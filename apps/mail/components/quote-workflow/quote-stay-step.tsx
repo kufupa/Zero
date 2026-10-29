@@ -65,7 +65,7 @@ export function StayAskChrome({
           ))}
         </ul>
       ) : null}
-      {askAction === 'amend' || askAction === 'cancel' ? (
+      {(askAction === 'amend' || askAction === 'cancel') && session.analysis?.amendment?.kind === askAction ? (
         <SecondaryButton className="w-auto self-start" onClick={() => onSelectStayKey?.(stay.id)}>
           Find this booking
         </SecondaryButton>

@@ -789,7 +789,15 @@ export function storedAnalysis(
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
-  const mapped = mapLlmDecision(luna, {
+  // A single named guest is evidence for the normal one-room quote default, not a room-to-guest assignment.
+  const onlySource = payload.stays.length === 1 && stays.length === 1 ? payload.stays[0] : undefined;
+  const defaultGuest = workflow === 'quote' && groups.length === 1 && onlySource?.rows.length === 1 &&
+    order[0]?.rowId === onlySource.rows[0]?.id && onlySource.guests?.length === 1
+    ? onlySource.guests[0]?.name.trim() : undefined;
+  const mappingLuna = defaultGuest && groups[0]
+    ? { ...luna, groups: [{ ...groups[0], guestNames: [defaultGuest] }] }
+    : luna;
+  const mapped = mapLlmDecision(mappingLuna, {
     channel: aopQuoteChannelFromSender({
       fromAddress: read.fromAddress,
       subject: read.subject,
@@ -797,6 +805,15 @@ export function storedAnalysis(
     }),
     ...(propertyCode ? { propertyCode } : {}),
   });
+  // The ordinary mapper suppresses non-quote groups. Keep existing cases for staff to choose in the pane,
+  // while retaining the non-quote intent and never creating quote or booking defaults for them.
+  const caseScoped = (workflow === 'amend' || workflow === 'cancel') && groups.length > 0;
+  if (caseScoped) {
+    mapped.groups = mapLlmDecision(luna, {
+      treatAs: 'create_booking',
+      ...(propertyCode ? { propertyCode } : {}),
+    }).groups;
+  }
   mapped.groups.forEach((group, index) => {
     const slot = order[index];
     if (!slot) return;
@@ -877,6 +894,7 @@ export function storedAnalysis(
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
+          ...(caseScoped ? { caseScoped: true } : {}),
           // Kept separately from room assignment so staff can see the names and numbers as reported in the email.
           ...(firstRowOfStay ? { stayGuests: guestsForStay(sourceStay) } : {}),
           // The People field may prefill only the one original room; the draft still must not match by row order.

@@ -4343,6 +4343,28 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
   });
 
+  it('lets staff select either same-date existing case without borrowing its neighbour number', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...quoteAnalysis.groups[0]!, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups,
+      luna: {
+        workflow: 'cancel', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [{ kind: 'cancel', groupIndexes: [0], note: '' }, { kind: 'cancel', groupIndexes: [1], note: '' }],
+      },
+      amendment: { kind: 'cancel', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    expect(groupStays(session.groups).map((stay) => stay.id)).toEqual(['stay-a', 'stay-b']);
+    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-a' }))?.confirmationNumber).toBe('11111111-1');
+    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-b' }))?.confirmationNumber).toBe('22222222-1');
+    const asQuote = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    expect(groupStays(asQuote.groups)).toHaveLength(1);
+  });
+
   it('lists each named guest on the stay with that guest confirmation', () => {
     const session = twoGuestStay(2, [
       { name: 'Ada Example', confirmationNumber: '11111111-1' },
@@ -4582,5 +4604,51 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(stayAskAction(session, 'stay-a')).toBe('booking');
     expect(stayAskAction(session, 'stay-b')).toBe('amend');
     expect(stayAskAction(session, stayKeyForGroup(groups[0]!))).toBe('other');
+  });
+
+  it('blocks booking drafts for an existing or mixed date while allowing an explicit new case', () => {
+    const newGroup = { ...quoteAnalysis.groups[0]!, id: 'new-room', stayId: 'new-stay' };
+    const existingGroup = { ...quoteAnalysis.groups[0]!, id: 'old-room', stayId: 'old-stay' };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [newGroup, existingGroup],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: 'amend', groupIndexes: [1], note: '' }],
+      },
+    };
+    const mixed = withStaffSource(analysisReady(analysis));
+    const dateKey = stayKeyForGroup(newGroup);
+    expect(quoteRunBlockReason(mixed, stepFor(mixed, dateKey))).toMatch(/existing or unclear booking/i);
+    const draft = {
+      draft: {
+        rooms: [{ groupId: 'new-room', roomIndex: 1, request: { arrival: newGroup.arrivalDate, departure: newGroup.departureDate }, schemaErrors: [] }],
+        rateCheck: [], missing: [], flags: [],
+      },
+      options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+      messageId: 'mail-1', selectionEpoch: 1, inputRevision: mixed.inputRevision, revisionRef: 'unquoted',
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    expect(reduceQuoteSession(mixed, { type: 'booking_draft_ready', payload: draft, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+
+    const distinct = analysisReady({
+      ...analysis,
+      groups: [newGroup, { ...existingGroup, arrivalDate: '2026-12-01', departureDate: '2026-12-03' }],
+    });
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, dateKey))).toBeNull();
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, '2026-12-01:2026-12-03'))).toMatch(/existing or unclear booking/i);
+
+    const onlyNew = withStaffSource(analysisReady({
+      ...analysis, groups: [newGroup],
+      luna: { ...analysis.luna!, tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }] },
+    }));
+    const accepted = reduceQuoteSession(onlyNew, {
+      type: 'booking_draft_ready', payload: { ...draft, inputRevision: onlyNew.inputRevision }, sourceHash: STAFF_HASH,
+    });
+    expect(accepted.bookingDrafts[dateKey]).toBeDefined();
+    const reclassified = reduceQuoteSession(accepted, {
+      type: 'analysis_ready', analysis: { ...onlyNew.analysis!, luna: { ...onlyNew.analysis!.luna!, tasks: [{ kind: 'other', groupIndexes: [0], note: '' }] } },
+    });
+    expect(reclassified.bookingDrafts).toEqual({});
   });
 });

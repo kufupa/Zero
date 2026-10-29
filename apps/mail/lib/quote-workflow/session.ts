@@ -177,12 +177,14 @@ export function stayIdOf(group: StayGroupRequirement): string {
   return group.stayId ?? `d:${stayKeyForGroup(group)}`;
 }
 
-/** The rows grouped into stays, in the order each stay's first row appears. Same dates are one stay. */
+/** Quote rows share date cards; existing-booking rows keep their source case even when dates match. */
 export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; rows: StayGroupRequirement[] }> {
   const byKey = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
     const dateKey = stayKeyForGroup(group);
-    const id = group.arrivalDate && group.departureDate
+    const id = 'caseScoped' in group && group.caseScoped === true && group.stayId
+      ? group.stayId
+      : group.arrivalDate && group.departureDate
       ? dateKey
       : group.arrivalDate
         ? `a:${group.arrivalDate}`
@@ -226,13 +228,23 @@ type StayAskRow = StayGroupRequirement & {
   confirmationNumber?: string | null;
   /** Extraction-level guests; their position here does not assign them to this room. */
   stayGuests?: StayAskGuest[];
+  caseScoped?: boolean;
 };
+
+function quoteDateGroups(groups: StayGroupRequirement[]): StayGroupRequirement[] {
+  return groups.map((group) => {
+    if (!('caseScoped' in group)) return group;
+    const copy = { ...group } as StayAskRow;
+    delete copy.caseScoped;
+    return copy;
+  });
+}
 
 function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[] {
   return (session.analysis?.luna?.groups ?? []) as LunaStayGroup[];
 }
 
-function stayAskRows(session: QuoteSession, stayId: string): StayAskRow[] {
+function stayAskRows(session: Pick<QuoteSession, 'groups'>, stayId: string): StayAskRow[] {
   return groupsForStayAction(session.groups, stayId) as StayAskRow[];
 }
 
@@ -308,7 +320,7 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
 }
 
 /** Stay ids a task named, taken from the analysis groups at those indexes so a later remove cannot retarget it. */
-function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][number]): string[] {
+function taskStayIds(session: Pick<QuoteSession, 'analysis'>, task: LunaAnalysisWire['tasks'][number]): string[] {
   const analysisGroups = session.analysis?.groups ?? [];
   return task.groupIndexes.flatMap((index) => {
     const group = analysisGroups[index];
@@ -317,7 +329,7 @@ function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][numb
 }
 
 /** The action this stay card should show. Tasks bind by stay id; a date-set card matches every row on those dates. */
-export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
+export function stayAskAction(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayId: string): StayAskAction {
   const tasks = session.analysis?.luna?.tasks ?? [];
   const rowIds = new Set(stayAskRows(session, stayId).map(stayIdOf));
   const ids = new Set([...rowIds, stayId]);
@@ -352,6 +364,16 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
   if (action === 'amend') return 'Amendment';
   if (action === 'cancel') return 'Cancellation';
   return null;
+}
+
+/** An existing or unclear case must never be offered a new-booking draft. */
+function blocksNewBooking(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayKey: string): boolean {
+  const luna = session.analysis?.luna;
+  return luna?.workflow === 'create_booking' && (luna.tasks?.length ?? 0) > 0 && stayAskAction(session, stayKey) !== 'booking';
+}
+
+function allowedBookingDrafts(session: Pick<QuoteSession, 'analysis' | 'groups' | 'bookingDrafts'>): QuoteSession['bookingDrafts'] {
+  return Object.fromEntries(Object.entries(session.bookingDrafts).filter(([key]) => !blocksNewBooking(session, key)));
 }
 
 /** Amend and cancel analyses keep their stays so each card can open CHECK. Other non-quote mail still has no stays. */
@@ -432,9 +454,14 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
 
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'> &
+    Partial<Pick<QuoteSession, 'analysis'>>,
   step: QuoteToolStep,
 ): string | null {
+  if (step.kind === 'quote_stay' && step.shareKey && session.analysis &&
+      blocksNewBooking({ groups: session.groups, analysis: session.analysis }, step.shareKey)) {
+    return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
+  }
   if (
     step.kind === 'quote_stay' &&
     step.shareKey &&
@@ -1372,6 +1399,7 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
   delete details.guestNames;
   delete details.confirmationNumber;
   delete details.stayGuests;
+  delete details.caseScoped;
   return copy;
 }
 
@@ -1698,7 +1726,7 @@ export function reduceQuoteSession(
     }
     case 'treat_as': {
       if (action.treatAs === session.treatAs) return session;
-      const chosen = { ...session, treatAs: action.treatAs };
+      const chosen = { ...session, treatAs: action.treatAs, groups: action.treatAs ? quoteDateGroups(session.groups) : session.groups };
       // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
       // and Get rates runs again for the chosen type. The stays staff have are kept.
       if (
@@ -1756,13 +1784,16 @@ export function reduceQuoteSession(
         // Staff corrected stay fields after this run started. Keep their groups and take
         // only the new read-out, so a late result never overwrites those edits.
         const staffActions = action.analysis.staffActions ?? session.staffActions;
-        const reviewItems = projectQuoteReviewItems(action.analysis, session.groups, [], staffActions);
+        const groups = action.analysis.intent === 'quote' ? quoteDateGroups(session.groups) : session.groups;
+        const reviewItems = projectQuoteReviewItems(action.analysis, groups, [], staffActions);
         const sourceKey = reviewSourceKey(session);
         const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
         return {
           ...session,
           phase: loadingDone,
           analysis: action.analysis,
+          groups,
+          bookingDrafts: allowedBookingDrafts({ ...session, groups, analysis: action.analysis }),
           analysisStartStayRevision: null,
           staffActions,
           staffHeader: prefillStaffHeaderFromLuna(
@@ -1790,6 +1821,7 @@ export function reduceQuoteSession(
           ...session,
           phase: loadingDone,
           analysis,
+          bookingDrafts: allowedBookingDrafts({ ...session, analysis }),
           analysisStartStayRevision: null,
           reviewItems: projectQuoteReviewItems(analysis, session.groups, extras, session.staffActions),
         };
@@ -1844,6 +1876,7 @@ export function reduceQuoteSession(
         analysisStartStayRevision: null,
         analysis: action.analysis,
         groups: action.analysis.groups,
+        bookingDrafts: allowedBookingDrafts({ ...base, groups: action.analysis.groups, analysis: action.analysis }),
         inputRevision: session.inputRevision + (requirementsChanged ? 1 : 0),
         selectedStayKey,
         steps: session.runningStepId && !requirementsChanged
@@ -2160,14 +2193,16 @@ export function reduceQuoteSession(
       const draftKey = Object.keys(session.staffQuotes).find(
         (key) => session.staffQuotes[key]?.revisionRef === action.payload.revisionRef,
       );
-      if (draftKey) return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
+      if (draftKey) return blocksNewBooking(session, draftKey)
+        ? session
+        : { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
       const keys = requestedQuoteKeys(session.groups);
       const room = action.payload.draft.rooms[0]?.request;
       const stayKey =
         typeof room?.arrival === 'string' && typeof room?.departure === 'string'
           ? `${room.arrival}:${room.departure}`
           : keys[0];
-      if (action.payload.revisionRef !== 'unquoted' || Object.keys(session.staffQuotes).length > 0 || keys.length !== 1 || stayKey !== keys[0]) {
+      if (action.payload.revisionRef !== 'unquoted' || Object.keys(session.staffQuotes).length > 0 || keys.length !== 1 || !stayKey || stayKey !== keys[0] || blocksNewBooking(session, stayKey)) {
         return session;
       }
       return { ...session, bookingDrafts: { ...session.bookingDrafts, [stayKey]: action.payload } };

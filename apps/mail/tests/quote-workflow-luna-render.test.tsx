@@ -195,6 +195,48 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByText('Agency & company')).toBeNull();
   });
 
+  it('offers separate existing cases for selection when their dates match', () => {
+    const onSelectStayKey = vi.fn();
+    const groups = [
+      { ...g1, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...g1, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'other', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: 'cancel',
+        tasks: [{ kind: 'cancel', groupIndexes: [0], note: '' }, { kind: 'cancel', groupIndexes: [1], note: '' }],
+      }),
+      amendment: { kind: 'cancel', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    render(<QuoteWorkflowPanel session={session} onSelectStayKey={onSelectStayKey} />);
+    expect(screen.getAllByLabelText('Stay guests').map((node) => node.textContent)).toEqual([
+      'Ada Example · 11111111-1', 'Bea Example · 22222222-1',
+    ]);
+    const buttons = screen.getAllByRole('button', { name: 'Find this booking' });
+    fireEvent.click(buttons[0]!);
+    fireEvent.click(buttons[1]!);
+    expect(onSelectStayKey.mock.calls).toEqual([['stay-a'], ['stay-b']]);
+  });
+
+  it('does not offer a lookup button when the matching amendment panel is unavailable', () => {
+    const groups = [
+      { ...g1, id: 'r_new', stayId: 'new-stay' },
+      { ...g1, id: 'r_old', stayId: 'old-stay', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'quote', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: 'create_booking',
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: 'amend', groupIndexes: [1], note: '' }],
+      }),
+      amendment: null,
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getAllByLabelText('Stay action').map((node) => node.textContent)).toEqual(['New booking', 'Amendment']);
+    expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
+  });
+
   it('drops the "not a quote or booking" notice when the change card carries the amendment (AE2)', () => {
     const session = sessionWithAnalysis({
       intent: 'other',

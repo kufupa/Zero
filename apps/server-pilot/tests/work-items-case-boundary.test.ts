@@ -32,6 +32,24 @@ function mixedMail(): MailExtractionPayload {
 }
 
 describe('stored case boundaries', () => {
+  it('keeps same-date existing cases separately selectable on cancellation mail', () => {
+    const payload = mixedMail();
+    payload.stays[0]!.action = 'cancel';
+    payload.stays[1]!.action = 'cancel';
+    payload.stays[1]!.requested = { ...payload.stays[0]!.requested };
+    payload.stays[1]!.booked = { ...payload.stays[0]!.booked! };
+    payload.stays[1]!.guests = [{ name: 'Bea Example', confirmationNumber: '22222222-1' }];
+    payload.confirmationNumbers = ['57291630-1', '22222222-1'];
+
+    const analysis = storedAnalysis({ kind: 'cancellation', payload, attachments: [] }, {}).analysis;
+    expect(analysis.intent).toBe('other');
+    expect(analysis.luna.confirmationNumber).toBeNull();
+    expect(analysis.groups.map((group) => [group.stayId, group.caseScoped, group.confirmationNumber])).toEqual([
+      ['s_existing', true, '57291630-1'], ['s_new', true, '22222222-1'],
+    ]);
+    expect(analysis.luna.tasks.map((task) => task.groupIndexes)).toEqual([[0], [1]]);
+  });
+
   it('keeps existing and new asks on their own stay, without assigning the existing number globally', () => {
     const payload = mixedMail();
     const { analysis, refs } = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}, undefined, 'HRCEN');
@@ -177,6 +195,20 @@ describe('stored case boundaries', () => {
       { 'stays[s_new].rows[r_new].count': 1 },
     ).analysis;
     expect(narrowed.groups[0]?.guestNames).toBeUndefined();
+  });
+
+  it('uses one named guest as quote-default evidence without assigning the guest to a room', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[1]!];
+    payload.confirmationNumbers = [];
+    payload.stays[0]!.totalRooms = null;
+    payload.stays[0]!.rows[0]!.rooms = null;
+    payload.stays[0]!.rows[0]!.adultsPerRoom = null;
+    const analysis = storedAnalysis({ kind: 'quote', payload, attachments: [] }, {}).analysis;
+    expect(analysis.groups[0]?.quantity).toBe(1);
+    expect(analysis.groups[0]?.fields.quantity).toBe('defaulted');
+    expect(analysis.groups[0]?.guestNames).toBeUndefined();
+    expect(analysis.luna.groups[0]?.guestNames).toEqual([]);
   });
 
   it('requires review when a single number accompanies several rooms', () => {

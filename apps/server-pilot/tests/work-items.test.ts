@@ -390,7 +390,7 @@ describe('stored read for the pane', () => {
       });
     }));
 
-  it('gives an amendment its amendment fields and no groups', () =>
+  it('gives an amendment its amendment fields and a selectable case', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'q4');
       await insertRead(db, messageId, {
@@ -413,7 +413,8 @@ describe('stored read for the pane', () => {
       });
       const work = await readyWork(db, 'q4');
       expect(work.analysis.intent).toBe('other');
-      expect(work.analysis.groups).toEqual([]);
+      expect(work.analysis.groups).toHaveLength(1);
+      expect(work.analysis.groups[0]).toMatchObject({ stayId: STAY_ONE, caseScoped: true });
       expect(work.analysis.amendment).toEqual({
         kind: 'amend',
         confirmationNumber: '57291630-1',
