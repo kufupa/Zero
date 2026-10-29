@@ -7,7 +7,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BookingCards } from '../components/quote-workflow/booking-card';
+import { BookingCards, type SavedStayCommit } from '../components/quote-workflow/booking-card';
 import {
   PANE_SAVE_UNCONFIRMED_REASON,
   type PaneStayClient,
@@ -80,7 +80,7 @@ const unconfirmed: PaneStayResult = { status: 'refused', reason: PANE_SAVE_UNCON
 
 let workItemSequence = 0;
 
-function renderCase(commit: PaneStayClient['commit']) {
+function renderCase(commit: PaneStayClient['commit'], savedStays?: Record<string, SavedStayCommit>) {
   // The real component's preview cache is module-scoped. A fresh identity keeps cases independent.
   const workItemId = `00000000-0000-4000-8000-${String(++workItemSequence).padStart(12, '0')}`;
   const preview = vi.fn<PaneStayClient['preview']>().mockResolvedValue(previewResult);
@@ -96,6 +96,7 @@ function renderCase(commit: PaneStayClient['commit']) {
       groups={[group]}
       paneSave={client}
       workItemId={workItemId}
+      savedStays={savedStays}
       propertyCode="HRCEN"
       contact={{ name: 'Example Booker', company: null, endClient: null, email: 'booker@example.invalid', phone: null }}
       confirmation={{ userEmail: 'staff@example.invalid', setting: { mode: 'self' } }}
@@ -144,6 +145,23 @@ describe('offline characterization of multi-room recovery', () => {
     },
   );
 
+  it('currently allows the individual second-room action after an uncertain first room', async () => {
+    const commit = vi.fn<PaneStayClient['commit']>()
+      .mockResolvedValueOnce(unconfirmed)
+      .mockResolvedValueOnce(secondVerified);
+    renderCase(commit);
+    fireEvent.click(await previewBoth());
+    await screen.findByText('Check HMS');
+    const secondRoomButton = screen.getByRole('button', { name: 'Create provisional booking' });
+    await waitFor(() => expect(secondRoomButton).toHaveProperty('disabled', false));
+
+    fireEvent.click(secondRoomButton);
+    await screen.findByText('Booked 1 of 2 – TEST-SECOND');
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[1]?.[0]).toMatchObject({ stayId: 's_aaaa1111_2' });
+    expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
+  });
+
   it('currently counts an unverified confirmation as booked, including after the second click', async () => {
     const commit = vi.fn<PaneStayClient['commit']>()
       .mockResolvedValueOnce({
@@ -165,6 +183,17 @@ describe('offline characterization of multi-room recovery', () => {
     expect(commit).toHaveBeenCalledTimes(2);
     expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
     expect(screen.getByText('Check HMS')).toBeDefined();
+  });
+
+  it('currently counts a restored unknown confirmation as booked', () => {
+    const commit = vi.fn<PaneStayClient['commit']>();
+    renderCase(commit, {
+      s_aaaa1111_1: { confirmationNumber: 'TEST-UNCERTAIN', status: 'unknown', screenshotRef: null },
+    });
+
+    expect(screen.getByText('Check HMS')).toBeDefined();
+    expect(screen.getByText('Booked 1 of 2 – TEST-UNCERTAIN')).toBeDefined();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('keeps the first verified confirmation when the linked second room becomes uncertain', async () => {
