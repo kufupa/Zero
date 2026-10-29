@@ -48,7 +48,7 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
-import { captureQuoteSourceProof, draftQuoteOccupancyMessage, isCenturionQuoteScope,
+import { captureQuoteSourceProof, draftQuoteOccupancyMessage, quoteSourceUnverifiedMessage, isCenturionQuoteScope,
   isCenturionQuoteTransport, quoteSourceProofIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
@@ -660,9 +660,9 @@ export async function runStaffQuote(
     ? await captureQuoteSourceProof(db, input, occupancyScope) : null;
   if (quoteTarget.target.propertyCode === 'HRCEN' && !quoteSourceProof) {
     refuseQuote(
-      'child_occupancy_incomplete',
-      draftQuoteOccupancyMessage,
-      { cause: { code: 'staff_quote_child_occupancy_incomplete' } },
+      'source_unverified',
+      quoteSourceUnverifiedMessage,
+      { cause: { code: 'staff_quote_source_unverified' } },
     );
   }
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;

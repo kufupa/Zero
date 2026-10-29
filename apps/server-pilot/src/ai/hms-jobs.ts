@@ -39,8 +39,9 @@ import {
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { childOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, quoteSourceProofFromRun,
-  quoteSourceProofIsCurrent, quoteSourceProofMatchesCopy, quoteSourceProofMatchesInput,
-  quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy, quoteSourcePolicyChangedMessage } from './child-occupancy.js';
+  quoteSourceProofIsCurrent, quoteSourceProofMatchesInput,
+  quoteSourceProofPredatesPolicy, quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage,
+  QUOTE_SOURCE_PROOF_VERSION } from './child-occupancy.js';
 import {
   CENTURION_HMS_READ_TARGET,
   hmsReadAuditMetrics,
@@ -683,6 +684,14 @@ type HmsJobEnqueueInput = {
   extraMetrics?: Record<string, unknown>;
 };
 
+export function quoteJobNeedsSourceWitness(input: HmsJobEnqueueInput): boolean {
+  const propertyCode = typeof input.extraMetrics?.propertyCode === 'string' ? input.extraMetrics.propertyCode :
+    parseHmsReadTarget(input.extraMetrics?.hmsReadTarget)?.propertyCode;
+  return input.request.kind === 'staff_quote' && isCenturionQuoteScope({
+    transportId: input.transportId, propertyCode,
+  });
+}
+
 function hmsJobInsertValues(input: HmsJobEnqueueInput): typeof aiWorkflowRun.$inferInsert {
   const now = new Date();
   const createdAt = input.createdAt ?? now;
@@ -707,6 +716,7 @@ function hmsJobInsertValues(input: HmsJobEnqueueInput): typeof aiWorkflowRun.$in
       userId: input.userId,
       owner: input.userId ? `${input.userId}:${input.transportId}` : null,
       ...input.extraMetrics,
+      ...(quoteJobNeedsSourceWitness(input) ? { quoteSourcePolicyVersion: QUOTE_SOURCE_PROOF_VERSION } : {}),
     },
     createdAt,
     updatedAt: now,
@@ -883,7 +893,8 @@ export async function enqueueHmsJob(
   db: DB = getDb(),
 ): Promise<{ run: AiWorkflowRun; created: boolean }> {
   const now = input.createdAt ?? new Date();
-  const shouldShareMailRead = input.userId === null && input.priority === HMS_JOB_PRIORITY_PREFETCH;
+  // A duplicate header does not prove that the other message used the same extraction source.
+  const shouldShareMailRead = input.userId === null && input.priority === HMS_JOB_PRIORITY_PREFETCH && !quoteJobNeedsSourceWitness(input);
   const copies = shouldShareMailRead
     ? await hmsMailCopiesForMessage(db, input.transportId, input.triggerMessageId)
     : null;
@@ -2798,7 +2809,8 @@ export async function prefetchQuoteReadyForExtraction(
     let created = 0;
     let deferred = 0;
     for (const shop of shops) {
-      const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
+      const digest = createHash('sha256').update(JSON.stringify(target.target.propertyCode === 'HRCEN'
+        ? { sourcePolicyVersion: QUOTE_SOURCE_PROOF_VERSION, input: shop.input } : shop.input)).digest('hex');
       const queued = await enqueuePreparedQuoteWithinCap(
         db,
         {
@@ -4337,18 +4349,13 @@ async function quoteViewIsCurrent(db: DB, run: AiWorkflowRun, request: HmsJobReq
     threadId: selected.threadId, messageId: selected.id, propertyCode }))) return false;
   // Da Vinci prices do not carry Centurion's source proof; retain their existing admission rules.
   if (!isCenturionQuoteScope({ transportId: run.transportId, propertyCode })) return true;
+  if (!sameSource) return false;
   const proof = quoteSourceProofFromRun(run);
   const sourceScope = { transportId: run.transportId, threadId: run.threadId, messageId: source.id, propertyCode };
   if (!quoteSourceProofMatchesInput(proof, request.input) ||
     !(await quoteSourceProofIsCurrent(db, request.input.groups, sourceScope, proof))) return false;
   const selectedScope = { transportId: view.transportId, threadId: selected.threadId, messageId: selected.id, propertyCode };
-  if (view.input) return await childOccupancyIsCurrent(db, view.input.groups, selectedScope) &&
-    (sameSource || await quoteSourceProofMatchesCopy(db, view.input.groups, selectedScope, proof));
-  if (sameSource) return true;
-  return quoteSourceProofMatchesSingleStay(db, { groups: request.input.groups.map((group) => ({
-    arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
-    adults: group.adults, children: group.childrenPerRoom ?? group.childrenAges.length, childAges: group.childrenAges,
-  })) }, selectedScope, proof);
+  return !view.input || await childOccupancyIsCurrent(db, view.input.groups, selectedScope);
 }
 
 async function toView(
@@ -4385,7 +4392,7 @@ async function toView(
     result = quoteSourceProofPredatesPolicy(quoteSourceProofFromRun(run))
       ? { ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage }
       : { ok: false, code: 'child_occupancy_incomplete',
-        message: 'Refresh the selected email and confirm rooms, guests, room type, meal plan, agency and company before using this price.' };
+        message: quoteSourceUnverifiedMessage };
   } else if (!quoteResult && staffQuote && result && hasPrice &&
     isCenturionQuoteTransport(options.quoteScope?.transportId ?? run.transportId) &&
     (options.quoteScope?.messageId || options.quoteScope?.workItemId) &&
@@ -4459,6 +4466,8 @@ async function latestStaffQuoteRunFor(
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
   const reusable = async (run: AiWorkflowRun) => {
+    const centurion = isCenturionQuoteScope({ transportId: run.transportId, propertyCode: quoteRunPropertyCode(run) });
+    if (centurion && objectRecord(run.metrics).quoteSourcePolicyVersion !== QUOTE_SOURCE_PROOF_VERSION) return false;
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
     // Require the priced property's evidence, with a bound-revision recovery for old Da Vinci staff quotes.
@@ -4467,6 +4476,15 @@ async function latestStaffQuoteRunFor(
       if (!propertyCode && !(await legacyDavinciQuoteHasBoundRevision(db, run, userId, quoteInput))) return false;
       if (propertyCode && !(await quotePropertyMatchesOrigin({ db, transportId: run.transportId, threadId: run.threadId,
         messageId: run.triggerMessageId ?? undefined, propertyCode }))) return false;
+      if (centurion) {
+        const request = hmsJobRequestSchema.safeParse(run.readRequest);
+        const proof = quoteSourceProofFromRun(run);
+        if (!request.success || request.data.kind !== 'staff_quote' || run.triggerMessageId !== messageId ||
+          request.data.input.sourceHash !== quoteInput.sourceHash || !quoteSourceProofMatchesInput(proof, request.data.input) ||
+          !(await quoteSourceProofIsCurrent(db, request.data.input.groups, {
+            transportId: run.transportId, threadId: run.threadId, messageId, propertyCode,
+          }, proof))) return false;
+      }
     }
     const stored = run.readResult as { status?: unknown } | null;
     if (stored?.status === 'ready') return true;
@@ -4490,7 +4508,8 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId === messageId &&
       // Admission binds a Centurion run to the current extraction. A stale queued
       // run, or its eventual refusal, cannot answer a later read of this mail.
-      (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
+      (!centurion || (parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId &&
+        parsed.data.input.sourceHash === quoteInput.sourceHash)) &&
       staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false, centurion);
     if (!(await reusable(userRun))) {
       // Newest matching price is stale: do not fall back to an older refusal.
@@ -4542,9 +4561,7 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
-      (centurion && (sameMessageCopy
-        ? parsed.data.input.sourceExtractionId !== quoteInput.sourceExtractionId
-        : preparedRun.state !== 'succeeded' || objectRecord(preparedRun.readResult).status !== 'ready')) ||
+      (centurion && (!sameMessageCopy || parsed.data.input.sourceExtractionId !== quoteInput.sourceExtractionId)) ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput,
         !centurion && preferBoundContract && hasReadySelectedContract(preparedRun), centurion)
     ) {

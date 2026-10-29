@@ -6,9 +6,11 @@ import {
   enqueueHmsJob,
   hmsMailCopiesForMessage,
   hmsMailReadIdempotencyKey,
+  quoteJobNeedsSourceWitness,
 } from './hms-jobs.js';
 import { reservePrefetchCapacity } from './prefetch-capacity.js';
 import { HMS_JOB_PROMPT_VERSION } from './run-ledger.js';
+import { QUOTE_SOURCE_PROOF_VERSION } from './child-occupancy.js';
 
 export type PreparedQuoteCapResult = {
   created: boolean;
@@ -49,7 +51,7 @@ export async function enqueuePreparedQuoteWithinCap(
     const centurionExtraction = copies.propertyCode === 'HRCEN' && input.request.kind === 'staff_quote';
     const sourceExtractionId = input.request.kind === 'staff_quote' ? input.request.input.sourceExtractionId ?? null : null;
     const storedIdentity =
-      copies.propertyCode && copies.messageIdHeader
+      !quoteJobNeedsSourceWitness(input) && copies.propertyCode && copies.messageIdHeader
         ? hmsMailReadIdempotencyKey(
             copies.propertyCode,
             copies.messageIdHeader,
@@ -92,6 +94,9 @@ export async function enqueuePreparedQuoteWithinCap(
                 eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
                 sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
                 sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+                ...(quoteJobNeedsSourceWitness(input)
+                  ? [sql`${aiWorkflowRun.metrics}->>'quoteSourcePolicyVersion' = ${String(QUOTE_SOURCE_PROOF_VERSION)}`]
+                  : []),
                 ...(centurionExtraction
                   ? [sql`${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' IS NOT DISTINCT FROM ${sourceExtractionId}`]
                   : []),

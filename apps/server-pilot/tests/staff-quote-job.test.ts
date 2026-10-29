@@ -15,6 +15,19 @@ import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// Unit fixtures expose synthetic witnessed reads; the route suites use the real Postgres source fence.
+vi.mock('../src/ai/workflow-classifier/source-fence.js', async (original) => {
+  const actual = await original<typeof import('../src/ai/workflow-classifier/source-fence.js')>();
+  return {
+    ...actual,
+    captureCurrentWitnessedRead: async (db: DB & { fixtureWitness?: (id: string) => unknown }, scope: Parameters<typeof actual.captureCurrentWitnessedRead>[1], id: string) =>
+      db.fixtureWitness ? db.fixtureWitness(id) : actual.captureCurrentWitnessedRead(db, scope, id),
+    withQuoteSourceSnapshot: async (db: DB & { fixtureWitness?: unknown }, read: (tx: DB) => Promise<unknown>) =>
+      db.fixtureWitness ? read(db) : actual.withQuoteSourceSnapshot(db, read),
+  };
+});
 
 const jobMocks = vi.hoisted(() => ({
   runStaffQuote: vi.fn(),
@@ -310,6 +323,10 @@ function staffQuoteRunDb(
   };
   let db: Record<string, unknown>;
   db = {
+    fixtureWitness: (id: string) => id === 'extraction-1' ? {
+      read: { id, usage: {} }, source: { digest: quoteDigest({ text: mail.textBody, subject: mail.subject }) },
+      extractionDigest: quoteDigest({ id, kind: 'quote', payload }),
+    } : null,
     select() {
       let table: unknown;
       const query = {
@@ -463,7 +480,7 @@ describe('runStaffQuote child occupancy', () => {
     expect(await captureQuoteSourceProof(quoteDb.db, input, scope)).toBeNull();
     await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED', cause: expect.objectContaining({
-        reason: 'child_occupancy_incomplete', code: 'staff_quote_child_occupancy_incomplete',
+        reason: 'source_unverified', code: 'staff_quote_source_unverified',
       }),
     });
     expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
@@ -488,7 +505,7 @@ describe('runStaffQuote child occupancy', () => {
     await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: expect.stringContaining('number of children'),
-      cause: expect.objectContaining({ reason: 'child_occupancy_incomplete' }),
+      cause: expect.objectContaining({ reason: 'source_unverified' }),
     });
     expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
   });

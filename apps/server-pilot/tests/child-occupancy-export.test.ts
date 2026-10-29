@@ -4,7 +4,7 @@ import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { captureQuoteSourceProof, draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold,
-  quoteSourcePolicyChangedMessage } from '../src/ai/child-occupancy.js';
+  quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage } from '../src/ai/child-occupancy.js';
 import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, claimDraftApprovalForSend, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
 import { AZURE_DRAFT_ROUTE } from '../src/ai/draft-route-factory.js';
 import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mail/send/outbound-queue.js';
@@ -14,6 +14,15 @@ import { appRouter } from '../src/trpc/router.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// These synthetic export fixtures exercise saved-state checks; real witness and lock races use Postgres tests.
+vi.mock('../src/ai/workflow-classifier/source-fence.js', async (original) => ({
+  ...await original<typeof import('../src/ai/workflow-classifier/source-fence.js')>(),
+  captureCurrentWitnessedRead: async (db: { fixtureWitness?: (id: string) => unknown }, _scope: unknown, id: string) =>
+    db.fixtureWitness?.(id) ?? null,
+  withQuoteSourceSnapshot: async (db: DB, read: (tx: DB) => Promise<unknown>) => read(db),
+}));
 
 const transportId = 'transport-centurion';
 const userId = 'user-1';
@@ -70,6 +79,10 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
     readRequest: { kind: 'quote_pdf', workItemId: itemId, revisionId: revision.id,
       propertyCode, transportId, userId, proposal } };
   const db = {
+    fixtureWitness: (id: string) => id === 'extract-1' ? {
+      read: { id, usage: {} }, source: { digest: quoteDigest({ body: mail.textBody, subject: mail.subject }) },
+      extractionDigest: quoteDigest({ id, kind: 'quote', payload }),
+    } : null,
     select(selection?: Record<string, unknown>) {
       let table: unknown;
       const query = {
@@ -323,7 +336,7 @@ describe('stored quote export and draft occupancy', () => {
         .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices).toHaveLength(0);
       await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
-        .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
+        .rejects.toMatchObject({ code: 'CONFLICT', message: quoteSourceUnverifiedMessage });
       delete state[`${rowPath}.${field}`];
     }
     delete (run.metrics.staffQuoteAttestation as { quoteSourceProof?: unknown }).quoteSourceProof;
@@ -341,7 +354,7 @@ describe('stored quote export and draft occupancy', () => {
     await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices).toHaveLength(0);
     await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
-      .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
+      .rejects.toMatchObject({ code: 'CONFLICT', message: quoteSourceUnverifiedMessage });
   });
 
   it('hides stored priced choices after the saved occupancy changes', async () => {
@@ -414,7 +427,7 @@ describe('stored quote export and draft occupancy', () => {
     expect(await draftQuoteOccupancyHold(db, { ...scope, transportId: 'transport-davinci', result: { importedOffers: [{}] } })).toBeNull();
     state[`${rowPath}.childrenPerRoom`] = 1;
     await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
-      .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
+      .rejects.toMatchObject({ code: 'CONFLICT', message: quoteSourceUnverifiedMessage });
     Object.assign(run.metrics.reservationistResult, { quoteRevisionIds: [], quoteRevisions: [] });
     expect(await draftQuoteOccupancyHold(db, { ...scope, result: { version: 1, tasks: [] } })).toBeNull();
     await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))

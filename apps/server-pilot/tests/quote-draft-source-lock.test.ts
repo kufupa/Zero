@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
+import { captureCenturionExtractionSource, CENTURION_SOURCE_WITNESS_VERSION } from '../src/ai/extraction/centurion-source-witness.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -75,26 +76,34 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
 
   it('holds the work item through commit and rejects a previously saved edit', async () => {
     const holder = openTestDbSession(), editor = openTestDbSession();
-    const id = randomUUID(), transportId = `draft-lock-${id}`, threadId = `thread-${id}`, messageId = `message-${id}`;
+    const id = randomUUID(), transportId = 'transport-centurion', threadId = `thread-${id}`, messageId = `message-${id}`;
     const address = `${id}@example.invalid`;
     try {
-      await holder.db.insert(mailboxTransport).values({ id: transportId, email: address, ownerHeaderValue: address });
+      await holder.db.insert(mailboxTransport).values({ id: transportId, email: 'centurion@legacyhotels.co.za',
+        ownerHeaderValue: 'centurion@legacyhotels.co.za' }).onConflictDoNothing();
       await holder.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
       await holder.db.insert(message).values({ id: messageId, transportId, threadId, direction: 'inbound',
-        messageIdHeader: address, fromAddress: 'sender@example.invalid' });
+        messageIdHeader: address, fromAddress: 'sender@example.invalid', subject: 'Synthetic quote',
+        textBody: 'Please quote one room for two adults and no children.' });
       const payload = { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
         confirmationNumbers: [], missing: [], stays: [{ id: 's1', hotel: null,
           requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
           rows: [{ id: 'g1', roomType: null, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: null }] }] };
+      const source = await holder.db.transaction((tx) => captureCenturionExtractionSource(tx as unknown as DB,
+        { transportId, threadId, messageId }, 'test', process.env));
+      expect(source.status).toBe('captured');
+      if (source.status !== 'captured') throw new Error('synthetic quote source is not witnessed');
       const [read] = await holder.db.insert(mailExtraction).values({ messageId, extractorVersion: 'test',
-        status: 'succeeded', kind: 'quote', payload }).returning({ id: mailExtraction.id });
+        status: 'succeeded', kind: 'quote', payload, usage: { sourceWitness: {
+          version: CENTURION_SOURCE_WITNESS_VERSION, status: 'captured', digest: source.digest,
+        } } }).returning({ id: mailExtraction.id });
       const [item] = await holder.db.insert(workItem).values({ transportId, threadId, sourceMessageId: messageId,
         kind: 'quote', extractionId: read!.id }).returning({ id: workItem.id });
       const scope = { transportId, threadId, messageId, propertyCode: 'HRCEN' };
       __setDbForTests({ db: holder.db, conn: null as never });
       const api = appRouter.createCaller({ auth: null as never, reqHeaders: new Headers(),
         sessionUser: { id: 'staff-1', email: 'staff@example.invalid', name: 'Staff' },
-        activeTransportId: transportId, accessRole: 'owner', transportEmail: address } as never).workItems;
+        activeTransportId: transportId, accessRole: 'owner', transportEmail: 'centurion@legacyhotels.co.za' } as never).workItems;
       const pane = await api.getByMessage({ internetMessageId: `<${address}>` });
       if (pane.status !== 'ready') throw new Error('synthetic work item was not ready');
       const stale = staffQuoteInput.parse({ messageId, sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,

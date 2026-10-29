@@ -11,6 +11,15 @@ import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.
 import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
 import { appRouter } from '../src/trpc/router.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// This suite isolates draft guards with a query stub; the real witness and locks are exercised with Postgres.
+vi.mock('../src/ai/workflow-classifier/source-fence.js', async (original) => ({
+  ...await original<typeof import('../src/ai/workflow-classifier/source-fence.js')>(),
+  captureCurrentWitnessedRead: async (db: { fixtureWitness?: (id: string) => unknown }, _scope: unknown, id: string) =>
+    db.fixtureWitness?.(id) ?? null,
+  withQuoteSourceSnapshot: async (db: DB, read: (tx: DB) => Promise<unknown>) => read(db),
+}));
 
 const transportId = 'transport-centurion', userId = 'user-1', itemId = '00000000-0000-4000-8000-000000000001';
 const pdf = Buffer.from('%PDF-1.4');
@@ -93,7 +102,11 @@ async function fixture() {
       }, for(mode: string) { transactionState.locks.push(mode); return Promise.resolve(rowsFor()); } };
     return query;
   };
-  const db = { transaction, select, selectDistinct: select, execute: async () => undefined,
+  const fixtureWitness = (id: string) => id === 'extract-1' ? {
+    read: { id, usage: {} }, source: { digest: quoteDigest({ body: mail.textBody, subject: mail.subject }) },
+    extractionDigest: quoteDigest({ id, payload }),
+  } : null;
+  const db = { transaction, select, selectDistinct: select, fixtureWitness, execute: async () => undefined,
     insert: () => ({ values: async () => undefined }) } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
     sourcePartyDigest: quoteSourcePartyDigest(payload, state), sourceExtractionId: 'extract-1',
@@ -187,7 +200,8 @@ describe('priced draft preflight', () => {
   });
 
   it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
-    const { proposal, state } = await fixture();
+    const { proposal, state, transactionState } = await fixture();
+    transactionState.enabled = true;
     const { workItemId: _workItemId, ...input } = proposal;
     await expect(caller().workstation.qualifiedQuoteProposalPdf(input)).resolves.toMatchObject({ pdfBase64: pdf.toString('base64') });
     state['stays[s1].rows[g1].board'] = 'bb';

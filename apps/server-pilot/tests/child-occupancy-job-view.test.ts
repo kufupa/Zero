@@ -10,6 +10,17 @@ import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { draftQuoteOccupancyHold } from '../src/ai/child-occupancy.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { quotePropertyMatchesOrigin } from '../src/hms/hms-quote-target.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// Isolate job-view behavior; real extraction witness and source locks use disposable Postgres tests.
+vi.mock('../src/ai/workflow-classifier/source-fence.js', async (original) => ({
+  ...await original<typeof import('../src/ai/workflow-classifier/source-fence.js')>(),
+  captureCurrentWitnessedRead: async (_db: unknown, _scope: unknown, id: string) => id === extraction.id ? {
+    read: { id, usage: {} }, source: { digest: 'f'.repeat(64) },
+    extractionDigest: quoteDigest({ id, kind: extraction.kind, payload: extraction.payload }),
+  } : null,
+  withQuoteSourceSnapshot: async (db: DB, read: (tx: DB) => Promise<unknown>) => read(db),
+}));
 
 const transportId = 'transport-centurion';
 const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
@@ -36,7 +47,7 @@ function job(request: unknown = { kind: 'staff_quote', input }) {
     readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', propertyCode: 'HRCEN', totalMinor: 10000,
       quoteSourceProof: quoteProof, asOf: new Date().toISOString() },
     readResultExpiresAt: new Date(Date.now() + 60_000),
-    metrics: { userId: 'user-1', batchId: 'batch-1', itemIndex: 0 },
+    metrics: { userId: 'user-1', batchId: 'batch-1', itemIndex: 0, quoteSourcePolicyVersion: 5 },
   } as unknown as AiWorkflowRun;
 }
 beforeAll(async () => {
@@ -180,7 +191,7 @@ describe('cached quote views use current selected occupancy', () => {
     expect(view?.result).not.toHaveProperty('totalMinor');
   });
 
-  it('preserves one-row copy reuse only when both copies have matching saved occupancy', async () => {
+  it('holds copied Centurion prices even when the copies have matching saved occupancy', async () => {
     const copy = { ...mail, id: 'm2', threadId: 't2' };
     const copyExtraction = { ...extraction, id: 'extract-2', payload: { ...extraction.payload,
       stays: [{ ...extraction.payload.stays[0]!, id: 's2', rows: [{
@@ -194,7 +205,7 @@ describe('cached quote views use current selected occupancy', () => {
       [mailExtraction, [extraction]], [workItem, [item()]], [mailExtraction, [copyExtraction]], [workItem, [copyItem(state)]],
     ];
     const selected = { ...byId, messageId: copy.id };
-    expect((await readHmsJobView(selected, fakeDb(replies({}))))?.result).toMatchObject({ status: 'ready' });
+    expect((await readHmsJobView(selected, fakeDb(replies({}))))?.result).toMatchObject({ ok: false });
     const stale = await readHmsJobView(selected, fakeDb(replies({ 'stays[s2].rows[r2].childrenPerRoom': 1 })));
     expect(stale).toMatchObject({ status: 'failed', result: { ok: false } });
   });
@@ -221,10 +232,10 @@ describe('cached quote views use current selected occupancy', () => {
   it('checks by-input read-back against the selected saved row', async () => {
     const replies: Array<[unknown, unknown[]]> = [
       [message, [mail]], [message, [{ id: mail.id }]], [aiWorkflowRun, [job()]],
-      [message, [mail]], [mailExtraction, [extraction]], [workItem, [item({ 'stays[s1].rows[r1].adults': 3 })]],
+      [mailExtraction, [extraction]], [workItem, [item({ 'stays[s1].rows[r1].adults': 3 })]],
     ];
     const view = await readHmsJobView({ transportId, userId: 'user-1', messageId: mail.id, kind: 'staff_quote', input }, fakeDb(replies));
-    expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
+    expect(view).toBeNull();
   });
 
   it('uses the batch work-item link and hides a stale quote price', async () => {

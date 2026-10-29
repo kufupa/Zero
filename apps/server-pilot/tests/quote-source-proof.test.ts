@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { captureQuoteSourceProof, quoteSourceProofIsCurrent, quoteSourceProofMatchesCopy,
   quoteSourceProofMatchesInput, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy } from '../src/ai/child-occupancy.js';
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// This file isolates saved-source comparisons. Real source capture and races use disposable Postgres tests.
+vi.mock('../src/ai/workflow-classifier/source-fence.js', async (original) => ({
+  ...await original<typeof import('../src/ai/workflow-classifier/source-fence.js')>(),
+  captureCurrentWitnessedRead: async (db: { fixtureWitness?: (id: string) => unknown }, _scope: unknown, id: string) =>
+    db.fixtureWitness?.(id) ?? null,
+  withQuoteSourceSnapshot: async (db: DB, read: (tx: DB) => Promise<unknown>) => read(db),
+}));
 
 const scope = { transportId: 'transport-centurion', threadId: 't1', messageId: 'm1', propertyCode: 'HRCEN' };
 const input = staffQuoteInput.parse({ messageId: 'm1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
@@ -22,7 +31,13 @@ function evidence(stayId = 's1', rowId = 'r1') {
         childrenPerRoom: 0, childAges: [] as number[], board: 'dbb' as string | null }] }] },
     state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1', kind: 'quote',
     conflicts: [] as Array<{ workItemId: string; kind: string; status: string }> };
-  const db = { select(selection?: Record<string, unknown>) {
+  const fixture = {
+    transaction: async (run: (tx: unknown) => Promise<unknown>) => run(fixture),
+    fixtureWitness: (id: string) => id === data.latest ? {
+      read: { id, usage: {} }, source: { digest: 'f'.repeat(64) },
+      extractionDigest: quoteDigest({ id: data.latest, kind: data.kind, payload: data.payload }),
+    } : null,
+    select(selection?: Record<string, unknown>) {
     let table: unknown;
     const conflict = selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection;
     const read = () => conflict ? data.conflicts : table === mailExtraction ? [{ id: data.latest, kind: data.kind, payload: data.payload }] :
@@ -32,7 +47,9 @@ function evidence(stayId = 's1', rowId = 'r1') {
       limit() { return query; }, for() { return query; },
     });
     return query;
-  } } as unknown as DB;
+    },
+  };
+  const db = fixture as unknown as DB;
   return { data, db };
 }
 
@@ -51,10 +68,10 @@ describe('source preferences bound to a Centurion price', () => {
   it('rejects pre-policy proofs on every Centurion reuse path but preserves HRDAV', async () => {
     const { db } = evidence();
     const current = await captureQuoteSourceProof(db, input, scope);
-    expect(current?.version).toBe(4);
+    expect(current?.version).toBe(5);
     const revision = { groups: [{ arrivalDate: '2027-10-20', departureDate: '2027-10-21',
       quantity: 1, adults: 2, children: 0, childAges: [] }] };
-    for (const version of [1, 2, 3]) {
+    for (const version of [1, 2, 3, 4]) {
       const old = { ...current!, version };
       expect(quoteSourceProofPredatesPolicy(old)).toBe(true);
       expect(quoteSourceProofMatchesInput(old, input)).toBe(false);
@@ -135,8 +152,8 @@ describe('source preferences bound to a Centurion price', () => {
     const copiedGroup = { ...input.groups[0]!, id: 'r2' };
     const revision = { groups: [{ arrivalDate: copiedGroup.arrivalDate, departureDate: copiedGroup.departureDate,
       quantity: 1, adults: 2, children: 0, childAges: [] }] };
-    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(true);
-    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(true);
+    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
     for (const path of ['contact.company', 'contact.endClient']) {
       copy.data.state[path] = 'Different Party';
       expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
@@ -175,8 +192,8 @@ describe('source preferences bound to a Centurion price', () => {
     data.latest = data.pinned = 'extract-2';
     expect(await captureQuoteSourceProof(db, input, scope)).toBeNull();
     expect(await captureQuoteSourceProof(db, { ...input, sourceExtractionId: 'extract-2' }, scope)).not.toBeNull();
-    // An existing quote may still reuse a relinked, identical extraction.
-    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, captured)).toBe(true);
+    // A later read must obtain its own source-bound quote, even for identical fields.
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, captured)).toBe(false);
   });
 
   it('distinguishes absent source values from staff-cleared values after admission', async () => {
@@ -202,7 +219,7 @@ describe('source preferences bound to a Centurion price', () => {
     expect(await quoteSourceProofIsCurrent(db, selected.groups, scope, proof)).toBe(true);
   });
 
-  it('allows a copied message only for an unambiguous row with the same source preferences', async () => {
+  it('holds a copied message even when its row and preferences match', async () => {
     const original = evidence();
     const proof = await captureQuoteSourceProof(original.db, input, scope);
     const copy = evidence('s2', 'r2');
@@ -210,14 +227,14 @@ describe('source preferences bound to a Centurion price', () => {
     const copiedGroup = { ...input.groups[0]!, id: 'r2' };
     const revision = { groups: [{ arrivalDate: copiedGroup.arrivalDate, departureDate: copiedGroup.departureDate,
       quantity: 1, adults: 2, children: 0, childAges: [] }] };
-    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(true);
-    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(true);
+    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
     copy.data.state['stays[s2].rows[r2].roomType'] = 'Standard Twin';
     expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
     expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
   });
 
-  it('checks the active saved row and its preferences after a copied room is replaced', async () => {
+  it('holds a copied message even when a replacement room matches', async () => {
     const original = evidence();
     const proof = await captureQuoteSourceProof(original.db, input, scope);
     const copy = evidence('s2', 'r2');
@@ -228,7 +245,7 @@ describe('source preferences bound to a Centurion price', () => {
     copy.data.state = { 'stays[s2].rows[r2].removed': true,
       [`${row}.count`]: 1, [`${row}.adults`]: 2, [`${row}.childrenPerRoom`]: 0, [`${row}.childAges`]: [],
       [`${row}.roomType`]: 'Standard King', [`${row}.board`]: 'dbb' };
-    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(true);
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
     copy.data.state[`${row}.roomType`] = 'Standard Twin';
     expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
   });
@@ -239,7 +256,7 @@ describe('source preferences bound to a Centurion price', () => {
     data.latest = 'extract-2';
     expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
     data.pinned = data.latest;
-    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(true);
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
     expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, null)).toBe(true);
     expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'UNKNOWN' }, null)).toBe(false);
     expect(await quoteSourceProofIsCurrent(db, input.groups,
@@ -250,8 +267,9 @@ describe('source preferences bound to a Centurion price', () => {
     const { data, db } = evidence();
     const proof = await captureQuoteSourceProof(db, input, scope);
     data.latest = data.pinned = 'extract-2';
-    // A truly identical read should not make staff fetch the same rates again.
-    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(true);
+    // Even an identical later read needs its own source-bound quote.
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+    data.latest = data.pinned = 'extract-1';
 
     const stay = data.payload.stays[0]!;
     stay.guests[0]!.name = 'Different Synthetic Guest';

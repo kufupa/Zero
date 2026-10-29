@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
-import { evaluateQuoteReadyForMessage, executeHmsJob, prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
+import { evaluateQuoteReadyForMessage, executeHmsJob, hmsMailReadIdempotencyKey, prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
 import { claimNextAiRun, HMS_JOB_PROMPT_VERSION, markAiRunRunning } from '../src/ai/run-ledger.js';
 import {
   CENTURION_HMS_READ_TARGET,
@@ -135,6 +135,8 @@ async function seedExtraction(db: DB, transportId: string, explicitChildren = tr
 function preparedRows(db: DB, messageId: string) {
   return db
     .select({
+      id: aiWorkflowRun.id,
+      createdAt: aiWorkflowRun.createdAt,
       readRequest: aiWorkflowRun.readRequest,
       nextRunAt: aiWorkflowRun.nextRunAt,
       metrics: aiWorkflowRun.metrics,
@@ -156,6 +158,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
       toAddresses: [],
     });
   });
+
+  it('creates a new policy-versioned prepared batch after legacy Centurion jobs', async () =>
+    withSeededTestDb(async (db) => {
+      const source = await seedExtraction(db, TRANSPORT_ID);
+      const header = `${randomUUID()}@example.test`;
+      await db.update(message).set({ messageIdHeader: header }).where(eq(message.id, source.messageId));
+      const config = await quotePaneConfigForProperty('HRCEN', TRANSPORT_ID);
+      const count = config?.salesStrategies.length ?? 0;
+      const env = { ...QUOTE_ON, RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRCEN: '/tmp/centurion-quote.json',
+        HMS_QUOTE_PREPARE_PER_HOUR: String(count * 2 + 2) };
+      expect(count).toBeGreaterThan(0);
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      const rows = await preparedRows(db, source.messageId);
+      for (const row of rows) {
+        const request = row.readRequest as Parameters<typeof hmsMailReadIdempotencyKey>[2];
+        const oldKey = hmsMailReadIdempotencyKey('HRCEN', header, request, row.createdAt, 'old', 'unused-thread');
+        await db.update(aiWorkflowRun).set({ idempotencyKey: oldKey,
+          metrics: { ...row.metrics, quoteSourcePolicyVersion: 4 } }).where(eq(aiWorkflowRun.id, row.id));
+      }
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      const all = await preparedRows(db, source.messageId);
+      expect(all).toHaveLength(count * 2);
+      expect(all.filter((row) => row.metrics?.quoteSourcePolicyVersion === 5)).toHaveLength(count);
+    }));
 
   it('evaluates a Da Vinci-origin message in the Centurion transport using its resolved property', async () =>
     withSeededTestDb(async (db) => {

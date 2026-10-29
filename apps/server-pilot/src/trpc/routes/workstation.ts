@@ -96,6 +96,7 @@ import {
   resolveHmsQuoteJobTarget,
 } from '../../hms/hms-quote-target.js';
 import { hmsReadTargetForTransport, hmsReadTargetJobMetrics } from '../../hms/hms-read-target.js';
+import { withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -104,7 +105,7 @@ import { runStaffQuote } from '../../ai/staff-quote-run.js';
 import { occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, importedOfferOccupancyHold, draftQuoteOccupancyMessage,
   quoteDocumentContactIsCurrent,
   quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy,
-  quoteSourcePolicyChangedMessage } from '../../ai/child-occupancy.js';
+  quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -766,7 +767,7 @@ async function proposalStaysFor(
     }, sourceProof))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: quoteSourceProofPredatesPolicy(sourceProof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
+        message: quoteSourceProofPredatesPolicy(sourceProof) ? quoteSourcePolicyChangedMessage : quoteSourceUnverifiedMessage,
       });
     }
     draftSources?.push({ revision: resolved.revision, proof: sourceProof });
@@ -1793,6 +1794,24 @@ export const workstationRouter = router({
         .limit(1);
       let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
       let documentWorkItemId = input.workItemId;
+      let documentPropertyCode: string | undefined;
+      const deliver = async (artifact: QuotePdfResult) => {
+        if (documentPropertyCode === 'HRCEN' && mail) {
+          const preflight = { messageId: input.messageId, threadId: mail.threadId, pdfHashes: [artifact.pdfHash],
+            preparedVersions: [input, ...input.additionalStays].map(({ workflowRunId, revisionRef }) => ({ workflowRunId, revisionRef })) };
+          // Cached bytes belong to the job that produced them, not necessarily this request.
+          // Hold the source only for DB checks; conversion and artifact storage stay outside this transaction.
+          await withQuoteSourceBusyHold(() => getDb().transaction(async (tx) => {
+            const db = tx as unknown as DB;
+            const sources = await assertCurrentDraftQuotePdf(preflight, ctx, { db, skipPending: true });
+            await assertDraftQuoteSourcesLocked(db, {
+              transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: input.messageId,
+            }, sources);
+            await assertCurrentDraftQuotePdf(preflight, ctx, { db, skipPending: true });
+          }));
+        }
+        return asPdf(artifact);
+      };
       if (!documentWorkItemId && mail && isCenturionQuoteTransport(ctx.activeTransportId)) {
         const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
           threadId: mail.threadId, messageId: input.messageId });
@@ -1808,6 +1827,7 @@ export const workstationRouter = router({
         if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
         const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
         const propertyCode = stays[0]!.revision.propertyCode;
+        documentPropertyCode = propertyCode;
         if (stays.some((stay) => stay.revision.propertyCode !== propertyCode))
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Quote stays must belong to the same hotel.' });
         if (propertyCode === 'HRCEN' && !(await quoteWorkItemBelongsToSource({ workItemId: documentWorkItemId,
@@ -1818,7 +1838,7 @@ export const workstationRouter = router({
           workItemId: documentWorkItemId,
           revisionId: documentKey,
         });
-        if (stored?.result) return asPdf(stored.result);
+        if (stored?.result) return deliver(stored.result);
         const enqueued = await enqueueQuotePdfJob({
           transportId: ctx.activeTransportId,
           threadId: mail.threadId,
@@ -1833,11 +1853,11 @@ export const workstationRouter = router({
         });
         jobRun = enqueued.run;
         const already = quotePdfResultOf(enqueued.run);
-        if (already) return asPdf(already);
+        if (already) return deliver(already);
       }
       const artifact = await buildQualifiedQuotePdf(input, ctx, mail?.fromAddress);
-      if (jobRun) return asPdf(await persistQuotePdfResult(jobRun.id, artifact));
-      return asPdf(artifact);
+      if (jobRun) return deliver(await persistQuotePdfResult(jobRun.id, artifact));
+      return deliver(artifact);
     }),
   quotePdfJob: mailboxProcedure
     .input(

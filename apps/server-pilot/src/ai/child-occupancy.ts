@@ -11,6 +11,7 @@ import { priorKindConflict } from './work-item-source-conflict.js';
 import { quoteSourcePartyDigest } from './quote-source-party.js';
 import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
 import { isQuoteSourceLockBusy, quoteSourceBusyError } from '../hms/quote-source-contention.js';
+import { captureCurrentWitnessedRead, classifierForExtraction, withQuoteSourceSnapshot } from './workflow-classifier/source-fence.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -197,7 +198,8 @@ export async function childOccupancyIsCurrent(
 
 export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
 export const draftQuoteOccupancyMessage = 'Refresh the email, confirm rooms, adults, the number of children per room and each age; check room type, meal plan, agency and company, then run the quote again.';
-export const quoteSourcePolicyChangedMessage = 'Rate checks have changed since this quote. Run rates again before using it.';
+export const quoteSourcePolicyChangedMessage = 'Rate checks have changed. A fresh supported email read is needed before pricing here; otherwise quote in HMS.';
+export const quoteSourceUnverifiedMessage = 'Nava cannot verify this email and its saved quote details. Refresh and confirm rooms, adults, the number of children and their ages, room type, meal plan, agency and company. Quote older emails or emails with attachments in HMS.';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
   return getPropertyTransportIds('HRCEN').includes(transportId.trim());
@@ -210,10 +212,12 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
   return isCenturionQuoteTransport(scope.transportId);
 }
 
-const QUOTE_SOURCE_PROOF_VERSION = 4 as const;
+export const QUOTE_SOURCE_PROOF_VERSION = 5 as const;
 type QuoteSourceProof = {
   version: typeof QUOTE_SOURCE_PROOF_VERSION;
   messageId: string;
+  extractionId: string;
+  witnessDigest: string;
   inputDigest: string;
   extractionDigest: string;
   sourceDigest: string;
@@ -278,33 +282,45 @@ function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
   const proof = value as Partial<QuoteSourceProof>;
   const hash = (item: unknown) => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item);
   return proof.version === QUOTE_SOURCE_PROOF_VERSION && typeof proof.messageId === 'string' && !!proof.messageId &&
+    typeof proof.extractionId === 'string' && !!proof.extractionId && hash(proof.witnessDigest) &&
     hash(proof.inputDigest) && hash(proof.extractionDigest) && hash(proof.sourceDigest) &&
     (proof.singleRowDigest === null || hash(proof.singleRowDigest))
     ? proof as QuoteSourceProof : null;
 }
 
 /** The proof comes from the server's submitted input and saved source before an HMS read starts. */
-export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
+async function captureQuoteSourceProofLocked(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
+  const centurion = isCenturionQuoteScope(scope);
+  // The source, all extraction rows and saved work-item state must be observed in one short transaction.
+  const read = centurion && input.sourceExtractionId
+    ? await captureCurrentWitnessedRead(db, scope, input.sourceExtractionId) : null;
+  if (centurion && !read) return null;
   const evidence = await loadChildOccupancyEvidence(db, scope);
   const snapshot = evidence && quoteSourceSnapshot(input.groups, evidence.payload, evidence.state);
-  if (!evidence || !snapshot || (isCenturionQuoteScope(scope) &&
+  if (!evidence || !snapshot || (centurion &&
     (input.sourcePartyDigest !== snapshot.partyDigest || input.sourceExtractionId !== evidence.extractionId)) || input.groups.some((group) => {
     const source = snapshot.preferences.find((item) => item.id === group.id);
     return !group.sourcePreference || !source || group.sourcePreference.roomType !== source.roomType ||
       group.sourcePreference.board !== source.board;
   })) return null;
-  // Bind the complete analyzed case as well as the saved pricing facts. A later
-  // read can change a guest, agency or action without changing the room rows.
-  // Store only a digest, and allow an identical later read to reuse the quote.
-  return { version: QUOTE_SOURCE_PROOF_VERSION, messageId: scope.messageId, inputDigest: quoteDigest(input),
+  const base = { messageId: scope.messageId, inputDigest: quoteDigest(input),
     extractionDigest: quoteDigest({ kind: evidence.kind, payload: evidence.payload }),
     sourceDigest: snapshot.sourceDigest, singleRowDigest: snapshot.singleRowDigest };
+  if (!read) return { ...base, version: 4 as const }; // Other properties keep their existing behavior.
+  return { ...base, version: QUOTE_SOURCE_PROOF_VERSION, extractionId: read.read.id, witnessDigest: read.source.digest,
+    extractionDigest: quoteDigest({ extraction: read.extractionDigest, classifier: classifierForExtraction(read.read) }) };
+}
+
+/** The proof comes from the server's submitted input and saved source before an HMS read starts. */
+export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
+  if (!isCenturionQuoteScope(scope)) return captureQuoteSourceProofLocked(db, input, scope);
+  return withQuoteSourceSnapshot(db, (tx) => captureQuoteSourceProofLocked(tx, input, { ...scope, lock: true }));
 }
 
 /** Only used to explain a refusal; the proof parser, not this predicate, grants access. */
 export function quoteSourceProofPredatesPolicy(value: unknown): boolean {
   return !!value && typeof value === 'object' && 'version' in value &&
-    (value.version === 1 || value.version === 2 || value.version === 3);
+    (value.version === 1 || value.version === 2 || value.version === 3 || value.version === 4);
 }
 
 export function quoteSourceProofFromRun(run: { metrics?: unknown; readResult?: unknown }): unknown {
@@ -321,31 +337,28 @@ export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: 
   if (!isCenturionQuoteScope(scope)) return true;
   const proof = parseQuoteSourceProof(value);
   if (!proof || proof.messageId !== scope.messageId) return false;
-  const evidence = await loadChildOccupancyEvidence(db, scope);
-  return !!evidence && quoteDigest({ kind: evidence.kind, payload: evidence.payload }) === proof.extractionDigest &&
-    quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
+  return withQuoteSourceSnapshot(db, async (locked) => {
+    const read = await captureCurrentWitnessedRead(locked, scope, proof.extractionId);
+    if (!read || read.source.digest !== proof.witnessDigest ||
+      quoteDigest({ extraction: read.extractionDigest, classifier: classifierForExtraction(read.read) }) !== proof.extractionDigest) return false;
+    const evidence = await loadChildOccupancyEvidence(locked, { ...scope, lock: true });
+    return !!evidence && evidence.extractionId === proof.extractionId &&
+      quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
+  });
 }
 
-/** A copied message can reuse a price only for one unambiguous row with the same saved preference. */
-export async function quoteSourceProofMatchesCopy(db: DB, groups: Group[], scope: QuoteSourceScope, value: unknown) {
+/** A copied message cannot establish that the selected source was used by the extraction. */
+export async function quoteSourceProofMatchesCopy(_db: DB, _groups: Group[], scope: QuoteSourceScope, _value: unknown) {
   if (!isCenturionQuoteScope(scope)) return true;
-  const proof = parseQuoteSourceProof(value);
-  if (!proof?.singleRowDigest || groups.length !== 1) return false;
-  const evidence = await loadChildOccupancyEvidence(db, scope);
-  return !!evidence && quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.singleRowDigest === proof.singleRowDigest;
+  // Identical text is not evidence that the selected message had the same extraction inputs.
+  return false;
 }
 
 export async function quoteSourceProofMatchesSingleStay(
-  db: DB, revision: { groups: StayOccupancy[] }, scope: QuoteSourceScope, value: unknown,
+  _db: DB, _revision: { groups: StayOccupancy[] }, scope: QuoteSourceScope, _value: unknown,
 ) {
   if (!isCenturionQuoteScope(scope)) return true;
-  const evidence = await loadChildOccupancyEvidence(db, scope);
-  if (!evidence) return false;
-  const group = singleStayOccupancyGroup(revision, evidence.payload, evidence.state);
-  if (!group) return false;
-  const snapshot = quoteSourceSnapshot([group], evidence.payload, evidence.state);
-  const proof = parseQuoteSourceProof(value);
-  return !!proof?.singleRowDigest && snapshot?.singleRowDigest === proof.singleRowDigest;
+  return false;
 }
 
 /** A priced candidate must still match the selected email and persisted room facts at promotion and send. */
@@ -392,7 +405,7 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
       if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(quote), {
         transportId: input.transportId, threadId: input.threadId, messageId: input.messageId,
         propertyCode: quote.propertyCode, lock: true,
-      }, input.quoteSourceProof))) return draftQuoteOccupancyMessage;
+      }, input.quoteSourceProof))) return quoteSourceUnverifiedMessage;
     }
   } catch (error) {
     if (isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();

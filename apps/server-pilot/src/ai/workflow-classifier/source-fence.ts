@@ -5,11 +5,17 @@ import { mailExtraction } from '../../db/schema/work.js';
 import { quoteDigest } from '../../quote-proposal/quote-revision.js';
 import { captureCenturionExtractionSource, CENTURION_SOURCE_WITNESS_VERSION } from '../extraction/centurion-source-witness.js';
 import { isWorkItemSourceBusy } from '../work-item-source-lock.js';
+import { withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
 import { classifierInputFromSelection, parseStoredClassifier, type ClassifierResult, type classifyWorkflow } from './index.js';
 
 type Read = typeof mailExtraction.$inferSelect;
 type Scope = { transportId: string; threadId: string; messageId: string };
 type SourceMode = 'legacy' | 'captured' | 'hold';
+
+/** Source, extraction and caller's saved state must remain stable through the same short transaction. */
+export function withQuoteSourceSnapshot<T>(db: DB, read: (tx: DB) => Promise<T>): Promise<T> {
+  return withQuoteSourceBusyHold(() => db.transaction((tx) => read(tx as unknown as DB)));
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -60,7 +66,7 @@ export function classifierForExtraction(read: Read): ClassifierResult | null {
 }
 
 /** Caller owns a short transaction. Lock source before reads, and every existing extraction before selecting latest. */
-async function captureCurrentRead(db: DB, scope: Scope, readId: string) {
+export async function captureCurrentWitnessedRead(db: DB, scope: Scope, readId: string) {
   const [before] = await db.select().from(mailExtraction)
     .where(and(eq(mailExtraction.id, readId), eq(mailExtraction.messageId, scope.messageId),
       eq(mailExtraction.status, 'succeeded'))).limit(1);
@@ -85,7 +91,7 @@ export async function currentCapturedClassifier(
 ): Promise<ClassifierResult | null> {
   try {
     return await db.transaction(async (tx) => {
-      const current = await captureCurrentRead(tx as unknown as DB, scope, readId);
+      const current = await captureCurrentWitnessedRead(tx as unknown as DB, scope, readId);
       return current?.extractionDigest === extractionDigest ? classifierForExtraction(current.read) : null;
     });
   } catch {
@@ -103,14 +109,14 @@ export async function storeCapturedClassifier(
       .from(message).where(eq(message.id, messageId)).limit(1);
     if (!msg) return;
     const scope = { ...msg, messageId };
-    const initial = await db.transaction((tx) => captureCurrentRead(tx as unknown as DB, scope, readId));
+    const initial = await db.transaction((tx) => captureCurrentWitnessedRead(tx as unknown as DB, scope, readId));
     if (!initial || classifierForExtraction(initial.read)) return;
     const result = await classify(classifierInputFromSelection(initial.source.selection),
       { signal: AbortSignal.timeout(deadlineMs) });
     const normalized = parseStoredClassifier({ classifier: result });
     if (!normalized) return;
     await db.transaction(async (tx) => {
-      const current = await captureCurrentRead(tx as unknown as DB, scope, readId);
+      const current = await captureCurrentWitnessedRead(tx as unknown as DB, scope, readId);
       if (!current || current.extractionDigest !== initial.extractionDigest || classifierForExtraction(current.read)) return;
       const proof = {
         version: 1, extractionId: current.read.id, sourceDigest: current.source.digest,

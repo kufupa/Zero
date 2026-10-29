@@ -7,13 +7,15 @@ import {
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
 import {
   enqueuePreparedQuoteWithinCap as enqueuePreparedQuoteWithinCapFromJobs,
+  enqueueHmsJob,
+  hmsMailReadIdempotencyKey,
   HMS_JOB_PRIORITY_PREFETCH,
 } from '../src/ai/hms-jobs.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { quotePaneConfigForProperty } from '../src/hms/rate-catalogue.js';
 import type { DB } from '../src/db/client.js';
-import { DAVINCI_TRANSPORT_ID, NAVA_TRANSPORT_ID } from '../src/db/seed.js';
+import { DAVINCI_TRANSPORT_ID, NAVA_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
@@ -105,6 +107,26 @@ async function preparedRows(db: DB, transportId: string) {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam', { timeout: 60_000 }, () => {
+  it('does not deduplicate a witnessed Centurion job against a legacy or another message copy', () =>
+    withSeededTestDb(async (db) => {
+      const header = `copy-${randomUUID()}@example.test`;
+      const first = await seedMailboxMessage(db, TRANSPORT_ID, header);
+      const copy = await seedMailboxMessage(db, TRANSPORT_ID, header);
+      const input = preparedQuoteInput(first, TRANSPORT_ID, `v5:${first.messageId}`);
+      const legacyKey = hmsMailReadIdempotencyKey('HRCEN', header, input.request, new Date(), 'old', first.threadId);
+      const legacy = await enqueueHmsJob({ ...input, idempotencyKey: legacyKey }, db);
+      await db.update(aiWorkflowRun).set({ metrics: { ...legacy.run.metrics, quoteSourcePolicyVersion: 4 } })
+        .where(eq(aiWorkflowRun.id, legacy.run.id));
+      expect(await enqueuePreparedQuoteWithinCap(db, input, 10)).toEqual({ created: true, deferred: false });
+      expect(await enqueuePreparedQuoteWithinCap(db, input, 10)).toEqual({ created: false, deferred: false });
+      expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(copy, TRANSPORT_ID, `v5:${copy.messageId}`), 10))
+        .toEqual({ created: true, deferred: false });
+      const rows = await preparedRows(db, TRANSPORT_ID);
+      expect(rows).toHaveLength(3);
+      expect(rows.filter((row) => row.metrics?.quoteSourcePolicyVersion === 5)).toHaveLength(2);
+      expect(new Set(rows.map((row) => row.triggerMessageId))).toEqual(new Set([first.messageId, copy.messageId]));
+    }));
+
   it('moved helper retains cap/idempotency', () =>
     withSeededTestDb(async (db) => {
         expect(enqueuePreparedQuoteWithinCapFromJobs).toBeTypeOf('function');
@@ -237,7 +259,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
       );
       expect(await enqueuePreparedQuoteWithinCap(db, legacyInput, 6)).toEqual({ created: true, deferred: false });
 
-      const [legacyRow] = (await preparedRows(db, DAVINCI_TRANSPORT_ID)).filter(
+      const legacyRow = (await preparedRows(db, DAVINCI_TRANSPORT_ID)).find(
         (row) => row.triggerMessageId === legacy.messageId,
       );
       if (!legacyRow) throw new Error('expected a legacy prepared quote row');

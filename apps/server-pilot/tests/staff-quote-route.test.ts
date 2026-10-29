@@ -1,10 +1,12 @@
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
-import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailThread, message, outboundSendQueue } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, attachment, mailDraft, mailThread, message, outboundSendQueue } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
-import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { captureCenturionExtractionSource, CENTURION_SOURCE_WITNESS_VERSION } from '../src/ai/extraction/centurion-source-witness.js';
+import { captureQuoteSourceProof, quoteSourceProofFromRun, quoteSourceProofIsCurrent } from '../src/ai/child-occupancy.js';
 import { mailExtractionPayloadSchema } from '../src/ai/extraction/schema.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH, HMS_JOB_PRIORITY_USER, queueAutoStaffQuoteHmsJob } from '../src/ai/hms-jobs.js';
 import { claimNextAiRun } from '../src/ai/run-ledger.js';
@@ -20,7 +22,7 @@ import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-sy
 import { DAVINCI_TRANSPORT_EMAIL, FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { QUOTE_PDF_PROMPT_VERSION } from '../src/ai/quote-pdf-jobs.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { AE1_OUTPUT, fakeModel } from './fixtures/inbound-extraction.js';
@@ -104,8 +106,16 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
     rows: [{ id: rowId, roomType: null, rooms: 2, adultsPerRoom: 1,
       childrenPerRoom: 0, childAges: [], board: null }],
   });
+  // Most route tests isolate later steps with a synthetic extraction. Bind its fixture source to the real reader;
+  // seedExtractedRequest below separately exercises the actual model/extraction persistence path.
+  const source = transportId === 'transport-centurion' ? await db.transaction((tx) =>
+    captureCenturionExtractionSource(tx as unknown as DB, { transportId, threadId, messageId },
+      'synthetic-occupancy-v1', process.env)) : null;
   const [extraction] = await db.insert(mailExtraction).values({
     messageId, extractorVersion: 'synthetic-occupancy-v1', status: 'succeeded', kind: 'quote',
+    ...(source?.status === 'captured' ? { usage: { sourceWitness: {
+      version: CENTURION_SOURCE_WITNESS_VERSION, status: 'captured', digest: source.digest,
+    } } } : {}),
     payload: { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
       confirmationNumbers: [], missing: [], stays: [
         stay('s_default', 'single', '2026-10-12', '2026-10-15'),
@@ -122,7 +132,10 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
 }
 
 /** Real selection and extraction persistence, with only the model response controlled. */
-async function seedExtractedRequest(db: DB) {
+async function seedExtractedRequest(db: DB, includePrior = false) {
+  vi.stubEnv('EXTRACTION_VISION', 'on');
+  vi.stubEnv('EXTRACTION_REASONING_EFFORT', 'max');
+  vi.stubEnv('EXTRACTION_PROMPT_MAX_CHARS', '200000');
   const transportId = 'transport-centurion', threadId = randomUUID(), messageId = randomUUID();
   const internetMessageId = `<${messageId}@example.invalid>`;
   const body = 'Please quote two rooms, one adult and no children in each, from 12 to 15 October 2027.';
@@ -132,6 +145,10 @@ async function seedExtractedRequest(db: DB) {
     messageIdHeader: `${messageId}@example.invalid`, subject: 'Accommodation quote', textBody: body,
     receivedAt: new Date('2026-10-29T08:00:00Z'),
   }).returning();
+  const priorId = includePrior ? randomUUID() : null;
+  if (priorId) await db.insert(message).values({ id: priorId, transportId, threadId, direction: 'inbound',
+    fromAddress: 'guest@example.invalid', subject: 'Earlier room request', textBody: 'Earlier requirements',
+    receivedAt: new Date('2026-10-28T08:00:00Z'), createdAt: new Date('2026-10-28T08:00:00Z') });
   const model = fakeModel(() => ({
     ...AE1_OUTPUT, agency: null, endClient: null, contact: { name: null, email: null, phone: null },
     stays: [{ hotel: null, requested: { arrival: '2027-10-12', departure: '2027-10-15' }, booked: null,
@@ -147,6 +164,7 @@ async function seedExtractedRequest(db: DB) {
   const parsed = mailExtractionPayloadSchema.parse(read?.payload);
   const stay = parsed.stays[0], row = stay?.rows[0];
   if (!mail || !read || !item || !stay || !row) throw new Error('synthetic extraction did not create a complete work item');
+  expect(read.usage?.sourceWitness).toMatchObject({ version: 1, status: 'captured', digest: expect.any(String) });
   const input: StaffQuoteInput = {
     messageId, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
     sourceExtractionId: read.id, sourcePartyDigest: quoteSourcePartyDigest(parsed, {})!,
@@ -155,7 +173,7 @@ async function seedExtractedRequest(db: DB) {
       sourcePreference: { roomType: null, board: null } }],
     salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '',
   };
-  return { mail, input, internetMessageId, workItemId: item.id, stayId: stay.id, rowId: row.id };
+  return { mail, input, internetMessageId, workItemId: item.id, stayId: stay.id, rowId: row.id, priorId };
 }
 
 const stayRowId = (arrival: string) => arrival === '2026-10-26' ? 'single_oct' : 'single_nov';
@@ -306,6 +324,10 @@ async function seedPreparedQuote(
   }
   const factBundle = reservationistResult?.proposalFacts?.find((bundle) => quote.factRefs.includes(bundle.ref));
   const preparedInput = { ...request.input, selectionEpoch: 0, inputRevision: 0 };
+  const sourceProof = request.mail.transportId === 'transport-centurion' ? await captureQuoteSourceProof(db, preparedInput, {
+    transportId: request.mail.transportId, threadId: request.mail.threadId, messageId: request.mail.id,
+    propertyCode: 'HRCEN',
+  }) : null;
   const { run } = await enqueueHmsJob({
     transportId: request.mail.transportId,
     threadId: request.mail.threadId,
@@ -323,6 +345,7 @@ async function seedPreparedQuote(
     status: 'ready',
     kind: 'staff_quote',
     workflowRunId: run.id,
+    ...(sourceProof ? { quoteSourceProof: sourceProof } : {}),
     asOf: now.toISOString(),
     freshUntil: freshness.expiresAt,
     preparedProposal: {
@@ -365,6 +388,7 @@ afterEach(() => {
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
   resetPartyCacheForTests();
+  __resetInboundExtractionCapForTests();
   configureDraftArtifactStorage(null);
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -714,7 +738,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           stage: async (key, body) => { objects.set(key, Buffer.from(body)); },
           read: async (key) => objects.get(key) ?? null,
         });
-        const request = await seedExtractedRequest(db), api = caller();
+        const request = await seedExtractedRequest(db, true), api = caller();
         await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId }))
           .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id });
 
@@ -776,8 +800,169 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
           fieldPath: `stays[${request.stayId}].rows[${request.rowId}].adults`, value: 2 });
         await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+          fieldPath: `stays[${request.stayId}].rows[${request.rowId}].adults`, value: 1 });
+        await expect(api.workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+
+        // The selected email and its raw hash are unchanged, but earlier model input has changed.
+        await db.update(message).set({ textBody: 'Changed earlier room requirements' }).where(eq(message.id, request.priorId!));
+        await expect(api.workstation.staffQuoteJob({ runId: queued.runId, messageId: request.mail.id }))
+          .resolves.toMatchObject({ status: 'failed', result: { ok: false } });
+        await expect(api.workstation.qualifiedQuoteProposalPdf(proposal)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(api.workstation.quotePdfJob({ workItemId: request.workItemId, revisionRef: quote.revisionRef,
+          company: '', agency: '', sourceContact: proposal.sourceContact, contactOverrides: proposal.contactOverrides }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(api.drafts.saveReply({ threadId: request.mail.threadId, replyToMessageId: request.mail.id,
+          to: ['guest@example.invalid'], subject: 'Re: Quote', html: '<p>Your quote is attached.</p>',
+          replyKind: 'quote', preparedVersions: versions, attachments: [{ name: pdf.fileName,
+            type: 'application/pdf', size: bytes.length, lastModified: 1, base64: pdf.pdfBase64 }] }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       });
     }, 60_000);
+
+    it('holds a changed prior thread before any native quote, even when the selected email is unchanged', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedExtractedRequest(db, true);
+        await db.update(message).set({ textBody: 'New earlier requirements' }).where(eq(message.id, request.priorId!));
+        await expect(caller().workstation.executeStaffQuote(request.input)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED', message: expect.stringContaining('cannot verify'),
+        });
+        expect(nativeRead).not.toHaveBeenCalled();
+      });
+    });
+
+    it('holds unwitnessed, translation-retried and thread-attachment reads before any native quote', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        for (const scenario of ['legacy', 'translation', 'sibling_attachment'] as const) {
+          const request = await seedExtractedRequest(db, scenario === 'sibling_attachment');
+          if (scenario !== 'sibling_attachment') {
+            await db.update(mailExtraction).set({ usage: scenario === 'legacy' ? {} : {
+              sourceWitness: { version: 1, status: 'unproven', reason: 'translation_retry' },
+            } }).where(eq(mailExtraction.id, request.input.sourceExtractionId!));
+          } else {
+            await db.insert(attachment).values({ id: randomUUID(), messageId: request.priorId!, filename: 'request.pdf',
+              mimeType: 'application/pdf', sizeBytes: 1, s3Key: 'synthetic/request.pdf', isInline: false });
+          }
+          await expect(caller().workstation.executeStaffQuote(request.input)).rejects.toMatchObject({
+            code: 'PRECONDITION_FAILED', message: expect.stringContaining('cannot verify'),
+          });
+        }
+        expect(nativeRead).not.toHaveBeenCalled();
+      });
+    });
+
+    it('discards a quote if an earlier message changes while the native read is running', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedExtractedRequest(db, true);
+        nativeRead.mockImplementationOnce(async (input) => {
+          await db.update(message).set({ textBody: 'Changed while pricing' }).where(eq(message.id, request.priorId!));
+          return nativeFixture(input);
+        });
+        await expect(caller().workstation.executeStaffQuote(request.input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        expect(nativeRead).toHaveBeenCalledTimes(1);
+        const successes = await db.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.triggerMessageId, request.mail.id),
+          eq(aiWorkflowRun.state, 'succeeded')));
+        expect(successes).toEqual([]);
+      });
+    });
+
+    it('uses short nested source locks at pricing and draft commit, without holding them over HMS or conversion', async () => {
+      const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+      const { seedAll } = await import('../src/db/seed.js');
+      const { default: postgres } = await import('postgres');
+      const { getPostgresSslOptions } = await import('../src/db/ssl-config.js');
+      await withIngestionDb(async ({ db, url }) => {
+        await seedAll(db);
+        vi.stubEnv('DATABASE_URL', url);
+        installFixture(db);
+        const parsed = new URL(url);
+        const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+        const writer = postgres(url, { max: 1, connect_timeout: 5,
+          ssl: local || parsed.searchParams.get('sslmode') === 'disable' ? false : getPostgresSslOptions(),
+          onnotice: () => undefined });
+        try {
+          const first = await seedExtractedRequest(db, true);
+          nativeRead.mockImplementationOnce(async (input) => {
+            // A separate connection can change source during HMS; the later fence must reject the price.
+            await writer.begin(async (tx) => {
+              await tx`set local lock_timeout = '200ms'`;
+              await tx`update message set text_body = 'Changed during HMS' where id = ${first.priorId}`;
+            });
+            return nativeFixture(input);
+          });
+          await expect(caller().workstation.executeStaffQuote(first.input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+          // This success exercises the real persistRun transaction with a nested current-witness check.
+          const second = await seedExtractedRequest(db, true), api = caller();
+          const quote = await api.workstation.executeStaffQuote(second.input);
+          const proposal = { ...pdfInput(quote), workItemId: second.workItemId };
+          const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+          const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, quote.workflowRunId));
+          const proof = quoteSourceProofFromRun(run!);
+          const refs = [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }];
+          const artifacts = new Map<string, Buffer>();
+          let sourceLocked = false;
+          configureDraftArtifactStorage({ read: async (key) => artifacts.get(key) ?? null, stage: async (key, body) => {
+            // The final draft fence excludes a concurrent source update until commit.
+            await expect(writer.begin(async (tx) => {
+              await tx`set local lock_timeout = '200ms'`;
+              await tx`update message set text_body = 'Racing draft' where id = ${second.mail.id}`;
+            })).rejects.toMatchObject({ code: '55P03' });
+            sourceLocked = true;
+            artifacts.set(key, Buffer.from(body));
+          } });
+          const bytes = Buffer.from(pdf.pdfBase64, 'base64');
+          await api.drafts.saveReply({ threadId: second.mail.threadId, replyToMessageId: second.mail.id,
+            to: ['guest@example.invalid'], subject: 'Re: Quote', html: '<p>Attached.</p>', replyKind: 'quote',
+            preparedVersions: refs, attachments: [{ name: pdf.fileName, type: 'application/pdf', size: bytes.length,
+              lastModified: 1, base64: pdf.pdfBase64 }] });
+          expect(sourceLocked).toBe(true);
+
+          // A competing writer holding message then asking for thread must not deadlock the nested source fence.
+          const held = deferred(), parentLocked = deferred();
+          const competing = writer.begin(async (tx) => {
+            await tx`set local lock_timeout = '2000ms'`;
+            await tx`select id from message where id = ${second.mail.id} for update`;
+            held.resolve();
+            await parentLocked.promise;
+            await tx`select id from mail_thread where id = ${second.mail.threadId} for update`;
+          });
+          await held.promise;
+          try {
+            await db.transaction(async (tx) => {
+              await tx.execute(sql`set local lock_timeout = '250ms'`);
+              await tx.select({ id: mailThread.id }).from(mailThread).where(eq(mailThread.id, second.mail.threadId)).for('update');
+              parentLocked.resolve();
+              await expect(quoteSourceProofIsCurrent(tx as unknown as DB, second.input.groups, {
+                transportId: second.mail.transportId, threadId: second.mail.threadId,
+                messageId: second.mail.id, propertyCode: 'HRCEN', lock: true,
+              }, proof)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+            });
+          } finally {
+            parentLocked.resolve();
+            await competing;
+          }
+
+          const third = await seedExtractedRequest(db, true);
+          const quoted = await api.workstation.executeStaffQuote(third.input);
+          vi.mocked(fetch).mockImplementationOnce(async () => {
+            await writer.begin(async (tx) => {
+              await tx`set local lock_timeout = '200ms'`;
+              await tx`update message set text_body = 'Changed during conversion' where id = ${third.priorId}`;
+            });
+            return new Response('%PDF-1.4 synthetic', { headers: { 'content-type': 'application/pdf' } });
+          });
+          await expect(api.workstation.qualifiedQuoteProposalPdf({ ...pdfInput(quoted), workItemId: third.workItemId }))
+            .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        } finally {
+          await writer.end();
+        }
+      }, { seed: false });
+    }, 120_000);
 
     it('does not reuse a PDF when saved contact changes under an explicit header', async () => {
       await withSeededTestDb(async (db) => {

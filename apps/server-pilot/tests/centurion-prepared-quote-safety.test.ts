@@ -5,6 +5,13 @@ import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail
 import type { DB } from '../src/db/client.js';
 import { DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
+
+// Picker-only tests use a stub; real witness revalidation has disposable-DB coverage.
+vi.mock('../src/ai/child-occupancy.js', async (original) => ({
+  ...await original<typeof import('../src/ai/child-occupancy.js')>(),
+  quoteSourceProofIsCurrent: async () => true,
+}));
 
 const input = staffQuoteInput.parse({
   messageId: 'message-1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
@@ -21,11 +28,14 @@ function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, co
   return {
     id, transportId, threadId: 'thread-1', triggerMessageId: input.messageId,
     state: 'succeeded', priority: 0, attempts: 0, failureClass: null, createdAt: now,
-    metrics: { quotePrepared: true, userId: null },
+    metrics: { quotePrepared: true, userId: null, ...(transportId === TRANSPORT_ID ? { quoteSourcePolicyVersion: 5 } : {}) },
     readRequest: { kind: 'staff_quote', input: quote },
     readResult: {
       kind: 'staff_quote', status: 'ready', asOf: now.toISOString(), totalMinor: 100_000,
       ...(includeProperty ? { propertyCode: transportId === TRANSPORT_ID ? 'HRCEN' : 'HRDAV' } : {}),
+      quoteSourceProof: { version: 5, messageId: quote.messageId, extractionId: quote.sourceExtractionId ?? 'read',
+        witnessDigest: 'a'.repeat(64), inputDigest: quoteDigest(quote), extractionDigest: 'b'.repeat(64),
+        sourceDigest: 'c'.repeat(64), singleRowDigest: null },
       rateOptions: [{ selected: true, contract }],
     },
     readResultExpiresAt: new Date(now.getTime() + 60_000),
@@ -93,7 +103,7 @@ describe('prepared quote reuse', () => {
   it.each([TRANSPORT_ID, DAVINCI_TRANSPORT_ID])('keeps a matching queued run for the same extraction on %s', async (transportId) => {
     const quote = { ...input, sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'read-1' };
     const old = preparedRun('same-read', transportId, quote, false);
-    const run = { ...old, state: 'queued', metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 };
+    const run = { ...old, state: 'queued', metrics: { ...old.metrics, quotePrepared: false, userId: 'staff-1' }, priority: 10 };
     const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(transportId),
       request: { kind: 'staff_quote', input: quote } }, quoteDb([run]));
     expect(result).toMatchObject({ created: false, run: { id: 'same-read' } });
@@ -109,9 +119,9 @@ describe('prepared quote reuse', () => {
   });
 
   it.each([
-    ['queued', 'ready', false], ['succeeded', 'refused', false],
-    ['succeeded', 'ready', true], ['succeeded', 'expired', false],
-  ])('only considers a ready, fresh cross-copy Centurion price (%s, %s)', async (state, status, considered) => {
+    ['queued', 'ready'], ['succeeded', 'refused'],
+    ['succeeded', 'ready'], ['succeeded', 'expired'],
+  ])('holds a cross-copy Centurion price (%s, %s)', async (state, status) => {
     const source = { ...input, sourceExtractionId: 'old-read' };
     const run = preparedRun('copy', TRANSPORT_ID, source, false);
     run.state = state;
@@ -136,9 +146,15 @@ describe('prepared quote reuse', () => {
     } as unknown as DB;
     const view = await readHmsJobView({ transportId: TRANSPORT_ID, userId: 'staff-1',
       messageId: selected.messageId, kind: 'staff_quote', input: selected }, fake);
-    // A considered result still needs independent selected-source proof before a price is exposed.
-    if (considered) expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
-    else expect(view).toBeNull();
+    expect(view).toBeNull();
+  });
+
+  it('queues a fresh job instead of deduplicating against a pre-witness Centurion price', async () => {
+    const old = preparedRun('old-policy', TRANSPORT_ID, input, false);
+    old.metrics = { ...old.metrics, quoteSourcePolicyVersion: 4 };
+    old.readResult.quoteSourceProof.version = 4;
+    const result = await queueAutoStaffQuoteHmsJob(autoStart(TRANSPORT_ID), quoteDb([old]));
+    expect(result).toMatchObject({ created: true, run: { id: 'fresh', metrics: { quoteSourcePolicyVersion: 5 } } });
   });
 
   it('uses the matching Centurion strategy even when an incompatible contract is first', async () => {
