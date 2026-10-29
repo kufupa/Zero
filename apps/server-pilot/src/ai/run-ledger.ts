@@ -260,6 +260,7 @@ export type AiFailureClass =
   | 'ARTIFACT_TRANSIENT'
   | 'AUDIT_CAPTURE'
   | 'HMS_LOCK_BUSY'
+  | 'SOURCE_LOCK_BUSY'
   | 'STAFF_QUOTE_ACTIVE'
   | 'WORKER_SHUTDOWN'
   | 'HMS_OUTAGE'
@@ -269,6 +270,7 @@ const RETRYABLE_FAILURE_CLASSES: ReadonlySet<AiFailureClass> = new Set([
   'TRANSIENT_NETWORK',
   'BEDROCK_TRANSIENT',
   'ARTIFACT_TRANSIENT',
+  'SOURCE_LOCK_BUSY',
 ]);
 
 export interface EnqueueAiRunInput {

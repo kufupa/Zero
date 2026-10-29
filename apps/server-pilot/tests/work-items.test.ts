@@ -1,10 +1,10 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import type { AttachmentRead } from '../src/ai/extraction/extract.js';
-import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { enqueueInboundExtraction, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import type { MailExtractionPayload, MailKind } from '../src/ai/extraction/schema.js';
 import {
   aiValueAt,
@@ -37,6 +37,8 @@ import {
   workItemIdForMail,
 } from '../src/ai/work-items.js';
 import { THREAD_CONFIRMATION_AMBIGUOUS } from '../src/ai/quote-workflow-synced-selection.js';
+import { isWorkItemSourceBusy, lockMessageSource } from '../src/ai/work-item-source-lock.js';
+import { executeAiRun } from '../src/ai/worker.js';
 import { maskStaffNote, recordPaneActions, recordStaffNote } from '../src/ai/work-events.js';
 import { parseReplyLinkArgs, runReplyLinkBackfill } from '../scripts/backfill-reply-link.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
@@ -219,6 +221,211 @@ function centurionCaller(activeTransportId = CENTURION) {
 }
 
 describe('stored read for the pane', () => {
+  it('fingerprints the full persisted extraction payload when the same read changes in place', () =>
+    withDb(async (db) => {
+      const key = 'source-payload-digest';
+      const messageId = await seedMail(db, key);
+      const original = { ...payload(), fixtureMetadata: { nested: { marker: 'before' }, flag: true } };
+      const extractionId = await insertRead(db, messageId, { version: 'extract-v1', payload: original });
+      const caller = centurionCaller().workItems;
+      const input = { internetMessageId: `<${key}@example.com>` };
+      const before = await caller.getByMessage(input);
+      if (before.status !== 'ready') throw new Error('missing initial read');
+      expect(before.sourceRead.payloadDigest).toMatch(/^[a-f0-9]{64}$/);
+      const opened = await caller.open(input);
+      if (opened.status !== 'ready') throw new Error('missing opened read');
+      expect(opened.sourceRead.payloadDigest).toBe(before.sourceRead.payloadDigest);
+
+      // This extra payload field is not displayed in the mapped analysis, but remains part of the raw read.
+      const changed = { ...original, fixtureMetadata: { nested: { marker: 'after' }, flag: true } };
+      await db.update(mailExtraction).set({ payload: changed }).where(eq(mailExtraction.id, extractionId));
+      const after = await caller.getByMessage(input);
+      if (after.status !== 'ready') throw new Error('missing updated read');
+      expect(after.sourceRead.extractionId).toBe(extractionId);
+      expect(after.sourceRead.analysis).toEqual(before.sourceRead.analysis);
+      expect(after.sourceRead.payloadDigest).not.toBe(before.sourceRead.payloadDigest);
+
+      // A different JSON object key order with the same values has the same digest.
+      const reordered = Object.fromEntries(Object.entries(changed).reverse());
+      await db.update(mailExtraction).set({ payload: reordered }).where(eq(mailExtraction.id, extractionId));
+      const same = await caller.getByMessage(input);
+      if (same.status !== 'ready') throw new Error('missing reordered read');
+      expect(same.sourceRead.payloadDigest).toBe(after.sourceRead.payloadDigest);
+    }));
+
+  it('holds a duplicate Centurion message identity arriving between read and open', () =>
+    withDb(async (db, url) => {
+      const key = 'ambiguous-source-first';
+      const first = await seedMail(db, key);
+      await insertRead(db, first, { version: 'extract-v1', payload: payload() });
+      const second = await seedMail(db, 'ambiguous-source-second');
+      const caller = centurionCaller().workItems;
+      const input = { internetMessageId: `<${key}@example.com>` };
+      expect(await caller.getByMessage(input)).toMatchObject({ status: 'ready', workItemId: null });
+
+      // Another connection makes a second stored message share the ID after the pane read and before open.
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      try {
+        await drizzle(otherConn, { schema }).transaction(async (tx) => {
+          await tx.update(message).set({ messageIdHeader: `${key}@example.com` }).where(eq(message.id, second));
+        });
+      } finally {
+        await otherConn.end();
+      }
+      const held = { status: 'failed', hold: true, reason: expect.stringContaining('More than one email') };
+      expect(await caller.open(input)).toMatchObject(held);
+      expect(await caller.getByMessage(input)).toMatchObject(held);
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, first))).toHaveLength(0);
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, second))).toHaveLength(0);
+      expect(await caller.open({ internetMessageId: '<unknown@example.com>' })).toEqual({ status: 'none' });
+
+      // The hold is scoped to Centurion; the existing Da Vinci ambiguity behavior is unchanged.
+      await addDaVinciMailboxes(db);
+      const david = await seedMailForTransport(db, 'ambiguous-davinci-one', DAVINCI, DAVINCI_TRANSPORT_EMAIL);
+      const other = await seedMailForTransport(db, 'ambiguous-davinci-two', DAVINCI, DAVINCI_TRANSPORT_EMAIL);
+      await insertRead(db, david, { version: 'extract-v1', payload: payload() });
+      await db.update(message).set({ messageIdHeader: 'ambiguous-davinci-one@example.com' }).where(eq(message.id, other));
+      const daVinci = { transportId: DAVINCI, internetMessageId: '<ambiguous-davinci-one@example.com>' };
+      expect(await storedWorkFor(db, daVinci)).toEqual({ status: 'none' });
+      expect(await openStoredWork(db, daVinci)).toEqual({ status: 'none' });
+    }));
+
+  it('fences open and ensure against competing inserted and updated latest reads', () =>
+    withDb(async (db, url) => {
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      const otherDb = drizzle(otherConn, { schema });
+      try {
+        for (const operation of ['open', 'ensure'] as const) {
+          for (const change of ['insert', 'update'] as const) {
+            const key = `open-race-${operation}-${change}`;
+            const messageId = await seedMail(db, key);
+            const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+            await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+              .where(eq(mailExtraction.id, first));
+            const pending = change === 'update'
+              ? await insertRead(db, messageId, { version: 'extract-v2', status: 'failed' }) : null;
+            let release!: () => void;
+            let started!: () => void;
+            const hold = new Promise<void>((resolve) => { release = resolve; });
+            const locked = new Promise<void>((resolve) => { started = resolve; });
+            const writer = otherDb.transaction(async (tx) => {
+              if (pending) {
+                await tx.update(mailExtraction).set({ status: 'succeeded', kind: 'booking', payload: {} })
+                  .where(eq(mailExtraction.id, pending));
+              } else {
+                await tx.insert(mailExtraction).values({ messageId, extractorVersion: 'extract-v2',
+                  status: 'succeeded', kind: 'booking', payload: {} });
+              }
+              started();
+              await hold;
+            });
+            const lookup = { transportId: CENTURION, internetMessageId: `<${key}@example.com>` };
+            try {
+              await Promise.race([locked, writer.then(() => { throw new Error('writer completed before lock'); })]);
+              if (operation === 'open') {
+                expect(await centurionCaller().workItems.open({ internetMessageId: lookup.internetMessageId }))
+                  .toMatchObject({ status: 'failed', hold: true, reason: expect.stringContaining('reopen') });
+              } else {
+                const result = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId })
+                  .then(() => null, (error: unknown) => error);
+                expect(isWorkItemSourceBusy(result)).toBe(true);
+              }
+              expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+              release();
+              await writer;
+              // The winner is now visible: a retry must hold, not create work from the older valid read.
+              expect(await openStoredWork(db, lookup)).toMatchObject({ status: 'failed', hold: true });
+              expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId })).toBeNull();
+              expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+            } finally {
+              release();
+              await writer;
+            }
+          }
+        }
+      } finally {
+        await otherConn.end();
+      }
+    }));
+
+  it('holds new extraction inserts and existing-row updates until the source transaction commits', () =>
+    withDb(async (db, url) => {
+      const messageId = await seedMail(db, 'source-lock-order');
+      const pending = await insertRead(db, messageId, { version: 'extract-pending', status: 'failed' });
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      const otherDb = drizzle(otherConn, { schema });
+      const attempt = (change: 'insert' | 'update') => otherDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '250ms'`);
+        if (change === 'insert') {
+          await tx.insert(mailExtraction).values({ messageId, extractorVersion: 'extract-new',
+            status: 'succeeded', kind: 'quote', payload: payload() });
+        } else {
+          await tx.update(mailExtraction).set({ status: 'succeeded', payload: payload() })
+            .where(eq(mailExtraction.id, pending));
+        }
+      });
+      try {
+        await db.transaction(async (tx) => {
+          expect(await lockMessageSource(tx, { transportId: CENTURION, messageId })).toBe(true);
+          for (const change of ['insert', 'update'] as const) {
+            const result = await attempt(change).then(() => null, (error: unknown) => error);
+            expect(isWorkItemSourceBusy(result)).toBe(true);
+          }
+        });
+        await attempt('insert');
+        await attempt('update');
+      } finally {
+        await otherConn.end();
+      }
+    }));
+
+  it('retries a busy inbound source through the worker after the competing transaction finishes', () =>
+    withDb(async (db, url) => {
+      const key = 'inbound-source-busy';
+      const messageId = await seedMail(db, key);
+      await insertRead(db, messageId, { version: EXTRACTION_VERSION, payload: payload() });
+      const run = await enqueueInboundExtraction({ transportId: CENTURION, threadId: `thread-${key}`, messageId }, db);
+      const claim = async (token: string) => db.update(aiWorkflowRun).set({
+        state: 'claimed', claimOwner: 'source-lock-test', claimToken: token, deadlineAt: new Date(Date.now() + 300_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+      await claim('first');
+      for (const [name, value] of Object.entries({
+        PORT: '39999', DATABASE_URL: url, BETTER_AUTH_URL: 'http://localhost:39999',
+        BETTER_AUTH_SECRET: 'disposable-source-lock-test-secret', AWS_REGION: 'us-east-1',
+        S3_BUCKET: 'disposable-source-lock-test', INBOUND_EXTRACTION: 'on',
+        AI_ENABLED: 'false', AI_WRITE_GATE_ENABLED: 'false', AI_DRAFTS_ENABLED: 'false',
+      })) vi.stubEnv(name, value);
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      let release!: () => void;
+      let started!: () => void;
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<void>((resolve) => { started = resolve; });
+      const writer = drizzle(otherConn, { schema }).transaction(async (tx) => {
+        await tx.select({ id: message.id }).from(message).where(eq(message.id, messageId)).for('update');
+        started();
+        await hold;
+      });
+      const options = { inboundExtractionAdapter: null, ingestClassify: async () => null };
+      try {
+        await Promise.race([locked, writer.then(() => { throw new Error('writer completed before lock'); })]);
+        expect(await executeAiRun(run.id, options)).toMatchObject({ state: 'retry_wait' });
+        expect((await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id)))[0])
+          .toMatchObject({ state: 'retry_wait', attempts: 1, failureClass: 'SOURCE_LOCK_BUSY',
+            lastError: 'Centurion email source is busy' });
+        expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+        release();
+        await writer;
+        await claim('second');
+        expect(await executeAiRun(run.id, options)).toMatchObject({ state: 'succeeded' });
+        expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(1);
+      } finally {
+        release();
+        await writer;
+        await otherConn.end();
+        vi.unstubAllEnvs();
+      }
+    }));
+
   it('holds a malformed latest Centurion read without moving or dismissing saved work', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'invalid-latest');

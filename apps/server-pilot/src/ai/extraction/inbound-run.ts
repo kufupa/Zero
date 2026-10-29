@@ -38,6 +38,7 @@ import {
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
 import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
+import { centurionSourceFence, isWorkItemSourceBusy, lockMessageSource } from '../work-item-source-lock.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
@@ -366,6 +367,12 @@ export async function runInboundExtraction(
   }
   const spamWrites = env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env);
   await commitRead(db, deps.claim, async (tx) => {
+    // Take the parent lock before insertion: inserting first acquires an FK key-share lock and can deadlock
+    // with another writer upgrading to the source fence after its own insertion.
+    if (centurionSourceFence(run.transportId) &&
+      !await lockMessageSource(tx, { transportId: run.transportId, messageId: run.triggerMessageId })) {
+      throw new Error('Inbound message is no longer available for source locking');
+    }
     await storeRead(tx, {
       messageId: run.triggerMessageId,
       status: 'succeeded',
@@ -514,6 +521,10 @@ export async function executeInboundExtractionRun(input: {
   } catch (error) {
     // Another worker owns the run now; it makes the read.
     if (error instanceof InboundClaimLostError) return { runId: run.id, state: 'retry_wait' };
+    if (centurionSourceFence(run.transportId) && isWorkItemSourceBusy(error)) {
+      // The transaction rolled back. Let the worker's bounded retry policy retry the entire read.
+      throw Object.assign(new Error('Centurion email source is busy'), { failureClass: 'SOURCE_LOCK_BUSY' as const });
+    }
     throw error;
   }
   if (outcome === 'capped' || outcome === 'disabled') {
