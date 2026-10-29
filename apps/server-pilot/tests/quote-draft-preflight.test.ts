@@ -7,6 +7,7 @@ import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { quotePdfJobIdentity } from '../src/ai/quote-pdf-jobs.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
+import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
 import { appRouter } from '../src/trpc/router.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 
@@ -44,15 +45,15 @@ async function fixture() {
   const state: Record<string, unknown> = {};
   const jobAvailable = { value: true };
   const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1',
-    savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[] };
+    savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[], draftAttachments: [] as unknown[] };
   let savedReplyRevisionReads = 0;
   const transaction = vi.fn(async () => { throw new Error('synthetic transaction reached'); });
-  const db = { transaction, select(selection?: Record<string, unknown>) {
+  const select = (selection?: Record<string, unknown>) => {
     let table: unknown;
     const query = { from(value: unknown) { table = value; return query; }, innerJoin() { return query; },
       where() { return query; }, orderBy() { return query; }, limit() {
         if (table === mailThread) return Promise.resolve([{ id: 't1', transportId }]);
-        if (table === mailDraft) return Promise.resolve([{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: [] }]);
+        if (table === mailDraft) return Promise.resolve([{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }]);
         if (table === mailDraftRevision) return Promise.resolve([savedReplyRevisionReads++ % 2 === 0
           ? { id: savedReply.savedId, htmlBody: savedReply.savedHtml, attachments: savedReply.savedAttachments }
           : { id: savedReply.latestId }]);
@@ -61,11 +62,13 @@ async function fixture() {
         if (table === workItem) return Promise.resolve([{ id: itemId, extractionId: 'extract-1', state }]);
         if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date() }]);
         if (table === aiWorkflowRun && selection && 'run' in selection) return Promise.resolve([{ run }]);
+        if (table === aiWorkflowRun && selection && 'hash' in selection) return Promise.resolve(jobAvailable.value ? [{ hash }] : []);
         if (table === aiWorkflowRun) return Promise.resolve(jobAvailable.value ? [job] : []);
         return Promise.resolve([]);
       } };
     return query;
-  } } as unknown as DB;
+  };
+  const db = { transaction, select, selectDistinct: select } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1', arrivalDate: '2027-10-20',
       departureDate: '2027-10-21', quantity: 1, adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'room_only',
@@ -73,13 +76,14 @@ async function fixture() {
   const proof = await captureQuoteSourceProof(db, quoteInput, { transportId, threadId: 't1', messageId: 'm1' });
   Object.assign(staff, { quoteSourceProof: proof });
   __setDbForTests({ db, conn: null as never });
+  configureDraftArtifactStorage({ read: async () => pdf } as never);
   return { revision, job, state, mail, transaction, savedReply, jobAvailable, proposal };
 }
 
 beforeEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected: {}, inbounds: [] });
 });
-afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; __setDbForTests(null); });
+afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; configureDraftArtifactStorage(null); __setDbForTests(null); });
 
 describe('priced draft preflight', () => {
   it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
@@ -110,14 +114,20 @@ describe('priced draft preflight', () => {
   });
 
   it('refuses stale webmail quote saves before creating or replacing a draft', async () => {
-    const { revision, state, transaction } = await fixture();
-    state['stays[s1].rows[g1].childrenPerRoom'] = 1;
+    const { revision, state, transaction, jobAvailable } = await fixture();
     const base = { threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
       attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
         lastModified: 1, base64: pdf.toString('base64') }] };
+    const disguised = { ...base, replyKind: 'other' as const, preparedVersions: [],
+      attachments: [{ ...base.attachments[0]!, type: 'application/octet-stream' }] };
+    await expect(caller().drafts.saveReply(disguised)).rejects.toThrow('synthetic transaction reached');
+    transaction.mockClear();
+    state['stays[s1].rows[g1].childrenPerRoom'] = 1;
     await expect(caller().drafts.saveReply({ ...base, replyKind: 'quote',
       preparedVersions: [{ workflowRunId: 'run-1', revisionRef: revision.id }] })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller().drafts.saveReply(disguised)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect(transaction).not.toHaveBeenCalled();
+    jobAvailable.value = false;
     await expect(caller().drafts.saveReply({ ...base, replyKind: 'other', preparedVersions: [] }))
       .rejects.toThrow('synthetic transaction reached');
     expect(transaction).toHaveBeenCalledOnce();
@@ -147,6 +157,10 @@ describe('priced draft preflight', () => {
     savedReply.savedId = savedReply.latestId = 'saved-reply:quote:2';
     await expect(read()).resolves.toMatchObject({ quoteBound: true });
     savedReply.latestId = 'composer-edit-2';
+    await expect(read()).resolves.toMatchObject({ quoteBound: true });
+    const attachment = { filename: 'quote.pdf', mimeType: 'application/pdf', s3Key: 'synthetic', sizeBytes: pdf.length, sourceHash: hash };
+    savedReply.savedId = savedReply.latestId = 'saved-reply:other:3';
+    savedReply.savedAttachments = savedReply.draftAttachments = [attachment];
     await expect(read()).resolves.toMatchObject({ quoteBound: true });
   });
 });
