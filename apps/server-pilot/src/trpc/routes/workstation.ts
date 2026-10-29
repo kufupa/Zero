@@ -86,7 +86,7 @@ import {
   quotePdfSenderDisplayName,
   retargetQuotePdfFileName,
 } from '../../quote-proposal/filename.js';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, inArray, sql } from 'drizzle-orm';
 import { getDb, type DB } from '../../db/client.js';
 import {
   assertHmsQuoteOriginAllowed,
@@ -755,14 +755,25 @@ export async function assertCurrentDraftQuotePdf(
   const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
     threadId: input.threadId, messageId: input.messageId });
   if (!target.ok) throw unavailable();
-  if (target.target.propertyCode !== 'HRCEN') return [];
+  const db = getDb();
+  if (target.target.propertyCode !== 'HRCEN') {
+    if (input.pdfHashes.length) {
+      const [protectedPdf] = await db.select({ request: aiWorkflowRun.readRequest }).from(aiWorkflowRun).where(and(
+        eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+        eq(aiWorkflowRun.state, 'succeeded'), inArray(sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`, input.pdfHashes),
+        sql`coalesce(${aiWorkflowRun.readRequest}->>'propertyCode', '') <> 'HRDAV'`,
+      )).limit(1);
+      // A later thread message can change the resolved hotel. Never let it exempt a previously recorded Centurion PDF.
+      if (protectedPdf) throw unavailable();
+    }
+    return [];
+  }
   if (!input.pdfHashes.length) throw unavailable();
   if (input.preparedVersions && (!input.preparedVersions.length ||
     new Set(input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`)).size !== input.preparedVersions.length))
     throw unavailable();
   const foundRefs: string[] = [];
   const sources: DraftQuoteSource[] = [];
-  const db = getDb();
   for (const hash of new Set(input.pdfHashes)) {
     const candidates = await db.select().from(aiWorkflowRun).where(and(
       eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.threadId, input.threadId),
@@ -783,7 +794,11 @@ export async function assertCurrentDraftQuotePdf(
         createHash('sha256').update(Buffer.from(result.pdfBase64, 'base64')).digest('hex') !== hash) continue;
       try {
         const candidateSources: DraftQuoteSource[] = [];
-        const stays = await proposalStaysFor(proposal.data, ctx, 'The quote PDF is no longer ready.', candidateSources);
+        // The PDF job records the mailbox member who approved its source; a colleague may use the shared saved draft.
+        const proposalCtx = request.data.userId
+          ? { ...ctx, sessionUser: { ...ctx.sessionUser, id: request.data.userId } }
+          : ctx;
+        const stays = await proposalStaysFor(proposal.data, proposalCtx, 'The quote PDF is no longer ready.', candidateSources);
         if (stays.some((stay) => stay.revision.propertyCode !== 'HRCEN')) continue;
         sources.push(...candidateSources);
       } catch (problem) { error = problem; continue; }
