@@ -19,7 +19,8 @@ export function useSavedReply(read: SavedReplyRead, threadId: string | null) {
   const readCurrent = useCallback(async (): Promise<ReviewedReply | null> => {
     if (!threadId) return null;
     const saved = await readRef.current({ threadId });
-    return saved ? { html: saved.html, attachments: saved.attachments } : null;
+    return saved ? { html: saved.html, attachments: saved.attachments,
+      ...(saved.quoteBound === undefined ? {} : { quoteBound: saved.quoteBound }) } : null;
   }, [threadId]);
 
   useEffect(() => {
