@@ -601,7 +601,7 @@ export function useStoredWork(args: {
       const active = [...inFlight.current.entries()]
         .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
       if (active.length) await Promise.allSettled(active);
-      if (lookupKeyRef.current !== lookupKey) return false;
+      if (historyPendingRef.current || lookupKeyRef.current !== lookupKey) return false;
       if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
       if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
       return true;
@@ -836,32 +836,25 @@ export function useStoredWork(args: {
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
-      // Hold only this work item's section. Removing latest also cancels its scheduled automatic retry.
-      // On a failed reset keep the held edits for an explicit retry; on success they were discarded.
+      // Hold only this work item's section and cancel its scheduled automatic retries.
       const held = new Map<string, FieldSend>();
-      const holdSection = () => {
-        const belongs = (entry: FieldSend) =>
-          entry.workItemId === readyWorkItemId && fieldPathInSection(entry.path, section);
-        for (const [key, entry] of failed.current) {
+      const belongs = (entry: FieldSend) =>
+        entry.workItemId === readyWorkItemId && fieldPathInSection(entry.path, section);
+      for (const saves of [failed.current, latest.current]) {
+        for (const [key, entry] of saves) {
           if (!belongs(entry)) continue;
           held.set(key, entry);
-          failed.current.delete(key);
+          saves.delete(key);
         }
-        for (const [key, entry] of latest.current) {
-          if (!belongs(entry)) continue;
-          held.set(key, entry);
-          latest.current.delete(key);
-        }
-        // A debounced edit is newer than any send already in flight for the same field.
-        for (const [key, entry] of pending.current) {
-          if (!belongs(entry)) continue;
-          clearTimeout(entry.timer);
-          held.set(key, entry);
-          pending.current.delete(key);
-        }
-        setSaveFailed(failed.current.size > 0);
-      };
-      holdSection();
+      }
+      // A debounced edit is newer than any send already in flight for the same field.
+      for (const [key, entry] of pending.current) {
+        if (!belongs(entry)) continue;
+        clearTimeout(entry.timer);
+        held.set(key, entry);
+        pending.current.delete(key);
+      }
+      setSaveFailed(failed.current.size > 0);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
       let resetSent = false;
@@ -869,7 +862,6 @@ export function useStoredWork(args: {
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
-          holdSection();
           resetSent = true;
           return pinned ? mutate(input, pinned) : mutate(input);
         })

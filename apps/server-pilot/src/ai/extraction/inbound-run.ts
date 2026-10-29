@@ -29,6 +29,7 @@ import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
+import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import {
   extractionPromptMaxChars,
   extractionReasoningEffort,
@@ -246,6 +247,17 @@ export type InboundExtractionDeps = {
   claim?: RunClaim;
 };
 
+export async function extractionPropertyCode(input: { transportId: string; threadId: string | null; messageId: string }) {
+  const property = resolvePropertyTransport(input.transportId);
+  if (property.kind !== 'property') return undefined;
+  if (property.property.propertyCode === 'HRCEN') {
+    if (!input.threadId) return undefined;
+    const origin = await guardCenturionHmsMailboxOrigin({ ...input, threadId: input.threadId }).catch(() => null);
+    if (!origin?.ok) return undefined;
+  }
+  return property.property.propertyCode;
+}
+
 /**
  * Reads one inbound mail. A model timeout or error is stored as a failed read and does not throw. A run cancelled by
  * its lease or deadline throws instead, so the worker's failure path decides and nothing is stored for it.
@@ -310,14 +322,13 @@ export async function runInboundExtraction(
     return 'failed';
   }
   if (!takeCallSlot(max, clock())) return 'capped';
-  const property = resolvePropertyTransport(run.transportId);
   const extraction = await extractInboundMail({
     adapter,
     selection,
     messageId: run.triggerMessageId,
     from: trigger.fromAddress,
     mailbox: trigger.mailbox,
-    propertyCode: property.kind === 'property' ? property.property.propertyCode : undefined,
+    propertyCode: await extractionPropertyCode({ transportId: run.transportId, threadId: trigger.threadId, messageId: run.triggerMessageId }),
     signal: deps.signal,
     deadlineMs:
       deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,

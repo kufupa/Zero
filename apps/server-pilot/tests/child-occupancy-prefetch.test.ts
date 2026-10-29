@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { CENTURION_CHILD_RULES, extractInboundMail } from '../src/ai/extraction/extract.js';
+import { extractionPropertyCode } from '../src/ai/extraction/inbound-run.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
 import { storedAnalysis } from '../src/ai/work-items.js';
@@ -49,6 +51,40 @@ describe('child occupancy extraction and prefetch', () => {
     if (!result.ok) throw new Error(result.reason);
     expect(result.payload.stays[0]?.rows[0]?.childrenPerRoom).toBeNull();
     expect(result.payload.missing.some((item) => item.field === 'childAges')).toBe(propertyCode === 'HRCEN');
+  });
+
+  it('does not apply Centurion prompts to a Da Vinci-origin email in the Centurion mailbox', async () => {
+    const before = mailboxHmsOriginBindLoaders.loadThreadOriginScan;
+    try {
+      const selected = { fromAddress: 'guest@example.invalid' };
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+        selectedFound: true, selected, inbounds: [{ toAddresses: ['davinci@legacyhotels.co.za'] }],
+      });
+      const input = { transportId: 'transport-centurion', threadId: 'thread-1', messageId: 'm1' };
+      const propertyCode = await extractionPropertyCode(input);
+      expect(propertyCode).toBeUndefined();
+      const original = AE1_OUTPUT.stays[0]!;
+      const model = fakeModel(() => ({ ...AE1_OUTPUT, missing: [], stays: [{ ...original, rows: [
+        { ...original.rows[0]!, childrenPerRoom: null, childAges: [] },
+      ] }] }));
+      const result = await extractInboundMail({ adapter: model.adapter, selection: selectionFor('Please quote.'), messageId: 'm1', propertyCode });
+      expect(model.calls[0]?.systemPrompt).not.toContain(CENTURION_CHILD_RULES);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.reason);
+      expect(result.payload.stays[0]?.rows[0]?.childrenPerRoom).toBeNull();
+      expect(result.payload.missing.some((item) => item.field === 'childAges')).toBe(false);
+
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected, inbounds: [selected] });
+      expect(await extractionPropertyCode(input)).toBe('HRCEN');
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: false, selected: null, inbounds: [] });
+      expect(await extractionPropertyCode(input)).toBeUndefined();
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => { throw new Error('unavailable'); };
+      expect(await extractionPropertyCode(input)).toBeUndefined();
+      expect(await extractionPropertyCode({ ...input, threadId: null })).toBeUndefined();
+      expect(await extractionPropertyCode({ ...input, transportId: 'transport-davinci' })).toBe('HRDAV');
+    } finally {
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = before;
+    }
   });
 
   it('keeps zero, unknown and legacy counts distinct and warns about incomplete ages', () => {
