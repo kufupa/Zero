@@ -125,6 +125,14 @@ export async function reconcileCreateSave({
       return { ...result, unknownOutcome: 'unresolved' };
     }
     confNo = String(newMatches[0].confirmation).trim();
+    const observedConfirmation = String(save?.confirmationNumber ?? '').trim();
+    if (observedConfirmation && observedConfirmation !== confNo) {
+      return {
+        ...result,
+        unknownOutcome: 'unresolved',
+        conflictingConfirmationNumbers: [observedConfirmation, confNo],
+      };
+    }
     result.unknownOutcome = 'found';
   }
 

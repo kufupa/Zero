@@ -1049,6 +1049,7 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     mismatches: merged.mismatches,
     screenshot: merged.screenshot ?? savedScreenshot,
     unknownOutcome: merged.unknownOutcome,
+    ...(merged.conflictingConfirmationNumbers ? { conflictingConfirmationNumbers: merged.conflictingConfirmationNumbers } : {}),
   };
 }
 
@@ -1396,9 +1397,10 @@ export async function main(argv = process.argv.slice(2)) {
       const proof = await runProofReadback(
         browser, secret, stay, dir, save, savedScreenshot, existingRows,
       );
-      result.confirmationNumber = proof.confNo ?? save.confirmationNumber;
+      result.confirmationNumber = proof.conflictingConfirmationNumbers ? null : (proof.confNo ?? save.confirmationNumber);
       result.saved = proof.confNo ? true : null;
       result.proof = proof;
+      if (proof.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = proof.conflictingConfirmationNumbers;
       result.cmsReason = proof.cmsReason;
       if (proofMode) {
         result.outcome = proof.readbackMatch === true ? 'readback_match'
