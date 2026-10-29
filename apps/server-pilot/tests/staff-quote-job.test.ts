@@ -141,7 +141,7 @@ function fixture(metrics: Record<string, unknown> = { userId: user.id, staffQuot
   const request = { kind: 'staff_quote', input: STAFF_QUOTE_INPUT };
   const run = {
     id: 'job-1',
-    transportId: 'transport-1',
+    transportId: TRANSPORT_ID,
     threadId: 'thread-1',
     runKind: 'read_tool',
     promptVersion: HMS_JOB_PROMPT_VERSION,
@@ -169,6 +169,7 @@ function preparedFixture() {
 }
 
 beforeEach(async () => {
+  vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', 'synthetic');
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markDeadLetter.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -358,7 +359,7 @@ async function provisionalWorkerQuote(
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
   prepared = false,
-  transportId = 'transport-1',
+  transportId = TRANSPORT_ID,
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -429,7 +430,7 @@ describe('runStaffQuote child occupancy', () => {
       '../src/ai/staff-quote-run.js',
     );
     const mail = {
-      id: STAFF_QUOTE_INPUT.messageId, transportId: 'transport-1', threadId: 'thread-1', direction: 'inbound',
+      id: STAFF_QUOTE_INPUT.messageId, transportId: TRANSPORT_ID, threadId: 'thread-1', direction: 'inbound',
       subject: 'Accommodation enquiry', textBody: 'Please quote accommodation.', htmlBody: null,
       receivedAt: new Date('2026-10-12T08:00:00Z'), sentAt: null, createdAt: new Date('2026-10-12T08:00:00Z'),
     };
@@ -439,7 +440,7 @@ describe('runStaffQuote child occupancy', () => {
     });
     const quoteDb = staffQuoteRunDb(mail, input.groups);
     quoteDb.payload.stays[0]!.rows[0]!.childrenPerRoom = 1;
-    await expect(actual.runStaffQuote(input, { transportId: 'transport-1', user }, quoteDb.db)).rejects.toMatchObject({
+    await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: expect.stringContaining('number of children'),
       cause: expect.objectContaining({ reason: 'child_occupancy_incomplete' }),
@@ -972,7 +973,7 @@ describe('staff_quote HMS job execution', () => {
   it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {
     const mail = {
       id: STAFF_QUOTE_INPUT.messageId,
-      transportId: 'transport-1',
+      transportId: TRANSPORT_ID,
       threadId: 'thread-1',
       direction: 'inbound',
       subject: 'Accommodation enquiry',
