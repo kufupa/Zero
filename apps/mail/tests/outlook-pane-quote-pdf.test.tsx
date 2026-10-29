@@ -6,6 +6,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { useQuotePdfJob } from '../components/nava-pane/use-quote-pdf-job';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
   emptyStaffQuoteHeader,
@@ -646,12 +649,16 @@ describe('Outlook pane quote proposal PDF', () => {
   });
 
   afterEach(() => {
+    cleanup();
+    setMailCacheScope({ userId: null, activeTransportId: null });
+    resetPaneEditsForTests();
+    resetGuestNameCacheForTests();
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
-    cleanup();
     vi.mocked(toast.error).mockClear();
     vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.warning).mockClear();
   });
 
   it('sends the approved quote to the server Excel route from Download Excel', async () => {
