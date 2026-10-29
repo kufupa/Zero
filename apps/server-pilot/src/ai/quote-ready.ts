@@ -168,7 +168,7 @@ function groupForStay(
       childrenAges: row.childAges,
       ...(!propertyCode || propertyCode === 'HRCEN'
         ? { sourcePreference: { roomType: roomType || null, board: row.board } } : {}),
-      board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
+      board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' || row.board === 'half_board' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
     });
   }
