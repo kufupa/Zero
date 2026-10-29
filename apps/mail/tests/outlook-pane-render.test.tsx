@@ -397,6 +397,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
           storeId: 'store-1',
           operationId: expect.any(String),
         }),
+        expect.any(Function),
       );
     });
   });
@@ -414,6 +415,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
       expect(sendCommandMock).toHaveBeenCalledWith(
         'CREATE_REPLY_DRAFT',
         expect.objectContaining({ htmlBody: expectedHtml.trim() }),
+        expect.any(Function),
       );
       expect(sendCommandMock).toHaveBeenCalledWith(
         'ADD_ATTACHMENT_TO_DRAFT',
@@ -421,6 +423,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
           fileName: AUTHORISED_QUOTE_PDF.fileName,
           base64Data: AUTHORISED_QUOTE_PDF.pdfBase64,
         }),
+        expect.any(Function),
       );
     });
   });

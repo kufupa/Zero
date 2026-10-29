@@ -307,11 +307,13 @@ describe('Insert saved reply in Outlook', () => {
           fileName: 'Quotation.pdf',
           base64Data: SAVED_PDF,
         }),
+        expect.any(Function),
       ),
     );
     expect(sendCommand).toHaveBeenCalledWith(
       'CREATE_REPLY_DRAFT',
       expect.objectContaining({ entryId: 'entry-1', htmlBody: SAVED_HTML, replyAll: false }),
+      expect.any(Function),
     );
     expect(saveReplyMutate).not.toHaveBeenCalled();
     expect(quoteDraftPreflight).toHaveBeenCalledTimes(2);
@@ -522,7 +524,7 @@ describe('Insert saved reply in Outlook', () => {
     const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
     const { result } = renderInsertHook(sendCommand, quoteSession, contextRevision);
     act(() => result.current.trackedDraft('selected'));
-    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything()));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything(), expect.any(Function)));
     contextRevision.current.selectionEpoch = 2;
     await act(async () => finish({ entryId: 'original-draft', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
@@ -537,6 +539,16 @@ describe('Insert saved reply in Outlook', () => {
       attachments: [{ fileName: 'document.pdf', pdfBase64: SAVED_PDF }] }));
     await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything()));
     expect(quoteDraftPreflight).not.toHaveBeenCalled();
+  });
+
+  it('explains how to recover when an older saved attachment has unknown quote provenance', async () => {
+    quoteDraftPreflight.mockRejectedValueOnce(new Error('unverified attachment'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('saved', { html: SAVED_HTML,
+      attachments: [{ fileName: 'supporting.pdf', pdfBase64: SAVED_PDF }] }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Remove it from the saved reply')));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
   });
 
   it('does not record a missing-details Outlook reply as a quote outcome', async () => {

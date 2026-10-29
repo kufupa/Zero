@@ -452,7 +452,7 @@ export function useOutlookBridge() {
   };
 
   const sendCommand = useCallback(
-    async <TReq, TResp>(action: BridgeAction, rawPayload: TReq): Promise<TResp> => {
+    async <TReq, TResp>(action: BridgeAction, rawPayload: TReq, beforeNative?: () => void): Promise<TResp> => {
       const execute = async (consentRequestId?: string): Promise<TResp> => {
       const checkMoveConsent = () => {
         const consent = moveConsent.current;
@@ -575,6 +575,8 @@ export function useOutlookBridge() {
       // awaits a server ticket. Refuse that command without treating the local
       // consent gate as a failed native authorization or revoking the dialog.
       checkMoveConsent();
+      // Recheck the caller's current inputs after ticket issuance and immediately before native receives a write.
+      beforeNative?.();
       let result: TResp;
       try {
         result = await nativeRequest<TResp>(
