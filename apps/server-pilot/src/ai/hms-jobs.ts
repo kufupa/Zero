@@ -763,7 +763,9 @@ export async function hmsMailCopiesForMessage(
 
 function hmsMailReadRequestKey(request: HmsJobRequest, propertyCode: string): string {
   return request.kind === 'staff_quote'
-    ? JSON.stringify({ kind: request.kind, price: staffQuotePriceKey(request.input, propertyCode !== 'HRDAV') })
+    ? JSON.stringify({ kind: request.kind, price: staffQuotePriceKey(request.input, propertyCode !== 'HRDAV'),
+        // A Centurion prepared job admitted for an older extraction must not prevent a new search.
+        ...(propertyCode === 'HRCEN' ? { sourceExtractionId: request.input.sourceExtractionId ?? null } : {}) })
     : hmsRequestKey(request);
 }
 
@@ -3769,6 +3771,9 @@ export async function executeHmsJob(input: {
       );
       const scoped = tx as unknown as DB;
       const now = new Date();
+      const property = resolvePropertyTransport(run.transportId);
+      const centurionExtraction = property.kind === 'property' && property.property.propertyCode === 'HRCEN';
+      const sourceExtractionId = request.kind === 'staff_quote' ? request.input.sourceExtractionId ?? null : null;
       const batchScope = and(
         eq(aiWorkflowRun.transportId, run.transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
@@ -3777,6 +3782,9 @@ export async function executeHmsJob(input: {
           : eq(aiWorkflowRun.id, run.id),
         sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        ...(centurionExtraction
+          ? [sql`${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' IS NOT DISTINCT FROM ${sourceExtractionId}`]
+          : []),
       );
       const batchRows = await scoped
         .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
@@ -3851,7 +3859,9 @@ export async function executeHmsJob(input: {
         batchSize: wakeBatchSize,
         now,
         excludeRunId: run.id,
-        excludeTriggerMessageId: run.triggerMessageId ?? undefined,
+        ...(centurionExtraction && run.triggerMessageId
+          ? { excludeQuoteBatch: { triggerMessageId: run.triggerMessageId, sourceExtractionId } }
+          : { excludeTriggerMessageId: run.triggerMessageId ?? undefined }),
       });
       if (capacity.action === 'disable') {
         await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
@@ -4387,12 +4397,15 @@ async function latestStaffQuoteRunFor(
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
+    const centurion = isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) });
     const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false,
-        isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) }));
+      // Admission binds a Centurion run to the current extraction. A stale queued
+      // run, or its eventual refusal, cannot answer a later read of this mail.
+      (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false, centurion);
     if (!reusable(userRun)) {
       // Newest matching price is stale: do not fall back to an older refusal.
       const stored = userRun.readResult as { status?: unknown } | null;
@@ -4443,6 +4456,9 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
+      (centurion && (sameMessageCopy
+        ? parsed.data.input.sourceExtractionId !== quoteInput.sourceExtractionId
+        : preparedRun.state !== 'succeeded' || objectRecord(preparedRun.readResult).status !== 'ready')) ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput,
         !centurion && preferBoundContract && hasReadySelectedContract(preparedRun), centurion)
     ) {

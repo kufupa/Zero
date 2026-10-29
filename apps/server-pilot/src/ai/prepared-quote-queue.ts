@@ -46,6 +46,8 @@ export async function enqueuePreparedQuoteWithinCap(
     );
     const scoped = tx as unknown as DB;
     const copies = await hmsMailCopiesForMessage(scoped, input.transportId, input.triggerMessageId);
+    const centurionExtraction = copies.propertyCode === 'HRCEN' && input.request.kind === 'staff_quote';
+    const sourceExtractionId = input.request.kind === 'staff_quote' ? input.request.input.sourceExtractionId ?? null : null;
     const storedIdentity =
       copies.propertyCode && copies.messageIdHeader
         ? hmsMailReadIdempotencyKey(
@@ -90,6 +92,9 @@ export async function enqueuePreparedQuoteWithinCap(
                 eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
                 sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
                 sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+                ...(centurionExtraction
+                  ? [sql`${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' IS NOT DISTINCT FROM ${sourceExtractionId}`]
+                  : []),
               ),
             )
         : [];
@@ -119,7 +124,7 @@ export async function enqueuePreparedQuoteWithinCap(
       perHour,
       batchSize: reservationBatchSize,
       now,
-      ...(existing.length ? {} : { excludeTriggerMessageId: input.triggerMessageId }),
+      ...(existing.length || centurionExtraction ? {} : { excludeTriggerMessageId: input.triggerMessageId }),
     });
     if (capacity.action === 'disable') return NOT_QUEUED;
     // A dead-letter retry while the hour is full must not spawn another reserved row.

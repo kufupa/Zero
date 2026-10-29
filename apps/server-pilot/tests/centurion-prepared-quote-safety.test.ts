@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { queueAutoStaffQuoteHmsJob, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
-import { aiDraftGeneration, aiWorkflowRun } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import type { DB } from '../src/db/client.js';
 import { DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 
@@ -31,7 +31,7 @@ function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, co
 }
 
 /** A query stub for the actual auto-start picker; inserted rows are returned as fresh jobs. */
-function quoteDb(rows: ReturnType<typeof preparedRun>[]) {
+function quoteDb(rows: unknown[]) {
   const database = {
     transaction: async (run: (tx: unknown) => Promise<unknown>) => run(database),
     execute: async () => undefined,
@@ -69,6 +69,72 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('prepared quote reuse', () => {
+  it.each([
+    ['user', 'queued', 'ready'], ['user', 'claimed', 'ready'], ['user', 'running', 'ready'],
+    ['user', 'retry_wait', 'ready'], ['user', 'dead_letter', 'ready'], ['user', 'superseded', 'ready'],
+    ['user', 'succeeded', 'refused'], ['user', 'succeeded', 'ready'],
+    ['prepared', 'queued', 'ready'], ['prepared', 'succeeded', 'refused'], ['prepared', 'succeeded', 'ready'],
+  ])('starts a fresh Centurion run after a new extraction instead of reusing %s %s %s', async (owner, state, status) => {
+    const oldInput = { ...input, sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'old-read' };
+    const newInput = { ...oldInput, sourceExtractionId: 'new-read' };
+    const old = preparedRun('old', TRANSPORT_ID, oldInput, false);
+    const run = { ...old, state, readResult: { ...old.readResult, status },
+      ...(owner === 'user' ? { metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 } : {}) };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(TRANSPORT_ID),
+      request: { kind: 'staff_quote', input: newInput } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: true, run: { id: 'fresh', readRequest: { input: { sourceExtractionId: 'new-read' } } } });
+  });
+
+  it.each([TRANSPORT_ID, DAVINCI_TRANSPORT_ID])('keeps a matching queued run for the same extraction on %s', async (transportId) => {
+    const quote = { ...input, sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'read-1' };
+    const old = preparedRun('same-read', transportId, quote, false);
+    const run = { ...old, state: 'queued', metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(transportId),
+      request: { kind: 'staff_quote', input: quote } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: false, run: { id: 'same-read' } });
+  });
+
+  it('preserves Da Vinci reuse across extraction identifiers', async () => {
+    const oldInput = { ...input, sourceExtractionId: 'old-read' };
+    const old = preparedRun('dav', DAVINCI_TRANSPORT_ID, oldInput, false);
+    const run = { ...old, state: 'queued', metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(DAVINCI_TRANSPORT_ID),
+      request: { kind: 'staff_quote', input: { ...oldInput, sourceExtractionId: 'new-read' } } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: false, run: { id: 'dav' } });
+  });
+
+  it.each([
+    ['queued', 'ready', false], ['succeeded', 'refused', false],
+    ['succeeded', 'ready', true], ['succeeded', 'expired', false],
+  ])('only considers a ready, fresh cross-copy Centurion price (%s, %s)', async (state, status, considered) => {
+    const source = { ...input, sourceExtractionId: 'old-read' };
+    const run = preparedRun('copy', TRANSPORT_ID, source, false);
+    run.state = state;
+    run.readResult = { ...run.readResult, status: status === 'expired' ? 'ready' : status,
+      asOf: status === 'expired' ? new Date(Date.now() - 48 * 60 * 60_000).toISOString() : new Date().toISOString() };
+    if (status === 'expired') run.readResultExpiresAt = new Date(Date.now() - 1000);
+    const selected = { ...source, messageId: 'message-2', sourceExtractionId: 'new-read' };
+    let messageRead = 0;
+    const fake = {
+      select: () => ({ from: (table: unknown) => {
+        if (table === message) {
+          messageRead += 1;
+          const rows = messageRead === 1 ? [{ id: selected.messageId, messageIdHeader: 'copy@example.test' }]
+            : messageRead === 2 ? [{ id: source.messageId }, { id: selected.messageId }] : [];
+          return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
+        }
+        if (table === aiWorkflowRun) return { where: () => ({ orderBy: async () => [run] }) };
+        if (table === aiDraftGeneration) return { where: () => ({ orderBy: () => ({ limit: async () => [] }) }) };
+        throw new Error('unexpected query');
+      } }),
+    } as unknown as DB;
+    const view = await readHmsJobView({ transportId: TRANSPORT_ID, userId: 'staff-1',
+      messageId: selected.messageId, kind: 'staff_quote', input: selected }, fake);
+    // A considered result still needs independent selected-source proof before a price is exposed.
+    if (considered) expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
+    else expect(view).toBeNull();
+  });
+
   it('uses the matching Centurion strategy even when an incompatible contract is first', async () => {
     const ws = preparedRun('ws', TRANSPORT_ID, { ...input, salesStrategy: 'WS' }, true);
     const bar = preparedRun('bar', TRANSPORT_ID, input, false);
@@ -97,13 +163,14 @@ describe('prepared quote reuse', () => {
     expect(view?.result).not.toHaveProperty('totalMinor');
   });
 
-  it('keeps a completed Centurion price and a legacy Da Vinci price readable', async () => {
+  it('holds a Centurion price without selected-source proof and keeps a legacy Da Vinci price readable', async () => {
     const centurion = preparedRun('cen', TRANSPORT_ID, input, false);
     const davinci = preparedRun('dav', DAVINCI_TRANSPORT_ID, {
       ...input, groups: [{ ...input.groups[0]!, childrenPerRoom: undefined }],
     }, false);
-    expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: centurion.id }, quoteDb([centurion])))
-      .toMatchObject({ status: 'done', result: { totalMinor: 100_000 } });
+    const held = await readHmsJobView({ transportId: TRANSPORT_ID, runId: centurion.id }, quoteDb([centurion]));
+    expect(held).toMatchObject({ status: 'failed', result: { ok: false } });
+    expect(held?.result).not.toHaveProperty('totalMinor');
     expect(await readHmsJobView({ transportId: DAVINCI_TRANSPORT_ID, runId: davinci.id }, quoteDb([davinci])))
       .toMatchObject({ status: 'done', result: { totalMinor: 100_000 } });
   });
