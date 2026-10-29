@@ -811,7 +811,7 @@ export const quoteRunScreenshotInput = z
   .strict();
 
 const staffQuoteJobInput = z.union([
-  z.object({ runId: z.string().uuid() }).strict(),
+  z.object({ runId: z.string().uuid(), messageId: z.string().min(1).max(1024).optional() }).strict(),
   z.object({ input: staffQuoteInput }).strict(),
 ]);
 

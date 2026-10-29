@@ -26,7 +26,7 @@ describe('rates ready notice across pane remounts', () => {
     const tracked = trackingStaffQuoteJob(ratesReadyJobs, query, () => ({
       messageId: 'mail-a', threadId: 'thread-a', emailKey: '<a>', subject: 'Twin for 3 nights', entryId: null,
     }));
-    await tracked!({ runId: 'run-1' });
+    await tracked!({ runId: 'run-1', messageId: 'mail-a' });
     first.unmount();
 
     status = 'done';
@@ -35,6 +35,7 @@ describe('rates ready notice across pane remounts', () => {
       useRatesReadyNotice({ jobsRef: ratesReadyJobs, openMessageId: 'mail-b', openEmailKey: '<b>', query, onOpenThread }),
     );
     await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(query).toHaveBeenLastCalledWith({ runId: 'run-1', messageId: 'mail-a' });
     expect(toast.mock.calls[0]?.[0]).toBe('Rates ready · Twin for 3 nights');
     second.unmount();
 
@@ -53,7 +54,7 @@ describe('rates ready notice across pane remounts', () => {
     const first = renderHook(() =>
       useRatesReadyNotice({ jobsRef: ratesReadyJobs, openMessageId: 'mail-a', openEmailKey: '<a>', query }),
     );
-    await tracked!({ runId: 'run-2' });
+    await tracked!({ runId: 'run-2', messageId: 'mail-a' });
     await waitFor(() => expect(ratesReadyJobs.current).toEqual([]), { timeout: 5000 });
     first.unmount();
     renderHook(() => useRatesReadyNotice({ jobsRef: ratesReadyJobs, openMessageId: 'mail-b', openEmailKey: '<b>', query }));
@@ -66,7 +67,7 @@ describe('rates ready notice across pane remounts', () => {
     renderHook(() => useRatesReadyNotice({ jobsRef: ratesReadyJobs, openMessageId: 'mail-b', openEmailKey: '<b>', query }));
     await trackingStaffQuoteJob(ratesReadyJobs, query, () => ({
       messageId: 'mail-a', threadId: 'thread-a', emailKey: '<a>', subject: 'Failed', entryId: null,
-    }))!({ runId: 'run-3' });
+    }))!({ runId: 'run-3', messageId: 'mail-a' });
     await waitFor(() => expect(ratesReadyJobs.current).toEqual([]), { timeout: 5000 });
     expect(query).toHaveBeenCalledTimes(1);
     expect(toast).not.toHaveBeenCalled();

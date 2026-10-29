@@ -2711,7 +2711,7 @@ describe('NavaPane', () => {
 
     await waitFor(() => expect(bridgeMockState.staffQuoteJobCalls).toHaveLength(readsBeforeRetry + 1));
     expect(bridgeMockState.staffQuoteJobCalls[readsBeforeRetry]).toEqual({
-      input: { runId: 'staff-job-poll-lost' },
+      input: { runId: 'staff-job-poll-lost', messageId: 'mail-1' },
       activeTransportId: 'transport-a',
     });
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1);

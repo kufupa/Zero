@@ -109,7 +109,7 @@ export function useRatesReadyNotice(input: {
       for (const job of jobs) {
         if (finished(job) || !query) continue;
         try {
-          const view = await query({ runId: job.runId });
+          const view = await query({ runId: job.runId, messageId: job.messageId });
           if (view) remember(jobs, { ...job, status: view.status, refused: staffQuoteViewRefused(view) });
         } catch { /* keep the pane-session row */ }
       }

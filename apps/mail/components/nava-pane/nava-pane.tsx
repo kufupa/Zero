@@ -18,7 +18,6 @@ import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
-  quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -1837,7 +1836,7 @@ export function NavaPane({
       const retryRun = lostRunId && originalStaffQuoteJob
         ? bindReadBackStaffQuote({
             query: (input, options) =>
-              originalStaffQuoteJob('input' in input ? { runId: lostRunId } : input, options),
+              originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
             source,
             selectionEpoch,
             inputRevision,
