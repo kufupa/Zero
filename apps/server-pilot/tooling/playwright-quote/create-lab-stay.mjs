@@ -305,7 +305,7 @@ export function compareReadbackStay(expected, actual) {
 
 export async function waitWhileStillProcessing({
   reason,
-  confirmationNumber: _priorConfirmation = '',
+  confirmationNumber: priorConfirmation = '',
   timeoutMs = READBACK_WAIT_MS,
   pollMs = READBACK_POLL_MS,
   now = Date.now,
@@ -313,12 +313,23 @@ export async function waitWhileStillProcessing({
   read,
 }) {
   const start = now();
+  let observedConfirmation = knownConfirmation({ confirmationNumber: priorConfirmation });
   for (;;) {
     const snapshot = await read();
-    const confirmationNumber = snapshot?.confirmationNumber ?? '';
+    const confirmationNumber = knownConfirmation(snapshot);
+    if (confirmationNumber && observedConfirmation && confirmationNumber !== observedConfirmation) {
+      return {
+        confirmed: false,
+        confirmationNumber: null,
+        conflictingConfirmationNumbers: [observedConfirmation, confirmationNumber],
+        status: snapshot?.status ?? null,
+        reason: 'conflicting_confirmation_numbers',
+      };
+    }
+    if (confirmationNumber) observedConfirmation = confirmationNumber;
     const maskVisible = snapshot?.maskVisible === true;
-    const currentReason = maskVisible ? 'still_processing' : (knownConfirmation({ confirmationNumber }) ? null : 'no_confirmation');
-    if (!maskVisible && knownConfirmation({ confirmationNumber })) {
+    const currentReason = maskVisible ? 'still_processing' : (confirmationNumber ? null : 'no_confirmation');
+    if (!maskVisible && confirmationNumber) {
       return {
         confirmed: true,
         confirmationNumber: squashText(confirmationNumber),
@@ -336,7 +347,7 @@ export async function waitWhileStillProcessing({
     }) === 'stop') {
       return {
         confirmed: false,
-        confirmationNumber: knownConfirmation({ confirmationNumber }) || null,
+        confirmationNumber: observedConfirmation || null,
         status: snapshot?.status ?? null,
         reason: currentReason ?? reason,
       };
@@ -1368,6 +1379,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
     }
     result.confirmationNumber = save.confirmationNumber;
+    if (save.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = save.conflictingConfirmationNumbers;
     result.saved = save.confirmed;
     result.saveReason = save.reason;
     if (save.confirmed) {

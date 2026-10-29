@@ -79,6 +79,21 @@ test('pane commit is committed only when readback matches', () => {
   assert.equal(rules.paneCommitOutcome({ readbackMatch: null, unknownOutcome: 'not_found' }), 'committed_unverified');
 });
 
+test('conflicting observed confirmations remain unresolved without guessing a match', async () => {
+  let calls = 0;
+  const result = await rules.reconcileCreateSave({
+    save: { confirmed: false, confirmationNumber: null, reason: 'conflicting_confirmation_numbers' },
+    expected: EXPECTED,
+    existingRows: [],
+    searchByGuestDates: async () => { calls += 1; return { outcome: 'ok', rows: [] }; },
+    readByConfirmation: async () => { calls += 1; return { outcome: 'found', stay: EXPECTED }; },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.confNo, null);
+  assert.equal(result.unknownOutcome, 'unresolved');
+  assert.equal(rules.paneCommitOutcome(result), 'committed_unverified');
+});
+
 test('confirmed save retains confirmation when readback throws', async () => {
   const result = await rules.reconcileCreateSave({
     save: { confirmed: true, confirmationNumber: '61143613-1' },

@@ -704,6 +704,43 @@ test('still_processing wait reads the form with fakes and never retries Save', a
   assert.equal(maskedClock, 60_000);
 });
 
+test('save polling preserves unconfirmed breadcrumbs and refuses conflicting numbers', async () => {
+  const rules = await loadReadbackRules();
+  const prior = '11111111-1';
+  const other = '22222222-1';
+  const poll = (confirmationNumber, frames) => {
+    let clock = 0;
+    let reads = 0;
+    return rules.waitWhileStillProcessing({
+      reason: 'still_processing', confirmationNumber, timeoutMs: 10, pollMs: 5,
+      now: () => clock, sleep: async (ms) => { clock += ms; },
+      read: async () => frames[Math.min(reads++, frames.length - 1)],
+    });
+  };
+  const blank = { maskVisible: false, confirmationNumber: '', status: 'Reserved' };
+  const unconfirmed = await poll(prior, [blank]);
+  assert.equal(unconfirmed.confirmed, false);
+  assert.equal(unconfirmed.confirmationNumber, prior);
+  assert.equal(rules.reconcileSaveInput(unconfirmed).confirmed, false);
+
+  const current = await poll(prior, [{ ...blank, confirmationNumber: prior }]);
+  assert.equal(current.confirmed, true);
+  assert.equal(current.confirmationNumber, prior);
+
+  const conflict = await poll(prior, [{ ...blank, confirmationNumber: other }]);
+  assert.equal(conflict.confirmed, false);
+  assert.equal(conflict.confirmationNumber, null);
+  assert.deepEqual(conflict.conflictingConfirmationNumbers, [prior, other]);
+  assert.equal(conflict.reason, 'conflicting_confirmation_numbers');
+  assert.equal(rules.reconcileSaveInput(conflict).reason, 'conflicting_confirmation_numbers');
+
+  const laterConflict = await poll('', [
+    { ...blank, maskVisible: true, confirmationNumber: prior }, blank,
+    { ...blank, confirmationNumber: other },
+  ]);
+  assert.deepEqual(laterConflict.conflictingConfirmationNumbers, [prior, other]);
+});
+
 test('confirmation find passes expected arrival so HMS can move the 60-day window', async () => {
   const rules = await loadReadbackRules();
   assert.deepEqual(rules.confirmationFindLookupArgs({
