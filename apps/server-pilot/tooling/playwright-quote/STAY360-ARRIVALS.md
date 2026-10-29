@@ -3,8 +3,8 @@
 `centurion-stay360.mjs` starts a fresh Chromium, logs in to Centurion, and opens
 Stay 360. Pass an async function to `withCenturionStay360Page` to use that page;
 the browser closes after the function returns. Each invocation owns its own
-browser. The current limit is 27 seconds for the entire run, including the
-function's work.
+browser. There is no fixed total runtime limit; individual readiness steps may
+still have their own timeouts.
 
 `arrival-ui.mjs` exports `readArrivalFromStay360(page, arrivalNumber)`.
 `read-arrival-ui.mjs` joins the two steps. From the worktree root:

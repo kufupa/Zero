@@ -17,7 +17,7 @@ export async function readRecordViewFromStay360(page, confirmation) {
   });
   const button = stay.locator('a.gs-header-btn:visible').filter({ has: page.locator('.gs-stay-icon') });
   if (await stay.count() !== 1 || await button.count() !== 1) throw new Error('STAY_BUTTON_NOT_UNIQUE');
-  await button.click({ timeout: 2_500 });
+  await button.click({ timeout: 0 });
 
   const deadline = Date.now() + 10_000;
   let frame;
@@ -64,7 +64,7 @@ export async function readRecordViewFromStay360(page, confirmation) {
       has: frame.locator('img[class*="x-tool-expand-"]'),
     });
     if (await expand.count() !== 1) throw new Error('RECORD_EXPAND_NOT_UNIQUE');
-    await expand.click({ timeout: 2_500 });
+    await expand.click({ timeout: 0 });
     await page.waitForTimeout(150);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
