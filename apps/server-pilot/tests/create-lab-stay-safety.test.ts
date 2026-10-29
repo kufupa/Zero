@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { paneCommitOutcome } from '../tooling/playwright-quote/create-proof-rules.mjs';
+import { propertySecretRefusal } from '../tooling/playwright-quote/property-profile.mjs';
 
 async function createLabStaySource(): Promise<string> {
   return readFile(new URL('../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url), 'utf8');
@@ -9,11 +10,15 @@ async function createLabStaySource(): Promise<string> {
 describe('create-lab-stay write safety', () => {
   it('checks the --property code on every write, not only proof', async () => {
     const source = await createLabStaySource();
-    expect(source).toContain('secret.expectedPropertyCode !== propertyCode');
-    expect(source).toContain('PROPERTY_HRCEN_REQUIRED');
-    expect(source).toContain('PROPERTY_HRDAV_REQUIRED');
-    expect(source).not.toContain('proofMode && secret.expectedPropertyCode');
-    expect(source).not.toContain('PROOF_PROPERTY_HRCEN_REQUIRED');
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRCEN')).toBeNull();
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRCEN')).toBe('PROPERTY_HRCEN_REQUIRED');
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRDAV')).toBe('PROPERTY_HRDAV_REQUIRED');
+    const check = source.indexOf('const hotelMismatch = propertySecretRefusal(secret, propertyCode)');
+    const refusal = source.indexOf('if (hotelMismatch) throw new Error(hotelMismatch)', check);
+    const connect = source.indexOf('await playwright().chromium.connectOverCDP', refusal);
+    expect(check).toBeGreaterThan(-1);
+    expect(refusal).toBeGreaterThan(check);
+    expect(connect).toBeGreaterThan(refusal);
   });
 
   it('captures before.png and wires pane-commit to proof reconcile', async () => {
@@ -27,7 +32,7 @@ describe('create-lab-stay write safety', () => {
 
   it('dismisses JS dialogs so a vanished dialog does not crash, and never accepts', async () => {
     const source = await createLabStaySource();
-    expect(source).toMatch(/page\.on\(['"]dialog['"]/);
+    expect(source).toMatch(/page\.on(?:\?\.)?\(['"]dialog['"]/);
     expect(source).toMatch(/dismiss\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
     expect(source).not.toMatch(/dialog\.accept\(/);
   });
@@ -177,6 +182,7 @@ describe('create-lab-stay --property HRDAV', () => {
     expect(cli.labtestInformationalOkAllowed({ lastName: 'Labtest', arrival: '2027-01-01' })).toBe(true);
     const source = await createLabStaySource();
     expect(source.indexOf('parseCreateProperty(argv)')).toBeLessThan(source.indexOf('connectOverCDP'));
-    expect(source.indexOf('PROPERTY_HRDAV_REQUIRED')).toBeLessThan(source.indexOf('connectOverCDP'));
+    expect(source.indexOf('propertySecretRefusal(secret, propertyCode)')).toBeGreaterThan(-1);
+    expect(source.indexOf('propertySecretRefusal(secret, propertyCode)')).toBeLessThan(source.indexOf('connectOverCDP'));
   });
 });
