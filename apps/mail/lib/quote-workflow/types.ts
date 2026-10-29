@@ -820,6 +820,8 @@ export type QuoteSession = {
   /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
   stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
+  /** Hotel whose pane configuration is active for the current selection. */
+  quotePropertyCode?: string | null;
   /** Preserves an explicit staff rate-strategy choice against later automatic prefill. */
   staffSalesStrategyEdited?: boolean;
   staffActions: ReservationistStaffAction[];
@@ -896,6 +898,7 @@ export type QuoteSessionAction =
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'quote_property_configured'; propertyCode: string | null }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
