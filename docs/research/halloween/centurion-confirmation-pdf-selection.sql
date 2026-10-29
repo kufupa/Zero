@@ -31,7 +31,7 @@ SELECT
   to_char(statement_timestamp() AT TIME ZONE 'UTC',
           'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS query_time_utc,
   count(*) AS candidate_attachment_rows,
-  count(DISTINCT message_id) AS parent_message_rows,
+  count(DISTINCT c.message_id) AS parent_message_rows,
   count(DISTINCT thread_id) FILTER (WHERE thread_id IS NOT NULL)
     AS distinct_thread_ids,
   count(DISTINCT filename) AS distinct_filenames,
@@ -39,10 +39,10 @@ SELECT
     AS rows_with_raw_mime_locator,
   count(*) FILTER (WHERE raw_mime_s3_key IS NULL)
     AS rows_without_raw_mime_locator,
-  count(DISTINCT message_id) FILTER (
+  count(DISTINCT c.message_id) FILTER (
     WHERE COALESCE(stored_from_address, '') LIKE 'Centurion at%'
   ) AS stored_from_address_prefix_diagnostic,
-  count(DISTINCT message_id) FILTER (
+  count(DISTINCT c.message_id) FILTER (
     WHERE pm.attachment_count > 1
   ) AS messages_with_multiple_candidate_pdfs,
   sum(size_bytes) AS declared_pdf_bytes,

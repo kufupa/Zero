@@ -110,7 +110,9 @@ export async function readFromHeader(
     if (separator < 0) return { status: 'unreadable' };
     const header = bytes.subarray(0, separator + (separator === crlf ? 4 : 2));
     const parsed = await simpleParser(header, { skipHtml: true, skipText: true });
-    const displayName = parsed.from?.value?.[0]?.name ?? '';
+    const sender = parsed.from?.value?.[0];
+    if (!sender?.address) return { status: 'unreadable', headerSha256: sha256(header) };
+    const displayName = sender.name ?? '';
     return {
       status: displayName.startsWith(FROM_PREFIX) ? 'match' : 'no_match',
       headerSha256: sha256(header),
