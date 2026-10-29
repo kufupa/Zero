@@ -126,7 +126,7 @@ Commands below are argument shapes, not a request to run live work. Remote comma
 2. **Export the selected PDFs and evidence** using that snapshot. Run `export-centurion-confirmation-pdf-dataset-live.ts` on the approved instance with the same environment:
 
    ```bash
-   pnpm --dir apps/server-pilot exec tsx scripts/export-centurion-confirmation-pdf-dataset-live.ts \\
+   pnpm --dir apps/server-pilot exec tsx scripts/export-centurion-confirmation-pdf-dataset-live.ts \
      --source-snapshot=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/live-<uuid>
    ```
 
@@ -135,8 +135,8 @@ Commands below are argument shapes, not a request to run live work. Remote comma
 3. **Retry missing raw-MIME evidence only**, when needed. The retry script derives targets from `attachments.jsonl` rows whose initial evidence status is `missing`, deduplicates/sorts message IDs, runs its SQL in a read-only transaction with a 30-second statement timeout, and requests only the first 64 KiB of each stored object.
 
    ```bash
-   pnpm --dir apps/server-pilot exec tsx scripts/retry-centurion-from-header-evidence-live.ts \\
-     --source-attachments=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/halloween-confirmation-pdfs-<uuid>/attachments.jsonl \\
+   pnpm --dir apps/server-pilot exec tsx scripts/retry-centurion-from-header-evidence-live.ts \
+     --source-attachments=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/halloween-confirmation-pdfs-<uuid>/attachments.jsonl \
      --output-file=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/halloween-confirmation-pdfs-<uuid>/sender-evidence-retry-YYYYMMDD.jsonl
    ```
 
@@ -148,10 +148,10 @@ Commands below are argument shapes, not a request to run live work. Remote comma
 
    ```bash
    sha256sum /absolute/local/bundle/attachments.jsonl
-   pnpm --dir apps/server-pilot exec tsx scripts/collect-centurion-from-header-retry-live.ts \\
-     --source-attachments=/absolute/local/bundle/attachments.jsonl \\
-     --expected-source-sha256=<sha256-from-previous-command> \\
-     --remote-evidence-file=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/halloween-confirmation-pdfs-<uuid>/sender-evidence-retry-YYYYMMDD.jsonl \\
+   pnpm --dir apps/server-pilot exec tsx scripts/collect-centurion-from-header-retry-live.ts \
+     --source-attachments=/absolute/local/bundle/attachments.jsonl \
+     --expected-source-sha256=<sha256-from-previous-command> \
+     --remote-evidence-file=/home/ubuntu/repos/zero/.private/connected-mailbox-corpus/halloween-confirmation-pdfs-<uuid>/sender-evidence-retry-YYYYMMDD.jsonl \
      --output-file=/absolute/repo/.private/sender-evidence-retry-YYYYMMDD.jsonl
    ```
 
@@ -160,9 +160,9 @@ Commands below are argument shapes, not a request to run live work. Remote comma
 6. **Build locally**, passing the optional override only if collected. The input directory must contain `attachments.jsonl`, `corpus.jsonl`, `source-manifest.json`, and `pdfs/`.
 
    ```bash
-   pnpm --dir apps/server-pilot exec tsx scripts/build-centurion-confirmation-pdf-dataset.ts \\
-     --input-dir=/absolute/local/bundle \\
-     --output-dir=/absolute/repo/.private/centurion-confirmation-pdf-dataset-YYYY-MM-DD \\
+   pnpm --dir apps/server-pilot exec tsx scripts/build-centurion-confirmation-pdf-dataset.ts \
+     --input-dir=/absolute/local/bundle \
+     --output-dir=/absolute/repo/.private/centurion-confirmation-pdf-dataset-YYYY-MM-DD \
      --sender-evidence-override=/absolute/repo/.private/sender-evidence-retry-YYYYMMDD.jsonl
    ```
 
