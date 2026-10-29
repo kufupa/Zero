@@ -841,6 +841,32 @@ describe('booking card staying-guest prefill', () => {
     expect(recalledGuestName(key)).toBe('Ada Example');
   });
 
+  it('prefills a single unquoted room by its matching stay dates only', () => {
+    const row = { ...g1, quantity: 1 };
+    const room = { ...draftReady().draft.rooms[0]!, groupId: '2026-11-12:2026-11-14',
+      request: { ...draftReady().draft.rooms[0]!.request, firstName: '', lastName: '' } };
+    const draft = { ...draftReady({ rooms: [room] }), revisionRef: 'unquoted' };
+    const session = { ...quotedSession(null), groups: [row], analysis: { ...analysis, groups: [row] },
+      bookingDrafts: { '2026-11-12:2026-11-14': draft } };
+    const key = guestEditorKeyFor(session, 'staff-1')!;
+    rememberGuestName(key, 'Ada Example');
+
+    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={key} />);
+    expect(fieldValues('First name')).toEqual(['Ada']);
+    expect(fieldValues('Last name')).toEqual(['Example']);
+    view.unmount();
+
+    const other = { ...draft, draft: { ...draft.draft, rooms: [{ ...room, groupId: '2026-11-20:2026-11-22' }] } };
+    const mismatchedView = render(<QuoteBookingHost workItemId="wi-1" guestEditorKey={key} session={{ ...session,
+      bookingDrafts: { '2026-11-12:2026-11-14': other } }} />);
+    expect(fieldValues('First name')).toEqual(['']);
+    expect(fieldValues('Last name')).toEqual(['']);
+    mismatchedView.unmount();
+    render(<QuoteBookingHost workItemId="wi-1" guestEditorKey={key} session={{ ...session,
+      bookingDrafts: { '2026-11-12:2026-11-14': { ...draft, revisionRef: 'rev-1' } } }} />);
+    expect(fieldValues('First name')).toEqual(['']);
+  });
+
   it('does not prefill an unknown guest from a private booker and leaves the room editable', () => {
     const row = { ...g1, quantity: 1 };
     const room = { ...draftReady().draft.rooms[0]!, request: { ...draftReady().draft.rooms[0]!.request,
