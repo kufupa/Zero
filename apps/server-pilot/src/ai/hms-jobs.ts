@@ -1426,6 +1426,46 @@ function quoteRunPropertyEvidence(run: AiWorkflowRun): { code: string | undefine
   return { code: !conflicting && (value === 'HRCEN' || value === 'HRDAV') ? value : undefined, conflicting };
 }
 
+/** Older Da Vinci staff summaries omitted propertyCode; their bound revision still identifies the hotel. */
+async function legacyDavinciQuoteHasBoundRevision(
+  db: DB, run: AiWorkflowRun, userId: string, current: StaffQuoteInput,
+): Promise<boolean> {
+  const transport = resolvePropertyTransport(run.transportId);
+  if (transport.kind !== 'property' || transport.property.propertyCode !== 'HRDAV' ||
+    objectRecord(run.metrics).userId !== userId) return false;
+  const result = objectRecord(run.readResult);
+  const embedded = objectRecord(objectRecord(result.preparedProposal).revision);
+  if (result.propertyCode !== undefined || embedded.propertyCode !== undefined ||
+    typeof result.workflowRunId !== 'string' || typeof result.revisionRef !== 'string' ||
+    typeof result.inputDigest !== 'string') return false;
+  const request = hmsJobRequestSchema.safeParse(run.readRequest);
+  if (!request.success || request.data.kind !== 'staff_quote' ||
+    request.data.input.messageId !== current.messageId || request.data.input.sourceHash !== current.sourceHash) return false;
+  const [source] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
+    .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+    .where(and(
+      eq(aiWorkflowRun.id, result.workflowRunId), eq(aiWorkflowRun.transportId, run.transportId),
+      eq(aiWorkflowRun.threadId, run.threadId), eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+      eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
+      eq(aiWorkflowRun.modelId, 'staff-approved-native'), eq(aiWorkflowRun.promptVersion, 'staff-quote-v1'),
+      eq(aiDraftGeneration.transportId, run.transportId), eq(aiDraftGeneration.threadId, run.threadId),
+      eq(aiDraftGeneration.requestedByUserId, userId), eq(aiDraftGeneration.model, 'staff-approved-native'),
+      eq(aiDraftGeneration.status, 'succeeded'),
+    )).limit(1);
+  const metrics = objectRecord(source?.metrics);
+  const attestation = objectRecord(metrics.staffQuoteAttestation);
+  const revisions = objectRecord(metrics.reservationistResult).quoteRevisions;
+  if (attestation.kind !== 'staff_approved_quote' || attestation.transportId !== run.transportId ||
+    attestation.userId !== userId || attestation.threadId !== run.threadId ||
+    attestation.messageId !== run.triggerMessageId || attestation.sourceHash !== request.data.input.sourceHash ||
+    attestation.inputDigest !== result.inputDigest || !Array.isArray(attestation.revisionIds) ||
+    !attestation.revisionIds.includes(result.revisionRef) || typeof attestation.authorizationId !== 'string' ||
+    !attestation.authorizationId || !Array.isArray(revisions)) return false;
+  const matching = revisions.map(objectRecord).filter((revision) => revision.id === result.revisionRef);
+  return matching.length === 1 && matching[0]!.propertyCode === 'HRDAV' &&
+    matching[0]!.authorizationId === attestation.authorizationId;
+}
+
 function quoteResultHasPrice(result: Record<string, unknown> | null): boolean {
   return Boolean(result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result));
 }
@@ -4421,11 +4461,13 @@ async function latestStaffQuoteRunFor(
   const reusable = async (run: AiWorkflowRun) => {
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
-    // A pane cannot safely use a price whose actual property is unknown or contradictory.
+    // Require the priced property's evidence, with a bound-revision recovery for old Da Vinci staff quotes.
     const propertyCode = quoteRunPropertyEvidence(run).code;
-    if (quoteResultHasPrice(run.readResult) && (!propertyCode ||
-      !(await quotePropertyMatchesOrigin({ db, transportId: run.transportId, threadId: run.threadId,
-        messageId: run.triggerMessageId ?? undefined, propertyCode })))) return false;
+    if (quoteResultHasPrice(run.readResult)) {
+      if (!propertyCode && !(await legacyDavinciQuoteHasBoundRevision(db, run, userId, quoteInput))) return false;
+      if (propertyCode && !(await quotePropertyMatchesOrigin({ db, transportId: run.transportId, threadId: run.threadId,
+        messageId: run.triggerMessageId ?? undefined, propertyCode }))) return false;
+    }
     const stored = run.readResult as { status?: unknown } | null;
     if (stored?.status === 'ready') return true;
     return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);
@@ -4446,6 +4488,7 @@ async function latestStaffQuoteRunFor(
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
+      parsed.data.input.sourceHash === quoteInput.sourceHash &&
       // Admission binds a Centurion run to the current extraction. A stale queued
       // run, or its eventual refusal, cannot answer a later read of this mail.
       (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&

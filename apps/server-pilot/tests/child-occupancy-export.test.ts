@@ -216,6 +216,9 @@ describe('stored quote export and draft occupancy', () => {
     expect((await api.quotePdfJob(cachedInput))?.result).toEqual(artifact);
     await expect(api.qualifiedQuoteProposalPdf(uncached)).rejects.toThrow('GOTENBERG_URL missing');
     expect((await api.quoteWorkbook(uncached)).xlsxBase64).toBeTruthy();
+    const override = () => api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' });
+    const overrideHold = { code: 'PRECONDITION_FAILED', message: 'Prepare the PDF from the reviewed quotation instead.' };
+    await expect(override()).rejects.toMatchObject(overrideHold);
 
     setThreadHotel('HRDAV');
     expect((await api.qualifiedProposalChoices(choiceInput)).choices).toHaveLength(0);
@@ -223,10 +226,11 @@ describe('stored quote export and draft occupancy', () => {
       () => api.quotePdfJob(cachedInput),
       () => api.qualifiedQuoteProposalPdf(uncached),
       () => api.quoteWorkbook(uncached),
-      () => api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }),
     ]) {
       await expect(attempt()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringMatching(/hotel.*changed/i) });
     }
+    // Direct Centurion overrides are held even before the origin recheck because they lack a durable PDF job.
+    await expect(override()).rejects.toMatchObject(overrideHold);
     await expect(draftQuoteOccupancyHold(db, { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1',
       result: run.metrics.reservationistResult })).resolves.toMatch(/hotel.*changed/i);
   });

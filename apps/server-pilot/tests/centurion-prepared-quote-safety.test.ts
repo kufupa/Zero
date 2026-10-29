@@ -4,6 +4,7 @@ import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-wor
 import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import type { DB } from '../src/db/client.js';
 import { DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 
 const input = staffQuoteInput.parse({
   messageId: 'message-1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
@@ -15,7 +16,7 @@ const input = staffQuoteInput.parse({
   parties: { agency: { kind: 'agency', nativeId: 'A123', name: 'Example Agency' } },
 });
 
-function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, contract: boolean) {
+function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, contract: boolean, includeProperty = true) {
   const now = new Date();
   return {
     id, transportId, threadId: 'thread-1', triggerMessageId: input.messageId,
@@ -24,6 +25,7 @@ function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, co
     readRequest: { kind: 'staff_quote', input: quote },
     readResult: {
       kind: 'staff_quote', status: 'ready', asOf: now.toISOString(), totalMinor: 100_000,
+      ...(includeProperty ? { propertyCode: transportId === TRANSPORT_ID ? 'HRCEN' : 'HRDAV' } : {}),
       rateOptions: [{ selected: true, contract }],
     },
     readResultExpiresAt: new Date(now.getTime() + 60_000),
@@ -65,8 +67,11 @@ function autoStart(transportId: string) {
 beforeEach(() => {
   vi.stubEnv('HMS_JOB_QUEUE', 'on');
   vi.stubEnv('HMS_QUOTE_PREPARE', 'on');
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+    selectedFound: true, selected: { toAddresses: ['centurion@legacyhotels.co.za'] }, inbounds: [],
+  });
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; vi.unstubAllEnvs(); });
 
 describe('prepared quote reuse', () => {
   it.each([
@@ -120,7 +125,8 @@ describe('prepared quote reuse', () => {
         if (table === message) {
           messageRead += 1;
           const rows = messageRead === 1 ? [{ id: selected.messageId, messageIdHeader: 'copy@example.test' }]
-            : messageRead === 2 ? [{ id: source.messageId }, { id: selected.messageId }] : [];
+            : messageRead === 2 ? [{ id: source.messageId }, { id: selected.messageId }]
+            : messageRead === 3 ? [{ threadId: 'selected-thread' }] : [];
           return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
         }
         if (table === aiWorkflowRun) return { where: () => ({ orderBy: async () => [run] }) };
@@ -167,7 +173,7 @@ describe('prepared quote reuse', () => {
     const centurion = preparedRun('cen', TRANSPORT_ID, input, false);
     const davinci = preparedRun('dav', DAVINCI_TRANSPORT_ID, {
       ...input, groups: [{ ...input.groups[0]!, childrenPerRoom: undefined }],
-    }, false);
+    }, false, false);
     const held = await readHmsJobView({ transportId: TRANSPORT_ID, runId: centurion.id }, quoteDb([centurion]));
     expect(held).toMatchObject({ status: 'failed', result: { ok: false } });
     expect(held?.result).not.toHaveProperty('totalMinor');

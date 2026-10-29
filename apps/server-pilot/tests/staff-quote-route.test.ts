@@ -6,7 +6,7 @@ import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quot
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
 import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import { mailExtractionPayloadSchema } from '../src/ai/extraction/schema.js';
-import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
+import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH, HMS_JOB_PRIORITY_USER, queueAutoStaffQuoteHmsJob } from '../src/ai/hms-jobs.js';
 import { claimNextAiRun } from '../src/ai/run-ledger.js';
 import { executeAiRun } from '../src/ai/worker.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
@@ -385,7 +385,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       return { request, api, quote, proposal };
     }
 
-    it('invalidates a quote and PDF when an unedited case relinks to a changed analysis', async () => {
+    it('holds a Centurion quote and PDF when a newer analysis has not been reconciled', async () => {
       await withSeededTestDb(async (db) => {
         const { request, api, proposal } = await readyQuoteForPdf(db);
         const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
@@ -401,7 +401,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const relinked = await ensureWorkItemForMessage(db, {
           transportId: request.mail.transportId, messageId: request.mail.id,
         });
-        expect(relinked).toMatchObject({ id: request.workItemId, extractionId: newRead!.id });
+        expect(relinked).toMatchObject({ id: request.workItemId, extractionId: request.input.sourceExtractionId });
+        expect(await api.workItems.open({ internetMessageId: request.internetMessageId })).toMatchObject({
+          workItemId: request.workItemId, extractionId: request.input.sourceExtractionId,
+          sourceRead: { extractionId: newRead!.id }, analysis: { caseActionsUncertain: true },
+        });
         await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
         await expect(api.workstation.qualifiedQuoteProposalPdf(proposal)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       });
@@ -416,8 +420,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         ));
         expect(job?.readRequest).toMatchObject({ workItemId: request.workItemId,
           proposal: { workItemId: request.workItemId } });
-        await expect(api.workstation.quotePdfJob({ workItemId: request.workItemId, revisionRef: quote.revisionRef,
-          company: '', agency: '' })).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
+        const poll = { workItemId: request.workItemId, revisionRef: quote.revisionRef, company: '', agency: '' };
+        await expect(api.workstation.quotePdfJob(poll)).resolves.toBeNull();
+        await expect(api.workstation.quotePdfJob({ ...poll, sourceContact: proposal.sourceContact,
+          contactOverrides: proposal.contactOverrides })).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
       });
     });
 
@@ -433,7 +439,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const setProposal = (value: Record<string, unknown>) => db.update(aiWorkflowRun)
           .set({ readRequest: { ...savedRequest, proposal: value } }).where(eq(aiWorkflowRun.id, job!.id));
         const poll = () => api.workstation.quotePdfJob({ workItemId: request.workItemId,
-          revisionRef: quote.revisionRef, company: '', agency: '' });
+          revisionRef: quote.revisionRef, company: '', agency: '', sourceContact: proposal.sourceContact,
+          contactOverrides: proposal.contactOverrides });
         await setProposal(legacyProposal);
         await expect(poll()).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
         const preflight = () => api.workstation.quoteDraftPreflight({ messageId: request.mail.id,
@@ -1412,6 +1419,65 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     });
 
+    it.each([
+      ['matching bound revision', 'current', true],
+      ['different priced property', 'other-property', false],
+      ['different approved user', 'other-user', false],
+      ['different source content', 'other-source', false],
+      ['changed current source', 'changed-current-source', false],
+      ['missing bound revision', 'missing', false],
+      ['unknown reported property', 'unknown-property', false],
+      ['expired price', 'expired', false],
+    ])('legacy HRDAV staff quote: %s', async (_description, change, reusable) => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db, 'HRDAV');
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'on');
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
+        const request = await seedRequest(db, 'transport-davinci');
+        const quote = await caller('transport-davinci', FAITH_USER_ID).workstation.executeStaffQuote(request.input);
+        const { propertyCode: _newField, ...oldSummary } = quote;
+        const { run } = await enqueueHmsJob({
+          transportId: request.mail.transportId, threadId: request.mail.threadId, triggerMessageId: request.mail.id,
+          workItemId: request.workItemId, userId: FAITH_USER_ID, priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `legacy-davinci-quote:${randomUUID()}`,
+          request: { kind: 'staff_quote', input: request.input },
+        }, db);
+        const asOf = change === 'expired' ? new Date(Date.now() - 48 * 60 * 60_000) : new Date();
+        await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: new Date(),
+          readResultExpiresAt: new Date(Date.now() + 60_000), readResult: {
+            ...oldSummary, kind: 'staff_quote', asOf: asOf.toISOString(),
+            ...(change === 'missing' ? { workflowRunId: 'missing-bound-revision' } : {}),
+            ...(change === 'unknown-property' ? { propertyCode: 'UNKNOWN' } : {}),
+          } }).where(eq(aiWorkflowRun.id, run.id));
+        if (change === 'other-property' || change === 'other-user' || change === 'other-source') {
+          const [source] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, quote.workflowRunId));
+          const metrics = structuredClone(source!.metrics!) as Record<string, unknown>;
+          const attestation = metrics.staffQuoteAttestation as Record<string, unknown>;
+          const reservationist = metrics.reservationistResult as { quoteRevisions: Array<Record<string, unknown>> };
+          if (change === 'other-property') reservationist.quoteRevisions[0]!.propertyCode = 'HRCEN';
+          if (change === 'other-user') attestation.userId = 'other-user';
+          if (change === 'other-source') attestation.sourceHash = 'f'.repeat(64);
+          await db.update(aiWorkflowRun).set({ metrics }).where(eq(aiWorkflowRun.id, quote.workflowRunId));
+        }
+        let currentInput = request.input;
+        if (change === 'changed-current-source') {
+          const [changed] = await db.update(message).set({ textBody: 'Please quote these revised synthetic details.' })
+            .where(eq(message.id, request.mail.id)).returning();
+          currentInput = { ...request.input, sourceHash: staffQuoteSourceHash(changed!) };
+        }
+        const attempted = await queueAutoStaffQuoteHmsJob({
+          transportId: request.mail.transportId, threadId: request.mail.threadId, triggerMessageId: request.mail.id,
+          workItemId: request.workItemId, userId: FAITH_USER_ID, priority: HMS_JOB_PRIORITY_USER,
+          request: { kind: 'staff_quote', input: currentInput },
+        }, db);
+        expect(attempted.created).toBe(!reusable);
+        if (reusable) expect(attempted.run.id).toBe(run.id);
+        else expect(attempted.run.id).not.toBe(run.id);
+      });
+    });
+
     it('queues all five DV transports to HRDAV when the flag is on and leaves Centurion on HRCEN', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
@@ -1464,3 +1530,38 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     });
   },
 );
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff quote reuse source binding', () => {
+  it.each([
+    ['HRCEN', 'transport-centurion', 'user-ropperman'],
+    ['HRDAV', 'transport-davinci', FAITH_USER_ID],
+  ])('starts a fresh %s quote when the stored email changes', async (property, transportId, userId) => {
+    await withSeededTestDb(async (db) => {
+      installFixture(db, property);
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'on');
+      vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+      vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
+      const request = await seedRequest(db, transportId);
+      const quote = await caller(transportId, userId).workstation.executeStaffQuote(request.input);
+      const jobInput = { transportId, threadId: request.mail.threadId, triggerMessageId: request.mail.id,
+        workItemId: request.workItemId, userId, priority: HMS_JOB_PRIORITY_USER,
+        request: { kind: 'staff_quote' as const, input: request.input } };
+      const { run } = await enqueueHmsJob({ ...jobInput, idempotencyKey: `staff-quote-source:${randomUUID()}` }, db);
+      await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: new Date(),
+        readResultExpiresAt: new Date(Date.now() + 60_000), readResult: {
+          ...quote, kind: 'staff_quote', asOf: new Date().toISOString(),
+        } }).where(eq(aiWorkflowRun.id, run.id));
+      expect(await queueAutoStaffQuoteHmsJob(jobInput, db)).toMatchObject({ created: false, run: { id: run.id } });
+
+      const [changed] = await db.update(message).set({ textBody: 'Please quote the same rooms and revised details.' })
+        .where(eq(message.id, request.mail.id)).returning();
+      const changedInput = { ...request.input, sourceHash: staffQuoteSourceHash(changed!) };
+      expect(changedInput.sourceHash).not.toBe(request.input.sourceHash);
+      const next = await queueAutoStaffQuoteHmsJob({ ...jobInput,
+        request: { kind: 'staff_quote', input: changedInput } }, db);
+      expect(next.created).toBe(true);
+      expect(next.run.id).not.toBe(run.id);
+    });
+  });
+});
