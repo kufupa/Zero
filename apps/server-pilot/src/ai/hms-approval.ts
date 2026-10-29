@@ -23,10 +23,10 @@ import {
 /**
  * Server-made, single-use, state-bound approvals for HMS writes (R14, KTD11, KTD12).
  *
- * - approveHmsWrite is the only producer of approval.granted. It recomputes the form digest from stored
- *   work-item state and takes the HMS before-state digest from the snapshot, then enqueues one hms_write run
- *   in the same transaction.
- * - consumeHmsWriteApproval is the only consumer. The run's lease must still be held, and the grant must
+ * - approveHmsWrite recomputes the form digest from stored work-item state and takes the HMS before-state digest
+ *   from the snapshot, then enqueues one hms_write run in the same transaction. Create plans use the same
+ *   append-only grant/consumption events, with their own property-wide create claim.
+ * - consumeHmsWriteApproval consumes these before-state grants. The run's lease must still be held, and the grant must
  *   verify, be under 30 minutes old, match the current form, and be unused.
  * - assertHmsUnchangedBeforeSave is the last check before Save. A mismatch dead-letters the run to needs-check.
  * - hms_write runs are never reclaimed by claimNextAiRun. sweepLostHmsWriteLeases turns a lost lease into
@@ -235,9 +235,25 @@ async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<st
   return resolved ? null : latest.id;
 }
 
-async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
+export async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
   await assertNoWriteInFlight(db, workItemId);
   if (await unresolvedNeedsCheckRunId(db, workItemId)) throw new HmsApprovalError('needs_check_open');
+}
+
+/** A create claim or uncertain receipt also blocks a different write on the same case. */
+function paneCreateNeedsCheck(state: Record<string, unknown>): boolean {
+  const claims = state.paneStaySaveClaims;
+  if (claims !== undefined && (!claims || typeof claims !== 'object' || Array.isArray(claims) || Object.keys(claims).length)) return true;
+  const stays = state.stays;
+  if (stays === undefined) return false;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return true;
+  return Object.values(stays).some((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const stay = raw as Record<string, unknown>;
+    if (stay.status === 'unknown') return true;
+    return stay.status === 'booked' && (typeof stay.confirmationNumber !== 'string' ||
+      !/^\d{6,10}-\d{1,2}$/.test(stay.confirmationNumber));
+  });
 }
 
 async function recordNeedsCheck(
@@ -408,6 +424,7 @@ export async function approveHmsWrite(input: {
     if (!item) throw new HmsApprovalError('not_found');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
+    if (paneCreateNeedsCheck(item.state)) throw new HmsApprovalError('needs_check_open');
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }

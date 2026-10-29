@@ -9,10 +9,10 @@ import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { assertReservationistResultFreshForAction } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
-import { hmsStateDigest } from './hms-approval.js';
+import { assertNoOpenWrite, hmsStateDigest } from './hms-approval.js';
 import { paneStayDigest, PANE_PREVIEW_TTL_MS } from './pane-stay-save.js';
 import { stayPreviewGrantOf, stayPreviewOf } from './pane-stay-preview-persist.js';
-import { staffQuoteSourceHash, type StaffQuoteAttestation } from './staff-quote-workflow.js';
+import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { stayCommitOf } from './work-items.js';
 
 const PLAN_KEY = 'hmsCreatePlan';
@@ -45,6 +45,16 @@ export const prepareHmsCreatePlanInput = z.object({
   quoteRunId: requiredText(200), revisionId: requiredText(200), groupId: requiredText(200),
   previewDigest: z.string().regex(DIGEST), stay: hmsCreateStayInput,
 }).strict();
+const staffQuoteAttestation = z.object({
+  version: z.literal(1), kind: z.literal('staff_approved_quote'), transportId: requiredText(200),
+  userId: requiredText(200), threadId: requiredText(200), messageId: requiredText(200),
+  sourceHash: z.string().regex(DIGEST), authorizationId: requiredText(200), revisionIds: z.array(z.string()).min(1),
+  rowPrices: z.array(z.unknown()).optional(), dinnerAddOnRequired: z.boolean().optional(),
+}).passthrough();
+const quoteResult = z.object({
+  quoteRevisionIds: z.array(z.string()), quoteRevisions: z.array(z.record(z.unknown())),
+  proposalFacts: z.array(z.unknown()).optional(),
+}).passthrough();
 export type HmsCreatePlanInput = z.input<typeof prepareHmsCreatePlanInput>;
 type ParsedInput = z.output<typeof prepareHmsCreatePlanInput>;
 
@@ -129,6 +139,7 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   if (item.status === 'done' || item.status === 'dismissed') refuse('work_item_closed');
   if (item.kind !== 'quote' && item.kind !== 'booking') refuse('case_not_supported');
   if (!item.threadId || !item.sourceMessageId) refuse('source_mail_missing');
+  await assertNoOpenWrite(db, item.id);
   const property = resolvePropertyTransport(item.transportId);
   if (property.kind !== 'property' || property.property.propertyCode !== 'HRCEN') refuse('property_unsupported');
   const propertyCode = property.property.propertyCode;
@@ -151,14 +162,16 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
     eq(aiWorkflowRun.threadId, item.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
   )).limit(1);
-  const attestation = run?.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
-  const result = run?.metrics?.reservationistResult as { quoteRevisionIds?: string[]; quoteRevisions?: QuoteRevision[]; proposalFacts?: unknown[] } | undefined;
-  if (!run || attestation?.version !== 1 || attestation.kind !== 'staff_approved_quote' ||
-      attestation.transportId !== item.transportId || attestation.threadId !== item.threadId ||
-      attestation.messageId !== run.triggerMessageId || !attestation.revisionIds?.includes(input.revisionId) ||
-      !result?.quoteRevisionIds?.includes(input.revisionId)) refuse('quote_not_found');
+  const parsedAttestation = staffQuoteAttestation.safeParse(run?.metrics?.staffQuoteAttestation);
+  const parsedResult = quoteResult.safeParse(run?.metrics?.reservationistResult);
+  if (!run || !parsedAttestation.success || !parsedResult.success) refuse('quote_not_found');
+  const attestation = parsedAttestation.data;
+  const result = parsedResult.data;
+  if (attestation.transportId !== item.transportId || attestation.threadId !== item.threadId ||
+      attestation.messageId !== run.triggerMessageId || !attestation.revisionIds.includes(input.revisionId) ||
+      !result.quoteRevisionIds.includes(input.revisionId)) refuse('quote_not_found');
   if (attestation.rowPrices?.length || attestation.dinnerAddOnRequired || result.proposalFacts?.length) refuse('quote_extra_not_supported');
-  const revisions = Array.isArray(result.quoteRevisions) ? result.quoteRevisions.filter((row) => row?.id === input.revisionId) : [];
+  const revisions = result.quoteRevisions.filter((row) => row.id === input.revisionId) as unknown as QuoteRevision[];
   if (revisions.length !== 1 || revisions[0]!.authorizationId !== attestation.authorizationId || revisions[0]!.propertyCode !== propertyCode) {
     refuse('quote_not_found');
   }

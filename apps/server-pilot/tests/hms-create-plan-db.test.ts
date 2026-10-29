@@ -5,6 +5,7 @@ import type { DB } from '../src/db/client.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { consumeHmsCreatePlan, loadHmsCreatePlan, prepareHmsCreatePlan } from '../src/ai/hms-create-plan.js';
+import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
@@ -65,6 +66,7 @@ describe('durable create-plan approval', () => {
       await expect(consumeHmsCreatePlan(db, { ...ref, actorUserId: scope.actorUserId, claimId: randomUUID() }, PLAN_NOW))
         .rejects.toThrow('claim_missing');
       const claimId = await claim(db, itemId);
+      await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW })).rejects.toMatchObject({ refusal: 'needs_check_open' });
       const attempts = await Promise.allSettled([1, 2].map(() => consumeHmsCreatePlan(db,
         { ...ref, actorUserId: scope.actorUserId, claimId }, PLAN_NOW)));
       expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
@@ -112,6 +114,16 @@ describe('durable create-plan approval', () => {
       await db.update(workItem).set({ revisionSeq: 1 }).where(eq(workItem.id, itemId));
       await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: second.plan.id,
         digest: second.digest, claimId }, PLAN_NOW)).rejects.toThrow('plan_expired_or_changed');
+    });
+  });
+
+  it('refuses a create plan while the existing HMS write runner is in flight', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId, input } = await seed(db);
+      await db.insert(aiWorkflowRun).values({ id: 'hms-write-1', transportId: scope.transportId, threadId: 'thread-1',
+        triggerMessageId: 'selected-message', runKind: 'hms_write', idempotencyKey: 'hms-write:fixture',
+        modelId: 'none', promptVersion: 'hms-write/1', state: 'queued', workItemId: itemId });
+      await expect(prepareHmsCreatePlan(db, scope, input, PLAN_NOW)).rejects.toMatchObject({ refusal: 'write_in_flight' });
     });
   });
 });
