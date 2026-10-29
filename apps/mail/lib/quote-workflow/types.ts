@@ -248,8 +248,6 @@ export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'in
 
 export type QuoteAnalysis = {
   intent: QuoteIntent;
-  /** Saved corrections still point at an older read of this email. */
-  caseActionsUncertain?: boolean;
   groups: StayGroupRequirement[];
   /** The saved case is pinned to a different or unavailable source read. */
   caseActionsUncertain?: boolean;
@@ -902,7 +900,7 @@ export type QuoteSessionAction =
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
   | { type: 'analysis_unsynced' }
   | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }
-  | { type: 'analysis_failed'; message: string }
+  | { type: 'analysis_failed'; message: string; hold?: true }
   | { type: 'handle_review_item'; itemId: string }
   | { type: 'unhandle_review_item'; itemId: string }
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }

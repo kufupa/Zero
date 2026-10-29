@@ -445,6 +445,30 @@ describe('useStoredWork', () => {
     expect(result.current.key).not.toBe(failedKey);
   });
 
+  it('keeps a malformed source held across retry and treat-as', async () => {
+    const { trpc } = fakeTrpc(() => ({ status: 'failed', reason: 'Review manually.', hold: true }));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-invalid' }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'failed', hold: true }));
+    act(() => result.current.retry());
+    expect(result.current.pane).toMatchObject({ state: 'failed', hold: true });
+    expect(storedDecision(result.current.pane, true)).toEqual({ kind: 'failed', reason: 'Review manually.' });
+  });
+
+  it('accepts a late source hold after the stored lookup times out', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let finish!: (value: unknown) => void;
+      const { trpc } = fakeTrpc(() => new Promise((resolve) => { finish = resolve; }));
+      const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-late-invalid' }));
+      act(() => vi.advanceTimersByTime(STORED_LOOKUP_TIMEOUT_MS));
+      expect(result.current.pane.state).toBe('reading');
+      await act(async () => { finish({ status: 'failed', reason: 'Review manually.', hold: true }); });
+      expect(result.current.pane).toMatchObject({ state: 'failed', hold: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gives up on a stored read that is slow and reads live', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

@@ -64,7 +64,7 @@ function setRecoveryMarked(key: string, marked: boolean): void {
 export type StoredPane =
   | { state: 'loading' }
   | { state: 'reading' }
-  | { state: 'failed'; reason: string }
+  | { state: 'failed'; reason: string; hold?: true }
   | {
       state: 'ready';
       analysis: QuoteAnalysis;
@@ -102,6 +102,7 @@ export type StoredDecision =
  */
 export function storedDecision(pane: StoredPane, overridden: boolean): StoredDecision {
   // A live re-read cannot clear a server conflict or a pinned older extraction.
+  if (pane.state === 'failed' && pane.hold) return { kind: 'failed', reason: pane.reason };
   if (pane.state === 'ready' && (pane.sourceConflict || pane.analysis.caseActionsUncertain)) {
     return { kind: 'ready', analysis: pane.analysis };
   }
@@ -752,9 +753,9 @@ export function useStoredWork(args: {
     const { activeTransportId: transportId, userId } = getMailCacheScope();
     const settle = (result: LookupResult) => {
       if (!current || settled) return;
-      // A timeout starts the live read. Only a late ready payload can supersede that fallback; a late miss or
-      // transport failure leaves the current live-read state alone and keeps Retry available there.
-      if (timedOut && result.status !== 'ready') {
+      // A timeout starts the live read. A late ready payload or an explicit source hold supersedes that fallback;
+      // a late miss or transport failure leaves the live-read state alone and keeps Retry available there.
+      if (timedOut && result.status !== 'ready' && !(result.status === 'failed' && result.hold)) {
         settled = true;
         return;
       }
@@ -816,8 +817,8 @@ export function useStoredWork(args: {
       fieldProvenance: provenanceOf(stored),
       refs: stored.refs,
     };
-  } else if (stored?.status === 'failed' && retried === 0) {
-    pane = { state: 'failed', reason: stored.reason };
+  } else if (stored?.status === 'failed' && (retried === 0 || stored.hold)) {
+    pane = { state: 'failed', reason: stored.reason, ...(stored.hold ? { hold: true as const } : {}) };
   } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
   else pane = { state: 'loading' };
 

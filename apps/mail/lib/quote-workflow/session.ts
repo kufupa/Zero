@@ -2269,19 +2269,27 @@ export function reduceQuoteSession(
       };
     }
     case 'analysis_failed': {
+      // A corrupt stored source may arrive after a live read or quote. Keep staff's fields, but invalidate every
+      // derived result and keep the case blocked even if a late live read finishes.
+      const held = action.hold
+        ? heldCaseAnalysis(session.analysis ?? { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] }, null)
+        : session.analysis;
       const failed = {
         id: 'analysis-failed',
         kind: 'analysis_failure' as const,
         rank: 'unread_source' as const,
         text: action.message,
         sourceLabel: 'This email',
-        blocking: false,
+        blocking: action.hold === true,
       };
       return {
-        ...session,
+        ...(action.hold ? clearDownstream(session) : session),
         phase: 'failed',
         errorMessage: action.message,
-        reviewItems: projectQuoteReviewItems(session.analysis, session.groups, [failed], session.staffActions),
+        analysis: held,
+        ...(action.hold ? { inputRevision: session.inputRevision + 1, reviewedReplyHtml: '',
+          reviewedReplySource: undefined, reviewedReplyEdited: false } : {}),
+        reviewItems: projectQuoteReviewItems(held, session.groups, [failed], session.staffActions),
       };
     }
     case 'review_documents_failed': {

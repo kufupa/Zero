@@ -218,6 +218,24 @@ describe('quote session', () => {
     expect(changed.selectedOfferIds).toEqual([]);
     expect(canCreateNativeDraft(changed)).toBe(false);
   });
+
+  it('invalidates prices and holds the case if a late stored source is malformed', () => {
+    const ready = reduceQuoteSession({ ...initialQuoteSession(), binding: bind() }, { type: 'analysis_ready', analysis: quoteAnalysis });
+    const quoted = { ...ready, pdf: { fileName: 'old.pdf', bytesBase64: 'JVBERi0=' },
+      selectedOfferIds: ['old'], offers: [authorisedOffer], reviewedReplyHtml: 'old reply' };
+    const held = reduceQuoteSession(quoted, { type: 'analysis_failed', message: 'Review manually.', hold: true });
+    expect(held.groups).toEqual(quoted.groups);
+    expect(held.analysis?.caseActionsUncertain).toBe(true);
+    expect(held.inputRevision).toBe(quoted.inputRevision + 1);
+    expect(held.pdf).toBeNull();
+    expect(held.offers).toEqual([]);
+    expect(held.reviewedReplyHtml).toBe('');
+    expect(held.reviewItems).toContainEqual(expect.objectContaining({ kind: 'analysis_failure', blocking: true }));
+    expect(canCreateNativeDraft(held)).toBe(false);
+    const late = reduceQuoteSession(held, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(late.analysis?.caseActionsUncertain).toBe(true);
+    expect(canCreateNativeDraft(late)).toBe(false);
+  });
   it('does not tick shuttle for a bank transfer, but does for an airport transfer', () => {
     const analysisWith = (request: string) => ({
       ...quoteAnalysis,

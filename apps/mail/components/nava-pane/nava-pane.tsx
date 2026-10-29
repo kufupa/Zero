@@ -732,7 +732,8 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const sourceHeld = storedWork.pane.state === 'ready' && storedWork.pane.analysis.caseActionsUncertain === true;
+  const sourceHeld = (storedWork.pane.state === 'ready' && storedWork.pane.analysis.caseActionsUncertain === true) ||
+    (storedWork.pane.state === 'failed' && storedWork.pane.hold === true);
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
@@ -1031,7 +1032,7 @@ export function NavaPane({
   const storedCaseGate = storedWork.pane.state === 'ready'
     ? `${storedWork.pane.extractionId}|${storedWork.pane.sourceRead?.extractionId ?? ''}|${storedWork.pane.sourceRead?.kind ?? ''}|${Boolean(storedWork.pane.sourceConflict)}|${Boolean(storedWork.pane.analysis.caseActionsUncertain)}`
     : '';
-  const storedGate = storedOverridden
+  const storedGate = storedOverridden && !(storedWork.pane.state === 'failed' && storedWork.pane.hold)
     ? `override|${storedWork.retryCount}|${storedWork.historyEpoch}|${storedCaseGate}`
     : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}|${storedCaseGate}`;
   useEffect(() => {
@@ -1076,7 +1077,8 @@ export function NavaPane({
       }
     } else if (decision.kind === 'failed') {
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
-      dispatchQuote({ type: 'analysis_failed', message: decision.reason });
+      dispatchQuote({ type: 'analysis_failed', message: decision.reason,
+        ...(pane.state === 'failed' && pane.hold ? { hold: true } : {}) });
     }
     let cancelled = false;
     if (decision.kind === 'live') void bindAnalyseSelection({
@@ -2681,7 +2683,7 @@ export function NavaPane({
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
-              onRetryRead={storedWork.retry}
+              onRetryRead={storedWork.pane.state === 'failed' && storedWork.pane.hold ? undefined : storedWork.retry}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
                   editStayRows(action);

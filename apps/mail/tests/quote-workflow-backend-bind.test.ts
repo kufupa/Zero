@@ -112,6 +112,18 @@ describe('quote workflow backend bind', () => {
     expect(open.mutate).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps a source hold discovered while opening a previously valid read', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-old', refs: {},
+      analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    const held = { status: 'failed' as const, reason: 'Review this request manually.', hold: true as const };
+    expect(await bindStoredWork({ query: { query: async () => stored }, open: { mutate: async () => held },
+      internetMessageId: 'mail' })).toEqual(held);
+  });
+
   it('reports unavailable when analyseSelection is not on the client', async () => {
     const result = await bindAnalyseSelection({
       input: {

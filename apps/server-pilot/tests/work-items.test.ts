@@ -219,6 +219,45 @@ function centurionCaller(activeTransportId = CENTURION) {
 }
 
 describe('stored read for the pane', () => {
+  it('holds a malformed latest Centurion read without moving or dismissing saved work', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'invalid-latest');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const opened = await readyWork(db, 'invalid-latest');
+      const path = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`;
+      await centurionCaller().workItems.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: path, value: 3 });
+      const [before] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const events = await eventsFor(db, opened.workItemId);
+      const latest = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      const lookup = { transportId: CENTURION, internetMessageId: '<invalid-latest@example.com>' };
+
+      for (const bad of [
+        { kind: 'booking', payload: {} },
+        { kind: 'quote', payload: null },
+        { kind: null, payload: payload() },
+      ] as const) {
+        await db.update(mailExtraction).set(bad).where(eq(mailExtraction.id, latest));
+        for (const read of [await storedWorkFor(db, lookup), await openStoredWork(db, lookup)]) {
+          expect(read).toMatchObject({ status: 'failed', hold: true, reason: expect.stringContaining('manually') });
+        }
+        expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId })).toBeNull();
+        expect(await workItemIdForMail(db, lookup)).toBeNull();
+        await expect(centurionCaller().workItems.recordEvent({ workItemId: opened.workItemId,
+          type: 'field.edit', fieldPath: path, value: 4 })).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(before);
+        expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+        expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(1);
+      }
+
+      const unopenedId = await seedMail(db, 'invalid-unopened');
+      await insertRead(db, unopenedId, { version: 'extract-v1', payload: null });
+      const unopened = { transportId: CENTURION, internetMessageId: '<invalid-unopened@example.com>' };
+      expect(await openStoredWork(db, unopened)).toMatchObject({ status: 'failed', hold: true });
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: unopenedId })).toBeNull();
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, unopenedId))).toHaveLength(0);
+    }));
+
   it('holds an older Centurion source and does not project saved data when that source is missing or invalid', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'held-source');

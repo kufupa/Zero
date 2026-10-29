@@ -1189,6 +1189,8 @@ export async function ensureWorkItemForMessage(
     .limit(1);
   const latest = await succeededRead(db, input.messageId);
   if (!msg || !latest || latest.kind === 'spam') return null;
+  // A corrupt Centurion read cannot be used to create, restore or dismiss work.
+  if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) return null;
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
@@ -1762,7 +1764,7 @@ export type FieldProvenance = Record<string, { source: FieldProvenanceSource; va
 
 export type StoredWork =
   | { status: 'none' }
-  | { status: 'failed'; reason: string }
+  | { status: 'failed'; reason: string; hold?: true }
   | {
       status: 'ready';
       /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
@@ -1806,12 +1808,28 @@ export type StoredWork =
       translation: StoredTranslation;
     };
 
-async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
+const INVALID_CENTURION_READ: StoredWork = {
+  status: 'failed',
+  reason: 'Nava could not use the saved email read. Review this request manually.',
+  hold: true,
+};
+
+async function failureFor(db: DB, messageId: string, transportId: string): Promise<StoredWork> {
+  // succeededRead returns null for a missing kind or payload. Do not mistake that corrupt success for no read.
+  if (centurionSourceFence(transportId)) {
+    const [success] = await db.select({ kind: mailExtraction.kind, payload: mailExtraction.payload })
+      .from(mailExtraction)
+      .where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.status, 'succeeded')))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+    if (success && (!success.kind || !mailExtractionPayloadSchema.safeParse(success.payload).success)) {
+      return INVALID_CENTURION_READ;
+    }
+  }
   const [latest] = await db
     .select({ status: mailExtraction.status, usage: mailExtraction.usage })
     .from(mailExtraction)
     .where(eq(mailExtraction.messageId, messageId))
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!latest || latest.status !== 'failed') return { status: 'none' };
   const code = latest.usage?.failureReason;
@@ -2042,7 +2060,10 @@ export async function storedWorkFor(
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return failureFor(db, msg.id);
+  if (!latest) return failureFor(db, msg.id, input.transportId);
+  if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) {
+    return INVALID_CENTURION_READ;
+  }
   const sourceConflict = await priorKindConflict(db, {
     transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, latestKind: latest.kind,
   });
@@ -2070,7 +2091,10 @@ export async function openStoredWork(
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return failureFor(db, msg.id);
+  if (!latest) return failureFor(db, msg.id, input.transportId);
+  if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) {
+    return INVALID_CENTURION_READ;
+  }
   const sourceConflict = await priorKindConflict(db, {
     transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, latestKind: latest.kind,
   });
@@ -2373,6 +2397,7 @@ export async function workItemIdForMail(
   if (!msg) return null;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return null;
+  if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) return null;
   const [item] = await db
     .select({ id: workItem.id })
     .from(workItem)

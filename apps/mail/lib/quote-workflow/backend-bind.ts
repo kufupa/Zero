@@ -211,7 +211,7 @@ export type StoredSourceConflict = {
  */
 export type StoredWork =
   | { status: 'none' }
-  | { status: 'failed'; reason: string }
+  | { status: 'failed'; reason: string; hold?: true }
   | {
       status: 'ready';
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
@@ -356,7 +356,8 @@ export async function bindStoredWork(args: {
   try {
     const opening = pinned ? args.open.mutate(input, pinned) : args.open.mutate(input);
     const opened = await Promise.race([opening, late]);
-    return opened.status === 'ready' && (opened.workItemId || opened.sourceConflict || opened.analysis.caseActionsUncertain)
+    return (opened.status === 'failed' && opened.hold) ||
+      (opened.status === 'ready' && (opened.workItemId || opened.sourceConflict || opened.analysis.caseActionsUncertain))
       ? opened : stored;
   } catch {
     return stored;
