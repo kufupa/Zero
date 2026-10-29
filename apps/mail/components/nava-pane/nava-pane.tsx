@@ -603,6 +603,9 @@ export function NavaPane({
     quoteSession.treatAs,
     quoteSession.staffNote,
   );
+  // Until the property catalogue resolves, retain the stricter source tracking:
+  // a saved contact reset can happen while a Centurion party is already picked.
+  const verifyQuotePartySource = !activePaneConfig || activePaneConfig.propertyCode === HRCEN_PROPERTY_CODE;
   // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
@@ -610,7 +613,7 @@ export function NavaPane({
     internetMessageId: activeEmail?.internetMessageId ?? null,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
-    verifyQuotePartySource: activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
+    verifyQuotePartySource,
   });
   // Forward the source this pane actually read; HMS party picks remain separately editable.
   const quoteSourceBinding = storedWork.pane.state === 'ready'
@@ -620,7 +623,7 @@ export function NavaPane({
   const localQuotePartyEdit = useRef<string | null>(null);
   useLayoutEffect(() => {
     const binding = quoteSession.binding;
-    if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE || !binding) {
+    if (!verifyQuotePartySource || !binding) {
       previousQuoteSource.current = null;
       localQuotePartyEdit.current = null;
       return;
@@ -638,7 +641,7 @@ export function NavaPane({
       dispatchQuote({ type: 'quote_source_changed',
         ...(contact ? { sourceParty: { agency: contact.company, company: contact.endClient } } : {}) });
     }
-  }, [activePaneConfig?.propertyCode, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
+  }, [verifyQuotePartySource, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
     quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId,
     storedWork.saveError]);
   const isExistingStayInformation =
@@ -711,7 +714,7 @@ export function NavaPane({
       phone: null,
     };
     const contact = { ...previous, [field]: value };
-    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (field === 'company' || field === 'endClient')) {
+    if (verifyQuotePartySource && (field === 'company' || field === 'endClient')) {
       const binding = quoteSession.binding;
       localQuotePartyEdit.current = binding ? JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]) : null;
       dispatchQuote({ type: 'quote_source_changed', sourceParty: { agency: contact.company, company: contact.endClient } });
