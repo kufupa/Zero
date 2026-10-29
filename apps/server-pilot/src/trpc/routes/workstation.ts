@@ -846,6 +846,8 @@ export async function assertCurrentDraftQuotePdf(
 export async function assertDraftQuoteSourcesLocked(
   db: DB, scope: { transportId: string; threadId: string; messageId: string }, sources: DraftQuoteSource[],
 ): Promise<void> {
+  // Bound implicit FK and unique-index waits too; this setting ends with the enclosing transaction.
+  await db.execute(sql`set local lock_timeout = '1s'`);
   const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
   // The parent locks also prevent new messages, extractions, work items and approvals through their foreign keys.
   // Writers may already hold a child row before acquiring a parent FK lock. After the thread is locked,

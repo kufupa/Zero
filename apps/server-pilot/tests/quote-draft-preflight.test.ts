@@ -90,7 +90,8 @@ async function fixture() {
       }, for(mode: string) { transactionState.locks.push(mode); return Promise.resolve(rowsFor()); } };
     return query;
   };
-  const db = { transaction, select, selectDistinct: select, insert: () => ({ values: async () => undefined }) } as unknown as DB;
+  const db = { transaction, select, selectDistinct: select, execute: async () => undefined,
+    insert: () => ({ values: async () => undefined }) } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
     sourcePartyDigest: quoteSourcePartyDigest(payload, state), sourceExtractionId: 'extract-1',
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1', arrivalDate: '2027-10-20',
@@ -192,14 +193,25 @@ describe('priced draft preflight', () => {
     expect(transaction).toHaveBeenCalledOnce();
   });
 
-  it('asks staff to retry when a quote source is being updated', async () => {
+  it.each([
+    ['lock timeout', { cause: { code: '55P03' } }],
+    ['wrapped deadlock', { cause: { cause: { code: '40P01' } } }],
+  ])('asks staff to retry after a %s', async (_description, error) => {
     const { transaction } = await fixture();
-    transaction.mockRejectedValueOnce(Object.assign(new Error('wrapped lock'), { cause: { code: '55P03' } }));
+    transaction.mockRejectedValueOnce(error);
     await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
       replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
         lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.',
         });
+  });
+
+  it('does not label an unrelated draft database error as a quote hold', async () => {
+    const { transaction } = await fixture();
+    const error = Object.assign(new Error('unrelated transaction failure'), { cause: { code: '40P01' } });
+    transaction.mockRejectedValueOnce(error);
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'other' })).rejects.toThrow('unrelated transaction failure');
   });
 
   it('refuses a saved quote if source facts change during attachment staging', async () => {

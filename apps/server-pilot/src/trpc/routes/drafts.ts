@@ -76,8 +76,14 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 }
 
 function isPostgresLockUnavailable(err: unknown): boolean {
-  if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '55P03') return true;
-  return err instanceof Error && err.cause !== undefined && isPostgresLockUnavailable(err.cause);
+  const visited = new Set<object>();
+  while (err && typeof err === 'object' && !visited.has(err)) {
+    visited.add(err);
+    const { code, cause } = err as { code?: unknown; cause?: unknown };
+    if (code === '55P03' || code === '40P01') return true;
+    err = cause;
+  }
+  return false;
 }
 
 type InboundAttachmentIdentityReader = (input: {
@@ -1854,9 +1860,9 @@ export const draftsRouter = tRouter({
       };
       const quoteSources = quoteBound ? await assertCurrentDraftQuotePdf(preflightInput, ctx) : [];
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
+      const lockQuote = quoteBound && isCenturionQuoteTransport(transportId);
       try {
         return await db.transaction(async (tx) => {
-          const lockQuote = quoteBound && isCenturionQuoteTransport(transportId);
           if (lockQuote) await assertDraftQuoteSourcesLocked(tx as unknown as DB, {
             transportId, threadId: input.threadId, messageId: input.replyToMessageId,
           }, quoteSources);
@@ -1971,7 +1977,7 @@ export const draftsRouter = tRouter({
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
         });
       } catch (error) {
-        if (isPostgresLockUnavailable(error)) {
+        if (lockQuote && isPostgresLockUnavailable(error)) {
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.' });
         }
         if (isPostgresUniqueViolation(error)) {

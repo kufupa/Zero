@@ -15,6 +15,56 @@ import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE } from './helpers/tes
 const reachable = await probeTestDb();
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disposable PostgreSQL)', () => {
+  it('bounds a busy parent lock and leaves the connection timeout unchanged', async () => {
+    const saver = openTestDbSession(), writer = openTestDbSession();
+    const id = randomUUID(), transportId = `draft-lock-${id}`, threadId = `thread-${id}`, messageId = `message-${id}`;
+    const address = `${id}@example.invalid`;
+    let releaseWriter: (() => void) | undefined;
+    let writing: Promise<unknown> | undefined;
+    try {
+      await saver.db.insert(mailboxTransport).values({ id: transportId, email: address, ownerHeaderValue: address });
+      await saver.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+      await saver.db.insert(message).values({ id: messageId, transportId, threadId, direction: 'inbound',
+        messageIdHeader: address, fromAddress: 'sender@example.invalid' });
+      const before = await saver.db.execute(sql`show lock_timeout`);
+      let writerReady!: () => void, writerFailed!: (reason: unknown) => void;
+      const ready = new Promise<void>((resolve, reject) => { writerReady = resolve; writerFailed = reject; });
+      const released = new Promise<void>((resolve) => { releaseWriter = resolve; });
+      writing = writer.db.transaction(async (tx) => {
+        try {
+          await tx.select({ id: mailThread.id }).from(mailThread).where(eq(mailThread.id, threadId)).for('update');
+          writerReady();
+          await released;
+        } catch (error) { writerFailed(error); throw error; }
+      });
+      await ready;
+      const saving = saver.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB,
+        { transportId, threadId, messageId }, []));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = await Promise.race([
+        saving.then(() => ({ kind: 'saved' as const }), (error: unknown) => ({ kind: 'busy' as const, error })),
+        new Promise<{ kind: 'waited' }>((resolve) => { timer = setTimeout(() => resolve({ kind: 'waited' }), 5000); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      releaseWriter?.();
+      await writing;
+      writing = undefined;
+      await saving.catch(() => undefined);
+      expect(outcome.kind).toBe('busy');
+      if (outcome.kind === 'busy') {
+        const error = outcome.error as { code?: string; cause?: { code?: string } };
+        expect([error.code, error.cause?.code]).toContain('55P03');
+      }
+      expect(await saver.db.execute(sql`show lock_timeout`)).toEqual(before);
+      await expect(saver.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB,
+        { transportId, threadId, messageId }, []))).resolves.toBeUndefined();
+    } finally {
+      releaseWriter?.();
+      if (writing) await writing.catch(() => undefined);
+      await Promise.all([saver.close(), writer.close()]);
+    }
+  }, 30000);
+
   it('lets a pricing writer finish when a draft encounters its already-locked generation', async () => {
     const saver = openTestDbSession(), writer = openTestDbSession();
     const id = randomUUID(), transportId = `draft-lock-${id}`, threadId = `thread-${id}`, messageId = `message-${id}`;
