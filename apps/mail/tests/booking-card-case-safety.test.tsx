@@ -58,6 +58,22 @@ describe('booking case safety', () => {
     expect(stayIdForRoom({ groupId: 'g'.repeat(60), roomIndex: 1 }, [{ ...group, id: 'g'.repeat(60) }])).toBe('');
     expect(stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [group, group])).toBe('');
     expect(stayIdForRoom({ groupId: '2027-01-15:2027-01-17', roomIndex: 1 }, [group, second])).toBe('');
+    expect(stayIdForRoom({ groupId: 'removed', roomIndex: 1 }, [group])).toBe('');
+  });
+
+  it('holds a draft whose room is no longer in the current groups', () => {
+    const { pane, preview, commit } = client();
+    render(<BookingCards draft={draft(['removed'])} groups={[group]} paneSave={pane}
+      workItemId={workItemId} confirmation={confirmation} />);
+    expect(screen.getByText('Nava could not identify this room. Book it in HMS.')).toBeDefined();
+    const previewButton = screen.getByRole('button', { name: 'Preview in HMS' });
+    const createButton = screen.getByRole('button', { name: 'Create provisional booking' });
+    expect(previewButton).toHaveProperty('disabled', true);
+    expect(createButton).toHaveProperty('disabled', true);
+    fireEvent.click(previewButton);
+    fireEvent.click(createButton);
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('allows read-only previews but disables individual and batch creates for multiple rooms', async () => {

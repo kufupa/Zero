@@ -333,6 +333,7 @@ export function stayIdForRoom(
   const dated = exact.length ? [] : groups.filter((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
   if (exact.length > 1 || dated.length > 1 || !Number.isInteger(room.roomIndex) || room.roomIndex < 1 || room.roomIndex > 999) return '';
   const group = exact[0] ?? dated[0];
+  if (groups.length && !group) return '';
   const groupId = group?.id ?? room.groupId;
   const stay = group?.stayId ?? groupId;
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-:';
