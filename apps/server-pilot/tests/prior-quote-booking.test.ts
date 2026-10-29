@@ -704,6 +704,38 @@ describe('revisionCarriesOnceExtras', () => {
 });
 
 describe('resolvePriorQuoteForBooking', () => {
+  it.each([
+    ['children do not match the older adult-only price', 'transport-centurion', 'HRCEN', 'children'],
+    ['current stay has no dated source', 'transport-centurion', 'HRCEN', 'undated'],
+    ['an HRDAV quote is in a Centurion mailbox', 'transport-centurion', 'HRDAV', 'matching'],
+    ['an HRCEN quote is in an HRDAV mailbox', 'transport-davinci', 'HRCEN', 'matching'],
+    ['the previous quote has unknown property', 'transport-davinci', '', 'matching'],
+  ])('holds prior-quote reuse when %s', async (_label, transportId, propertyCode, current) => {
+    const revision = await freshRevision();
+    revision.propertyCode = propertyCode;
+    const group = analysis().groups[0]!;
+    const requested = current === 'children'
+      ? analysis({ groups: [{ ...group, childrenPerRoom: 2, childAges: [7, 10] } as typeof group] })
+      : current === 'undated'
+        ? analysis({ groups: [{ ...group, arrival: null, departure: null }] })
+        : analysis();
+    const run = { transportId, threadId: 'thread-1', state: 'succeeded',
+      metrics: { reservationistResult: { quoteRevisionIds: [revision.id], quoteRevisions: [revision] } } };
+    expect(resolvePriorQuoteForBooking(run, { transportId, threadId: 'thread-1', revisionRef: revision.id,
+      analysis: requested, now: new Date('2026-10-07T03:00:00Z') }))
+      .toEqual({ status: 'unavailable', reason: 'fresh_quote_required' });
+  });
+
+  it('still reuses a matching HRDAV quote in an HRDAV mailbox', async () => {
+    const revision = await freshRevision();
+    revision.propertyCode = 'HRDAV';
+    const transportId = 'transport-davinci';
+    const run = { transportId, threadId: 'thread-1', state: 'succeeded',
+      metrics: { reservationistResult: { quoteRevisionIds: [revision.id], quoteRevisions: [revision] } } };
+    expect(resolvePriorQuoteForBooking(run, { transportId, threadId: 'thread-1', revisionRef: revision.id,
+      analysis: analysis(), now: new Date('2026-10-07T03:00:00Z') })).toMatchObject({ status: 'ready' });
+  });
+
   it('returns ready when the thread run is fresh and dates match', async () => {
     const revision = await freshRevision();
     const resolved = resolvePriorQuoteForBooking(
@@ -924,6 +956,19 @@ describe('prior-quote routes', () => {
       analysis: analysis(),
     });
     expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
+  });
+
+  it('returns a fresh-quote hold before preparing a prior Centurion booking draft', async () => {
+    const revision = await freshRevision();
+    const run = { id: 'run-1', transportId: 'transport-centurion', threadId: 'thread-1', state: 'succeeded',
+      metrics: { reservationistResult: { quoteRevisionIds: [revision.id], quoteRevisions: [revision] } } };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [run] }) }) }) } as unknown as DB;
+    __setDbForTests({ db, conn: null as never });
+    const result = await caller().workstation.usePriorQuoteForBooking({
+      workflowRunId: run.id, revisionRef: revision.id, threadId: run.threadId, messageId: 'message-1',
+      selectionEpoch: 1, inputRevision: 1, analysis: analysis({ groups: [{ ...analysis().groups[0]!, childAges: [7, 10] }] }),
+    });
+    expect(result).toEqual({ status: 'unavailable', reason: 'fresh_quote_required' });
   });
 
   it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not list an unadopted prepared quote as a prior offer', async () => {

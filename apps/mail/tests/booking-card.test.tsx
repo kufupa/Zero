@@ -2793,6 +2793,12 @@ describe('expired prior re-quote', () => {
     expect(expiredPriorQuoteNotice(['scope_mismatch'], null)).toBe('mismatch');
   });
 
+  it('asks for a fresh search instead of restoring old stay details when reuse is held', () => {
+    expect(expiredPriorQuoteNotice(['expired', 'fresh_quote_required'], {
+      workflowRunId: 'run-old', revisionRef: 'rev-old',
+    })).toBe('fresh_search');
+  });
+
   it('sends prior groups and party header unchanged when staff has not edited stays', () => {
     const groups = staffQuoteGroupsForExpiredPriorRequote({
       stored,
