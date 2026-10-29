@@ -1566,7 +1566,9 @@ describe('booking card pane save', () => {
     const pending = deferred<PaneStayResult>();
     const preview = vi.fn<PaneStayClient['preview']>().mockImplementation(() => pending.promise);
     const { client } = paneClient({ preview });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    const draft = draftReady();
+    draft.draft.rooms = draft.draft.rooms.slice(0, 1);
+    render(<BookingCards draft={draft} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({

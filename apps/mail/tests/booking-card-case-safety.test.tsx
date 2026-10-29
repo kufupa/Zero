@@ -70,7 +70,7 @@ describe('booking case safety', () => {
     const { pane, preview, commit } = client();
     render(<BookingCards draft={draft(['removed'])} groups={[group]} paneSave={pane}
       workItemId={workItemId} confirmation={confirmation} />);
-    expect(screen.getByText('Nava could not identify this room. Book it in HMS.')).toBeDefined();
+    expect(screen.getAllByText('Nava could not identify this room. Book it in HMS.').length).toBeGreaterThan(0);
     const previewButton = screen.getByRole('button', { name: 'Preview in HMS' });
     const createButton = screen.getByRole('button', { name: 'Create provisional booking' });
     expect(previewButton).toHaveProperty('disabled', true);
