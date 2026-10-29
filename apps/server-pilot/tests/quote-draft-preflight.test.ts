@@ -14,8 +14,8 @@ import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 const transportId = 'transport-centurion', userId = 'user-1', itemId = '00000000-0000-4000-8000-000000000001';
 const pdf = Buffer.from('%PDF-1.4');
 const hash = createHash('sha256').update(pdf).digest('hex');
-const caller = (activeTransportId = transportId) => appRouter.createCaller({
-  auth: null as never, reqHeaders: new Headers(), sessionUser: { id: userId, email: 'staff@example.invalid', name: 'Staff' },
+const caller = (activeTransportId = transportId, actorId = userId) => appRouter.createCaller({
+  auth: null as never, reqHeaders: new Headers(), sessionUser: { id: actorId, email: 'staff@example.invalid', name: 'Staff' },
   activeTransportId, accessRole: 'owner', transportEmail: 'centurion@legacyhotels.co.za',
 } as never);
 
@@ -77,6 +77,8 @@ async function fixture() {
         if (table === aiDraftGeneration) rows = [{ id: 'generation-1', createdAt: new Date() }];
         if (table === aiWorkflowRun && selection && 'run' in selection) rows = [{ run }];
         else if (table === aiWorkflowRun && selection && 'hash' in selection) rows = jobAvailable.value ? [{ hash }] : [];
+        else if (table === aiWorkflowRun && selection && 'request' in selection)
+          rows = jobAvailable.value && job.readRequest.propertyCode !== 'HRDAV' ? [{ request: job.readRequest }] : [];
         else if (table === aiWorkflowRun) rows = jobAvailable.value ? [job] : [];
         const result = Promise.resolve(rows);
         return Object.assign(result, { for(mode: string) { transactionState.locks.push(mode); return result; } });
@@ -98,7 +100,7 @@ async function fixture() {
 beforeEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected: {}, inbounds: [] });
 });
-afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; configureDraftArtifactStorage(null); __setDbForTests(null); });
+afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; configureDraftArtifactStorage(null); __setDbForTests(null); vi.unstubAllEnvs(); });
 
 describe('priced draft preflight', () => {
   it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
@@ -126,6 +128,21 @@ describe('priced draft preflight', () => {
     job.readResult.pdfBase64 = pdf.toString('base64');
     jobAvailable.value = false;
     await expect(caller().workstation.quoteDraftPreflight(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('lets a mailbox colleague use a current PDF while still binding its recorded author and source', async () => {
+    const { job, state } = await fixture();
+    const input = { messageId: 'm1', threadId: 't1', pdfHashes: [hash] };
+    const colleague = () => caller(transportId, 'user-2').workstation.quoteDraftPreflight(input);
+    await expect(colleague()).resolves.toEqual({ ready: true });
+    state['stays[s1].rows[g1].roomType'] = 'Standard Twin';
+    await expect(colleague()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    delete state['stays[s1].rows[g1].roomType'];
+    job.readRequest.userId = 'user-3';
+    await expect(colleague()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    job.readRequest.userId = userId;
+    job.readRequest.transportId = 'another-transport';
+    await expect(colleague()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
   it('refuses stale webmail quote saves before creating or replacing a draft', async () => {
@@ -175,6 +192,20 @@ describe('priced draft preflight', () => {
       .resolves.toEqual({ ready: true });
     await expect(caller('transport-davinci').workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1',
       pdfHashes: [] })).resolves.toEqual({ ready: true });
+  });
+
+  it('does not exempt a recorded Centurion PDF when a thread later resolves to Da Vinci', async () => {
+    const { job, jobAvailable } = await fixture();
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '{}');
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected: {},
+      inbounds: [{ toAddresses: ['davinci@legacyhotels.co.za'] }] });
+    const input = { messageId: 'm1', threadId: 't1', pdfHashes: [hash] };
+    await expect(caller().workstation.quoteDraftPreflight(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    job.readRequest.propertyCode = 'HRDAV';
+    await expect(caller().workstation.quoteDraftPreflight(input)).resolves.toEqual({ ready: true });
+    jobAvailable.value = false;
+    await expect(caller().workstation.quoteDraftPreflight(input)).resolves.toEqual({ ready: true });
   });
 
   it('keeps an edited saved quote guarded and trusts a non-quote classification only while current', async () => {
