@@ -11,6 +11,7 @@ import {
   staffQuoteDinnerNoMatchFallback,
   staffQuoteGovernmentDinnerNote,
   staffQuoteChildOccupancyComplete,
+  staffQuoteInput,
   staffQuoteSourceHash,
   STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE,
   type StaffQuoteAttestation,
@@ -47,6 +48,7 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
+import { childOccupancyIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
@@ -443,6 +445,8 @@ export function staffQuoteFailureMessage(
     native_quote_capture_oversized: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',
+    staff_quote_child_occupancy_incomplete:
+      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
   };
   const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
   if (business) return business;
@@ -617,6 +621,7 @@ export async function runStaffQuote(
   db: DB,
   options: StaffQuoteRunOptions = {},
 ) {
+  input = staffQuoteInput.parse(input);
   const [mail] = await db
     .select()
     .from(message)
@@ -635,6 +640,15 @@ export async function runStaffQuote(
     refuseQuote('quote_davinci_disabled', quoteTarget.message, {
       cause: { code: quoteTarget.code },
     });
+  }
+  const occupancyScope = { transportId: identity.transportId, threadId: mail.threadId, messageId: mail.id,
+    propertyCode: quoteTarget.target.propertyCode };
+  if (!(await childOccupancyIsCurrent(db, input.groups, occupancyScope))) {
+    refuseQuote(
+      'inputs_incomplete',
+      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
+      { cause: { code: 'staff_quote_child_occupancy_incomplete' } },
+    );
   }
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
@@ -656,7 +670,7 @@ export async function runStaffQuote(
     propertyCode: config.owner.propertyCode,
   };
   if (!staffQuoteChildOccupancyComplete(input, scope.propertyCode)) {
-    refuseQuote('child_occupancy_incomplete', STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE);
+    refuseQuote('inputs_incomplete', STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE);
   }
   const signal = options.signal ?? AbortSignal.timeout(20 * 60000);
   // Pricing does not require a staff identity. The logged-in staff signer is added by PDF/Excel export.
@@ -741,7 +755,8 @@ export async function runStaffQuote(
       (systemPrepared || latest?.id === generationId) &&
       !!current &&
       current.threadId === scope.threadId &&
-      staffQuoteSourceHash(current) === input.sourceHash
+      staffQuoteSourceHash(current) === input.sourceHash &&
+      await childOccupancyIsCurrent(db, input.groups, occupancyScope)
     );
   };
   const databaseUrl = process.env.DATABASE_URL;

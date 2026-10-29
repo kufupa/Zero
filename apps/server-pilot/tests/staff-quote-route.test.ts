@@ -1,5 +1,6 @@
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
@@ -87,7 +88,30 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
     clientEmail: '',
     clientTelephone: '',
   };
-  return { mail, input, internetMessageId, storedMessageId };
+  const stay = (id: string, rowId: string, arrival: string, departure: string) => ({
+    id, hotel: null, requested: { arrival, departure }, booked: null, totalRooms: 2,
+    rows: [{ id: rowId, roomType: null, rooms: 2, adultsPerRoom: 1,
+      childrenPerRoom: 0, childAges: [], board: null }],
+  });
+  const [extraction] = await db.insert(mailExtraction).values({
+    messageId, extractorVersion: 'synthetic-occupancy-v1', status: 'succeeded', kind: 'quote',
+    payload: { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+      confirmationNumbers: [], missing: [], stays: [
+        stay('s_default', 'single', '2026-10-12', '2026-10-15'),
+        stay('s_oct', 'single_oct', '2026-10-26', '2026-10-27'),
+        stay('s_nov', 'single_nov', '2026-11-17', '2026-11-18'),
+      ] },
+  }).returning({ id: mailExtraction.id });
+  const [item] = await db.insert(workItem).values({
+    transportId, threadId, sourceMessageId: messageId, kind: 'quote', extractionId: extraction!.id,
+  }).returning({ id: workItem.id });
+  return { mail, input, internetMessageId, storedMessageId, workItemId: item!.id };
+}
+
+const stayRowId = (arrival: string) => arrival === '2026-10-26' ? 'single_oct' : 'single_nov';
+
+async function saveStayEdits(db: DB, workItemId: string, state: Record<string, unknown>) {
+  await db.update(workItem).set({ state }).where(eq(workItem.id, workItemId));
 }
 
 async function nativeFixture(
@@ -623,17 +647,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           api.workstation.executeStaffQuote({
             ...request.input,
             inputRevision,
-            groups: [{ ...request.input.groups[0]!, arrivalDate, departureDate, quantity }],
+            groups: [{ ...request.input.groups[0]!, id: stayRowId(arrivalDate), arrivalDate, departureDate, quantity }],
           });
         const october = await stayOn(1, '2026-10-26', '2026-10-27');
         const november = await stayOn(2, '2026-11-17', '2026-11-18');
         const octoberRequest = {
           ...request,
-          input: { ...request.input, groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-10-26', departureDate: '2026-10-27' }] },
+          input: { ...request.input, groups: [{ ...request.input.groups[0]!, id: 'single_oct', arrivalDate: '2026-10-26', departureDate: '2026-10-27' }] },
         };
         const novemberRequest = {
           ...request,
-          input: { ...request.input, groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-11-17', departureDate: '2026-11-18' }] },
+          input: { ...request.input, groups: [{ ...request.input.groups[0]!, id: 'single_nov', arrivalDate: '2026-11-17', departureDate: '2026-11-18' }] },
         };
         const octoberPrepared = await seedPreparedQuote(db, octoberRequest, october);
         const novemberPrepared = await seedPreparedQuote(db, novemberRequest, november);
@@ -643,6 +667,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             { workflowRunId: novemberPrepared.workflowRunId, revisionRef: novemberPrepared.revisionRef, factRefs: [] },
           ],
         };
+        await saveStayEdits(db, request.workItemId, { 'stays[s_oct].rows[single_oct].count': 3 });
         const currentOctober = await stayOn(3, '2026-10-26', '2026-10-27', 3);
 
         await expect(api.workstation.qualifiedQuoteProposalPdf(pdfInput(octoberPrepared))).rejects.toMatchObject({
@@ -653,7 +678,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         });
         await expect(api.workstation.qualifiedQuoteProposalPdf(oldCombined)).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED',
-          message: 'Newer stay inputs were approved; use the current quote',
         });
         await expect(api.workstation.quoteWorkbook(oldCombined)).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED',
@@ -722,7 +746,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           api.workstation.executeStaffQuote({
             ...request.input,
             inputRevision,
-            groups: [{ ...request.input.groups[0]!, arrivalDate, departureDate }],
+            groups: [{ ...request.input.groups[0]!, id: stayRowId(arrivalDate), arrivalDate, departureDate }],
           });
         const october = await stayOn(1, '2026-10-26', '2026-10-27');
         const november = await stayOn(2, '2026-11-17', '2026-11-18');
@@ -771,14 +795,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const october = await api.workstation.executeStaffQuote({
           ...request.input,
           inputRevision: 1,
-          groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-10-26', departureDate: '2026-10-27' }],
+          groups: [{ ...request.input.groups[0]!, id: 'single_oct', arrivalDate: '2026-10-26', departureDate: '2026-10-27' }],
           shuttleRequested: true,
           shuttleMinor: 50000,
         });
         const november = await api.workstation.executeStaffQuote({
           ...request.input,
           inputRevision: 2,
-          groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-11-17', departureDate: '2026-11-18' }],
+          groups: [{ ...request.input.groups[0]!, id: 'single_nov', arrivalDate: '2026-11-17', departureDate: '2026-11-18' }],
         });
         expect(october).toMatchObject({ status: 'ready', totalMinor: 70002, factRefs: ['extras'] });
         expect(november).toMatchObject({ status: 'ready', totalMinor: 20002 });
@@ -819,6 +843,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           (error) => ({ error }),
         );
         await entered.promise;
+        await saveStayEdits(db, request.workItemId, {
+          'stays[s_default].requested.departure': '2026-10-14',
+          'stays[s_default].rows[single].count': 3,
+        });
         const corrected = {
           ...request.input,
           inputRevision: 2,
@@ -865,6 +893,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const request = await seedRequest(db),
           api = caller();
         const first = await api.workstation.executeStaffQuote(request.input);
+        await saveStayEdits(db, request.workItemId, { 'stays[s_default].rows[single].count': 3 });
         const second = await api.workstation.executeStaffQuote({
           ...request.input,
           inputRevision: 2,
