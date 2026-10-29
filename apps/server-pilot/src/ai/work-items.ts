@@ -564,6 +564,19 @@ function payloadConfirmationNumbers(payload: MailExtractionPayload): string[] {
   return [...new Set([...fromGuests, ...fromTop])];
 }
 
+/** Staff changing a count does not establish which room an existing booking belongs to. */
+function singleOriginalRoom(
+  stay: ExtractionStay | undefined,
+  rowId: string | null | undefined,
+  rooms: number | null | undefined,
+  projectedRowCount: number,
+): boolean {
+  if (!stay || stay.rows.length > 1 || projectedRowCount !== 1) return false;
+  if (stay.rows.length === 0) return rowId === null && stay.totalRooms === 1;
+  const row = stay.rows[0]!;
+  return row.id === rowId && rooms === 1 && (row.rooms ?? stay.totalRooms) === 1 && (stay.totalRooms ?? 1) === 1;
+}
+
 /** A stay's guests have no room links; only a single original room can carry a guest's number. */
 function confirmationForGroup(
   stay: ExtractionStay | undefined,
@@ -572,12 +585,7 @@ function confirmationForGroup(
   rooms: number | null | undefined,
   projectedRowCount: number,
 ): string | null {
-  if (!stay || stay.rows.length > 1 || projectedRowCount !== 1) return null;
-  if (stay.rows.length === 1 && (
-    stay.rows[0]?.id !== rowId || rooms !== 1 || (stay.rows[0]?.rooms ?? 1) !== 1 || (stay.totalRooms ?? 1) !== 1
-  )) return null;
-  // A date-only stay can identify a room only when the source says there was exactly one.
-  if (stay.rows.length === 0 && (rowId !== null || stay.totalRooms !== 1)) return null;
+  if (!stay || !singleOriginalRoom(stay, rowId, rooms, projectedRowCount)) return null;
   if (payload.stays.length === 1 && payloadConfirmationNumbers(payload).length > 1) return null;
   if (stay.guests?.length) {
     if (stay.guests.length !== 1 || !stay.guests[0]?.name.trim()) return null;
@@ -727,10 +735,13 @@ export function storedAnalysis(
   }
   const confirmations = payloadConfirmationNumbers(payload);
   const selectedConfirmation = confirmations.length === 1 ? confirmations[0]! : null;
-  const hasUnassignedConfirmation = payload.confirmationNumbers.some((number) => {
-    const confirmation = trimmedConfirmation(number);
-    return confirmation && payload.stays.filter((stay) => stayGuestConfirmations(stay).includes(confirmation)).length !== 1;
-  });
+  const threadNumber = trimmedConfirmation(threadConfirmation?.confirmation);
+  const hasUnassignedConfirmation = Boolean(threadConfirmation?.reason) ||
+    Boolean(threadNumber && payload.stays.filter((stay) => stayGuestConfirmations(stay).includes(threadNumber)).length !== 1) ||
+    payload.confirmationNumbers.some((number) => {
+      const confirmation = trimmedConfirmation(number);
+      return confirmation && payload.stays.filter((stay) => stayGuestConfirmations(stay).includes(confirmation)).length !== 1;
+    });
   const multiplePeopleOrRooms = stays.some((stay) => {
     const source = payload.stays.find((item) => item.id === stay.id);
     return !source || (source.guests?.length ?? 0) > 1 || source.rows.length > 1 ||
@@ -848,11 +859,15 @@ export function storedAnalysis(
         const stayId = order[index]?.stayId;
         const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
         const projectedRowCount = order.filter((slot) => slot.stayId === stayId).length;
-        const confirmationNumber = confirmationForGroup(sourceStay, payload, order[index]?.rowId, groups[index]?.rooms, projectedRowCount);
+        const rowId = order[index]?.rowId;
+        const rooms = groups[index]?.rooms;
+        const confirmationNumber = confirmationForGroup(sourceStay, payload, rowId, rooms, projectedRowCount) ??
+          (payload.stays.length === 1 && singleOriginalRoom(sourceStay, rowId, rooms, projectedRowCount)
+            ? overlaid.confirmation : null);
         const firstRowOfStay = order.findIndex((slot) => slot.stayId === stayId) === index;
         const onlyGuest = sourceStay?.guests?.length === 1 ? sourceStay.guests[0] : undefined;
         const originalRoomCount = sourceStay?.rows[0]?.rooms ?? sourceStay?.totalRooms;
-        const singleRoomGuest = payload.stays.length === 1 && stays.length === 1 && sourceStay?.rows.length === 1 &&
+        const singleRoomGuest = !ambiguous && payload.stays.length === 1 && stays.length === 1 && sourceStay?.rows.length === 1 &&
           projectedRowCount === 1 && order[index]?.rowId === sourceStay.rows[0]?.id && originalRoomCount === 1 &&
           (sourceStay.totalRooms ?? 1) === 1 && groups[index]?.rooms === 1
           ? onlyGuest?.name.trim()
@@ -916,9 +931,9 @@ function stayKeepsIdentity(id: string, before: MailExtractionPayload, after: Mai
   const prior = before.stays.find((stay) => stay.id === id);
   const next = after.stays.find((stay) => stay.id === id);
   if (!prior || !next) return true; // A staff-added stay has no extraction counterpart in either read.
-  const priorHotel = prior.hotel?.trim().toLowerCase();
-  const nextHotel = next.hotel?.trim().toLowerCase();
-  if (priorHotel && nextHotel && priorHotel !== nextHotel) return false;
+  const priorHotel = prior.hotel?.trim().toLowerCase() ?? '';
+  const nextHotel = next.hotel?.trim().toLowerCase() ?? '';
+  if (priorHotel !== nextHotel) return false;
   // A top-level number with no unique owner could refer to any edited case in the mail.
   const unassigned = (payload: MailExtractionPayload) => new Set(payload.confirmationNumbers.flatMap((value) => {
     const number = trimmedConfirmation(value);
@@ -935,10 +950,10 @@ function stayKeepsIdentity(id: string, before: MailExtractionPayload, after: Mai
   const priorNumbers = numbers(prior, before);
   const nextNumbers = numbers(next, after);
   if (priorNumbers.size || nextNumbers.size) return sameStrings(priorNumbers, nextNumbers);
-  const names = (stay: ExtractionStay) => new Set(guestsForStay(stay).map((guest) => guest.name.trim().toLowerCase()));
+  const names = (stay: ExtractionStay) => guestsForStay(stay).map((guest) => guest.name.trim().toLowerCase()).sort();
   const priorNames = names(prior);
   const nextNames = names(next);
-  return sameStrings(priorNames, nextNames);
+  return priorNames.length === nextNames.length && priorNames.every((name, index) => name === nextNames[index]);
 }
 
 /**
@@ -951,7 +966,7 @@ export function correctionsCarryTo(
   after: MailExtractionPayload,
   state: WorkState,
 ): boolean {
-  if (before.stays === after.stays) return true;
+  if (before === after) return true;
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;

@@ -4294,6 +4294,25 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(amendmentOf(selectedCopy)).toMatchObject({ confirmationNumber: null, arrival: null, departure: null });
   });
 
+  it('keeps a case-level confirmation unassigned when the source did not identify a room', () => {
+    const guest = { name: 'Ada Example', confirmationNumber: '11111111-1' };
+    const group = { ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: [guest] };
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other', groups: [group],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: guest.confirmationNumber, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBeNull();
+  });
+
   it('lists each named guest on the stay with that guest confirmation', () => {
     const session = twoGuestStay(2, [
       { name: 'Ada Example', confirmationNumber: '11111111-1' },

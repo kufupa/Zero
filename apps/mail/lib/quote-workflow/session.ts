@@ -102,9 +102,8 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
       return { ...base, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
-    if (assigned) return { ...base, confirmationNumber: assigned };
-    // A thread-only number can identify the only unedited row, but must not follow a different or newly added row.
-    return session.analysis?.groups.length === 1 ? base : { ...base, confirmationNumber: null };
+    // The stored projection assigns source and thread numbers only when this is the single original room.
+    return { ...base, confirmationNumber: assigned };
   }
   // Stored rosters are case-scoped; a newly added or copied stay cannot inherit another case's lookup.
   if (session.analysis?.groups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests))) return unbound();

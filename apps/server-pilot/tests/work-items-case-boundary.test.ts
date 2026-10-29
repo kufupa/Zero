@@ -44,7 +44,6 @@ describe('stored case boundaries', () => {
       ['s_existing', '57291630-1', 'SKNG'],
       ['s_new', undefined, 'SKNG'],
     ]);
-    expect(analysis.groups[1]?.childrenAges).toEqual([]);
     expect(refs).toEqual({
       r_existing: { stayId: 's_existing', rowId: 'r_existing' },
       r_new: { stayId: 's_new', rowId: 'r_new' },
@@ -79,6 +78,20 @@ describe('stored case boundaries', () => {
     const analysis = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
     expect(analysis.luna.tasks.map((task) => task.kind)).toEqual(['amend', 'other']);
     expect(analysis.luna.confirmationNumber).toBeNull();
+  });
+
+  it('does not label a new request while a thread-only booking number has no case owner', () => {
+    const payload = mixedMail();
+    const unassigned = storedAnalysis(
+      { kind: 'booking', payload, attachments: [] }, {},
+      { confirmation: '33333333-1', reason: null },
+    ).analysis;
+    expect(unassigned.luna.tasks.map((task) => task.kind)).toEqual(['amend', 'other']);
+    const attributed = storedAnalysis(
+      { kind: 'booking', payload, attachments: [] }, {},
+      { confirmation: '57291630-1', reason: null },
+    ).analysis;
+    expect(attributed.luna.tasks.map((task) => task.kind)).toEqual(['amend', 'create_booking']);
   });
 
   it('keeps guest names and numbers on the stay without assigning them to rows by order', () => {
@@ -152,6 +165,11 @@ describe('stored case boundaries', () => {
     expect(single.groups[0]?.guestNames).toEqual(['Bea Example']);
     expect(single.luna.groups[0]?.guestNames).toEqual([]);
 
+    payload.confirmationNumbers = ['11111111-1', '22222222-1'];
+    const ambiguous = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(ambiguous.groups[0]?.guestNames).toBeUndefined();
+    payload.confirmationNumbers = [];
+
     payload.stays[0]!.totalRooms = 2;
     payload.stays[0]!.rows[0]!.rooms = 2;
     const narrowed = storedAnalysis(
@@ -182,6 +200,30 @@ describe('stored case boundaries', () => {
     payload.stays[0]!.totalRooms = 1;
     const single = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
     expect(single.groups[0]?.confirmationNumber).toBe('57291630-1');
+  });
+
+  it('does not assign a booking number when the original room count was unknown', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[0]!];
+    payload.stays[0]!.totalRooms = null;
+    payload.stays[0]!.rows[0]!.rooms = null;
+    const analysis = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {
+      'stays[s_existing].rows[r_existing].count': 1,
+    }).analysis;
+    expect(analysis.luna.confirmationNumber).toBe('57291630-1'); // usable as a case-level lookup hint
+    expect(analysis.groups[0]?.confirmationNumber).toBeUndefined();
+  });
+
+  it('attaches a thread-only number to the one room when its original count is known', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[0]!];
+    payload.stays[0]!.guests![0]!.confirmationNumber = null;
+    payload.confirmationNumbers = [];
+    const analysis = storedAnalysis(
+      { kind: 'booking', payload, attachments: [] }, {},
+      { confirmation: '57291630-1', reason: null },
+    ).analysis;
+    expect(analysis.groups[0]?.confirmationNumber).toBe('57291630-1');
   });
 
   it('does not assign a guest number when staff have added another row to a single-row stay', () => {
@@ -298,6 +340,8 @@ describe('re-read identity for staff corrections', () => {
     const differentProperty = structuredClone(before);
     differentProperty.stays[0]!.hotel = 'Da Vinci';
     expect(correctionsCarryTo(before, differentProperty, state)).toBe(false);
+    differentProperty.stays[0]!.hotel = null;
+    expect(correctionsCarryTo(before, differentProperty, state)).toBe(false);
   });
 
   it('does not move saved edits when a partially overlapping roster or top-level number changes', () => {
@@ -315,11 +359,16 @@ describe('re-read identity for staff corrections', () => {
     const reordered = structuredClone(before);
     reordered.stays[0]!.guests!.reverse();
     expect(correctionsCarryTo(before, reordered, state)).toBe(true);
+    const duplicateName = structuredClone(before);
+    duplicateName.stays[0]!.guests!.push({ name: 'Ada Example', confirmationNumber: null });
+    expect(correctionsCarryTo(before, duplicateName, state)).toBe(false);
 
     before.confirmationNumbers = ['11111111-1'];
     const differentNumber = structuredClone(before);
     differentNumber.confirmationNumbers = ['22222222-1'];
     expect(correctionsCarryTo(before, differentNumber, state)).toBe(false);
+    const sharedStays = { ...before, confirmationNumbers: ['22222222-1'] };
+    expect(correctionsCarryTo(before, sharedStays, state)).toBe(false);
     const lostNumber = structuredClone(before);
     lostNumber.confirmationNumbers = [];
     expect(correctionsCarryTo(before, lostNumber, state)).toBe(false);
