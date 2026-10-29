@@ -4387,12 +4387,15 @@ async function latestStaffQuoteRunFor(
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
+    const centurion = isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) });
     const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false,
-        isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) }));
+      // Admission binds a Centurion run to the current extraction. A stale queued
+      // run, or its eventual refusal, cannot answer a later read of this mail.
+      (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false, centurion);
     if (!reusable(userRun)) {
       // Newest matching price is stale: do not fall back to an older refusal.
       const stored = userRun.readResult as { status?: unknown } | null;
@@ -4443,6 +4446,9 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
+      (centurion && (sameMessageCopy
+        ? parsed.data.input.sourceExtractionId !== quoteInput.sourceExtractionId
+        : preparedRun.state !== 'succeeded' || objectRecord(preparedRun.readResult).status !== 'ready')) ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput,
         !centurion && preferBoundContract && hasReadySelectedContract(preparedRun), centurion)
     ) {

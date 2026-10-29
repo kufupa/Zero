@@ -69,6 +69,40 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('prepared quote reuse', () => {
+  it.each([
+    ['user', 'queued', 'ready'], ['user', 'claimed', 'ready'], ['user', 'running', 'ready'],
+    ['user', 'retry_wait', 'ready'], ['user', 'dead_letter', 'ready'], ['user', 'superseded', 'ready'],
+    ['user', 'succeeded', 'refused'], ['user', 'succeeded', 'ready'],
+    ['prepared', 'queued', 'ready'], ['prepared', 'succeeded', 'refused'], ['prepared', 'succeeded', 'ready'],
+  ])('starts a fresh Centurion run after a new extraction instead of reusing %s %s %s', async (owner, state, status) => {
+    const oldInput = { ...input, sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'old-read' };
+    const newInput = { ...oldInput, sourceExtractionId: 'new-read' };
+    const old = preparedRun('old', TRANSPORT_ID, oldInput, false);
+    const run = { ...old, state, readResult: { ...old.readResult, status },
+      ...(owner === 'user' ? { metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 } : {}) };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(TRANSPORT_ID),
+      request: { kind: 'staff_quote', input: newInput } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: true, run: { id: 'fresh', readRequest: { input: { sourceExtractionId: 'new-read' } } } });
+  });
+
+  it.each([TRANSPORT_ID, DAVINCI_TRANSPORT_ID])('keeps a matching queued run for the same extraction on %s', async (transportId) => {
+    const quote = { ...input, sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'read-1' };
+    const old = preparedRun('same-read', transportId, quote, false);
+    const run = { ...old, state: 'queued', metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(transportId),
+      request: { kind: 'staff_quote', input: quote } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: false, run: { id: 'same-read' } });
+  });
+
+  it('preserves Da Vinci reuse across extraction identifiers', async () => {
+    const oldInput = { ...input, sourceExtractionId: 'old-read' };
+    const old = preparedRun('dav', DAVINCI_TRANSPORT_ID, oldInput, false);
+    const run = { ...old, state: 'queued', metrics: { quotePrepared: false, userId: 'staff-1' }, priority: 10 };
+    const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(DAVINCI_TRANSPORT_ID),
+      request: { kind: 'staff_quote', input: { ...oldInput, sourceExtractionId: 'new-read' } } }, quoteDb([run]));
+    expect(result).toMatchObject({ created: false, run: { id: 'dav' } });
+  });
+
   it('uses the matching Centurion strategy even when an incompatible contract is first', async () => {
     const ws = preparedRun('ws', TRANSPORT_ID, { ...input, salesStrategy: 'WS' }, true);
     const bar = preparedRun('bar', TRANSPORT_ID, input, false);
