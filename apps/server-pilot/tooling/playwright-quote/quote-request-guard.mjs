@@ -2,6 +2,7 @@
 // This uses only existing reviewed login/shell rules. Hotel Availability's
 // inquiry bodies have not yet been reviewed by the canonical policy.
 import { attachBorrowedSession, newBorrowedContext } from './session-reuse.mjs';
+import { randomUUID } from 'node:crypto';
 
 const SHELL_RULES = new Set([
   'live-login-get',
@@ -13,15 +14,22 @@ const SHELL_RULES = new Set([
 
 async function loadCanonicalPolicy() {
   try {
-    const [manifest, policy, origins] = await Promise.all([
-      import('../../dist/hms/live-read-manifest.js'),
-      import('../../dist/hms/request-policy.js'),
-      import('../../dist/hms/browser-artifacts.js'),
-    ]);
-    return { ...manifest, ...policy, ...origins };
+    // A namespaced loader follows the checked-out TypeScript graph instead of
+    // silently using a stale build in dist. The CLI still starts with plain node.
+    const { register } = await import('tsx/esm/api');
+    const loader = register({ namespace: `nava-quote-policy-${randomUUID()}` });
+    try {
+      const [manifest, policy, origins] = await Promise.all([
+        loader.import('../../src/hms/live-read-manifest.ts', import.meta.url),
+        loader.import('../../src/hms/request-policy.ts', import.meta.url),
+        loader.import('../../src/hms/browser-artifacts.ts', import.meta.url),
+      ]);
+      return { ...manifest, ...policy, ...origins };
+    } finally {
+      await loader.unregister();
+    }
   } catch {
-    // A source checkout must be built before the CLI can use the canonical
-    // policy. Never fall back to the permissive legacy availability guard.
+    // No loader or source is a hold, never a permissive legacy fallback.
     throw new Error('HMS_QUOTE_CANONICAL_POLICY_UNAVAILABLE');
   }
 }

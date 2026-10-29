@@ -13,6 +13,10 @@ tunnel, and the existing PMS credential secret. Module resolution is anchored
 to the sibling package manifest, not the server's older Playwright install.
 The server workspace dependencies must also be installed: audit capture reuses
 `src/hms/trace-privacy.ts` and its existing pinned `fflate` 0.8.2 dependency.
+The Centurion guard also needs the pinned `tsx` package and the checked-out
+`src/hms` source at the same reviewed revision as this tool. It loads that
+source directly; no server build is needed for the guard. A missing loader or
+source stops the run with `HMS_QUOTE_CANONICAL_POLICY_UNAVAILABLE`.
 
 Restore the exact checked-in dependency installation when needed:
 
@@ -268,16 +272,21 @@ PMS's displayed meal-plan label.
 
 ## Checks and evidence
 
+Run these from the worktree root on the approved test host, following the
+project's serialized test route; do not run the suite on the shared VPS.
+
 ```bash
-unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL
 node --check apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs
 node --check apps/server-pilot/tooling/playwright-quote/quote-contract.mjs
 node --check apps/server-pilot/tooling/playwright-quote/audit.mjs
-node --test apps/server-pilot/tooling/playwright-quote/*.test.mjs
+node --import tsx --test --test-concurrency=1 apps/server-pilot/tooling/playwright-quote/*.test.mjs
 (cd apps/server-pilot && node_modules/.bin/vitest run tests/hms-trace-privacy.test.ts tests/hms-browser-artifacts.test.ts)
 ```
 
-Focused tests use no database or live PMS. Live run IDs, hashes, outcomes,
+The full Node glob includes `create-tool.schema.test.mjs`, which needs the
+private `.private/create-screen/new-record.md` fixture. Focused tests use no
+database or live PMS. Live run IDs, hashes, outcomes,
 timing and remaining source limits sit in
 `.private/playwright-quote/widening-handoff.md` (this widening) and historical
 `.private/playwright-quote/handoff.md`. Those records, not this README, prove
