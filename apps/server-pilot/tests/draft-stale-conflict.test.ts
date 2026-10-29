@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { copyFileSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import * as draftApprovalModule from '../src/ai/draft-approval.js';
 import { loadLiveThreadStateVersion } from '../src/ai/drafts.js';
+import { quoteSourceBusyError } from '../src/hms/quote-source-contention.js';
 import { callerFor } from './helpers/trpc-caller';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import type { DB } from '../src/db/client.js';
@@ -894,6 +895,76 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         .limit(1);
       expect(queue?.status).toBe('sent');
       expect(queue?.smtpPayload).toMatchObject({ draftApproval: approval });
+    });
+  }, 30000);
+
+  it.each([
+    ['preflight', 0, false], ['claim', 0, false],
+    ['preflight', 30, false], ['claim', 30, false], ['claim', 30, true],
+  ] as const)('defers a busy %s with undo=%i and rechecks changed=%s', async (phase, undo, changed) => {
+    await withSeededTestDb(async (db) => {
+      process.env.UNDO_SEND_SECONDS = String(undo);
+      process.env.MAIL_SELF_BCC = 'false';
+      const threadId = randomUUID(), parentMessageId = randomUUID(), draftId = randomUUID();
+      const generationId = randomUUID(), revisionId = randomUUID(), body = '<p>Approved guest reply</p>';
+      const evidence = { kind: 'hms' as const, id: `evidence-${generationId}`, toolId: 'hms_quote_stay',
+        toolVersion: '1', propertyCode: 'HRCEN', observedAt: '2026-07-06T10:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z', claimKeys: ['rate'], sourceHash: 'a'.repeat(64), scopeVerified: true };
+      await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`, subject: 'Booking' });
+      await db.insert(message).values({ id: parentMessageId, transportId: TRANSPORT_ID, threadId,
+        direction: 'inbound', fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'],
+        subject: 'Booking', textBody: 'Need help', receivedAt: new Date('2026-07-06T10:00:00Z') });
+      const threadStateVersion = await loadLiveThreadStateVersion(db, { transportId: TRANSPORT_ID, threadId });
+      await db.insert(aiDraftGeneration).values({ id: generationId, transportId: TRANSPORT_ID, threadId,
+        requestedByUserId: 'user-navaai', contextMessageIds: [parentMessageId], model: 'approved-local-test',
+        promptVersion: 'draft-v1', status: 'succeeded', outcome: 'candidate', threadStateVersion, evidence: [evidence] });
+      await db.insert(mailDraft).values({ id: draftId, transportId: TRANSPORT_ID, threadId,
+        createdByUserId: 'user-navaai', status: 'active', origin: 'ai', generationId,
+        replyToMessageId: parentMessageId, toAddresses: ['guest@example.com'], subject: 'Re: Booking', htmlBody: body });
+      await db.insert(mailDraftRevision).values({ id: revisionId, draftId, generationId, actorUserId: 'user-navaai',
+        kind: 'ai_generated', toAddresses: ['guest@example.com'], ccAddresses: [], bccAddresses: [],
+        subject: 'Re: Booking', textBody: 'Candidate', htmlBody: body, attachments: [] });
+      await insertTrustedCandidateRun(db, { generationId, threadId, triggerMessageId: parentMessageId });
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
+      const approval = await caller.drafts.approve({ draftId, subject: 'Re: Booking', html: body, text: '',
+        to: ['guest@example.com'], cc: [], bcc: [], attachments: [] });
+      const smtpSend = vi.fn<SmtpTransport['send']>().mockResolvedValue({ messageId: 'deferred@zero.test',
+        accepted: ['guest@example.com'], rejected: [] });
+      __setSmtpTransportForTests({ kind: 'fake', send: smtpSend });
+      const assertCurrent = draftApprovalModule.assertDraftApprovalCurrent;
+      let busy = true;
+      vi.spyOn(draftApprovalModule, 'assertDraftApprovalCurrent').mockImplementation(async (input) => {
+        if (busy && input.queueMessageId && (phase === 'claim' ? input.lockQuoteOrigin : !input.lockQuoteOrigin)) {
+          const [draft] = await input.db.select({ isSent: mailDraft.isSent }).from(mailDraft).where(eq(mailDraft.id, draftId));
+          if (draft?.isSent) throw quoteSourceBusyError();
+        }
+        return assertCurrent(input);
+      });
+      const queued = await caller.mail.send({ threadId, draftId, to: ['guest@example.com'],
+        subject: 'Re: Booking', message: body, draftApproval: approval });
+      expect(queued).toMatchObject({ queued: true });
+      if (undo > 0) {
+        await __forceSendAtPastForTests(queued.messageId, TRANSPORT_ID, db);
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+      }
+      const [held] = await db.select().from(outboundSendQueue).where(eq(outboundSendQueue.messageId, queued.messageId));
+      expect(held).toMatchObject({ status: 'pending', attempts: 1, smtpAttemptedAt: null,
+        lastError: JSON.stringify({ code: 'QUOTE_SOURCE_BUSY' }) });
+      expect(held!.sendAt.getTime()).toBeGreaterThan(Date.now());
+      expect(smtpSend).not.toHaveBeenCalled();
+      const [stillClaimed] = await db.select({ status: mailDraft.status, isSent: mailDraft.isSent })
+        .from(mailDraft).where(eq(mailDraft.id, draftId));
+      expect(stillClaimed).toEqual({ status: 'sent', isSent: true });
+      if (changed) await db.insert(message).values({ id: randomUUID(), transportId: TRANSPORT_ID, threadId,
+        direction: 'inbound', fromAddress: 'guest@example.com', textBody: 'Updated request', receivedAt: new Date() });
+      busy = false;
+      await __forceSendAtPastForTests(queued.messageId, TRANSPORT_ID, db);
+      await expect(flushDue({ db })).resolves.toEqual({ flushed: changed ? 0 : 1 });
+      expect(smtpSend).toHaveBeenCalledTimes(changed ? 0 : 1);
+      const [finalDraft] = await db.select({ status: mailDraft.status, isSent: mailDraft.isSent })
+        .from(mailDraft).where(eq(mailDraft.id, draftId));
+      expect(finalDraft).toEqual(changed ? { status: 'active', isSent: false } : { status: 'sent', isSent: true });
     });
   }, 30000);
 

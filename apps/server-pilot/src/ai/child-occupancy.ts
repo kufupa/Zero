@@ -10,7 +10,7 @@ import { getPropertyTransportIds } from '../../tooling/playwright-quote/property
 import { priorKindConflict } from './work-item-source-conflict.js';
 import { quoteSourcePartyDigest } from './quote-source-party.js';
 import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
-import { isQuoteSourceLockBusy, QUOTE_SOURCE_BUSY_MESSAGE } from '../hms/quote-source-contention.js';
+import { isQuoteSourceLockBusy, quoteSourceBusyError } from '../hms/quote-source-contention.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -378,7 +378,8 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
       }, input.quoteSourceProof))) return draftQuoteOccupancyMessage;
     }
   } catch (error) {
-    return isQuoteSourceLockBusy(error) ? QUOTE_SOURCE_BUSY_MESSAGE : draftQuoteOccupancyMessage;
+    if (isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
+    return draftQuoteOccupancyMessage;
   }
   return null;
 }
