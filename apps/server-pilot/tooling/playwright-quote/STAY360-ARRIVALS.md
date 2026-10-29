@@ -3,8 +3,8 @@
 `centurion-stay360.mjs` starts a fresh Chromium, logs in to Centurion, and opens
 Stay 360. Pass an async function to `withCenturionStay360Page` to use that page;
 the browser closes after the function returns. Each invocation owns its own
-browser. The current limit is 27 seconds for the entire run, including the
-function's work.
+browser. There is no fixed total runtime limit; individual readiness steps may
+still have their own timeouts.
 
 `arrival-ui.mjs` exports `readArrivalFromStay360(page, arrivalNumber)`.
 `read-arrival-ui.mjs` joins the two steps. From the worktree root:
@@ -80,3 +80,20 @@ Record View.
 
 The JSON contains guest information. Save it only in a private location, for
 example after `umask 077`; do not commit it or include it in shared notes.
+
+## Read Record View
+
+```sh
+node apps/server-pilot/tooling/playwright-quote/read-record-view-ui.mjs --confirmation CONFIRMATION-NUMBER
+```
+
+The command keeps the 1a result, opens Record View in the same browser, checks
+its confirmation number, expands the rendered form sections and returns fields,
+checkbox states, displayed text and current grid pages. Other tabs, hidden
+content and unloaded grid pages are excluded. The reusable page action is
+`readRecordViewFromStay360(page, confirmation)` after selecting the confirmation.
+
+An exact `Note` or `Notes` dialog is captured in the JSON and saved under the
+private `.private/stay360-confirmation/` directory before its Close button is
+clicked. Other dialogs stop the read. The browser's read-only guard is
+heuristic; it does not prove every possible mutating request is blocked.

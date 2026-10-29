@@ -93,9 +93,6 @@ export async function withCenturionStay360Page(operation) {
   let browser;
   let context;
   let phase = 'credentials';
-  let timedOut = false;
-  let timeoutError;
-  let timeoutHandle;
 
   const closeResources = async () => {
     const ownedContext = context;
@@ -107,61 +104,31 @@ export async function withCenturionStay360Page(operation) {
     if (ownedBrowser) await ownedBrowser.close().catch(() => {});
   };
 
-  const run = async () => {
-    try {
-      const secret = readCenturionSecret();
-      if (timedOut) throw timeoutError;
-
-      phase = 'browser_launch';
-      browser = await launchCenturionChromium();
-      if (timedOut) throw timeoutError;
-
-      phase = 'browser_context';
-      context = await browser.newContext({ viewport });
-      if (timedOut) throw timeoutError;
-
-      const page = await context.newPage();
-      if (timedOut) throw timeoutError;
-      page.setDefaultTimeout(2_500);
-
-      phase = 'login';
-      await login(page, secret, {});
-      if (timedOut) throw timeoutError;
-
-      phase = 'stay_360';
-      await openCenturionStay360(page);
-      if (timedOut) throw timeoutError;
-
-      phase = 'operation';
-      return await operation(page);
-    } catch (error) {
-      if (error && typeof error === 'object' && !error.phase) {
-        try { error.phase = phase; } catch { /* Preserve the original failure. */ }
-      }
-      throw error;
-    } finally {
-      if (timedOut) await closeResources();
-    }
-  };
-
-  const timeout = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      timeoutError = new Error('RUN_LIMIT_27_SECONDS');
-      timeoutError.phase = phase;
-      reject(timeoutError);
-    }, 27_000);
-  });
-
   try {
-    return await Promise.race([run(), timeout]);
+    const secret = readCenturionSecret();
+
+    phase = 'browser_launch';
+    browser = await launchCenturionChromium();
+
+    phase = 'browser_context';
+    context = await browser.newContext({ viewport });
+
+    const page = await context.newPage();
+
+    phase = 'login';
+    await login(page, secret, {});
+
+    phase = 'stay_360';
+    await openCenturionStay360(page);
+
+    phase = 'operation';
+    return await operation(page);
   } catch (error) {
     if (error && typeof error === 'object' && !error.phase) {
       try { error.phase = phase; } catch { /* Preserve the original failure. */ }
     }
     throw error;
   } finally {
-    clearTimeout(timeoutHandle);
     await closeResources();
   }
 }
