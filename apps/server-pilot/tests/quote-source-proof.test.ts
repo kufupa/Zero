@@ -132,6 +132,22 @@ describe('source preferences bound to a Centurion price', () => {
     expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
   });
 
+  it('checks the active saved row and its preferences after a copied room is replaced', async () => {
+    const original = evidence();
+    const proof = await captureQuoteSourceProof(original.db, input, scope);
+    const copy = evidence('s2', 'r2');
+    const copyScope = { ...scope, threadId: 't2', messageId: 'm2' };
+    const revision = { groups: [{ arrivalDate: '2027-10-20', departureDate: '2027-10-21',
+      quantity: 1, adults: 2, children: 0, childAges: [] }] };
+    const row = 'stays[s2].rows[r_added]';
+    copy.data.state = { 'stays[s2].rows[r2].removed': true,
+      [`${row}.count`]: 1, [`${row}.adults`]: 2, [`${row}.childrenPerRoom`]: 0, [`${row}.childAges`]: [],
+      [`${row}.roomType`]: 'Standard King', [`${row}.board`]: 'dbb' };
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(true);
+    copy.data.state[`${row}.roomType`] = 'Standard Twin';
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
+  });
+
   it('holds pinned old extractions and keeps HRDAV quote behavior on a Centurion mailbox', async () => {
     const { data, db } = evidence();
     const proof = await captureQuoteSourceProof(db, input, scope);

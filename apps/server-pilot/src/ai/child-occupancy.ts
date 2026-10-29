@@ -300,23 +300,10 @@ export async function quoteSourceProofMatchesSingleStay(
 ) {
   if (!isCenturionQuoteScope(scope)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);
-  if (!evidence || !singleStayOccupancyMatchesRevision(revision, evidence.payload, evidence.state)) return false;
-  const parsed = mailExtractionPayloadSchema.safeParse(evidence.payload);
-  if (!parsed.success) return false;
-  const quoted = revision.groups[0]!;
-  const stay = parsed.data.stays.find((item) => {
-    const arrival = `stays[${item.id}].requested.arrival`, departure = `stays[${item.id}].requested.departure`;
-    return evidence.state[`stays[${item.id}].removed`] !== true &&
-      (Object.hasOwn(evidence.state, arrival) ? evidence.state[arrival] : item.requested.arrival) === quoted.arrivalDate &&
-      (Object.hasOwn(evidence.state, departure) ? evidence.state[departure] : item.requested.departure) === quoted.departureDate;
-  });
-  const row = stay?.rows[0];
-  if (!stay || !row) return false;
-  const path = `stays[${stay.id}].rows[${row.id}].childAges`;
-  const ages = Object.hasOwn(evidence.state, path) ? evidence.state[path] : row.childAges;
-  if (!Array.isArray(ages)) return false;
-  const snapshot = quoteSourceSnapshot([{ id: row.id, arrivalDate: quoted.arrivalDate, departureDate: quoted.departureDate,
-    quantity: quoted.quantity, adults: quoted.adults, childrenPerRoom: quoted.children, childrenAges: ages }], evidence.payload, evidence.state);
+  if (!evidence) return false;
+  const group = singleStayOccupancyGroup(revision, evidence.payload, evidence.state);
+  if (!group) return false;
+  const snapshot = quoteSourceSnapshot([group], evidence.payload, evidence.state);
   const proof = parseQuoteSourceProof(value);
   return !!proof?.singleRowDigest && snapshot?.singleRowDigest === proof.singleRowDigest;
 }
