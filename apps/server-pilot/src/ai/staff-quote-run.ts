@@ -444,7 +444,7 @@ export function staffQuoteFailureMessage(
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',
     staff_quote_child_occupancy_incomplete:
-      'Confirm the number of children per room and enter an age for each child, then run the quote again.',
+      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
   };
   const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
   if (business) return business;
@@ -631,7 +631,7 @@ export async function runStaffQuote(
   if (!(await childOccupancyIsCurrent(db, input.groups, occupancyScope))) {
     refuseQuote(
       'child_occupancy_incomplete',
-      'Confirm the number of children per room and enter an age for each child, then run the quote again.',
+      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
       { cause: { code: 'staff_quote_child_occupancy_incomplete' } },
     );
   }

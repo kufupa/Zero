@@ -128,6 +128,39 @@ describe('quote input bound to saved occupancy evidence', () => {
     }], { ...evidence, stays: [first, second] }, {})).toBe(false);
   });
 
+  it('binds rooms and adults to the selected row and saved corrections', () => {
+    const evidence = payload(0, []);
+    const forged = { ...group([], 0), quantity: 3, adults: 1 };
+    expect(childOccupancyMatchesStored([forged], evidence, {})).toBe(false);
+    const state = { [`${base}.count`]: 3, [`${base}.adults`]: 1 };
+    expect(childOccupancyMatchesStored([forged], evidence, state)).toBe(true);
+    expect(childOccupancyMatchesStored([forged], evidence, { ...state, [`${base}.count`]: null })).toBe(false);
+    expect(childOccupancyMatchesStored([forged], evidence, { ...state, [`${base}.adults`]: null })).toBe(false);
+  });
+
+  it('accepts the pane’s unedited room and adult defaults only when their evidence exists', () => {
+    const evidence = payload(0, []);
+    const stay = evidence.stays[0]!;
+    const row = stay.rows[0]!;
+    const oneByGuest = { ...evidence, stays: [{ ...stay, totalRooms: null, rows: [{ ...row, rooms: null, adultsPerRoom: 1 }] }] };
+    expect(childOccupancyMatchesStored([{ ...group([], 0), adults: 1 }], oneByGuest, {})).toBe(true);
+    const totalRooms = { ...evidence, stays: [{ ...stay, totalRooms: 3, rows: [{ ...row, rooms: null, adultsPerRoom: null }] }] };
+    expect(childOccupancyMatchesStored([{ ...group([], 0), quantity: 3 }], totalRooms, {})).toBe(true);
+    const noRoomEvidence = { ...evidence, stays: [{ ...stay, totalRooms: null, rows: [{ ...row, rooms: null, adultsPerRoom: null }] }] };
+    expect(childOccupancyMatchesStored([group([], 0)], noRoomEvidence, {})).toBe(false);
+    expect(childOccupancyMatchesStored([{ ...group([], 0), quantity: 3 }], totalRooms, { [`${base}.count`]: null })).toBe(false);
+    expect(childOccupancyMatchesStored([group([], 0)], evidence, { [`${base}.adults`]: null })).toBe(false);
+  });
+
+  it('does not treat a second staff-added row as a single-room-row default', () => {
+    const evidence = payload(0, []);
+    const stay = evidence.stays[0]!;
+    const noRooms = { ...evidence, stays: [{ ...stay, totalRooms: 3, rows: [{ ...stay.rows[0]!, rooms: null }] }] };
+    expect(childOccupancyMatchesStored([{ ...group([], 0), quantity: 3 }], noRooms, {
+      [`stays[${stayId}].rows[r_added].count`]: 1,
+    })).toBe(false);
+  });
+
   it('uses saved date corrections and treats an explicit cleared date as unknown', () => {
     const evidence = payload(0, []);
     const moved = { ...group([], 0), arrivalDate: '2027-10-22', departureDate: '2027-10-23' };
@@ -154,6 +187,7 @@ describe('quote input bound to saved occupancy evidence', () => {
     expect(childOccupancyMatchesStored([added], evidence, { [`${addedBase}.childrenPerRoom`]: 1 })).toBe(false);
     expect(childOccupancyMatchesStored([added], evidence, {
       [`${addedBase}.childrenPerRoom`]: 1, [`${addedBase}.childAges`]: [5],
+      [`${addedBase}.count`]: 1, [`${addedBase}.adults`]: 2,
     })).toBe(true);
   });
 
@@ -163,6 +197,7 @@ describe('quote input bound to saved occupancy evidence', () => {
     const syntheticRow = `stays[${stayId}].rows[${stayId}_row]`;
     expect(childOccupancyMatchesStored([{ ...group([]), id: stayId }], evidence, {
       [`${syntheticRow}.childrenPerRoom`]: 0, [`${syntheticRow}.childAges`]: [],
+      [`${syntheticRow}.count`]: 1, [`${syntheticRow}.adults`]: 2,
     })).toBe(true);
   });
 
