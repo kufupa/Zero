@@ -138,6 +138,18 @@ describe('quote workflow backend bind', () => {
       open: { mutate: async () => ({ status: 'none' }) }, internetMessageId: 'mail' })).toEqual({ status: 'none' });
   });
 
+  it('holds an explicit failed open after a previously successful stored read', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-old', refs: {},
+      analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    expect(await bindStoredWork({ query: { query: async () => stored },
+      open: { mutate: async () => ({ status: 'failed', reason: 'Read failed.' }) }, internetMessageId: 'mail' }))
+      .toEqual({ status: 'failed', reason: 'Read failed.', hold: true });
+  });
+
   it('reports a late disappearance after showing a slow stored read', async () => {
     vi.useFakeTimers();
     try {
@@ -190,6 +202,34 @@ describe('quote workflow backend bind', () => {
       await vi.advanceTimersByTimeAsync(10);
       expect(await result).toEqual(stored);
       finish({ ...stored, extractionId: 'ex-new' });
+      await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['payload', 'contact', 'saved-edit'] as const)('holds a late open after a same-ID %s change', async (change) => {
+    vi.useFakeTimers();
+    try {
+      const analysis = { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] };
+      const stored = {
+        status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+        extractionId: 'ex-old', refs: {}, analysis,
+        sourceRead: { extractionId: 'ex-old', kind: 'quote', payloadDigest: 'before', analysis, refs: {} },
+        contact: { name: null as string | null, company: null, endClient: null, email: null, phone: null },
+        language: null, translation: null,
+      };
+      let finish!: (value: typeof stored & { revisionSeq?: number }) => void;
+      const onLateHold = vi.fn();
+      const result = bindStoredWork({ query: { query: async () => stored },
+        open: { mutate: () => new Promise((resolve) => { finish = resolve; }) },
+        internetMessageId: 'mail', openTimeoutMs: 10, onLateHold });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await result).toEqual(stored);
+      const opened = change === 'payload' ? { ...stored, sourceRead: { ...stored.sourceRead, payloadDigest: 'after' } }
+        : change === 'contact' ? { ...stored, contact: { ...stored.contact, name: 'Changed' } }
+        : { ...stored, revisionSeq: 1 };
+      finish(opened);
       await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
     } finally {
       vi.useRealTimers();

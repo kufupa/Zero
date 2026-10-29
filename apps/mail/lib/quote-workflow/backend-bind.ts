@@ -229,6 +229,8 @@ export type StoredWork =
       sourceRead?: {
         extractionId: string;
         kind: string;
+        /** Digest of the stored extraction payload; older servers may omit it. */
+        payloadDigest?: string;
         analysis: ReadyAnalyse;
         refs: Record<string, { stayId: string; rowId: string | null }>;
       };
@@ -306,6 +308,16 @@ export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
   return workItems ?? {};
 }
 
+function storedReadSnapshot(read: Extract<StoredWork, { status: 'ready' }>): string {
+  return JSON.stringify({
+    kind: read.kind, extractionId: read.extractionId, sourceRead: read.sourceRead ?? null,
+    analysis: read.analysis, refs: read.refs, contact: read.contact,
+    sourcePartyDigest: read.sourcePartyDigest ?? null, sourcePartyFields: read.sourcePartyFields ?? null,
+    confirmationNumbers: read.confirmationNumbers ?? [], language: read.language, translation: read.translation,
+    stays: read.stays ?? {},
+  });
+}
+
 /**
  * Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live.
  * The read writes nothing. A stored read with no work item yet is opened once (workItems.open) so edits have an item;
@@ -363,14 +375,15 @@ export async function bindStoredWork(args: {
       if (opened.status === 'none') return {
         status: 'failed', hold: true, reason: 'This email changed or is no longer available. Review it manually.',
       };
+      if (opened.status === 'failed' && !opened.hold) return { ...opened, hold: true };
       return opened;
     });
     void opening.then((opened) => {
       if (!openTimedOut || args.isStale?.()) return;
       if (opened.status === 'failed' && opened.hold) args.onLateHold?.(opened);
-      if (opened.status === 'ready' && (opened.extractionId !== stored.extractionId || opened.kind !== stored.kind ||
-        opened.sourceConflict || opened.analysis.caseActionsUncertain ||
-        (opened.sourceRead && opened.sourceRead.extractionId !== (stored.sourceRead?.extractionId ?? stored.extractionId)))) {
+      if (opened.status === 'ready' && (opened.sourceConflict || opened.analysis.caseActionsUncertain ||
+        (typeof opened.revisionSeq === 'number' && opened.revisionSeq > 0) ||
+        storedReadSnapshot(opened) !== storedReadSnapshot(stored))) {
         args.onLateHold?.({ status: 'failed', hold: true,
           reason: 'This email changed while it was opening. Review it manually.' });
       }
