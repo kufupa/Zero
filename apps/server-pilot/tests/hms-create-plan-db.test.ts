@@ -186,4 +186,13 @@ describe('durable create-plan approval', () => {
       await expect(consumeHmsCreatePlan(db, ref, PLAN_NOW)).rejects.toThrow('plan_changed');
     });
   });
+
+  it('refuses case reads whose order is ambiguous at the same timestamp', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { input } = await seed(db);
+      await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-tie',
+        status: 'succeeded', kind: 'booking', payload: CASE_READ, createdAt: new Date(PLAN_NOW.getTime() - 120_000) });
+      await expect(prepareHmsCreatePlan(db, scope, input, PLAN_NOW)).rejects.toThrow('case_read_superseded');
+    });
+  });
 });

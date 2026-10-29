@@ -178,13 +178,19 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   if (isSelfSentPreStayInformationMail({ fromAddress: selected.fromAddress, mailboxAddress: mailbox.email, subject: selected.subject })) {
     refuse('existing_stay_information');
   }
-  const caseReads = await db.select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload,
+  const caseReads = await db.select({ id: mailExtraction.id, kind: mailExtraction.kind, createdAt: mailExtraction.createdAt, payload: mailExtraction.payload,
     translation: mailExtraction.translation, attachments: mailExtraction.attachments }).from(mailExtraction).where(and(
     eq(mailExtraction.messageId, selected.id), eq(mailExtraction.status, 'succeeded'),
   )).orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
   const caseRead = caseReads[0];
   if (caseRead && item.extractionId && caseRead.id !== item.extractionId) refuse('case_read_superseded');
   if (!caseRead || caseRead.kind !== item.kind) refuse('case_scope_unverified');
+  // A timestamp tie does not establish which read was current when the plan was shown.
+  const [tiedRead] = await db.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+    eq(mailExtraction.messageId, selected.id), eq(mailExtraction.status, 'succeeded'),
+    ne(mailExtraction.id, caseRead.id), gte(mailExtraction.createdAt, caseRead.createdAt),
+  )).limit(1);
+  if (tiedRead) refuse('case_read_superseded');
   assertOneRoomCaseScope(caseRead.payload, item.state, input.stayId);
   const [run] = await db.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
