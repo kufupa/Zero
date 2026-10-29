@@ -124,6 +124,43 @@ describe('quote workflow backend bind', () => {
       internetMessageId: 'mail' })).toEqual(held);
   });
 
+  it('holds a previously found email that disappears while opening its work item', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-old', refs: {},
+      analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    const held = { status: 'failed', hold: true, reason: expect.stringContaining('no longer available') };
+    expect(await bindStoredWork({ query: { query: async () => stored }, open: { mutate: async () => ({ status: 'none' }) },
+      internetMessageId: 'mail' })).toEqual(held);
+    expect(await bindStoredWork({ query: { query: async () => ({ status: 'none' }) },
+      open: { mutate: async () => ({ status: 'none' }) }, internetMessageId: 'mail' })).toEqual({ status: 'none' });
+  });
+
+  it('reports a late disappearance after showing a slow stored read', async () => {
+    vi.useFakeTimers();
+    try {
+      const stored = {
+        status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+        extractionId: 'ex-old', refs: {},
+        analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+        contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+      };
+      let finish!: (value: { status: 'none' }) => void;
+      const onLateHold = vi.fn();
+      const result = bindStoredWork({ query: { query: async () => stored },
+        open: { mutate: () => new Promise((resolve) => { finish = resolve; }) },
+        internetMessageId: 'mail', openTimeoutMs: 10, onLateHold });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await result).toEqual(stored);
+      finish({ status: 'none' });
+      await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports unavailable when analyseSelection is not on the client', async () => {
     const result = await bindAnalyseSelection({
       input: {

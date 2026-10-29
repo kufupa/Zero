@@ -358,7 +358,13 @@ export async function bindStoredWork(args: {
     }, args.openTimeoutMs);
   });
   try {
-    const opening = pinned ? args.open.mutate(input, pinned) : args.open.mutate(input);
+    const opening = (pinned ? args.open.mutate(input, pinned) : args.open.mutate(input)).then((opened): StoredWork => {
+      // The earlier lookup found this email. A later absence means the selected source changed or became ambiguous.
+      if (opened.status === 'none') return {
+        status: 'failed', hold: true, reason: 'This email changed or is no longer available. Review it manually.',
+      };
+      return opened;
+    });
     void opening.then((opened) => {
       if (openTimedOut && opened.status === 'failed' && opened.hold && !args.isStale?.()) args.onLateHold?.(opened);
     }, () => {});
