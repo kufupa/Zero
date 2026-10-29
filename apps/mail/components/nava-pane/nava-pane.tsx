@@ -675,6 +675,27 @@ export function NavaPane({
   });
   const storedPaneRef = useRef(storedWork.pane);
   storedPaneRef.current = storedWork.pane;
+  // Forward the source this pane actually read; HMS party picks remain separately editable.
+  const quoteSourceBinding = storedWork.pane.state === 'ready'
+    ? { sourcePartyDigest: storedWork.pane.sourcePartyDigest ?? null, sourceExtractionId: storedWork.pane.extractionId }
+    : { sourcePartyDigest: null, sourceExtractionId: null };
+  const previousQuoteSource = useRef<{ key: string; party: string | null; extraction: string | null } | null>(null);
+  useEffect(() => {
+    const binding = quoteSession.binding;
+    if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE || !binding) {
+      previousQuoteSource.current = null;
+      return;
+    }
+    const next = { key: JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]), party: quoteSourceBinding.sourcePartyDigest,
+      extraction: quoteSourceBinding.sourceExtractionId };
+    const previous = previousQuoteSource.current;
+    previousQuoteSource.current = next;
+    if (previous?.key === next.key && previous.party &&
+      (previous.party !== next.party || previous.extraction !== next.extraction)) {
+      dispatchQuote({ type: 'quote_source_changed' });
+    }
+  }, [activePaneConfig?.propertyCode, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
+    quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId]);
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -1117,6 +1138,8 @@ export function NavaPane({
     quoteSession.analysis?.luna?.workflow ?? '',
     caseReviewPending(quoteSession.analysis) ? 'case-held' : '',
     quoteSession.staffSource?.threadId ?? '',
+    quoteSourceBinding.sourcePartyDigest ?? '',
+    quoteSourceBinding.sourceExtractionId ?? '',
     String(quoteSession.inputRevision),
     String(quoteSession.stayRevision),
     String(quoteSession.binding?.selectionEpoch ?? 0),
@@ -1180,6 +1203,7 @@ export function NavaPane({
         staffQuoteJob,
         registryStrategies,
         source,
+        ...quoteSourceBinding,
         selectionEpoch,
         inputRevision,
         groups,
@@ -1295,6 +1319,7 @@ export function NavaPane({
               query: trackRatesJob(staff.workstation.staffQuoteJob?.query, source),
               signal: pollController.signal,
               source,
+              ...quoteSourceBinding,
               selectionEpoch,
               inputRevision,
               groups,
@@ -1535,6 +1560,7 @@ export function NavaPane({
     staffQuoteAutoSuppressed,
     staffQuoteAutoAttempted,
     activePaneConfig,
+    ...quoteSourceBinding,
     autoStartStaffQuoteStepRef,
     runQuoteStep: (stepId, autoStart, readBack) => runQuoteStepRef.current(stepId, autoStart, readBack),
     autoStaffQuoteSuppressed,
@@ -1833,6 +1859,7 @@ export function NavaPane({
         queue: staff.workstation.queueStaffQuote?.mutate,
         staffQuoteJob: trackRatesJob(staff.workstation.staffQuoteJob?.query, source),
         source,
+        ...quoteSourceBinding,
         selectionEpoch,
         inputRevision,
         groups,
@@ -2018,6 +2045,7 @@ export function NavaPane({
           query: (input, options) =>
             originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
           source,
+          ...quoteSourceBinding,
           selectionEpoch,
           inputRevision,
           groups: stayGroups,
@@ -2028,14 +2056,14 @@ export function NavaPane({
       }
       if (readBack && !retrying) {
         return bindReadBackStaffQuote({
-          query: observedStaffQuoteJob, source, selectionEpoch, inputRevision, groups: stayGroups,
+          query: observedStaffQuoteJob, source, ...quoteSourceBinding, selectionEpoch, inputRevision, groups: stayGroups,
           header: runHeader, propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey,
         });
       }
       if (autoStart && !retrying) {
         return bindAutoStartStaffQuote({
           queue: staff.workstation.queueStaffQuote?.mutate, staffQuoteJob: observedStaffQuoteJob,
-          source, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
+          source, ...quoteSourceBinding, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
           propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey,
         });
       }
@@ -2044,6 +2072,7 @@ export function NavaPane({
         queue: staff.workstation.queueStaffQuote?.mutate,
         staffQuoteJob: observedStaffQuoteJob,
         source,
+        ...quoteSourceBinding,
         selectionEpoch,
         inputRevision,
         groups: stayGroups,

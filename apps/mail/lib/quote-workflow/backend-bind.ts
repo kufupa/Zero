@@ -232,6 +232,8 @@ export type StoredWork =
       };
       sourceConflict?: StoredSourceConflict;
       contact: StoredContact;
+      /** Fingerprint of the saved agency and end-client source, from this read. */
+      sourcePartyDigest?: string | null;
       /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
       stays?: Record<string, StoredStayCommit>;
       /** The read's source language (ISO 639-1), or null when unclear. */

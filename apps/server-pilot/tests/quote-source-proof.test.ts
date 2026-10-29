@@ -4,14 +4,16 @@ import { captureQuoteSourceProof, quoteSourceProofIsCurrent, quoteSourceProofMat
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 
 const scope = { transportId: 'transport-centurion', threadId: 't1', messageId: 'm1', propertyCode: 'HRCEN' };
 const input = staffQuoteInput.parse({ messageId: 'm1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
+  sourcePartyDigest: quoteSourcePartyDigest({ agency: null, endClient: null }, {}), sourceExtractionId: 'extract-1',
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1,
     adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'dinner_bb', roomCodes: ['SKNG'],
     sourcePreference: { roomType: 'Standard King', board: 'dbb' } }], salesStrategy: 'BAR' });
 function evidence(stayId = 's1', rowId = 'r1') {
-  const data = { payload: { contact: { name: null, email: null, phone: null }, agency: null as string | null, endClient: null,
+  const data = { payload: { contact: { name: null, email: null, phone: null }, agency: null as string | null, endClient: null as string | null,
     confirmationNumbers: [], missing: [], stays: [{ id: stayId, hotel: null,
       requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
       guests: [{ name: 'Synthetic Guest', confirmationNumber: null as string | null }],
@@ -49,10 +51,10 @@ describe('source preferences bound to a Centurion price', () => {
   it('rejects pre-policy proofs on every Centurion reuse path but preserves HRDAV', async () => {
     const { db } = evidence();
     const current = await captureQuoteSourceProof(db, input, scope);
-    expect(current?.version).toBe(3);
+    expect(current?.version).toBe(4);
     const revision = { groups: [{ arrivalDate: '2027-10-20', departureDate: '2027-10-21',
       quantity: 1, adults: 2, children: 0, childAges: [] }] };
-    for (const version of [1, 2]) {
+    for (const version of [1, 2, 3]) {
       const old = { ...current!, version };
       expect(quoteSourceProofPredatesPolicy(old)).toBe(true);
       expect(quoteSourceProofMatchesInput(old, input)).toBe(false);
@@ -92,6 +94,89 @@ describe('source preferences bound to a Centurion price', () => {
     delete data.state['stays[s1].rows[r1].roomType'];
     data.state['stays[s1].rows[r1].board'] = 'bb';
     expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+  });
+
+  it.each([
+    ['contact.company', 'Synthetic Agency', 'Another Agency'],
+    ['contact.endClient', 'Synthetic Company', 'Another Company'],
+  ])('invalidates a Centurion price after the saved %s changes or is cleared', async (path, original, changed) => {
+    const { data, db } = evidence();
+    data.payload.agency = 'Synthetic Agency';
+    data.payload.endClient = 'Synthetic Company';
+    const submitted = staffQuoteInput.parse({ ...input, agency: data.payload.agency, company: data.payload.endClient,
+      sourcePartyDigest: quoteSourcePartyDigest(data.payload, data.state),
+      parties: { agency: { kind: 'agency', nativeId: 'AGENCY1', name: data.payload.agency },
+        company: { kind: 'company', nativeId: 'COMPANY1', name: data.payload.endClient } } });
+    const proof = await captureQuoteSourceProof(db, submitted, scope);
+    expect(proof).not.toBeNull();
+    for (const unrelated of ['contact.name', 'contact.email', 'contact.phone']) data.state[unrelated] = 'changed';
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, scope, proof)).toBe(true);
+    data.state[path] = original;
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, scope, proof)).toBe(true);
+    data.state[path] = changed;
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, scope, proof)).toBe(false);
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, { ...scope, propertyCode: 'HRDAV' }, proof)).toBe(true);
+    data.state[path] = null;
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, scope, proof)).toBe(false);
+    delete data.state[path];
+    expect(await quoteSourceProofIsCurrent(db, submitted.groups, scope, proof)).toBe(true);
+  });
+
+  it('does not reuse a copied price for a different saved agency or end client', async () => {
+    const original = evidence();
+    original.data.payload.agency = 'Synthetic Agency';
+    original.data.payload.endClient = 'Synthetic Company';
+    const proof = await captureQuoteSourceProof(original.db,
+      { ...input, sourcePartyDigest: quoteSourcePartyDigest(original.data.payload, original.data.state)! }, scope);
+    const copy = evidence('s2', 'r2');
+    copy.data.payload.agency = 'Synthetic Agency';
+    copy.data.payload.endClient = 'Synthetic Company';
+    const copyScope = { ...scope, threadId: 't2', messageId: 'm2' };
+    const copiedGroup = { ...input.groups[0]!, id: 'r2' };
+    const revision = { groups: [{ arrivalDate: copiedGroup.arrivalDate, departureDate: copiedGroup.departureDate,
+      quantity: 1, adults: 2, children: 0, childAges: [] }] };
+    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(true);
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(true);
+    for (const path of ['contact.company', 'contact.endClient']) {
+      copy.data.state[path] = 'Different Party';
+      expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
+      expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
+      expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], { ...copyScope, propertyCode: 'HRDAV' }, proof)).toBe(true);
+      delete copy.data.state[path];
+    }
+    copy.data.payload.agency = 'Different Agency';
+    expect(await quoteSourceProofMatchesCopy(copy.db, [copiedGroup], copyScope, proof)).toBe(false);
+    expect(await quoteSourceProofMatchesSingleStay(copy.db, revision, copyScope, proof)).toBe(false);
+  });
+
+  it('requires the pane-seen party and extraction at Centurion admission', async () => {
+    const { data, db } = evidence();
+    const captured = await captureQuoteSourceProof(db, input, scope);
+    expect(captured).not.toBeNull();
+    expect(await captureQuoteSourceProof(db, { ...input, sourcePartyDigest: undefined }, scope)).toBeNull();
+    expect(await captureQuoteSourceProof(db, { ...input, sourceExtractionId: undefined }, scope)).toBeNull();
+    expect(await captureQuoteSourceProof(db, { ...input, sourcePartyDigest: undefined, sourceExtractionId: undefined },
+      { ...scope, propertyCode: 'HRDAV' })).not.toBeNull();
+
+    data.state['contact.company'] = 'New Source Agency';
+    expect(await captureQuoteSourceProof(db, input, scope)).toBeNull();
+    // A deliberately different HMS choice remains valid once the pane has seen the saved source.
+    const seen = staffQuoteInput.parse({ ...input, sourcePartyDigest: quoteSourcePartyDigest(data.payload, data.state),
+      agency: 'Picked Agency', parties: { agency: { kind: 'agency', nativeId: 'A1', name: 'Picked Agency' } } });
+    expect(await captureQuoteSourceProof(db, seen, scope)).not.toBeNull();
+    data.state['contact.company'] = null;
+    expect(await captureQuoteSourceProof(db, seen, scope)).toBeNull();
+    const cleared = { ...input, sourcePartyDigest: quoteSourcePartyDigest(data.payload, data.state)! };
+    expect(cleared.sourcePartyDigest).not.toBe(input.sourcePartyDigest); // explicit clear is not an absent field
+    expect(await captureQuoteSourceProof(db, cleared, scope)).not.toBeNull();
+    delete data.state['contact.company'];
+    expect(await captureQuoteSourceProof(db, cleared, scope)).toBeNull();
+
+    data.latest = data.pinned = 'extract-2';
+    expect(await captureQuoteSourceProof(db, input, scope)).toBeNull();
+    expect(await captureQuoteSourceProof(db, { ...input, sourceExtractionId: 'extract-2' }, scope)).not.toBeNull();
+    // An existing quote may still reuse a relinked, identical extraction.
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, captured)).toBe(true);
   });
 
   it('distinguishes absent source values from staff-cleared values after admission', async () => {

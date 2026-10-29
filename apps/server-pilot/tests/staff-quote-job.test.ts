@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { AiWorkflowRun } from '../src/ai/run-ledger.js';
@@ -111,6 +112,8 @@ import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 
 const STAFF_QUOTE_INPUT = {
   messageId: 'message-1',
+  sourcePartyDigest: quoteSourcePartyDigest({ agency: null, endClient: null }, {})!,
+  sourceExtractionId: 'extraction-1',
   sourceHash: 'a'.repeat(64),
   selectionEpoch: 3,
   inputRevision: 5,
@@ -431,6 +434,25 @@ async function provisionalWorkerQuote(
 }
 
 describe('runStaffQuote child occupancy', () => {
+  it('refuses a stale pane party before configuration or HMS is reached', async () => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
+      '../src/ai/staff-quote-run.js',
+    );
+    const mail = {
+      id: STAFF_QUOTE_INPUT.messageId, transportId: TRANSPORT_ID, threadId: 'thread-1', direction: 'inbound',
+      subject: 'Accommodation enquiry', textBody: 'Please quote accommodation.', htmlBody: null,
+      receivedAt: new Date('2026-10-12T08:00:00Z'), sentAt: null, createdAt: new Date('2026-10-12T08:00:00Z'),
+    };
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail) });
+    const quoteDb = staffQuoteRunDb(mail, input.groups);
+    quoteDb.occupancyState['contact.company'] = 'New Synthetic Agency';
+    await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED', cause: expect.objectContaining({ reason: 'child_occupancy_incomplete' }),
+    });
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+  });
+
   it('refuses a forged zero when the extraction mentions a child without an age', async () => {
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
       '../src/ai/staff-quote-run.js',

@@ -637,6 +637,20 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('rejects a prepared price from a different saved party source', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { sourcePartyDigest: 'c'.repeat(64) }),
+    }));
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, queue, staffQuoteJob, source,
+      sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'read-1',
+      selectionEpoch: 3, inputRevision: 4, groups, header: emptyStaffQuoteHeader(),
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('out of date') });
+  });
+
   it('does not relabel a prepared contract price as the selected Centurion strategy', async () => {
     const header = {
       ...emptyStaffQuoteHeader(),

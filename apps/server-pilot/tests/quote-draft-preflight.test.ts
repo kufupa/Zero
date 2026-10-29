@@ -4,6 +4,7 @@ import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { quotePdfJobIdentity } from '../src/ai/quote-pdf-jobs.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
@@ -88,6 +89,7 @@ async function fixture() {
   };
   const db = { transaction, select, selectDistinct: select, insert: () => ({ values: async () => undefined }) } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
+    sourcePartyDigest: quoteSourcePartyDigest(payload, state), sourceExtractionId: 'extract-1',
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1', arrivalDate: '2027-10-20',
       departureDate: '2027-10-21', quantity: 1, adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'room_only',
       sourcePreference: { roomType: null, board: null } }] });

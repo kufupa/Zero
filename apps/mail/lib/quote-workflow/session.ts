@@ -2338,6 +2338,8 @@ export function reduceQuoteSession(
         },
       };
     }
+    case 'quote_source_changed':
+      return clearDownstream({ ...session, inputRevision: session.inputRevision + 1 });
     case 'patch_staff_header': {
       // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.
       const { fieldErrors, ...amounts } = action.header;

@@ -13,6 +13,7 @@ import { resolveApprovedOverride, resolveImportedOffer } from '../src/quote-prop
 import { appRouter } from '../src/trpc/router.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 
 const transportId = 'transport-centurion';
 const userId = 'user-1';
@@ -101,6 +102,7 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
     },
   } as unknown as DB;
   const sourceInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
+    sourcePartyDigest: quoteSourcePartyDigest(payload, state), sourceExtractionId: 'extract-1',
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1',
       arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 2, adults: 1,
       childrenPerRoom: 0, childrenAges: [], board: 'room_only', sourcePreference: { roomType: null, board: null } }] });
@@ -236,6 +238,20 @@ describe('stored quote export and draft occupancy', () => {
     }
     delete (run.metrics.staffQuoteAttestation as { quoteSourceProof?: unknown }).quoteSourceProof;
     await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it.each(['contact.company', 'contact.endClient'])('holds a cached PDF, workbook, choices and draft after %s changes', async (path) => {
+    const { proposal, revision, state, db, draft, artifact } = await fixture();
+    const api = caller().workstation;
+    const { workItemId: _item, ...uncached } = proposal;
+    const pdf = { workItemId: itemId, revisionRef: revision.id, company: '', agency: '' };
+    expect((await api.quotePdfJob(pdf))?.result).toEqual(artifact);
+    state[path] = 'Another Synthetic Party';
+    await expect(api.quotePdfJob(pdf)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices).toHaveLength(0);
+    await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
   });
 
   it('hides stored priced choices after the saved occupancy changes', async () => {

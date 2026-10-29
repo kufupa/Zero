@@ -6,10 +6,12 @@ import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger
 import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 
 const mail = { id: 'm1', transportId: 'transport-centurion', threadId: 't1', direction: 'inbound',
   messageIdHeader: null, subject: 'Synthetic quote', textBody: 'Please quote accommodation.', htmlBody: null };
 const base = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
+  sourcePartyDigest: quoteSourcePartyDigest({ agency: null, endClient: null }, {}), sourceExtractionId: 'extract-1',
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1,
     adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
   salesStrategy: 'BAR', parties: { agency: { kind: 'agency', nativeId: '42', name: 'Example Agency' } } });

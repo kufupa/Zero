@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { assertDraftQuoteSourcesLocked } from '../src/trpc/routes/workstation.js';
+import { appRouter } from '../src/trpc/router.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 
@@ -20,7 +22,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
     try {
       await holder.db.insert(mailboxTransport).values({ id: transportId, email: address, ownerHeaderValue: address });
       await holder.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
-      await holder.db.insert(message).values({ id: messageId, transportId, threadId, direction: 'inbound', fromAddress: address });
+      await holder.db.insert(message).values({ id: messageId, transportId, threadId, direction: 'inbound',
+        messageIdHeader: address, fromAddress: 'sender@example.invalid' });
       const payload = { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
         confirmationNumbers: [], missing: [], stays: [{ id: 's1', hotel: null,
           requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
@@ -30,9 +33,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
       const [item] = await holder.db.insert(workItem).values({ transportId, threadId, sourceMessageId: messageId,
         kind: 'quote', extractionId: read!.id }).returning({ id: workItem.id });
       const scope = { transportId, threadId, messageId, propertyCode: 'HRCEN' };
-      const input = staffQuoteInput.parse({ messageId, sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
+      __setDbForTests({ db: holder.db, conn: null as never });
+      const api = appRouter.createCaller({ auth: null as never, reqHeaders: new Headers(),
+        sessionUser: { id: 'staff-1', email: 'staff@example.invalid', name: 'Staff' },
+        activeTransportId: transportId, accessRole: 'owner', transportEmail: address } as never).workItems;
+      const pane = await api.getByMessage({ internetMessageId: `<${address}>` });
+      if (pane.status !== 'ready') throw new Error('synthetic work item was not ready');
+      const stale = staffQuoteInput.parse({ messageId, sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
+        sourcePartyDigest: quoteSourcePartyDigest(payload, {}), sourceExtractionId: read!.id,
         groups: [{ id: 'g1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1, adults: 2,
           childrenPerRoom: 0, childrenAges: [], board: 'room_only', sourcePreference: { roomType: null, board: null } }] });
+      expect(pane.sourcePartyDigest).toBe(stale.sourcePartyDigest);
+      await api.recordEvent({ workItemId: item!.id, type: 'field.edit', fieldPath: 'contact.company', value: 'New Agency' });
+      expect(await captureQuoteSourceProof(holder.db, stale, scope)).toBeNull();
+      const refreshed = await api.getByMessage({ internetMessageId: `<${address}>` });
+      if (refreshed.status !== 'ready') throw new Error('synthetic refreshed work item was not ready');
+      expect(refreshed.sourcePartyDigest).not.toBe(stale.sourcePartyDigest);
+      const input = { ...stale, sourcePartyDigest: refreshed.sourcePartyDigest ?? undefined };
       const proof = await captureQuoteSourceProof(holder.db, input, scope);
       expect(proof).not.toBeNull();
       const revision = await syntheticRevision(['600.00'], 'Room Only R', 'SKNG', undefined, '2027-10-20', 'auth-1',
@@ -62,6 +79,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
       await expect(holder.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB, scope, sources)))
         .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     } finally {
+      __setDbForTests(null);
       await Promise.all([holder.close(), editor.close()]);
     }
   }, 30000);
