@@ -470,6 +470,23 @@ describe('runStaffQuote child occupancy', () => {
 });
 
 describe('staff_quote HMS job execution', () => {
+  it('does not publish a price if the thread hotel changes while the job is pricing', async () => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) => {
+      originMocks.guard.mockResolvedValue({
+        ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin',
+      });
+      return syntheticRevision(
+        ['600.00', '600.00'], 'Room Only R', 'SKNG', undefined, '2026-11-12', prepared.authorizationId,
+      );
+    });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false },
+    });
+  });
+
   it('persists the hotel that priced when the mailbox origin changes after the worker check', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());

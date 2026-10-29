@@ -5,6 +5,8 @@ import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
+import { draftQuoteOccupancyHold } from '../src/ai/child-occupancy.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 
 const transportId = 'transport-centurion';
 const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
@@ -44,7 +46,7 @@ function fakeDb(replies: Array<[unknown, unknown[]]>): DB {
     };
     const query = Object.assign(Promise.resolve().then(read), {
       from(value: unknown) { table = value; return query; },
-      where() { return query; }, orderBy() { return query; },
+      where() { return query; }, orderBy() { return query; }, for() { return query; },
       limit() { return query; },
     });
     return query;
@@ -56,7 +58,40 @@ const byIdReplies = (saved = item()) => [
   [aiWorkflowRun, [job()]], [message, [mail]], [mailExtraction, [extraction]], [workItem, [saved]],
 ] as Array<[unknown, unknown[]]>;
 
+async function withDavinciOrigin<T>(callback: () => Promise<T>): Promise<T> {
+  const previous = mailboxHmsOriginBindLoaders.loadThreadOriginScan;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+    selectedFound: true,
+    selected: { fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] },
+    inbounds: [{ fromAddress: 'davinci@legacyhotels.co.za' }],
+  });
+  try {
+    return await callback();
+  } finally {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = previous;
+  }
+}
+
 describe('cached quote views use current selected occupancy', () => {
+  it('holds a cached price if another inbound changes the thread hotel', async () => {
+    await withDavinciOrigin(async () => {
+      const view = await readHmsJobView(byId, fakeDb(byIdReplies()));
+      expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
+      expect(view?.result).not.toHaveProperty('totalMinor');
+    });
+  });
+
+  it('holds a final quote draft if another inbound changes the thread hotel', async () => {
+    await withDavinciOrigin(async () => {
+      const revision = { propertyCode: 'HRCEN', groups: [{ ...input.groups[0], children: 0, childAges: [] }] };
+      const hold = await draftQuoteOccupancyHold(fakeDb([[mailExtraction, [extraction]], [workItem, [item()]]]), {
+        transportId, threadId: mail.threadId, messageId: mail.id, triggerMessageId: mail.id,
+        result: { quoteRevisions: [revision] },
+      });
+      expect(hold).toMatch(/hotel|mailbox/i);
+    });
+  });
+
   it('returns a matching quote only while saved child evidence is complete', async () => {
     const current = await readHmsJobView(byId, fakeDb(byIdReplies()));
     expect(current?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
