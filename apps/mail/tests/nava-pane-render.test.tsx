@@ -2571,7 +2571,7 @@ describe('NavaPane', () => {
     expect(within(notice).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
   });
 
-  it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
+  it('auto-queues a Centurion Dinner B&B ask on the public BAR strategy', async () => {
     configureCenturionPane();
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
@@ -2591,7 +2591,7 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
-    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'BAR' });
   });
 
   it('auto-queues each complete date option once', async () => {
