@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
-import { blankRequiredCreateFields, createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { blankRequiredCreateFields, createLabtestRefusal, createModeRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
 import { profileFor } from './property-profile.mjs';
 
 function requiredRequest(extra = {}) {
@@ -37,6 +39,20 @@ async function withRequest(data, fn) {
 test('offline create request test does not opt into pilot RDS', () => {
   assert.notEqual(process.env.VITEST_ALLOW_PILOT_RDS, '1');
   assert.equal(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || ''), false);
+});
+
+test('implicit create exits before request or browser work; explicit safe modes remain available', () => {
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('./create-lab-stay.mjs', import.meta.url)),
+    '--property', 'HRCEN', '--request', '/nonexistent/create-request.json',
+  ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /explicit_create_mode_required/);
+  assert.equal(createModeRefusal({ paneCommit: true }), null);
+  assert.equal(createModeRefusal({ stopBefore: 'save' }), null);
+  assert.equal(createModeRefusal({ stopBefore: 'availability' }), null);
+  assert.equal(createModeRefusal({ shopMode: true }), null);
+  assert.equal(createModeRefusal({}), 'explicit_create_mode_required');
 });
 
 test('adults 0 fails before any browser work', async () => {

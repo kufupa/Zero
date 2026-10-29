@@ -82,6 +82,12 @@ export function createLabtestRefusal(propertyCode, stay, env = process.env) {
   return null;
 }
 
+// A create must use the reconciled pane-commit path; preview and rate shop never save.
+export function createModeRefusal({ paneCommit, stopBefore, shopMode }) {
+  return paneCommit || shopMode || stopBefore === 'availability' || stopBefore === 'save'
+    ? null : 'explicit_create_mode_required';
+}
+
 // --- create-readback-rules ---
 export const READBACK_WAIT_MS = 60_000;
 export const READBACK_POLL_MS = 5_000;
@@ -1044,6 +1050,12 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const shopMode = parseShop(argv);
+  const modeRefusal = createModeRefusal({ ...stop, shopMode });
+  if (modeRefusal) {
+    process.stderr.write(`${modeRefusal}\n`);
+    process.exitCode = 2;
+    return;
+  }
   const out = parseOutDir(argv);
   if (!out.ok) {
     process.stderr.write(`${out.error}\n`);
@@ -1262,6 +1274,7 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     const verifySave = proofMode || stop.paneCommit;
+    if (!verifySave) throw new Error('explicit_create_mode_required');
     const existingRows = verifySave
       ? await readExistingGuestRows(browser, secret, stay, dir, result)
       : null;
@@ -1390,46 +1403,6 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
-    if (result.saved) {
-      const actual = await readSavedCreateFields(page);
-      const cms = compareCmsReadback(expectedCmsFields(stay), actual);
-      const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
-      const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
-        .map(([field, expected]) => ({ field, expected, actual: actual[field] ?? null }));
-      if (cms.reason || childMismatches.length) {
-        result.outcome = cms.reason ?? 'saved_child_mismatch';
-        result.cmsReason = cms.reason;
-        result.mismatches = [...cms.mismatches, ...childMismatches];
-        result.cancelled = false;
-        process.stdout.write(`${result.outcome}\n`);
-        return;
-      }
-    }
-    if (!result.saved) {
-      result.outcome = 'save_unconfirmed';
-      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
-      process.stdout.write(`${result.outcome}\n`);
-      return;
-    }
-    let cancelled = false;
-    for (let attempt = 1; attempt <= 2 && !cancelled; attempt += 1) {
-      try {
-        await clickTip(page, 'Cancel');
-        const yes = page.getByRole('button', { name: /yes|ok/i }).first();
-        if (await yes.count()) await yes.click();
-        await page.waitForTimeout(2000);
-        const status = await page.locator('input[name="status"]').inputValue().catch(() => '');
-        result.statusAfterCancel = status;
-        cancelled = /cancel/i.test(status);
-      } catch (error) {
-        result.cancelError = String(error.message || error);
-      }
-    }
-    result.cancelled = cancelled;
-    await shot(page, dir, 'cancelled.png');
-    result.outcome = cancelled ? 'saved_then_cancelled' : 'cancel_failed';
-      process.stdout.write(`${result.outcome}\n`);
-      if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
     });
   } catch (error) {
     result.outcome = 'execution_failure';
