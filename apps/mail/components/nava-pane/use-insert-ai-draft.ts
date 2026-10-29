@@ -73,12 +73,22 @@ type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
 
 /** Changes are marked at dispatch time, before React renders or debounced work-item saves finish. */
-export function useQuoteDraftRevision<Action extends { type: string }>(dispatch: (action: Action) => void) {
+export function useQuoteDraftRevision<Action extends { type: string }>(
+  dispatch: (action: Action) => void, pendingPartyKinds: QuoteSession['pendingPartyKinds'],
+) {
   const live = useRef(0);
+  const latestPendingKinds = useRef(pendingPartyKinds);
+  latestPendingKinds.current = pendingPartyKinds;
   const mark = useCallback(() => { live.current += 1; }, []);
   const trackedDispatch = useCallback((action: Action) => {
-    // Lookup status is reported on every picker render; it does not change the reviewed quote.
-    if (action.type !== 'party_lookup_pending') mark();
+    if (action.type === 'party_lookup_pending') {
+      // Pickers report this after every render, but a real transition must hold a pending draft.
+      const lookup = action as { kind: string; pending: boolean };
+      if ((latestPendingKinds.current ?? []).some((kind) => kind === lookup.kind) !== lookup.pending) mark();
+    } else if (action.type !== 'quote_strategy_comparison_started' && action.type !== 'quote_strategy_comparison_result') {
+      // Background comparison rows do not select or alter the reviewed quote.
+      mark();
+    }
     dispatch(action);
   }, [dispatch, mark]);
   return { live, rendered: live.current, mark, dispatch: trackedDispatch };
@@ -465,6 +475,8 @@ export function useInsertAiDraft({
         if (!proof) return;
         if (!sameStaffScope() || contextRevision.current.selectionEpoch !== proof.localSelectionEpoch)
           throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
+        if (quoteSessionRef.current.pendingPartyKinds?.length)
+          throw new QuoteDraftPreflightError('Wait for the company or agency lookup to finish, then try again.');
         if (quoteDraftRevision.current !== proof.localRevision || !sameLocalQuote(proof.localQuote, quoteSessionRef.current))
           throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
       };

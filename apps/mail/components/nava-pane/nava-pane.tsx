@@ -318,7 +318,7 @@ export function NavaPane({
     activateMailboxSync,
   } = bridge;
   const [quoteSession, dispatchQuoteState] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
-  const quoteDraftRevision = useQuoteDraftRevision(dispatchQuoteState);
+  const quoteDraftRevision = useQuoteDraftRevision(dispatchQuoteState, quoteSession.pendingPartyKinds);
   const dispatchQuote = quoteDraftRevision.dispatch;
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobMessageId = quoteSession.staffSource?.messageId ?? null;
