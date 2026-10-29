@@ -18,7 +18,6 @@ import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
-  quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -105,6 +104,11 @@ import {
   stayKeyForGroup,
   hasStaffStayEdits,
   initialQuoteSession,
+  caseReviewPending,
+  paneCaseSnapshot,
+  sameCaseSnapshot,
+  withPaneRead,
+  type PaneCaseSnapshot,
   nextSelectedOfferIds,
   partyLookupWaitReason,
   pickNextRunnableStep,
@@ -233,17 +237,50 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
   return JSON.stringify([transportId, messageId, sourceHash, stayKey]);
 }
 
+const PANE_SOURCE_PREFIX = 'nava.pane-source.v1:';
+type PaneSourceRecord = { rows: string; source: PaneCaseSnapshot; pending?: boolean };
+const paneSources = new Map<string, PaneSourceRecord>();
+
+function paneSourceRecord(key: string): PaneSourceRecord | null {
+  try { return paneSources.get(key) ?? JSON.parse(sessionStorage.getItem(`${PANE_SOURCE_PREFIX}${key}`) ?? 'null'); }
+  catch { return paneSources.get(key) ?? null; }
+}
+
+function rememberPaneSource(key: string, groups: QuoteAnalysis['groups'], source: PaneCaseSnapshot | null, pending = false): void {
+  if (!source) {
+    paneSources.delete(key);
+    try { sessionStorage.removeItem(`${PANE_SOURCE_PREFIX}${key}`); } catch { /* In-memory state is gone. */ }
+    return;
+  }
+  const record = { rows: JSON.stringify(groups), source, pending };
+  paneSources.set(key, record);
+  try { sessionStorage.setItem(`${PANE_SOURCE_PREFIX}${key}`, JSON.stringify(record)); } catch { /* Memory still covers this mount. */ }
+}
+
+function recalledPaneSource(key: string, groups: QuoteAnalysis['groups']): PaneCaseSnapshot | null {
+  try {
+    const raw = paneSourceRecord(key);
+    const source = raw?.source;
+    if (raw?.rows !== JSON.stringify(groups) || !source ||
+      (source.identity !== null && typeof source.identity !== 'string') || typeof source.tasks !== 'string' ||
+      (source.propertyCode !== null && typeof source.propertyCode !== 'string')) return null;
+    return source as PaneCaseSnapshot;
+  } catch { return null; }
+}
+
 function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
   messageKey: string | undefined,
+  propertyCode: string | null,
 ): QuoteAnalysis {
-  if (!messageKey) return analysis;
-  const groups = overlayRememberedGroups(
-    analysis.groups,
-    recalledPaneEdits(paneEditKey(transportId, messageKey)),
-  );
-  return groups === analysis.groups ? analysis : { ...analysis, groups };
+  const key = messageKey ? paneEditKey(transportId, messageKey) : null;
+  const remembered = key ? recalledPaneEdits(key) : null;
+  if (key && remembered === null) rememberPaneSource(key, [], null);
+  const groups = overlayRememberedGroups(analysis.groups, remembered);
+  const overlaid = remembered !== null && groups !== analysis.groups;
+  return withPaneRead(analysis, overlaid ? groups : null,
+    overlaid && key && remembered ? recalledPaneSource(key, remembered) : null, propertyCode);
 }
 
 function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): HmsJobView {
@@ -650,7 +687,11 @@ export function NavaPane({
     pendingContactCorrections.current = null;
     const transportId = quoteSession.binding?.transportId;
     const messageKey = quoteSession.binding?.internetMessageId ?? activeEmail?.internetMessageId;
-    if (transportId && messageKey) forgetPaneEdits(paneEditKey(transportId, messageKey));
+    if (transportId && messageKey) {
+      const key = paneEditKey(transportId, messageKey);
+      forgetPaneEdits(key);
+      rememberPaneSource(key, [], null);
+    }
   }, [storedWork.historyEpoch]);
   const workItemPane =
     storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
@@ -779,12 +820,33 @@ export function NavaPane({
     const before = quoteSessionRef.current;
     dispatchQuote(action);
     const after = reduceQuoteSession(before, action);
-    storedWork.recordGroups(before.groups, after.groups);
+    const held = caseReviewPending(after.analysis);
+    if (!held) storedWork.recordGroups(before.groups, after.groups);
     const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
     if (after.binding?.transportId && messageKey) {
-      rememberPaneEdits(paneEditKey(after.binding.transportId, messageKey), after.groups);
+      const key = paneEditKey(after.binding.transportId, messageKey);
+      const pending = held || paneSourceRecord(key)?.pending === true;
+      rememberPaneEdits(key, after.groups);
+      rememberPaneSource(key, after.groups, paneCaseSnapshot(after.analysis), pending);
     }
   };
+  // Deferred edits are logged only after the stored read proves it is the case they were made for.
+  useEffect(() => {
+    const binding = quoteSession.binding;
+    const analysis = quoteSession.analysis;
+    if (!binding?.internetMessageId || binding.internetMessageId !== activeEmail?.internetMessageId ||
+      !analysis || caseReviewPending(analysis) || storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
+    const key = paneEditKey(binding.transportId, binding.internetMessageId);
+    const record = paneSourceRecord(key);
+    const current = paneCaseSnapshot(analysis);
+    const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
+    if (!record?.pending || !record.source || !current || !stored ||
+      !sameCaseSnapshot(record.source, current) || !sameCaseSnapshot(record.source, stored)) return;
+    storedWork.recordGroups(storedWork.pane.analysis.groups, quoteSession.groups);
+    rememberPaneEdits(key, quoteSession.groups);
+    rememberPaneSource(key, quoteSession.groups, current);
+  }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, storedWork.pane, storedWork.recordGroups,
+    activeEmail?.internetMessageId, activePaneConfig?.propertyCode]);
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
   const storedGate = storedOverridden
@@ -807,6 +869,7 @@ export function NavaPane({
           decision.analysis,
           binding.transportId,
           binding.internetMessageId,
+          activePaneConfig?.propertyCode ?? null,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
@@ -817,7 +880,13 @@ export function NavaPane({
         // The read as a first read, the way analysis_ready reads it under her typing, so the diff is only her typing.
         const first = { ...before, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null };
         const plain = reduceQuoteSession(first, ready).groups;
-        storedWork.recordGroups(plain, reduceQuoteSession(before, ready).groups);
+        const landed = reduceQuoteSession(before, ready);
+        if (!caseReviewPending(landed.analysis)) storedWork.recordGroups(plain, landed.groups);
+        else if (binding.internetMessageId) {
+          const key = paneEditKey(binding.transportId, binding.internetMessageId);
+          rememberPaneEdits(key, landed.groups);
+          rememberPaneSource(key, landed.groups, paneCaseSnapshot(landed.analysis), true);
+        }
       }
     } else if (decision.kind === 'failed') {
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
@@ -846,6 +915,7 @@ export function NavaPane({
               remote.analysis,
               binding.transportId,
               binding.internetMessageId,
+              activePaneConfig?.propertyCode ?? null,
             ),
           });
           return;
@@ -900,7 +970,7 @@ export function NavaPane({
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage, activePaneConfig?.propertyCode]);
 
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);

@@ -1592,6 +1592,41 @@ describe('NavaPane', () => {
     expect(screen.getByText('3 adults per room')).toBeDefined();
   });
 
+  it('holds remembered edits when the fresh stored case has a different guest', async () => {
+    const group = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1,
+      guestNames: ['Ada Example'], stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const original = { ...STORED_READY, analysis: { ...STORED_READY.analysis, groups: [group] } };
+    bridgeMockState.storedWork = original;
+    const pane = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(screen.getByText('3 adults per room')).toBeDefined());
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalled());
+    pane.unmount();
+    bridgeMockState.recordEvent.mockClear();
+    bridgeMockState.storedWork = { ...original, analysis: { ...original.analysis, groups: [{ ...group,
+      guestNames: ['Bea Example'], stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] } };
+    const heldPane = render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    expect(screen.getByText('3 adults per room')).toBeDefined();
+    expect(screen.queryByText('Ada Example')).toBeNull();
+    expect(screen.queryByText('Bea Example')).toBeNull();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(screen.getByText('4 adults per room')).toBeDefined());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    heldPane.unmount();
+    bridgeMockState.storedWork = original;
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
+      fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
+    })));
+  });
+
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
     bridgeMockState.storedWork = {
       ...STORED_READY,
