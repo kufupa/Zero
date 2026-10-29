@@ -204,7 +204,7 @@ export function linkRecord(
     for (const confirmation of item.confirmationNumbers) {
       for (const linkedDbId of indexes.byIdentifier.get(confirmation.value) ?? []) {
         const linked = indexes.byDbId.get(linkedDbId);
-        if (!linked || linked.threadId === parent.threadId) continue;
+        if (!linked || linkedDbId === parentDbId || (parent.threadId !== null && linked.threadId === parent.threadId)) continue;
         addEdge(edges, pdfId, linkedDbId, 2, 'confirmation_number_body_match', {
           confirmationNumber: confirmation.value,
           pdfPageNumber: confirmation.pageNumber,
