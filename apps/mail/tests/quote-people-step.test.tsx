@@ -147,6 +147,20 @@ describe('QuotePeopleStep', () => {
     expect(guest.value).toBe('Staff-entered value');
   });
 
+  it('does not treat a private contact as the staying guest when no guest was read', () => {
+    const row = { id: 'r_1', stayId: 's_1', quantity: 1 };
+    const session = { staffSource: null, groups: [row],
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
+    const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
+      contact, contactEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
+
+    render(<QuotePeopleStep {...props} />);
+    const guest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(guest.value).toBe('');
+    expect(guest.getAttribute('placeholder')).toBe('Guest name?');
+    expect(stayingGuestName(session, contact, 'private-contact-only')).toBe('');
+  });
+
   it('prefills a stored guest only while the original single room remains selected', () => {
     const row = {
       id: 'r_1', stayId: 's_1', quantity: 1,

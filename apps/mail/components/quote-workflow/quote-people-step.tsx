@@ -10,7 +10,7 @@ import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quot
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
 
-function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
+function inferredGuestName(session: QuoteSession): string {
   const sourceGroups = session.analysis?.groups ?? [];
   const hasStoredRoster = sourceGroups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests));
   if (hasStoredRoster) {
@@ -40,7 +40,6 @@ function inferredGuestName(session: QuoteSession, contact?: StoredContact | null
 
   if (uniqueGuestNames.length === 1) return uniqueGuestNames[0] ?? '';
   if (uniqueGuestNames.length > 1) return '';
-  if (session.analysis?.luna?.party?.kind === 'private') return contact?.name?.trim() ?? '';
   return '';
 }
 
@@ -58,25 +57,23 @@ export function guestEditorKeyFor(session: QuoteSession, fallback?: string | nul
 
 export function stayingGuestName(
   session: QuoteSession,
-  contact?: StoredContact | null,
+  _contact?: StoredContact | null,
   editorKey?: string,
 ): string {
   const key = editorKey ?? guestEditorKeyFor(session);
-  return recalledGuestName(key) ?? inferredGuestName(session, contact);
+  return recalledGuestName(key) ?? inferredGuestName(session);
 }
 
 function GuestNameField({
   session,
-  contact,
   guestEditorKey,
 }: {
   session: QuoteSession;
-  contact?: StoredContact | null;
   guestEditorKey: string;
 }) {
   const editedName = useSyncExternalStore(subscribeStayingGuestName,
     () => recalledGuestName(guestEditorKey), () => null);
-  const guestName = editedName ?? inferredGuestName(session, contact);
+  const guestName = editedName ?? inferredGuestName(session);
   const needsPrompt = guestName.trim().length === 0;
 
   return (
@@ -292,7 +289,6 @@ export function QuotePeopleStep({
       <GuestNameField
         key={`guest:${guestEditorKey}`}
         session={session}
-        contact={contact}
         guestEditorKey={guestEditorKey}
       />
       <StaffPartyFields
