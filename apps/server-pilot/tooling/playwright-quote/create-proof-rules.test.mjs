@@ -81,8 +81,9 @@ test('pane commit is committed only when readback matches', () => {
 
 test('conflicting observed confirmations remain unresolved without guessing a match', async () => {
   let calls = 0;
+  const observed = ['11111111-1', '22222222-1', '33333333-1'];
   const result = await rules.reconcileCreateSave({
-    save: { confirmed: false, confirmationNumber: null, reason: 'conflicting_confirmation_numbers' },
+    save: { confirmed: false, confirmationNumber: null, reason: 'conflicting_confirmation_numbers', conflictingConfirmationNumbers: observed },
     expected: EXPECTED,
     existingRows: [],
     searchByGuestDates: async () => { calls += 1; return { outcome: 'ok', rows: [] }; },
@@ -91,6 +92,8 @@ test('conflicting observed confirmations remain unresolved without guessing a ma
   assert.equal(calls, 0);
   assert.equal(result.confNo, null);
   assert.equal(result.unknownOutcome, 'unresolved');
+  assert.equal(result.conflictReason, 'conflicting_confirmation_numbers');
+  assert.deepEqual(result.conflictingConfirmationNumbers, observed);
   assert.equal(rules.paneCommitOutcome(result), 'committed_unverified');
 });
 

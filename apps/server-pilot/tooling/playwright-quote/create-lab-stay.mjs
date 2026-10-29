@@ -232,6 +232,9 @@ export function reconcileSaveInput(save) {
     confirmationNumber: confirmation || null,
     reason: save?.reason ?? null,
     status: save?.status ?? null,
+    ...(Array.isArray(save?.conflictingConfirmationNumbers)
+      ? { conflictingConfirmationNumbers: save.conflictingConfirmationNumbers }
+      : {}),
   };
 }
 
@@ -1080,6 +1083,7 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     mismatches: merged.mismatches,
     screenshot: merged.screenshot ?? savedScreenshot,
     unknownOutcome: merged.unknownOutcome,
+    ...(merged.conflictReason ? { conflictReason: merged.conflictReason } : {}),
     ...(merged.conflictingConfirmationNumbers ? { conflictingConfirmationNumbers: merged.conflictingConfirmationNumbers } : {}),
   };
 }

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
 import { blankRequiredCreateFields, createLabtestRefusal, createModeRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { reconcileCreateSave } from './create-proof-rules.mjs';
 import { profileFor } from './property-profile.mjs';
 import { readSaveSnapshot, waitForSaveConfirmation } from './save-wait.mjs';
 
@@ -734,7 +735,13 @@ test('save polling preserves unconfirmed breadcrumbs and refuses conflicting num
   assert.equal(conflict.confirmationNumber, null);
   assert.deepEqual(conflict.conflictingConfirmationNumbers, [prior, other]);
   assert.equal(conflict.reason, 'conflicting_confirmation_numbers');
-  assert.equal(rules.reconcileSaveInput(conflict).reason, 'conflicting_confirmation_numbers');
+  const reconciliationInput = rules.reconcileSaveInput(conflict);
+  assert.equal(reconciliationInput.reason, 'conflicting_confirmation_numbers');
+  const proof = await reconcileCreateSave({ save: reconciliationInput });
+  assert.equal(proof.unknownOutcome, 'unresolved');
+  assert.equal(proof.confNo, null);
+  assert.equal(proof.conflictReason, 'conflicting_confirmation_numbers');
+  assert.deepEqual(proof.conflictingConfirmationNumbers, [prior, other]);
 
   const laterConflict = await poll('', [
     { ...blank, maskVisible: true, confirmationNumber: prior }, blank,

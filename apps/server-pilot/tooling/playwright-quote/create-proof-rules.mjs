@@ -87,7 +87,16 @@ export async function reconcileCreateSave({
   save, expected, existingRows, readByConfirmation, searchByGuestDates,
 }) {
   const result = { confNo: null, readbackMatch: null, mismatches: [], screenshot: null, unknownOutcome: null };
-  if (save?.reason === 'conflicting_confirmation_numbers') return { ...result, unknownOutcome: 'unresolved' };
+  if (save?.reason === 'conflicting_confirmation_numbers') {
+    return {
+      ...result,
+      unknownOutcome: 'unresolved',
+      conflictReason: 'conflicting_confirmation_numbers',
+      ...(Array.isArray(save.conflictingConfirmationNumbers)
+        ? { conflictingConfirmationNumbers: save.conflictingConfirmationNumbers }
+        : {}),
+    };
+  }
   let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
   if (confNo) result.confNo = confNo;
 
@@ -130,6 +139,7 @@ export async function reconcileCreateSave({
       return {
         ...result,
         unknownOutcome: 'unresolved',
+        conflictReason: 'conflicting_confirmation_numbers',
         conflictingConfirmationNumbers: [observedConfirmation, confNo],
       };
     }
