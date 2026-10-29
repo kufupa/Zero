@@ -13,18 +13,14 @@ import {
   notExists,
   or,
   sql,
-  type SQL,
 } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { sqlList } from '../db/schema/hitl.js';
 import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 import {
-  FOLLOW_UP_DRAFT_FIELD_PATH,
   mailExtraction,
-  TELEMETRY_EVENT_TYPES,
   workEvent,
   workItem,
 } from '../db/schema/work.js';
@@ -69,6 +65,9 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
+import { personTouchSql, priorKindConflict, type StoredSourceConflict } from './work-item-source-conflict.js';
+export { personTouchSql, priorKindConflict } from './work-item-source-conflict.js';
+export type { StoredSourceConflict } from './work-item-source-conflict.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1398,18 +1397,6 @@ export async function knownSenders(db: WorkTx, transportId: string, fromAddresse
 }
 
 /**
- * SQL for "a person touched this work item", over the work_event alias the caller's query uses. The planner, the
- * dismissal sweep and the quote follow-up's close check all read it. A person's user event counts, except pane telemetry
- * and a plain field.accept (an AI value confirmed as read). The follow-up suggestion's accept is the exception: using it
- * from the Outlook reminder is the person's decision to send the follow-up.
- */
-export function personTouchSql(alias: string): SQL {
-  const e = sql.raw(alias);
-  return sql`(${e}.actor_kind = 'user' and ${e}.type not in (${sqlList(TELEMETRY_EVENT_TYPES)})
-    and (${e}.type <> 'field.accept' or ${e}.field_path = ${FOLLOW_UP_DRAFT_FIELD_PATH}))`;
-}
-
-/**
  * One status change the thread's work makes. `repoint` moves the reply link of an item a reply already closed to the
  * hotel's latest answer, and changes no status.
  */
@@ -1767,10 +1754,6 @@ export function storedTranslation(raw: unknown): StoredTranslation {
 
 export type FieldProvenanceSource = 'ai' | 'staff' | 'unknown';
 export type FieldProvenance = Record<string, { source: FieldProvenanceSource; value: unknown }>;
-export type StoredSourceConflict = {
-  reason: 'workflow_reclassified';
-  previousItems: Array<{ workItemId: string; kind: string; status: string }>;
-};
 
 export type StoredWork =
   | { status: 'none' }
@@ -2012,30 +1995,6 @@ async function readyView(
     language: read.language,
     translation: storedTranslation(read.translation),
   };
-}
-
-/** Do not hide decisions or saved state on an older workflow when this mail is reclassified. */
-export async function priorKindConflict(
-  db: DB,
-  input: { transportId: string; threadId: string; messageId: string; latestKind: string },
-): Promise<StoredSourceConflict | undefined> {
-  const previousItems = await db
-    .select({ workItemId: workItem.id, kind: workItem.kind, status: workItem.status })
-    .from(workItem)
-    .where(and(
-      eq(workItem.transportId, input.transportId),
-      eq(workItem.threadId, input.threadId),
-      eq(workItem.sourceMessageId, input.messageId),
-      ne(workItem.kind, input.latestKind),
-      or(
-        sql`${workItem.state} <> '{}'::jsonb`,
-        inArray(workItem.status, ['done', 'review']),
-        sql`exists (select 1 from ${workEvent} as prior_event
-          where prior_event.work_item_id = ${workItem.id} and ${personTouchSql('prior_event')})`,
-      ),
-    ))
-    .orderBy(desc(workItem.updatedAt), desc(workItem.id));
-  return previousItems.length ? { reason: 'workflow_reclassified', previousItems } : undefined;
 }
 
 async function workItemForKind(
