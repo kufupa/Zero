@@ -151,7 +151,7 @@ describe('create-lab-stay --property HRDAV', () => {
   it('parses --property, matches profile rooms, and Labtest-guards only in lab', async () => {
     const cli = await import('../tooling/playwright-quote/create-lab-stay.mjs');
     const { profileFor } = await import('../tooling/playwright-quote/property-profile.mjs');
-    expect(cli.parseCreateProperty([])).toEqual({ ok: true, propertyCode: 'HRCEN' });
+    expect(cli.parseCreateProperty([])).toEqual({ ok: false, exitCode: 2, error: 'PROPERTY_REQUIRED' });
     expect(cli.parseCreateProperty(['--property', 'HRDAV'])).toEqual({ ok: true, propertyCode: 'HRDAV' });
     expect(cli.parseCreateProperty(['--property', 'OTHER'])).toEqual({
       ok: false,

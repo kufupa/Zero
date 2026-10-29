@@ -305,7 +305,7 @@ export function compareReadbackStay(expected, actual) {
 
 export async function waitWhileStillProcessing({
   reason,
-  confirmationNumber: priorConfirmation = '',
+  confirmationNumber: _priorConfirmation = '',
   timeoutMs = READBACK_WAIT_MS,
   pollMs = READBACK_POLL_MS,
   now = Date.now,
@@ -1049,12 +1049,19 @@ export async function main(argv = process.argv.slice(2)) {
     process.exitCode = stop.exitCode;
     return;
   }
+  const property = parseCreateProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode;
+    return property.exitCode;
+  }
+  const propertyCode = property.propertyCode;
   const shopMode = parseShop(argv);
   const modeRefusal = createModeRefusal({ ...stop, shopMode });
   if (modeRefusal) {
     process.stderr.write(`${modeRefusal}\n`);
     process.exitCode = 2;
-    return;
+    return 2;
   }
   const out = parseOutDir(argv);
   if (!out.ok) {
@@ -1063,13 +1070,6 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const actions = stayActions(stop.stopBefore);
-  const property = parseCreateProperty(argv);
-  if (!property.ok) {
-    process.stderr.write(`${property.error}\n`);
-    process.exitCode = property.exitCode;
-    return property.exitCode;
-  }
-  const propertyCode = property.propertyCode;
   const loaded = await loadCreateRequest(argv);
   if (!loaded.ok) {
     process.stderr.write(`${loaded.error}\n`);

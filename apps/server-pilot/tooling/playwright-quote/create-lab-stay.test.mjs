@@ -55,6 +55,17 @@ test('implicit create exits before request or browser work; explicit safe modes 
   assert.equal(createModeRefusal({}), 'explicit_create_mode_required');
 });
 
+test('missing property is refused before an implicit or explicit create mode', () => {
+  for (const mode of [[], ['--stop-before', 'save']]) {
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./create-lab-stay.mjs', import.meta.url)),
+      '--request', '/nonexistent/create-request.json', ...mode,
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /^PROPERTY_REQUIRED\s*$/);
+  }
+});
+
 test('adults 0 fails before any browser work', async () => {
   const loaded = await withRequest(requiredRequest({ adults: 0 }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, false);
