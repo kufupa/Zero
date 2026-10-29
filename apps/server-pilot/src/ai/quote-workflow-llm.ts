@@ -162,6 +162,7 @@ export type MappedQuoteDecision = {
     departureDate?: string;
     quantity?: number;
     adults?: number;
+    childrenPerRoom?: number | null;
     childrenAges: number[];
     board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
@@ -540,6 +541,7 @@ export function mapLlmDecision(
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
+      ...(group.childrenPerRoom !== undefined ? { childrenPerRoom: group.childrenPerRoom } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),

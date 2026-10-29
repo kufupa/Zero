@@ -37,6 +37,7 @@ function payload(overrides: Record<string, unknown> = {}) {
             roomType: 'Standard King',
             rooms: null,
             adultsPerRoom: 2,
+            childrenPerRoom: 0,
             childAges: [],
             board: null,
           },
@@ -65,6 +66,30 @@ function buildWithRoomType(roomType: string) {
 }
 
 describe('prepared quote input from stored extraction', () => {
+  it('keeps the extracted child count in the prepared group and its price identity', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({ stays: [{ ...stay, rows: [{
+      ...stay.rows[0]!, childrenPerRoom: 2, childAges: [8, 11],
+    }] }] });
+    const input = plan.inputs[0]!;
+    expect(input.groups[0]).toMatchObject({ childrenPerRoom: 2, childrenAges: [8, 11] });
+    expect(staffQuotePriceKey(input)).not.toEqual(staffQuotePriceKey({
+      ...input, groups: [{ ...input.groups[0]!, childrenPerRoom: 1 }],
+    }));
+  });
+
+  it('leaves the child-count request field out of Da Vinci prepared quotes', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId, sourceHash, propertyCode: 'HRDAV', now: new Date('2026-10-14T12:00:00.000Z'),
+      payload: payload({ stays: [{ ...stay, rows: [{
+        ...stay.rows[0]!, childrenPerRoom: 1, childAges: [8],
+      }] }] }),
+    });
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ childrenAges: [8] });
+    expect(plan.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
+  });
+
   it('defaults unspecified board to B&B and uses the single-row total without inventing occupancy', () => {
     const plan = build();
 
@@ -93,7 +118,7 @@ describe('prepared quote input from stored extraction', () => {
           booked: null,
           totalRooms: 1,
           rows: [{
-            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childAges: [], board: 'dbb',
+            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: 'dbb',
           }],
         },
       ],
@@ -474,6 +499,7 @@ function payloadForEval47Shape(row: Eval47SummaryRow): Record<string, unknown> |
         roomType: room.roomCodes[0] ?? null,
         rooms: room.count,
         adultsPerRoom: room.adultsPerRoom,
+        childrenPerRoom: room.childCountPerRoom,
         childAges: Array.from({ length: room.childCountPerRoom }, () => 0),
         board: board === 'room_only' ? 'room_only' : board === 'dinner_bb' ? 'dbb' : 'bb',
       };

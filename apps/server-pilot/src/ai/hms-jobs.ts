@@ -109,6 +109,8 @@ import {
 import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
 import { isStaffSender, knownSenders, NEEDS_YOU_KINDS } from './work-items.js';
 import {
+  STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE,
+  staffQuoteChildOccupancyComplete,
   staffQuoteInput,
   staffQuoteSourceHash,
   type StaffQuoteInput,
@@ -929,6 +931,7 @@ export async function queueAutoStaffQuoteHmsJob(
     const scoped = tx as unknown as DB;
     const [existing] = await latestStaffQuoteRunFor(
       scoped,
+      input.transportId,
       and(
         eq(aiWorkflowRun.transportId, input.transportId),
         eq(aiWorkflowRun.runKind, 'read_tool'),
@@ -4221,8 +4224,17 @@ async function toView(
   options: { includePosition?: boolean } = {},
 ): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
-  const status = STATUS_BY_STATE[run.state];
-  const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  let status = STATUS_BY_STATE[run.state];
+  let result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const property = resolvePropertyTransport(run.transportId);
+  const quoteResult = objectRecord(run.readRequest).kind === 'staff_quote' || objectRecord(result).kind === 'staff_quote';
+  if (property.kind === 'property' && property.property.propertyCode === 'HRCEN' && quoteResult && result &&
+    result.ok !== false && (!request.success || request.data.kind !== 'staff_quote' ||
+      !staffQuoteChildOccupancyComplete(request.data.input, 'HRCEN'))) {
+    status = 'failed';
+    result = { kind: 'staff_quote', ok: false, code: 'staff_quote_child_occupancy_incomplete',
+      message: STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE };
+  }
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
@@ -4245,6 +4257,7 @@ async function toView(
 /** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
 async function latestStaffQuoteRunFor(
   db: DB,
+  transportId: string,
   scope: ReturnType<typeof and>,
   messageId: string,
   quoteInput: StaffQuoteInput,
@@ -4315,9 +4328,11 @@ async function latestStaffQuoteRunFor(
     if (sameTerms) return [userRun];
   }
 
-  // A ready, selected contract for the bound party wins over the pane's default public strategy.
-  // Preserve the original newest-first order within each tier. Comparison callers still validate the strategy.
-  const preferBoundContract = Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
+  // Da Vinci keeps its existing bound-contract preference; Centurion must match the selected strategy.
+  // Preserve newest-first order within each tier. Comparison callers still validate the strategy.
+  const property = resolvePropertyTransport(transportId);
+  const preferBoundContract = property.kind === 'property' && property.property.propertyCode === 'HRDAV' &&
+    Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
     ['BAR', 'Government', 'GOV'].includes(quoteInput.salesStrategy);
   const hasReadySelectedContract = (run: AiWorkflowRun): boolean => {
     const result = objectRecord(run.readResult);
@@ -4498,6 +4513,7 @@ export async function readHmsJobView(
       : 'kind' in input && input.kind === 'staff_quote'
         ? await latestStaffQuoteRunFor(
             db,
+            input.transportId,
             scope,
             input.messageId,
             input.input,

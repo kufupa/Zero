@@ -230,6 +230,7 @@ describe('executeStaffQuote party on the pane bind', () => {
     departureDate: '2026-11-14',
     quantity: 1,
     adults: 1,
+    childrenPerRoom: 0,
     childrenAges: [] as number[],
     board: 'bb' as const,
     specialRequests: [] as string[],

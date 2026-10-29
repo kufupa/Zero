@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { paneStayAvailabilityRequestFor } from '../lib/quote-workflow/pane-stay-bind';
 import {
   bindExecuteStaffQuote,
   bindReadBackStaffQuote,
@@ -26,6 +27,7 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   departureDate: '2026-11-17',
   quantity: 1,
   adults: 1,
+  childrenPerRoom: 0,
   childrenAges: [],
   board: 'bb',
   specialRequests: [],
@@ -34,6 +36,35 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
 });
 
 describe('HRDAV native room and board maps', () => {
+  it('requires complete child occupancy for Centurion but preserves older Da Vinci reads', () => {
+    const unknown = stay({ childrenPerRoom: undefined, childrenAges: [], roomPreference: 'STWN' });
+    expect(staffQuoteGroupsFromStay([unknown], HRDAV_PROPERTY_CODE)).toHaveProperty('ok');
+    expect(staffQuoteGroupsFromStay([unknown], HRCEN_PROPERTY_CODE)).toEqual({
+      error: expect.stringMatching(/Confirm the number of children/),
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', [unknown], HRDAV_PROPERTY_CODE)).not.toBeNull();
+    expect(paneStayAvailabilityRequestFor('thread-1', [unknown], HRCEN_PROPERTY_CODE)).toBeNull();
+    expect(staffQuoteGroupsFromStay([stay({ childrenPerRoom: 2, childrenAges: [7] })], HRCEN_PROPERTY_CODE))
+      .toEqual({ error: expect.stringMatching(/Confirm the number of children/) });
+    expect(staffQuoteGroupsFromStay([stay({ childrenPerRoom: 1, childrenAges: [17] })], HRCEN_PROPERTY_CODE))
+      .toMatchObject({ ok: [{ childrenPerRoom: 1, childrenAges: [17] }] });
+  });
+  it('carries an explicit child count into the quote request', () => {
+    expect(staffQuoteGroupsFromStay([
+      stay({ childrenPerRoom: 1, childrenAges: [8] }),
+    ], HRCEN_PROPERTY_CODE)).toMatchObject({
+      ok: [{ childrenPerRoom: 1, childrenAges: [8] }],
+    });
+  });
+
+  it('keeps Da Vinci requests compatible with prepared quotes that omit the new count', () => {
+    const prepared = staffQuoteGroupsFromStay([
+      stay({ childrenPerRoom: 1, childrenAges: [8] }),
+    ], HRDAV_PROPERTY_CODE);
+    expect(prepared).toMatchObject({ ok: [{ childrenAges: [8] }] });
+    if ('ok' in prepared) expect(prepared.ok[0]).not.toHaveProperty('childrenPerRoom');
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

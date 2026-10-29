@@ -27,6 +27,7 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
         departureDate: '2026-10-15',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'bb',
       },

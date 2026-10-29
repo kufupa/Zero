@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -1176,6 +1175,7 @@ describe('quote session', () => {
         {
           ...quoteAnalysis.groups[0]!,
           organisation: 'Provincial Treasury',
+          childrenPerRoom: 1,
           childrenAges: [8],
           board: 'dinner_bb' as const,
           specialRequests: ['late arrival'],
@@ -1206,6 +1206,7 @@ describe('quote session', () => {
           quantity: 2,
           roomPreference: 'suite',
           adults: 1,
+          childrenPerRoom: 1,
           childrenAges: [8],
           board: 'dinner_bb',
           organisation: 'Provincial Treasury',

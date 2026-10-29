@@ -227,6 +227,7 @@ describe('staff row prices (AE4)', () => {
           departureDate: '2026-10-14',
           quantity: 2,
           adults: 1,
+          childrenPerRoom: 0,
           childrenAges: [],
           board: 'room_only',
           roomCodes: ['SKNG'],

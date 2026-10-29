@@ -102,6 +102,7 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
     quantity: group.quantity,
     roomPreference: group.roomPreference,
     adults: group.adults,
+    childrenPerRoom: group.childrenPerRoom,
     childrenAges: [...group.childrenAges],
     board: group.board,
     organisation: group.organisation,
@@ -1909,7 +1910,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

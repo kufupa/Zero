@@ -238,6 +238,7 @@ function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
     { path: `${row}.count`, value: group.quantity ?? null },
     { path: `${row}.adults`, value: group.adults ?? null },
     { path: `${row}.roomType`, value: group.roomPreference || null },
+    { path: `${row}.childrenPerRoom`, value: group.childrenPerRoom ?? null },
     { path: `${row}.childAges`, value: group.childrenAges },
     { path: `${row}.board`, value: extractionBoard(group.board) },
   ];
@@ -327,10 +328,15 @@ export function fieldEventsBetween(
     const count = `${row}.count`;
     const fromTotal = countFromStayTotal(group, old);
     const confirmed = old?.fields.quantity === 'defaulted' && !fromTotal;
+    // A dates-only stay has no source row: an explicit zero must save its empty age list too.
+    const confirmedNoChildren = old && group.childrenPerRoom === 0 && old.childrenPerRoom !== 0;
+    const always = new Set<string>();
+    if (confirmed) always.add(count);
+    if (confirmedNoChildren) always.add(`${row}.childAges`);
     changed(
       rowFieldsAt(row, group).filter((event) => !fromTotal || event.path !== count),
       old ? rowFieldsAt(row, old) : null,
-      confirmed ? new Set([count]) : undefined,
+      always,
     );
   }
   const kept = new Set(after.map((group) => group.id));
@@ -383,6 +389,8 @@ export function useStoredWork(args: {
   const [historyEpoch, setHistoryEpoch] = useState(0);
   const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
   const [historyPending, setHistoryPending] = useState(false);
+  // Guard synchronous callbacks as well as the next render while a history action is in flight.
+  const historyPendingRef = useRef(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
   const [cursorEpoch, setCursorEpoch] = useState(0);
@@ -583,6 +591,24 @@ export function useStoredWork(args: {
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
 
+  /** Wait until the selected email's pending edits have actually reached the server. */
+  const flushEdits = useCallback(async (): Promise<boolean> => {
+    if (!readyWorkItemId || !lookupKey || historyPendingRef.current || historyPending || historyNeedsReload ||
+        !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
+    const prefix = `${readyWorkItemId}\n`;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      flushAll();
+      const active = [...inFlight.current.entries()]
+        .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
+      if (active.length) await Promise.allSettled(active);
+      if (historyPendingRef.current || lookupKeyRef.current !== lookupKey) return false;
+      if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
+      if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
+      return true;
+    }
+    return false;
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyWorkItemId]);
+
   const retry = useCallback(() => {
     if (!internetMessageId) return;
     setRetries((prev) => ({
@@ -594,7 +620,7 @@ export function useStoredWork(args: {
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
-      if (historyPending || historyNeedsReload) return;
+      if (historyPendingRef.current || historyPending || historyNeedsReload) return;
       if (!readyRefs || !readyWorkItemId) return;
       const events = fieldEventsBetween(readyRefs, before, after);
       if (events.length) {
@@ -614,7 +640,7 @@ export function useStoredWork(args: {
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
-      if (historyPending || historyNeedsReload) return;
+      if (historyPendingRef.current || historyPending || historyNeedsReload) return;
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
         prev && prev.key === lookupKey && prev.result?.status === 'ready'
@@ -749,15 +775,16 @@ export function useStoredWork(args: {
   const runHistoryMove = useCallback(
     (mutate: HistoryMutate | undefined, message: string) => {
       const seq = historyCursor?.seq;
-      if (!readyWorkItemId || !mutate || seq === undefined) return;
+      if (!readyWorkItemId || !mutate || seq === undefined || historyPendingRef.current) return;
       const keyNow = lookupKey;
+      historyPendingRef.current = true;
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves();
@@ -779,6 +806,7 @@ export function useStoredWork(args: {
           setHistoryError(historyMoveErrorCopy(error, message));
         })
         .finally(() => {
+          historyPendingRef.current = false;
           setHistoryPending(false);
         });
     },
@@ -802,41 +830,78 @@ export function useStoredWork(args: {
   const resetSection = useCallback(
     (section: WorkItemSection) => {
       const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
-      if (!readyWorkItemId || !mutate) return;
+      if (!readyWorkItemId || !mutate || historyPendingRef.current) return;
       const keyNow = lookupKey;
+      historyPendingRef.current = true;
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
-      dropQueuedSaves(section);
+      // Hold only this work item's section and cancel its scheduled automatic retries.
+      const held = new Map<string, FieldSend>();
+      const belongs = (entry: FieldSend) =>
+        entry.workItemId === readyWorkItemId && fieldPathInSection(entry.path, section);
+      for (const saves of [failed.current, latest.current]) {
+        for (const [key, entry] of saves) {
+          if (!belongs(entry)) continue;
+          held.set(key, entry);
+          saves.delete(key);
+        }
+      }
+      // A debounced edit is newer than any send already in flight for the same field.
+      for (const [key, entry] of pending.current) {
+        if (!belongs(entry)) continue;
+        clearTimeout(entry.timer);
+        held.set(key, entry);
+        pending.current.delete(key);
+      }
+      setSaveFailed(failed.current.size > 0);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
-      void Promise.allSettled([...inFlight.current.values()])
+      let resetSent = false;
+      let resetApplied = false;
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
-          dropQueuedSaves(section);
+          resetSent = true;
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
-          if (lookupKeyRef.current !== keyNow) return;
+          if (!resetSent) return;
           if (historyStaleOf(result)) {
-            setHistoryError(HISTORY_STALE_COPY);
+            if (lookupKeyRef.current === keyNow) setHistoryError(HISTORY_STALE_COPY);
             return;
           }
+          resetApplied = true;
+          if (lookupKeyRef.current !== keyNow) return;
           return refetchStored();
         })
         .catch((error) => {
-          setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
+          if (lookupKeyRef.current === keyNow) {
+            setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
+          }
         })
         .finally(() => {
+          if (!resetApplied) {
+            for (const [key, entry] of held) {
+              if (!pending.current.has(key) && !latest.current.has(key) && !failed.current.has(key)) {
+                failed.current.set(key, entry);
+              }
+            }
+            setSaveFailed(failed.current.size > 0);
+          }
+          historyPendingRef.current = false;
           setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+    [lookupKey, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   const reloadHistory = useCallback(() => {
+    if (historyPendingRef.current) return;
+    historyPendingRef.current = true;
     setHistoryPending(true);
     void refetchStored().finally(() => {
+      historyPendingRef.current = false;
       setHistoryPending(false);
     });
   }, [refetchStored]);
@@ -854,6 +919,7 @@ export function useStoredWork(args: {
     recordGroups,
     recordContact,
     acceptUnedited,
+    flushEdits,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
@@ -876,7 +942,7 @@ export function useStoredWork(args: {
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
   if (stored.status !== 'ready' || !events.length) return stored;
-  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  const fieldProvenance: WorkItemProvenanceMap = { ...provenanceOf(stored) };
   for (const event of events) {
     fieldProvenance[event.path] = { source: 'staff', value: event.value };
   }

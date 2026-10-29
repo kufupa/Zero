@@ -4,6 +4,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { StayCard } from '@/components/quote-workflow/requirement-card';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
@@ -103,6 +104,47 @@ describe('storedDecision', () => {
 });
 
 describe('fieldEventsBetween', () => {
+  it('saves a confirmed zero with empty ages for a dates-only stay', () => {
+    const before = row('s_1', 's_1', { childrenPerRoom: null });
+    const onPatch = vi.fn();
+    render(<StayCard stayId="s_1" rows={[before]} index={0} stayCount={1} onPatch={onPatch} />);
+    fireEvent.change(screen.getByLabelText('Children per room'), { target: { value: '0' } });
+    const after = { ...before, ...onPatch.mock.calls[0]![1] };
+    expect(fieldEventsBetween({ s_1: { stayId: 's_1', rowId: null } }, [before], [after])).toEqual([
+      { path: 'stays[s_1].rows[s_1_row].childrenPerRoom', value: 0 },
+      { path: 'stays[s_1].rows[s_1_row].childAges', value: [] },
+    ]);
+    cleanup();
+  });
+
+  it('persists the copied row occupancy independently and saves later corrections on that row', () => {
+    const original = { ...G1, childrenPerRoom: 1, childrenAges: [8] };
+    const session = { ...initialQuoteSession(), groups: [original] };
+    const copied = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'g1', token: 'c1' });
+    const copy = copied.groups.find((group) => group.id === 'r_c1')!;
+    expect(copy).toMatchObject({ childrenPerRoom: 1, childrenAges: [8] });
+    expect(fieldEventsBetween(READY.refs, session.groups, copied.groups)).toEqual(expect.arrayContaining([
+      { path: 'stays[st-1].rows[r_c1].childrenPerRoom', value: 1 },
+      { path: 'stays[st-1].rows[r_c1].childAges', value: [8] },
+    ]));
+    const corrected = copied.groups.map((group) => group.id === copy.id
+      ? { ...group, childrenPerRoom: 2, childrenAges: [8, 11] }
+      : group);
+    expect(fieldEventsBetween(READY.refs, copied.groups, corrected)).toEqual([
+      { path: 'stays[st-1].rows[r_c1].childrenPerRoom', value: 2 },
+      { path: 'stays[st-1].rows[r_c1].childAges', value: [8, 11] },
+    ]);
+  });
+
+  it('saves empty ages alongside a confirmed zero for a stay with no extracted row', () => {
+    const before = { ...G3, childrenPerRoom: null };
+    const after = { ...before, childrenPerRoom: 0 };
+    expect(fieldEventsBetween(READY.refs, [before], [after])).toEqual([
+      { path: 'stays[st-2].rows[st-2_row].childrenPerRoom', value: 0 },
+      { path: 'stays[st-2].rows[st-2_row].childAges', value: [] },
+    ]);
+  });
+
   it('maps a row edit to its stable stay and row ids, and a stay date to the stay', () => {
     expect(
       fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, board: 'dinner_bb' }), G2]),
@@ -440,6 +482,159 @@ describe('useStoredWork', () => {
         expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 4 }),
       );
       expect(result.current.saveFailed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('discards a failed edit after resetting its stay, so rates and Retry do not restore it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => ({ reset: 1 }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      expect(result.current.saveFailed).toBe(true);
+      expect(await result.current.flushEdits()).toBe(false);
+
+      await act(async () => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(reset).toHaveBeenCalledWith({ workItemId: 'wi-1', section: { type: 'stay', stayId: 'st-1' } });
+      expect(result.current.saveFailed).toBe(false);
+      expect(await result.current.flushEdits()).toBe(true);
+      act(() => result.current.retrySave());
+      expect(mutate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an automatic retry before reset and blocks a same-tick quote until reset completes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      let finishReset: (value: { reset: number }) => void = () => undefined;
+      const reset = vi.fn((_input: unknown) => new Promise<{ reset: number }>((resolve) => { finishReset = resolve; }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS); });
+      expect(mutate).toHaveBeenCalledTimes(1);
+
+      let flushed: Promise<boolean> = Promise.resolve(true);
+      act(() => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        flushed = result.current.flushEdits();
+      });
+      expect(await flushed).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_RETRY_MS); });
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(mutate).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        finishReset({ reset: 1 });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(await result.current.flushEdits()).toBe(true);
+      expect(mutate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('blocks a quote already waiting for a save if a reset starts during that wait', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      let finishSave: (value: { aiValue: null; value: null }) => void = () => undefined;
+      mutate.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+      let finishReset: (value: { reset: number }) => void = () => undefined;
+      const reset = vi.fn((_input: unknown) => new Promise<{ reset: number }>((resolve) => { finishReset = resolve; }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      let quote: Promise<boolean> = Promise.resolve(true);
+      act(() => {
+        result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]);
+        quote = result.current.flushEdits();
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        finishSave({ aiValue: null, value: null });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(await quote).toBe(false);
+      expect(reset).toHaveBeenCalledTimes(1);
+      await act(async () => { finishReset({ reset: 1 }); await vi.advanceTimersByTimeAsync(0); });
+      expect(await result.current.flushEdits()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps failed edits for another mailbox when resetting the same field on this one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate, query } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => ({ reset: 1 }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result, rerender } = renderHook(
+        ({ id }: { id: string }) => useStoredWork({ trpc: routes, internetMessageId: id }),
+        { initialProps: { id: 'm-1' } },
+      );
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordContact('phone', 'first'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      query.mockImplementation(async () => ({ ...READY, workItemId: 'wi-2' }));
+      rerender({ id: 'm-2' });
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordContact('phone', 'second'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      expect(mutate).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        result.current.resetSection({ type: 'contact' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.saveFailed).toBe(true);
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => { result.current.retrySave(); await Promise.resolve(); });
+      expect(mutate).toHaveBeenCalledTimes(5);
+      expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 'first' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a failed edit for Retry when resetting its section fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => { throw new Error('offline'); });
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      await act(async () => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.historyError).toBe("Couldn't reset — try again");
+      expect(result.current.saveFailed).toBe(true);
+      expect(await result.current.flushEdits()).toBe(false);
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => { result.current.retrySave(); await Promise.resolve(); });
+      expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 4 }));
     } finally {
       vi.useRealTimers();
     }

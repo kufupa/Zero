@@ -6,6 +6,7 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import { childOccupancyReady } from './child-occupancy';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type {
   QueueStatus,
@@ -73,6 +74,7 @@ export type StaffQuoteGroupInput = {
   departureDate: string;
   quantity: number;
   adults: number;
+  childrenPerRoom?: number | null;
   childrenAges: number[];
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
@@ -198,7 +200,7 @@ function staffQuoteRequestMatches(
     ...(canIgnoreStrategy ? { salesStrategy: expected.salesStrategy } : {}),
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
-      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      adults: group.adults, childrenPerRoom: group.childrenPerRoom ?? null, childrenAges: group.childrenAges, board: group.board,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -217,6 +219,7 @@ function staffQuoteStayTermsMatch(
         departureDate: group.departureDate,
         quantity: group.quantity,
         adults: group.adults,
+        childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: group.childrenAges,
         board: group.board,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
@@ -518,6 +521,9 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    if (propertyCode !== HRDAV_PROPERTY_CODE && !childOccupancyReady(group)) {
+      return { error: 'Confirm the number of children per room and enter an age for each child.' };
+    }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
     // An explicit code list or a known preference still binds; garbage codes still refuse below.
     const rooms = resolveNativeRoomCodes({
@@ -537,6 +543,7 @@ export function staffQuoteGroupsFromStay(
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
+      ...(propertyCode !== HRDAV_PROPERTY_CODE ? { childrenPerRoom: group.childrenPerRoom } : {}),
       childrenAges: [...group.childrenAges],
       board: group.board,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
@@ -1459,7 +1466,9 @@ export async function bindAutoStartStaffQuote(
     const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
     // Prepared quotes may have an older display header, but their source and price terms must still match.
     // A staff-started run must also match the submitted header before its pane counters can be rebased.
-    const requestMatches = staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true) &&
+    const requestMatches = staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    ) &&
       staffQuoteStayTermsMatch(settled.request, built.input) &&
       (settled.prefetch === true || (
         settled.request?.kind === 'staff_quote' &&
@@ -1504,7 +1513,7 @@ export async function bindReadBackStaffQuote(
     if (!first || args.signal?.aborted) return null;
     if (first.request && (
       !staffQuoteStayTermsMatch(first.request, built.input) ||
-      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true)
+      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE)
     )) return null;
     if (
       first.status === 'done' &&
@@ -1516,7 +1525,9 @@ export async function bindReadBackStaffQuote(
     }
     const settled = await pollStaffQuoteJob(args.query, first, built.input.messageId, args.signal);
     if (args.signal?.aborted) return null;
-    if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
+    if (settled.request && !staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    )) return null;
     const rebased = settled.result
       ? {
           ...settled,

@@ -66,6 +66,8 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, guest names. Never ask for rates, room type or board.
 - Use null for anything not stated. Never guess.`;
 
+export const CENTURION_CHILD_RULES = `For each room, set childrenPerRoom to 0 only if zero children are explicitly stated, to the stated number of children in EACH room when known, or null when children are not mentioned or the count or per-room allocation is unknown. childAges contains only ages explicitly given for EACH room; never invent an age or assume an age is zero. If the count is unknown or differs from the known ages, include childrenPerRoom or childAges in missing. Do not spread a total across rooms without an explicit allocation.`;
+
 /** Generic action classifier. Independent of legacy kind, sender domain, and property-specific workflows. */
 export const ACTION_CLASSIFICATION_RULES = `Action classification is independent of legacy kind; never infer needsAction or action from kind. Decide from the TARGET message plus prior thread messages (and the target's attachments): identify whether the target adds open work now, using prior messages to recognise work already handled or the booking it refers to. Never classify by sender domain alone. OTA, booking-channel, system-notice and H-Pay payment-link mail is excluded before this prompt (Layer 0 hard skip). Person travel agents remain in scope. If an OTA or channel-manager body still reaches this prompt, class it no_action; so is a channel or portal request to update inventory, room counts or rates, a review-site prompt and an integration error notice. Other system-generated mail is classed by what it carries: a travel-agent, TMC or virtual-card platform's voucher or booking notice is new_booking, a booking extension or change notice is amend, a virtual-card (VCC) or card-payment notice is billing, and a bank notice that money was paid into the hotel account is payment_proof.
 - no_action (needsAction=false): pure acknowledgements, thanks, FYI, resolved or already-handled messages, marketing or cold sales, newsletters, automated notices, and a TMC, agent or booking-platform cancellation notification (an automated notice that a booking was cancelled, even if it asks the hotel to cancel it in its system); a person writing to ask for a cancellation is cancel. Pre-stay mail the hotel's own mailbox sends to itself about an existing confirmation number is no_action. A separate current ask in the same mail still counts.
@@ -143,6 +145,7 @@ export function buildInboundPrompt(
     maxChars?: number;
     visualAttachments?: VisualAttachmentMarker[];
     env?: NodeJS.ProcessEnv;
+    propertyCode?: string;
   } = {},
 ): {
   system: string;
@@ -225,7 +228,7 @@ export function buildInboundPrompt(
     return { id: range.id, status: 'read' };
   });
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
+    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}${options.propertyCode === 'HRCEN' ? `\n${CENTURION_CHILD_RULES}` : ''}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
     user,
     attachmentReads,
     threadContextTruncated,
@@ -613,6 +616,7 @@ export async function extractInboundMail(input: {
   from?: string | null;
   /** The address of the mailbox the mail came into (the transport's email). */
   mailbox?: string | null;
+  propertyCode?: string;
   signal?: AbortSignal;
   deadlineMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -625,6 +629,7 @@ export async function extractInboundMail(input: {
   });
   const prompt = buildInboundPrompt(input.selection, input.from, input.mailbox, {
     env,
+    propertyCode: input.propertyCode,
     visualAttachments: vision.visualAttachments,
   });
   const reads = attachmentReads(input.selection.attachments, {
@@ -665,6 +670,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    propertyCode: input.propertyCode,
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),

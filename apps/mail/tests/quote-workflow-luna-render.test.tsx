@@ -6,6 +6,7 @@ import type {
   QuoteSession,
   StayGroupRequirement,
   LunaAnalysisWire,
+  QuotePaneConfig,
 } from '../lib/quote-workflow/types';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
@@ -324,6 +325,47 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Guest names for room 2?')).toBeDefined();
+  });
+
+  it.each(['childrenPerRoom', 'childAges'])('clears the Centurion %s question only after all child details are complete', (field) => {
+    const question = 'Confirm the children for every room?';
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    const session = sessionWithAnalysis({
+      intent: 'quote', groups: [{ ...g1, childrenPerRoom: null }], secondaryAsks: [], alternatives: [],
+      luna: lunaWire({ missing: [{ field, question }] }),
+    });
+    const { rerender } = render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
+    expect(screen.getByText(question)).toBeDefined();
+    const row = session.groups[0]!;
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [{ ...row, childrenPerRoom: 1, childrenAges: [] }] }} paneConfig={paneConfig} />);
+    expect(screen.getByText(question)).toBeDefined();
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [{ ...row, childrenPerRoom: 0, childrenAges: [] }] }} paneConfig={paneConfig} />);
+    expect(screen.queryByText(question)).toBeNull();
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [{ ...row, childrenPerRoom: 1, childrenAges: [8] }] }} paneConfig={paneConfig} />);
+    expect(screen.queryByText(question)).toBeNull();
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [
+      { ...row, childrenPerRoom: 0, childrenAges: [] }, { ...row, id: 'g2', childrenPerRoom: null, childrenAges: [] },
+    ] }} paneConfig={paneConfig} />);
+    expect(screen.getByText(question)).toBeDefined();
+  });
+
+  it('keeps the existing HRDAV child-age answer behavior', () => {
+    const question = 'What are the children’s ages?';
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1', propertyCode: 'HRDAV', roomTypes: [], ratePlans: [], boards: ['bb'],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    const session = sessionWithAnalysis({
+      intent: 'quote', groups: [g1], secondaryAsks: [], alternatives: [],
+      luna: lunaWire({ missing: [{ field: 'childAges', question }] }),
+    });
+    const { rerender } = render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
+    expect(screen.getByText(question)).toBeDefined();
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [{ ...session.groups[0]!, childrenAges: [8] }] }} paneConfig={paneConfig} />);
+    expect(screen.queryByText(question)).toBeNull();
   });
 
   it('labels staff-note evidence chips as staff note', () => {

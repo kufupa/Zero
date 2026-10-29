@@ -81,7 +81,7 @@ import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-pers
  * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
  */
 
-export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
+export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childrenPerRoom', 'childAges', 'board'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
   | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
@@ -97,6 +97,7 @@ const ROW_KEYS = {
   count: 'rooms',
   adults: 'adultsPerRoom',
   roomType: 'roomType',
+  childrenPerRoom: 'childrenPerRoom',
   childAges: 'childAges',
   board: 'board',
 } as const;
@@ -404,6 +405,8 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return isInt(value, 1, 999);
     case 'adults':
       return isInt(value, 1, 9);
+    case 'childrenPerRoom':
+      return isInt(value, 0, 6);
     case 'roomType':
       return typeof value === 'string' && value.length > 0 && value.length <= 120;
     case 'childAges':
@@ -428,7 +431,7 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   if (parsed.rowId === null) return parsed.field === 'removed' ? false : stay.requested[parsed.field];
   const row = stay.rows.find((item) => item.id === parsed.rowId);
   if (!row) return null;
-  return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
+  return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]] ?? null;
 }
 
 type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms'>;
@@ -651,6 +654,7 @@ export function storedAnalysis(
         dateEvidence: null,
         rooms: null,
         adultsPerRoom: null,
+        childrenPerRoom: null,
         childAges: [],
         board: null,
         roomPreference: null,
@@ -663,6 +667,7 @@ export function storedAnalysis(
     for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
       const rooms = pick(at('count'), row.rooms);
+      const childAges = pick<number[] | null>(at('childAges'), row.childAges);
       const take = typeof rooms === 'number' && rooms > 0 ? rooms : 1;
       const rowNames = guestNames.slice(guestAt, guestAt + take);
       guestAt += take;
@@ -672,7 +677,8 @@ export function storedAnalysis(
         dateEvidence: null,
         rooms,
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
+        childrenPerRoom: childAges === null ? null : pick(at('childrenPerRoom'), row.childrenPerRoom ?? null),
+        childAges: childAges ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,
@@ -733,6 +739,8 @@ export function storedAnalysis(
       corrected.push(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
+        ['childrenPerRoom', `${rowPath}.childrenPerRoom`],
+        ['childrenAges', `${rowPath}.childAges`],
         ['board', `${rowPath}.board`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.

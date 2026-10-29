@@ -28,6 +28,7 @@ function stayRow(id: string, arrival: string, departure: string, board: 'dbb' | 
         roomType: 'SKNG',
         rooms: 1,
         adultsPerRoom: 2,
+        childrenPerRoom: 0,
         childAges: [],
         board,
       },
