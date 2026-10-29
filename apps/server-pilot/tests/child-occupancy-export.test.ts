@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
@@ -10,6 +10,7 @@ import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mai
 import { assertHmsDraftFreshForAction } from '../src/trpc/routes/drafts.js';
 import { resolveApprovedOverride, resolveImportedOffer } from '../src/quote-proposal/quote-revision.js';
 import { appRouter } from '../src/trpc/router.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 
 const transportId = 'transport-centurion';
@@ -106,7 +107,14 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
   return { revision, proposal, state, artifact, db, draft, run, proof };
 }
 
-afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
+beforeEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected: {}, inbounds: [] });
+});
+afterEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  __setDbForTests(null);
+  vi.unstubAllEnvs();
+});
 
 describe('stored quote export and draft occupancy', () => {
   it('preserves HRDAV quote choices, export and booking use without Centurion child evidence', async () => {
