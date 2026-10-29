@@ -1079,6 +1079,43 @@ describe('NavaPane', () => {
     expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
   });
 
+  it('holds an early edit across a two-case read and remount until staff discard it', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    const first = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1, childrenPerRoom: 0,
+      arrivalDate: '2027-10-20', departureDate: '2027-10-21' };
+    const second = { ...first, id: 'r_2', stayId: 's_2', arrivalDate: '2027-11-20', departureDate: '2027-11-21' };
+    const refs = { r_1: { stayId: 's_1', rowId: 'r_1' }, r_2: { stayId: 's_2', rowId: 'r_2' } };
+    const analysis = { ...STORED_READY.analysis, groups: [first, second] };
+    bridgeMockState.storedWork = {
+      ...STORED_READY, refs, analysis,
+      sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis, refs, payloadDigest: 'a'.repeat(64) },
+    };
+    let releaseLookup = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      internetMessageId: '<unassigned-loading-edit@example.invalid>' } } as PaneBridge;
+    const pane = render(<NavaPane bridge={bridge} />);
+    fireEvent.change(await screen.findByLabelText(/Arrival/i), { target: { value: '2027-10-25' } });
+    await act(async () => releaseLookup());
+    expect(await screen.findByText(/early edits are not assigned to a stay/i)).toBeDefined();
+    expect((screen.getByLabelText(/Arrival/i) as HTMLInputElement).value).toBe('2027-10-25');
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    pane.unmount();
+    render(<NavaPane bridge={bridge} />);
+    expect(await screen.findByText(/early edits are not assigned to a stay/i)).toBeDefined();
+    expect((screen.getByLabelText(/Arrival/i) as HTMLInputElement).value).toBe('2027-10-25');
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes and reload' }));
+    await waitFor(() => expect(screen.queryByText(/early edits are not assigned to a stay/i)).toBeNull(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getAllByLabelText(/Arrival/i)).toHaveLength(2), { timeout: 5000 });
+    expect((screen.getAllByLabelText(/Arrival/i) as HTMLInputElement[]).map((input) => input.value))
+      .toEqual(['2027-10-20', '2027-11-20']);
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+  }, 15000);
+
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
     bridgeMockState.storedWork = STORED_AMENDMENT;
     render(<NavaPane bridge={fakeBridge} />);
