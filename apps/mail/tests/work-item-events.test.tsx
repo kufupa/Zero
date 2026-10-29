@@ -114,6 +114,7 @@ describe('fieldEventsBetween', () => {
       { path: 'stays[s_1].rows[s_1_row].childrenPerRoom', value: 0 },
       { path: 'stays[s_1].rows[s_1_row].childAges', value: [] },
     ]);
+    cleanup();
   });
 
   it('persists the copied row occupancy independently and saves later corrections on that row', () => {
