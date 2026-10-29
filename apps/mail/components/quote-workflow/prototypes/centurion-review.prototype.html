@@ -275,7 +275,7 @@
     }
     function rateRows(showPlan = false) {
       const p = prices();
-      if (!p.dates.length) return '<div class="small muted">Enter a valid stay of 1–7 nights to see the example nightly rates.</div>';
+      if (!p.dates.length) return '<div class="small muted">This prototype calculates example rates for stays of 1–7 nights.</div>';
       const rows = (amounts) => p.dates.map((date, i) => `<div class="line small"><span>${formatDate(date)}</span><span>${money(amounts[i])}</span></div>`).join('');
       return `<div><div class="price-title">${esc(state.values.queenType)} · 1 room</div>${showPlan ? `<div class="small muted">${esc(state.values.queenRate)}</div>` : ''}${rows(p.queen)}<div class="price-title">${esc(state.values.twinType)} · 1 room</div>${showPlan ? `<div class="small muted">${esc(state.values.twinRate)}</div>` : ''}${rows(p.twin)}<div class="line total-line"><span>Rooms</span><span>${money(p.rooms)}</span></div></div>`;
     }
@@ -339,7 +339,7 @@
       return `${outcomeBlock()}${notices()}${section(hasOutcome() ? 'Originally approved actions' : 'Actions for this email', plan)}${disclosure('Edit stay and guests', 'Dates, room types, occupants and child age', stayEditor(), !ageValid())}${disclosure('Edit agency & rates', `${esc(state.values.agency)} · ${money(p.rooms)} rooms`, partyEditor() + '<div class="subheading">Nightly rates</div>' + rateEditor())}${disclosure('Edit Add-On', addonSummary(), addOnEditor())}${disclosure('Edit HMS confirmation', esc(state.values.recipient || 'Recipient missing'), confirmationEditor())}${disclosure('Other booking details', otherSummary(), otherEditor())}`;
     }
     function disabledReason() {
-      if (!nights().length) return 'Enter a valid stay of 1–7 nights.';
+      if (!nights().length) return 'This prototype supports example stays of 1–7 nights.';
       if (!ageValid()) return 'Enter the child’s age to continue.';
       if (!adultsValid()) return 'Enter the number of adults in each room.';
       if (!state.values.queenGuest.trim() || !state.values.twinGuest.trim() || !state.values.childName.trim()) return 'Enter each guest’s name.';
