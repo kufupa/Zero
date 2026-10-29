@@ -6,7 +6,7 @@
   "description": "Isolated development dependencies for the HMS Stagehand v4 read-tool trial",
   "engines": { "node": ">=22.18.0" },
   "dependencies": {
-    "@browserbasehq/stagehand": "4.1.0",
+    "@browserbasehq/stagehand": "4.3.0",
     "playwright": "1.63.0"
   }
 }
