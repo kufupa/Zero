@@ -446,6 +446,9 @@ export function NavaPane({
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
+  useEffect(() => {
+    dispatchQuote({ type: 'quote_property_configured', propertyCode: activePaneConfig?.propertyCode ?? null });
+  }, [activePaneConfig?.propertyCode, quoteSession.binding?.selectionEpoch, quoteSession.binding?.transportId]);
   const quoteStrategyRegistryKey = (activePaneConfig?.salesStrategies ?? [])
     .map((strategy) => `${strategy.code}:${strategy.requestValue}`)
     .join('|');
@@ -1856,7 +1859,7 @@ export function NavaPane({
         }
       : undefined;
     // Use the background default unless Centurion staff explicitly chose a different strategy.
-    const runHeader = autoStart || readBack
+    const runHeader = autoStart || readBack || (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && !quoteSession.staffSalesStrategyEdited)
       ? autoRunHeader(quoteSession, activePaneConfig?.propertyCode)
       : quoteSession.staffHeader;
     const noticeEmail = {

@@ -4186,6 +4186,28 @@ describe('autoRunHeader', () => {
       staffSalesStrategyEdited: true,
     }, HRCEN_PROPERTY_CODE).salesStrategy).toBe('BAR');
   });
+
+  it('uses BAR for Centurion dinner and government-party reads, even when configuration arrives late', () => {
+    const dinner: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      luna: lunaQuote({ party: { kind: 'government', name: 'Department X', reference: null } }),
+    };
+    const unconfigured = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: dinner });
+    expect(unconfigured.staffHeader.salesStrategy).toBe('Government');
+    const ready = reduceQuoteSession(unconfigured, { type: 'quote_property_configured', propertyCode: HRCEN_PROPERTY_CODE });
+    expect(ready.staffHeader.salesStrategy).toBe('BAR');
+    expect(ready.inputRevision).toBeGreaterThan(unconfigured.inputRevision);
+    expect(autoRunHeader(ready, HRCEN_PROPERTY_CODE).salesStrategy).toBe('BAR');
+    const changed = reduceQuoteSession(ready, {
+      type: 'patch_group', groupId: ready.groups[0]!.id, patch: { board: 'dinner_bb' },
+    });
+    expect(changed.staffHeader.salesStrategy).toBe('BAR');
+    const chosen = reduceQuoteSession(changed, { type: 'patch_staff_header', header: { salesStrategy: 'Government' } });
+    expect(autoRunHeader(chosen, HRCEN_PROPERTY_CODE).salesStrategy).toBe('Government');
+    expect(reduceQuoteSession(chosen, { type: 'quote_property_configured', propertyCode: 'HRDAV' }).staffHeader.salesStrategy)
+      .toBe('Government');
+  });
 });
 
 it('a mixed Dinner B&B + B&B mail keeps the session default on BAR', () => {

@@ -824,6 +824,8 @@ export type QuoteSession = {
   sourcePartyEpoch?: number;
   sourcePartyReview?: StaffQuoteParty['kind'][];
   sourcePartyAutoPickDisabled?: boolean;
+  /** Hotel whose pane configuration is active for the current selection. */
+  quotePropertyCode?: string | null;
   /** Preserves an explicit staff rate-strategy choice against later automatic prefill. */
   staffSalesStrategyEdited?: boolean;
   staffActions: ReservationistStaffAction[];
@@ -900,6 +902,7 @@ export type QuoteSessionAction =
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'quote_property_configured'; propertyCode: string | null }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader>; sourcePartyEpoch?: number }
   | { type: 'quote_source_changed'; sourceParty?: { agency: string | null; company: string | null } }
   | { type: 'quote_party_reviewed'; kind: StaffQuoteParty['kind']; sourcePartyEpoch: number }

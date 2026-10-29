@@ -180,6 +180,23 @@ describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
     expect(edited.staffHeader.parties?.company?.nativeId).toBe('hms-2');
   });
 
+  it('keeps the changed-source party hold when the Centurion catalogue arrives late', () => {
+    const picked = reduceQuoteSession(aeSession(), { type: 'patch_staff_header', header: PICK });
+    const held = reduceQuoteSession(picked, { type: 'quote_source_changed',
+      sourceParty: { agency: null, company: 'New Company' } });
+    const configured = reduceQuoteSession(held, { type: 'quote_property_configured', propertyCode: HRCEN_PROPERTY_CODE });
+    expect(configured.staffHeader.salesStrategy).toBe('BAR');
+    expect(configured.staffHeader.parties).toBeUndefined();
+    expect(configured.sourcePartyReview).toEqual(['company']);
+    expect(configured.sourcePartyAutoPickDisabled).toBe(true);
+    expect(reduceQuoteSession(configured, { type: 'patch_staff_header', header: PICK,
+      sourcePartyEpoch: picked.sourcePartyEpoch ?? 0 })).toBe(configured);
+    const next = reduceQuoteSession(configured, { type: 'selection',
+      binding: { ...BINDING, entryId: 'next', selectionEpoch: 2 } });
+    expect(next.staffHeader.parties).toBeUndefined();
+    expect(next.sourcePartyReview ?? []).toEqual([]);
+  });
+
   it('clears visible quote results when the saved source changes', async () => {
     const session = aeSession();
     const { session: priced } = await runStay(session, A, async () =>
