@@ -15,7 +15,7 @@ const dateParts = (date) => [date.getFullYear(), date.getMonth() + 1, date.getDa
 
 // A small page model: selectors apply visibility, and Ext callbacks run as the driver supplies them.
 function availabilityPage({ oldVisible = false, cloudVisible = false, currentRange, endpoint = oldPath,
-  fixture = multipleSource(), criteriaOverride = {} } = {}) {
+  fixture = multipleSource(), criteriaOverride = {}, ignoreDateSet = false } = {}) {
   const actions = [];
   const fields = Object.fromEntries([
     'startdate', 'dates', 'groupname', 'organization', 'travelagency', 'roomtypes', 'rateplans',
@@ -36,7 +36,10 @@ function availabilityPage({ oldVisible = false, cloudVisible = false, currentRan
     assert.ok(field, `unknown component ${id}`);
     return {
       getValue: () => field.value,
-      setValue: (value) => { field.value = value; actions.push(['setValue', field.name]); },
+      setValue: (value) => {
+        if (!(ignoreDateSet && field.name === 'dates')) field.value = value;
+        actions.push(['setValue', field.name]);
+      },
       getStore: () => ({ getRange: () => [{ data: { value: 'BAR', display: 'BAR' } }] }),
     };
   } };
@@ -50,7 +53,10 @@ function availabilityPage({ oldVisible = false, cloudVisible = false, currentRan
       count: async () => matches.length,
       isVisible: async () => matches.length === 1 && matches[0].visible,
       inputValue: async () => single().value,
-      fill: async (value) => { single().value = value; actions.push(['fill', name, value]); },
+      fill: async (value) => {
+        if (!(ignoreDateSet && name === 'startdate')) single().value = value;
+        actions.push(['fill', name, value]);
+      },
       press: async (key) => { single(); actions.push(['press', name, key]); },
       click: async () => {
         const field = single();
@@ -62,12 +68,24 @@ function availabilityPage({ oldVisible = false, cloudVisible = false, currentRan
         { element: single(), value, Ext: ext, Date }),
     };
   };
+  const appliedStartDate = () => {
+    if (fields.startdate.visible) {
+      const match = /^(\d{2})-([A-Z]{3})-(\d{4})$/.exec(fields.startdate.value);
+      if (!match) return null;
+      const month = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'].indexOf(match[2]) + 1;
+      return month ? `${match[3]}-${String(month).padStart(2, '0')}-${match[1]}T00:00:00` : null;
+    }
+    const date = fields.dates.visible ? fields.dates.value?.startDate : null;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    const [year, month, day] = dateParts(date);
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00`;
+  };
   const response = (url, method, marker) => ({
     url: () => url,
     request: () => ({
       method: () => method,
       postDataJSON: () => ({
-        propertyCodes: fields.propertycodes.value, startDate: `${request.arrivalDate}T00:00:00`,
+        propertyCodes: fields.propertycodes.value, startDate: appliedStartDate(),
         adultCount: Number(fields.adults.value), childCount: Number(fields.children.value), childAges: [],
         salesStrategy: fields.salesstrategy.value, lengthOfStay: 'DY', shopByDay: false,
         roomTypeCodes: fields.roomtypes.value, ratePlanCodes: fields.rateplans.value,
@@ -196,5 +214,11 @@ for (const form of [
       await assert.rejects(quote.searchCalendar(page, request, request.rooms[0]),
         new RegExp(`APPLIED_CRITERIA_MISMATCH_${code}`));
     }
+  });
+
+  test(`${form.name} search rejects a date control that did not apply the requested date`, async () => {
+    const { page } = availabilityPage({ ...form, ignoreDateSet: true });
+    await assert.rejects(quote.searchCalendar(page, request, request.rooms[0]),
+      /APPLIED_CRITERIA_MISMATCH_startDate/);
   });
 }
