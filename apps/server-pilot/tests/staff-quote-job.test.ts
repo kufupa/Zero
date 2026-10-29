@@ -3,6 +3,7 @@ import { createReservationistBusinessServices } from '../src/ai/reservationist-b
 import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
+import { awaitPendingStaffQuote } from '../src/ai/staff-quote-trace-async.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { AiWorkflowRun } from '../src/ai/run-ledger.js';
@@ -1309,6 +1310,62 @@ describe('staff_quote HMS job execution', () => {
     await expect(job).resolves.toBe('succeeded');
     expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(true);
     expect(jobMocks.markSucceeded).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['staff', 'occupancy'], ['staff', 'email'], ['staff', 'approval'],
+    ['prepared', 'occupancy'], ['prepared', 'email'],
+  ] as const)('holds a %s Centurion quote if %s changes after capture while trace finishes', async (kind, change) => {
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const { run, fence, db: quoteDb, inserted, occupancyState, mail, hooks } =
+      await provisionalWorkerQuote(finished, undefined, {}, kind === 'prepared');
+    const job = executeHmsJob({ run, fence, db: quoteDb });
+    try {
+      // The pending registry is entered only after the captured price passed the first source check.
+      await vi.waitFor(async () => {
+        const settled = await Promise.race([awaitPendingStaffQuote(mail.id as string).then(() => true), delay(1).then(() => false)]);
+        expect(settled).toBe(false);
+      }, { timeout: 2_000, interval: 5 });
+      expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+      if (change === 'occupancy') occupancyState['stays[s_test].rows[single].adults'] = 3;
+      if (change === 'email') mail.textBody = 'A changed synthetic request.';
+      if (change === 'approval') hooks.supersede();
+    } finally {
+      finish();
+    }
+    await expect(job).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ ok: false, propertyCode: 'HRCEN',
+        code: 'staff_quote_centurion_source_changed', message: expect.stringMatching(/changed while pricing/i) }),
+    }), quoteDb);
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+  });
+
+  it('keeps the existing HRDAV retry when the email changes during a provisional trace', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const { run, fence, db: quoteDb, inserted, mail } =
+      await provisionalWorkerQuote(finished, undefined, {}, false, 'transport-davinci');
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' }, outputDir: '/tmp/synthetic-staff-quote',
+    });
+    const job = executeHmsJob({ run, fence, db: quoteDb });
+    try {
+      await vi.waitFor(async () => {
+        const settled = await Promise.race([awaitPendingStaffQuote(mail.id as string).then(() => true), delay(1).then(() => false)]);
+        expect(settled).toBe(false);
+      }, { timeout: 2_000, interval: 5 });
+      mail.textBody = 'A changed synthetic request.';
+    } finally {
+      finish();
+    }
+    await expect(job).resolves.toBe('retry_wait');
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK' }), quoteDb);
+    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+    expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
   });
 
   it('retries a provisional trace failure instead of marking a ready result', async () => {

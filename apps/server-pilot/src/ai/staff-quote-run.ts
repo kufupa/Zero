@@ -1197,7 +1197,10 @@ export async function runStaffQuote(
       const pending = lockRun
         .then(async () => {
           // A newer approval may have superseded this generation while the trace finished.
-          if (!(await stillCurrent())) throw new Error('staff_quote_superseded');
+          if (!(await stillCurrent())) {
+            if (scope.propertyCode === 'HRCEN') refuseChangedSource('Selected email or approved inputs changed while pricing');
+            throw new Error('staff_quote_superseded');
+          }
           await persistRun(await summary());
         })
         .catch(async (error: unknown) => {
