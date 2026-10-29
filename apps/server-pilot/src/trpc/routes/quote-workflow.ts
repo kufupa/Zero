@@ -47,7 +47,7 @@ import {
   workItemIdForMail,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
-import { mailboxProcedure, router } from '../trpc.js';
+import { mailboxProcedure, router, type TrpcMailboxContext } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
@@ -164,6 +164,55 @@ export const analyseSelectionInput = z.object({
   staffNote: z.string().max(4000).optional(),
 });
 
+async function analyseSelectedMail(input: z.infer<typeof analyseSelectionInput>, ctx: TrpcMailboxContext) {
+  // One canonical id for the loader's exact match and for the cache key.
+  const internetMessageId = canonicalInternetMessageId(input.internetMessageId) ?? undefined;
+  const loader =
+    quoteWorkflowLoaders.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
+  const synced = await loader({
+    transportId: ctx.activeTransportId,
+    internetMessageId,
+    entryId: input.entryId,
+    storeId: input.storeId,
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!synced) {
+    return { status: 'unsynced' as const };
+  }
+  const { payload, outcome } = await analyseSyncedSelection(synced, {
+    internetMessageId,
+    treatAs: input.treatAs,
+    staffNote: input.staffNote,
+    selectionEpoch: input.selectionEpoch,
+    cacheDir: resolveAnalyseCacheDir(quoteWorkflowLoaders.analyseCacheDir),
+    transportId: ctx.activeTransportId,
+    promptVersion: quoteWorkflowLoaders.promptVersion ?? QUOTE_WORKFLOW_PROMPT_VERSION,
+    adapter: quoteWorkflowLoaders.adapter,
+    llmEnabled: () =>
+      quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env),
+    recorder: resolveAgentRunRecorder(process.env, quoteWorkflowLoaders.agentRunRecorder),
+    recordAs: { trigger: 'pane', userId: ctx.sessionUser.id },
+  });
+  if (outcome.kind === 'fallback') {
+    console.warn('quote_workflow_fallback', outcome.reason);
+  }
+  // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
+  // never holds the answer, and a note that fails to save is logged, not thrown.
+  const note = input.staffNote?.trim();
+  if (note && internetMessageId) {
+    const transportId = ctx.activeTransportId;
+    const userId = ctx.sessionUser.id;
+    void (async () => {
+      const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
+      if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
+    })().catch((error: unknown) => {
+      console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
+    });
+  }
+  // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
+  return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };
+}
+
 export const runStepInput = z.object({
   stepId: z.string().min(1),
   selectionEpoch: z.number().int(),
@@ -192,54 +241,7 @@ export const quoteWorkflowRouter = router({
   }),
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
-    .mutation(async ({ input, ctx }) => {
-      // One canonical id for the loader's exact match and for the cache key.
-      const internetMessageId = canonicalInternetMessageId(input.internetMessageId) ?? undefined;
-      const loader =
-        quoteWorkflowLoaders.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
-      const synced = await loader({
-        transportId: ctx.activeTransportId,
-        internetMessageId,
-        entryId: input.entryId,
-        storeId: input.storeId,
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!synced) {
-        return { status: 'unsynced' as const };
-      }
-      const { payload, outcome } = await analyseSyncedSelection(synced, {
-        internetMessageId,
-        treatAs: input.treatAs,
-        staffNote: input.staffNote,
-        selectionEpoch: input.selectionEpoch,
-        cacheDir: resolveAnalyseCacheDir(quoteWorkflowLoaders.analyseCacheDir),
-        transportId: ctx.activeTransportId,
-        promptVersion: quoteWorkflowLoaders.promptVersion ?? QUOTE_WORKFLOW_PROMPT_VERSION,
-        adapter: quoteWorkflowLoaders.adapter,
-        llmEnabled: () =>
-          quoteWorkflowLoaders.llmEnabled?.() ?? quoteWorkflowLlmEnabled(process.env),
-        recorder: resolveAgentRunRecorder(process.env, quoteWorkflowLoaders.agentRunRecorder),
-        recordAs: { trigger: 'pane', userId: ctx.sessionUser.id },
-      });
-      if (outcome.kind === 'fallback') {
-        console.warn('quote_workflow_fallback', outcome.reason);
-      }
-      // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
-      // never holds the answer, and a note that fails to save is logged, not thrown.
-      const note = input.staffNote?.trim();
-      if (note && internetMessageId) {
-        const transportId = ctx.activeTransportId;
-        const userId = ctx.sessionUser.id;
-        void (async () => {
-          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
-          if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
-        })().catch((error: unknown) => {
-          console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
-        });
-      }
-      // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
-      return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };
-    }),
+    .mutation(({ input, ctx }) => analyseSelectedMail(input, ctx)),
   // Read-only. Voucher or POP mail gets the guest surname and arrival read from its text, and the file to save. The
   // stored subject and body decide it, so an ordinary email reads no attachment bytes. Nothing is booked or changed.
   voucherFind: mailboxProcedure.input(voucherFindInput).query(async ({ input, ctx }): Promise<VoucherFindReply> => {
