@@ -1401,14 +1401,18 @@ function runPropertyCode(run: { metrics?: unknown }): string {
   );
 }
 
-/** A finished quote carries its resolved property, even on a mixed-origin mailbox. */
-function quoteRunPropertyCode(run: AiWorkflowRun): string | undefined {
+/** Only the result or its prepared revision proves which property actually priced the quote. */
+function quoteRunPropertyEvidence(run: AiWorkflowRun): { code: string | undefined; conflicting: boolean } {
   const result = objectRecord(run.readResult);
   const revision = objectRecord(objectRecord(result.preparedProposal).revision);
-  const metrics = objectRecord(run.metrics);
-  const value = revision.propertyCode ?? result.propertyCode ?? metrics.propertyCode ??
-    parseHmsReadTarget(metrics.hmsReadTarget)?.propertyCode;
-  return value === 'HRCEN' || value === 'HRDAV' ? value : undefined;
+  const conflicting = revision.propertyCode !== undefined && result.propertyCode !== undefined &&
+    revision.propertyCode !== result.propertyCode;
+  const value = revision.propertyCode ?? result.propertyCode;
+  return { code: !conflicting && (value === 'HRCEN' || value === 'HRDAV') ? value : undefined, conflicting };
+}
+
+function quoteResultHasPrice(result: Record<string, unknown> | null): boolean {
+  return Boolean(result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result));
 }
 
 function hmsRequestKey(request: HmsJobRequest): string {
@@ -4261,7 +4265,7 @@ async function quoteViewIsCurrent(db: DB, run: AiWorkflowRun, request: HmsJobReq
   }
   if (view.input && (view.input.messageId !== selected.id ||
     view.input.sourceHash !== staffQuoteSourceHash(selected))) return false;
-  const propertyCode = quoteRunPropertyCode(run);
+  const propertyCode = quoteRunPropertyEvidence(run).code;
   const sourceScope = { transportId: run.transportId, threadId: run.threadId, messageId: source.id, propertyCode };
   if (!(await childOccupancyIsCurrent(db, request.input.groups, sourceScope))) return false;
   const selectedScope = { transportId: view.transportId, threadId: selected.threadId, messageId: selected.id, propertyCode };
@@ -4281,11 +4285,17 @@ async function toView(
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   let status = STATUS_BY_STATE[run.state];
   let result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const property = quoteRunPropertyEvidence(run);
+  const propertyCode = property.code;
+  const staffQuote = objectRecord(run.readRequest).kind === 'staff_quote' || objectRecord(result).kind === 'staff_quote';
   const quoteResult = isCenturionQuoteScope({ transportId: options.quoteScope?.transportId ?? run.transportId,
-    propertyCode: quoteRunPropertyCode(run) }) &&
-    (objectRecord(run.readRequest).kind === 'staff_quote' || objectRecord(result).kind === 'staff_quote');
-  const hasPrice = result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result);
-  if (quoteResult && result && hasPrice && (!request.success || request.data.kind !== 'staff_quote' ||
+    propertyCode }) && staffQuote;
+  const hasPrice = quoteResultHasPrice(result);
+  if (staffQuote && result && hasPrice && ((quoteResult && !propertyCode) || property.conflicting)) {
+    status = 'failed';
+    result = { kind: 'staff_quote', ok: false, code: 'staff_quote_property_unverified',
+      message: 'The hotel for this saved quote could not be confirmed. Search availability again.' };
+  } else if (quoteResult && result && hasPrice && (!request.success || request.data.kind !== 'staff_quote' ||
       !staffQuoteChildOccupancyComplete(request.data.input, 'HRCEN'))) {
     status = 'failed';
     result = { kind: 'staff_quote', ok: false, code: 'staff_quote_child_occupancy_incomplete',
@@ -4295,6 +4305,9 @@ async function toView(
     status = 'failed';
     result = { ok: false, code: 'child_occupancy_incomplete',
       message: 'Refresh the selected email and confirm rooms, adults and children per room before using this price.' };
+  } else if (result && hasPrice && propertyCode && result.propertyCode === undefined) {
+    // Prepared revisions from before the top-level field was added already record the actual property.
+    result = { ...result, propertyCode };
   }
   return {
     runId: run.id,
@@ -4360,6 +4373,8 @@ async function latestStaffQuoteRunFor(
   const reusable = (run: AiWorkflowRun) => {
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
+    // A pane cannot safely use a price whose actual property is unknown or contradictory.
+    if (quoteResultHasPrice(run.readResult) && !quoteRunPropertyEvidence(run).code) return false;
     const stored = run.readResult as { status?: unknown } | null;
     if (stored?.status === 'ready') return true;
     return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);

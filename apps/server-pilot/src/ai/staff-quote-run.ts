@@ -1085,6 +1085,8 @@ export async function runStaffQuote(
       });
     const summary = async () => ({
       status: 'ready' as const,
+      // The mailbox origin may have changed since this job was queued.
+      propertyCode: scope.propertyCode,
       workflowRunId,
       revisionRef: revision.id,
       messageId: mail.id,

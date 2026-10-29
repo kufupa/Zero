@@ -823,6 +823,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         readResult: {
           kind: 'staff_quote',
           status: 'ready',
+          propertyCode: 'HRDAV',
           messageId: source.messageId,
           asOf: asOf.toISOString(),
         },
@@ -1578,6 +1579,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         };
         const quoteResult = {
           status: 'ready',
+          propertyCode: 'HRCEN',
           workflowRunId: target!.id,
           revisionRef: 'overflow-1',
           messageId: second.messageId,
@@ -1672,7 +1674,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         state: 'succeeded',
         createdAt: new Date(Date.now() - 24 * 60 * 60_000),
         finishedAt: new Date(Date.now() - 60_000),
-        readResult: { kind: 'staff_quote', ok, asOf: new Date().toISOString() },
+        readResult: { kind: 'staff_quote', ok, propertyCode: 'HRCEN', asOf: new Date().toISOString() },
         readResultExpiresAt: new Date(Date.now() + 60_000),
       }).where(eq(aiWorkflowRun.id, run.id));
 
@@ -1690,6 +1692,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         readResult: {
           kind: 'staff_quote',
           status: 'ready',
+          propertyCode: 'HRCEN',
           asOf: threeHoursAgo.toISOString(),
         },
         readResultExpiresAt: new Date(threeHoursAgo.getTime() + 15 * 60_000),
@@ -1703,6 +1706,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         readResult: {
           kind: 'staff_quote',
           status: 'ready',
+          propertyCode: 'HRCEN',
           asOf: twentyFiveHoursAgo.toISOString(),
         },
         readResultExpiresAt: new Date(twentyFiveHoursAgo.getTime() + 15 * 60_000),
@@ -1910,6 +1914,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId, staffQuoteUser);
       const quoteResult = {
         status: 'ready',
+        propertyCode: 'HRCEN',
         workflowRunId: 'staff-quote-workflow-1',
         revisionRef: 'revision-1',
         messageId,
@@ -2062,6 +2067,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }, db);
       const quoteResult = {
         status: 'ready',
+        propertyCode: 'HRCEN',
         workflowRunId: run.id,
         revisionRef: 'prepared-revision-1',
         messageId,
@@ -2416,6 +2422,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           readResult: {
             kind: 'staff_quote',
             status: 'ready',
+            propertyCode: 'HRCEN',
             messageId,
             asOf: new Date(now).toISOString(),
           },
@@ -3867,6 +3874,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const asOf = new Date();
       const preparedResult = {
         status: 'ready',
+        propertyCode: 'HRDAV',
         workflowRunId: randomUUID(),
         revisionRef: 'prepared-revision',
         messageId: copies[0]!.messageId,

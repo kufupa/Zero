@@ -123,6 +123,8 @@ export type ExecuteStaffQuoteInput = {
 
 export type ExecuteStaffQuoteResult = {
   status: 'ready';
+  /** The property that actually supplied this price; missing on older cached results. */
+  propertyCode?: string;
   workflowRunId: string;
   revisionRef: string;
   messageId: string;
@@ -1153,6 +1155,14 @@ function boundStaffQuoteResult(
       status: 'unavailable',
       reason:
         'The quote does not match the selected email. Select the email again, then run it again.',
+    };
+  }
+  if (result.propertyCode !== args.propertyCode) {
+    return {
+      status: 'unavailable',
+      reason: result.propertyCode === HRCEN_PROPERTY_CODE || result.propertyCode === HRDAV_PROPERTY_CODE
+        ? "This quote is for a different hotel. Open the email in that hotel's mailbox and search again."
+        : 'The hotel for this quote could not be confirmed. Refresh the email and search again.',
     };
   }
   if (

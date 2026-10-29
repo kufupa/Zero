@@ -281,6 +281,7 @@ describe('staff quote strategy comparisons', () => {
   function queuedQuote(strategy: string, group: StayGroupRequirement) {
     return {
       status: 'ready',
+      propertyCode: HRDAV_PROPERTY_CODE,
       workflowRunId: `workflow-${strategy}`,
       revisionRef: `revision-${strategy}`,
       messageId: 'mail-1',

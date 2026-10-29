@@ -64,6 +64,7 @@ function stayGroup(
     quantity: 1,
     roomPreference: 'standard king',
     adults: 1,
+    childrenPerRoom: 0,
     childrenAges: [],
     board: 'bb',
     specialRequests: [],
@@ -552,6 +553,7 @@ describe('per-stay extras on a combined quote', () => {
       const other = input.other?.unit === 'item' ? input.other.amountMinor : 0;
       return {
         status: 'ready' as const,
+        propertyCode: HRCEN_PROPERTY_CODE,
         workflowRunId: `run-${key}-${sent.length}`,
         revisionRef: `rev-${key}-${sent.length}`,
         messageId: 'mail-1',
