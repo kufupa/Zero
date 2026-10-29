@@ -138,6 +138,17 @@ describe('quote input bound to saved occupancy evidence', () => {
     expect(childOccupancyMatchesStored([forged], evidence, { ...state, [`${base}.adults`]: null })).toBe(false);
   });
 
+  it('does not drop another child-bearing row of the selected stay', () => {
+    const evidence = payload(0, []);
+    const stay = evidence.stays[0]!;
+    const second = { ...stay.rows[0]!, id: 'r_2', childrenPerRoom: 1, childAges: [] };
+    const twoRows = { ...evidence, stays: [{ ...stay, rows: [...stay.rows, second] }] };
+    expect(childOccupancyMatchesStored([group([], 0)], twoRows, {})).toBe(false);
+    expect(childOccupancyMatchesStored([group([], 0)], twoRows, {
+      [`stays[${stayId}].rows[r_2].removed`]: true,
+    })).toBe(true);
+  });
+
   it('accepts the pane’s unedited room and adult defaults only when their evidence exists', () => {
     const evidence = payload(0, []);
     const stay = evidence.stays[0]!;
@@ -185,7 +196,7 @@ describe('quote input bound to saved occupancy evidence', () => {
     const added = { ...group([5], 1), id: 'r_added' };
     const addedBase = `stays[${stayId}].rows[r_added]`;
     expect(childOccupancyMatchesStored([added], evidence, { [`${addedBase}.childrenPerRoom`]: 1 })).toBe(false);
-    expect(childOccupancyMatchesStored([added], evidence, {
+    expect(childOccupancyMatchesStored([group([], 0), added], evidence, {
       [`${addedBase}.childrenPerRoom`]: 1, [`${addedBase}.childAges`]: [5],
       [`${addedBase}.count`]: 1, [`${addedBase}.adults`]: 2,
     })).toBe(true);

@@ -109,6 +109,17 @@ describe('stored quote export and draft occupancy', () => {
     });
   });
 
+  it('does not return a cached PDF after the saved room or adult count changes', async () => {
+    const { revision, state } = await fixture();
+    const api = caller().workstation;
+    const input = { workItemId: itemId, revisionRef: revision.id, company: '', agency: '' };
+    state[`${rowPath}.count`] = 3;
+    await expect(api.quotePdfJob(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    state[`${rowPath}.count`] = 2;
+    state[`${rowPath}.adults`] = 2;
+    await expect(api.quotePdfJob(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('refuses a booking draft from a quote when the saved count changed', async () => {
     const { proposal, state } = await fixture();
     state[`${rowPath}.childrenPerRoom`] = 1;
