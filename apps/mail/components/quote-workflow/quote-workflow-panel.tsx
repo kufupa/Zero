@@ -17,6 +17,7 @@ import {
   stayKeyForGroup,
   staffSourceReady,
   stayTotals,
+  type QuoteWorkflowSession,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { childOccupancyReady } from '@/lib/quote-workflow/child-occupancy';
@@ -766,7 +767,13 @@ export function QuoteWorkflowPanel({
         ? governmentParty || dinnerBbAsk
         : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
-    if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy }, { staffEdit: true });
+    const selectedComparisons = (session as Partial<QuoteWorkflowSession>).quoteStrategySelections ?? {};
+    const changesComparison = paneConfig?.propertyCode === HRCEN_PROPERTY_CODE && Object.values(selectedComparisons).some((code) =>
+      code === 'GOV' ? salesStrategy !== 'Government' : code !== salesStrategy,
+    );
+    if (salesStrategy !== header.salesStrategy || changesComparison) {
+      onPatchStaffHeader?.({ salesStrategy }, { staffEdit: true });
+    }
   };
   const stays = groupStays(formGroups);
   const roomTotals = stayTotals(session.groups);
@@ -1274,6 +1281,10 @@ export function QuoteWorkflowPanel({
                                 </td>
                                 <td className="p-1.5">
                                   {row?.status === 'ready' ? (
+                                    <div>
+                                    {(session as Partial<QuoteWorkflowSession>).quoteStrategySelections?.[stayKey] === strategy.code ? (
+                                      <span className="text-[12px] font-semibold">Selected</span>
+                                    ) : null}
                                     <SecondaryButton
                                       className="w-auto"
                                       disabled={!onSelectQuoteStrategy || !comparisonsComplete || loadingThisStay || queuedThisStay}
@@ -1292,6 +1303,7 @@ export function QuoteWorkflowPanel({
                                     >
                                       {`Use ${strategy.label} (${strategy.code}) rates`}
                                     </SecondaryButton>
+                                    </div>
                                   ) : '—'}
                                 </td>
                               </tr>

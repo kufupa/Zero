@@ -776,8 +776,10 @@ export function NavaPane({
   const editStayRows = (action: QuoteSessionAction) => {
     suppressAutoStaffQuoteForCurrentEmail();
     const before = quoteSessionRef.current;
-    dispatchQuote(action);
     const after = reduceQuoteSession(before, action);
+    // Keep sequential row edits in the same event on the latest saved snapshot.
+    quoteSessionRef.current = after;
+    dispatchQuote(action);
     storedWork.recordGroups(before.groups, after.groups);
     const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
     if (after.binding?.transportId && messageKey) {
@@ -1584,9 +1586,7 @@ export function NavaPane({
 
   const saveQuoteEdits = async () => {
     if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE) return true;
-    if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) {
-      return false;
-    }
+    if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return false;
     return storedWork.flushEdits();
   };
 
@@ -1801,9 +1801,10 @@ export function NavaPane({
           return trackedStaffQuoteJob(input, options);
         }
       : undefined;
-    // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
-    // row is Dinner B&B), so a prepared run's price shape matches.
-    const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
+    // Use the background default unless Centurion staff explicitly chose a different strategy.
+    const runHeader = autoStart || readBack
+      ? autoRunHeader(quoteSession, activePaneConfig?.propertyCode)
+      : quoteSession.staffHeader;
     const noticeEmail = {
       emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
       emailSubject: activeEmail?.subject?.trim() || null,

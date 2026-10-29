@@ -44,6 +44,7 @@ import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '
 import {
   defaultStaffStayExtras,
   emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
@@ -1556,6 +1557,7 @@ function strategyOutcome(
         totalMinor,
         currency: 'ZAR',
         quoteRequestKey: stayKey,
+        requestedSalesStrategy: strategyCode === 'GOV' ? 'Government' : strategyCode,
         approvedHeader: emptyHeader(),
         rateOptions: groupIds.map((groupId) => ({
           id: `rate-${revisionRef}-${groupId}`,
@@ -1620,6 +1622,21 @@ function singleStaySession(stayKey = STAY_A): QuoteSession {
 }
 
 describe('strategy comparison session state', () => {
+  it('keeps raw source preferences separate from unchanged default and selected rate', () => {
+    const initial = singleStaySession();
+    const group = { ...initial.groups[0]!, board: 'bb' as const, roomPreference: 'Twin',
+      sourcePreference: { roomType: 'Twin', board: null } };
+    const session = { ...initial, groups: [group] };
+    const sameBoard = reduceQuoteSession(session, {
+      type: 'patch_group', groupId: group.id, patch: { board: 'bb', rateCode: 'RATE' },
+    });
+    expect(sameBoard.groups[0]?.sourcePreference).toEqual({ roomType: 'Twin', board: null });
+    const changed = reduceQuoteSession(sameBoard, {
+      type: 'patch_group', groupId: group.id, patch: { board: 'dinner_bb', roomPreference: 'Standard Queen' },
+    });
+    expect(changed.groups[0]?.sourcePreference).toEqual({ roomType: 'Standard Queen', board: 'dbb' });
+  });
+
   it('keeps comparison searches separate from an approved quote and restores each strategy PDF', () => {
     const base = singleStaySession();
     const withApprovedQuote = reduceQuoteSession(
@@ -4155,6 +4172,19 @@ describe('autoRunHeader', () => {
     expect(
       autoRunHeader({ staffHeader: header, groups: [{ board: 'dinner_bb' }, { board: 'bb' }] as never }).salesStrategy,
     ).toBe('BAR');
+  });
+
+  it('keeps the rate strategy explicitly selected by staff for Centurion', () => {
+    expect(autoRunHeader({
+      staffHeader: header,
+      groups: [{ board: 'bb' }] as never,
+      staffSalesStrategyEdited: true,
+    }, HRCEN_PROPERTY_CODE).salesStrategy).toBe('Government');
+    expect(autoRunHeader({
+      staffHeader: emptyStaffQuoteHeader(),
+      groups: [{ board: 'dinner_bb' }] as never,
+      staffSalesStrategyEdited: true,
+    }, HRCEN_PROPERTY_CODE).salesStrategy).toBe('BAR');
   });
 });
 

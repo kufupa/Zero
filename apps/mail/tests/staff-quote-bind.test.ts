@@ -35,6 +35,19 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   ...overrides,
 });
 
+it('sends the raw Centurion source preference separately from a selected HMS rate', () => {
+  const row = stay({
+    roomCodes: ['STQN'], rateCode: 'CORP',
+    sourcePreference: { roomType: 'Twin', board: null },
+  });
+  expect(staffQuoteGroupsFromStay([row], HRCEN_PROPERTY_CODE)).toMatchObject({
+    ok: [{ roomCodes: ['STQN'], rateCode: 'CORP', board: 'bb', sourcePreference: { roomType: 'Twin', board: null } }],
+  });
+  const davinci = staffQuoteGroupsFromStay([{ ...row, roomCodes: ['STKNG'] }], HRDAV_PROPERTY_CODE);
+  expect(davinci).toHaveProperty('ok');
+  if ('ok' in davinci) expect(davinci.ok[0]).not.toHaveProperty('sourcePreference');
+});
+
 describe('HRDAV native room and board maps', () => {
   it('requires complete child occupancy for Centurion but preserves older Da Vinci reads', () => {
     const unknown = stay({ childrenPerRoom: undefined, childrenAges: [], roomPreference: 'STWN' });
@@ -373,6 +386,8 @@ describe('staff quote strategy comparisons', () => {
       },
       result: { staffQuote: { preparedByNava: true } },
     });
+    expect(results.find((item) => item.strategyCode === 'NC')?.result?.staffQuote.requestedSalesStrategy).toBe('NC');
+    expect(results.find((item) => item.strategyCode === 'GOV')?.result?.staffQuote.requestedSalesStrategy).toBe('Government');
   });
 
   it('does not shop a strategy absent from the active property registry', async () => {
