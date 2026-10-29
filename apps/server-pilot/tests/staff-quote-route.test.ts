@@ -145,6 +145,7 @@ async function nativeFixture(
             rate: { code: 'BARRO', label: 'Room Only' },
             board: 'Room Only R',
             appliedContext: {},
+            rateScope: 'public',
             eligibility: 'verified',
             availability: 'available',
             matchStatus: 'match',
