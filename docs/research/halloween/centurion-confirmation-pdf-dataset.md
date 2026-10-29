@@ -190,6 +190,7 @@ The Centurion transport, filename regex, and `From` prefix are hard-coded in the
 - The run kit is being shipped in separate reviewed slices. Before relying on a clean or remote checkout, verify it contains the exporter, retry, collector, builder, supporting field/link modules, tests, SQL and this report at the intended merged revision.
 - The encrypted transfer's exact upload/download invocation and cleanup confirmation are not recorded. Capture them next run without exposing guest data; delete the temporary transfer object only after local hashes verify and cleanup is authorized.
 - The separate inventory SQL had ambiguous joined `message_id` references; those references were qualified after review. The corrected SQL has not been run against PostgreSQL.
+- The exporter has no per-object S3 read deadline. A stalled object read can block its workers until the enclosing SSM command times out; a future rerun should address and test this limitation.
 - The ordered-ID digest guard was added after the live collection. A synthetic range-payload test passes, but the guard has not yet been exercised against EC2/SSM. The full private rebuild after the in-memory reduction and missing-helper fix reproduced the reported aggregate counts.
 - This guide describes the tested Centurion path. Cross-mailbox parameterization remains future work; it is not a supported flag-only operation.
 
