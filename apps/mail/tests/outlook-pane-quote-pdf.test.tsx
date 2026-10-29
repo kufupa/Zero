@@ -52,6 +52,15 @@ const {
   },
 }));
 
+// This mock represents an authorised bridge: run the caller's guard at
+// the same boundary as the real bridge, immediately before native dispatch.
+const authorisedSendCommand = (action: string, payload: unknown, beforeNative?: () => void) => {
+  beforeNative?.();
+  return beforeNative
+    ? sendCommandMock(action, payload, beforeNative)
+    : sendCommandMock(action, payload);
+};
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
@@ -94,7 +103,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
-    sendCommand: sendCommandMock,
+    sendCommand: authorisedSendCommand,
   }),
 }));
 
@@ -555,8 +564,10 @@ describe('Outlook pane quote proposal PDF', () => {
     view.rerender(<OutlookPanePage />);
     await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
     // The button is off until a PDF is prepared for this session, and says why.
-    expect(screen.getByRole('button', { name: /Draft quotation into email reply/i }).hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('Prepare the quote PDF first')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Draft quotation into email reply/i }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByText('Prepare the quote PDF first')).toBeDefined();
+    });
     expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
   }, 15_000);
   it('prepares the booking draft from the staff-edited stay dates, not the raw Luna read-out', async () => {
