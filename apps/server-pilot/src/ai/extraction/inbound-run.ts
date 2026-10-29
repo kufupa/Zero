@@ -28,6 +28,7 @@ import { lunaCallBudget } from '../bedrock/luna.js';
 import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import {
   extractionPromptMaxChars,
   extractionReasoningEffort,
@@ -54,6 +55,7 @@ import {
   EXTRACTION_MIN_IMAGE_BYTES,
   EXTRACTION_MODEL_ID,
   EXTRACTION_RULES,
+  CENTURION_CHILD_RULES,
   EXTRACTION_THREAD_MESSAGE_MAX_CHARS,
   EXTRACTION_THREAD_TOTAL_MAX_CHARS,
   extractInboundMail,
@@ -79,6 +81,7 @@ export const EXTRACTION_VERSION = `extract-${createHash('sha256')
   .update(CENTURION_HOTEL_RULES)
   .update('\n')
   .update(EXTRACTION_RULES)
+  .update(CENTURION_CHILD_RULES)
   .update('\n')
   .update(ACTION_CLASSIFICATION_RULES)
   .update('\n')
@@ -307,12 +310,14 @@ export async function runInboundExtraction(
     return 'failed';
   }
   if (!takeCallSlot(max, clock())) return 'capped';
+  const property = resolvePropertyTransport(run.transportId);
   const extraction = await extractInboundMail({
     adapter,
     selection,
     messageId: run.triggerMessageId,
     from: trigger.fromAddress,
     mailbox: trigger.mailbox,
+    propertyCode: property.kind === 'property' ? property.property.propertyCode : undefined,
     signal: deps.signal,
     deadlineMs:
       deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,

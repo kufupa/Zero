@@ -346,6 +346,10 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByText(question)).toBeNull();
     rerender(<QuoteWorkflowPanel session={{ ...session, groups: [{ ...row, childrenPerRoom: 1, childrenAges: [8] }] }} paneConfig={paneConfig} />);
     expect(screen.queryByText(question)).toBeNull();
+    rerender(<QuoteWorkflowPanel session={{ ...session, groups: [
+      { ...row, childrenPerRoom: 0, childrenAges: [] }, { ...row, id: 'g2', childrenPerRoom: null, childrenAges: [] },
+    ] }} paneConfig={paneConfig} />);
+    expect(screen.getByText(question)).toBeDefined();
   });
 
   it('keeps the existing HRDAV child-age answer behavior', () => {

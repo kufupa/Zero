@@ -54,7 +54,6 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. For each stay, requestedDateEvidence is an exact source phrase for that stay's dates only; never reuse another stay's phrase.
 - Date anchoring is per stay. Precedence: a staff correction attributed to that stay; an explicit year in that stay's date evidence (the subject may supply a year only for a single stay); that stay's verified "next year" (the year after Johannesburg receipt) or "next <weekday>" resolved from the Johannesburg received date, overriding model dates; then a yearless date uses its next occurrence from receipt even if the model supplied a farther-future year. For a cross-year span such as "28 Dec - 2 Jan 2027", the year after the second date applies to the January endpoint and the December arrival is in the preceding year. For one stay with missing or unmatched evidence, check body/subject for an explicit year first. For multiple stays with missing or unmatched evidence, keep model dates rather than inferring from another stay. Never borrow another stay's year or relative phrase.
 - rows: within a stay, one row per room type as written. "Single" and "Double/Twin" are separate rows. rooms is the count of identical rooms of that type. adultsPerRoom is the adults in EACH room: "6 adults in 3 rooms" is 2, one named guest in a room is 1, and a double or twin with no headcount is 2.
-- For every room row, set childrenPerRoom to 0 if no children are requested, to the stated number of children in EACH room when known, or null when children are mentioned but the count or per-room allocation is unknown. childAges contains only ages explicitly given for EACH room; never invent an age or assume an age is zero. If the count is unknown or differs from the number of known ages, include childrenPerRoom or childAges in missing. Do not spread a total across rooms without an explicit allocation.
 - totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
 - agency is the organisation of the sender: the From address domain, the signature or the letterhead. A travel agency or tour operator writing for its client is the agency. endClient is the party the booking is for ("our client X", or a client or group named in the subject or body), only when it differs from the sender. A company named in the subject is the end client, not the agency, unless the sender works for it. Never swap them.
@@ -64,8 +63,10 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
-- missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, children per room, child ages, guest names. Never ask for rates, room type or board.
+- missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, guest names. Never ask for rates, room type or board.
 - Use null for anything not stated. Never guess.`;
+
+export const CENTURION_CHILD_RULES = `For each room, set childrenPerRoom to 0 only if zero children are explicitly stated, to the stated number of children in EACH room when known, or null when children are not mentioned or the count or per-room allocation is unknown. childAges contains only ages explicitly given for EACH room; never invent an age or assume an age is zero. If the count is unknown or differs from the known ages, include childrenPerRoom or childAges in missing. Do not spread a total across rooms without an explicit allocation.`;
 
 /** Generic action classifier. Independent of legacy kind, sender domain, and property-specific workflows. */
 export const ACTION_CLASSIFICATION_RULES = `Action classification is independent of legacy kind; never infer needsAction or action from kind. Decide from the TARGET message plus prior thread messages (and the target's attachments): identify whether the target adds open work now, using prior messages to recognise work already handled or the booking it refers to. Never classify by sender domain alone. OTA, booking-channel, system-notice and H-Pay payment-link mail is excluded before this prompt (Layer 0 hard skip). Person travel agents remain in scope. If an OTA or channel-manager body still reaches this prompt, class it no_action; so is a channel or portal request to update inventory, room counts or rates, a review-site prompt and an integration error notice. Other system-generated mail is classed by what it carries: a travel-agent, TMC or virtual-card platform's voucher or booking notice is new_booking, a booking extension or change notice is amend, a virtual-card (VCC) or card-payment notice is billing, and a bank notice that money was paid into the hotel account is payment_proof.
@@ -144,6 +145,7 @@ export function buildInboundPrompt(
     maxChars?: number;
     visualAttachments?: VisualAttachmentMarker[];
     env?: NodeJS.ProcessEnv;
+    propertyCode?: string;
   } = {},
 ): {
   system: string;
@@ -226,7 +228,7 @@ export function buildInboundPrompt(
     return { id: range.id, status: 'read' };
   });
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
+    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}${options.propertyCode === 'HRCEN' ? `\n${CENTURION_CHILD_RULES}` : ''}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
     user,
     attachmentReads,
     threadContextTruncated,
@@ -614,6 +616,7 @@ export async function extractInboundMail(input: {
   from?: string | null;
   /** The address of the mailbox the mail came into (the transport's email). */
   mailbox?: string | null;
+  propertyCode?: string;
   signal?: AbortSignal;
   deadlineMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -626,6 +629,7 @@ export async function extractInboundMail(input: {
   });
   const prompt = buildInboundPrompt(input.selection, input.from, input.mailbox, {
     env,
+    propertyCode: input.propertyCode,
     visualAttachments: vision.visualAttachments,
   });
   const reads = attachmentReads(input.selection.attachments, {
@@ -666,6 +670,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    propertyCode: input.propertyCode,
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),
