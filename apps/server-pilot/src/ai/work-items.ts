@@ -58,10 +58,10 @@ import {
 } from '../../tooling/playwright-quote/property-registry.mjs';
 import {
   COARSE_TO_AGENT,
-  parseStoredClassifier,
   shouldAttachWorkflowHint,
   type ClassifierResult,
 } from './workflow-classifier/index.js';
+import { classifierExtractionDigest, classifierForExtraction, classifierSourceMode, currentCapturedClassifier } from './workflow-classifier/source-fence.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
@@ -1159,6 +1159,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
+  const classifier = classifierForExtraction(row);
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -1167,7 +1168,9 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     attachments: row.attachments as AttachmentRead[] | null,
     language: row.language,
     translation: row.translation,
-    classifier: parseStoredClassifier(row.usage),
+    classifier,
+    classifierExtractionDigest: classifier && classifierSourceMode(row.usage) === 'captured'
+      ? classifierExtractionDigest(row) : null,
   };
 }
 
@@ -1977,6 +1980,12 @@ async function readyView(
       !mailExtractionPayloadSchema.safeParse(prior.payload).success))));
   const held = Boolean(centurion && item && (priorMissing || item.extractionId !== latest.id));
   const read = priorMissing ? latest : prior ?? latest;
+  const currentClassifier = async (selected: ReadyRead) => selected.classifier && selected.classifierExtractionDigest
+    ? currentCapturedClassifier(db, { transportId, threadId: msg.threadId, messageId }, selected.id,
+        selected.classifierExtractionDigest)
+    : selected.classifier;
+  const readClassifier = await currentClassifier(read);
+  const latestClassifier = read.id === latest.id ? readClassifier : await currentClassifier(latest);
   const confirmationNumbers = payloadConfirmationNumbers(read.payload);
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
@@ -1998,6 +2007,7 @@ async function readyView(
   const stored = storedAnalysis(
     {
       ...read,
+      classifier: readClassifier,
       fromAddress: msg.fromAddress,
       subject: msg.subject,
       bodyText: msg.textBody,
@@ -2014,7 +2024,7 @@ async function readyView(
     confirmationNumbers: latestConfirmations,
   });
   const source = storedAnalysis(
-    { ...latest, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
+    { ...latest, classifier: latestClassifier, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
     {},
     isHmsConfirmation(latestConfirmations[0] ?? '') ? undefined : synced?.threadConfirmation,
     resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
