@@ -106,7 +106,7 @@ vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
   guardCenturionHmsMailboxOrigin: originMocks.guard,
 }));
 
-import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
+import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 
@@ -504,6 +504,39 @@ describe('runStaffQuote child occupancy', () => {
 });
 
 describe('staff_quote HMS job execution', () => {
+  it('persists the hotel that priced when the mailbox origin changes after the worker check', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    // The queue/worker initially sees Centurion; the quote runner's later recheck sees Da Vinci.
+    originMocks.guard.mockResolvedValueOnce({ ok: true }).mockResolvedValue({
+      ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin',
+    });
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' }, outputDir: '/tmp/synthetic-staff-quote',
+    });
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
+      syntheticRevision(
+        ['600.00', '600.00'], 'Room Only R', 'SKNG', undefined, '2026-11-12', prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] }, 'HRDAV',
+      ),
+    );
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    const result = jobMocks.markSucceeded.mock.calls.at(-1)?.[0].readResult as Record<string, unknown>;
+    expect(result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV' });
+    expect(quoteRunMocks.getServices).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAV' }), expect.anything());
+
+    const readView = async (readResult: Record<string, unknown>) => {
+      const stored = { ...run, state: 'succeeded', createdAt: new Date(), readResult };
+      const readDb = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [stored] }) }) }) } as unknown as DB;
+      return readHmsJobView({ transportId: run.transportId, runId: run.id, staffQuoteOwnerId: user.id }, readDb);
+    };
+    expect((await readView(result))?.result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV' });
+    const { propertyCode: _unknownProperty, ...legacyResult } = result;
+    expect(await readView(legacyResult)).toMatchObject({ status: 'failed', result: { ok: false } });
+  });
+
   it('records rate-pick history only for manual staff quotes', async () => {
     for (const autoStart of [false, true]) {
       jobMocks.runStaffQuote.mockClear();

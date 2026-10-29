@@ -112,6 +112,8 @@ import {
 import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
 import { isStaffSender, knownSenders, NEEDS_YOU_KINDS } from './work-items.js';
 import {
+  STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE,
+  staffQuoteChildOccupancyComplete,
   staffQuoteInput,
   staffQuoteSourceHash,
   type StaffQuoteInput,
@@ -933,6 +935,7 @@ export async function queueAutoStaffQuoteHmsJob(
     const scoped = tx as unknown as DB;
     const [existing] = await latestStaffQuoteRunFor(
       scoped,
+      input.transportId,
       and(
         eq(aiWorkflowRun.transportId, input.transportId),
         eq(aiWorkflowRun.runKind, 'read_tool'),
@@ -1409,6 +1412,20 @@ function quoteRunPropertyCode(run: AiWorkflowRun): string | undefined {
   const value = revision.propertyCode ?? result.propertyCode ?? metrics.propertyCode ??
     parseHmsReadTarget(metrics.hmsReadTarget)?.propertyCode;
   return value === 'HRCEN' || value === 'HRDAV' ? value : undefined;
+}
+
+/** Only the result or its prepared revision proves which property actually priced the quote. */
+function quoteRunPropertyEvidence(run: AiWorkflowRun): { code: string | undefined; conflicting: boolean } {
+  const result = objectRecord(run.readResult);
+  const revision = objectRecord(objectRecord(result.preparedProposal).revision);
+  const conflicting = revision.propertyCode !== undefined && result.propertyCode !== undefined &&
+    revision.propertyCode !== result.propertyCode;
+  const value = revision.propertyCode ?? result.propertyCode;
+  return { code: !conflicting && (value === 'HRCEN' || value === 'HRDAV') ? value : undefined, conflicting };
+}
+
+function quoteResultHasPrice(result: Record<string, unknown> | null): boolean {
+  return Boolean(result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result));
 }
 
 function hmsRequestKey(request: HmsJobRequest): string {
@@ -4265,7 +4282,7 @@ async function quoteViewIsCurrent(db: DB, run: AiWorkflowRun, request: HmsJobReq
   }
   if (view.input && (view.input.messageId !== selected.id ||
     view.input.sourceHash !== staffQuoteSourceHash(selected))) return false;
-  const propertyCode = quoteRunPropertyCode(run);
+  const propertyCode = quoteRunPropertyEvidence(run).code;
   const proof = quoteSourceProofFromRun(run);
   const sourceScope = { transportId: run.transportId, threadId: run.threadId, messageId: source.id, propertyCode };
   if (!quoteSourceProofMatchesInput(proof, request.input) ||
@@ -4288,16 +4305,31 @@ async function toView(
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   let status = STATUS_BY_STATE[run.state];
   let result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const property = quoteRunPropertyEvidence(run);
+  const propertyCode = property.code;
+  const staffQuote = objectRecord(run.readRequest).kind === 'staff_quote' || objectRecord(result).kind === 'staff_quote';
   const quoteResult = isCenturionQuoteScope({ transportId: options.quoteScope?.transportId ?? run.transportId,
-    propertyCode: quoteRunPropertyCode(run) }) &&
-    (objectRecord(run.readRequest).kind === 'staff_quote' || result?.kind === 'staff_quote');
-  if (quoteResult && result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result) &&
+    propertyCode }) && staffQuote;
+  const hasPrice = quoteResultHasPrice(result);
+  if (staffQuote && result && hasPrice && ((quoteResult && !propertyCode) || property.conflicting)) {
+    status = 'failed';
+    result = { kind: 'staff_quote', ok: false, code: 'staff_quote_property_unverified',
+      message: 'The hotel for this saved quote could not be confirmed. Search availability again.' };
+  } else if (quoteResult && result && hasPrice && (!request.success || request.data.kind !== 'staff_quote' ||
+      !staffQuoteChildOccupancyComplete(request.data.input, 'HRCEN'))) {
+    status = 'failed';
+    result = { kind: 'staff_quote', ok: false, code: 'staff_quote_child_occupancy_incomplete',
+      message: STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE };
+  } else if (quoteResult && result && hasPrice &&
     (!request.success || !(await quoteViewIsCurrent(db, run, request.data, options.quoteScope)))) {
     status = 'failed';
     result = quoteSourceProofPredatesPolicy(quoteSourceProofFromRun(run))
       ? { ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage }
       : { ok: false, code: 'child_occupancy_incomplete',
         message: 'Refresh the selected email and confirm rooms, guests, room type, meal plan, agency and company before using this price.' };
+  } else if (result && hasPrice && propertyCode && result.propertyCode === undefined) {
+    // Older prepared revisions already record the actual property.
+    result = { ...result, propertyCode };
   }
   return {
     runId: run.id,
@@ -4321,6 +4353,7 @@ async function toView(
 /** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
 async function latestStaffQuoteRunFor(
   db: DB,
+  transportId: string,
   scope: ReturnType<typeof and>,
   messageId: string,
   quoteInput: StaffQuoteInput,
@@ -4362,6 +4395,8 @@ async function latestStaffQuoteRunFor(
   const reusable = (run: AiWorkflowRun) => {
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
+    // A pane cannot safely use a price whose actual property is unknown or contradictory.
+    if (quoteResultHasPrice(run.readResult) && !quoteRunPropertyEvidence(run).code) return false;
     const stored = run.readResult as { status?: unknown } | null;
     if (stored?.status === 'ready') return true;
     return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);
@@ -4377,12 +4412,15 @@ async function latestStaffQuoteRunFor(
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
+    const centurion = isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) });
     const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false,
-        isCenturionQuoteScope({ transportId: userRun.transportId, propertyCode: quoteRunPropertyCode(userRun) }));
+      // Admission binds a Centurion run to the current extraction. A stale queued
+      // run, or its eventual refusal, cannot answer a later read of this mail.
+      (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false, centurion);
     if (!reusable(userRun)) {
       // Newest matching price is stale: do not fall back to an older refusal.
       const stored = userRun.readResult as { status?: unknown } | null;
@@ -4392,9 +4430,11 @@ async function latestStaffQuoteRunFor(
     if (sameTerms) return [userRun];
   }
 
-  // A ready, selected contract for the bound party wins over the pane's default public strategy.
+  // Da Vinci keeps its existing bound-contract preference; Centurion must match the selected strategy.
   // Preserve the original newest-first order within each tier. Comparison callers still validate the strategy.
-  const preferBoundContract = Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
+  const property = resolvePropertyTransport(transportId);
+  const preferBoundContract = property.kind === 'property' && property.property.propertyCode === 'HRDAV' &&
+    Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
     ['BAR', 'Government', 'GOV'].includes(quoteInput.salesStrategy);
   const hasReadySelectedContract = (run: AiWorkflowRun): boolean => {
     const result = objectRecord(run.readResult);
@@ -4431,6 +4471,9 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
+      (centurion && (sameMessageCopy
+        ? parsed.data.input.sourceExtractionId !== quoteInput.sourceExtractionId
+        : preparedRun.state !== 'succeeded' || objectRecord(preparedRun.readResult).status !== 'ready')) ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput,
         !centurion && preferBoundContract && hasReadySelectedContract(preparedRun), centurion)
     ) {
@@ -4577,6 +4620,7 @@ export async function readHmsJobView(
       : 'kind' in input && input.kind === 'staff_quote'
         ? await latestStaffQuoteRunFor(
             db,
+            input.transportId,
             scope,
             input.messageId,
             input.input,

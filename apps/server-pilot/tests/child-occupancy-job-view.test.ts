@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
+import { HMS_JOB_PRIORITY_USER, queueAutoStaffQuoteHmsJob, readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { captureQuoteSourceProof, quoteSourcePolicyChangedMessage } from '../src/ai/child-occupancy.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
@@ -15,7 +15,7 @@ const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
 const input = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
   sourcePartyDigest: quoteSourcePartyDigest({ agency: null, endClient: null }, {}), sourceExtractionId: 'extract-1',
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21',
-    quantity: 1, adults: 2, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
+    quantity: 1, adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
   salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' });
 const extraction = { id: 'extract-1', kind: 'quote', payload: {
   contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
@@ -30,7 +30,7 @@ function job(request: unknown = { kind: 'staff_quote', input }) {
   return { id: 'run-1', transportId, threadId: mail.threadId, triggerMessageId: mail.id,
     workItemId: 'item-1', runKind: 'read_tool', promptVersion: HMS_JOB_PROMPT_VERSION, priority: 10,
     state: 'succeeded', attempts: 1, failureClass: null, createdAt: new Date(),
-    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', totalMinor: 10000,
+    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', propertyCode: 'HRCEN', totalMinor: 10000,
       quoteSourceProof: quoteProof, asOf: new Date().toISOString() },
     readResultExpiresAt: new Date(Date.now() + 60_000),
     metrics: { userId: 'user-1', batchId: 'batch-1', itemIndex: 0 },
@@ -167,6 +167,7 @@ describe('cached quote views use current selected occupancy', () => {
 
   it('keeps single and batch HRDAV quote views available without the Centurion evidence context', async () => {
     const davinci = { ...job(), transportId: 'transport-davinci' };
+    davinci.readResult = { ...davinci.readResult, propertyCode: undefined };
     const view = await readHmsJobView({ ...byId, transportId: 'transport-davinci', messageId: undefined },
       fakeDb([[aiWorkflowRun, [davinci]]]));
     expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
@@ -187,6 +188,80 @@ describe('cached quote views use current selected occupancy', () => {
     unknown.readResult = { status: 'ready', totalMinor: 10000, propertyCode: 'UNKNOWN' };
     const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [unknown]]]));
     expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
+  });
+
+  it('holds an actual Centurion result even if the earlier queued target was HRDAV', async () => {
+    const { childrenPerRoom: _count, ...legacyGroup } = input.groups[0]!;
+    const run = job({ kind: 'staff_quote', input: { ...input, groups: [legacyGroup] } });
+    run.metrics = { ...run.metrics, propertyCode: 'HRDAV' };
+    run.readResult = { ...run.readResult, propertyCode: 'HRCEN' };
+    const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [run]]]));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_child_occupancy_incomplete' } });
+  });
+
+  it('does not treat the queued target as the property that priced an older result', async () => {
+    for (const queuedProperty of [undefined, 'HRDAV']) {
+      const legacy = job();
+      legacy.metrics = { ...legacy.metrics, propertyCode: queuedProperty };
+      legacy.readResult = { ...legacy.readResult, propertyCode: undefined };
+      const view = await readHmsJobView(byId, fakeDb([
+        [aiWorkflowRun, [legacy]], [message, [mail]], [mailExtraction, [extraction]], [workItem, [item()]],
+      ]));
+      expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_property_unverified' } });
+      expect(view?.result).not.toHaveProperty('totalMinor');
+    }
+  });
+
+  it('exposes a saved prepared revision\'s property without treating its queued target as evidence', async () => {
+    const prepared = job();
+    prepared.metrics = { ...prepared.metrics, propertyCode: 'HRCEN' };
+    prepared.readResult = { ...prepared.readResult, propertyCode: undefined,
+      preparedProposal: { revision: { propertyCode: 'HRDAV' } } };
+    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [prepared]]]));
+    expect(view?.result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV', totalMinor: 10000 });
+  });
+
+  it('holds a result whose own property conflicts with the saved prepared revision', async () => {
+    const conflicting = job();
+    conflicting.readResult = { ...conflicting.readResult, propertyCode: 'HRDAV',
+      preparedProposal: { revision: { propertyCode: 'HRCEN' } } };
+    const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [conflicting]]]));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_property_unverified' } });
+  });
+
+  it('starts a fresh auto-quote instead of repeatedly reusing a price with an unknown property', async () => {
+    const legacy = job();
+    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
+    legacy.readResult = { ...legacy.readResult, propertyCode: undefined };
+    const select = () => {
+      const query = Object.assign(Promise.resolve([legacy]), {
+        from() { return query; }, where() { return query; }, orderBy() { return query; },
+      });
+      return query;
+    };
+    let inserted: Record<string, unknown> | undefined;
+    const fake = {
+      select,
+      execute: async () => undefined,
+      insert: () => ({ values: (value: Record<string, unknown>) => {
+        inserted = value;
+        return { onConflictDoNothing: () => ({ returning: async () => [value] }) };
+      } }),
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(fake),
+    } as unknown as DB;
+    const request = { transportId, threadId: mail.threadId,
+      triggerMessageId: mail.id, workItemId: 'item-1', userId: 'user-1',
+      request: { kind: 'staff_quote' as const, input }, priority: HMS_JOB_PRIORITY_USER };
+    const queued = await queueAutoStaffQuoteHmsJob(request, fake);
+    expect(queued.created).toBe(true);
+    expect(queued.run.id).not.toBe(legacy.id);
+    expect(inserted).toMatchObject({ state: 'queued', readRequest: { kind: 'staff_quote', input } });
+
+    legacy.readResult = { ...legacy.readResult, propertyCode: 'HRCEN' };
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+    legacy.state = 'queued';
+    legacy.readResult = null;
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
   });
 
   it('keeps a non-quote job view unchanged without quote context', async () => {

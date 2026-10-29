@@ -58,6 +58,7 @@ import {
   UNQUOTED_BOOKING_REVISION_REF,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  FRESH_PRIOR_QUOTE_MESSAGE,
   expiredPriorQuoteNotice,
   expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
@@ -114,6 +115,7 @@ import {
   type PaneCaseSnapshot,
   nextSelectedOfferIds,
   partyLookupWaitReason,
+  quotePartySourceTransition,
   pickNextRunnableStep,
   quoteRunBlockReason,
   reduceQuoteSession,
@@ -140,7 +142,7 @@ import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
-import { useInsertAiDraft } from './use-insert-ai-draft';
+import { useInsertAiDraft, useQuoteDraftRevision } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
 import { useQuotePdfJob } from './use-quote-pdf-job';
 import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
@@ -379,7 +381,9 @@ export function NavaPane({
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
-  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const [quoteSession, dispatchQuoteState] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const quoteDraftRevision = useQuoteDraftRevision(dispatchQuoteState);
+  const dispatchQuote = quoteDraftRevision.dispatch;
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobMessageId = quoteSession.staffSource?.messageId ?? null;
   const partyJobTransport = useMemo(
@@ -511,6 +515,9 @@ export function NavaPane({
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
+  useEffect(() => {
+    dispatchQuote({ type: 'quote_property_configured', propertyCode: activePaneConfig?.propertyCode ?? null });
+  }, [activePaneConfig?.propertyCode, quoteSession.binding?.selectionEpoch, quoteSession.binding?.transportId]);
   const quoteStrategyRegistryKey = (activePaneConfig?.salesStrategies ?? [])
     .map((strategy) => `${strategy.code}:${strategy.requestValue}`)
     .join('|');
@@ -575,6 +582,7 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  const flushQuoteEditsRef = useRef<() => Promise<boolean>>(async () => false);
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
@@ -593,6 +601,10 @@ export function NavaPane({
     currentScope,
     contextRevision,
     quoteSession,
+    quoteSessionRef,
+    quoteDraftRevision: quoteDraftRevision.live,
+    quoteDraftRenderedRevision: quoteDraftRevision.rendered,
+    flushQuoteEdits: () => flushQuoteEditsRef.current(),
     combinedEdit,
     sendCommand,
     supportsAction,
@@ -665,6 +677,8 @@ export function NavaPane({
     quoteSession.treatAs,
     quoteSession.staffNote,
   );
+  // A source can change before the hotel catalogue has loaded.
+  const verifyQuotePartySource = !activePaneConfig || activePaneConfig.propertyCode === HRCEN_PROPERTY_CODE;
   // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
@@ -672,8 +686,12 @@ export function NavaPane({
     internetMessageId: activeEmail?.internetMessageId ?? null,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
-    verifyQuotePartySource: activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
+    verifyQuotePartySource,
   });
+  flushQuoteEditsRef.current = () => {
+    const propertyCode = activePaneConfig?.propertyCode ?? quoteSessionRef.current.quotePropertyCode;
+    return propertyCode && propertyCode !== HRCEN_PROPERTY_CODE ? Promise.resolve(true) : storedWork.flushEdits();
+  };
   const storedPaneRef = useRef(storedWork.pane);
   storedPaneRef.current = storedWork.pane;
   // Forward the source this pane actually read; HMS party picks remain separately editable.
@@ -684,7 +702,7 @@ export function NavaPane({
   const localQuotePartyEdit = useRef<string | null>(null);
   useLayoutEffect(() => {
     const binding = quoteSession.binding;
-    if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE || !binding) {
+    if (!verifyQuotePartySource || !binding) {
       previousQuoteSource.current = null;
       localQuotePartyEdit.current = null;
       return;
@@ -692,19 +710,18 @@ export function NavaPane({
     const next = { key: JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]), party: quoteSourceBinding.sourcePartyDigest,
       extraction: quoteSourceBinding.sourceExtractionId };
     const previous = previousQuoteSource.current;
+    const transition = quotePartySourceTransition(previous, next, localQuotePartyEdit.current === next.key,
+      Boolean(storedWork.saveError), Boolean(quoteSession.sourcePartyAutoPickDisabled));
+    if (transition === 'defer') return;
     previousQuoteSource.current = next;
-    if (localQuotePartyEdit.current === next.key) return;
     localQuotePartyEdit.current = null;
-    const changed = previous?.key === next.key && previous.party &&
-      (previous.party !== next.party || previous.extraction !== next.extraction);
-    const readyAfterHold = previous?.key === next.key && !previous.party && next.party && quoteSession.sourcePartyAutoPickDisabled;
-    if (changed || readyAfterHold) {
+    if (transition === 'review') {
       const contact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : null;
       dispatchQuote({ type: 'quote_source_changed',
         ...(contact ? { sourceParty: { agency: contact.company, company: contact.endClient } } : {}) });
     }
-  }, [activePaneConfig?.propertyCode, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
-    quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId]);
+  }, [verifyQuotePartySource, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
+    quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId, storedWork.saveError]);
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -766,16 +783,17 @@ export function NavaPane({
           fieldProvenance: storedWork.pane.fieldProvenance,
           refs: storedWork.pane.refs ?? {},
           onResetContact: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
-            ? () => storedWork.resetSection({ type: 'contact' })
+            ? () => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'contact' }); }
             : undefined,
           onResetStay: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
-            ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
+            ? (stayId: string) => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'stay', stayId }); }
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload || contactCaseHeld,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
     if (storedWork.historyPending || storedWork.historyNeedsReload || contactCaseHeld) return;
+    quoteDraftRevision.mark();
     const previous = documentContactRef.current ?? {
       name: null,
       company: null,
@@ -784,7 +802,7 @@ export function NavaPane({
       phone: null,
     };
     const contact = { ...previous, [field]: value };
-    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (field === 'company' || field === 'endClient')) {
+    if (verifyQuotePartySource && (field === 'company' || field === 'endClient')) {
       const binding = quoteSession.binding;
       localQuotePartyEdit.current = binding ? JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]) : null;
       dispatchQuote({ type: 'quote_source_changed', sourceParty: { agency: contact.company, company: contact.endClient } });
@@ -1532,6 +1550,8 @@ export function NavaPane({
               },
             },
           });
+        } else if (notice === 'fresh_search') {
+          toast.warning(FRESH_PRIOR_QUOTE_MESSAGE);
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
@@ -2038,7 +2058,7 @@ export function NavaPane({
         }
       : undefined;
     // Use the background default unless Centurion staff explicitly chose a different strategy.
-    const runHeader = autoStart || readBack
+    const runHeader = autoStart || readBack || (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && !quoteSession.staffSalesStrategyEdited)
       ? autoRunHeader(quoteSession, activePaneConfig?.propertyCode)
       : quoteSession.staffHeader;
     const noticeEmail = {
@@ -2205,7 +2225,7 @@ export function NavaPane({
       supportsAction={supportsAction}
       quoteSession={quoteSession}
       combinedEdit={combinedEdit}
-      onCombinedEditChange={setCombinedEdit}
+      onCombinedEditChange={(edit) => { quoteDraftRevision.mark(); setCombinedEdit(edit); }}
       quoteOrBookingEmail={quoteOrBookingEmail}
       isDraftPending={isDraftPending}
       statusMessage={draftStatusMessage}
@@ -2367,8 +2387,8 @@ export function NavaPane({
               <WorkItemHistoryControls
                 workItemId={paneWorkItemId}
                 serverCursor={storedWork.historyCursor}
-                onUndo={storedWork.undo}
-                onRedo={storedWork.redo}
+                onUndo={(id, revision) => { quoteDraftRevision.mark(); storedWork.undo(id, revision); }}
+                onRedo={(id, revision) => { quoteDraftRevision.mark(); storedWork.redo(id, revision); }}
                 pending={storedWork.historyPending || storedWork.historyNeedsReload || caseReviewPending(quoteSession.analysis)}
               />
             ) : null}

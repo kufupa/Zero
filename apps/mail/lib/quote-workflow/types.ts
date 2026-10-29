@@ -824,6 +824,8 @@ export type QuoteSession = {
   /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
   stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
+  /** Hotel whose pane configuration applies to the current selection. */
+  quotePropertyCode?: string | null;
   /** A changed source invalidates native parties until staff chooses again. */
   sourcePartyEpoch?: number;
   sourcePartyReview?: StaffQuoteParty['kind'][];
@@ -904,6 +906,7 @@ export type QuoteSessionAction =
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'quote_property_configured'; propertyCode: string | null }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader>; sourcePartyEpoch?: number }
   | { type: 'quote_source_changed'; sourceParty?: { agency: string | null; company: string | null } }
   | { type: 'quote_party_reviewed'; kind: StaffQuoteParty['kind']; sourcePartyEpoch: number }

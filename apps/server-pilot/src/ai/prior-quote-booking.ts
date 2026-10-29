@@ -1,4 +1,5 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
+import { getPropertyRegistration, resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { occupiedDates, type Board, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import {
@@ -68,7 +69,7 @@ export type PriorQuoteRun = {
 
 export type PriorQuoteResolveResult =
   | { status: 'ready'; revision: QuoteRevision }
-  | { status: 'unavailable'; reason: 'expired' | 'not_found' | 'scope_mismatch' };
+  | { status: 'unavailable'; reason: 'expired' | 'not_found' | 'scope_mismatch' | 'fresh_quote_required'; message?: string };
 
 function iso(value: Date | string | null | undefined): string {
   if (!value) return '';
@@ -363,6 +364,12 @@ export function resolvePriorQuoteForBooking(
   }
   const revision = revisionsFromRun(run).find((row) => row.id === scope.revisionRef);
   if (!revision) return { status: 'unavailable', reason: 'not_found' };
+  const mailbox = resolvePropertyTransport(scope.transportId);
+  if ((mailbox.kind === 'property' && mailbox.property.propertyCode === 'HRCEN') ||
+    revision.propertyCode === 'HRCEN' || !getPropertyRegistration(revision.propertyCode)) {
+    return { status: 'unavailable', reason: 'fresh_quote_required',
+      message: 'Check the stay details and search rates again before booking.' };
+  }
   const asked = scope.analysis.groups.filter((group) => group.arrival && group.departure);
   if (asked.length && !analysisMatchesQuotedStay(scope.analysis, revision)) {
     return { status: 'unavailable', reason: 'scope_mismatch' };

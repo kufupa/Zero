@@ -62,8 +62,9 @@ import {
 } from '../../ai/hitl-tool-run.js';
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
-import { aiWorkflowRun, aiDraftGeneration, message } from '../../db/schema/mail.js';
-import { workItem } from '../../db/schema/work.js';
+import { aiWorkflowRun, aiDraftGeneration, mailThread, message } from '../../db/schema/mail.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS } from '../../ai/quote-outcomes.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
 import {
   countOtherInFlightQuoteRuns,
   describeHmsQueueStatus,
@@ -255,7 +256,7 @@ export const qualifiedProposalInput = z
     agency: z.string().max(256).default('Quote'),
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
-    additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+    additionalStays: z.array(qualifiedStayInput).max(MAX_QUOTE_OUTCOME_VERSIONS - 1).default([]),
     workItemId: z.string().uuid().optional(),
   })
   .strict();
@@ -263,7 +264,7 @@ export const quoteDraftPreflightInput = z.object({
   messageId: z.string().min(1),
   threadId: z.string().min(1),
   pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(32),
-  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(63).optional(),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS).optional(),
 }).strict();
 export function resolveLedgerProposal(
   run: {
@@ -535,8 +536,9 @@ async function staffApprovalsFor(
   ctx: { activeTransportId: string; sessionUser: { id: string } },
   threadId: string,
   messageId: string,
+  db: DB = getDb(),
 ) {
-  const rows = await getDb()
+  const rows = await db
     .select({
       id: aiDraftGeneration.id,
       createdAt: aiDraftGeneration.createdAt,
@@ -570,6 +572,7 @@ async function proposalStaysFor(
   ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
   resolveFailure: string,
   draftSources?: DraftQuoteSource[],
+  options?: { db?: DB; skipPending?: boolean },
 ): Promise<ProposalStay[]> {
   const requests = [
     {
@@ -582,8 +585,8 @@ async function proposalStaysFor(
   ];
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Each stay needs its own approved quote' });
-  const db = getDb();
-  await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
+  const db = options?.db ?? getDb();
+  if (!options?.skipPending) await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
   const [current] = await db
     .select()
     .from(message)
@@ -638,7 +641,7 @@ async function proposalStaysFor(
   const threadId = runs[0]!.run.threadId;
   const approvals = combined
     ? [
-        ...(await staffApprovalsFor(ctx, threadId, input.messageId)),
+        ...(await staffApprovalsFor(ctx, threadId, input.messageId, db)),
         ...runs.flatMap(({ run, systemPrepared }) =>
           systemPrepared
             ? [{ generationId: run.id, createdAt: run.createdAt, span: preparedStaySpan(run.readResult) }]
@@ -748,8 +751,8 @@ async function proposalStaysFor(
 /** A durable PDF must be stored under the work item for its actual selected email. */
 async function quoteWorkItemBelongsToSource(scope: {
   workItemId: string; transportId: string; threadId: string; messageId: string;
-}): Promise<boolean> {
-  const [item] = await getDb().select({ id: workItem.id }).from(workItem)
+}, db: DB = getDb()): Promise<boolean> {
+  const [item] = await db.select({ id: workItem.id }).from(workItem)
     .innerJoin(message, and(eq(message.id, workItem.sourceMessageId),
       eq(message.transportId, workItem.transportId), eq(message.threadId, workItem.threadId)))
     .where(and(eq(workItem.id, scope.workItemId), eq(workItem.transportId, scope.transportId),
@@ -761,14 +764,15 @@ async function quoteWorkItemBelongsToSource(scope: {
 export async function assertCurrentDraftQuotePdf(
   input: z.infer<typeof quoteDraftPreflightInput>,
   ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
+  options?: { db?: DB; skipPending?: boolean },
 ): Promise<DraftQuoteSource[]> {
   if (!isCenturionQuoteTransport(ctx.activeTransportId)) return [];
   const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED',
     message: 'The quote PDF could not be verified for this email. Refresh the email and prepare the quote again.' });
+  const db = options?.db ?? getDb();
   const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
-    threadId: input.threadId, messageId: input.messageId });
+    threadId: input.threadId, messageId: input.messageId, db });
   if (!target.ok) throw unavailable();
-  const db = getDb();
   if (target.target.propertyCode !== 'HRCEN') {
     if (input.pdfHashes.length) {
       const [protectedPdf] = await db.select({ request: aiWorkflowRun.readRequest }).from(aiWorkflowRun).where(and(
@@ -814,14 +818,14 @@ export async function assertCurrentDraftQuotePdf(
         request.data.revisionId !== quotePdfJobIdentity(proposal.data) || result.pdfHash !== hash ||
         createHash('sha256').update(Buffer.from(result.pdfBase64, 'base64')).digest('hex') !== hash) continue;
       if (!(await quoteWorkItemBelongsToSource({ workItemId: request.data.workItemId,
-        transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId }))) continue;
+        transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId }, db))) continue;
       try {
         const candidateSources: DraftQuoteSource[] = [];
         // The PDF job records the mailbox member who approved its source; a colleague may use the shared saved draft.
         const proposalCtx = request.data.userId
           ? { ...ctx, sessionUser: { ...ctx.sessionUser, id: request.data.userId } }
           : ctx;
-        const stays = await proposalStaysFor(proposal.data, proposalCtx, 'The quote PDF is no longer ready.', candidateSources);
+        const stays = await proposalStaysFor(proposal.data, proposalCtx, 'The quote PDF is no longer ready.', candidateSources, options);
         if (stays.some((stay) => stay.revision.propertyCode !== 'HRCEN')) continue;
         sources.push(...candidateSources);
       } catch (problem) { error = problem; continue; }
@@ -838,14 +842,39 @@ export async function assertCurrentDraftQuotePdf(
   return sources;
 }
 
-/** Hold the saved source stable from its final check until the draft transaction commits. */
+/** Lock the thread and all proof inputs until the enclosing draft transaction commits. */
 export async function assertDraftQuoteSourcesLocked(
   db: DB, scope: { transportId: string; threadId: string; messageId: string }, sources: DraftQuoteSource[],
 ): Promise<void> {
+  const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
+  // The parent locks also prevent new messages, extractions, work items and approvals through their foreign keys.
+  // Writers may already hold a child row before acquiring a parent FK lock. After the thread is locked,
+  // fail fast on any busy child so neither transaction can wait on the other in the opposite order.
+  const [thread] = await db.select({ id: mailThread.id }).from(mailThread).where(and(
+    eq(mailThread.id, scope.threadId), eq(mailThread.transportId, scope.transportId),
+  )).limit(1).for('update');
+  if (!thread) throw unavailable();
+  const messages = await db.select({ id: message.id }).from(message).where(and(
+    eq(message.threadId, scope.threadId), eq(message.transportId, scope.transportId),
+  )).orderBy(message.id).for('update', { noWait: true });
+  if (!messages.some((row) => row.id === scope.messageId)) throw unavailable();
+  await db.select({ id: mailExtraction.id }).from(mailExtraction)
+    .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id).for('share', { noWait: true });
+  // FOR UPDATE also blocks inserting events on a sibling work item while checking earlier human decisions.
+  await db.select({ id: workItem.id }).from(workItem).where(and(
+    eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
+    eq(workItem.sourceMessageId, scope.messageId),
+  )).orderBy(workItem.id).for('update', { noWait: true });
+  await db.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
+    eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
+  )).orderBy(aiDraftGeneration.id).for('share', { noWait: true });
+  await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, scope.transportId), eq(aiWorkflowRun.threadId, scope.threadId),
+  )).orderBy(aiWorkflowRun.id).for('share', { noWait: true });
   for (const source of sources) {
     if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(source.revision), {
       ...scope, propertyCode: source.revision.propertyCode, lock: true,
-    }, source.proof))) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
+    }, source.proof))) throw unavailable();
   }
 }
 

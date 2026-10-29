@@ -1,5 +1,5 @@
 import type { QuoteSalesStrategy } from '../hms/rate-catalogue.js';
-import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { hasInvalidStayDates, mailExtractionPayloadSchema } from './extraction/schema.js';
 import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
 import { matchRoomType } from './room-types.js';
@@ -110,11 +110,12 @@ function unpickedTwinRoomCode(roomType: string | undefined): 'STWN' | undefined 
 function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
-  missing: ReadonlyArray<{ field: string }> = [],
+  missing: ReadonlyArray<{ field: string; stayId?: string }> = [],
   propertyCode?: string,
+  knownStayIds: readonly string[] = [],
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
   const { arrival } = stay.requested;
-  const reversedStayDates = missing.some((item) => item.field === 'stayDates');
+  const reversedStayDates = hasInvalidStayDates(missing, stay.id, knownStayIds);
   const departure =
     stay.requested.departure ||
     (!reversedStayDates && validIsoDay(arrival) ? addDays(arrival, 1) : null);
@@ -274,7 +275,7 @@ export function buildPreparedStaffQuotePlan(input: {
   const sourcePartyDigest = quoteSourcePartyDigest(payload, {});
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode);
+    const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode, payload.stays.map((item) => item.id));
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,

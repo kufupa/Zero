@@ -61,11 +61,7 @@ async function fixture() {
   });
   const select = (selection?: Record<string, unknown>) => {
     let table: unknown;
-    const query = { from(value: unknown) { table = value; return query; }, innerJoin() { return query; },
-      where() { return query; }, orderBy() {
-        return selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection
-          ? Promise.resolve([]) : query;
-      }, limit() {
+    const rowsFor = () => {
         let rows: unknown[] = [];
         if (table === mailThread) rows = [{ id: 't1', transportId }];
         if (table === mailDraft && !transactionState.active) rows = [{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }];
@@ -82,9 +78,16 @@ async function fixture() {
         else if (table === aiWorkflowRun && selection && 'request' in selection)
           rows = jobAvailable.value && job.readRequest.propertyCode !== 'HRDAV' ? [{ request: job.readRequest }] : [];
         else if (table === aiWorkflowRun) rows = jobAvailable.value ? [job] : [];
-        const result = Promise.resolve(rows);
+        return rows;
+    };
+    const query = { from(value: unknown) { table = value; return query; }, innerJoin() { return query; },
+      where() { return query; }, orderBy() {
+        return selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection
+          ? Promise.resolve([]) : query;
+      }, limit() {
+        const result = Promise.resolve(rowsFor());
         return Object.assign(result, { for(mode: string) { transactionState.locks.push(mode); return result; } });
-      } };
+      }, for(mode: string) { transactionState.locks.push(mode); return Promise.resolve(rowsFor()); } };
     return query;
   };
   const db = { transaction, select, selectDistinct: select, insert: () => ({ values: async () => undefined }) } as unknown as DB;
@@ -189,6 +192,16 @@ describe('priced draft preflight', () => {
     expect(transaction).toHaveBeenCalledOnce();
   });
 
+  it('asks staff to retry when a quote source is being updated', async () => {
+    const { transaction } = await fixture();
+    transaction.mockRejectedValueOnce(Object.assign(new Error('wrapped lock'), { cause: { code: '55P03' } }));
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.',
+        });
+  });
+
   it('refuses a saved quote if source facts change during attachment staging', async () => {
     const { state, transactionState } = await fixture();
     transactionState.enabled = true;
@@ -207,6 +220,26 @@ describe('priced draft preflight', () => {
     configureDraftArtifactStorage({ read: async () => pdf, stage: async () => undefined } as never);
     await expect(caller().drafts.saveReply(input)).resolves.toMatchObject({ id: expect.any(String), replaced: false });
     expect(transactionState.committed).toBe(true);
+  });
+
+  it('rechecks the email and recorded PDF after staging before committing a quote draft', async () => {
+    const { mail, job, transactionState } = await fixture();
+    transactionState.enabled = true;
+    const input = { threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>', replyKind: 'quote' as const,
+      attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] };
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => {
+      mail.textBody = 'Changed while staging';
+    } } as never);
+    await expect(caller().drafts.saveReply(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transactionState.committed).toBe(false);
+
+    mail.textBody = 'Please quote accommodation.';
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => {
+      job.readResult.pdfBase64 = Buffer.from('%PDF-changed').toString('base64');
+    } } as never);
+    await expect(caller().drafts.saveReply(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transactionState.committed).toBe(false);
   });
 
   it('does not impose the Centurion proof on an HRDAV mailbox', async () => {

@@ -464,6 +464,7 @@ describe('staff quote execute/PDF header bind', () => {
   };
   const readyResult = {
     status: 'ready' as const,
+    propertyCode: HRCEN_PROPERTY_CODE,
     workflowRunId: 'run-1',
     revisionRef: 'rev-1',
     messageId: source.messageId,

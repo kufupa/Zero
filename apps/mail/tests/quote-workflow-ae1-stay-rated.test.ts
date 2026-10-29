@@ -81,6 +81,7 @@ function aeSession(): QuoteSession {
 function serverSummary(input: { inputRevision: number; stay: typeof A; totalMinor: number }): ExecuteStaffQuoteResult {
   return {
     status: 'ready',
+    propertyCode: HRCEN_PROPERTY_CODE,
     workflowRunId: '1e6c9d25-0000-4000-8000-000000000001',
     revisionRef: `quote:${'c'.repeat(64)}`,
     messageId: 'mail-1',

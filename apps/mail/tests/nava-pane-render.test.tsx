@@ -221,6 +221,7 @@ vi.mock('../providers/query-provider', () => ({
           }
           return {
             status: 'ready', workflowRunId: 'run-1', revisionRef: 'rev-auth', messageId: 'mail-1', threadId: 'thread-1', factRefs: [],
+            propertyCode: bridgeMockState.quotePaneConfig?.propertyCode,
             selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision, inputDigest: 'digest', totalMinor: 272000, currency: 'ZAR',
             arrivalDate: input.groups[0]?.arrivalDate, departureDate: input.groups[0]?.departureDate, description: 'Selected allocation',
             runId: bridgeMockState.staffQuoteRunId,
@@ -923,6 +924,7 @@ describe('NavaPane', () => {
 
   const STAFF_QUOTE_READY = {
     status: 'ready',
+    propertyCode: 'HRCEN',
     workflowRunId: 'workflow-restored',
     revisionRef: 'revision-restored',
     messageId: 'mail-1',

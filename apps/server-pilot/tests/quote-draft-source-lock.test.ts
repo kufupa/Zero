@@ -5,7 +5,7 @@ import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { assertDraftQuoteSourcesLocked } from '../src/trpc/routes/workstation.js';
 import { appRouter } from '../src/trpc/router.js';
@@ -15,6 +15,64 @@ import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE } from './helpers/tes
 const reachable = await probeTestDb();
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disposable PostgreSQL)', () => {
+  it('lets a pricing writer finish when a draft encounters its already-locked generation', async () => {
+    const saver = openTestDbSession(), writer = openTestDbSession();
+    const id = randomUUID(), transportId = `draft-lock-${id}`, threadId = `thread-${id}`, messageId = `message-${id}`;
+    const generationId = `generation-${id}`, runId = `run-${id}`, address = `${id}@example.invalid`;
+    let releaseWriter: (() => void) | undefined;
+    let writing: Promise<unknown> | undefined;
+    try {
+      await saver.db.insert(mailboxTransport).values({ id: transportId, email: address, ownerHeaderValue: address });
+      await saver.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+      await saver.db.insert(message).values({ id: messageId, transportId, threadId, direction: 'inbound',
+        messageIdHeader: address, fromAddress: 'sender@example.invalid' });
+      await saver.db.insert(aiDraftGeneration).values({ id: generationId, transportId, threadId,
+        requestedByUserId: 'staff-1', model: 'staff-approved-native', promptVersion: 'test' });
+      let writerReady!: () => void, writerFailed!: (reason: unknown) => void;
+      const ready = new Promise<void>((resolve, reject) => { writerReady = resolve; writerFailed = reject; });
+      const released = new Promise<void>((resolve) => { releaseWriter = resolve; });
+      let finishQuote = false;
+      writing = writer.db.transaction(async (tx) => {
+        try {
+          // This is the first lock taken by staff-quote-run.persistRun before inserting the workflow run.
+          await tx.update(aiDraftGeneration).set({ status: 'succeeded' }).where(eq(aiDraftGeneration.id, generationId));
+          writerReady();
+          await released;
+          if (finishQuote) await tx.insert(aiWorkflowRun).values({ id: runId, transportId, threadId,
+            triggerMessageId: messageId, runKind: 'candidate_draft', idempotencyKey: runId,
+            modelId: 'staff-approved-native', promptVersion: 'test', generationId, state: 'succeeded' });
+        } catch (error) { writerFailed(error); throw error; }
+      });
+      await ready;
+      const saving = saver.db.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '4s'`);
+        await assertDraftQuoteSourcesLocked(tx as unknown as DB, { transportId, threadId, messageId }, []);
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = await Promise.race([
+        saving.then(() => ({ kind: 'saved' as const }), (error: unknown) => ({ kind: 'busy' as const, error })),
+        new Promise<{ kind: 'waited' }>((resolve) => { timer = setTimeout(() => resolve({ kind: 'waited' }), 1500); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      finishQuote = outcome.kind === 'busy';
+      releaseWriter?.();
+      await writing;
+      writing = undefined;
+      await saving.catch(() => undefined);
+      expect(outcome.kind).toBe('busy');
+      if (outcome.kind === 'busy') {
+        const error = outcome.error as { code?: string; cause?: { code?: string } };
+        expect([error.code, error.cause?.code]).toContain('55P03');
+      }
+      expect(await saver.db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)))
+        .toEqual([{ id: runId }]);
+    } finally {
+      releaseWriter?.();
+      if (writing) await writing.catch(() => undefined);
+      await Promise.all([saver.close(), writer.close()]);
+    }
+  }, 30000);
+
   it('holds the work item through commit and rejects a previously saved edit', async () => {
     const holder = openTestDbSession(), editor = openTestDbSession();
     const id = randomUUID(), transportId = `draft-lock-${id}`, threadId = `thread-${id}`, messageId = `message-${id}`;
@@ -79,12 +137,34 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
         const error = await editor.db.execute(sql`select id from ${workItem} where id = ${item!.id} for update nowait`)
           .then(() => null, (reason: unknown) => reason as { code?: string; cause?: { code?: string } });
         expect([error?.code, error?.cause?.code]).toContain('55P03');
+        const extractionUpdate = await editor.db.execute(sql`select id from ${mailExtraction} where id = ${read!.id} for update nowait`)
+          .then(() => null, (reason: unknown) => reason as { code?: string; cause?: { code?: string } });
+        expect([extractionUpdate?.code, extractionUpdate?.cause?.code]).toContain('55P03');
+        const insertRead = await editor.db.transaction(async (tx) => {
+          await tx.execute(sql`set local lock_timeout = '250ms'`);
+          await tx.insert(mailExtraction).values({ messageId, extractorVersion: 'concurrent',
+            status: 'succeeded', kind: 'quote', payload });
+        }).then(() => null, (reason: unknown) => reason as { code?: string; cause?: { code?: string } });
+        expect([insertRead?.code, insertRead?.cause?.code]).toContain('55P03');
+        const insertApproval = await editor.db.transaction(async (tx) => {
+          await tx.execute(sql`set local lock_timeout = '250ms'`);
+          await tx.insert(aiDraftGeneration).values({ id: `new-${id}`, transportId, threadId,
+            requestedByUserId: 'staff-1', model: 'staff-approved-native', promptVersion: 'test' });
+        }).then(() => null, (reason: unknown) => reason as { code?: string; cause?: { code?: string } });
+        expect([insertApproval?.code, insertApproval?.cause?.code]).toContain('55P03');
       } finally {
         release();
         await saving;
       }
       await editor.db.update(workItem).set({ state: { 'stays[s1].rows[g1].roomType': 'Standard Twin' } })
         .where(eq(workItem.id, item!.id));
+      await expect(holder.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB, scope, sources)))
+        .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      await editor.db.update(workItem).set({ state: { 'contact.company': 'New Agency' } }).where(eq(workItem.id, item!.id));
+      await expect(holder.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB, scope, sources)))
+        .resolves.toBeUndefined();
+      await editor.db.insert(mailExtraction).values({ messageId, extractorVersion: 'newer',
+        status: 'succeeded', kind: 'quote', payload, createdAt: new Date(Date.now() + 1000) });
       await expect(holder.db.transaction((tx) => assertDraftQuoteSourcesLocked(tx as unknown as DB, scope, sources)))
         .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     } finally {

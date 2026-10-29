@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
@@ -72,6 +72,36 @@ export type ReviewedReply = { html: string; attachments: Array<{ fileName: strin
 type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
 
+/** Changes are marked at dispatch time, before React renders or debounced work-item saves finish. */
+export function useQuoteDraftRevision<Action>(dispatch: (action: Action) => void) {
+  const live = useRef(0);
+  const mark = useCallback(() => { live.current += 1; }, []);
+  const trackedDispatch = useCallback((action: Action) => {
+    mark();
+    dispatch(action);
+  }, [dispatch, mark]);
+  return { live, rendered: live.current, mark, dispatch: trackedDispatch };
+}
+
+type LocalQuoteSnapshot = Pick<QuoteSession,
+  'inputRevision' | 'stayRevision' | 'pdf' | 'staffSource' | 'staffQuote' | 'staffQuotes' |
+  'selectedStayKey' | 'reviewedReplyHtml'>;
+
+function localQuoteSnapshot(session: QuoteSession): LocalQuoteSnapshot {
+  return {
+    inputRevision: session.inputRevision, stayRevision: session.stayRevision, pdf: session.pdf,
+    staffSource: session.staffSource, staffQuote: session.staffQuote, staffQuotes: session.staffQuotes,
+    selectedStayKey: session.selectedStayKey, reviewedReplyHtml: session.reviewedReplyHtml,
+  };
+}
+
+function sameLocalQuote(snapshot: LocalQuoteSnapshot, session: QuoteSession): boolean {
+  return snapshot.inputRevision === session.inputRevision && snapshot.stayRevision === session.stayRevision &&
+    snapshot.pdf === session.pdf && snapshot.staffSource === session.staffSource &&
+    snapshot.staffQuote === session.staffQuote && snapshot.staffQuotes === session.staffQuotes &&
+    snapshot.selectedStayKey === session.selectedStayKey && snapshot.reviewedReplyHtml === session.reviewedReplyHtml;
+}
+
 function quoteReplyKind(scope: ReplyDraftScope, session: QuoteSession, reply: ReviewedReply): ReplyKind {
   if (scope === 'saved' && reply.quoteBound !== undefined) return reply.quoteBound ? 'quote' : 'other';
   if (scope !== 'saved' && quoteDeclineReplyOnly(session)) return 'decline';
@@ -122,7 +152,8 @@ type PendingReplyOperation = {
   pdfs?: Array<{ fileName: string; pdfBase64: string }>;
   reviewedHtml?: string;
   quotePreflight?: { messageId: string; threadId: string; pdfHashes: string[];
-    preparedVersions?: PreparedQuoteRef[]; transportId: string | null } | null;
+    preparedVersions?: PreparedQuoteRef[]; transportId: string | null;
+    localRevision: number; localSelectionEpoch: number; localQuote: LocalQuoteSnapshot } | null;
   replyPayload?: {
     operationId: string;
     entryId: string;
@@ -176,6 +207,10 @@ export function useInsertAiDraft({
   currentScope,
   contextRevision,
   quoteSession,
+  quoteSessionRef,
+  quoteDraftRevision,
+  quoteDraftRenderedRevision,
+  flushQuoteEdits,
   combinedEdit,
   sendCommand,
   supportsAction,
@@ -186,6 +221,10 @@ export function useInsertAiDraft({
   currentScope: string | null;
   contextRevision: { readonly current: { scopeEpoch: number; selectionEpoch: number } };
   quoteSession: QuoteSession;
+  quoteSessionRef: { readonly current: QuoteSession };
+  quoteDraftRevision: { readonly current: number };
+  quoteDraftRenderedRevision: number;
+  flushQuoteEdits: () => Promise<boolean>;
   combinedEdit: CombinedReplyEdit | null;
   sendCommand: PaneBridge['sendCommand'];
   supportsAction: PaneBridge['supportsAction'];
@@ -415,12 +454,27 @@ export function useInsertAiDraft({
             pdfHashes: await Promise.all(pdfs.map((pdf) => sha256Base64(pdf.pdfBase64))),
             ...(scope === 'saved' ? {} : { preparedVersions: preparedQuoteRefs(quoteSession, scope) }),
             transportId: owner?.transportId ?? quoteSession.binding?.transportId ?? null,
+            localRevision: quoteDraftRenderedRevision, localSelectionEpoch: startedSelectionEpoch,
+            localQuote: localQuoteSnapshot(quoteSession),
           };
         } else attempt.quotePreflight = null;
       }
-      const recheckQuote = async (requireSelectedEmail: boolean) => {
+      const checkLocalQuote = () => {
         const proof = attempt.quotePreflight;
         if (!proof) return;
+        if (!sameStaffScope() || contextRevision.current.selectionEpoch !== proof.localSelectionEpoch)
+          throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
+        if (quoteDraftRevision.current !== proof.localRevision || !sameLocalQuote(proof.localQuote, quoteSessionRef.current))
+          throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
+      };
+      const recheckQuote = async () => {
+        const proof = attempt.quotePreflight;
+        if (!proof) return;
+        checkLocalQuote();
+        let saved = false;
+        try { saved = await flushQuoteEdits(); } catch { /* Fail closed when the pending edits cannot be checked. */ }
+        if (!saved) throw new QuoteDraftPreflightError('The quote edits could not be saved. Retry saving before creating the draft.');
+        checkLocalQuote();
         const preflight = trpcClient.workstation?.quoteDraftPreflight?.mutate;
         if (!preflight) throw new QuoteDraftPreflightError('Refresh the pane and prepare the quote again.');
         try {
@@ -429,8 +483,7 @@ export function useInsertAiDraft({
         } catch {
           throw new QuoteDraftPreflightError('The quote changed or could not be verified. Refresh the email and prepare it again.');
         }
-        if (!sameStaffScope() || (requireSelectedEmail && contextRevision.current.selectionEpoch !== startedSelectionEpoch))
-          throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
+        checkLocalQuote();
       };
       if (!attempt.draftLocation) {
         // Renewal may suppress selection events while Outlook is busy. A PDF
@@ -459,7 +512,11 @@ export function useInsertAiDraft({
         replyAll: false,
         openInComposer: false,
       };
-      if (!attempt.draftLocation) await recheckQuote(true);
+      if (!attempt.draftLocation) {
+        await recheckQuote();
+        // A queued edit can run between the preflight promise resolving and this continuation.
+        checkLocalQuote();
+      }
       attempt.replyPayload = replyPayload;
       if (!attempt.draftLocation) {
         replyMarkerBelongsToCurrentScope.current = true;
@@ -494,7 +551,8 @@ export function useInsertAiDraft({
       const alreadyAdded = attempt.attachmentsAdded ?? 0;
       for (const [index, payload] of attachmentPayloads.entries()) {
         if (index < alreadyAdded) continue;
-        await recheckQuote(false);
+        await recheckQuote();
+        checkLocalQuote();
         await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;

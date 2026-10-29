@@ -674,6 +674,20 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
   return `Finding the ${names.join(' and ')} in HMS…`;
 }
 
+/** A local edit waits for its save, but a failed source refresh must be reviewed immediately. */
+export function quotePartySourceTransition(
+  previous: { key: string; party: string | null; extraction: string | null } | null,
+  next: { key: string; party: string | null; extraction: string | null },
+  localEditPending: boolean,
+  saveProblem: boolean,
+  autoPickDisabled: boolean,
+): 'defer' | 'review' | 'none' {
+  if (localEditPending && !saveProblem) return 'defer';
+  if (previous?.key !== next.key) return 'none';
+  if (previous.party && (previous.party !== next.party || previous.extraction !== next.extraction)) return 'review';
+  return !previous.party && next.party && autoPickDisabled ? 'review' : 'none';
+}
+
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
   session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'> &
@@ -1499,6 +1513,7 @@ function prefillStaffHeaderFromLuna(
   header: StaffQuoteHeader,
   analysis: QuoteAnalysis,
   staffSalesStrategyEdited: boolean,
+  propertyCode?: string | null,
 ): StaffQuoteHeader {
   let next = header;
   const party = analysis.luna?.party;
@@ -1516,7 +1531,8 @@ function prefillStaffHeaderFromLuna(
   }
   // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
   if (!staffSalesStrategyEdited) {
-    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind, (analysis as CaseAnalysis).paneRead?.propertyCode) };
+    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind,
+      propertyCode ?? (analysis as CaseAnalysis).paneRead?.propertyCode) };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -2008,6 +2024,13 @@ export function reduceQuoteSession(
         binding: action.binding,
       };
     }
+    case 'quote_property_configured': {
+      if ((session.quotePropertyCode ?? null) === action.propertyCode) return session;
+      const salesStrategy = session.staffSalesStrategyEdited ? session.staffHeader.salesStrategy :
+        automaticSalesStrategy(session.groups, session.analysis?.luna?.party?.kind, action.propertyCode);
+      return clearDownstream({ ...session, quotePropertyCode: action.propertyCode,
+        staffHeader: { ...session.staffHeader, salesStrategy }, inputRevision: session.inputRevision + 1 });
+    }
     case 'treat_as': {
       if (action.treatAs === session.treatAs) return session;
       const chosen = { ...session, treatAs: action.treatAs, groups: action.treatAs ? quoteDateGroups(session.groups) : session.groups };
@@ -2132,6 +2155,7 @@ export function reduceQuoteSession(
             session.staffHeader,
             analysis,
             session.staffSalesStrategyEdited === true,
+            session.quotePropertyCode,
           ),
           reviewItems,
           handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
@@ -2189,6 +2213,7 @@ export function reduceQuoteSession(
             session.staffHeader,
             action.analysis,
             session.staffSalesStrategyEdited === true,
+            session.quotePropertyCode,
           ),
         };
       }
@@ -2225,6 +2250,7 @@ export function reduceQuoteSession(
           session.staffHeader,
           action.analysis,
           session.staffSalesStrategyEdited === true,
+          session.quotePropertyCode,
         ),
         reviewItems,
         handledSourceKey: sourceKey || null,
@@ -2631,7 +2657,7 @@ export function reduceQuoteSession(
       const salesStrategy = session.staffSalesStrategyEdited
         ? staffHeader.salesStrategy
         : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind,
-            (session.analysis as CaseAnalysis | null)?.paneRead?.propertyCode);
+            session.quotePropertyCode ?? (session.analysis as CaseAnalysis | null)?.paneRead?.propertyCode);
       const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
