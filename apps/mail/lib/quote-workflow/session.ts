@@ -277,7 +277,6 @@ export function withPaneRead(
 ): QuoteAnalysis {
   return { ...analysis, paneRead: { groups, rememberedSource, propertyCode } } as CaseAnalysis;
 }
-
 /** The baseline is retained while case evidence is held, including across a pane switch. */
 export function paneCaseSnapshot(analysis: QuoteAnalysis | null): PaneCaseSnapshot | null {
   if (!analysis) return null;
@@ -2057,7 +2056,8 @@ export function reduceQuoteSession(
         ? singleCaseReclassification(session.analysis, action.analysis, session.treatAs) : null;
       const aliases = reclassified ?? (previous && fresh && sameCaseSnapshot(previous, fresh, explicitTypeChange, retainedRows)
         ? previous.aliases : undefined);
-      if (aliases) action = { ...action, analysis: { ...action.analysis, caseAliases: aliases } as CaseAnalysis };
+      if (aliases && !(action.analysis as CaseAnalysis).caseAliases) return reduceQuoteSession(session,
+        { ...action, analysis: { ...action.analysis, caseAliases: aliases } as CaseAnalysis });
       const changed = Boolean(previous && fresh && editsToKeep && !reclassified &&
         !sameCaseSnapshot(previous, fresh, explicitTypeChange, retainedRows));
       if (!fresh || unverifiedMemory || changed || caseReviewPending(action.analysis) || (wasHeld && !previous)) {

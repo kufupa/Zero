@@ -5040,7 +5040,8 @@ describe('fresh case evidence and mixed actions', () => {
   it('accepts a saved room removal only when the retained case roster still matches', () => {
     const firstWithoutAssignment = { ...first, confirmationNumber: undefined };
     const before: QuoteAnalysis = { ...source, groups: [firstWithoutAssignment, second] };
-    const after: QuoteAnalysis = { ...before, groups: [{ ...second, stayGuests: first.stayGuests }],
+    const remainingWithRoster = { ...second, stayGuests: first.stayGuests };
+    const after: QuoteAnalysis = { ...before, groups: [remainingWithRoster],
       luna: lunaQuote({ tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] }) };
     let edited = analysisReady(withPaneRead(before, null, null, 'HRCEN'));
     edited = reduceQuoteSession(edited, { type: 'remove_row', groupId: first.id });
