@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
-import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
+import { DAVINCI_TRANSPORT_EMAIL, FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { eq } from 'drizzle-orm';
@@ -576,7 +576,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const prepared = await seedPreparedQuote(db, request, quote);
         const copy = await seedMailboxCopy(db, request.mail, 'transport-faith');
         const copyApi = caller('transport-faith', FAITH_USER_ID);
-        const sourceInput = pdfInput({ ...prepared, messageId: request.mail.id });
+        const sourceInput = { ...pdfInput({ ...prepared, messageId: request.mail.id }), outlookEmail: DAVINCI_TRANSPORT_EMAIL };
         const copyInput = {
           ...pdfInput({ ...prepared, messageId: copy.id }),
           outlookEmail: FAITH_TRANSPORT_EMAIL,
@@ -762,7 +762,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const pdf = await api.workstation.qualifiedQuoteProposalPdf(combined);
         expect(pdf.totalMinor).toBe(40004);
         expect(pdf.revisionId).toMatch(/^quotes:/);
-        expect(pdf.fileName).toMatch(/^Quote - Guest 26 October - 18 November 2026 \([0-9a-f]{8}\)\.pdf$/);
+        expect(pdf.fileName).toMatch(/^Quote - Quote 26 October - 18 November 2026 \([0-9a-f]{8}\)\.pdf$/);
         expect(vi.mocked(fetch).mock.calls.at(-1)![0]).toBe('http://synthetic.invalid/forms/libreoffice/convert');
         const workbook = await api.workstation.quoteWorkbook(combined);
         expect(workbook).toMatchObject({ totalMinor: 40004, revisionId: pdf.revisionId });
