@@ -24,6 +24,22 @@ describe('one-room HMS create plan contract', () => {
     expect(() => assertOneRoomCaseScope(multipleGuests, {}, CASE_STAY_ID)).toThrow('case_multiple_guests_unsupported');
   });
 
+  it('refuses to create when the case identifies an existing reservation or change', () => {
+    const stay = CASE_READ.stays[0]!;
+    const cases = [
+      { ...CASE_READ, confirmationNumbers: ['123456-1'] },
+      { ...CASE_READ, stays: [{ ...stay, guests: [{ name: 'Existing Guest', confirmationNumber: '123456-1' }] }] },
+      { ...CASE_READ, stays: [{ ...stay, booked: { arrival: '2027-09-10', departure: '2027-09-11' } }] },
+      { ...CASE_READ, action: 'amend' },
+      { ...CASE_READ, stays: [{ ...stay, action: 'cancel' }] },
+    ];
+    for (const caseRead of cases) {
+      expect(() => assertOneRoomCaseScope(caseRead, {}, CASE_STAY_ID)).toThrow('existing_booking_unsupported');
+    }
+    expect(() => assertOneRoomCaseScope(CASE_READ, {}, CASE_STAY_ID, 'Booking reference 123456-1'))
+      .toThrow('existing_booking_unsupported');
+  });
+
   it('accepts only the matching, fresh native quote with every nightly amount', async () => {
     const { revision, input } = await quotedPlanFixture();
     const parsed = prepareHmsCreatePlanInput.parse(input);

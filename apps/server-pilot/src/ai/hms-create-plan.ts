@@ -11,6 +11,7 @@ import { assertReservationistResultFreshForAction } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { mailExtractionPayloadSchema } from './extraction/schema.js';
 import { assertNoOpenWrite, hmsStateDigest } from './hms-approval.js';
+import { extractHmsConfirmations } from './hms-jobs.js';
 import { paneStayDigest, PANE_PREVIEW_TTL_MS } from './pane-stay-save.js';
 import { stayPreviewGrantOf, stayPreviewOf } from './pane-stay-preview-persist.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
@@ -96,13 +97,21 @@ async function selectedMailHash(db: DB, mail: typeof message.$inferSelect): Prom
 }
 
 /** The first slice cannot silently approve one room from a case with other displayed rooms. */
-export function assertOneRoomCaseScope(payload: unknown, state: Record<string, unknown>, stayId: string): void {
+export function assertOneRoomCaseScope(payload: unknown, state: Record<string, unknown>, stayId: string, mailText = ''): void {
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success) refuse('case_scope_unverified');
   const stays = formStays(parsed.data, state);
   if (stays.length !== 1 || stays[0]!.rows.length > 1 ||
       (stays[0]!.totalRooms !== null && stays[0]!.totalRooms !== 1)) refuse('case_multiple_rooms_unsupported');
   if (stayId !== `${stays[0]!.id}_1`) refuse('case_room_identity_changed');
+  const existingAction = (action: string | undefined) => action === 'amend' || action === 'cancel';
+  if (parsed.data.confirmationNumbers.some((confirmation) => confirmation.trim()) ||
+      parsed.data.stays.some((stay) =>
+        Boolean(stay.booked?.arrival || stay.booked?.departure) || existingAction(stay.action) ||
+        (stay.guests ?? []).some((guest) => Boolean(guest.confirmationNumber?.trim()))) ||
+      existingAction(parsed.data.action) || extractHmsConfirmations(mailText).length > 0) {
+    refuse('existing_booking_unsupported');
+  }
   const guests = parsed.data.stays.find((stay) => stay.id === stays[0]!.id)?.guests ?? [];
   if (guests.length > 1) refuse('case_multiple_guests_unsupported');
   const row = stays[0]!.rows[0];
@@ -191,7 +200,8 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
     ne(mailExtraction.id, caseRead.id), gte(mailExtraction.createdAt, caseRead.createdAt),
   )).limit(1);
   if (tiedRead) refuse('case_read_superseded');
-  assertOneRoomCaseScope(caseRead.payload, item.state, input.stayId);
+  assertOneRoomCaseScope(caseRead.payload, item.state, input.stayId,
+    `${selected.subject ?? ''}\n${selected.textBody ?? ''}\n${selected.htmlBody ?? ''}`);
   const [run] = await db.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
     eq(aiWorkflowRun.threadId, item.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
