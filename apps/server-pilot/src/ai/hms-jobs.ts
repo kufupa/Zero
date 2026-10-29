@@ -4401,7 +4401,9 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
-      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, preferBoundContract && hasReadySelectedContract(preparedRun))
+      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput,
+        (runPropertyCode(preparedRun) !== 'HRCEN' || !isCenturionQuoteTransport(preparedRun.transportId)) &&
+          preferBoundContract && hasReadySelectedContract(preparedRun))
     ) {
       continue;
     }
