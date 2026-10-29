@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useLayoutEffect, useRef } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { caseReviewPending, isMultiStay, requestedQuoteKeys, stayIdOf } from '@/lib/quote-workflow/session';
@@ -30,6 +30,10 @@ export function QuoteBookingHost({
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const confirmation = useConfirmationSources();
+  // Keep the same mounted card during a temporary scope hold, but discard its local state on a new owner/message.
+  const lastGuestKey = useRef(guestEditorKey ?? null);
+  const mountedGuestKey = guestEditorKey || lastGuestKey.current;
+  useLayoutEffect(() => { if (guestEditorKey) lastGuestKey.current = guestEditorKey; }, [guestEditorKey]);
   const requestKey = JSON.stringify([
     session.binding?.transportId,
     session.binding?.storeId,
@@ -38,6 +42,7 @@ export function QuoteBookingHost({
     session.binding?.selectionEpoch,
     session.binding?.scopeEpoch,
     workItemId,
+    mountedGuestKey,
   ]);
 
   const shownDrafts = requestedQuoteKeys(session.groups).filter((key) => session.bookingDrafts[key]);
@@ -59,13 +64,13 @@ export function QuoteBookingHost({
 
   return (
     <>
-      {shownDrafts.length > 0 && guestEditorKey === null ? (
+      {shownDrafts.length > 0 && !guestEditorKey ? (
         <p className="text-[13px] text-[#64748b]">Select a signed-in mailbox and email to review bookings.</p>
       ) : null}
-      {shownDrafts.length > 0 && guestEditorKey !== null && !singleRoomGuest ? (
+      {shownDrafts.length > 0 && guestEditorKey && !singleRoomGuest ? (
         <p className="text-[13px] text-[#64748b]">Check each room’s guest name.</p>
       ) : null}
-      <div hidden={guestEditorKey === null}>
+      <div hidden={!guestEditorKey}>
       {shownDrafts.map((key) => (
           <Fragment key={`${requestKey}:${key}`}>
             {isMultiStay(session) ? (

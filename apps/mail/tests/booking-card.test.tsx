@@ -322,6 +322,8 @@ function sessionWithBoardRoomLabel(session: QuoteSession, roomLabel: string): Qu
   };
 }
 
+const GUEST_TEST_KEY = JSON.stringify(['staff-test', 'transport-test', 'store-test', 'entry-test']);
+
 describe('booking cards', () => {
   it('shows editable room and rate controls for each booking', () => {
     const { client } = paneClient();
@@ -348,7 +350,7 @@ describe('booking cards', () => {
     const session = quotedSession(draft);
     const workItemId = '11111111-1111-1111-1111-111111111111';
     const host = (currentSession: QuoteSession) => (
-      <QuoteBookingHost session={currentSession} paneSave={client} workItemId={workItemId} />
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={currentSession} paneSave={client} workItemId={workItemId} />
     );
     const { rerender } = render(host(session));
 
@@ -484,7 +486,7 @@ describe('booking cards', () => {
   });
 
   it('renders create-only fields once per draft room', () => {
-    render(<QuoteWorkflowPanel session={quotedSession()} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={quotedSession()} />);
     const agencies = screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[];
     expect(agencies).toHaveLength(2);
     expect(agencies.every((field) => field.options[field.selectedIndex]?.getAttribute('value') === '')).toBe(true);
@@ -519,7 +521,7 @@ describe('booking cards', () => {
         steps: [{ label: 'Arrival', value: '2026-11-12', source: 'mail' }],
       },
     };
-    render(<QuoteWorkflowPanel session={session} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={session} />);
     expect(screen.queryByRole('heading', { name: 'Book in HMS' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Key into HMS' })).toBeNull();
     expect(screen.queryByText('Nava does not write to HMS')).toBeNull();
@@ -529,7 +531,7 @@ describe('booking cards', () => {
     const draft = draftReady();
     for (const room of draft.draft.rooms) delete room.request.ratePlan;
     const onPatchGroup = vi.fn();
-    render(<QuoteWorkflowPanel session={quotedSession(draft)} onPatchGroup={onPatchGroup} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={quotedSession(draft)} onPatchGroup={onPatchGroup} />);
     const fields = screen.getAllByLabelText('Rate code');
     expect(fields).toHaveLength(1);
     fireEvent.change(fields[0]!, { target: { value: 'barro' } });
@@ -542,7 +544,7 @@ describe('booking cards', () => {
     const session = quotedSession();
     session.groups[0] = { ...session.groups[0]!, rateCode: 'BARRO' };
     const onPatchGroup = vi.fn();
-    render(<QuoteWorkflowPanel session={session} onPatchGroup={onPatchGroup} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={session} onPatchGroup={onPatchGroup} />);
 
     fireEvent.blur(screen.getByLabelText('Rate code'));
 
@@ -563,7 +565,7 @@ describe('booking cards', () => {
       overrideRateCodes: [],
       eventRateCodes: [],
     };
-    render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={session} paneConfig={paneConfig} />);
     const stay = screen.getByRole('article', { name: 'Stay 1 details' });
     const roomType = within(stay).getByLabelText('Room type') as unknown as HTMLSelectElement;
     const values = Array.from(roomType.options, (option) => option.value);
@@ -574,7 +576,7 @@ describe('booking cards', () => {
 
   it('shows an amber mismatch banner with the claim quote', () => {
     render(
-      <QuoteWorkflowPanel
+      <QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY}
         session={quotedSession(
           draftReady({
             rateCheck: [
@@ -595,7 +597,7 @@ describe('booking cards', () => {
 
   it('shows party_rate_not_applied on the booking draft', () => {
     render(
-      <QuoteWorkflowPanel
+      <QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY}
         session={quotedSession(draftReady({ flags: ['party_rate_not_applied'] }))}
       />,
     );
@@ -603,7 +605,7 @@ describe('booking cards', () => {
   });
 
   it('shows copy guidance and a disabled writes-off create while pane save is off', () => {
-    render(<QuoteWorkflowPanel session={quotedSession()} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={quotedSession()} />);
     expect(
       screen.getByText(
         'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.',
@@ -648,7 +650,7 @@ describe('booking cards', () => {
 
   it('keeps track/source/guarantee selects local-only', () => {
     const session = quotedSession();
-    render(<QuoteWorkflowPanel session={session} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={session} />);
     const track = screen.getAllByLabelText('Track')[0]!;
     fireEvent.change(track, { target: { value: 'COR' } });
     expect((track as unknown as HTMLSelectElement).value).toBe('COR');
@@ -761,7 +763,7 @@ describe('booking cards', () => {
   });
 
   it('passes picked company and bound agency from quote to booking card', () => {
-    render(<QuoteWorkflowPanel session={quotedSession(bareDraft(), PICKED)} />);
+    render(<QuoteWorkflowPanel guestEditorKey={GUEST_TEST_KEY} session={quotedSession(bareDraft(), PICKED)} />);
     expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
     for (const select of screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[]) {
       expect(select.value).toBe('__bound__');
@@ -853,7 +855,9 @@ describe('booking card staying-guest prefill', () => {
     const secondKey = guestEditorKeyFor(session, 'staff-2')!;
     rememberGuestName(firstKey, 'Ada Example');
     rememberGuestName(secondKey, 'Bea Example');
-    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={firstKey} />);
+    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    expect(screen.getByText('Select a signed-in mailbox and email to review bookings.')).toBeDefined();
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={firstKey} />);
     const firstName = () => screen.getByLabelText('First name') as HTMLInputElement;
     const originalInput = firstName();
     expect(originalInput.value).toBe('Ada');
@@ -862,8 +866,7 @@ describe('booking card staying-guest prefill', () => {
     expect(originalInput.closest('[hidden]')).not.toBeNull();
     view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={firstKey} />);
     expect(firstName().value).toBe('Edited');
-    const nextUser = { ...session, binding: { ...session.binding!, scopeEpoch: session.binding!.scopeEpoch + 1 } };
-    view.rerender(<QuoteBookingHost session={nextUser} workItemId="wi-1" guestEditorKey={secondKey} />);
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={secondKey} />);
     expect(firstName().value).toBe('Bea');
   });
 
@@ -1702,7 +1705,7 @@ describe('booking card pane save', () => {
     const { client, preview, commit } = paneClient();
     const workItemId = '22222222-2222-4222-8222-222222222222';
     const host = (session: QuoteSession) => (
-      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId={workItemId} />
     );
     const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
 
@@ -1724,7 +1727,7 @@ describe('booking card pane save', () => {
     const { client, preview, commit } = paneClient();
     const workItemId = '33333333-3333-4333-8333-333333333333';
     const host = (session: QuoteSession) => (
-      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId={workItemId} />
     );
     const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
 
@@ -1750,7 +1753,7 @@ describe('booking card pane save', () => {
     const { client, commit } = paneClient({ preview });
     const workItemId = '44444444-4444-4444-8444-444444444444';
     const host = (session: QuoteSession) => (
-      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId={workItemId} />
     );
     const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
 
@@ -1775,7 +1778,7 @@ describe('booking card pane save', () => {
     const { client, commit } = paneClient({ preview });
     const workItemId = '55555555-5555-4555-8555-555555555555';
     render(
-      <QuoteBookingHost
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
         session={bookingSessionForPreview(previewableDraft(), 1)}
         paneSave={client}
         workItemId={workItemId}
@@ -2110,7 +2113,7 @@ describe('booking card pane save', () => {
     draft.draft.rooms[1]!.request.lastName = 'Smith';
     const session = quotedSession(draft);
     session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
+    render(<QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
     pickRoomChoices(0);
     pickRoomChoices(1);
     fireEvent.click(previewButton(0));
@@ -2130,7 +2133,7 @@ describe('booking card pane save', () => {
     draft.draft.rooms[1]!.request.lastName = 'Smith';
     const session = quotedSession(draft);
     session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
+    render(<QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
     pickRoomChoices(0);
     pickRoomChoices(1);
     fireEvent.change(screen.getAllByLabelText('Guarantee')[1]!, { target: { value: 'Guaranteed By Agent' } });
@@ -2148,7 +2151,7 @@ describe('booking card pane save', () => {
     const draft = draftReady();
     const session = quotedSession(draft);
     session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
+    render(<QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
     pickRoomChoices(0);
     pickRoomChoices(1);
     fireEvent.click(previewButton(0));
@@ -2230,7 +2233,7 @@ describe('booking card pane save', () => {
     const session = quotedSession(draft);
     session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
     render(
-      <QuoteBookingHost
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
         session={session}
         paneSave={client}
         workItemId="11111111-1111-1111-1111-111111111111"

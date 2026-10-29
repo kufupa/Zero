@@ -311,9 +311,11 @@ describe('QuotePeopleStep', () => {
     const session = { binding, staffSource: null, groups: [], analysis: { groups: [], luna: { groups: [] } } } as unknown as QuoteSession;
     const first = guestEditorKeyFor(session, 'user-1')!;
     const second = guestEditorKeyFor(session, 'user-2')!;
-    const other = guestEditorKeyFor({ ...session, binding: { ...binding, internetMessageId: 'message-2' } }, 'user-1')!;
+    const other = guestEditorKeyFor({ ...session, binding: { ...binding, entryId: 'entry-2' } }, 'user-1')!;
     expect(first).not.toBe(second);
+    expect(first).not.toBe(other); // Two selected messages can share the same Internet Message-ID.
     expect(guestEditorKeyFor(session, null)).toBeNull();
+    expect(guestEditorKeyFor({ ...session, binding: { ...binding, storeId: '' } }, 'user-1')).toBeNull();
     sessionStorage.setItem('nava.guest-name.v1:mailbox-1::message-1', 'Legacy Guest');
 
     const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(), scrollToStep: vi.fn() };

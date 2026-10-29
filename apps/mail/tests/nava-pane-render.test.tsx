@@ -1180,8 +1180,8 @@ describe('NavaPane', () => {
     await waitFor(() => expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe(''));
     fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Second Guest' } });
     await act(async () => releaseDiscard());
-    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', ['message', firstMessage]]))).toBe('First Guest');
-    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', ['message', secondMessage]]))).toBe('Second Guest');
+    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', 'store-1', '001']))).toBe('First Guest');
+    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', 'store-1', '002']))).toBe('Second Guest');
   }, 15000);
 
   it('isolates guest edits when the signed-in user changes before the mailbox scope catches up', async () => {
@@ -1191,7 +1191,7 @@ describe('NavaPane', () => {
     setMailCacheScope({ userId: 'staff-a', activeTransportId: 'transport-1' });
     bridgeMockState.storedWork = twoCaseStoredWork();
     const firstMessage = '<guest-scope-first@example.invalid>';
-    const secondMessage = '<guest-scope-second@example.invalid>';
+    const secondMessage = firstMessage; // Distinct selected entries can have the same Message-ID header.
     const bridge = (entryId: string, internetMessageId: string) => ({ ...fakeBridge,
       activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId } } as PaneBridge);
     sessionStorage.setItem(`nava.guest-name.v1:${paneEditKey('transport-1', firstMessage)}`, 'Unowned Guest');
