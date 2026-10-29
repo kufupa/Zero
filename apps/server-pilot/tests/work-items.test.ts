@@ -4667,13 +4667,20 @@ describe('pane revision undo/redo', () => {
         .limit(1);
       const eventsBefore = await eventsFor(db, work.workItemId);
 
-      const redone = await redoWorkItemRevision(db, {
+      const stale = await redoWorkItemRevision(db, {
         transportId: CENTURION,
         workItemId: work.workItemId,
         userId: USER,
         expectedSeq: 2,
       });
-      expect(redone).toMatchObject({ status: 'history_stale', revision: 0, revisionHead: 1, seq: 2 });
+      expect(stale).toMatchObject({ status: 'stale', revision: 0, revisionHead: 1, seq: 3 });
+      const redone = await redoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 3,
+      });
+      expect(redone).toMatchObject({ status: 'history_stale', revision: 0, revisionHead: 1, seq: 3 });
 
       const [afterRedo] = await db
         .select({
