@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { paneStayAvailabilityRequestFor } from '../lib/quote-workflow/pane-stay-bind';
 import {
   bindExecuteStaffQuote,
   bindReadBackStaffQuote,
@@ -35,6 +36,16 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
 });
 
 describe('HRDAV native room and board maps', () => {
+  it('keeps legacy Da Vinci occupancy quotable without changing the Centurion requirement', () => {
+    const legacy = stay({ childrenPerRoom: undefined, childrenAges: [], roomPreference: 'STWN' });
+    expect(staffQuoteGroupsFromStay([legacy], HRDAV_PROPERTY_CODE)).toHaveProperty('ok');
+    expect(staffQuoteGroupsFromStay([legacy], HRCEN_PROPERTY_CODE)).toEqual({
+      error: expect.stringMatching(/Confirm the number of children/),
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', [legacy], HRDAV_PROPERTY_CODE)).not.toBeNull();
+    expect(paneStayAvailabilityRequestFor('thread-1', [legacy], HRCEN_PROPERTY_CODE)).toBeNull();
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

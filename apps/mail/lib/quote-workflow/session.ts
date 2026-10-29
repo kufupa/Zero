@@ -142,6 +142,7 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
     quantity: group.quantity,
     roomPreference: group.roomPreference,
     adults: group.adults,
+    childrenPerRoom: group.childrenPerRoom,
     childrenAges: [...group.childrenAges],
     board: group.board,
     organisation: group.organisation,

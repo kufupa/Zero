@@ -137,7 +137,7 @@ function StayAvailabilityPanel({
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
 }) {
   const threadId = session.binding?.threadId;
-  const requestedAvailability = paneStayAvailabilityRequestFor(threadId, stay.rows);
+  const requestedAvailability = paneStayAvailabilityRequestFor(threadId, stay.rows, paneConfig?.propertyCode);
   const requestKey = requestedAvailability ? JSON.stringify(requestedAvailability) : null;
   const request = useMemo(
     () => requestKey === null ? null : JSON.parse(requestKey) as PaneStayAvailabilityRequest,
@@ -152,12 +152,13 @@ function StayAvailabilityPanel({
     paneConfig?.transportId ?? null,
     paneConfig?.propertyCode ?? null,
     request !== null,
-    stay.rows.map(({ id, arrivalDate, departureDate, quantity, adults, childrenAges }) => [
+    stay.rows.map(({ id, arrivalDate, departureDate, quantity, adults, childrenPerRoom, childrenAges }) => [
       id,
       arrivalDate ?? null,
       departureDate ?? null,
       quantity ?? null,
       adults ?? null,
+      childrenPerRoom ?? null,
       childrenAges ?? null,
     ]),
   ]);

@@ -328,10 +328,16 @@ export function fieldEventsBetween(
     const count = `${row}.count`;
     const fromTotal = countFromStayTotal(group, old);
     const confirmed = old?.fields.quantity === 'defaulted' && !fromTotal;
+    // A dates-only read has no extracted room row to supply even an empty age list. Persist the
+    // explicit empty list alongside a staff-confirmed zero so the server can verify that row.
+    const confirmedNoChildren = old && group.childrenPerRoom === 0 && old.childrenPerRoom !== 0;
+    const always = new Set<string>();
+    if (confirmed) always.add(count);
+    if (confirmedNoChildren) always.add(`${row}.childAges`);
     changed(
       rowFieldsAt(row, group).filter((event) => !fromTotal || event.path !== count),
       old ? rowFieldsAt(row, old) : null,
-      confirmed ? new Set([count]) : undefined,
+      always,
     );
   }
   const kept = new Set(after.map((group) => group.id));

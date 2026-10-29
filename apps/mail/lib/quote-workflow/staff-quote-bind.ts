@@ -521,7 +521,7 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
-    if (!childOccupancyReady(group)) {
+    if (propertyCode !== HRDAV_PROPERTY_CODE && !childOccupancyReady(group)) {
       return { error: 'Confirm the number of children per room and enter an age for each child.' };
     }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.

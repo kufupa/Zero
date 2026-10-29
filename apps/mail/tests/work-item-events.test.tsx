@@ -4,6 +4,8 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { StayCard } from '@/components/quote-workflow/requirement-card';
+import { childOccupancyMatchesStored } from '../../server-pilot/src/ai/child-occupancy';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
@@ -103,6 +105,33 @@ describe('storedDecision', () => {
 });
 
 describe('fieldEventsBetween', () => {
+  it('saves an explicit zero and empty ages for a dates-only stay so it can be quoted', () => {
+    const before = row('s_1', 's_1', {
+      arrivalDate: '2027-10-20', departureDate: '2027-10-21', childrenPerRoom: null,
+    });
+    const onPatch = vi.fn();
+    render(<StayCard stayId="s_1" rows={[before]} index={0} stayCount={1} onPatch={onPatch} />);
+    fireEvent.change(screen.getByLabelText('Children per room'), { target: { value: '0' } });
+    const after = { ...before, ...onPatch.mock.calls[0]![1] };
+    const events = fieldEventsBetween({ s_1: { stayId: 's_1', rowId: null } }, [before], [after]);
+    expect(events).toEqual([
+      { path: 'stays[s_1].rows[s_1_row].childrenPerRoom', value: 0 },
+      { path: 'stays[s_1].rows[s_1_row].childAges', value: [] },
+    ]);
+    const state = Object.fromEntries(events.map(({ path, value }) => [path, value]));
+    const payload = {
+      contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+      confirmationNumbers: [], missing: [], stays: [{
+        id: 's_1', hotel: null, requested: { arrival: '2027-10-20', departure: '2027-10-21' },
+        booked: null, totalRooms: 1, rows: [],
+      }],
+    };
+    expect(childOccupancyMatchesStored([{
+      id: 's_1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1, adults: 2,
+      childrenPerRoom: 0, childrenAges: [],
+    }], payload, state)).toBe(true);
+  });
+
   it('persists an explicit child count and ages under the selected row', () => {
     expect(fieldEventsBetween(READY.refs, [G1], [{ ...G1, childrenPerRoom: 1, childrenAges: [7] }])).toEqual([
       { path: 'stays[st-1].rows[rw-1].childrenPerRoom', value: 1 },

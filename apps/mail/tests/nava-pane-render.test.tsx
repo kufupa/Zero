@@ -886,6 +886,7 @@ describe('NavaPane', () => {
           departureDate: '2026-11-05',
           quantity: 2,
           adults: 2,
+          childrenPerRoom: 0,
           childrenAges: [],
           board: 'bb',
           specialRequests: [],
@@ -1082,6 +1083,28 @@ describe('NavaPane', () => {
       expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'stays[s_1].rows[r_1].adults', value: 3 }),
     );
   }, 15_000);
+
+  it('waits for a room edit to be saved before starting the selected quote', async () => {
+    let finishSave!: (value: unknown) => void;
+    const save = new Promise<unknown>((resolve) => { finishSave = resolve; });
+    let enableQueue!: (value: boolean) => void;
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.recordEvent.mockImplementation(() => save);
+    bridgeMockState.jobQueueEnabledQuery.mockImplementation(() => new Promise((resolve) => { enableQueue = resolve; }));
+    bridgeMockState.queueStaffQuoteMutation.mockResolvedValue({ runId: 'staff-job-saved-edit' });
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.click(screen.getByRole('button', { name: 'More: Rooms for stay 1, room 1' }));
+    await waitFor(() => expect(enableQueue).toBeTypeOf('function'));
+    await act(async () => enableQueue(true));
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalled());
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    await act(async () => { finishSave({}); });
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+  });
 
   it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
     bridgeMockState.storedWork = STORED_READY;
