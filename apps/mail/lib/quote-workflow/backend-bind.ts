@@ -311,6 +311,7 @@ export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
 function storedReadSnapshot(read: Extract<StoredWork, { status: 'ready' }>): string {
   return JSON.stringify({
     kind: read.kind, extractionId: read.extractionId, sourceRead: read.sourceRead ?? null,
+    existingStayInformation: read.existingStayInformation === true,
     analysis: read.analysis, refs: read.refs, contact: read.contact,
     sourcePartyDigest: read.sourcePartyDigest ?? null, sourcePartyFields: read.sourcePartyFields ?? null,
     confirmationNumbers: read.confirmationNumbers ?? [], language: read.language, translation: read.translation,
@@ -376,12 +377,17 @@ export async function bindStoredWork(args: {
         status: 'failed', hold: true, reason: 'This email changed or is no longer available. Review it manually.',
       };
       if (opened.status === 'failed' && !opened.hold) return { ...opened, hold: true };
+      if (opened.status === 'ready' && ['done', 'dismissed'].includes(opened.workItemStatus ?? '')) return {
+        status: 'failed', hold: true, reason: 'This case is already closed. Review it manually.',
+      };
       return opened;
     });
     void opening.then((opened) => {
       if (!openTimedOut || args.isStale?.()) return;
       if (opened.status === 'failed' && opened.hold) args.onLateHold?.(opened);
+      const needsDigest = !args.transportId || args.transportId === 'transport-centurion';
       if (opened.status === 'ready' && (opened.sourceConflict || opened.analysis.caseActionsUncertain ||
+        (needsDigest && (!stored.sourceRead?.payloadDigest || !opened.sourceRead?.payloadDigest)) ||
         (typeof opened.revisionSeq === 'number' && opened.revisionSeq > 0) ||
         storedReadSnapshot(opened) !== storedReadSnapshot(stored))) {
         args.onLateHold?.({ status: 'failed', hold: true,

@@ -7,6 +7,7 @@ import {
   quoteWorkflowFromTrpc,
   QUOTE_WORKFLOW_BIND_TARGETS,
   STAFF_QUOTE_PILOT_MISSING,
+  type StoredWork,
 } from '../lib/quote-workflow/backend-bind';
 import {
   approvedExecuteHeader,
@@ -230,6 +231,33 @@ describe('quote workflow backend bind', () => {
         : change === 'contact' ? { ...stored, contact: { ...stored.contact, name: 'Changed' } }
         : { ...stored, revisionSeq: 1 };
       finish(opened);
+      await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['closed', 'information', 'missing-digest'] as const)('holds a late %s result', async (change) => {
+    vi.useFakeTimers();
+    try {
+      const analysis = { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] };
+      const sourceRead = { extractionId: 'ex-old', kind: 'quote', payloadDigest: 'digest', analysis, refs: {} };
+      const stored = {
+        status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+        extractionId: 'ex-old', refs: {}, analysis,
+        sourceRead: change === 'missing-digest' ? { ...sourceRead, payloadDigest: undefined } : sourceRead,
+        contact: { name: null, company: null, endClient: null, email: null, phone: null },
+        language: null, translation: null,
+      };
+      let finish!: (value: StoredWork) => void;
+      const onLateHold = vi.fn();
+      const result = bindStoredWork({ query: { query: async () => stored },
+        open: { mutate: () => new Promise((resolve) => { finish = resolve; }) },
+        internetMessageId: 'mail', transportId: 'transport-centurion', openTimeoutMs: 10, onLateHold });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await result).toEqual(stored);
+      finish(change === 'closed' ? { ...stored, workItemId: 'wi', workItemStatus: 'done' }
+        : change === 'information' ? { ...stored, existingStayInformation: true } : stored);
       await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
     } finally {
       vi.useRealTimers();
