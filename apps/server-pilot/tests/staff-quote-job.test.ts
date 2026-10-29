@@ -626,6 +626,8 @@ describe('staff_quote HMS job execution', () => {
         'Choose All public rates (BAR) if the guest is not entitled.',
     );
     expect(readResult.dinnerAddOnRequired).toBe(false);
+    expect(readResult).toMatchObject({ requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'Government' });
+    expect(readResult).not.toHaveProperty('salesStrategyFallback');
   });
 
   it('keeps BAR Dinner B&B on the existing B&B-plus-dinner retry path', async () => {
@@ -763,6 +765,8 @@ describe('staff_quote HMS job execution', () => {
       dinnerAddOn: { amountMinor: 35_000, unit: 'per_person_per_night' },
       dinnerAddOnRequired: false,
       dinnerFallbackGroupIds: ['single'],
+      requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'BAR',
+      salesStrategyFallback: { from: 'Government', to: 'BAR', reason: 'no_matching_rate' },
     });
     expect(inserted.find(({ table }) => table === aiWorkflowRun)?.values).toMatchObject({
       metrics: { staffQuoteAttestation: { salesStrategy: 'BAR' } },
