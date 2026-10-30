@@ -9,8 +9,9 @@ not assume one room.
 
 Each returned night includes the requested quantity, the difference between it
 and the observed room count (`observedShortfall`, never below zero), and a
-status. A known shortfall is `shortfall`; missing inventory or unverified search
-scope remains unknown. `count_sufficient` means only that the observed count is
+status. A verified shortfall is `shortfall`; `shortfall_unverified` still shows
+the observed difference when other evidence is incomplete. Missing inventory
+remains unknown. `count_sufficient` means only that the observed count is
 large enough for that night. It does not establish rate eligibility, a hold,
 combined availability across room types or a reservation. The option-level
 status is `partial` when later nights have not been returned. Follow the view's

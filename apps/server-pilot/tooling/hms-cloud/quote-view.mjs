@@ -24,12 +24,14 @@ export function getQuoteView(snapshot, { roomQuantity, ...filters } = {}) {
         const count = Number.isSafeInteger(night.roomsAvailable) && night.roomsAvailable >= 0 ? night.roomsAvailable : null;
         const observedShortfall = quantity != null && count != null ? Math.max(0, quantity - count) : null;
         const status = quantity == null ? 'quantity_unknown' : observedShortfall == null ? 'inventory_unknown'
-          : night.reasons.includes('unknown') ? 'scope_unverified' : observedShortfall > 0 ? 'shortfall' : 'count_sufficient';
+          : observedShortfall > 0 ? (night.reasons.includes('unknown') ? 'shortfall_unverified' : 'shortfall')
+            : night.reasons.includes('unknown') ? 'evidence_unverified' : 'count_sufficient';
         return { ...night, roomQuantity: { requested: quantity, observedShortfall, status } };
       });
       const status = quantity == null ? 'quantity_unknown' : nights.some((night) => night.roomQuantity.status === 'shortfall')
-        ? 'shortfall' : !nights.length || nights.some((night) => night.roomQuantity.status !== 'count_sufficient')
-          ? 'unknown' : !allNightsShown ? 'partial' : 'count_sufficient';
+        ? 'shortfall' : nights.some((night) => night.roomQuantity.status === 'shortfall_unverified')
+          ? 'shortfall_unverified' : !nights.length || nights.some((night) => night.roomQuantity.status !== 'count_sufficient')
+            ? 'unknown' : !allNightsShown ? 'partial' : 'count_sufficient';
       return { ...option, roomQuantity: { requested: quantity, status, allNightsShown }, nights };
     }),
   };
