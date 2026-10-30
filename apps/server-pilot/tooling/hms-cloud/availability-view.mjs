@@ -46,6 +46,23 @@ function isoDate(value) {
   return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== iso ? null : iso;
 }
 
+const displayKey = (property, room, rate, promotion, date, value, currency) =>
+  JSON.stringify([property, room, rate, promotion ?? null, date, value, currency]);
+
+function displayedPriceIndex(snapshot) {
+  const capture = snapshot?.displayedPrices;
+  const index = new Map();
+  if (capture?.outcome !== 'captured' || capture.source !== 'visible_hms_grid' || !Array.isArray(capture.cells)) return index;
+  for (const cell of capture.cells) {
+    if (!cell || typeof cell.displayedText !== 'string' || !cell.displayedText.trim() || cell.displayedText.length > 200 ||
+        !isoDate(cell.date)) continue;
+    const key = displayKey(cell.propertyCode, cell.roomTypeCode, cell.ratePlanCode, cell.promotionCode,
+      cell.date, cell.responseValue, cell.currency);
+    index.set(key, index.has(key) ? null : cell.displayedText);
+  }
+  return index;
+}
+
 function datesMatchApplied(dates, applied) {
   const start = isoDate(typeof applied?.startDate === 'string' ? applied.startDate.slice(0, 10) : null);
   const count = numericInteger(applied?.numberOfDays);
@@ -210,7 +227,7 @@ function category(reasons) {
   return 'positive_stock';
 }
 
-function observation(property, room, rate, date, index, contextVerified, includeDetails = false) {
+function observation(property, room, rate, date, index, contextVerified, includeDetails = false, displayedPrices = null) {
   const key = `col${index + 1}`;
   const propertyCell = property.columns?.[key] ?? null;
   const roomCell = room.columns?.[key] ?? null;
@@ -237,14 +254,17 @@ function observation(property, room, rate, date, index, contextVerified, include
       typeof rateCell?.israteavailable !== 'boolean' || nativeNodes.some((node) =>
         node && booleanFlags.some((key) => node[key] != null && typeof node[key] !== 'boolean'))) reasons.add('unknown');
   if (!includeDetails) return reasons;
+  const displayedText = displayedPrices?.get(displayKey(property.code, room.code, rate.code, rate.promotioncode,
+    isoDate(date), price, rate.currency)) ?? null;
   return {
     date: isoDate(date), nativeDate: date,
     roomsAvailable: validCount ? count : null,
     price: {
       responseValue: validPrice ? price : null,
       responseText: typeof price === 'string' ? price : null,
-      displayedText: null,
-      displayedTextStatus: 'unknown',
+      displayedText,
+      displayedTextStatus: displayedText === null ? 'unknown' : 'captured',
+      displayedTextSource: displayedText === null ? null : 'visible_hms_grid',
       currency: rate.currency ?? null,
       currencySymbol: rate.currencysymbol ?? null,
     },
@@ -285,6 +305,12 @@ export function getAvailabilityView(snapshot, filters = {}) {
       unprojectedAppliedFields: applied.omittedFields,
       checkoutRestrictions: 'unknown',
       observationTimeKnown: typeof snapshot.observedAt === 'string' && Number.isFinite(Date.parse(snapshot.observedAt)),
+      displayedPrices: snapshot.displayedPrices?.source === 'visible_hms_grid' ? {
+        outcome: snapshot.displayedPrices.outcome === 'captured' ? 'captured' : 'unknown',
+        correlatedCells: Number.isSafeInteger(snapshot.displayedPrices.coverage?.correlatedPriceCells)
+          ? snapshot.displayedPrices.coverage.correlatedPriceCells : null,
+        exhaustive: false,
+      } : null,
     },
     options: [],
   };
@@ -361,13 +387,14 @@ export function getAvailabilityView(snapshot, filters = {}) {
       nextOffset: nightOffset + nightLimit < data.datesList.length ? nightOffset + nightLimit : null,
       matchesAppliedCriteria: datesAligned },
   };
+  const displayedPrices = displayedPriceIndex(snapshot);
   result.options = selected.map(({ property, room, rate, rowVerified, reasons, category: state }) => ({
     property: clone(omit(property, ['children', 'columns'])),
     room: clone(omit(room, ['children', 'columns'])),
     rate: clone(omit(rate, ['children', 'columns'])),
     category: state, reasons,
     nights: data.datesList.slice(nightOffset, nightOffset + nightLimit).map((date, index) =>
-      observation(property, room, rate, date, nightOffset + index, rowVerified, true)),
+      observation(property, room, rate, date, nightOffset + index, rowVerified, true, displayedPrices)),
   }));
   return result;
 }
