@@ -99,3 +99,10 @@ An exact `Note` or `Notes` dialog is captured in the JSON and saved under the
 private `.private/stay360-confirmation/` directory before its Close button is
 clicked. Other dialogs stop the read. The browser's read-only guard is
 heuristic; it does not prove every possible mutating request is blocked.
+
+## Guest Details and Notes
+
+After Record View, `readGuestDetailsFromStay360(page, confirmation)` opens and
+reads Guest Details on the same page. The shared browser automatically captures
+and closes explicitly titled Notes popups; other dialogs are not closed.
+See [reader verification](STAY360-READ-VERIFICATION.md) for live checks.

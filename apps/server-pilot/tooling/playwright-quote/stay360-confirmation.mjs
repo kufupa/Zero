@@ -1,24 +1,10 @@
 // Read-only confirmation lookup on an already-open Centurion Stay 360 page.
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
+import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
+
+export { dismissNotesOrThrow } from './stay360-notes.mjs';
 
 const SEARCH_TIMEOUT_MS = 30_000;
-
-function saveNotePrivately(note) {
-  const privateRoot = fileURLToPath(new URL('../../../../.private/', import.meta.url));
-  const noteRoot = join(privateRoot, 'stay360-confirmation');
-  for (const directory of [privateRoot, noteRoot]) {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const stat = statSync(directory);
-    if (!stat.isDirectory() || (stat.mode & 0o077) !== 0) throw new Error('NOTE_PRIVATE_DIRECTORY_UNSAFE');
-  }
-  const directory = mkdtempSync(join(noteRoot, 'note-'));
-  const path = join(directory, 'note.json');
-  writeFileSync(path, JSON.stringify(note, null, 2), { mode: 0o600, flag: 'wx' });
-  return path;
-}
 
 async function findSearchWindow(page, searchBox) {
   const windows = page.locator('.x-window.x-menu:visible');
@@ -72,50 +58,6 @@ async function waitForSearch(page, searchBox) {
   throw new Error('CONFIRMATION_SEARCH_TIMEOUT');
 }
 
-// Only dismiss the explicitly titled Notes dialog, never an unrelated prompt.
-export async function dismissNotesOrThrow(root, { allowRecordFrame = false } = {}) {
-  const dialogs = root.locator('.x-window:visible:not(.x-menu)');
-  const notes = [];
-  let noteDialog = null;
-  let recordFrames = 0;
-  for (let index = 0, count = await dialogs.count(); index < count; index += 1) {
-    const dialog = dialogs.nth(index);
-    const frames = dialog.locator('iframe:visible');
-    if (allowRecordFrame && await frames.count() === 1) {
-      const isRecordFrame = await frames.evaluate((element) => {
-        const url = new URL(element.src, location.href);
-        return url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV';
-      });
-      if (isRecordFrame && ++recordFrames === 1) continue;
-    }
-    const titles = dialog.locator('.x-window-header-text:visible');
-    const title = await titles.count() === 1 ? (await titles.innerText()).trim() : '';
-    if (!/^(Note|Notes)$/.test(title) || noteDialog) throw new Error('UNEXPECTED_DIALOG');
-    noteDialog = dialog;
-  }
-  if (noteDialog) {
-    const close = noteDialog.locator('a.x-btn:visible').filter({ hasText: /^Close$/ });
-    if (await close.count() !== 1) throw new Error('NOTE_CLOSE_NOT_UNIQUE');
-    const note = await noteDialog.evaluate((element) => ({
-      title: element.querySelector('.x-window-header-text')?.innerText.trim() || '',
-      text: element.innerText.trim(),
-      fields: [...element.querySelectorAll('input:not([type="hidden"]):not([type="password"]), textarea, select')]
-        .filter((field) => field.getBoundingClientRect().width && field.getBoundingClientRect().height)
-        .map((field) => ({
-          name: field.name || null,
-          type: field.type || field.tagName.toLowerCase(),
-          value: field.type === 'checkbox' || field.type === 'radio' ? field.checked : field.value,
-        })),
-    }));
-    note.privateCapture = saveNotePrivately(note);
-    notes.push(note);
-    const handle = await noteDialog.elementHandle();
-    await close.click();
-    await handle.waitForElementState('hidden');
-  }
-  return notes;
-}
-
 async function waitForSelectedDetails(page, popup, wanted) {
   const deadline = Date.now() + 30_000;
   const notes = [];
@@ -155,6 +97,7 @@ export async function readConfirmationFromStay360(page, confirmation) {
   }
   const wanted = confirmation.trim();
   await installReadOnlyGuard(page.context());
+  await installStay360NotesHandler(page);
 
   const search = page.locator('input[name="search"]:visible');
   await search.waitFor({ state: 'visible' });
@@ -275,8 +218,41 @@ export async function readConfirmationFromStay360(page, confirmation) {
     ok: true,
     confirmation: wanted,
     selectedRow,
-    notes,
+    notes: [...notes, ...await takeHandledNotes(page)],
     details,
     method: 'Playwright UI search and selection; no direct HMS API calls.',
   };
 }
+
+/*
+Observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
+fields when rendered. Some fields appear conditionally; other tabs and
+unrendered content are excluded. These are observations, not a write schema.
+Below: label [DOM name]; type is div for all observed fields.
+
+Stay:
+  Add-On Total [enhancedexptotal] | adults [adults] | Arrival [arrivaldate] | Average Nightly [averagenightly]
+  Departure [departuredate] | Meal Plan [mealplan] | nights [nights] | Rate Plan [rateplan]
+  Reservation Note [reservationnote] | Room [room] | Room Type [roomtype]
+  Room Type for Charge [roomtypecharge] | Status [status] | Stay Grand Total [grandtotal] | Tax [tax]
+
+Associations:
+  A/R Account [araccountname] | Booking Agency [ta1] | Channel [channeldesc] | Group [groupname]
+  Lease [leasenumber] | Market Segment [marketsegmentdesc] | Organization [company]
+  Source of Business [sourceofbusinessdesc]
+
+Guest:
+  address [address] | emailaddress [emailaddress] | Guest Notes [guestnotes] | guestfullname [guestfullname]
+  Lifetime Nights [nightsvalue] | Lifetime Revenue [revenuevalue] | Lifetime Stays [lifetimestays]
+  Loyalty [loyaltynumber] | Mobile Number [mobilenumber] | Rewards [rewardsprogram_display]
+  VIP Level [viplevel_display]
+
+Folio:
+  Balance: [foliobalance] | Deposit Amount [depositamount] | Deposit Due Date [depositduedate]
+  Deposit Received [depositreceived] | Guarantee [cardnumber1]
+  Remaining Authorization [remainingauthorization] | Settlement [cardnumber] | SUBFOLIOS [SUBFOLIOS]
+
+Other observed card titles: Add-Ons, Stay Details, External Confirmations,
+  Additional Guests, Preferences, Notes, Messages, Traces, Tax Invoicing,
+  Auto Transfer, Associated Reservations, Shares. They may return text/grids.
+*/
