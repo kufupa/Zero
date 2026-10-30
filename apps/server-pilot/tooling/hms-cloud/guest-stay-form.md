@@ -8,9 +8,11 @@ HRCEN at `https://hmsweb.hms.eu1.inforcloudsuite.com`. Other properties,
 configurations and origins are unverified; other origins are rejected.
 
 The live draft covered both dates, adults, reason for stay, first and last name,
-child ages, CMS recipient, CMS message ID, and the send checkbox. Other listed
-text fields and guarantee type were observed on the form but not individually
-exercised. The child-age editor is an `.x-window.x-menu` on this property.
+child ages, CMS recipient, CMS message ID, and the send checkbox. A separate
+unsaved Labtest draft also read back booker name, booker contact, reservation
+note and guest email. Guarantee selection has narrower live coverage; see the
+current implementation notes. The child-age editor is an `.x-window.x-menu` on
+this property.
 
 | Function | Explicit input |
 | --- | --- |
@@ -60,15 +62,18 @@ Dropdowns and CMS codes come from current UI stores, not historical choices.
 Option coverage is unknown when HMS does not supply a reliable total. CMS
 selection checks the picker, search ID, grid and code again before clicking.
 Callers choose the code; this module does not infer one.
-Closing the CMS picker verifies the unsaved form remained unchanged; an
-`action_uncertain` result means the close may have happened without verified
-readback. Unexpected dialogs are left untouched.
+Closing the CMS picker returns `closed_unsaved` after verifying the form is
+unchanged, or `not_open` if no picker is open. An `action_uncertain` result
+means the close may have happened without verified readback. Unexpected dialogs
+are left untouched.
 
-Results use `ok`, `updated_unsaved`, `input_gap`, `unsupported`,
-`execution_failure`, or `action_uncertain`. An uncertain action may have
-changed the form. After an uncertain child-age action, protected draft-change
-requests remain blocked on that page; start a fresh draft before retrying.
-Successful actions can continue on the same page. Unexpected requests are blocked and
+Results use `ok`, `updated_unsaved`, `closed_unsaved`, `not_open`, `input_gap`,
+`unsupported`, `execution_failure`, or `action_uncertain`. An uncertain action
+may have changed the form, and a request already dispatched to HMS may still
+complete. After an uncertain child-age action, protected draft-change requests
+remain blocked on that page; use a new Playwright page with the read-only guard
+before retrying. Reloading or reopening a draft on the same page does not clear
+the quarantine. Successful actions can continue on the same page. Unexpected requests are blocked and
 unexpected dialogs are left untouched. During each action an additional route
 permits only query-free blank-stay age reads/validation and CMS lookup POSTs;
 age requests must also include `ONLY_DATA_REQUIRED=true`. The existing read-only
