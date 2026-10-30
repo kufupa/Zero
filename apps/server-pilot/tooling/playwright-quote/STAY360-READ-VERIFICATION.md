@@ -23,6 +23,12 @@ subsequent change.
   PMS page verified that Notes closes during a passive wait. An unrelated
   dialog was left open; when it appeared alongside Notes, the operation
   stopped with `UNEXPECTED_DIALOG` without clicking either Close button.
+- **Cross-frame safety:** reproduced a Notes popup closing while an unrelated
+  dialog was open in the other frame. After the fix, simulated Notes and Other
+  dialogs were placed in both frame arrangements on a live PMS page; both runs
+  returned `UNEXPECTED_DIALOG` without closing either dialog.
+- **Arrival output:** inserted a simulated Notes popup on a live PMS page;
+  the arrival read closed it and returned its private capture in `notes`.
 
 The reader modules also passed `node --check`; `git diff --check` passed.
 Notes are captured before closing. Only dialogs explicitly titled `Note` or

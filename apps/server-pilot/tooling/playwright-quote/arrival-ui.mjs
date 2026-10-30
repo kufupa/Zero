@@ -1,5 +1,7 @@
 // Read-only UI steps that operate on a page already positioned in Centurion Stay 360.
 // Output and observed fields: ./STAY360-ARRIVALS.md.
+import { takeHandledNotes } from './stay360-notes.mjs';
+
 const viewport = { width: 1440, height: 1000 };
 
 const inViewport = (box) => !!box && box.width > 0 && box.height > 0 && box.x < viewport.width &&
@@ -112,6 +114,7 @@ export async function readArrivalFromStay360(page, arrivalNumber) {
     ok: true,
     arrivalNumber,
     selectedArrivalRow,
+    notes: await takeHandledNotes(page),
     details,
     method: 'Playwright UI clicks only; no request interception or direct HMS API calls.',
   };

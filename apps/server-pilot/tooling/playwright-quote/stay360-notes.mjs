@@ -21,6 +21,37 @@ function saveNotePrivately(note) {
   return path;
 }
 
+function sameOriginRoots(page) {
+  let origin;
+  try { origin = new URL(page.url()).origin; } catch { /* The main page may be navigating. */ }
+  return [page, ...page.frames().filter((frame) => {
+    if (frame === page.mainFrame()) return false;
+    try { return new URL(frame.url()).origin === origin; } catch { return false; }
+  })];
+}
+
+async function findNoteDialog(root, allowRecordFrame) {
+  const dialogs = root.locator('.x-window:visible:not(.x-menu)');
+  let noteDialog = null;
+  let recordFrames = 0;
+  for (let index = 0, count = await dialogs.count(); index < count; index += 1) {
+    const dialog = dialogs.nth(index);
+    const frames = dialog.locator('iframe:visible');
+    if (allowRecordFrame && await frames.count() === 1) {
+      const isRecordFrame = await frames.evaluate((element) => {
+        const url = new URL(element.src, location.href);
+        return url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV';
+      });
+      if (isRecordFrame && ++recordFrames === 1) continue;
+    }
+    const titles = dialog.locator('.x-window-header-text:visible');
+    const title = await titles.count() === 1 ? (await titles.innerText()).trim() : '';
+    if (!/^(Note|Notes)$/.test(title) || noteDialog) throw new Error('UNEXPECTED_DIALOG');
+    noteDialog = dialog;
+  }
+  return noteDialog;
+}
+
 // Only dismiss the explicitly titled Notes dialog, never an unrelated prompt.
 export async function dismissNotesOrThrow(root, { allowRecordFrame = false } = {}) {
   const page = typeof root.page === 'function' ? root.page() : root;
@@ -32,26 +63,17 @@ export async function dismissNotesOrThrow(root, { allowRecordFrame = false } = {
     state.handling = true;
   }
   try {
-    const dialogs = root.locator('.x-window:visible:not(.x-menu)');
+    const noteDialog = await findNoteDialog(root, allowRecordFrame);
     const notes = [];
-    let noteDialog = null;
-    let recordFrames = 0;
-    for (let index = 0, count = await dialogs.count(); index < count; index += 1) {
-      const dialog = dialogs.nth(index);
-      const frames = dialog.locator('iframe:visible');
-      if (allowRecordFrame && await frames.count() === 1) {
-        const isRecordFrame = await frames.evaluate((element) => {
-          const url = new URL(element.src, location.href);
-          return url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV';
-        });
-        if (isRecordFrame && ++recordFrames === 1) continue;
-      }
-      const titles = dialog.locator('.x-window-header-text:visible');
-      const title = await titles.count() === 1 ? (await titles.innerText()).trim() : '';
-      if (!/^(Note|Notes)$/.test(title) || noteDialog) throw new Error('UNEXPECTED_DIALOG');
-      noteDialog = dialog;
-    }
     if (noteDialog) {
+      // Do not close Notes while another same-origin frame has an unrelated dialog.
+      for (const other of sameOriginRoots(page)) {
+        if (other === root || (other !== page && other.isDetached())) continue;
+        try { await findNoteDialog(other, other === page); } catch (error) {
+          if (other !== page && other.isDetached()) continue;
+          throw error;
+        }
+      }
       const close = noteDialog.locator('a.x-btn:visible').filter({ hasText: /^Close$/ });
       if (await close.count() !== 1) throw new Error('NOTE_CLOSE_NOT_UNIQUE');
       const note = await noteDialog.evaluate((element) => ({
@@ -86,13 +108,7 @@ function scanNotes(page, state) {
   if (state.handling || state.failure || page.isClosed()) return Promise.resolve();
   const scan = (async () => {
     try {
-      let origin;
-      try { origin = new URL(page.url()).origin; } catch { /* The main page may be navigating. */ }
-      const roots = [page, ...page.frames().filter((frame) => {
-        if (frame === page.mainFrame()) return false;
-        try { return new URL(frame.url()).origin === origin; } catch { return false; }
-      })];
-      for (const root of roots) {
+      for (const root of sameOriginRoots(page)) {
         if (root !== page && root.isDetached()) continue;
         try {
           const titles = root.locator('.x-window:visible:not(.x-menu) .x-window-header-text:visible')

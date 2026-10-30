@@ -225,7 +225,7 @@ export async function readConfirmationFromStay360(page, confirmation) {
 }
 
 /*
-Observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
+Partial observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
 fields when rendered. Some fields appear conditionally; other tabs and
 unrendered content are excluded. These are observations, not a write schema.
 Below: label [DOM name]; type is div for all observed fields.
@@ -241,18 +241,4 @@ Associations:
   Lease [leasenumber] | Market Segment [marketsegmentdesc] | Organization [company]
   Source of Business [sourceofbusinessdesc]
 
-Guest:
-  address [address] | emailaddress [emailaddress] | Guest Notes [guestnotes] | guestfullname [guestfullname]
-  Lifetime Nights [nightsvalue] | Lifetime Revenue [revenuevalue] | Lifetime Stays [lifetimestays]
-  Loyalty [loyaltynumber] | Mobile Number [mobilenumber] | Rewards [rewardsprogram_display]
-  VIP Level [viplevel_display]
-
-Folio:
-  Balance: [foliobalance] | Deposit Amount [depositamount] | Deposit Due Date [depositduedate]
-  Deposit Received [depositreceived] | Guarantee [cardnumber1]
-  Remaining Authorization [remainingauthorization] | Settlement [cardnumber] | SUBFOLIOS [SUBFOLIOS]
-
-Other observed card titles: Add-Ons, Stay Details, External Confirmations,
-  Additional Guests, Preferences, Notes, Messages, Traces, Tax Invoicing,
-  Auto Transfer, Associated Reservations, Shares. They may return text/grids.
 */
