@@ -57,14 +57,15 @@ export async function readDocumentsFromStay360(page, confirmation) {
       documents,
       hasUnloadedFolders: unloadedFolders > 0,
       coverage: {
-        status: unloadedFolders || unrecognizedLeaves ? 'partial' : documents.length ? 'loaded' : 'empty',
+        status: unloadedFolders || unrecognizedLeaves ? 'partial' : documents.length ? 'loaded' : 'loaded_empty',
         loadedDocuments: documents.length,
         unloadedFolders,
         unrecognizedLeaves,
         unnamedDocuments: documents.filter((document) => !document.name).length,
+        refreshVerified: false,
         complete: null,
       },
-      captureScope: 'Loaded document tree nodes only; full coverage and additional pages are not verified.',
+      captureScope: 'Loaded document tree nodes only; refresh and full coverage are not verified.',
     };
   });
   notes.push(...await takeHandledNotes(page));

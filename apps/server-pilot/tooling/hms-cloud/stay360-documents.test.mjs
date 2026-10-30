@@ -55,7 +55,9 @@ test('distinguishes an empty tree from unresolved document nodes', async () => {
     };
 
     const empty = await read([{ leaf: true, data: { text: 'No Documents' } }]);
-    assert.equal(empty.coverage.status, 'empty');
+    assert.equal(empty.coverage.status, 'loaded_empty');
+    assert.equal(empty.coverage.refreshVerified, false);
+    assert.equal(empty.coverage.complete, null);
     assert.equal(empty.documents.length, 0);
 
     const unloaded = await read([{ loaded: false }]);
