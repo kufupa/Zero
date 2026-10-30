@@ -19,6 +19,12 @@ const FILTERS = {
 
 const busy = new WeakSet();
 const currentSearches = new WeakMap();
+// Only the guarded selection and its native/form readbacks can record this proof.
+const verifiedLabtestProfiles = new WeakMap();
+
+export function isVerifiedLabtestProfile(page, nativeId) {
+  return Boolean(nativeId) && verifiedLabtestProfiles.get(page) === nativeId;
+}
 const clean = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
 const sameText = (left, right) => (clean(left) || '').toLocaleLowerCase() === (clean(right) || '').toLocaleLowerCase();
 const errorCode = (error, fallback) => /^[A-Z][A-Z0-9_]{2,100}$/.test(String(error?.message || ''))
@@ -448,6 +454,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     if (indexes.length !== 1) throw new Error('GUEST_ID_NOT_UNIQUE');
     await page.route('**/*', guard);
     interactionStarted = true;
+    verifiedLabtestProfiles.delete(page);
     await rows.nth(indexes[0]).click();
     const selected = await page.evaluate(({ windowId, wanted }) => {
       const rows = Ext.getCmp(windowId)?.query('grid,readonlygrid')?.[0]?.getSelectionModel?.()?.getSelection?.() || [];
@@ -483,6 +490,11 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
         else if (Date.now() - stableSince >= 500 && uniqueField(form, 'firstname') !== undefined &&
             uniqueField(form, 'lastname') !== undefined && uniqueField(form, 'guestid') === id &&
             sameText(uniqueField(form, 'firstname'), values.firstname) && sameText(uniqueField(form, 'lastname'), values.lastname)) {
+          if (candidates[0].firstName === 'Proof' && candidates[0].lastName === 'Labtest' &&
+              values.firstname === 'Proof' && values.lastname === 'Labtest' &&
+              uniqueField(form, 'firstname') === 'Proof' && uniqueField(form, 'lastname') === 'Labtest') {
+            verifiedLabtestProfiles.set(page, id);
+          }
           forget(page);
           return { outcome: 'selected_unsaved', searchId, nativeId: id, candidate: candidates[0],
             nativeReadback: Object.fromEntries(['propertycode', 'guestid', 'firstname', 'lastname', 'confirmationnumber', 'recordid', 'reservationid']
