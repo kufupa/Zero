@@ -210,8 +210,8 @@ async function main(): Promise<void> {
 
   const runtimeFingerprintSha256 = fingerprintRuntime({
     sourceRevision,
-    playwrightRevision: '1.52.0',
-    chromiumRevision: '1169',
+    playwrightRevision: '1.63.0',
+    chromiumRevision: '1243',
   });
 
   const findId = registry.active.hms_find_reservation;
