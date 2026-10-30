@@ -23,6 +23,15 @@ Adult and child counts are per search scenario; guest names and room quantity
 are separate inputs. Run separate searches for different dates or occupancies.
 The underlying snapshot and quote view remain private. No total is inferred.
 
+For an optional arithmetic sum, pass `includeNightlyValueSum: true` in the view
+options. `nightlyValueSum` adds the native Hotel Availability values for one
+option only when all nights and checked search criteria match, no criteria
+fields are unprojected, and every value has at most two decimal places in one
+known currency. It uses exact decimal arithmetic; incomplete, unsupported or
+unverified inputs return `unavailable`.
+The room quantity is not multiplied. Price basis, quantity basis, taxes and the
+official stay total remain unknown; restrictions and stock still need review.
+
 ## Live read on a shared page
 
 `readQuote` composes the existing Hotel Availability reader with this view. It
