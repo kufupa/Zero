@@ -1,5 +1,6 @@
 // Small actions on a caller-owned, guarded, blank Guest Stay page.
 import { randomUUID } from 'node:crypto';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -9,6 +10,7 @@ const TEXT_FIELDS = {
 const DATE_FIELDS = { arrivalDate: 'arrivaldate', departureDate: 'departuredate' };
 const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType: 'guaranteetype' };
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
+const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const busyPages = new WeakSet();
 const cmsSearches = new WeakMap();
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -136,16 +138,23 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
   if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'ACTION_IN_PROGRESS' };
   busyPages.add(page);
   let attempted = false, nativeDialog = false, before = null, blocked = [];
+  let fence = null, approval = null, ageValidationReady = false, ageValidationCount = 0;
   const onDialog = () => { nativeDialog = true; };
   const guard = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
     const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(method) && !DANGEROUS_PATH.test(url.pathname);
-    if (!safeRead && !(method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges))) {
+    const allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
+    const ageValidation = method === 'POST' && url.pathname === CHILD_AGE_VALIDATE;
+    if ((!safeRead && !allowed) || (ageValidation &&
+        (!ageValidationReady || ageValidationCount !== 0 || !approval?.allow(request)))) {
       blocked.push({ method, path: url.pathname });
       await route.abort();
-    } else await route.fallback();
+    } else {
+      if (ageValidation) ageValidationCount += 1;
+      await route.fallback();
+    }
   };
   const check = async (which = allowed) => {
     await dialogs(page, () => nativeDialog, which);
@@ -156,14 +165,20 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
   try {
     await check();
     before = await readFields(page);
+    if (post === 'ages') {
+      fence = await installPageRequestFence(page, [CHILD_AGE_VALIDATE]);
+      approval = fence.open();
+    }
     await page.route('**/*', guard);
-    const result = await operation({ check, mark: () => { attempted = true; } });
+    const result = await operation({ check, mark: () => { attempted = true; },
+      allowAgeValidation: () => { ageValidationReady = true; } });
     await page.waitForTimeout(1000);
     await check();
     const after = await readFields(page);
     await verifySettled(page, result, after);
     return { ...result, changedFields: changes(before, after) };
   } catch (error) {
+    if (attempted && fence) fence.quarantine();
     let observed;
     if (!nativeDialog) {
       try { await assertForm(page, propertyCode); observed = await readFields(page); } catch { /* No safe readback. */ }
@@ -172,6 +187,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
       issue: blocked.length ? 'UNEXPECTED_REQUEST_BLOCKED' : nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error),
       ...(blocked.length ? { blockedRequests: blocked } : {}), ...(observed && before ? { changedFields: changes(before, observed) } : {}) };
   } finally {
+    approval?.close();
     await page.unroute('**/*', guard).catch(() => {});
     page.off('dialog', onDialog);
     busyPages.delete(page);
@@ -299,7 +315,7 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
     return inputGap('CHILD_AGES_REQUIRED_OR_INVALID');
   }
   const requested = [...childAges];
-  return run(page, propertyCode, { allowed: 'ages', post: 'ages', expectedAges: requested }, async ({ check, mark }) => {
+  return run(page, propertyCode, { allowed: 'ages', post: 'ages', expectedAges: requested }, async ({ check, mark, allowAgeValidation }) => {
     const countOptions = await comboOptions(await uniqueInput(page, 'children'));
     if (!countOptions.some((option) => clean(option.value) === String(requested.length))) {
       return { outcome: 'unsupported', issue: 'CHILD_COUNT_UNAVAILABLE', requestedChildAges: requested };
@@ -360,8 +376,9 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
       if (clean(await row.locator('input:visible').inputValue()) !== String(requested[index])) throw new Error('AGE_READBACK_MISMATCH');
     }
     await check();
+    allowAgeValidation();
     const validating = page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/web/base/OSRESV.HDR.validateChildAgeDetails', { timeout: 12000 });
+      new URL(response.url()).pathname === CHILD_AGE_VALIDATE, { timeout: 12000 });
     const [response] = await Promise.all([validating, popup.locator('a.x-btn:visible').filter({ hasText: /^\s*Apply\s*$/ }).click({ timeout: 5000 })]);
     if (!response.ok()) throw new Error('AGE_VALIDATION_FAILED');
     const native = await response.json();
