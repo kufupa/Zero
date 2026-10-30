@@ -440,7 +440,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
       return;
     }
     if (request.method() === 'POST' && url.pathname === spec.changePath) {
-      if (!isSafePartySelectionRequest({ method: request.method(), url: request.url(), postData: request.postData() },
+      if (!attempted || requestIdVerified || !isSafePartySelectionRequest({ method: request.method(), url: request.url(), postData: request.postData() },
         { kind, nativeId, propertyCode: pageProperty, pageOrigin: new URL(page.url()).origin })) {
         requestFailed = true;
         await route.abort();
