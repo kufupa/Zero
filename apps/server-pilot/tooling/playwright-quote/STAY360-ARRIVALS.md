@@ -25,6 +25,7 @@ raw JSON that can contain guest information. Keep actual values private.
 | `ok` | The UI actions and extraction finished without an error. This alone does not prove reservation details loaded. |
 | `arrivalNumber` | The requested visible arrival row number. |
 | `selectedArrivalRow` | Raw text of the selected row from the arrivals list. |
+| `notes` | Notes captured and closed automatically during the read, with private capture paths. |
 | `details.visibleFormFields` | Visible inputs outside the arrivals grid, each with `label` and `value`; empty values are kept. This includes search controls, not just reservation fields. |
 | `details.visibleGridText` | Text from other visible outer grids, excluding the arrivals grid. |
 | `details.visiblePageTextOutsideGrids` | Visible page text outside grids, including navigation and other surrounding text. |
@@ -99,3 +100,10 @@ An exact `Note` or `Notes` dialog is captured in the JSON and saved under the
 private `.private/stay360-confirmation/` directory before its Close button is
 clicked. Other dialogs stop the read. The browser's read-only guard is
 heuristic; it does not prove every possible mutating request is blocked.
+
+## Guest Details and Notes
+
+After Record View, `readGuestDetailsFromStay360(page, confirmation)` opens and
+reads Guest Details on the same page. The shared browser automatically captures
+and closes explicitly titled Notes popups; other dialogs are not closed.
+See [reader verification](STAY360-READ-VERIFICATION.md) for live checks.

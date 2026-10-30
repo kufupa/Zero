@@ -1,11 +1,12 @@
 // Open the selected Stay 360 record and read its Record View in the same page.
-import { dismissNotesOrThrow } from './stay360-confirmation.mjs';
+import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 export async function readRecordViewFromStay360(page, confirmation) {
   const wanted = typeof confirmation === 'string' ? confirmation.trim() : '';
   if (!wanted) throw new Error('INVALID_CONFIRMATION');
   await installReadOnlyGuard(page.context());
+  await installStay360NotesHandler(page);
   const headers = page.locator('h1.recordcode:visible');
   if (await headers.count() !== 1 || (await headers.innerText()).trim() !== wanted) {
     throw new Error('CONFIRMATION_HEADER_MISMATCH');
@@ -128,5 +129,6 @@ export async function readRecordViewFromStay360(page, confirmation) {
   if (details.confirmationInRecord !== wanted || details.activeTab !== 'Record View') {
     throw new Error('RECORD_CONFIRMATION_MISMATCH');
   }
+  notes.push(...await takeHandledNotes(page));
   return { notes, details };
 }

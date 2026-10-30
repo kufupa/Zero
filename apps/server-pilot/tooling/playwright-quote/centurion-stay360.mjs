@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { login } from './session-reuse.mjs';
+import { installStay360NotesHandler, notesHandlerFailure } from './stay360-notes.mjs';
 
 const secretId = 'nava-zero/server-pilot/infor-hms-read';
 const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -92,6 +93,7 @@ async function openCenturionStay360(page) {
 export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch } = {}) {
   let browser;
   let context;
+  let page;
   let phase = 'credentials';
 
   const closeResources = async () => {
@@ -114,7 +116,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     phase = 'browser_context';
     context = await browser.newContext({ viewport });
 
-    const page = await context.newPage();
+    page = await context.newPage();
 
     phase = 'login';
     await login(page, secret, {});
@@ -123,12 +125,14 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     await openCenturionStay360(page);
 
     phase = 'operation';
+    await installStay360NotesHandler(page);
     return await operation(page);
   } catch (error) {
-    if (error && typeof error === 'object' && !error.phase) {
-      try { error.phase = phase; } catch { /* Preserve the original failure. */ }
+    const failure = (page && notesHandlerFailure(page)) || error;
+    if (failure && typeof failure === 'object' && !failure.phase) {
+      try { failure.phase = phase; } catch { /* Preserve the original failure. */ }
     }
-    throw error;
+    throw failure;
   } finally {
     await closeResources();
   }
