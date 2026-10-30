@@ -159,6 +159,19 @@ function allowedSearch(request, kind, origin) {
   }
   return false;
 }
+function roomFilterResetRequest(request, origin, metadata) {
+  if (!metadata) return false;
+  const url = new URL(request.url());
+  const body = new URLSearchParams(request.postData() || '');
+  const gridId = clean(metadata.GRIDID), dataSpyId = clean(metadata.DATASPYID);
+  const expected = { GRID_ID: gridId, GRID_NAME: SPECS.roomType.grid, DATASPY_ID: dataSpyId,
+    USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.DATA_ONLY.STORED',
+    LOV_TAGNAME: 'roomtype', LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: PROPERTY, LOV_ALIAS_TYPE_1: 'text' };
+  return request.method() === 'POST' && url.origin === origin && url.pathname === '/web/base/GRIDDATA' && !url.search && !url.hash &&
+    /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
+    /^\d+$/.test(gridId) && /^\d+$/.test(dataSpyId) && [...body.keys()].length === Object.keys(expected).length &&
+    Object.entries(expected).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value);
+}
 async function withFence(page, allowed, action, scope = null, quarantine = null) {
   const effects = [];
   const requests = new Map();
@@ -219,10 +232,10 @@ async function waitGrid(page, id, count, timeout = 15000) {
     return store && !store.isLoading() && store.getCount() === count;
   }, { id, count }, { timeout });
 }
-async function collectCatalog(page, kind, nativeDialog) {
+async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const spec = SPECS[kind];
   await assertWindows(page, [], nativeDialog);
-  const formState = JSON.stringify(await formFields(page));
+  const form = await formFields(page), formState = JSON.stringify(form);
   const initial = page.waitForResponse((response) => {
     const req = response.request();
     const path = new URL(req.url()).pathname;
@@ -249,11 +262,57 @@ async function collectCatalog(page, kind, nativeDialog) {
   searches.set(page, { kind, windowId: id, shopId: searches.get(page)?.shopId, formState, cleanupOnly: true });
   const response = await initial;
   if (!response || response.status() !== 200) throw new Error('PICKER_REQUEST_UNVERIFIED');
+  let nativeFilters = kind === 'roomType'
+    ? [...new URLSearchParams(response.request().postData() || '')]
+      .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }))
+    : [];
+  const initialNativeFilters = nativeFilters.map((item) => ({ ...item }));
+  let nativeFilterReset = false;
   let { rows, metadata } = responseGrid(parseResponse(await responseText(response)));
-  const initialMetadata = metadata;
+  let initialMetadata = metadata;
   if (clean(metadata.GRIDNAME) !== spec.grid) throw new Error('PICKER_RESPONSE_INVALID');
   await waitGrid(page, id, rows.length);
   let current = await readWindow(page, id);
+  const roomFields = form.filter((field) => field.name === 'roomtype');
+  const roomCode = roomFields.length === 1 ? clean(roomFields[0].value) : '';
+  const filterValue = (name) => nativeFilters.filter((item) => item.name === name).map((item) => item.value);
+  const controls = (name) => current.controls.filter((control) => control.name === name).map((control) => clean(control.value));
+  const only = (values, value) => values.length === 1 && values[0] === value;
+  const emptyGridFilters = ['ff_roomtypecode', 'ff_roomtypedesc', 'ff_unittypecode', 'ff_minadults', 'ff_maxadults',
+    'ff_maxchildren', 'ff_bedtype'].every((name) => only(controls(name), ''));
+  const resetKnownFilter = kind === 'roomType' && roomCode && nativeFilters.length === 3 &&
+    only(filterValue('filterfields'), 'roomtypecode') && only(filterValue('filteroperator'), 'CONTAINS') &&
+    only(filterValue('filtervalue'), roomCode) && only(controls('filterfields'), 'Room Type') &&
+    only(controls('selfiltervaluectrl'), roomCode) && only(controls('dataspylist'), '(default)') &&
+    emptyGridFilters && current.controls.filter((control) => control.name?.startsWith('ff_')).every((control) => !clean(control.value)) &&
+    /^\d+$/.test(clean(metadata.GRIDID)) && /^\d+$/.test(clean(metadata.DATASPYID));
+  if (resetKnownFilter) {
+    const input = win.locator('input[name="selfiltervaluectrl"]:visible');
+    const run = win.locator('a.x-btn:visible').filter({ hasText: /^\s*Run\s*$/ });
+    if (await input.count() === 1 && await input.isEditable() && await run.count() === 1) {
+      await assertWindows(page, [spec.title], nativeDialog);
+      allowReset(metadata);
+      await input.fill('');
+      if (await input.inputValue() !== '') throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
+      const pending = page.waitForResponse((res) => roomFilterResetRequest(res.request(), HMS_ORIGIN, initialMetadata),
+        { timeout: 20000 }).catch(() => null);
+      await assertWindows(page, [spec.title], nativeDialog);
+      await run.click({ timeout: 10000 });
+      const reset = await pending;
+      if (!reset || reset.status() !== 200 || nativeDialog()) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
+      ({ rows, metadata } = responseGrid(parseResponse(await responseText(reset))));
+      if (['GRIDID', 'GRIDNAME', 'DATASPYID'].some((key) => clean(metadata[key]) !== clean(initialMetadata[key]))) {
+        throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
+      }
+      await waitGrid(page, id, rows.length);
+      current = await readWindow(page, id);
+      if (!only(controls('selfiltervaluectrl'), '') ||
+          JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
+      nativeFilters = [];
+      nativeFilterReset = true;
+      initialMetadata = metadata;
+    }
+  }
   for (let attempt = 0; attempt < 20 && coverage(metadata, rows.length).complete === false; attempt += 1) {
     const next = page.waitForResponse((res) => new URL(res.url()).pathname === '/web/base/GETCACHE' &&
       allowedSearch(res.request(), kind, new URL(page.url()).origin), { timeout: 8000 }).catch(() => null);
@@ -276,6 +335,10 @@ async function collectCatalog(page, kind, nativeDialog) {
   const c = coverage(metadata, rows.length);
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
+  const catalogCoverage = kind !== 'roomType' ? c : nativeFilters.length
+    ? { ...c, total: null, complete: false, possiblyTruncated: true, nativeFiltered: true,
+      filteredResultTotal: c.total, filteredResultComplete: c.complete }
+    : { ...c, nativeFiltered: false };
   const key = (row) => signature([row], spec);
   const candidates = rows.map((row) => {
     const matches = current.records.filter((record) => key(record) === key(row));
@@ -284,7 +347,8 @@ async function collectCatalog(page, kind, nativeDialog) {
       responseData: row, gridData: matches.length === 1 ? matches[0] : null,
       ...(matches.length > 1 ? { possibleGridData: matches } : {}) };
   });
-  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: c,
+  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: catalogCoverage,
+    nativeFilters, initialNativeFilters, nativeFilterReset,
     columns: current.columns, metadata, pickerState: JSON.stringify(current),
     formState: JSON.stringify(await formFields(page)),
     shopState: kind === 'ratePlan' ? JSON.stringify(await shopControls(page)) : null };
@@ -328,8 +392,10 @@ async function search(page, kind, input = {}) {
     if (state?.kind === kind) {
       await assertCurrent(page, state, () => native);
     } else {
-      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin),
-        () => collectCatalog(page, kind, () => native));
+      let resetMetadata = null;
+      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin) ||
+        (kind === 'roomType' && roomFilterResetRequest(req, origin, resetMetadata)),
+      () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }));
       state = { kind, ...capture.result };
       effects = capture.effects;
     }
@@ -342,6 +408,9 @@ async function search(page, kind, input = {}) {
     return { outcome, kind, searchId, observedAt: state.observedAt,
       criteria: { propertyCode: PROPERTY, scope: kind === 'ratePlan' ? 'guest_stay_rate_shop_catalog' : 'guest_stay_room_catalog',
         query: filter.query, offset: filter.offset, limit: filter.limit,
+        ...(kind === 'roomType' ? { nativeFilters: state.nativeFilters.map((item) => ({ ...item })),
+          ...(state.nativeFilterReset ? { nativeFilterReset: true,
+            initialNativeFilters: state.initialNativeFilters.map((item) => ({ ...item })) } : {}) } : {}),
         ...(state.shopState ? { rateShopControls: JSON.parse(state.shopState) } : {}) },
       coverage: { ...state.coverage, matchingLoaded: matches.length, returned: Math.min(filter.limit, Math.max(0, matches.length - filter.offset)) },
       columns: state.columns, metadata: state.metadata, candidates: matches.slice(filter.offset, filter.offset + filter.limit), effects };
