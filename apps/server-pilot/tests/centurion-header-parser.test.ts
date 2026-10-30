@@ -16,6 +16,23 @@ describe('synthetic header-token parser', () => {
     });
   });
 
+  it('rejects malformed dot atoms without declaring completeness', () => {
+    for (const value of ['<.@.>', '<a..b@example.test>', '<.a@example.test>', '<a.@example.test>',
+      '<a@.example.test>', '<a@example..test>', '<a@example.test.>']) {
+      expect(isValidHeaderValue(value, 'messageIds')).toBe(false);
+      expect(normalizedHeaders([value], null, 'complete', false))
+        .toEqual({ ids: [], completeness: 'incomplete' });
+    }
+  });
+
+  it('unfolds quoted local parts but rejects unpaired line breaks', () => {
+    expect(normalizedHeaders(['<"Quoted\r\n Local"@example.test>'], null, 'complete', false))
+      .toEqual({ ids: ['quoted local@example.test'], completeness: 'complete' });
+    for (const newline of ['\r', '\n', '\r\n']) {
+      expect(isValidHeaderValue(`<"Quoted${newline}Local"@example.test>`, 'messageIds')).toBe(false);
+    }
+  });
+
   it('allows adjacent angle tokens and rejects partial or joined bare tokens', () => {
     expect(normalizedHeaders(['<a@example.test><b@example.test>'], null, 'complete', true))
       .toEqual({ ids: ['a@example.test', 'b@example.test'], completeness: 'complete' });

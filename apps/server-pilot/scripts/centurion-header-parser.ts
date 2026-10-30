@@ -8,9 +8,12 @@ const uniqueSorted = (values: Iterable<string>): string[] => [...new Set(values)
 // Accept complete Message-ID tokens only. In a malformed value retain only
 // preceding unambiguous tokens and mark the field incomplete; never scan junk
 // for a substring that happens to look like a Message-ID.
-const messageIdBody = String.raw`(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|[A-Za-z0-9!#$%&'*+\-/=?^_\x60{|}~.]+)@(?:[A-Za-z0-9!#$%&'*+\-/=?^_\x60{|}~.]+|\[(?:[^\[\]\\\s]|\\[^\r\n])+\])`;
+const dotAtom = String.raw`[A-Za-z0-9!#$%&'*+\-/=?^_\x60{|}~]+(?:\.[A-Za-z0-9!#$%&'*+\-/=?^_\x60{|}~]+)*`;
+const messageIdBody = String.raw`(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|${dotAtom})@(?:${dotAtom}|\[(?:[^\[\]\\\s]|\\[^\r\n])+\])`;
 
 function tokenizeHeaderValue(raw: string, allowMany: boolean): { ids: string[]; malformed: boolean } {
+  // RFC unfolding removes CRLF only when followed by folding whitespace.
+  raw = raw.replace(/\r\n(?=[ \t])/g, '');
   const token = new RegExp(`(?:<(${messageIdBody})>|(${messageIdBody}))`, 'y');
   const ids: string[] = [];
   let position = 0;
