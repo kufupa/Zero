@@ -37,8 +37,11 @@ async function clickMenuNode(node) {
   try { await node.click({ timeout: 2500 }); }
   catch (error) {
     const message = String(error);
-    if (!/outside of the viewport/i.test(message) || /intercepts pointer events/i.test(message)) throw error;
-    await node.evaluate((element) => element.click());
+    if (/outside of the viewport/i.test(message) && !/intercepts pointer events/i.test(message)) {
+      await node.evaluate((element) => element.click());
+    } else if (error?.name === 'TimeoutError') {
+      await node.click();
+    } else throw error;
   }
 }
 
@@ -52,16 +55,37 @@ export async function openHotelAvailability(page) {
   await page.locator('input[name="search"]:visible').first().waitFor({ timeout: 25000 });
   const node = (name) => page.locator('span.x-tree-node-text:visible')
     .filter({ hasText: new RegExp(`^${name}$`) });
-  await page.locator('a.app-menu-trigger:visible').click();
-  if (!await node('Availability').isVisible()) {
-    await clickMenuNode(node('Front Desk'));
-    await page.waitForTimeout(900);
+  const menuOpen = () => node('Front Desk').evaluate((element) => {
+    const box = element.closest('.x-tree-view')?.getBoundingClientRect();
+    return Boolean(box && Math.min(innerWidth, box.right) - Math.max(0, box.left) >= box.width * 0.9);
+  }).catch(() => false);
+  const ensureMenuOpen = async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (await menuOpen()) return;
+      await page.locator('a.app-menu-trigger:visible').click();
+      await page.waitForTimeout(1200);
+    }
+    if (!await menuOpen()) throw new Error('MENU_NOT_OPENED');
+  };
+  const ensureExpanded = async (parent, child, delay) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (await node(child).isVisible()) return;
+      await clickMenuNode(node(parent));
+      await page.waitForTimeout(delay);
+    }
+    if (!await node(child).isVisible()) throw new Error('MENU_NOT_EXPANDED');
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await ensureMenuOpen();
+    await ensureExpanded('Front Desk', 'Availability', 900);
+    await ensureExpanded('Availability', 'Hotel Availability', 1200);
+    await clickMenuNode(node('Hotel Availability'));
+    if (await title.waitFor({ timeout: 8000 }).then(() => true, () => false)) {
+      await page.locator('input[name="dates"]:visible').first().waitFor({ timeout: 25000 });
+      return;
+    }
   }
-  if (!await node('Hotel Availability').isVisible()) await clickMenuNode(node('Availability'));
-  await page.waitForTimeout(1200);
-  await clickMenuNode(node('Hotel Availability'));
-  await title.waitFor({ timeout: 25000 });
-  await page.locator('input[name="dates"]:visible').first().waitFor({ timeout: 25000 });
+  throw new Error('HOTEL_AVAILABILITY_NOT_OPENED');
 }
 
 async function openPicker(page, name) {
@@ -135,39 +159,47 @@ async function setGuests(page, input) {
 
 async function readCatalog(page, name, propertyCode) {
   await openPicker(page, name);
-  const win = page.locator('.x-window:visible:not(.x-menu)').last();
+  const title = name === 'roomtypes' ? 'Room Types' : 'Rate Plans';
+  const win = page.locator('.x-window:visible:not(.x-menu)').filter({
+    has: page.locator('.x-window-header-text').filter({ hasText: new RegExp(`^${title}$`) }),
+  }).last();
   await win.waitFor({ state: 'visible', timeout: 20000 });
-  const state = () => win.evaluate((element) => {
-    const store = Ext.getCmp(element.id)?.query('grid,readonlygrid')?.[0]?.getStore?.();
-    const match = element.innerText.match(/Records:\s*(\d+)\s+of\s+(\d+)/i);
-    return { records: store?.getRange?.().map((record) => ({ ...record.data })) ?? null,
-      reportedLoaded: match ? Number(match[1]) : null, reportedTotal: match ? Number(match[2]) : null };
-  });
-  await page.waitForFunction((id) => Boolean(Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()),
-    await win.getAttribute('id'), { timeout: 20000 });
-  await page.waitForTimeout(700);
-  let current = await state();
-  for (let pageNumber = 0; current.records && current.reportedTotal > current.records.length && pageNumber < 20; pageNumber += 1) {
-    const previous = current.records.length;
-    await win.locator('.x-grid-view:visible').last().evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    await page.waitForFunction(({ id, previousCount }) =>
-      Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()?.getCount?.() > previousCount,
-    { id: await win.getAttribute('id'), previousCount: previous }, { timeout: 6000 }).catch(() => {});
-    current = await state();
-    if (current.records?.length === previous) break;
+  try {
+    const state = () => win.evaluate((element) => {
+      const store = Ext.getCmp(element.id)?.query('grid,readonlygrid')?.[0]?.getStore?.();
+      const match = element.innerText.match(/Records:\s*(\d+)\s+of\s+(\d+)/i);
+      return { records: store?.getRange?.().map((record) => ({ ...record.data })) ?? null,
+        reportedLoaded: match ? Number(match[1]) : null, reportedTotal: match ? Number(match[2]) : null };
+    });
+    await page.waitForFunction((id) => Boolean(Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()),
+      await win.getAttribute('id'), { timeout: 20000 });
+    await page.waitForTimeout(700);
+    let current = await state();
+    for (let pageNumber = 0; current.records && current.reportedTotal > current.records.length && pageNumber < 20; pageNumber += 1) {
+      const previous = current.records.length;
+      await win.locator('.x-grid-view:visible').last().evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      await page.waitForFunction(({ id, previousCount }) =>
+        Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()?.getCount?.() > previousCount,
+      { id: await win.getAttribute('id'), previousCount: previous }, { timeout: 6000 }).catch(() => {});
+      current = await state();
+      if (current.records?.length === previous) break;
+    }
+    const codeField = name === 'roomtypes' ? 'roomtypecode' : 'rateplancode';
+    const selectedCodes = (current.records || []).map((row) => clean(row[codeField]));
+    const complete = current.reportedTotal !== null && current.reportedTotal === current.records?.length &&
+      current.reportedLoaded === current.records?.length;
+    if (!complete || !selectedCodes.length || selectedCodes.some((code) => !code || code.includes(',')) ||
+        new Set(selectedCodes).size !== selectedCodes.length ||
+        current.records.some((row) => clean(row.property).toUpperCase() !== propertyCode.toUpperCase())) {
+      throw new Error('CATALOG_INCOMPLETE_OR_AMBIGUOUS');
+    }
+    return { ...current, complete, codes: selectedCodes };
+  } finally {
+    if (await win.isVisible().catch(() => false)) {
+      await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).first().click({ timeout: 10000 });
+      await win.waitFor({ state: 'hidden', timeout: 10000 });
+    }
   }
-  const codeField = name === 'roomtypes' ? 'roomtypecode' : 'rateplancode';
-  const selectedCodes = (current.records || []).map((row) => clean(row[codeField]));
-  const complete = current.reportedTotal !== null && current.reportedTotal === current.records?.length &&
-    current.reportedLoaded === current.records?.length;
-  if (!complete || !selectedCodes.length || selectedCodes.some((code) => !code || code.includes(',')) ||
-      new Set(selectedCodes).size !== selectedCodes.length ||
-      current.records.some((row) => clean(row.property).toUpperCase() !== propertyCode.toUpperCase())) {
-    throw new Error('CATALOG_INCOMPLETE_OR_AMBIGUOUS');
-  }
-  await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).first().click();
-  await win.waitFor({ state: 'hidden', timeout: 10000 });
-  return { ...current, complete, codes: selectedCodes };
 }
 
 async function setCodes(page, name, selected) {
