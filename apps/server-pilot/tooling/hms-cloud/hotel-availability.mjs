@@ -208,6 +208,22 @@ async function setCodes(page, name, selected) {
   await input.press('Tab');
 }
 
+// This specific HMS message is informational; leave every other dialog alone.
+async function dismissUnavailableDialog(page, timeout = 0) {
+  const dialog = page.locator('.x-message-box:visible').filter({
+    has: page.getByText('Selected criteria is not available for these dates.', { exact: true }),
+  });
+  if (timeout) await dialog.first().waitFor({ state: 'visible', timeout }).catch(() => {});
+  const count = await dialog.count();
+  if (!count) return false;
+  if (count !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
+  const ok = dialog.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
+  if (await ok.count() !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
+  await ok.click();
+  await dialog.waitFor({ state: 'hidden', timeout: 10000 });
+  return true;
+}
+
 function requestMatches(actual, input, selected, nights) {
   return clean(actual.launchedFrom).toLowerCase() === 'hotelavailability' &&
     clean(actual.propertyCodes).toUpperCase() === clean(input.propertyCode).toUpperCase() &&
@@ -229,6 +245,7 @@ export async function searchHotelAvailability(page, input) {
   let stage = 'opening_screen';
   try {
     await openHotelAvailability(page);
+    await dismissUnavailableDialog(page);
     const property = await page.locator('input[name="propertycodes"]:visible').first().inputValue();
     if (clean(property).toUpperCase() !== clean(input.propertyCode).toUpperCase()) throw new Error('PROPERTY_MISMATCH');
     stage = 'loading_catalogs';
@@ -256,12 +273,22 @@ export async function searchHotelAvailability(page, input) {
     if (!response || response.status() !== 200 || await response.finished()) throw new Error('SEARCH_REQUEST_FAILED');
     const applied = JSON.parse(response.request().postData() || '{}');
     if (!requestMatches(applied, input, selected, validated.nights)) throw new Error('SEARCH_CRITERIA_MISMATCH');
-    const data = await response.json();
-    if (!data?.availabilitydata || !Array.isArray(data.availabilitydata.children) ||
-        !Array.isArray(data.availabilitydata.datesList)) throw new Error('SEARCH_RESPONSE_INVALID');
+    let rawResponse = null;
+    try { rawResponse = await response.text(); } catch { /* HMS sometimes returns no readable body. */ }
+    let data = null;
+    try { data = JSON.parse(rawResponse); } catch { /* An unavailable search can have no JSON body. */ }
     const { bookingSessionID: _session, ...appliedCriteria } = applied;
-    return { outcome: 'ok', snapshot: { observedAt: new Date().toISOString(),
-      requestedCriteria: input, appliedCriteria, catalogs, response: data } };
+    const snapshot = { observedAt: new Date().toISOString(), requestedCriteria: input,
+      appliedCriteria, catalogs, response: data };
+    if (!data?.availabilitydata || !Array.isArray(data.availabilitydata.children) ||
+        !Array.isArray(data.availabilitydata.datesList)) {
+      if (await dismissUnavailableDialog(page, 15000)) {
+        if (data === null) snapshot.rawResponse = rawResponse;
+        return { outcome: 'criteria_unavailable', issue: 'SELECTED_CRITERIA_NOT_AVAILABLE', snapshot };
+      }
+      throw new Error('SEARCH_RESPONSE_INVALID');
+    }
+    return { outcome: 'ok', snapshot };
   } catch (error) {
     const message = String(error?.message || error).split('\n')[0];
     return { outcome: 'execution_failure', stage,

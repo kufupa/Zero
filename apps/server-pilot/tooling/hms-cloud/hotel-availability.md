@@ -21,6 +21,12 @@ search time and applied criteria; the browser request is checked against the
 requested property, dates, occupancy and codes. An incomplete catalog or failed
 search is not a sold-out result.
 
+When HMS explicitly says the selected criteria are unavailable for those dates,
+the reader returns `criteria_unavailable`, records the response, and closes that
+specific message so the same page can be searched again. This does not mean the
+whole hotel is sold out. A malformed response without that message remains an
+execution failure.
+
 The search currently requires blank Group, Organization and Booking Agency
 context. HMS has those controls, but this module does not yet select them. It
 returns the other applied search settings, including restricted-sell options;

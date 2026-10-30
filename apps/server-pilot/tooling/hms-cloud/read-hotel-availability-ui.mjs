@@ -20,19 +20,27 @@ try {
   if ((await stat(dirname(path))).mode & 0o077) throw new Error('OUTPUT_DIRECTORY_NOT_PRIVATE');
   process.umask(0o077);
   const request = JSON.parse(readFileSync(0, 'utf8'));
+  if (request.view != null && (typeof request.view !== 'object' || Array.isArray(request.view) ||
+      (request.view.roomTypes != null && !Array.isArray(request.view.roomTypes)) ||
+      (request.view.ratePlans != null && !Array.isArray(request.view.ratePlans)))) throw new Error('VIEW_FILTER_INVALID');
   const result = await withCenturionStay360Page((page) => searchHotelAvailability(page, request.criteria));
-  if (result.outcome !== 'ok') {
+  if (result.outcome !== 'ok' && result.outcome !== 'criteria_unavailable') {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exitCode = 1;
   } else {
+    const view = result.outcome === 'ok' && request.view ? filterHotelAvailability(result.snapshot, request.view) : undefined;
     await writeFile(path, `${JSON.stringify(result.snapshot)}\n`, { flag: 'wx', mode: 0o600 });
-    const availability = result.snapshot.response.availabilitydata;
-    const properties = availability.children.filter((item) => item.isprop && !item.issummary);
-    const roomRows = properties.flatMap((item) => item.children || []);
-    const summary = { dateCount: availability.datesList.length, roomRows: roomRows.length,
-      rateRows: roomRows.reduce((count, room) => count + (room.children || []).length, 0) };
-    process.stdout.write(`${JSON.stringify({ outcome: 'ok', snapshotPath: path, summary,
-      ...(request.view ? { view: filterHotelAvailability(result.snapshot, request.view) } : {}) })}\n`);
+    if (result.outcome === 'criteria_unavailable') {
+      process.stdout.write(`${JSON.stringify({ outcome: result.outcome, issue: result.issue, snapshotPath: path })}\n`);
+    } else {
+      const availability = result.snapshot.response.availabilitydata;
+      const properties = availability.children.filter((item) => item.isprop && !item.issummary);
+      const roomRows = properties.flatMap((item) => item.children || []);
+      const summary = { dateCount: availability.datesList.length, roomRows: roomRows.length,
+        rateRows: roomRows.reduce((count, room) => count + (room.children || []).length, 0) };
+      process.stdout.write(`${JSON.stringify({ outcome: 'ok', snapshotPath: path, summary,
+        ...(view ? { view } : {}) })}\n`);
+    }
   }
 } catch (error) {
   const message = String(error?.message || error).split('\n')[0];
