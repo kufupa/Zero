@@ -312,8 +312,8 @@ async function createProductionHmsRuntimeInternal(
         options?.expectedRuntimeFingerprintSha256,
       runtimeFingerprint: {
         sourceRevision,
-        playwrightRevision: '1.52.0',
-        chromiumRevision: '1169',
+        playwrightRevision: '1.63.0',
+        chromiumRevision: '1243',
       },
       hmsSecretArn: config.secretArn,
     });
@@ -403,8 +403,8 @@ async function createProductionHmsRuntimeInternal(
     // Live opens must carry per-tool HmsSessionAuthorization.
     requireSessionAuthorization: true,
     sourceRevision,
-    playwrightRevision: '1.52.0',
-    chromiumRevision: '1169',
+    playwrightRevision: '1.63.0',
+    chromiumRevision: '1243',
     evidenceBindings:
       evidenceHmac && version
         ? {

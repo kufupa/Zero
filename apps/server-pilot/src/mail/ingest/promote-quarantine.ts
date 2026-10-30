@@ -3,7 +3,7 @@
  * into normal storage.
  *
  * Requires `INGEST_REQUIRE_OWNER_HEADER=false` in process env. Fetches raw MIME
- * from S3, parses, persists. The Penny ReserveCloud staff path keeps the
+ * from S3, parses, persists. The designated staff-mailbox path keeps the
  * Centurion override, forced outbound, and in-transaction quarantine delete.
  * Every other row uses normal routing plus mailbox copies (`skipAiEnqueue`)
  * and deletes quarantine only after the primary and every copy succeed.

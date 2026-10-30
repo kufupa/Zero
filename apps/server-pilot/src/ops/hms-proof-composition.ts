@@ -46,8 +46,8 @@ const PROOF_TOOL_ID = 'hms_find_reservation' as const;
 const PROOF_TOOL_VERSION = '1.2.0' as const;
 const PROOF_BRANCH_ID = 'guest_stay_search' as const;
 const PROOF_PROPERTY_CODE = 'HRCEN' as const;
-const PROOF_PLAYWRIGHT_REVISION = '1.52.0' as const;
-const PROOF_CHROMIUM_REVISION = '1169' as const;
+const PROOF_PLAYWRIGHT_REVISION = '1.63.0' as const;
+const PROOF_CHROMIUM_REVISION = '1243' as const;
 
 export const PHASE_A_PROOF_MILESTONE_ORDER = [
   'loginStartedAt',

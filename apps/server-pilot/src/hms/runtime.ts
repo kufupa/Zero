@@ -2287,7 +2287,7 @@ function createHmsRuntimeInternal(
                 terminalCode: args.terminalCode,
                 terminalStage: args.terminalStage,
                 sourceRevision: options.sourceRevision ?? 'unknown',
-                playwrightRevision: options.playwrightRevision ?? '1.52.0',
+                playwrightRevision: options.playwrightRevision ?? '1.63.0',
                 chromiumRevision: options.chromiumRevision ?? 'unknown',
                 requestRules: [...ruleCounts.entries()].map(([ruleId, count]) => ({
                   ruleId,
@@ -2439,7 +2439,7 @@ function createHmsRuntimeInternal(
               terminalCode: args.terminalCode,
               terminalStage: args.terminalStage,
               sourceRevision: options.sourceRevision ?? 'unknown',
-              playwrightRevision: options.playwrightRevision ?? '1.52.0',
+              playwrightRevision: options.playwrightRevision ?? '1.63.0',
               chromiumRevision: options.chromiumRevision ?? 'unknown',
               requestRules: [...ruleCounts.entries()].map(([ruleId, count]) => ({
                 ruleId,

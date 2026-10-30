@@ -87,7 +87,7 @@ export { materializeMaskedQuoteProofArtifacts } from '../hms/quote-proof-artifac
 export { materializeMaskedCommsProofArtifacts } from '../hms/communications-proof-artifacts.js';
 
 export const HMS_DEPENDENCY_REVISION =
-  'playwright-1.52.0-chromium-1169' as const;
+  'playwright-1.63.0-chromium-1243' as const;
 
 export type HmsOperatorFailCode =
   | 'MODE_ENABLED_FORBIDDEN'
@@ -1824,8 +1824,8 @@ export function runAcceptG1(): void {
     receipt!.toolId === 'hms_find_reservation' &&
     receipt!.toolVersion === '1.2.0' &&
     receipt!.dependencyRevision === HMS_DEPENDENCY_REVISION &&
-    receipt!.playwrightRevision === '1.52.0' &&
-    receipt!.chromiumRevision === '1169';
+    receipt!.playwrightRevision === '1.63.0' &&
+    receipt!.chromiumRevision === '1243';
   const rulesValid = validateRequestRuleCounts(
     receipt!.requestRules,
     liveProofAllowedRuleIds(),
@@ -2216,8 +2216,8 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
         receipt.toolId !== 'hms_find_reservation' ||
         receipt.toolVersion !== '1.2.0' ||
         receipt.dependencyRevision !== HMS_DEPENDENCY_REVISION ||
-        receipt.playwrightRevision !== '1.52.0' ||
-        receipt.chromiumRevision !== '1169' ||
+        receipt.playwrightRevision !== '1.63.0' ||
+        receipt.chromiumRevision !== '1243' ||
         !receipt.trace ||
         !receipt.video ||
         receipt.blockedRequests !== 0 ||

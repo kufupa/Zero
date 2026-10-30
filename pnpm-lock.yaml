@@ -812,8 +812,8 @@ importers:
         specifier: ^7.0.5
         version: 7.0.13
       playwright:
-        specifier: 1.52.0
-        version: 1.52.0
+        specifier: 1.63.0
+        version: 1.63.0
       postgres:
         specifier: 3.4.5
         version: 3.4.5
@@ -850,7 +850,7 @@ importers:
         version: 0.31.4
       promptfoo:
         specifier: 0.124.1
-        version: 0.124.1(@aws-sdk/credential-provider-node@3.972.63)(@aws-sdk/credential-providers@3.1152.0)(@cloudflare/workers-types@4.20250628.0)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.6.2)(@types/json-schema@7.0.15)(@types/node@22.15.29)(@types/pg@8.6.1)(@upstash/redis@1.35.0)(kysely@0.29.5)(pg@8.23.1)(playwright@1.52.0)(postgres@3.4.5)(socks@2.8.10)
+        version: 0.124.1(@aws-sdk/credential-provider-node@3.972.63)(@aws-sdk/credential-providers@3.1152.0)(@cloudflare/workers-types@4.20250628.0)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.6.2)(@types/json-schema@7.0.15)(@types/node@22.15.29)(@types/pg@8.6.1)(@upstash/redis@1.35.0)(kysely@0.29.5)(pg@8.23.1)(playwright@1.63.0)(postgres@3.4.5)(socks@2.8.10)
       react:
         specifier: 'catalog:'
         version: 19.1.0
@@ -11578,9 +11578,19 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  playwright-core@1.63.0:
+    resolution: {integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   playwright@1.52.0:
     resolution: {integrity: sha512-JAwMNMBlxJ2oD1kce4KPtMkDeKGHQstdpFPcPH3maElAXon/QZeTvtsfXmTMRyO9TslfoYOXkSsvao2nE1ilTw==}
     engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.63.0:
+    resolution: {integrity: sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg==}
+    engines: {node: '>=20'}
     hasBin: true
 
   pluralize@8.0.0:
@@ -26345,11 +26355,17 @@ snapshots:
 
   playwright-core@1.52.0: {}
 
+  playwright-core@1.63.0: {}
+
   playwright@1.52.0:
     dependencies:
       playwright-core: 1.52.0
     optionalDependencies:
       fsevents: 2.3.2
+
+  playwright@1.63.0:
+    dependencies:
+      playwright-core: 1.63.0
 
   pluralize@8.0.0: {}
 
@@ -26534,7 +26550,7 @@ snapshots:
       err-code: 2.0.3
       retry: 0.12.0
 
-  promptfoo@0.124.1(@aws-sdk/credential-provider-node@3.972.63)(@aws-sdk/credential-providers@3.1152.0)(@cloudflare/workers-types@4.20250628.0)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.6.2)(@types/json-schema@7.0.15)(@types/node@22.15.29)(@types/pg@8.6.1)(@upstash/redis@1.35.0)(kysely@0.29.5)(pg@8.23.1)(playwright@1.52.0)(postgres@3.4.5)(socks@2.8.10):
+  promptfoo@0.124.1(@aws-sdk/credential-provider-node@3.972.63)(@aws-sdk/credential-providers@3.1152.0)(@cloudflare/workers-types@4.20250628.0)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.6.2)(@types/json-schema@7.0.15)(@types/node@22.15.29)(@types/pg@8.6.1)(@upstash/redis@1.35.0)(kysely@0.29.5)(pg@8.23.1)(playwright@1.63.0)(postgres@3.4.5)(socks@2.8.10):
     dependencies:
       '@anthropic-ai/sdk': 0.128.0(zod@4.4.3)
       '@apidevtools/json-schema-ref-parser': 16.0.5(@types/json-schema@7.0.15)
@@ -26638,7 +26654,7 @@ snapshots:
       node-sql-parser: 5.4.0
       pdf-parse: 2.4.5
       pem: 1.14.8
-      playwright: 1.52.0
+      playwright: 1.63.0
       read-excel-file: 9.3.12
       sharp: 0.35.5(@types/node@22.15.29)
     transitivePeerDependencies:
