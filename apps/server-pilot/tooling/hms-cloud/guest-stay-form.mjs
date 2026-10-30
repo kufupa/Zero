@@ -295,15 +295,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     let allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
     if (post === 'guarantee' && method === 'POST' && url.pathname === GUARANTEE_CHANGE && guaranteeExpected &&
         guaranteeRequest(page, request, guaranteeExpected)) {
-      const { guest, session } = guaranteeExpected.draft;
-      let current = true;
-      if (guest) {
-        try {
-          const token = await bounded(verifiedLabtestProfileToken(page, { nativeId: guest.nativeId, session }), 2000, 'GUEST_PROOF_TIMEOUT');
-          current = token === guest.token && isVerifiedLabtestProfileCurrent(page, { session, ...guest });
-        } catch { current = false; }
-      }
-      if (active && current && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
+      if (active && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
       else if (active) fence?.quarantine();
     }
     const ageValidation = method === 'POST' && url.pathname === CHILD_AGE_VALIDATE;

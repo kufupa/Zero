@@ -33,6 +33,7 @@ function forgetGuaranteeProfile(page) {
   const proof = verifiedGuaranteeProfiles.get(page);
   verifiedGuaranteeProfiles.delete(page);
   if (proof?.onRequest) page.off('request', proof.onRequest);
+  if (proof?.onNavigation) page.off('framenavigated', proof.onNavigation);
   if (proof?.record) void proof.record.dispose().catch(() => {});
   const revision = Symbol();
   profileRevisions.set(page, revision);
@@ -598,8 +599,12 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
                       verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page);
                 } catch { if (verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page); }
               };
+              proof.onNavigation = (frame) => {
+                if (frame === page.mainFrame() && verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page);
+              };
               verifiedGuaranteeProfiles.set(page, proof);
               page.on('request', proof.onRequest);
+              page.on('framenavigated', proof.onNavigation);
               draft = null;
             }
           }
