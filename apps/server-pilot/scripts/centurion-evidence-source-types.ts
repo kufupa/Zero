@@ -209,13 +209,41 @@ function normalizeOriginalMailbox(raw: string): string | null {
   return isCanonicalMailbox(candidate) ? candidate.toLowerCase() : null;
 }
 
+/** Strip balanced RFC-style comments without changing quoted mailboxes or domain literals. */
+function stripAddressComments(value: string): string | null {
+  let quoted = false, literal = false, escaped = false, depth = 0, result = '';
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (depth) {
+      if ((code < 32 && code !== 9) || code === 127) return null;
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (character === '(') depth++;
+      else if (character === ')') depth--;
+      continue;
+    }
+    if (escaped) { result += character; escaped = false; continue; }
+    if ((quoted || literal) && character === '\\') { result += character; escaped = true; continue; }
+    if (!literal && character === '"') { result += character; quoted = !quoted; continue; }
+    if (quoted) { result += character; continue; }
+    if (literal) { result += character; if (character === ']') literal = false; continue; }
+    if (character === '[') { result += character; literal = true; continue; }
+    if (character === '(') { depth = 1; continue; }
+    if (character === ')' || character === '\\') return null;
+    result += character;
+  }
+  return depth || quoted || literal || escaped ? null : result;
+}
+
 /** Split only unambiguous RFC-style comma lists; no aliases or guessed partial list. */
 export function normalizeOriginal(value: unknown): string[] | null {
   if (typeof value !== 'string' || !value.trim()) return null;
+  const clean = stripAddressComments(value);
+  if (clean === null || !clean.trim()) return null;
   const parts: string[] = [];
   let quoted = false, literal = false, escaped = false, angled = false, start = 0;
-  for (let i = 0; i < value.length; i++) {
-    const ch = value[i]!;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i]!;
     if (escaped) { escaped = false; continue; }
     if ((quoted || literal) && ch === '\\') { escaped = true; continue; }
     if (!literal && ch === '"') { quoted = !quoted; continue; }
@@ -224,10 +252,10 @@ export function normalizeOriginal(value: unknown): string[] | null {
     if (ch === '[') { literal = true; continue; }
     if (ch === '<') { if (angled) return null; angled = true; continue; }
     if (ch === '>') { if (!angled) return null; angled = false; continue; }
-    if (ch === ',' && !angled) { parts.push(value.slice(start, i)); start = i + 1; }
+    if (ch === ',' && !angled) { parts.push(clean.slice(start, i)); start = i + 1; }
   }
   if (quoted || literal || angled || escaped) return null;
-  parts.push(value.slice(start));
+  parts.push(clean.slice(start));
   const normalized = parts.map(normalizeOriginalMailbox);
   return normalized.some((item) => item === null) ? null : normalized as string[];
 }

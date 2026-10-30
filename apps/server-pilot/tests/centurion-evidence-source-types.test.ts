@@ -41,6 +41,13 @@ describe('original address normalization', () => {
       .toEqual(['one@[tag:a<b>]', 'two@example.test']);
   });
 
+  it('preserves addresses with balanced display and mailbox comments', () => {
+    expect(normalizeOriginal('John (Reservations, East) "Nick" <one@example.test>, two@example.test'))
+      .toEqual(['one@example.test', 'two@example.test']);
+    expect(normalizeOriginal('one(comment)@example.test')).toEqual(['one@example.test']);
+    expect(normalizeOriginal('John (Ops (East)) <one@example.test>')).toEqual(['one@example.test']);
+  });
+
   it('rejects malformed or ambiguous input as a whole, never a partial list', () => {
     for (const value of [
       null, undefined, 1, [], '', '   ', 'not an address',
