@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  isCanonicalMailbox,
   normalizeOriginal,
   type EvidenceSourceInput,
   type EvidenceSources,
@@ -30,10 +31,17 @@ describe('original address normalization', () => {
     }
   });
 
-  it('preserves the existing permissive mailbox check rather than imposing RFC validation', () => {
-    expect(normalizeOriginal('A..B@EXAMPLE.TEST')).toEqual(['a..b@example.test']);
-    expect(normalizeOriginal('x@y')).toEqual(['x@y']);
-    expect(normalizeOriginal('x@y:z')).toEqual(['x@y:z']);
+  it('rejects definitely malformed mailboxes and preserves valid quoted and literal forms', () => {
+    for (const value of ['guest@hotel:invalid', 'group:guest@example.test', 'guest@exa\x00mple.test',
+      'guest@(invalid)', 'a..b@example.test', 'guest@.example.test', 'guest@example..test']) {
+      expect(isCanonicalMailbox(value)).toBe(false);
+      expect(normalizeOriginal(value)).toBeNull();
+    }
+    for (const value of ['x@y', 'guest+tag@example.test', '"quoted local"@example.test',
+      '"a@b"@[IPv6:2001:db8::1]', 'guest@[127.0.0.1]']) {
+      expect(isCanonicalMailbox(value)).toBe(true);
+      expect(normalizeOriginal(value)).toEqual([value.toLowerCase()]);
+    }
   });
 });
 

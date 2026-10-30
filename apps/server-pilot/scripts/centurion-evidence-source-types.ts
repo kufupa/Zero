@@ -129,6 +129,54 @@ export type EvidenceSources = {
   addressCounts: { complete: number; incomplete: number; unknown: number; missingFields: number };
 };
 
+/** Validate a mailbox without rewriting aliases or deriving an alternative address. */
+export function isCanonicalMailbox(value: string): boolean {
+  if (!value || value !== value.trim()) return false;
+  const atom = (part: string): boolean => {
+    if (!part || part.startsWith('.') || part.endsWith('.') || part.includes('..')) return false;
+    return [...part].every((character) => {
+      if (character === '.') return true;
+      const code = character.codePointAt(0)!;
+      return code < 128 ? /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]$/.test(character)
+        : !/[\s\p{Cc}\p{Cs}]/u.test(character);
+    });
+  };
+  let at: number;
+  if (value.startsWith('"')) {
+    let index = 1, closed = false;
+    while (index < value.length) {
+      const code = value.charCodeAt(index), character = value[index]!;
+      if ((code < 32 && code !== 9) || code === 127) return false;
+      if (character === '\\') {
+        index++;
+        if (index >= value.length) return false;
+        const escaped = value.charCodeAt(index);
+        if (escaped < 32 || escaped === 127) return false;
+      } else if (character === '"') { closed = true; index++; break; }
+      index++;
+    }
+    if (!closed || value[index] !== '@') return false;
+    at = index;
+  } else {
+    at = value.indexOf('@');
+    if (at < 1 || !atom(value.slice(0, at))) return false;
+  }
+  const domain = value.slice(at + 1);
+  if (domain.startsWith('[') && domain.endsWith(']')) {
+    const inner = domain.slice(1, -1);
+    if (!inner) return false;
+    for (let index = 0; index < inner.length; index++) {
+      const character = inner[index]!, code = inner.charCodeAt(index);
+      if (character === '\\') {
+        index++;
+        if (index >= inner.length || inner.charCodeAt(index) < 33 || inner.charCodeAt(index) > 126) return false;
+      } else if (code < 33 || code > 126 || character === '[' || character === ']') return false;
+    }
+    return true;
+  }
+  return atom(domain);
+}
+
 function normalizeOriginalMailbox(raw: string): string | null {
   const trimmed = raw.trim();
   const bracketed = trimmed.match(/^([^<>@]*)<([^<>]+)>$/);
@@ -136,7 +184,7 @@ function normalizeOriginalMailbox(raw: string): string | null {
   if ((display.includes('"') || display.includes(',')) && !/^"[^"]*"$/.test(display)) return null;
   if (/[;:]/.test(display)) return null;
   const candidate = (bracketed ? bracketed[2]! : trimmed).trim();
-  return /^[^\s@<>,;]+@[^\s@<>,;]+$/.test(candidate) ? candidate.toLowerCase() : null;
+  return isCanonicalMailbox(candidate) ? candidate.toLowerCase() : null;
 }
 
 /** Split only unambiguous RFC-style comma lists; no aliases or guessed partial list. */
