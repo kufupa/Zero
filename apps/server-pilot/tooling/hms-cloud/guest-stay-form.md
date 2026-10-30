@@ -4,7 +4,8 @@
 confirmation**. Install the existing read-only guard before opening Guest Stay;
 `withBookingLookupSession` already does this. Pass the expected `propertyCode`
 to every call and serialize all actions on the page. The live checks used
-HRCEN; other properties and configurations are unverified.
+HRCEN at `https://hmsweb.hms.eu1.inforcloudsuite.com`. Other properties,
+configurations and origins are unverified; other origins are rejected.
 
 The live draft covered both dates, adults, reason for stay, first and last name,
 child ages, CMS recipient, CMS message ID, and the send checkbox. Other listed
@@ -39,8 +40,8 @@ await withBookingLookupSession(async ({ page }) => {
 }, { memory: null });
 ```
 
-Each action checks property and blank confirmation, reads back the form and
-returns observed `changedFields`. Arrival changed departure and day-of-week on
+Each action checks origin, property and blank confirmation, reads back the form
+and returns observed `changedFields`. Arrival changed departure and day-of-week on
 the observed screen, so check the returned changes and set departure explicitly.
 Names are individual text fields; room quantity is a separate fact and is not
 inferred here. Guest email and CMS recipient are separate fields.

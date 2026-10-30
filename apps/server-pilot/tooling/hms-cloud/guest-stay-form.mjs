@@ -1,6 +1,7 @@
 // Small actions on a caller-owned, guarded, blank Guest Stay page.
 import { randomUUID } from 'node:crypto';
 
+const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
   firstName: 'firstname', lastName: 'lastname', bookerName: 'caller', bookerContact: 'udfchar06',
   reservationNote: 'reservationnote', guestEmail: 'emailaddress', cmsRecipient: 'udfchar13',
@@ -24,14 +25,16 @@ function displayDate(iso) {
 }
 
 async function assertForm(page, propertyCode) {
-  const ok = await page.evaluate((expected) => {
+  const issue = await page.evaluate(({ expected, origin }) => {
+    if (location.origin !== origin) return 'HMS_ORIGIN_MISMATCH';
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const named = (name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible);
     const confirmation = named('confirmationnumber');
     const property = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
-    return property === expected && confirmation.length === 1 && !confirmation[0].value.trim() && named('ta1').length === 1;
-  }, propertyCode);
-  if (!ok) throw new Error('PROPERTY_OR_BLANK_STAY_MISMATCH');
+    return property === expected && confirmation.length === 1 && !confirmation[0].value.trim() && named('ta1').length === 1
+      ? null : 'PROPERTY_OR_BLANK_STAY_MISMATCH';
+  }, { expected: propertyCode, origin: CLOUD_ORIGIN });
+  if (issue) throw new Error(issue);
 }
 
 async function readFields(page) {
@@ -139,7 +142,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     const url = new URL(request.url());
     const method = request.method();
     const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(method) && !DANGEROUS_PATH.test(url.pathname);
-    if (!safeRead && !(method === 'POST' && post && allowedPost(request, new URL(page.url()).origin, propertyCode, post, expectedAges))) {
+    if (!safeRead && !(method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges))) {
       blocked.push({ method, path: url.pathname });
       await route.abort();
     } else await route.fallback();
