@@ -2,8 +2,9 @@
 
 These functions use one authenticated, property-scoped Playwright page. The caller
 owns the page and must install the existing read-only guard before opening an
-unsaved Guest Stay. Search leaves the picker open for refinement. The caller
-chooses a candidate; the tools do not infer an identity.
+unsaved Guest Stay. The guard blocks the cloud vault card-entry POST; these
+tools do not support card entry. Search leaves the picker open for refinement.
+The caller chooses a candidate; the tools do not infer an identity.
 
 ```js
 import {

@@ -2,6 +2,8 @@
 
 const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
+const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
+const CLOUD_CARD_ENTRY_PATH = '/Vault/servlets/showCardEntryHandler';
 // On-prem Hotel Availability posts hotelAvail/; the Infor cloud build (HRCEN, 2026-10-27) posts rateshop/.
 const AVAILABILITY_READ_PATHS = new Set([
   '/api/internalBooking/hotelAvail/inquiryForGrid',
@@ -26,13 +28,14 @@ export function shouldAbortReadOnlyRequest({ method, url }) {
   const requestMethod = String(method ?? '').toUpperCase();
   if (!MUTATION_METHOD.test(requestMethod)) return false;
   if (requestMethod !== 'POST') return true;
-  let pathname;
+  let target;
   try {
-    pathname = new URL(url).pathname;
+    target = new URL(url);
   } catch {
     return true;
   }
-  return MUTATION_PATH.test(pathname);
+  return (target.origin === CLOUD_VAULT_ORIGIN && target.pathname === CLOUD_CARD_ENTRY_PATH) ||
+    MUTATION_PATH.test(target.pathname);
 }
 
 export async function installReadOnlyGuard(context) {
