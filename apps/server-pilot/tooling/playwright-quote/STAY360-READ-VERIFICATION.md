@@ -14,6 +14,11 @@ subsequent change.
 - **Blank search name:** a real search row had no name, although the opened
   details card did. With no name hint the full read succeeded; with a name hint,
   lookup returned `CONFIRMATION_HINT_UNVERIFIED` and the blank candidate.
+- **Search date window:** two real reservations outside the initial window were
+  found after moving the calendar backwards and forwards, including a
+  single-digit start day. Both arrival-date hints selected the expected record.
+- **Name matching:** targeted synthetic cases covered title-like surnames,
+  prefixed titles, conflicting names and incomplete or blank names.
 - **Notes during Record View:** two parallel reads of the same reservation had
   previously timed out after the Notes popup blocked a click (about 46 seconds
   total, including a 30-second click timeout). After the shared handler was

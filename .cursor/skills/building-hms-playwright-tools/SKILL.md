@@ -1,53 +1,22 @@
 ---
 name: building-hms-playwright-tools
-description: >
-  Use when building or widening a Centurion Infor HMS Playwright tool (quote,
-  guest stay, folio, notes, traces, lab write), when an agent reaches for
-  Stagehand, OpenAI Computer Use, CRS Check Availability, a stuffed Astra
-  checklist, a new playwright-hms extract, or a second browser owner, or after
-  a tool run when a new PMS trap should be recorded.
+description: Use when building or extending PMS Playwright read or write flows, especially Centurion Stay 360.
 ---
 
-# Building HMS Playwright tools
+# Building PMS flows
 
-Kernel today: `apps/server-pilot/tooling/playwright-quote/` — login, borrowed CDP, `audit.mjs`, `remote-owner.mjs`. Import it. Do not extract `playwright-hms` first. Shipped CLI = native Playwright, zero model.
+Build quickly with Codex and Playwright driving the actual PMS. Discuss the desired behavior with the user. Give each useful read or action a module with explicit inputs and structured results; compose longer flows on the same page/session where useful. Return options for unresolved identities instead of guessing.
 
-## Swimlanes
+Current modules live in `apps/server-pilot/tooling/playwright-quote/`:
 
-| Actor | Owns |
-|---|---|
-| Cursor Grok 4.6 high | Schema, kernel import, `node --test`, docs, Astra brief, git. Never attaches HMS. |
-| GPT-6 Astra via `codex exec -m gpt-6-astra` | Live PMS, selectors, live proof. Resume **one** session. |
-| Not owners | Cursor Browser, Luna, Astra parent for git/tests, Stagehand click-model |
+- `centurion-stay360.mjs`: browser, login and Stay 360 lifecycle.
+- `stay360-notes.mjs`: automatically closes and privately captures Notes popups; other dialogs stay untouched. The shared browser installs it; install it on any other page setup. Use `takeHandledNotes(page)` to include automatic captures in a reader's output.
+- `stay360-confirmation.mjs` (1a), `stay360-record-view.mjs` (1b), `stay360-guest-details.mjs` (1c): composable readers; their end comments inventory observed fields. 1a accepts optional name/date and returns options for ambiguous matches. `read-*-ui.mjs` runners compose them.
+- `stay360-lookup-cli.mjs`: shared JSON input and structured lookup-error output.
+- `create-lab-stay.mjs`, `amend-stay.mjs`, and `write-cli-lease.mjs`: existing write-workflow references; check their actual coverage before reuse.
 
-## Steps
+Inspect the real UI, build in small stages, and validate the requested behavior in the PMS as directly as practical. For identity lookups, check ambiguous results, blank fields and conflicting hints against real records where available. Skip low-value local test loops; follow the repository's required release checks. Report what was observed and what remains unverified. An observed read field is not proof it is writable.
 
-1. Freeze `$defs.request` / `$defs.result`. Completeness = every field source-backed, explicit unknown, or typed error.
-2. Grok writes CLI stub + tests **offline**. No browser.
-3. Fill `assets/astra-brief.txt` ≤1500 chars. Tool, page, schema path, stop rule. No AE1–AE9 dump.
-4. One `codex exec`; then `resume`. Persist locators immediately. Prices-first. Keep borrowed browser alive. Skip `--video` and tests on Astra clock.
-5. Grok runs tests. Schema-complete → stop.
-6. Append **one** trap to `references/traps.md`. Patch this skill; do not fork a sibling.
+Follow `PRODUCT.md` and current workspace instructions: an agent may read real guests, but writes only to Labtest. Keep credentials and guest values out of logs, comments and this skill.
 
-## Rails
-
-- Front Desk → Availability → **Hotel Availability**. CRS Check Availability creates records.
-- Native vs normalized. `STWN` = Standard Twin **room type**. Bed card is its own field. Never map `STWN` → twin beds.
-- Writes: far-future lab stays only (keeper + cancel-victim, empty-inventory night). Never mailbox stays.
-- HITL (`proposalRef`) is a later envelope, not first CLI.
-- Unset `DATABASE_URL` before tests. Never Vitest against pilot RDS.
-- No commit unless asked.
-
-## Load next
-
-- `references/traps.md`
-- `assets/astra-brief.txt`
-- Quote `README.md` for owner/tunnel env **names** (never secrets, CDP URLs, mail bodies in briefs)
-
-## Red flags
-
-- Stagehand runtime / “just click the PMS”
-- Astra brief >1500 chars
-- Tests or `--video` on first Astra exec
-- New login rewrite or second browser owner
-- Inventing beds, totals, or pool ids (`MAIN`) from labels
+After each building session, discuss what worked, what was slow or failed, and what to change with the user. Append or revise durable lessons and the module list in both the repository and shared skill copies; keep this file short and avoid overgeneralizing from one run.

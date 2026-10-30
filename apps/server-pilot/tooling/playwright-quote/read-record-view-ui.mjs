@@ -3,34 +3,32 @@
 import { withCenturionStay360Page } from './centurion-stay360.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
+import { lookupFailure, readLookupInput } from './stay360-lookup-cli.mjs';
 
 const usage = 'Usage: node apps/server-pilot/tooling/playwright-quote/read-record-view-ui.mjs --confirmation NUMBER\n' +
+  '   or: node apps/server-pilot/tooling/playwright-quote/read-record-view-ui.mjs --json-stdin\n' +
+  'JSON input: {"confirmation":"...","guestName":"...","arrivalDate":"YYYY-MM-DD"}; the last two are optional.\n' +
   'Prints the selected Stay 360 page and Record View as JSON; output contains guest information.';
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === '--help') {
   process.stdout.write(`${usage}\n`);
   process.exit(0);
 }
-if (args.length !== 2 || args[0] !== '--confirmation' || !args[1].trim()) {
-  process.stderr.write(`INVALID_CONFIRMATION\n${usage}\n`);
+const started = Date.now();
+let input;
+try { input = readLookupInput(args); }
+catch (error) {
+  process.stderr.write(`${JSON.stringify(lookupFailure(error, started), null, 2)}\n`);
   process.exit(2);
 }
-
-const started = Date.now();
 try {
   const result = await withCenturionStay360Page(async (page) => {
-    const stay360 = await readConfirmationFromStay360(page, args[1]);
-    const recordView = await readRecordViewFromStay360(page, args[1]);
+    const stay360 = await readConfirmationFromStay360(page, input.confirmation, input.options);
+    const recordView = await readRecordViewFromStay360(page, input.confirmation);
     return { ok: true, confirmation: stay360.confirmation, stay360, recordView };
   });
   process.stdout.write(`${JSON.stringify({ ...result, elapsedMs: Date.now() - started }, null, 2)}\n`);
 } catch (error) {
-  const message = String(error?.message || error).split('\n')[0];
-  process.stderr.write(`${JSON.stringify({
-    ok: false,
-    phase: error?.phase || 'startup',
-    elapsedMs: Date.now() - started,
-    error: /^[A-Z][A-Z0-9_]{2,100}$/.test(message) ? message : 'PLAYWRIGHT_OPERATION_FAILED',
-  }, null, 2)}\n`);
+  process.stderr.write(`${JSON.stringify(lookupFailure(error, started), null, 2)}\n`);
   process.exitCode = 1;
 }

@@ -132,3 +132,71 @@ export async function readRecordViewFromStay360(page, confirmation) {
   notes.push(...await takeHandledNotes(page));
   return { notes, details };
 }
+
+/*
+1b return (reader): { notes, details }. notes[] has title, text, fields
+  and privateCapture. details: { confirmationInRecord, activeTab, fields,
+  visibleText, grids, captureScope }. fields[]: { section, label, name,
+  type, value }; grids[] contains rendered grid text.
+The CLI returns { ok, confirmation, stay360, recordView, elapsedMs }.
+
+Observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
+rendered controls. Other tabs, hidden content and unloaded grid pages are
+excluded. These are observations, not proof of writable fields.
+Below: label [DOM name; type if not text].
+
+No section:
+  Balance: [balance] | Balance: [balancecurr] | Booking Agency Contract: [bacontract]
+  CMS Booker Email: [udfchar13] | CMS Form Status: [udfchar07] | CMS Message Id: [udfchar09]
+  CMS Send Mail: [udfchkbox04; checkbox] | Confirmation Number: [confirmationnumber]
+  Deposit Due Amount Required: [udfchar02] | Deposit Due Date.: [udfdate02]
+  Deposit Received: [depositreceived] | Deposit Received: [depositreceivedcurrency]
+  External Reference 1: [externalreference1] | Group: [groupname] | Last Checkout Date : [lastcheckoutdate]
+  Last Property: [lastproperty] | Last Room Occupied: [lastroomoccupied] | Legacy Lifestyle Update: [facebookid]
+  Lifetime Nights: [nightsvalue] | Lifetime Revenue: [revenuedesc] | Lifetime Revenue: [revenuevalue]
+  Lifetime Stays: [lifetimestays] | Loyalty Number: [playernumber] | Loyalty Points Balance: [twitterid]
+  New / Existing Member: [bookingdotcomid] | Status: [status] | Wi-Fi Voucher: [udfchar10]
+  WIFI Status: [udfchar11]
+
+Stay:
+  A/R Account: [araccountname] | Add-On Total: [enhancedexptotal] | Add-On Total: [enhancedexptotalcurr]
+  Adults: [adults] | Arrival Date: [arrivaldate] | Arrival Date: [arrivaldayofweek]
+  Average Rate: [averagerate] | Average Rate: [averageratecurr] | Billing Reference: [billingreference]
+  Booker Contact: [udfchar06] | Booker Name: [caller] | Child 0 - 02: [child1] | Child 03 - 12: [child2]
+  Child 13 - 17: [child3] | Children: [children] | Commission Percent: [ta1commission]
+  Confidential Rate: [confidentialratecb; checkbox] | Departure Date: [departuredate]
+  Departure Date: [departuredayofweek] | Do Not Move Reason: [donotmovereason]
+  Do Not Move: [donotmove; checkbox] | Grand Total: [grandtotal] | Grand Total: [grandtotalcurr]
+  Guarantee Type: [guaranteetype] | Ignore All Restrictions: [ignoreallrestrictions; checkbox]
+  Market Segment: [marketsegment] | Meal Plan: [mealplan] | Nights: [nights] | Organization: [company]
+  Primary Booking Agency: [ta1] | Promotion: [promotioncode] | Rate Plan: [rateplan]
+  Reason for Stay: [reasonforstay] | Reservation Note / Billing Instructions: [reservationnote; textarea]
+  Resort Fee: [resortfee] | Resort Fee: [totalresortfee] | Room Type for Charge: [roomtypecharge]
+  Room Type: [roomtype] | Room: [room] | Scheduled Room: [scheduledroom]
+  Source Of Business: [sourceofbusinessdesc] | Total Rate: [totalrate] | Total Rate: [totalratecurr]
+  Track / Sub Segment: [track] | Waitlist Priority: [waitlistpriority] | Walk In: [iswalkin; checkbox]
+
+Guest:
+  Address Type: [addresstypecode] | Address: [address; textarea] | Auto Email Folio: [autoemailfolio; checkbox]
+  City: [city] | Cleaning Time: [cleaningtime] | Country of Residence: [countryofresidencedesc]
+  Country: [countrydesc] | Date of Birth: [dateofbirth] | E-mail Address: [emailaddress]
+  E-mail Type: [emailtypecode] | First Name: [firstname] | Gender: [gender] | Language: [language]
+  Last Name: [lastname] | Legacy Lifestyle Member: [guestoptin3; checkbox]
+  Legacy Marketing Opt in: [guestoptin1; checkbox] | Lifestyle Marketing Opt in: [guestoptin2; checkbox]
+  Mobile Number: [mobilenumber] | Nationality: [nationalitydesc] | Passport Scan Date: [passportscanneddate]
+  Phone Number: [phonenumber] | Phone Type: [phonetypecode] | Postal Code: [postalcode] | Profile ID: [guestid]
+  Scanned Passport Reference: [scannedpassportref] | State / Province: [statedesc]
+  Terms and Conditions: [guestoptin4; checkbox] | Title: [prefix] | Turndown Time: [turndowntime]
+  Vat Id: [taxid] | Vehicle Reg No.: [vehicle] | VIP Level: [viplevel]
+
+Reservation:
+  Cancellation Date: [canceldate] | Cancellation Note: [cancellationnote; textarea]
+  Cancellation Number: [cancelnumber] | Cancellation Reason: [cancelreasondesc]
+  External Cancellation Number: [thirdpartycancellationnumber] | Reservation Date: [reservationdate]
+
+Settlement:
+  No Post: [nopost; checkbox] | Settlement Type: [settlementtype]
+
+Record Details:
+  Created By: [createdby] | Created On: [created] | Updated By: [updatedby] | Updated On: [updated]
+*/
