@@ -278,11 +278,13 @@ export async function searchHotelAvailability(page, input) {
     let data = null;
     try { data = JSON.parse(rawResponse); } catch { /* An unavailable search can have no JSON body. */ }
     const { bookingSessionID: _session, ...appliedCriteria } = applied;
-    const snapshot = { observedAt: new Date().toISOString(), requestedCriteria: input,
+    const snapshot = { outcome: 'ok', observedAt: new Date().toISOString(), requestedCriteria: input,
       appliedCriteria, catalogs, response: data };
     if (!data?.availabilitydata || !Array.isArray(data.availabilitydata.children) ||
         !Array.isArray(data.availabilitydata.datesList)) {
       if (await dismissUnavailableDialog(page, 15000)) {
+        snapshot.outcome = 'criteria_unavailable';
+        snapshot.message = 'Selected criteria is not available for these dates.';
         if (data === null) snapshot.rawResponse = rawResponse;
         return { outcome: 'criteria_unavailable', issue: 'SELECTED_CRITERIA_NOT_AVAILABLE', snapshot };
       }
