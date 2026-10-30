@@ -79,8 +79,16 @@ export async function openNewGuestStay(page) {
       const nodes = page.locator('span.x-tree-node-text:visible');
       const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
       if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }));
-      await clickTreeNode(guestStay);
-      await page.locator('input[name="ff_confirmationnumber"]:visible').first().waitFor({ timeout: 25000 });
+      let opened = false;
+      for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
+        await page.waitForTimeout(800);
+        if (!await guestStay.isVisible().catch(() => false)) await page.locator('a.app-menu-trigger:visible').click();
+        await clickTreeNode(guestStay);
+        opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
+          .waitFor({ timeout: 8000 }).then(() => true, () => false);
+        if (!opened) await assertExpectedDialogs(page);
+      }
+      if (!opened) throw new Error('GUEST_STAY_NOT_OPENED');
       await assertExpectedDialogs(page);
       await page.locator('[data-qtip="New Record (Ctrl+N)"]:visible').first().click();
       await agency.waitFor({ timeout: 25000 });
@@ -152,17 +160,16 @@ function matchesRun(request, query, alias) {
   }
 }
 
-function parseGridResponse(body) {
-  try {
-    const payload = JSON.parse(body.replace(/^(\s*\{\s*)pageData\s*:/, '$1"pageData":'));
-    const data = payload?.pageData;
-    const grid = data?.grid?.GRIDRESULT?.GRID;
-    const failed = [payload, data].some((part) => part && Object.hasOwn(part, 'success') && part.success !== true);
-    if (failed || data?.messages != null || !Array.isArray(grid?.DATA) || !grid?.METADATA) throw new Error();
-    return { rows: grid.DATA, metadata: grid.METADATA };
-  } catch {
-    throw new Error('LOOKUP_RESPONSE_INVALID');
-  }
+function responseData(body) {
+  const json = body.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
+  const payload = JSON.parse(json);
+  const data = payload?.pageData;
+  const hasContent = (value) => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
+  const failed = [payload, data].some((part) => part && ((Object.hasOwn(part, 'success') && part.success !== true) ||
+    hasContent(part.error) || hasContent(part.errors)));
+  if (!data || failed || hasContent(data.messages)) throw new Error('LOOKUP_RESPONSE_INVALID');
+  return data;
 }
 
 async function waitForResponseRows(page, windowId, columns, rows, timeoutMs) {
@@ -259,12 +266,17 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Run\s*$/ }).first().click();
     const response = await responsePromise;
-    if (!response || response.status() !== 200 || await response.finished()) throw new Error('LOOKUP_SEARCH_UNVERIFIED');
+    if (!response || response.status() !== 200) throw new Error('LOOKUP_SEARCH_UNVERIFIED');
     const requestFilters = [...new URLSearchParams(response.request().postData() || '')]
       .filter(([name]) => name.startsWith('MADDON_FILTER_'))
       .map(([name, value]) => ({ name, value }));
     stage = 'reading_response';
-    const { rows, metadata } = parseGridResponse(await response.text());
+    let timer;
+    const body = await Promise.race([response.text(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('LOOKUP_RESPONSE_TIMEOUT')), timeoutMs);
+    })]).finally(() => clearTimeout(timer));
+    const { DATA: rows, METADATA: metadata } = responseData(body).grid?.GRIDRESULT?.GRID ?? {};
+    if (!Array.isArray(rows) || !metadata) throw new Error('LOOKUP_RESPONSE_INVALID');
     stage = 'waiting_for_grid';
     const { keys, expected } = await waitForResponseRows(page, windowId, spec.columns, rows, timeoutMs);
     await assertExpectedDialogs(page);
@@ -352,6 +364,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   let observed = null;
   let requestIdVerified = false;
   let changeResponseVerified = false;
+  let pendingChangeResponses = 0;
   const inFlight = new Set();
   const onDialog = () => { nativeDialog = true; };
   const onRequest = (request) => { if (request.method() === 'POST') inFlight.add(request); };
@@ -360,8 +373,16 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   const onResponse = (response) => {
     if (!inFlight.has(response.request())) return;
     if (new URL(response.url()).pathname === spec.changePath) {
-      changeResponseVerified = response.status() === 200;
-      if (!changeResponseVerified) requestFailed = true;
+      if (response.status() !== 200) requestFailed = true;
+      else {
+        pendingChangeResponses += 1;
+        void response.text().then((body) => {
+          const values = responseData(body).values;
+          changeResponseVerified = Boolean(values && Object.hasOwn(values, 'confirmationnumber') &&
+            !clean(values.confirmationnumber) && clean(values[spec.requestId]) === nativeId);
+          if (!changeResponseVerified) requestFailed = true;
+        }).catch(() => { requestFailed = true; }).finally(() => { pendingChangeResponses -= 1; });
+      }
     } else if (response.status() >= 400) requestFailed = true;
   };
   const guardChange = async (route) => {
@@ -434,12 +455,12 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
           form: { fields, changedFields: changedFields(before, fields) } };
         const snapshot = JSON.stringify(fields);
         if (snapshot !== lastSnapshot || inFlight.size) stableSince = Date.now();
-        else if (requestIdVerified && changeResponseVerified && Date.now() - stableSince >= 500 &&
+        else if (requestIdVerified && changeResponseVerified && !pendingChangeResponses && Date.now() - stableSince >= 500 &&
             value.trim().toLocaleLowerCase() === candidates[0].name.toLocaleLowerCase()) {
           lastSearch.delete(page);
           return {
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
-            nativeIdEvidence: 'form_change_request',
+            nativeIdEvidence: 'form_change_response',
             ...observed,
             ...(kind === 'agency' ? { displayedAgency: value } : { displayedOrganization: value }),
           };

@@ -34,7 +34,8 @@ search. It checks the current picker, criteria and grid again before acting.
 On success it returns the selected field and visible form fields with their
 changes. Organization and agency selections send a field-change request before
 Save; the selection guard allows that request only for a blank confirmation,
-empty reservation keys and the chosen ID. A `selection_uncertain` outcome means
+empty reservation keys and the chosen ID. The reply must confirm that ID and
+contain no HMS message. A `selection_uncertain` outcome means
 the action may have occurred: inspect the form before trying again. Unexpected
 dialogs are left untouched.
 
