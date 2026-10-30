@@ -819,8 +819,8 @@ async function productionReadRuntimeFacts(
   const sourceRevision = resolveHmsSourceRevision();
   const runtimeFp = runtimeFingerprintSha256({
     sourceRevision,
-    playwrightRevision: '1.52.0',
-    chromiumRevision: '1169',
+    playwrightRevision: '1.63.0',
+    chromiumRevision: '1243',
   });
   if (!productionActiveReadState) {
     const load = () =>
@@ -990,8 +990,8 @@ export function createLiveHmsCandidateSessionFactory(
     const sourceRevision = resolveHmsSourceRevision();
     const runtimeFp = runtimeFingerprintSha256({
       sourceRevision,
-      playwrightRevision: '1.52.0',
-      chromiumRevision: '1169',
+      playwrightRevision: '1.63.0',
+      chromiumRevision: '1243',
     });
     const findReleaseRaw = active?.releases.get('hms_find_reservation') ?? null;
     const findRelease =
@@ -1103,7 +1103,7 @@ export function createLiveHmsCandidateSessionFactory(
             operationId: input.runId!,
             toolId: 'hms_find_reservation',
             toolVersion: '1.2.0',
-            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            dependencyRevision: 'playwright-1.63.0-chromium-1243',
             executionClass: 'normal',
             inputClass,
           })
@@ -1148,7 +1148,7 @@ export function createLiveHmsCandidateSessionFactory(
             operationId,
             toolId: 'hms_quote_stay',
             toolVersion: '2.0.0',
-            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            dependencyRevision: 'playwright-1.63.0-chromium-1243',
             executionClass: 'normal',
             inputClass: 'authorized_exact',
             requestBranchId: 'quote_availability_search',
@@ -1199,7 +1199,7 @@ export function createLiveHmsCandidateSessionFactory(
                 operationId,
                 toolId: 'hms_read_folio',
                 toolVersion: '1.0.0',
-                dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                dependencyRevision: 'playwright-1.63.0-chromium-1243',
                 executionClass: 'normal',
                 inputClass: 'authorized_exact',
                 requestBranchId: branchId,
@@ -1444,7 +1444,7 @@ export function createLiveHmsCandidateSessionFactory(
                     operationId,
                     toolId: 'hms_group_block_read',
                     toolVersion: '1.0.0',
-                    dependencyRevision: 'playwright-1.52.0-chromium-1169',
+                    dependencyRevision: 'playwright-1.63.0-chromium-1243',
                     executionClass: 'normal',
                     inputClass: 'authorized_exact',
                     requestBranchId: branch.id,

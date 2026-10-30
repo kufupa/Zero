@@ -90,7 +90,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
     expect(source).toMatch(/lane !== 'hms'/);
     // off mode claims none
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
-    expect(source).toMatch(/dependencyRevision:\s*'playwright-1\.52\.0-chromium-1169'/);
+    expect(source).toMatch(/dependencyRevision:\s*'playwright-1\.63\.0-chromium-1243'/);
     // No production mock fallback on HMS path
     const hmsBlock = source.slice(
       source.indexOf("executorLane === 'hms'"),
@@ -190,9 +190,8 @@ describe('hms shadow lane/mode (DB-free)', () => {
     expect(ai).toMatch(/HMS_DRAFT_ENRICHMENT_MODE\s*===\s*['"]shadow['"]/);
     const drafts = readFileSync(join(here, '..', 'src', 'trpc', 'routes', 'drafts.ts'), 'utf8');
     expect(drafts).toMatch(/HMS_MANUAL_OPS_REQUIRED|hmsMode === 'shadow'/);
-    expect(drafts).toMatch(
-      /executorLane,\s*'hms'|executorLane === 'hms'|eq\(aiWorkflowRun\.executorLane, 'hms'\)/,
-    );
+    // Candidate refreshes run on the default worker; the isolated HMS lane is read/shadow-only.
+    expect(drafts).toMatch(/executorLane:\s*'default'/);
     expect(HMS_MANUAL_OPS_REQUIRED).toBe('HMS_MANUAL_OPS_REQUIRED');
   });
 

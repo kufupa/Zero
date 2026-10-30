@@ -70,7 +70,7 @@ describe('hms live proof Phase A contracts', () => {
     expect(proof).toMatch(/OperatorExit/);
     expect(proof).toMatch(/throw new OperatorExit/);
     expect(proof).toMatch(/PHASE_A_PROOF_READY/);
-    expect(proof).toMatch(/playwright-1\.52\.0-chromium-1169/);
+    expect(proof).toMatch(/playwright-1\.63\.0-chromium-1243/);
   });
 
   it(

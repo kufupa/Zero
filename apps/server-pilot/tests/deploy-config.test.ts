@@ -5041,8 +5041,8 @@ if (!realMailGate) {
       expect(existsSync(path)).toBe(true);
       const script = readFileSync(path, 'utf8');
       expect(script).toMatch(/\/opt\/nava/);
-      expect(script).toMatch(/1\.52\.0/);
-      expect(script).toMatch(/1169/);
+      expect(script).toMatch(/1\.63\.0/);
+      expect(script).toMatch(/1243/);
       expect(script).not.toMatch(/EXPECTED_FFMPEG_REV|FFMPEG_EXE/);
       expect(script).toMatch(/HMS_DEPENDENCIES_OK/);
       expect(script).toMatch(/headless|chromium/i);

@@ -2207,7 +2207,7 @@ describe('Task 5 HMS live proof CLI (DB-free)', () => {
   it('status validates build/deps/manifest/fingerprint/role/health/TTL/deltas', () => {
     const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
     expect(source).toMatch(/NAVA_BUILD_COMMIT|buildCommit|runningProcessCommit/);
-    expect(source).toMatch(/playwright-1\.52\.0-chromium-1169/);
+    expect(source).toMatch(/playwright-1\.63\.0-chromium-1243/);
     expect(source).toMatch(/manifestSha256/);
     expect(source).toMatch(/rowFingerprintSha256/);
     expect(source).toMatch(/roleProofSha256/);

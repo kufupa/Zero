@@ -110,7 +110,7 @@ const LEGAL_FORMS = new Set([
   'llc',
   'sl',
 ]);
-const BRACKETED = /\(([^()]*)\)|\[([^\[\]]*)\]/g;
+const BRACKETED = /\(([^()]*)\)|\[([^[\]]*)\]/g;
 const LEGAL_ABBREVIATION = /\b(?:P\.T\.Y\.?|L\.T\.D\.?|L\.L\.C\.?|S\.A\.?|S\.L\.?)\b/giu;
 const ACRONYM = /^\p{Lu}[\p{Lu}\p{N}&]{1,15}$/u;
 const ORG_WORDS =
@@ -300,7 +300,7 @@ function namesFromText(textValue: string): string[] {
   const out = new Set<string>();
   const boundedText = textValue.slice(0, MAX_PERSON_SCAN_CHARS);
   const patterns = [
-    /\b(?:guest|lead guest|traveller|traveler|passenger|booker|contact)(?:\s+name)?\s*[:\-]\s*([^\n,;]{2,100})/giu,
+    /\b(?:guest|lead guest|traveller|traveler|passenger|booker|contact)(?:\s+name)?\s*[:-]\s*([^\n,;]{2,100})/giu,
     /\b(?:accommodation|booking|stay|rooms?)\s+for\s+(?:(?:mr|mrs|ms|miss|dr)\.?\s+)?([\p{Lu}][\p{L}'’.-]+(?:\s+[\p{Lu}][\p{L}'’.-]+){1,2})(?=$|[\s,.;:!])/gu,
     /\b(?:regards|kind regards|best regards|sincerely|thank you|thanks|cheers)\s*[,\-:]?\s*((?:(?:mr|mrs|ms|miss|dr)\.?\s+)?[\p{Lu}][\p{L}'’.-]+(?:\s+[\p{Lu}][\p{L}'’.-]+){1,2})(?=$|[\s,.;:!|])/giu,
   ];
@@ -551,8 +551,8 @@ export function buildPartyMatchCandidates(input: {
   for (const row of signatureOrganisations) add(row.name, row.kind, 'signature', 'strong');
 
   if (historyEnabled && senderHistory) {
-    // The email beats history: any same-kind name in the email that is not the history name keeps history weak, so the
-    // email's own name binds (live replay 2026-10-19: "Nexus Travel" in the email vs "XL Nexus" history tied when both were strong).
+    // The email beats history: any same-kind name in the email that differs from the historical name
+    // keeps the history weak, so the email's own name can bind.
     const emailContradictsHistory = candidates.some(
       (candidate) =>
         candidate.kind === senderHistory.kind &&
@@ -786,9 +786,9 @@ function rowSuggestionScore(
   candidates: readonly PartyMatchCandidate[],
   row: PartyMatchRow,
 ): number {
-  const scores = candidates.map((candidate) => partyClaimScore(candidate, row));
-  if (scores.includes(2)) return 0;
-  if (scores.includes(1)) return 1;
+  const scores = new Set(candidates.map((candidate) => partyClaimScore(candidate, row)));
+  if (scores.has(2)) return 0;
+  if (scores.has(1)) return 1;
   if (
     candidates.some(
       (candidate) =>

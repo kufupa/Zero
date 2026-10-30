@@ -31,8 +31,7 @@
 #
 # Playwright: both CLIs resolve playwright 1.63.0 from apps/server-pilot/tooling/stagehand/node_modules.
 # Install it in the worktree that holds this script first: npm ci --prefix apps/server-pilot/tooling/stagehand
-# No NODE_PATH is needed, and it would not help: NODE_PATH is consulted only after that walk, so it
-# cannot replace the apps/server-pilot/node_modules/playwright (1.52.0) the walk finds first.
+# No NODE_PATH is needed. The server package also pins Playwright 1.63.0.
 #
 # Exit: 0 all six steps as expected. 2 refused before any browser step. 3 stopped at a step (see summary.json).
 set -euo pipefail

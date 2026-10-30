@@ -70,8 +70,8 @@ async function activeFindAdmission() {
       releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
       runtimeFingerprintSha256: runtimeFingerprintSha256({
         sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.52.0',
-        chromiumRevision: '1169',
+        playwrightRevision: '1.63.0',
+        chromiumRevision: '1243',
       }),
     });
   }
@@ -104,8 +104,8 @@ async function activeQuoteAdmission() {
       releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
       runtimeFingerprintSha256: runtimeFingerprintSha256({
         sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.52.0',
-        chromiumRevision: '1169',
+        playwrightRevision: '1.63.0',
+        chromiumRevision: '1243',
       }),
     });
   }
@@ -139,8 +139,8 @@ async function activeFolioAdmission(sections: readonly string[]) {
       releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
       runtimeFingerprintSha256: runtimeFingerprintSha256({
         sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.52.0',
-        chromiumRevision: '1169',
+        playwrightRevision: '1.63.0',
+        chromiumRevision: '1243',
       }),
     });
   }
@@ -186,8 +186,8 @@ async function activeLinkedContextAdmission(input: {
       releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
       runtimeFingerprintSha256: runtimeFingerprintSha256({
         sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.52.0',
-        chromiumRevision: '1169',
+        playwrightRevision: '1.63.0',
+        chromiumRevision: '1243',
       }),
     });
   }
