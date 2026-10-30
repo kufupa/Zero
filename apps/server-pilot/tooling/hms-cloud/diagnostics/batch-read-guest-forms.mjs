@@ -13,7 +13,13 @@ if (process.argv.length !== 5 || !Number.isInteger(workers) || workers < 1) {
 const input = resolve(inputArg);
 const output = resolve(outputArg);
 if ((statSync(dirname(output)).mode & 0o077) !== 0) throw new Error('OUTPUT_DIRECTORY_NOT_PRIVATE');
-const candidates = JSON.parse(readFileSync(input, 'utf8')).candidates;
+let candidates;
+try {
+  candidates = JSON.parse(readFileSync(input, 'utf8')).candidates;
+} catch {
+  console.error('INVALID_CANDIDATES');
+  process.exit(2);
+}
 if (!Array.isArray(candidates) || !candidates.length ||
     candidates.some((item) => !item || typeof item.confirmation !== 'string' ||
       !item.confirmation.trim() || item.confirmation !== item.confirmation.trim()) ||

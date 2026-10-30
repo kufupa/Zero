@@ -29,8 +29,16 @@ if (!confirmations.length || confirmations.some((value) => !/^\d{7,}-\d+$/.test(
   throw new Error('INVALID_CANDIDATE_TABLE');
 }
 const hintFile = process.env.STAY360_DATE_HINTS_FILE;
-const hints = hintFile ? new Map(JSON.parse(readFileSync(hintFile, 'utf8')).candidates
-  .map((item) => [item.confirmation, { arrivalDate: item.arrivalDateHint, guestName: item.guestNameHint }])) : null;
+let hints = null;
+if (hintFile) {
+  try {
+    hints = new Map(JSON.parse(readFileSync(hintFile, 'utf8')).candidates
+      .map((item) => [item.confirmation, { arrivalDate: item.arrivalDateHint, guestName: item.guestNameHint }]));
+  } catch {
+    console.error('INVALID_ARRIVAL_DATE_HINTS');
+    process.exit(2);
+  }
+}
 if (hints && confirmations.some((confirmation) => {
   const arrivalDate = hints.get(confirmation)?.arrivalDate;
   return arrivalDate != null && arrivalDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(arrivalDate);
