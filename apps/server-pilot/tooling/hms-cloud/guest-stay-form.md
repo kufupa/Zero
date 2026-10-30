@@ -67,16 +67,20 @@ Option coverage is unknown when HMS does not supply a reliable total. CMS
 selection checks the picker, search ID, grid and code again before clicking.
 Callers choose the code; this module does not infer one.
 Guarantee selection is currently limited to an HRCEN Proof Labtest draft with
-2027+ dates and guarded guest, stay and other profile IDs blank. A selected
-guest profile is unsupported. A nonblank A/R profile is supported only after `selectArAccount`
-verifies the account and profile on the same page, draft record and session;
-another A/R search invalidates that proof. Pre-populated or unverified A/R
-profiles remain unsupported. Selecting the current value
-returns `unchanged_unsaved` without another guarantee-change request. On one
-live draft, guarantee first, rate second and fake guest third retained all three
-values; guarantee changes after the guest were refused. In a separate live
-draft, Deposit Requested remained selected after agency, organization and A/R
-selection. Other guarantee options and action orders require their own evidence.
+2027+ dates and guarded stay and other profile IDs blank. A selected guest is
+supported only for the verified fake profile on the same page, draft record and
+session; a new guest search invalidates that guarantee proof. A nonblank A/R
+profile is supported only after `selectArAccount` verifies the account and
+profile on the same page, draft record and session; another A/R search
+invalidates that proof. A selected guest and A/R together, and pre-populated or
+unverified profiles, remain unsupported. Selecting the current value returns
+`unchanged_unsaved` without another guarantee-change request. Live unsaved
+drafts verified guarantee → rate → fake guest, and fake guest → rate →
+guarantee, with matching native and visible readbacks. A later guest search
+invalidated the guarantee proof without invalidating the earlier rate marker.
+In a separate live draft, Deposit Requested remained selected after agency,
+organization and A/R selection. Other guarantee options and action orders
+require their own evidence.
 The guarantee request check binds the current draft, code, session, IDs and
 known flags but does not reject every additional non-ID form field. This
 Labtest-only check is not evidence that arbitrary extra fields are safe.
