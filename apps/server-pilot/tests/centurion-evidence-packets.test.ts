@@ -699,6 +699,22 @@ describe('Centurion evidence inspection packets', () => {
   });
 
 
+  it('rejects contradictory concrete confirmation comparison fields', () => {
+    const generator = createPacketGenerator(runKey());
+    const source = input();
+    source.claims[0]!.status = 'unknown'; source.claims[0]!.inspection = 'uninspected';
+    const item = source.claims[0]!.evidence[0]!;
+    item.comparisonField = 'confirmation'; item.observationConflict = 'unknown';
+    for (const [outcome, equality] of [['equal', 'different'], ['different', 'equal']] as const) {
+      item.comparisonOutcome = outcome; item.confirmationEquality = equality;
+      expect(generator.generate(source)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    }
+    item.comparisonOutcome = 'equal'; item.confirmationEquality = 'equal';
+    expect(generator.generate(source).ok).toBe(true);
+    item.confirmationEquality = 'unknown';
+    expect(generator.generate(source).ok).toBe(true);
+  });
+
   it('rejects inconsistent header and comparison facts even before inspection', () => {
     const generator = createPacketGenerator(runKey());
     const source = input();

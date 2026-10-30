@@ -81,6 +81,10 @@ function packetShape(id: typeof rawId) {
         item.headerDirection !== 'none' && item.headerDirection !== 'unknown') return false;
     if ((item.comparisonOutcome === 'equal' || item.comparisonOutcome === 'different') &&
         (item.comparisonField === 'unknown' || item.comparisonField === 'not_applicable')) return false;
+    if (item.comparisonField === 'confirmation' &&
+        (item.comparisonOutcome === 'equal' || item.comparisonOutcome === 'different') &&
+        (item.confirmationEquality === 'equal' || item.confirmationEquality === 'different') &&
+        item.comparisonOutcome !== item.confirmationEquality) return false;
     if ((item.observationConflict === 'conflict' && item.comparisonOutcome === 'equal') ||
         (item.observationConflict === 'consistent' && item.comparisonOutcome === 'different')) return false;
     return true;
