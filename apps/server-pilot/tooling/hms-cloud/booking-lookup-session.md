@@ -23,6 +23,7 @@ at the top level.
 | `searchOrganization` | `query`: organization name; optional lookup `options` |
 | `selectOrganization` | `nativeId` and `searchId` from the current organization search |
 | `searchArAccount` | `query`: A/R account name; optional lookup `options` |
+| `selectArAccount` | `nativeId` and `searchId` from the current A/R account search |
 | `readGuestStay` | Reads the visible unsaved form, including blank fields |
 | `quit` | Closes the session |
 
@@ -33,8 +34,7 @@ before deciding what to do. Readback includes any automatically handled Notes.
 A blocked form read returns `FORM_READ_TIMEOUT`;
 unexpected dialogs are left untouched. Results retain all candidates, search IDs, raw
 response and grid details, coverage and truncation flags. Search again to
-refine; selection requires the latest matching live search. A/R selection is a
-separate follow-up after its selector lands.
+refine; selection requires the latest matching live search.
 
 The old names `memory`, `agency`, `organization`, `arAccount`, and
 `selectAgency` remain available. `selectAgency` accepts the legacy top-level

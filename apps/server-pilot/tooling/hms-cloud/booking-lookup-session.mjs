@@ -9,7 +9,7 @@ import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
-  selectBookingAgency, selectPrimaryBookingAgency, selectOrganization,
+  selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount,
 } from './lookup.mjs';
 
 const PROPERTY = 'HRCEN';
@@ -118,7 +118,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       agency: searchPrimaryBookingAgency, searchPrimaryBookingAgency,
       organization: searchOrganization, searchOrganization,
       arAccount: searchArAccount, searchArAccount,
-      selectAgency: selectBookingAgency, selectPrimaryBookingAgency, selectOrganization,
+      selectAgency: selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount,
       readGuestStay: readUnsavedGuestStay,
     };
     if (!Object.hasOwn(tools, tool)) return { id, tool, outcome: 'input_gap', issue: 'unknown_tool' };
@@ -131,7 +131,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       const selection = request.selection ?? (request.searchId === undefined
         ? request.nativeId : { nativeId: request.nativeId, searchId: request.searchId });
       result = await action(page, selection, request.options);
-    } else if (tool === 'selectPrimaryBookingAgency' || tool === 'selectOrganization') {
+    } else if (tool === 'selectPrimaryBookingAgency' || tool === 'selectOrganization' || tool === 'selectArAccount') {
       const selection = request.selection ?? { nativeId: request.nativeId, searchId: request.searchId };
       result = await action(page, selection, request.options);
     } else {
@@ -176,7 +176,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
 
 const usage = 'Usage: node booking-lookup-session.mjs --jsonl\n' +
   'Tools: queryBookingMemory, searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchOrganization, ' +
-  'selectOrganization, searchArAccount, readGuestStay, quit. Legacy names remain available.\n' +
+  'selectOrganization, searchArAccount, selectArAccount, readGuestStay, quit. Legacy names remain available.\n' +
   'JSONL results contain private data; redirect them to a private location.\n';
 
 const writeJsonLine = (value) => new Promise((done, fail) => {
