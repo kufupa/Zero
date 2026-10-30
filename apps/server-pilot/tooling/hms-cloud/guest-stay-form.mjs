@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
+import { isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -152,16 +153,19 @@ async function guaranteeDraft(page, propertyCode) {
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const guest = component('guestid');
     if (!data || !exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
-        !blankIds.filter((key) => key !== 'arprofileid').every((key) => exact(key, '')) || !unique('arprofileid') ||
+        !blankIds.filter((key) => key !== 'arprofileid' && key !== 'guestid').every((key) => exact(key, '')) ||
+        !unique('arprofileid') || !unique('guestid') ||
         keys.filter((key) => key.toLowerCase() === 'araccountid').length > 1 ||
         !unique('bookingsessionid') || !String(data.bookingsessionid ?? '').trim() ||
-        typeof guest?.getValue !== 'function' || String(guest.getValue() ?? '').trim() || fields.guestid[0].value.trim() ||
+        typeof guest?.getValue !== 'function' || String(guest.getValue() ?? '').trim() !== String(data.guestid ?? '').trim() ||
+        fields.guestid[0].value.trim() !== String(data.guestid ?? '').trim() ||
         fields.confirmationnumber[0].value.trim() || fields.firstname[0].value !== 'Proof' || fields.lastname[0].value !== 'Labtest') return null;
     const profileId = String(data.arprofileid ?? '').trim();
     const accountId = unique('araccountid') ? String(data.araccountid ?? '').trim() : '';
-    if (Boolean(profileId) !== Boolean(accountId)) return null;
+    const guestId = String(data.guestid ?? '').trim();
+    if (Boolean(profileId) !== Boolean(accountId) || (guestId && profileId)) return null;
     return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
-      ar: profileId ? { accountId, profileId } : null };
+      guestId, ar: profileId ? { accountId, profileId } : null };
   }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS });
   if (!state) return null;
   const arrival = wireDate(state.arrival), departure = wireDate(state.departure);
@@ -169,13 +173,22 @@ async function guaranteeDraft(page, propertyCode) {
   const identity = state.ar && { session: state.session, ...state.ar };
   const token = identity && await verifiedArSelectionToken(page, identity);
   if (identity && !token) return null;
-  return { session: state.session, arrival, departure, ar: identity ? { ...state.ar, token } : null };
+  let guest = null;
+  if (state.guestId) {
+    if (!isVerifiedLabtestProfile(page, state.guestId)) return null;
+    const guestToken = await verifiedLabtestProfileToken(page, { nativeId: state.guestId, session: state.session });
+    if (!guestToken) return null;
+    guest = { nativeId: state.guestId, token: guestToken };
+  }
+  return { session: state.session, arrival, departure, ar: identity ? { ...state.ar, token } : null, guest };
 }
 
 function guaranteeRequest(page, request, expected) {
   try {
     const ar = expected.draft.ar;
+    const guest = expected.draft.guest;
     if (ar && !isVerifiedArSelectionCurrent(page, { session: expected.draft.session, ...ar })) return false;
+    if (guest && !isVerifiedLabtestProfileCurrent(page, { session: expected.draft.session, ...guest })) return false;
     const url = new URL(request.url());
     if (request.method() !== 'POST' || url.origin !== CLOUD_ORIGIN || url.pathname !== GUARANTEE_CHANGE || url.search || url.hash ||
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
@@ -189,11 +202,12 @@ function guaranteeRequest(page, request, expected) {
       pagemode: 'display', isafterreservationsave: '', savesettlementcctoprofile: '0', linkedprofileflag: '0',
       ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
       ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}),
+      ...(guest ? { guestid: guest.nativeId } : {}),
     };
     return new Set(keys).size === keys.length && Object.entries(fields).every(([key, value]) => body.getAll(key).length === 1 &&
       body.get(key) === value && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
       !keys.some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
-        !(ar && key === 'arprofileid') && clean(body.get(key))) &&
+        !(ar && key === 'arprofileid') && !(guest && key === 'guestid') && clean(body.get(key))) &&
       !(!ar && keys.some((key) => key.toLowerCase() === 'araccountid' && clean(body.get(key))));
   } catch { return false; }
 }
@@ -232,15 +246,17 @@ async function verifyGuaranteeResponse(response, expected) {
   if (!response || response.status() !== 200) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
   const values = parseGuaranteeResponse(await bounded(response.text(), 5000, 'GUARANTEE_RESPONSE_TIMEOUT'));
   const ar = expected.draft.ar;
+  const guest = expected.draft.guest;
   const fields = { propertycode: 'HRCEN', status: 'New', firstname: 'Proof', lastname: 'Labtest',
     arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire,
     guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '',
     guaranteecreditcardid: '', leaseguaranteecreditcardid: '', ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
-    ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}) };
+    ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}),
+    ...(guest ? { guestid: guest.nativeId } : {}) };
   if (!values || !Object.entries(fields).every(([key, value]) => Object.hasOwn(values, key) && clean(values[key]) === value &&
       Object.keys(values).filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) ||
       Object.keys(values || {}).some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
-        !(ar && key === 'arprofileid') && clean(values[key])) ||
+        !(ar && key === 'arprofileid') && !(guest && key === 'guestid') && clean(values[key])) ||
       (!ar && Object.keys(values || {}).some((key) => key.toLowerCase() === 'araccountid' && clean(values[key])))) {
     throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
   }
@@ -279,7 +295,15 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     let allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
     if (post === 'guarantee' && method === 'POST' && url.pathname === GUARANTEE_CHANGE && guaranteeExpected &&
         guaranteeRequest(page, request, guaranteeExpected)) {
-      if (active && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
+      const { guest, session } = guaranteeExpected.draft;
+      let current = true;
+      if (guest) {
+        try {
+          const token = await bounded(verifiedLabtestProfileToken(page, { nativeId: guest.nativeId, session }), 2000, 'GUEST_PROOF_TIMEOUT');
+          current = token === guest.token && isVerifiedLabtestProfileCurrent(page, { session, ...guest });
+        } catch { current = false; }
+      }
+      if (active && current && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
       else if (active) fence?.quarantine();
     }
     const ageValidation = method === 'POST' && url.pathname === CHILD_AGE_VALIDATE;
