@@ -40,10 +40,12 @@ describe('private saved-snapshot JSONL parser', () => {
   it('fails closed on malformed framing, duplicate keys and lossy numeric values', () => {
     for (const input of ['', '\n', '{}\n\n{}', '{}\n\n', '{', '{}\nnot-json', '{"x":1,"x":2}',
       '{"x":1,"\\u0078":2}', '{"nested":{"x":1,"x":2}}', '{"x":9007199254740993}',
-      '{"x":1e9999}', '{"x":1e-9999}', '﻿{}']) {
+      '{"x":1000000000000000100}', '{"x":1000000000000000128}', '{"x":9007199254740992}',
+      '{"x":-9007199254740992}', '{"x":1e20}', '{"x":1e9999}', '{"x":1e-9999}', '﻿{}']) {
       expect(parseEvidenceSnapshotJsonl(input)).toEqual({ ok: false, error: { code: 'INVALID_JSONL' } });
     }
     expect(parseEvidenceSnapshotJsonl('{"a":{"x":1},"b":{"x":1.0},"list":[1e2,-0,0.5]}').ok).toBe(true);
+    expect(parseEvidenceSnapshotJsonl('{"x":9007199254740991}').ok).toBe(true);
   });
 
   it('never leaks source text, paths, keys, or thrown exception messages on errors', () => {

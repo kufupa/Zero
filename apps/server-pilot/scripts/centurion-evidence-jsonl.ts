@@ -44,7 +44,8 @@ function retainsJsonValues(line: string): boolean {
       while (i + 1 < line.length && /[0-9eE+.-]/.test(line[i + 1]!)) i++;
       const raw = line.slice(start, i + 1);
       const value = Number(raw);
-      if (!Number.isFinite(value) || decimalKey(raw) !== decimalKey(String(value))) return false;
+      if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)) ||
+          decimalKey(raw) !== decimalKey(String(value))) return false;
     }
   }
   return true;
