@@ -294,7 +294,9 @@ export function getAvailabilityView(snapshot, filters = {}) {
     throw new TypeError('INVALID_AVAILABILITY_SNAPSHOT');
   }
 
-  if (data.children.some((item) => !item || typeof item !== 'object')) throw new TypeError('INVALID_AVAILABILITY_SNAPSHOT');
+  if (data.children.some((item) => !item || item.isprop !== true || typeof item.issummary !== 'boolean')) {
+    throw new TypeError('INVALID_AVAILABILITY_SNAPSHOT');
+  }
   const propertyRows = data.children.filter((item) => item.isprop && !item.issummary);
   const hasCode = (item) => typeof item?.code === 'string' && Boolean(item.code.trim());
   if (propertyRows.some((property) => !hasCode(property) || !Array.isArray(property.children) || property.children.some((room) =>
