@@ -559,7 +559,8 @@ export async function closeGuestStayPartyPicker(page, { propertyCode } = {}) {
     const titles = await win.locator('.x-window-header-text:visible').allTextContents();
     const kind = Object.keys(LOOKUPS).find((key) => titles.length === 1 && titles[0].trim() === LOOKUPS[key].title);
     const windowId = await win.getAttribute('id'), previous = lastSearch.get(page);
-    if (!kind || !windowId || (previous && (previous.kind !== kind || previous.windowId !== windowId))) {
+    if (!kind || !windowId || (previous && (previous.kind !== kind || previous.windowId !== windowId)) ||
+        !await win.evaluate((el) => Boolean(Ext.getCmp(el.id)?.query('grid,readonlygrid')?.[0]?.getStore?.()))) {
       throw new Error('PARTY_PICKER_UNAVAILABLE');
     }
     const before = await readForm(page);
