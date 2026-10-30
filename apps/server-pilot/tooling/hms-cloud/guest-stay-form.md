@@ -71,6 +71,9 @@ live draft, guarantee first, rate second and fake guest third retained all three
 values; guarantee changes after the guest were refused. In a separate live
 draft, Deposit Requested remained selected after agency, organization and A/R
 selection. Other guarantee options and action orders require their own evidence.
+The guarantee request check binds the current draft, code, session, IDs and
+known flags but does not reject every additional non-ID form field. This
+Labtest-only check is not evidence that arbitrary extra fields are safe.
 Closing the CMS picker returns `closed_unsaved` after verifying the form is
 unchanged, or `not_open` if no picker is open. An `action_uncertain` result
 means the close may have happened without verified readback. Unexpected dialogs
