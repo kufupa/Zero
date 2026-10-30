@@ -8,7 +8,7 @@ const SPECS = {
   roomType: { title: 'Room Types', grid: 'LVROOMTYPE2', code: 'roomtypecode', id: 'roomtypeid', name: 'roomtypedesc' },
   ratePlan: { title: 'Rate Plans', grid: 'LVMULTIRATEPLANS3', code: 'rateplancode', name: 'rateplanname' },
 };
-const searches = new WeakMap();
+const searches = new WeakMap(), guards = new WeakMap();
 const busy = new WeakSet();
 const clean = (v) => String(v ?? '').trim();
 const validCode = (v) => /^[A-Z][A-Z0-9_]{2,100}$/.test(v);
@@ -304,7 +304,6 @@ function options(input) {
   }
   return { query: query.trim(), offset, limit };
 }
-
 async function search(page, kind, input = {}) {
   let filter;
   try { filter = options(input); } catch { return { outcome: 'input_gap', issue: 'INVALID_SEARCH_OPTIONS' }; }
@@ -314,7 +313,9 @@ async function search(page, kind, input = {}) {
   const onDialog = () => { native = true; };
   page.on('dialog', onDialog);
   try {
-    await installReadOnlyGuard(page.context());
+    const context = page.context();
+    if (!guards.has(context)) guards.set(context, installReadOnlyGuard(context).catch((error) => { guards.delete(context); throw error; }));
+    await guards.get(context);
     let state = searches.get(page);
     let effects = [];
     if (state?.cleanupOnly || (state && state.kind !== kind)) throw new Error('PICKER_CLOSE_REQUIRED');
@@ -346,7 +347,6 @@ async function search(page, kind, input = {}) {
     busy.delete(page);
   }
 }
-
 export const searchRoomTypes = (page, input) => search(page, 'roomType', input);
 export const searchRatePlans = (page, input) => search(page, 'ratePlan', input);
 function matchingCandidates(state, input) {
@@ -427,7 +427,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
           JSON.stringify(await readWindow(page, state.windowId)) !== state.pickerState) throw new Error('PICKER_SELECTION_CHANGED');
       await assertWindows(page, ['Room Types'], () => native);
       await win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).click({ timeout: timeoutMs });
-      await win.waitFor({ state: 'hidden', timeout: timeoutMs });
+      await win.waitFor({ state: 'hidden', timeout: timeoutMs }); searches.delete(page);
       await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: timeoutMs });
       await assertWindows(page, [], () => native);
       for (const path of paths) {
@@ -449,7 +449,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
       nativeIdEvidence: 'form_change_and_attribute_refresh_responses',
       form: { fields: after, changedFields: changedFields(before, after) }, effects };
   } catch (error) {
-    if (attempted) searches.delete(page);
+    if (attempted && searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
     return { outcome: attempted ? 'selection_uncertain' : 'execution_failure', issue: issue(error, 'ROOM_SELECTION_FAILED') };
   } finally { page.off('response', onResponse); page.off('dialog', onDialog); busy.delete(page); }
 }

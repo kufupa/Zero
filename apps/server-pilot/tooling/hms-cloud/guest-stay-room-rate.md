@@ -44,8 +44,9 @@ loaded rows again. They reject changed or closed visible state; hidden identity 
 server changes are not detected. Even matching criteria and an unchanged picker
 do not guarantee current inventory, prices or eligibility.
 
-If loading fails after this module opens a picker, call `closeRoomRatePicker`
-before retrying. Cleanup checks the recorded window and blank draft and refuses
+If loading fails after this module opens a picker, or selection is uncertain
+while the picker remains open, call `closeRoomRatePicker` before retrying.
+Cleanup checks the recorded window and unchanged blank draft and refuses
 unexpected dialogs; it never makes the incomplete catalog selectable.
 
 Room selection requires a unique current candidate with both a native ID and a
