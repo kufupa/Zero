@@ -12,9 +12,16 @@ criteria are:
 
 - `propertyCode`: expected property, currently verified with `HRCEN`.
 - `arrivalDate`, `departureDate`: calendar dates in `YYYY-MM-DD`.
-- `adults`: explicit count; `childAges`: explicit array, empty for no children.
+- `adults`: explicit count; `childAges`: required explicit array, `[]` for
+  explicitly no children.
 - `roomTypes`, `ratePlans`: arrays of exact HMS codes, or `"all"` to load the
   complete corresponding picker catalog.
+
+Optional `childCount` must be a non-negative integer equal to the number of
+entries in `childAges`. Invalid counts return `input_gap` with
+`CHILD_COUNT_INVALID`; counts that disagree with the ages return
+`CHILD_COUNT_MISMATCH`. Missing or invalid ages still return
+`OCCUPANCY_REQUIRED`.
 
 An `"all"` search scrolls the picker to load more records and requires the
 visible loaded and total counts to agree before submitting the codes. The
