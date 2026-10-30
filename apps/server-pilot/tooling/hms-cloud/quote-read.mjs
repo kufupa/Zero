@@ -1,6 +1,6 @@
 // Compose a live Hotel Availability read with a private, bounded quote view.
-import { stat, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { lstat, realpath, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { searchHotelAvailability } from './hotel-availability.mjs';
 import { getQuoteView } from './quote-view.mjs';
 
@@ -20,13 +20,25 @@ export async function readQuote(page, { criteria, roomQuantity, view = {}, snaps
     return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_MISMATCH' };
   }
   if (Object.hasOwn(view, 'roomQuantity')) return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_IN_VIEW' };
-  const path = resolve(snapshotPath);
+  const requestedPath = resolve(snapshotPath);
+  let path;
   try {
-    const directory = await stat(dirname(path));
+    const directoryPath = await realpath(dirname(requestedPath));
+    const directory = await stat(directoryPath);
     if (!directory.isDirectory() || (directory.mode & 0o077) ||
         (typeof process.getuid === 'function' && directory.uid !== process.getuid())) {
       return { outcome: 'input_gap', issue: 'OUTPUT_DIRECTORY_NOT_PRIVATE' };
     }
+    for (let ancestor = directoryPath; ; ancestor = dirname(ancestor)) {
+      try {
+        await lstat(join(ancestor, '.git'));
+        return { outcome: 'input_gap', issue: 'OUTPUT_DIRECTORY_IN_GIT_WORKTREE' };
+      } catch (error) {
+        if (error?.code !== 'ENOENT') return { outcome: 'input_gap', issue: 'OUTPUT_DIRECTORY_NOT_PRIVATE' };
+      }
+      if (dirname(ancestor) === ancestor) break;
+    }
+    path = join(directoryPath, basename(requestedPath));
   } catch {
     return { outcome: 'input_gap', issue: 'OUTPUT_DIRECTORY_NOT_PRIVATE' };
   }

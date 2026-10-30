@@ -23,8 +23,9 @@ The underlying snapshot and quote view remain private. No total is inferred.
 ## Live read on a shared page
 
 `readQuote` composes the existing Hotel Availability reader with this view. It
-saves the full snapshot to a new file in a private, caller-owned directory and
-returns a bounded view. It accepts `criteria_unavailable` as a separate result.
+saves the full snapshot to a new file in a private, caller-owned directory
+outside Git worktrees and returns a bounded view. It accepts
+`criteria_unavailable` as a separate result.
 The room quantity is recorded with the request; it is not sent as an HMS
 inventory reservation or proof of joint availability.
 
