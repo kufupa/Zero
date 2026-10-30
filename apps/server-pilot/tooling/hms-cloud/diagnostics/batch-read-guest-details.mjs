@@ -24,7 +24,7 @@ const end = markdown.indexOf('\n## ', start + heading.length);
 const table = markdown.slice(start + heading.length, end < 0 ? undefined : end);
 const rows = table.split(/\r?\n/).filter((line) => line.trimStart().startsWith('|'));
 const confirmations = rows.slice(2).map((row) => row.split('|')[1].trim().replace(/^`|`$/g, ''));
-if (!confirmations.length || confirmations.some((value) => !/^\d{7,}-\d+$/.test(value)) ||
+if (!confirmations.length || confirmations.some((value) => !/^\d{6,}-\d+$/.test(value)) ||
     new Set(confirmations).size !== confirmations.length) {
   throw new Error('INVALID_CANDIDATE_TABLE');
 }
