@@ -106,7 +106,7 @@ function requestedScope(requested) {
   let omittedPartyFields = 0;
   for (const [key, value] of Object.entries(requested)) {
     if (['propertyCode', 'arrivalDate', 'departureDate'].includes(key) && typeof value === 'string') criteria[key] = value;
-    else if (['adults', 'quantity', 'roomQuantity', 'roomCount'].includes(key) && Number.isSafeInteger(value)) criteria[key] = value;
+    else if (['adults', 'childCount', 'quantity', 'roomQuantity', 'roomCount'].includes(key) && Number.isSafeInteger(value)) criteria[key] = value;
     else if (key === 'childAges' && Array.isArray(value) && value.every(Number.isSafeInteger)) criteria[key] = [...value];
     else if (['roomTypes', 'ratePlans'].includes(key) && (value === 'all' ||
         (Array.isArray(value) && value.every((code) => typeof code === 'string')))) criteria[key] = clone(value);
@@ -182,11 +182,14 @@ function checkedCriteria(requested, applied, catalogs, partyMatch) {
   const days = numericInteger(applied?.numberOfDays);
   const ages = requested?.childAges;
   const children = numericInteger(applied?.childCount);
+  const hasRequestedChildCount = requested != null && typeof requested === 'object' && 'childCount' in requested;
+  const requestedChildCount = requested?.childCount;
   const adultCount = numericInteger(applied?.adultCount);
   const actualAges = applied?.childAges;
   const occupancyKnown = Number.isSafeInteger(requested?.adults) && requested.adults > 0 && Array.isArray(ages) &&
     ages.every((age) => Number.isSafeInteger(age) && age >= 0) && children !== null && adultCount !== null &&
     children >= 0 && adultCount > 0 &&
+    (!hasRequestedChildCount || (Number.isSafeInteger(requestedChildCount) && requestedChildCount >= 0)) &&
     (children === 0 || Array.isArray(actualAges));
   return {
     property: requestProperty && appliedProperty ? requestProperty === appliedProperty : null,
@@ -194,7 +197,8 @@ function checkedCriteria(requested, applied, catalogs, partyMatch) {
       ? arrival === appliedStart && (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / DAY_MS === days
       : null,
     occupancy: occupancyKnown ? requested.adults === adultCount && ages.length === children &&
-      JSON.stringify(ages) === JSON.stringify(actualAges ?? []) : null,
+      JSON.stringify(ages) === JSON.stringify(actualAges ?? []) &&
+      (!hasRequestedChildCount || (requestedChildCount === ages.length && requestedChildCount === children)) : null,
     partyContext: partyMatch,
     roomTypes: sameCodes(requestedCodes(requested?.roomTypes, catalogs?.roomTypes), submittedCodes(applied?.roomTypeCodes)),
     ratePlans: sameCodes(requestedCodes(requested?.ratePlans, catalogs?.ratePlans), submittedCodes(applied?.ratePlanCodes)),

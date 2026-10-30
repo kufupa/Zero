@@ -34,6 +34,10 @@ function validate(input) {
       input.childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 99)) {
     throw new Error('OCCUPANCY_REQUIRED');
   }
+  if ('childCount' in input) {
+    if (!Number.isSafeInteger(input.childCount) || input.childCount < 0) throw new Error('CHILD_COUNT_INVALID');
+    if (input.childCount !== input.childAges.length) throw new Error('CHILD_COUNT_MISMATCH');
+  }
   if (!clean(input.propertyCode)) throw new Error('PROPERTY_REQUIRED');
   for (const key of ['roomTypes', 'ratePlans']) {
     const value = input[key];
@@ -658,7 +662,13 @@ export async function cancelHotelAvailabilityParty(page) {
 export async function searchHotelAvailability(page, input) {
   let validated;
   try { validated = validate(input); }
-  catch (error) { return { outcome: 'input_gap', issue: error.message }; }
+  catch (error) {
+    const guidance = {
+      CHILD_COUNT_INVALID: 'childCount must be a non-negative integer.',
+      CHILD_COUNT_MISMATCH: 'childCount must match the number of childAges.',
+    }[error.message];
+    return { outcome: 'input_gap', issue: error.message, ...(guidance ? { message: guidance } : {}) };
+  }
   if (!page || typeof page.locator !== 'function' || typeof page.context !== 'function') {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
   }
