@@ -21,6 +21,11 @@ describe('original address normalization', () => {
     expect(normalizeOriginal('"A \\"B\\"" <one@example.test>')).toEqual(['one@example.test']);
   });
 
+  it('preserves quoted display names containing angle brackets', () => {
+    expect(normalizeOriginal('"Guest <VIP>" <guest@example.test>, other@example.test'))
+      .toEqual(['guest@example.test', 'other@example.test']);
+  });
+
   it('rejects malformed or ambiguous input as a whole, never a partial list', () => {
     for (const value of [
       null, undefined, 1, [], '', '   ', 'not an address',
