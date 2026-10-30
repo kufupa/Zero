@@ -817,6 +817,7 @@ describe('Centurion evidence inspection packets', () => {
       (value) => { value.claims[1]!.evidence[1]!.provenanceAvailable = false; },
       (value) => { value.claims[1]!.evidence[0]!.observationSourceId = null; },
       (value) => { value.claims[1]!.evidence[0]!.observationSourceId = value.pdfId; },
+      (value) => { value.claims[1]!.evidence[0]!.observationSourceId = value.parentId; },
       (value) => { value.claims[1]!.evidence[1]!.observationSourceId = 'invented-extract'; },
       (value) => { value.claims[1]!.evidence[0]!.sourceId = value.claims[1]!.objectId; },
       (value) => { value.claims[1]!.evidence[1]!.sourceId = value.pdfId; },

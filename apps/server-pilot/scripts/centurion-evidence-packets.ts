@@ -252,8 +252,11 @@ function packetShape(id: typeof rawId) {
         item.parentAddressRoles.length > 0 && item.candidateAddressRoles.length > 0)).map((candidate) => candidate.objectId));
     return value.claims.every((claim) =>
       (claim.proposition !== 'observation_comparison' || claim.subjectId === value.pdfId) &&
+      // The caller must independently bind an extract to its PDF. The packet
+      // can also reject an obvious collision with the parent message identity.
       (claim.proposition !== 'confirmation_corroboration' ||
-        (claim.subjectId === value.pdfId && surfacedCandidates.has(claim.objectId))) &&
+        (claim.subjectId === value.pdfId && surfacedCandidates.has(claim.objectId) &&
+          claim.evidence.every((item) => item.sourceRole !== 'pdf' || item.observationSourceId !== value.parentId))) &&
       (claim.proposition !== 'attachment_parent' ||
         (value.parentId !== null && claim.subjectId === value.pdfId && claim.objectId === value.parentId &&
           claim.evidence.every((item) => item.sourceRole !== 'pdf' || item.sourceId === value.pdfId)))) &&
