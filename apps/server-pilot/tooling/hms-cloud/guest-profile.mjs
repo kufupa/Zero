@@ -383,7 +383,7 @@ export async function closeGuestProfilePicker(page) {
 export function isSafeGuestProfileChangeRequest({ method, url, postData }, nativeId) {
   try {
     const target = new URL(url);
-    if (method !== 'POST' || target.origin !== ORIGIN || target.pathname !== CHANGE_PATH || !clean(nativeId)) return false;
+    if (method !== 'POST' || target.origin !== ORIGIN || target.pathname !== CHANGE_PATH || target.search || !clean(nativeId)) return false;
     const body = new URLSearchParams(postData || '');
     const required = ['PKID', 'guestid', 'confirmationnumber', 'recordid', 'reservationid', 'propertycode',
       'ONLY_DATA_REQUIRED', 'newprofileclick', 'linkprofileflag', 'savecctoprofile', 'createinactiveprofileflag',
