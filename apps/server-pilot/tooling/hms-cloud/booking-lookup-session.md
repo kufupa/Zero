@@ -24,6 +24,7 @@ at the top level.
 | `selectOrganization` | `nativeId` and `searchId` from the current organization search |
 | `searchArAccount` | `query`: A/R account name; optional lookup `options` |
 | `selectArAccount` | `nativeId` and `searchId` from the current A/R account search |
+| `closeGuestStayPartyPicker` | `propertyCode`; close the current agency, organization or A/R picker |
 | `readGuestStay` | Reads the visible unsaved form, including blank fields |
 | `quit` | Closes the session |
 
@@ -45,6 +46,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `setGuestStayChildAges` | `propertyCode`, explicit `childAges` array |
 | `listCmsMessageIds` | `propertyCode`; opens the picker |
 | `selectCmsMessageId` | `propertyCode`, current `searchId`, explicit `code` |
+| `closeCmsMessageIdPicker` | `propertyCode`; close the CMS picker without selecting a code |
 | `setCmsSendCheckbox` | `propertyCode`, explicit boolean `checked` |
 | `searchHotelAvailabilityParty` | `propertyCode`, `kind`, `query`; optional lookup `options` |
 | `selectHotelAvailabilityParty` | `kind`, current `searchId`, explicit `nativeId` |

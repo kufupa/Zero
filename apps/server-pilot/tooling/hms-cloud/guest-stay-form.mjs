@@ -176,7 +176,9 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     await check();
     const after = await readFields(page);
     await verifySettled(page, result, after);
-    return { ...result, changedFields: changes(before, after) };
+    const changedFields = changes(before, after);
+    if (result.outcome === 'closed_unsaved' && changedFields.length) throw new Error('CMS_CANCEL_FORM_CHANGED');
+    return { ...result, changedFields };
   } catch (error) {
     if (attempted && fence) fence.quarantine();
     let observed;
@@ -469,5 +471,30 @@ export async function selectCmsMessageId(page, { propertyCode, searchId, code } 
     if (clean(actual) !== code.trim()) throw new Error('CMS_READBACK_MISMATCH');
     cmsSearches.delete(page);
     return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: code, actual };
+  });
+}
+
+/** Close the CMS code picker without selecting a code or changing the draft. */
+export async function closeCmsMessageIdPicker(page, { propertyCode } = {}) {
+  return run(page, propertyCode, { allowed: 'cms' }, async ({ check, mark }) => {
+    const win = page.locator('.x-window:visible:not(.x-menu)').filter({ hasText: 'CMS Message Id' });
+    if (!await win.count()) { cmsSearches.delete(page); return { outcome: 'not_open' }; }
+    if (await win.count() !== 1) throw new Error('CMS_LOOKUP_NOT_UNIQUE');
+    const windowId = await win.getAttribute('id'), previous = cmsSearches.get(page);
+    if (!windowId || (previous && (previous.windowId !== windowId || previous.propertyCode !== propertyCode)) ||
+        !await win.evaluate((el) => Boolean(Ext.getCmp(el.id)?.query('grid,readonlygrid')?.length))) {
+      throw new Error('CMS_LOOKUP_STALE');
+    }
+    const cancel = win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ });
+    if (await cancel.count() !== 1) throw new Error('CMS_CANCEL_NOT_UNIQUE');
+    await check();
+    cmsSearches.delete(page);
+    mark();
+    await cancel.click({ timeout: 5000 });
+    await page.waitForFunction((id) => !Ext.getCmp(id)?.isVisible(), windowId, { timeout: 10000 });
+    await win.waitFor({ state: 'hidden', timeout: 10000 });
+    await check();
+    if (await page.locator('.x-window:visible:not(.x-menu)').count()) throw new Error('UNEXPECTED_DIALOG');
+    return { outcome: 'closed_unsaved', draftUnchanged: true };
   });
 }
