@@ -1,6 +1,17 @@
 // Add a requested room count to the bounded, private availability view.
 import { getAvailabilityView } from './availability-view.mjs';
 
+// Aliases constrain the request but do not supply the canonical room quantity.
+export function roomQuantityIssue(criteria, { roomQuantity, roomCount, quantity } = {}) {
+  const canonical = [roomQuantity, criteria?.roomQuantity];
+  const aliases = [roomCount, quantity, criteria?.roomCount, criteria?.quantity];
+  const invalid = (value) => !Number.isSafeInteger(value) || value < 1;
+  if (canonical.some((value) => value != null && invalid(value)) ||
+      aliases.some((value) => value !== undefined && invalid(value))) return 'ROOM_QUANTITY_INVALID';
+  const supplied = [...canonical, ...aliases].filter((value) => value != null);
+  return supplied.some((value) => value !== supplied[0]) ? 'ROOM_QUANTITY_MISMATCH' : null;
+}
+
 function sumNightlyValues(nights, verified) {
   const basis = { source: 'hotel_availability_nightly_values', quantityApplied: false,
     quantityBasis: 'unknown', priceBasis: 'unknown', tax: 'unknown', finalTotal: 'unknown' };
@@ -29,14 +40,13 @@ function sumNightlyValues(nights, verified) {
 /** Compare each observed night with the explicit quantity for this room scenario. */
 export function getQuoteView(snapshot, { roomQuantity, includeNightlyValueSum = false, ...filters } = {}) {
   if (typeof includeNightlyValueSum !== 'boolean') throw new TypeError('NIGHTLY_SUM_FLAG_INVALID');
+  if (Object.hasOwn(filters, 'roomCount') || Object.hasOwn(filters, 'quantity')) {
+    throw new Error('ROOM_QUANTITY_IN_VIEW');
+  }
   const recorded = snapshot?.requestedCriteria?.roomQuantity;
-  if ((roomQuantity != null && (!Number.isSafeInteger(roomQuantity) || roomQuantity < 1)) ||
-      (recorded != null && (!Number.isSafeInteger(recorded) || recorded < 1))) {
-    throw new RangeError('ROOM_QUANTITY_INVALID');
-  }
-  if (roomQuantity != null && recorded != null && roomQuantity !== recorded) {
-    throw new Error('ROOM_QUANTITY_MISMATCH');
-  }
+  const issue = roomQuantityIssue(snapshot?.requestedCriteria, { roomQuantity });
+  if (issue === 'ROOM_QUANTITY_INVALID') throw new RangeError(issue);
+  if (issue) throw new Error(issue);
   const quantity = roomQuantity ?? recorded ?? null;
   const view = getAvailabilityView(snapshot, filters);
   const allNightsShown = view.coverage.nights != null && view.scope.nightOffset === 0 &&

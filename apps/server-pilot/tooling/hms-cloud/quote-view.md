@@ -1,11 +1,20 @@
 # Quantity-aware quote view
 
 `getQuoteView(snapshot, { roomQuantity, ...filters })` adds a room-count check
-to the bounded `getAvailabilityView` result. Supply a positive integer for the
-number of rooms of this room type in the scenario. A `roomQuantity` already in
-the snapshot's requested criteria is also accepted; conflicting values fail.
-If the quantity is unknown, the result reports `ROOM_QUANTITY_UNKNOWN` and does
-not assume one room.
+to the bounded `getAvailabilityView` result. Supply a positive safe integer
+`roomQuantity` for the number of rooms of this room type in the scenario. A
+`roomQuantity` already in the snapshot's requested criteria is also accepted.
+If both the option and recorded quantity are absent or null, the result reports
+`ROOM_QUANTITY_UNKNOWN` and does not assume one room.
+
+The possible aliases `roomCount` and `quantity` in requested criteria are
+checked, but never used to infer `roomQuantity`; an alias alone leaves the
+quantity unknown. Supplied aliases must be positive safe integers and all
+supplied representations must agree. A null alias is invalid; an undefined
+alias is treated as absent. Invalid values throw `ROOM_QUANTITY_INVALID`, and
+conflicts, including those in older snapshots, throw `ROOM_QUANTITY_MISMATCH`.
+The view filters must not contain `roomCount` or `quantity`; those throw
+`ROOM_QUANTITY_IN_VIEW`. Pass `roomQuantity` directly as the documented option.
 
 Each returned night includes the requested quantity, the difference between it
 and the observed room count (`observedShortfall`, never below zero), and a
@@ -39,6 +48,13 @@ official stay total remain unknown; restrictions and stock still need review.
 saves the full snapshot to a new file in a private, caller-owned directory
 outside Git worktrees and returns a bounded view. It accepts
 `criteria_unavailable` as a separate result.
+Supply `roomQuantity` at the top level or in `criteria`, and keep any
+`roomCount` or `quantity` values at either level consistent with it. Invalid or
+conflicting representations return `input_gap` with `ROOM_QUANTITY_INVALID` or
+`ROOM_QUANTITY_MISMATCH` before the search. Supplying `roomQuantity`,
+`roomCount` or `quantity` inside `view` returns `ROOM_QUANTITY_IN_VIEW`.
+Top-level aliases are retained in the private snapshot's requested criteria,
+so later projections continue to check them without inferring a room quantity.
 The room quantity is recorded with the request; it is not sent as an HMS
 inventory reservation or proof of joint availability.
 
