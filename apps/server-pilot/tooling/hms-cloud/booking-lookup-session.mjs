@@ -27,6 +27,7 @@ import {
 import {
   searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker,
 } from './guest-stay-room-rate.mjs';
+import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -280,7 +281,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
       setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, setCmsSendCheckbox,
       searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
-      searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker,
+      searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker, selectGuestStayRatePlan,
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
       selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
       closeHotelAvailability, readQuote, viewQuoteSnapshot,
@@ -326,7 +327,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       'readGuestStayForm', 'setGuestStayText', 'setGuestStayDate', 'listGuestStayDropdown',
       'selectGuestStayDropdown', 'setGuestStayChildAges', 'listCmsMessageIds', 'selectCmsMessageId',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
-      'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType',
+      'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
       result = await action(page, request, request.options);
@@ -380,7 +381,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
 const usage = 'Usage: node booking-lookup-session.mjs --jsonl\n' +
   'Tools: queryBookingMemory, searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchOrganization, ' +
   'selectOrganization, searchArAccount, selectArAccount, readGuestStay, guest/profile/form tools, ' +
-  'availability-party and room/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, quit. Legacy names remain available.\n' +
+  'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, quit. Legacy names remain available.\n' +
   'JSONL results contain private data; redirect them to a private location.\n';
 
 const writeJsonLine = (value) => new Promise((done, fail) => {

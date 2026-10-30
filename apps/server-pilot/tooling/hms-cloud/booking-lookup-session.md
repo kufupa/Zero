@@ -53,6 +53,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `inspectRoomRateCandidate` | Current `searchId` and `nativeId` and/or `code` |
 | `selectRoomType` | Current `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
 | `closeRoomRatePicker` | Closes the current room or rate catalog picker |
+| `selectGuestStayRatePlan` | Explicit current rate `code` on a verified blank-profile draft |
 | `searchGuestStaySourceBusiness` | Optional description `query`, `field: "description"` and lookup `options` |
 | `inspectGuestStaySourceBusiness` | Current `searchId`; optional `nativeCode`, `offset`, `limit` |
 | `selectGuestStaySourceBusiness` | Current `searchId` and explicit `nativeCode`; optional lookup `options` |
@@ -77,6 +78,9 @@ catalog, not a quote or a draft rate selection. Closing Rate Shop can leave its
 server-side session cancel unverified. See
 [guest-stay-room-rate.md](./guest-stay-room-rate.md) and
 [guest-stay-source-business.md](./guest-stay-source-business.md) for details.
+`selectGuestStayRatePlan` sets an unsaved draft rate with response and form
+readback. Selecting a rate after a guest profile is unsupported; see
+[guest-stay-rate-plan.md](./guest-stay-rate-plan.md) for its guards and limits.
 
 `readQuote` uses [quote-read.mjs](./quote-read.mjs) unchanged: the caller
 supplies explicit criteria, a view object and a new snapshot path
