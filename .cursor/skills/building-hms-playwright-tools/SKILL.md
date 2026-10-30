@@ -10,7 +10,7 @@ Build quickly with Codex and Playwright driving the actual PMS. Discuss the desi
 Current modules live in `apps/server-pilot/tooling/playwright-quote/`:
 
 - `centurion-stay360.mjs`: browser, login and Stay 360 lifecycle.
-- `stay360-notes.mjs`: automatically closes and privately captures Notes popups; other dialogs stay untouched. The shared browser installs it; install it on any other page setup.
+- `stay360-notes.mjs`: automatically closes and privately captures Notes popups; other dialogs stay untouched. The shared browser installs it; install it on any other page setup. Use `takeHandledNotes(page)` to include automatic captures in a reader's output.
 - `stay360-confirmation.mjs` (1a), `stay360-record-view.mjs` (1b), `stay360-guest-details.mjs` (1c): composable readers; their end comments inventory observed fields. 1a accepts optional name/date and returns options for ambiguous matches. `read-*-ui.mjs` runners compose them.
 - `stay360-lookup-cli.mjs`: shared JSON input and structured lookup-error output.
 - `create-lab-stay.mjs`, `amend-stay.mjs`, and `write-cli-lease.mjs`: existing write-workflow references; check their actual coverage before reuse.
