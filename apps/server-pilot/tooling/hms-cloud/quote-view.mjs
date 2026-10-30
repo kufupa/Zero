@@ -46,7 +46,8 @@ export function getQuoteView(snapshot, { roomQuantity, includeNightlyValueSum = 
     criteria.length > 0 && criteria.every((match) => match === true) &&
     view.coverage.unprojectedRequestedFields === 0 && view.coverage.unprojectedPartyFields === 0 &&
     view.coverage.unprojectedAppliedFields === 0 && view.coverage.observationTimeKnown === true &&
-    view.coverage.propertyRows === 1 && view.coverage.unexpectedPropertyRows === 0;
+    view.coverage.propertyRows === 1 && view.coverage.unexpectedPropertyRows === 0 &&
+    view.coverage.duplicateRateRows === 0 && view.coverage.unexpectedRateRows === 0;
   return {
     ...view,
     roomQuantity: { requested: quantity, gap: quantity == null ? 'ROOM_QUANTITY_UNKNOWN' : null,
