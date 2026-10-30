@@ -17,7 +17,8 @@ The caller chooses the code. The tool opens a fresh Rate Shop catalog, requires
 complete coverage and one exact code match, closes it, and verifies that the
 inquiry and cancellation used the same blank-draft booking session. It fences
 the two observed native requests to the current code, property, draft dates and
-names, blank identifiers, `ONLY_DATA_REQUIRED` and that session. It checks both
+names, blank identifiers, disabled profile creation/link/save flags,
+`ONLY_DATA_REQUIRED` and that session. It checks both
 responses and the visible and Ext field readback before reporting
 `selected_unsaved`. A validated native **code** is returned; an independent
 native rate-plan ID is not exposed. `changedFields` includes dependent form

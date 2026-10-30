@@ -121,6 +121,8 @@ function rateChangeRequest(request, code, dates, sessionId, draft) {
     reservationstayid:'',reservationshareid:'',guestid:'',firstname:draft.first,lastname:draft.last,status:'New',
     arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,
     ONLY_DATA_REQUIRED:'true',bookingsessionid:sessionId,
+    newprofileclick:'',linkprofileflag:'',savecctoprofile:'0',createinactiveprofileflag:'0',reqguestprofilelookup:'',
+    pagemode:'display',isafterreservationsave:'',savesettlementcctoprofile:'0',linkedprofileflag:'0',
   };
   if (!Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value &&
       keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return false;
