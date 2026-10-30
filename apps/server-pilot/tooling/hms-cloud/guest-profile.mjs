@@ -21,9 +21,88 @@ const busy = new WeakSet();
 const currentSearches = new WeakMap();
 // Only the guarded selection and its native/form readbacks can record this proof.
 const verifiedLabtestProfiles = new WeakMap();
+const verifiedGuaranteeProfiles = new WeakMap();
+const profileRevisions = new WeakMap();
 
 export function isVerifiedLabtestProfile(page, nativeId) {
   return Boolean(nativeId) && verifiedLabtestProfiles.get(page) === nativeId;
+}
+
+function forgetGuaranteeProfile(page) {
+  if (!page || (typeof page !== 'object' && typeof page !== 'function')) return null;
+  const proof = verifiedGuaranteeProfiles.get(page);
+  verifiedGuaranteeProfiles.delete(page);
+  if (proof?.onRequest) page.off('request', proof.onRequest);
+  if (proof?.onNavigation) page.off('framenavigated', proof.onNavigation);
+  if (proof?.record) void proof.record.dispose().catch(() => {});
+  const revision = Symbol();
+  profileRevisions.set(page, revision);
+  return revision;
+}
+
+// Keep the native record, so a later draft with the same guest ID is not proof.
+async function profileDraft(page) {
+  let record;
+  try {
+    record = await page.evaluateHandle((origin) => {
+      if (location.origin !== origin) return null;
+      const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const names = ['guaranteetype', 'guestid', 'confirmationnumber'];
+      const fields = names.map((name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible));
+      if (fields.some((items) => items.length !== 1) || fields[2][0].value.trim()) return null;
+      const component = (el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      const form = component(fields[0][0])?.up?.('form');
+      if (!form?.el?.dom || fields.some(([el]) => !form.el.dom.contains(el) || component(el)?.up?.('form') !== form)) return null;
+      return form.getRecord?.() ?? null;
+    }, ORIGIN);
+    const session = await record.evaluate((item) => {
+      const data = item?.data, keys = data && Object.keys(data);
+      const exact = (key, value) => keys && Object.hasOwn(data, key) &&
+        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
+      if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+          !keys.includes('bookingsessionid') || keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length !== 1) return null;
+      return String(data.bookingsessionid ?? '').trim() || null;
+    });
+    if (session) return { record, session };
+  } catch { /* The profile can still be selected without a guarantee proof. */ }
+  await record?.dispose().catch(() => {});
+  return null;
+}
+
+async function profileRecordMatches(page, proof) {
+  try {
+    return await page.evaluate(({ origin, record, session, nativeId }) => {
+      if (location.origin !== origin) return false;
+      const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const names = ['guaranteetype', 'guestid', 'firstname', 'lastname', 'confirmationnumber'];
+      const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible)]));
+      if (names.some((name) => fields[name].length !== 1) || fields.confirmationnumber[0].value.trim()) return false;
+      const component = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
+      const form = component('guaranteetype')?.up?.('form');
+      if (!form?.el?.dom || form.getRecord?.() !== record ||
+          names.some((name) => !form.el.dom.contains(fields[name][0]) || component(name)?.up?.('form') !== form)) return false;
+      const data = record?.data, keys = data && Object.keys(data);
+      const exact = (key, value) => keys && Object.hasOwn(data, key) &&
+        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
+      const current = (name, value) => fields[name][0].value.trim() === value &&
+        typeof component(name)?.getValue === 'function' && String(component(name).getValue() ?? '').trim() === value;
+      return Boolean(exact('propertycode', 'HRCEN') && exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status', 'New') &&
+        exact('bookingsessionid', session) && exact('guestid', nativeId) && exact('firstname', 'Proof') && exact('lastname', 'Labtest') &&
+        current('guestid', nativeId) && current('firstname', 'Proof') && current('lastname', 'Labtest'));
+    }, { origin: ORIGIN, record: proof.record, session: proof.session, nativeId: proof.nativeId });
+  } catch { return false; }
+}
+
+export async function verifiedLabtestProfileToken(page, { nativeId, session }) {
+  const proof = verifiedGuaranteeProfiles.get(page);
+  if (!isVerifiedLabtestProfile(page, nativeId) || !proof?.record || proof.session !== session ||
+      !await profileRecordMatches(page, proof) || verifiedGuaranteeProfiles.get(page) !== proof) return null;
+  return proof.token;
+}
+
+export function isVerifiedLabtestProfileCurrent(page, { nativeId, session, token }) {
+  const proof = verifiedGuaranteeProfiles.get(page);
+  return Boolean(isVerifiedLabtestProfile(page, nativeId) && proof?.session === session && proof?.token === token && token);
 }
 const clean = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
 const sameText = (left, right) => (clean(left) || '').toLocaleLowerCase() === (clean(right) || '').toLocaleLowerCase();
@@ -213,6 +292,7 @@ async function requireCurrent(page, state, searchId, nativeDialog) {
 
 /** Search one observed Guests filter; repeat with another criterion to refine. */
 export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {}) {
+  forgetGuaranteeProfile(page);
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS', candidates: [] };
   forget(page);
   const field = input?.field ?? 'lastName';
@@ -419,11 +499,13 @@ function changedFields(before, after) {
 
 /** Select one unique ID from the current search; never save the stay or profile. */
 export async function selectGuestProfile(page, { searchId, nativeId } = {}, { timeoutMs = 20000 } = {}) {
+  const revision = forgetGuaranteeProfile(page);
   const id = clean(nativeId);
   if (!searchId || !id) return { outcome: 'input_gap', issue: 'GUEST_SEARCH_ID_AND_NATIVE_ID_REQUIRED' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS' };
   busy.add(page);
   let attempted = false, interactionStarted = false, nativeDialog = false, blocked = false, allowedChanges = 0, observed = null;
+  let draft = null, requestSessionBound = false;
   let fence, scope;
   const onDialog = () => { nativeDialog = true; };
   const guard = async (route) => {
@@ -432,7 +514,13 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     if (safeRead(request)) return route.fallback();
     const safe = attempted && allowedChanges === 0 &&
       isSafeGuestProfileChangeRequest({ method, url: request.url(), postData: request.postData() }, id);
-    if (safe && scope?.allow(request)) { allowedChanges += 1; return route.fallback(); }
+    if (safe && scope?.allow(request)) {
+      const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+      requestSessionBound = Boolean(draft && body.getAll('bookingsessionid').length === 1 &&
+        keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length === 1 && body.get('bookingsessionid') === draft.session);
+      allowedChanges += 1;
+      return route.fallback();
+    }
     blocked = true;
     return route.abort();
   };
@@ -446,6 +534,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     const candidates = state.result.candidates.filter((item) => item.nativeId === id);
     if (candidates.length !== 1 || (!candidates[0].firstName && !candidates[0].lastName) ||
         grid.records.filter((row) => clean(row.guestid) === id).length !== 1) throw new Error('GUEST_ID_NOT_UNIQUE');
+    if (candidates[0].firstName === 'Proof' && candidates[0].lastName === 'Labtest') draft = await profileDraft(page);
     const rows = win.locator('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row');
     const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
       const grid = Ext.ComponentQuery.query('grid,readonlygrid').find((item) => item.getEl?.()?.dom?.contains(element));
@@ -493,7 +582,31 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
           if (candidates[0].firstName === 'Proof' && candidates[0].lastName === 'Labtest' &&
               values.firstname === 'Proof' && values.lastname === 'Labtest' &&
               uniqueField(form, 'firstname') === 'Proof' && uniqueField(form, 'lastname') === 'Labtest') {
+            const keys = Object.keys(values);
+            const exact = (key, value) => Object.hasOwn(values, key) &&
+              keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && clean(values[key]) === value;
+            const responseBound = Boolean(draft && exact('bookingsessionid', draft.session) && exact('guestid', id) &&
+              exact('firstname', 'Proof') && exact('lastname', 'Labtest'));
+            const bound = Boolean(draft && requestSessionBound && responseBound &&
+              await profileRecordMatches(page, { record: draft.record, session: draft.session, nativeId: id }));
+            if (nativeDialog || blocked) throw new Error('GUEST_SELECTION_UNVERIFIED');
             verifiedLabtestProfiles.set(page, id);
+            if (bound && profileRevisions.get(page) === revision) {
+              const proof = { nativeId: id, record: draft.record, session: draft.session, token: randomUUID() };
+              proof.onRequest = (request) => {
+                try {
+                  if (request.method() === 'POST' && new URL(request.url()).pathname === CHANGE_PATH &&
+                      verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page);
+                } catch { if (verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page); }
+              };
+              proof.onNavigation = (frame) => {
+                if (frame === page.mainFrame() && verifiedGuaranteeProfiles.get(page) === proof) forgetGuaranteeProfile(page);
+              };
+              verifiedGuaranteeProfiles.set(page, proof);
+              page.on('request', proof.onRequest);
+              page.on('framenavigated', proof.onNavigation);
+              draft = null;
+            }
           }
           forget(page);
           return { outcome: 'selected_unsaved', searchId, nativeId: id, candidate: candidates[0],
@@ -513,6 +626,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
   } finally {
     scope?.close();
     await page.unroute('**/*', guard).catch(() => {});
+    await draft?.record.dispose().catch(() => {});
     page.off('dialog', onDialog);
     busy.delete(page);
   }
