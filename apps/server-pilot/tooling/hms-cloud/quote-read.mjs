@@ -2,24 +2,20 @@
 import { lstat, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { searchHotelAvailability } from './hotel-availability.mjs';
-import { getQuoteView } from './quote-view.mjs';
+import { getQuoteView, roomQuantityIssue } from './quote-view.mjs';
 
 /** Keep the full snapshot privately; return only the requested quote page. */
-export async function readQuote(page, { criteria, roomQuantity, view = {}, snapshotPath } = {}) {
+export async function readQuote(page, { criteria, roomQuantity, roomCount, quantity, view = {}, snapshotPath } = {}) {
   if (!criteria || typeof criteria !== 'object' || Array.isArray(criteria) ||
       !view || typeof view !== 'object' || Array.isArray(view) ||
       typeof snapshotPath !== 'string' || !snapshotPath.trim()) {
     return { outcome: 'input_gap', issue: 'QUOTE_INPUT_REQUIRED' };
   }
-  const recorded = criteria.roomQuantity;
-  if ((roomQuantity != null && (!Number.isSafeInteger(roomQuantity) || roomQuantity < 1)) ||
-      (recorded != null && (!Number.isSafeInteger(recorded) || recorded < 1))) {
-    return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_INVALID' };
+  const issue = roomQuantityIssue(criteria, { roomQuantity, roomCount, quantity });
+  if (issue) return { outcome: 'input_gap', issue };
+  if (['roomQuantity', 'roomCount', 'quantity'].some((key) => Object.hasOwn(view, key))) {
+    return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_IN_VIEW' };
   }
-  if (roomQuantity != null && recorded != null && roomQuantity !== recorded) {
-    return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_MISMATCH' };
-  }
-  if (Object.hasOwn(view, 'roomQuantity')) return { outcome: 'input_gap', issue: 'ROOM_QUANTITY_IN_VIEW' };
   const requestedPath = resolve(snapshotPath);
   let path;
   try {
