@@ -30,6 +30,11 @@ distinct stays that share a confirmation into separate inputs or resolve their
 identity before combining them. Do not infer a stay ID from contact details.
 This safety correction prevents histories from being silently mixed.
 
+The hint counts below use **distinct observed confirmations**, not independently
+verified stay IDs. Matching native confirmation fields corroborate the sampled
+read, but do not establish global uniqueness. The lookup may have reported
+multiple matches. No stay ID is fabricated from a confirmation, guest, or contact.
+
 ## Queries and roles
 
 Search using a string or `{ email }`, `{ domain }`, or `{ name }`. Address
@@ -67,6 +72,74 @@ count in `nestedEvidenceTruncations`. Counts deduplicate confirmation support,
 not evidence records. Counts and ordering are historical evidence, not an
 automatic choice, proof of identity, or proof that an HMS selection is currently
 valid.
+
+## Historical rate, room and guarantee hints
+
+Every query returns separate `historicalHints.ratePlan`, `.roomType`, and
+`.guaranteeType` frequency lists. They summarize all selected-source observations
+for the matched confirmations, including later observations, independently of
+the party combinations. They are not a mapping between a party, rate, room,
+or guarantee and do not select a value. Historical values do not prove current
+availability, rate eligibility, or guarantee requirements.
+
+Each value includes distinct `confirmationCount`, `pmsObservationCount`,
+`sourceOfBusinessCounts`, and its field sources. One confirmation can support
+multiple values, including conflicting values or values observed at different
+times; source counts can overlap. For address queries,
+`uncertainLinkConfirmationCount` identifies confirmations with an uncertain
+matching address link. The existing role and link-provenance rules still apply.
+The three dimensions are never combined into a cross-product.
+Frequency values normalize whitespace and group case-insensitively using NFKC;
+private evidence retains the original field-source values.
+
+For hint counts, the input confirmation must match Record View's native
+`confirmationInRecord` and Stay 360's native `confirmationInHeader`, the
+Record View tab must be active, and the Stay 360 read must have succeeded.
+A conflicting echoed confirmation also excludes that observation. The
+`identityCoverage` counts excluded missing, mismatched, or unverified reads,
+reported multiple-match selections, complete, incomplete and unknown lookup
+completeness, and supplied `verifiedStayId` values. These counts can overlap
+across observations. An unknown lookup is not known to be complete. A missing
+multiple-match flag does not prove the confirmation is globally unique.
+Lookup completeness is the reader's reported result coverage within its
+searched date range, not global uniqueness; the range is retained in private
+evidence when supplied.
+For a name query, at least one name-matching observation must meet these native
+confirmation checks. For an address query, a matching address link must point
+to such an observation. Matches without this anchor are counted in
+`unverifiedMatchConfirmationCount`; their hint coverage is unknown. This check
+does not make an attachment or confirmation-candidate link independent proof.
+The multiple-match signal and selection description come from
+`result.stay360.matchSelection`; the description is retained in private
+evidence. A reader's hint-based selection is not an independently verified
+unique stay ID.
+Repeated confirmations still require the existing shared caller-verified stay ID.
+
+Each field's `coverage` distinguishes an observed blank (`""`) from a missing
+field and an unavailable value (`null`). Missing and unavailable field-source
+counts identify Record View and Stay 360 separately; `conflictingConfirmationCount`
+includes different known values, including blank versus nonblank. Coverage
+categories can overlap across sources and observations. Older memories without
+hint fields return empty lists and report unknown historical coverage.
+An absent or non-array field collection is an unknown source, not a missing
+field. A partially captured card collection also reports that source as unknown
+while retaining values from the cards that were captured. `missingFieldSourceCounts`
+only counts eligible captured collections lacking the label; `unknownFieldSourceCounts`
+counts uncaptured or partial collections even when identity is unverified, and
+`unavailableFieldSourceCounts` counts eligible observations with present labels
+whose values are unavailable. `unknownFieldConfirmationCount` also includes
+observations lacking hint data or eligible identity evidence.
+
+`hintLimit` defaults to 25 and is capped at 200 values per dimension; each list
+reports its full `valueCount` and `valuesTruncated`. Values longer than 256
+characters are truncated with `valueTruncated`, full length and SHA-256 so
+distinct values with the same prefix remain distinguishable. With `includeEvidence`, each
+value includes bounded private confirmation records, observation timestamps,
+source-of-business, native identity status, original field-source values, and
+matching address-link provenance. The existing `evidenceLimit` applies to each
+list; nested string truncations report the full length by path. `recordView`
+and `stay360` field sources correspond to `recordView.details.fields` and
+`stay360.details.cards[].fields` respectively.
 
 ## Evidence and compatibility
 

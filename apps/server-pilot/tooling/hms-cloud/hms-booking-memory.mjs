@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { PARTY_FIELDS, SOURCES, combinationKey, confirmationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
+import { HINT_LABELS, PARTY_FIELDS, SOURCES, combinationKey, confirmationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
 
 export { queryHmsBookingMemory } from './hms-booking-memory-query.mjs';
 
@@ -12,6 +12,39 @@ const LABELS = {
   'a/r account': 'arAccount',
 };
 const labelOf = field => text(field?.label).replace(/:$/, '').trim().toLowerCase();
+
+function historicalHintFields(result) {
+  const recordFields = result?.recordView?.details?.fields;
+  const cards = result?.stay360?.details?.cards;
+  const sources = {
+    recordView: Array.isArray(recordFields) ? recordFields : null,
+    stay360: Array.isArray(cards) ? cards.flatMap(card => Array.isArray(card?.fields) ? card.fields : []) : null,
+  };
+  const incompleteSources = Array.isArray(cards) && cards.some(card => !Array.isArray(card?.fields)) ? ['stay360'] : [];
+  return Object.fromEntries(Object.entries(HINT_LABELS).map(([label, key]) => [key,
+    { ...Object.fromEntries(Object.entries(sources).map(([source, fields]) => [source,
+      fields && fields.filter(field => labelOf(field) === label).map(field =>
+        typeof field?.value === 'string' || typeof field?.value === 'number' ? field.value : null),
+    ])), incompleteSources },
+  ]));
+}
+
+function historicalIdentity(result, key) {
+  const record = result?.recordView?.details;
+  const stay = result?.stay360;
+  const [recordConfirmation, headerConfirmation, echoedConfirmation] = [record?.confirmationInRecord,
+    stay?.details?.confirmationInHeader, stay?.confirmation].map(confirmationKey);
+  const mismatch = [recordConfirmation, headerConfirmation, echoedConfirmation].some(value => value && value !== key);
+  const nativeConfirmation = mismatch ? 'mismatch' : !recordConfirmation || !headerConfirmation ? 'missing'
+    : record?.activeTab !== 'Record View' || stay?.ok !== true ? 'unverified_view' : 'matched';
+  const selectionEvidence = text(stay?.matchSelection) || null;
+  return {
+    nativeConfirmation, selectionEvidence,
+    selectionMultiplicity: selectionEvidence ? 'multiple' : 'not_reported',
+    lookupResultsComplete: typeof stay?.searchResults?.complete === 'boolean' ? stay.searchResults.complete : null,
+    searchedDateRange: stay?.searchedDateRange || null,
+  };
+}
 
 function readFields(fields, path) {
   const found = Object.fromEntries(PARTY_FIELDS.map(field => [field, []]));
@@ -30,7 +63,9 @@ function readFields(fields, path) {
 
 function outcomeVariants(result) {
   const record = readFields(result?.recordView?.details?.fields, 'recordView.details.fields');
-  const cards = readFields((result?.stay360?.details?.cards || []).flatMap(card => card.fields || []),
+  const cardList = result?.stay360?.details?.cards;
+  const cards = readFields(Array.isArray(cardList)
+    ? cardList.flatMap(card => Array.isArray(card?.fields) ? card.fields : []) : [],
     'stay360.details.cards[].fields');
   const conflicts = new Set([...Object.keys(record.conflicts), ...Object.keys(cards.conflicts)]);
   for (const field of PARTY_FIELDS) {
@@ -126,7 +161,8 @@ export function buildHmsBookingMemory({
     const metadata = snapshotMetadata[index];
     for (const [resultIndex, result] of (snapshot?.results || []).entries()) {
       if (!result || result.ok === false) { exclusions.failedPmsResultCount++; continue; }
-      const values = (result?.recordView?.details?.fields || [])
+      const recordFields = result?.recordView?.details?.fields;
+      const values = (Array.isArray(recordFields) ? recordFields : [])
         .filter(field => labelOf(field) === 'source of business').map(field => text(field.value)).filter(Boolean);
       const distinct = [...new Set(values.map(value => value.toLowerCase()))];
       if (!distinct.length) { exclusions.excludedUnknownSourcePmsResultCount++; continue; }
@@ -141,6 +177,7 @@ export function buildHmsBookingMemory({
         observationId: metadata.snapshotId + '-' + (resultIndex + 1),
         snapshotId: metadata.snapshotId, snapshotDate: metadata.snapshotDate,
         sourceType: metadata.sourceType, provenance: result.provenance || null,
+        historicalIdentity: historicalIdentity(result, key), historicalHints: historicalHintFields(result),
         outcomes: outcomeVariants(result),
         pdfAttachmentIds: [...new Set((pdf.pdfAttachmentIds || []).map(text).filter(Boolean))],
         pdfProvenance: Object.fromEntries(['pdfRecordCount', 'labeledPdfCount',
@@ -202,6 +239,7 @@ export function buildHmsBookingMemory({
         sourceSnapshotId: message.sourceSnapshotId, sourceSnapshotIds: message.sourceSnapshotIds,
         messageDbId: message.messageDbId, sentAt: message.sentAt, linkMethod: edge.method, linkProvenance,
         linkedPmsSnapshotIds: [...new Set(edge.observations.map(observation => observation.snapshotId))],
+        linkedPmsObservationIds: [...new Set(edge.observations.map(observation => observation.observationId))],
       });
     }
   }
@@ -209,7 +247,7 @@ export function buildHmsBookingMemory({
   const linkedOutbound = new Set([...edges.values()].filter(edge => edge.message.direction === 'outbound')
     .map(edge => edge.message.recordId));
   return {
-    schemaVersion: 2, propertyCode: scope, sourceOfBusinessFilter: [...SOURCES], snapshots: snapshotMetadata,
+    schemaVersion: 3, propertyCode: scope, sourceOfBusinessFilter: [...SOURCES], snapshots: snapshotMetadata,
     observations, addressEvidence,
     linkage: {
       pmsResultCount: snapshotMetadata.reduce((sum, item) => sum + item.resultCount, 0),
