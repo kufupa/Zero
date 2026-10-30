@@ -550,6 +550,15 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
       return Number(value);
     };
     let current = await parseCount();
+    if (requested.length === 0 && current === 0 && initial.childAges.length === 0 && !clean(await count.inputValue())) {
+      // A blank spinner does not submit numeric zero; establish it with the native controls.
+      for (const [direction, expected] of [['up', 1], ['down', 0]]) {
+        const button = count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${direction}`);
+        await check(); await button.click({ timeout: 5000 });
+        await page.waitForTimeout(100);
+        if (clean(await count.inputValue()) !== String(expected)) throw new Error('CHILD_COUNT_READBACK_MISMATCH');
+      }
+    }
     while (current !== requested.length) {
       const change = current < requested.length ? 1 : -1;
       const button = count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${change === 1 ? 'up' : 'down'}`);
