@@ -59,10 +59,12 @@ detected blocking flags; it is not a guarantee of eligibility or bookability.
 Conditional flags are retained without interpreting whether they apply.
 Individual nightly categories are also provided.
 
-`price.responseValue` retains the raw value. When the reader captured an
-unambiguous, fully visible HMS grid cell for the same row, date, value and
-currency, `displayedTextStatus` is `captured` and `displayedTextSource` is
-`visible_hms_grid`. Offscreen, clipped, unmatched or duplicate cells remain
+`price.responseValue` retains the raw value. When the reader captures an
+unambiguous HMS grid cell for the same row, date, value and currency,
+`displayedTextStatus` is `captured` and `displayedTextSource` is
+`visible_hms_grid`. Visibility is checked within the grid viewport; an overlay
+or clipping in the iframe's parent can still obscure a captured cell.
+Offscreen within the grid, clipped, unmatched or duplicate cells remain
 `unknown`. `coverage.displayedPrices` reports capture coverage, which is not
 exhaustive. A native response string, if present, is kept as `responseText`
 without claiming it appeared on screen. Currency and every native cell flag
