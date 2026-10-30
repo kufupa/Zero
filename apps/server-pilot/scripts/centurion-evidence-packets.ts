@@ -8,7 +8,7 @@ const completeness = z.enum(['complete', 'partial', 'unavailable', 'unknown']);
 const countBand = z.enum(['zero', 'one', 'two_to_ten', 'eleven_to_hundred', 'over_hundred', 'unknown']);
 const proposition = z.enum([
   'attachment_parent', 'same_thread', 'exact_header', 'exact_address', 'same_stay',
-  'document_version', 'later_observation', 'observation_comparison',
+  'document_version', 'later_observation', 'observation_comparison', 'confirmation_corroboration',
 ]);
 const claimStatus = z.enum(['supported', 'candidate', 'conflicting', 'unknown']);
 const inspection = z.enum(['uninspected', 'inspected', 'insufficient']);
@@ -101,6 +101,25 @@ function packetShape(id: typeof rawId) {
     // Deterministic facts may be present without adjudication, but a claim
     // remains unknown until it has been inspected with sufficient evidence.
     if (value.status !== 'unknown' && value.inspection !== 'inspected') return false;
+    if (value.proposition === 'confirmation_corroboration') {
+      // Token comparison is only a neutral, attributable fact; never an adjudicated stay match.
+      if (value.status !== 'unknown' || value.inspection !== 'uninspected' || value.subjectId === value.objectId ||
+          value.evidence.length !== 2 || value.evidence[0]!.evidenceId === value.evidence[1]!.evidenceId) return false;
+      const pdf = value.evidence.filter((item) => item.sourceRole === 'pdf');
+      const mail = value.evidence.filter((item) => item.sourceRole === 'candidate_message');
+      if (pdf.length !== 1 || mail.length !== 1 || pdf[0]!.sourceId !== value.subjectId ||
+          pdf[0]!.observationSourceId === null || pdf[0]!.observationSourceId === value.subjectId ||
+          pdf[0]!.observationSourceId === value.objectId || mail[0]!.sourceId !== value.objectId ||
+          mail[0]!.observationSourceId !== null) return false;
+      const comparison = pdf[0]!.confirmationEquality;
+      if (comparison !== 'equal' && comparison !== 'different') return false;
+      // A mismatch is meaningful only between two labeled or structured identifiers.
+      if (comparison === 'different' && value.evidence.some((item) =>
+        item.confirmationStrength !== 'labeled' && item.confirmationStrength !== 'structured')) return false;
+      return value.evidence.every((item) => item.type === 'confirmation_token' && item.provenanceAvailable &&
+        item.subjectId === value.subjectId && item.objectId === value.objectId && item.confirmationEquality === comparison &&
+        (item.confirmationStrength === 'structured' || item.confirmationStrength === 'labeled' || item.confirmationStrength === 'unlabeled_numeric'));
+    }
     if (value.proposition === 'observation_comparison') {
       // A comparison concerns exactly these two source endpoints, independent
       // of which capture came first. Callers must validate private references.
@@ -151,6 +170,7 @@ function packetShape(id: typeof rawId) {
         document_version: ['document_version'],
         later_observation: ['observation'],
         observation_comparison: ['observation'],
+        confirmation_corroboration: ['confirmation_token'],
       };
       const contradicting = relevant.filter((item) => {
         if (!types[value.proposition].includes(item.type) || item.observationConflict !== 'conflict') return false;
@@ -222,16 +242,26 @@ function packetShape(id: typeof rawId) {
     claims: z.array(claim),
     nextCursor: id.nullable(),
     nextStructuralCursor: id.nullable(),
-  }).strict().refine((value) =>
-    value.claims.every((claim) =>
+  }).strict().refine((value) => {
+    // Build one page-local candidate index; never scan all claims per corroboration.
+    const surfacedCandidates = new Set(value.claims.filter((candidate) =>
+      candidate.proposition === 'exact_address' && value.parentId !== null && candidate.subjectId === value.parentId &&
+      candidate.objectId !== value.parentId && candidate.evidence.some((item) => item.type === 'address' &&
+        item.sourceRole === 'candidate_message' && item.provenanceAvailable && item.sourceId === candidate.objectId &&
+        item.subjectId === candidate.subjectId && item.objectId === candidate.objectId &&
+        item.parentAddressRoles.length > 0 && item.candidateAddressRoles.length > 0)).map((candidate) => candidate.objectId));
+    return value.claims.every((claim) =>
       (claim.proposition !== 'observation_comparison' || claim.subjectId === value.pdfId) &&
+      (claim.proposition !== 'confirmation_corroboration' ||
+        (claim.subjectId === value.pdfId && surfacedCandidates.has(claim.objectId))) &&
       (claim.proposition !== 'attachment_parent' ||
         (value.parentId !== null && claim.subjectId === value.pdfId && claim.objectId === value.parentId &&
           claim.evidence.every((item) => item.sourceRole !== 'pdf' || item.sourceId === value.pdfId)))) &&
-    (value.nextStructuralCursor === null || value.structuralPageCompleteness === 'partial') &&
-    (value.structuralPageCompleteness !== 'not_requested' ||
-      (value.nextStructuralCursor === null && value.structuralCountBand === 'unknown' &&
-        value.structuralPageCountBand === 'unknown')));
+      (value.nextStructuralCursor === null || value.structuralPageCompleteness === 'partial') &&
+      (value.structuralPageCompleteness !== 'not_requested' ||
+        (value.nextStructuralCursor === null && value.structuralCountBand === 'unknown' &&
+          value.structuralPageCountBand === 'unknown'));
+  });
 }
 
 const privateInputSchema = packetShape(rawId);

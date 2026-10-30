@@ -699,22 +699,6 @@ describe('Centurion evidence inspection packets', () => {
   });
 
 
-  it('rejects contradictory concrete confirmation comparison fields', () => {
-    const generator = createPacketGenerator(runKey());
-    const source = input();
-    source.claims[0]!.status = 'unknown'; source.claims[0]!.inspection = 'uninspected';
-    const item = source.claims[0]!.evidence[0]!;
-    item.comparisonField = 'confirmation'; item.observationConflict = 'unknown';
-    for (const [outcome, equality] of [['equal', 'different'], ['different', 'equal']] as const) {
-      item.comparisonOutcome = outcome; item.confirmationEquality = equality;
-      expect(generator.generate(source)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
-    }
-    item.comparisonOutcome = 'equal'; item.confirmationEquality = 'equal';
-    expect(generator.generate(source).ok).toBe(true);
-    item.confirmationEquality = 'unknown';
-    expect(generator.generate(source).ok).toBe(true);
-  });
-
   it('rejects inconsistent header and comparison facts even before inspection', () => {
     const generator = createPacketGenerator(runKey());
     const source = input();
@@ -737,6 +721,116 @@ describe('Centurion evidence inspection packets', () => {
     expect(generator.generate(source).ok).toBe(true);
   });
 
+
+
+  it('rejects contradictory concrete confirmation comparison fields', () => {
+    const generator = createPacketGenerator(runKey());
+    const source = input();
+    source.claims[0]!.status = 'unknown'; source.claims[0]!.inspection = 'uninspected';
+    const item = source.claims[0]!.evidence[0]!;
+    item.comparisonField = 'confirmation'; item.observationConflict = 'unknown';
+    for (const [outcome, equality] of [['equal', 'different'], ['different', 'equal']] as const) {
+      item.comparisonOutcome = outcome; item.confirmationEquality = equality;
+      expect(generator.generate(source)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    }
+    item.comparisonOutcome = 'equal'; item.confirmationEquality = 'equal';
+    expect(generator.generate(source).ok).toBe(true);
+    item.confirmationEquality = 'unknown';
+    expect(generator.generate(source).ok).toBe(true);
+  });
+
+  it('emits neutral confirmation corroboration only for a surfaced address candidate', () => {
+    const generator = createPacketGenerator(runKey());
+    const source = input();
+    const address = source.claims[0]!;
+    address.subjectId = source.parentId!;
+    address.status = 'unknown'; address.inspection = 'uninspected';
+    address.evidence[0]!.subjectId = address.subjectId;
+    const candidate = address.objectId;
+    const base = address.evidence[0]!;
+    const token = { ...base, type: 'confirmation_token' as const, identityRelation: 'not_applicable' as const,
+      parentAddressRoles: [], candidateAddressRoles: [], subjectId: source.pdfId, objectId: candidate,
+      confirmationEquality: 'equal' as const, confirmationStrength: 'labeled' as const };
+    source.claims.push({ claimId: `${canary}:confirmation-claim`, subjectId: source.pdfId, objectId: candidate,
+      proposition: 'confirmation_corroboration', status: 'unknown', inspection: 'uninspected', evidence: [
+        { ...token, evidenceId: `${canary}:pdf-token`, sourceId: source.pdfId, sourceRole: 'pdf', observationSourceId: `${canary}:extract` },
+        { ...token, evidenceId: `${canary}:mail-token`, sourceId: candidate, sourceRole: 'candidate_message', observationSourceId: null,
+          confirmationStrength: 'unlabeled_numeric' },
+      ] });
+    const issued = generator.generate(source);
+    if (!issued.ok) throw new Error('Synthetic fixture failed');
+    const claim = issued.value.claims[1]!;
+    expect(claim).toMatchObject({ proposition: 'confirmation_corroboration', status: 'unknown', inspection: 'uninspected' });
+    expect(claim.evidence.map((item) => item.confirmationStrength)).toEqual(['labeled', 'unlabeled_numeric']);
+    expect(claim.subjectId).toBe(issued.value.pdfId);
+    expect(claim.objectId).toBe(issued.value.claims[0]!.objectId);
+    expect(claim.evidence[0]!.observationSourceId).toMatch(/^[a-f0-9]{64}$/);
+    expect(issued.value.claims.some((item) => item.proposition === 'same_stay')).toBe(false);
+    expect(JSON.stringify(issued.value)).not.toContain(canary);
+    const mutated = structuredClone(issued.value);
+    mutated.claims[1]!.evidence[1]!.confirmationStrength = 'labeled';
+    expect(generator.serialize(mutated)).toEqual({ ok: false, error: { code: 'INVALID_PACKET' } });
+    const different = structuredClone(source);
+    for (const item of different.claims[1]!.evidence) {
+      item.confirmationEquality = 'different'; item.confirmationStrength = 'labeled';
+    }
+    const differentResult = generator.generate(different);
+    if (!differentResult.ok) throw new Error('Synthetic fixture failed');
+    expect(differentResult.value.claims[1]).toMatchObject({ status: 'unknown', inspection: 'uninspected', evidence: [
+      expect.objectContaining({ confirmationEquality: 'different', confirmationStrength: 'labeled' }),
+      expect.objectContaining({ confirmationEquality: 'different', confirmationStrength: 'labeled' }),
+    ] });
+    expect(differentResult.value.claims.some((item) => item.proposition === 'same_stay')).toBe(false);
+    const structured = structuredClone(different);
+    structured.claims[1]!.evidence[0]!.confirmationStrength = 'structured';
+    structured.claims[1]!.evidence[1]!.confirmationStrength = 'structured';
+    expect(generator.generate(structured).ok).toBe(true);
+    for (const index of [0, 1]) for (const strength of ['unlabeled_numeric', 'unknown'] as const) {
+      const weak = structuredClone(different);
+      weak.claims[1]!.evidence[index]!.confirmationStrength = strength;
+      expect(generator.generate(weak)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    }
+    const disagreement = structuredClone(different);
+    disagreement.claims[1]!.evidence[0]!.confirmationEquality = 'equal';
+    expect(generator.generate(disagreement)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const alteredRelation = structuredClone(differentResult.value);
+    alteredRelation.claims[1]!.evidence[0]!.confirmationEquality = 'equal';
+    expect(generator.serialize(alteredRelation)).toEqual({ ok: false, error: { code: 'INVALID_PACKET' } });
+
+    const bad: ((value: PrivatePacketInput) => void)[] = [
+      (value) => { value.claims[1]!.status = 'supported'; value.claims[1]!.inspection = 'inspected'; },
+      (value) => { value.claims[1]!.status = 'candidate'; value.claims[1]!.inspection = 'inspected'; },
+      (value) => { value.claims[1]!.status = 'conflicting'; value.claims[1]!.inspection = 'inspected'; },
+      (value) => { value.claims[1]!.inspection = 'inspected'; },
+      (value) => { value.claims[1]!.inspection = 'insufficient'; },
+      (value) => { value.claims.shift(); },
+      (value) => { value.parentId = null; },
+      (value) => { value.claims[0]!.subjectId = 'other-parent'; },
+      (value) => { value.claims[0]!.objectId = 'other-candidate'; },
+      (value) => { value.claims[0]!.evidence[0]!.provenanceAvailable = false; },
+      (value) => { value.claims[0]!.evidence[0]!.sourceId = 'other-candidate'; },
+      (value) => { value.claims[0]!.evidence[0]!.parentAddressRoles = []; },
+      (value) => { value.claims[1]!.subjectId = 'other-pdf'; },
+      (value) => { value.claims[1]!.objectId = 'other-candidate'; },
+      (value) => { value.claims[1]!.evidence.pop(); },
+      (value) => { value.claims[1]!.evidence[0]!.provenanceAvailable = false; },
+      (value) => { value.claims[1]!.evidence[1]!.provenanceAvailable = false; },
+      (value) => { value.claims[1]!.evidence[0]!.observationSourceId = null; },
+      (value) => { value.claims[1]!.evidence[0]!.observationSourceId = value.pdfId; },
+      (value) => { value.claims[1]!.evidence[1]!.observationSourceId = 'invented-extract'; },
+      (value) => { value.claims[1]!.evidence[0]!.sourceId = value.claims[1]!.objectId; },
+      (value) => { value.claims[1]!.evidence[1]!.sourceId = value.pdfId; },
+      (value) => { value.claims[1]!.evidence[1]!.evidenceId = value.claims[1]!.evidence[0]!.evidenceId; },
+      (value) => { value.claims[1]!.evidence[1]!.confirmationEquality = 'different'; },
+      (value) => { value.claims[1]!.evidence[1]!.confirmationStrength = 'unknown'; },
+    ];
+    for (const change of bad) {
+      const invalid = structuredClone(source); change(invalid);
+      const result = generator.generate(invalid);
+      expect(result).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+      expect(JSON.stringify(result)).not.toContain(canary);
+    }
+  });
 
   it('emits attributed observation comparisons without assuming HMS timing or same stay', () => {
     const generator = createPacketGenerator(runKey());
