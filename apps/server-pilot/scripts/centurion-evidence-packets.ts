@@ -21,6 +21,7 @@ const addressRole = z.enum([
   'original_from', 'original_to', 'original_cc', 'original_bcc', 'original_reply_to', 'original_sender', 'unknown',
 ]);
 const identityRelation = z.enum(['distinct_source_identity', 'unresolved', 'not_applicable']);
+const attachmentAttribution = z.enum(['verified_snapshot_parent', 'ambiguous_snapshot_occurrence', 'inventory_only_reference', 'unknown', 'not_applicable']);
 const headerRelation = z.enum(['message_id', 'in_reply_to', 'references', 'none', 'unknown']);
 const headerDirection = z.enum(['parent_to_target', 'target_to_parent', 'shared', 'none', 'unknown']);
 const structuralPageCompleteness = z.enum(['complete', 'partial', 'unavailable', 'unknown', 'not_requested']);
@@ -50,6 +51,7 @@ function packetShape(id: typeof rawId) {
     sourceRole,
     provenanceAvailable: z.boolean(),
     type: evidenceType,
+    attachmentAttribution,
     identityRelation,
     parentAddressRoles: z.array(addressRole),
     candidateAddressRoles: z.array(addressRole),
@@ -65,6 +67,12 @@ function packetShape(id: typeof rawId) {
     // Object capture time relative to subject capture time; never a stay date.
     objectObservationTime: observationTime,
   }).strict().refine((item) => {
+    // For attachment evidence this flag refers to the parent link, not merely
+    // the existence of the inventory row. Do not promote unresolved anchors.
+    if (item.type === 'attachment') {
+      if (item.attachmentAttribution === 'not_applicable' ||
+          item.provenanceAvailable !== (item.attachmentAttribution === 'verified_snapshot_parent')) return false;
+    } else if (item.attachmentAttribution !== 'not_applicable') return false;
     if (item.type === 'address' ? item.identityRelation === 'not_applicable' :
         item.identityRelation !== 'not_applicable') return false;
     if (item.type === 'header' && item.headerRelation !== 'none' && item.headerRelation !== 'unknown' &&
@@ -116,6 +124,9 @@ function packetShape(id: typeof rawId) {
       return true;
     }
     if (value.evidence.some((item) => item.observationSourceId !== null)) return false;
+    if (value.proposition === 'attachment_parent' && value.status !== 'unknown' &&
+        (!value.evidence.some((item) => item.type === 'attachment') ||
+         value.evidence.some((item) => item.type === 'attachment' && item.attachmentAttribution !== 'verified_snapshot_parent'))) return false;
     if (value.status === 'unknown' || value.status === 'candidate') return true;
     // The comparison must explicitly identify both claim endpoints, on the same
     // provenanced item whose source is one of those endpoints. A provenance
@@ -383,6 +394,7 @@ export function createPacketGenerator(runKey: Uint8Array, cursorState?: unknown,
             sourceRole: item.sourceRole,
             provenanceAvailable: item.provenanceAvailable,
             type: item.type,
+            attachmentAttribution: item.attachmentAttribution,
             identityRelation: item.identityRelation,
             parentAddressRoles: item.parentAddressRoles,
             candidateAddressRoles: item.candidateAddressRoles,

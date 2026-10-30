@@ -41,6 +41,7 @@ const input = (): PrivatePacketInput => ({
       sourceRole: 'candidate_message',
       provenanceAvailable: true,
       type: 'address',
+      attachmentAttribution: 'not_applicable',
       identityRelation: 'unresolved',
       parentAddressRoles: ['current_from'],
       candidateAddressRoles: ['current_to'],
@@ -247,7 +248,7 @@ describe('Centurion evidence inspection packets', () => {
     type Claim = PrivatePacketInput['claims'][number];
     type Evidence = Claim['evidence'][number];
     const variants: { proposition: Claim['proposition']; evidence: Partial<Evidence>[] }[] = [
-      { proposition: 'attachment_parent', evidence: [{ type: 'attachment', identityRelation: 'not_applicable', sourceRole: 'pdf' }] },
+      { proposition: 'attachment_parent', evidence: [{ type: 'attachment', attachmentAttribution: 'verified_snapshot_parent', identityRelation: 'not_applicable', sourceRole: 'pdf' }] },
       { proposition: 'same_thread', evidence: [{ type: 'thread', identityRelation: 'not_applicable', sourceRole: 'parent_message' }] },
       { proposition: 'exact_header', evidence: [{ type: 'header', identityRelation: 'not_applicable', headerRelation: 'in_reply_to', headerDirection: 'parent_to_target' }] },
       { proposition: 'exact_address', evidence: [{ type: 'address', parentAddressRoles: ['current_from'], candidateAddressRoles: ['current_to'] }] },
@@ -423,7 +424,7 @@ describe('Centurion evidence inspection packets', () => {
     type Claim = PrivatePacketInput['claims'][number];
     type Evidence = Claim['evidence'][number];
     const cases: { proposition: Claim['proposition']; evidence: Partial<Evidence> }[] = [
-      { proposition: 'attachment_parent', evidence: { type: 'attachment', identityRelation: 'not_applicable' } },
+      { proposition: 'attachment_parent', evidence: { type: 'attachment', attachmentAttribution: 'verified_snapshot_parent', identityRelation: 'not_applicable' } },
       { proposition: 'same_thread', evidence: { type: 'thread', identityRelation: 'not_applicable' } },
       { proposition: 'exact_header', evidence: { type: 'header', identityRelation: 'not_applicable', headerRelation: 'references', headerDirection: 'parent_to_target' } },
       { proposition: 'exact_address', evidence: { type: 'address', parentAddressRoles: ['current_from'], candidateAddressRoles: ['current_to'] } },
@@ -565,7 +566,7 @@ describe('Centurion evidence inspection packets', () => {
     claim.proposition = 'attachment_parent';
     claim.objectId = source.parentId!;
     claim.evidence[0] = { ...claim.evidence[0]!, sourceId: source.pdfId, subjectId: source.pdfId,
-      objectId: source.parentId!, sourceRole: 'pdf', type: 'attachment', identityRelation: 'not_applicable' };
+      objectId: source.parentId!, sourceRole: 'pdf', type: 'attachment', attachmentAttribution: 'verified_snapshot_parent', identityRelation: 'not_applicable' };
     expect(generator.generate(source).ok).toBe(true);
     const changes: ((value: PrivatePacketInput) => void)[] = [
       (value) => { value.claims[0]!.subjectId = value.parentId!; },
@@ -577,6 +578,58 @@ describe('Centurion evidence inspection packets', () => {
       const invalid = structuredClone(source); change(invalid);
       expect(generator.generate(invalid)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
     }
+  });
+
+
+  it('distinguishes verified, ambiguous and inventory-only attachment attribution', () => {
+    const generator = createPacketGenerator(runKey());
+    const source = input();
+    const claim = source.claims[0]!;
+    claim.proposition = 'attachment_parent';
+    claim.objectId = source.parentId!;
+    claim.status = 'unknown';
+    claim.inspection = 'uninspected';
+    claim.evidence[0] = { ...claim.evidence[0]!, sourceId: source.pdfId, subjectId: source.pdfId,
+      objectId: source.parentId!, sourceRole: 'pdf', type: 'attachment', identityRelation: 'not_applicable',
+      attachmentAttribution: 'verified_snapshot_parent', provenanceAvailable: true };
+    const values = ['verified_snapshot_parent', 'ambiguous_snapshot_occurrence', 'inventory_only_reference', 'unknown'] as const;
+    for (const attribution of values) {
+      const candidate = structuredClone(source);
+      candidate.claims[0]!.evidence[0]!.attachmentAttribution = attribution;
+      candidate.claims[0]!.evidence[0]!.provenanceAvailable = attribution === 'verified_snapshot_parent';
+      const issued = generator.generate(candidate);
+      if (!issued.ok) throw new Error('Fixture failed');
+      expect(issued.value.claims[0]).toMatchObject({ status: 'unknown', inspection: 'uninspected', evidence: [
+        expect.objectContaining({ attachmentAttribution: attribution, provenanceAvailable: attribution === 'verified_snapshot_parent' }),
+      ] });
+      const changed = structuredClone(issued.value);
+      changed.claims[0]!.evidence[0]!.attachmentAttribution = attribution === 'verified_snapshot_parent' ? 'unknown' : 'verified_snapshot_parent';
+      expect(generator.serialize(changed)).toEqual({ ok: false, error: { code: 'INVALID_PACKET' } });
+      const invalid = structuredClone(candidate);
+      invalid.claims[0]!.evidence[0]!.provenanceAvailable = !invalid.claims[0]!.evidence[0]!.provenanceAvailable;
+      expect(generator.generate(invalid)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+      if (attribution !== 'verified_snapshot_parent') {
+        for (const status of ['supported', 'candidate', 'conflicting'] as const) {
+          const promoted = structuredClone(candidate);
+          promoted.claims[0]!.inspection = 'inspected'; promoted.claims[0]!.status = status;
+          expect(generator.generate(promoted)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+        }
+      }
+      expect(JSON.stringify(issued.value)).not.toContain(canary);
+    }
+    const emptyCandidate = structuredClone(source);
+    emptyCandidate.claims[0]!.status = 'candidate'; emptyCandidate.claims[0]!.inspection = 'inspected';
+    emptyCandidate.claims[0]!.evidence = [];
+    expect(generator.generate(emptyCandidate)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const missing = structuredClone(source);
+    missing.claims[0]!.evidence[0]!.attachmentAttribution = 'not_applicable';
+    expect(generator.generate(missing)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const wrongType = input();
+    wrongType.claims[0]!.evidence[0]!.attachmentAttribution = 'inventory_only_reference';
+    expect(generator.generate(wrongType)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const unknownKey = structuredClone(source) as unknown as { claims: Array<{ evidence: Array<Record<string, unknown>> }> };
+    delete unknownKey.claims[0]!.evidence[0]!.attachmentAttribution;
+    expect(generator.generate(unknownKey)).toEqual({ ok: false, error: { code: 'INVALID_INPUT' } });
   });
 
   it('verifies stateless reconstructed cursor positions and bounds state across pages and restarts', () => {
