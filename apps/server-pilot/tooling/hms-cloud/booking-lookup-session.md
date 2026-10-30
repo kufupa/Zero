@@ -27,7 +27,97 @@ at the top level.
 | `readGuestStay` | Reads the visible unsaved form, including blank fields |
 | `quit` | Closes the session |
 
-Selections also accept `selection: {nativeId, searchId}`. They return the
+Additional tools accept their inputs as top-level request properties. Each
+response keeps the underlying module's outcome and fields alongside `id` and
+`tool`. The JSONL runner executes actions sequentially on the same page.
+
+| Tool | Input |
+| --- | --- |
+| `searchGuestProfiles` | `field` and `query`; optional lookup `options` |
+| `inspectGuestProfileCandidates` | Current `searchId`; optional `nativeId`, `offset`, `limit` |
+| `selectGuestProfile` | Current `searchId` and explicit `nativeId`; optional lookup `options` |
+| `closeGuestProfilePicker` | Cancels the current picker without choosing a guest |
+| `readGuestStayForm` | `propertyCode` |
+| `setGuestStayText` | `propertyCode`, `field`, `value` |
+| `setGuestStayDate` | `propertyCode`, `field`, `date` |
+| `listGuestStayDropdown` | `propertyCode`, `field` |
+| `selectGuestStayDropdown` | `propertyCode`, `field`, explicit current `value` |
+| `setGuestStayChildAges` | `propertyCode`, explicit `childAges` array |
+| `listCmsMessageIds` | `propertyCode`; opens the picker |
+| `selectCmsMessageId` | `propertyCode`, current `searchId`, explicit `code` |
+| `setCmsSendCheckbox` | `propertyCode`, explicit boolean `checked` |
+| `searchHotelAvailabilityParty` | `propertyCode`, `kind`, `query`; optional lookup `options` |
+| `selectHotelAvailabilityParty` | `kind`, current `searchId`, explicit `nativeId` |
+| `cancelHotelAvailabilityParty` | Cancels the current availability party picker |
+| `searchRoomTypes`, `searchRatePlans` | Optional `query`, `offset`, `limit` |
+| `inspectRoomRateCandidate` | Current `searchId` and `nativeId` and/or `code` |
+| `selectRoomType` | Current `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
+| `closeRoomRatePicker` | Closes the current room or rate catalog picker |
+| `searchGuestStaySourceBusiness` | Optional description `query`, `field: "description"` and lookup `options` |
+| `inspectGuestStaySourceBusiness` | Current `searchId`; optional `nativeCode`, `offset`, `limit` |
+| `selectGuestStaySourceBusiness` | Current `searchId` and explicit `nativeCode`; optional lookup `options` |
+| `closeGuestStaySourceBusinessPicker` | Closes the current Source of Business picker |
+| `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
+| `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
+| `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
+
+Guest searches invalidate earlier guest search IDs; inspection, selection and
+closing use the current picker. The availability party kinds are `organization`,
+`bookingAgency` and `group`. Select a current candidate there before supplying
+its ID in the quote criteria's `partyContext`. The session never chooses a
+guest, party, dropdown value or CMS code. See [guest-profile.md](./guest-profile.md),
+[guest-stay-form.md](./guest-stay-form.md) and
+[hotel-availability.md](./hotel-availability.md) for supported inputs and
+uncertain outcomes.
+
+Room and Source of Business actions use the current picker and require an
+explicit selection. Source selection verifies the description; independent
+native-code form readback is unsupported. Rate Plan search reads the Rate Shop
+catalog, not a quote or a draft rate selection. Closing Rate Shop can leave its
+server-side session cancel unverified. See
+[guest-stay-room-rate.md](./guest-stay-room-rate.md) and
+[guest-stay-source-business.md](./guest-stay-source-business.md) for details.
+
+`readQuote` uses [quote-read.mjs](./quote-read.mjs) unchanged: the caller
+supplies explicit criteria, a view object and a new snapshot path
+in a private caller-owned directory outside any Git worktree. The path's parent
+is resolved before the boundary check; the snapshot is written once with mode
+`0600`. The response contains a bounded quote view and snapshot path, never the
+full availability snapshot. It also returns an opaque `snapshotHandle` for this
+session, including when the snapshot was saved but the first projection failed.
+View defaults and limits are described in
+[availability-view.md](./availability-view.md). Supply `roomQuantity` either at
+the top level or in criteria; if omitted, the view reports
+`ROOM_QUANTITY_UNKNOWN`. Quantity means a count check, not a hold or combined
+availability. Separate searches need separate paths.
+
+`viewQuoteSnapshot` re-projects a snapshot created by `readQuote` on the same
+page without contacting HMS. Its `view` accepts `roomTypes`, `ratePlans`,
+`offset`, `limit`, `nightOffset`, `nightLimit` and `includeNightlyValueSum`; it
+retains the original room quantity or unknown and rejects any other view key or
+snapshot path. The optional sum is not a final stay total; see
+[quote-view.md](./quote-view.md) for its basis and limits. Handles expire when
+the page closes and cannot address snapshots from another session. The private
+file must remain present, mode `0600` and unchanged: a content hash detects
+replacement, and symlinks are rejected. A successful projection has top-level
+`outcome: "ok"`; both top-level `snapshotOutcome` and `view.outcome` report
+whether the saved search was `criteria_unavailable`.
+
+`closeHotelAvailability` only acts on the current Guest Stay iframe's unique
+native Close button. An unexpected dialog or a nonblank confirmation prevents
+the click. After a click, `closed_unsaved` requires the iframe to disappear and
+the HRCEN blank-confirmation form to read back. `close_uncertain` means the
+click may have happened; inspect the form before continuing. It does not
+resolve unexpected dialogs or save the form. If a native dialog appears, page
+actions fail with `UNEXPECTED_DIALOG`; memory and saved-snapshot projections
+remain available, and `quit` closes the session.
+
+The form module's observed coverage is narrower than its complete list of
+supported fields; consult its live-coverage note before relying on an untested
+text field or guarantee type.
+
+Guest Stay agency, organization and A/R selections also accept
+`selection: {nativeId, searchId}`. They return the
 underlying selection result, including its form readback and changed fields.
 `selection_uncertain` means the change may have occurred; use `readGuestStay`
 before deciding what to do. Readback includes any automatically handled Notes.
