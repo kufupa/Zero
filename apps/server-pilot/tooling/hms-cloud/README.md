@@ -35,6 +35,12 @@ the response and grid, including dates converted by the UI. `no_match` requires
 a verified empty response and grid;
 `execution_failure` is not an empty result.
 
+`closeGuestStayPartyPicker(page, { propertyCode })` closes the current agency,
+organization or A/R picker without choosing a candidate. It checks the blank
+draft before and after the click; `close_uncertain` means the click may have
+occurred but the unchanged draft could not be verified. Other dialogs are left
+untouched.
+
 Field-named selection requires the `searchId` and a unique native ID from that
 search. It checks the current picker, criteria and grid again before acting.
 On success it returns the selected field and visible form fields with their

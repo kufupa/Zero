@@ -515,6 +515,82 @@ export const searchPrimaryBookingAgency = searchBookingAgencies;
 export const searchOrganization = searchOrganizations;
 export const searchArAccount = searchArAccounts;
 
+/** Close the current party picker without choosing a candidate or changing the draft. */
+export async function closeGuestStayPartyPicker(page, { propertyCode } = {}) {
+  if (!page || typeof page.locator !== 'function' || typeof page.route !== 'function') {
+    return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
+  }
+  if (typeof propertyCode !== 'string' || !/^[A-Z0-9]+$/.test(propertyCode)) {
+    return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED' };
+  }
+  if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'lookup_in_progress' };
+  busyPages.add(page);
+  let attempted = false, nativeDialog = false, blocked = false;
+  const onDialog = () => { nativeDialog = true; };
+  const guard = async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) &&
+        !/save|delete|cancel|duplicate|checkin|checkout|send|crs/i.test(pathname)) return route.fallback();
+    blocked = true;
+    return route.abort();
+  };
+  const checkDraft = async () => {
+    const targetMatches = await page.evaluate((expected) => {
+      const visible = (el) => Boolean(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const fields = (name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible);
+      const confirmation = fields('confirmationnumber');
+      const property = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
+      return location.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com' && property === expected &&
+        confirmation.length === 1 && !confirmation[0].value.trim() && fields('ta1').length === 1;
+    }, propertyCode);
+    if (!targetMatches) throw new Error('PROPERTY_OR_BLANK_STAY_MISMATCH');
+  };
+  page.on('dialog', onDialog);
+  try {
+    await checkDraft();
+    await assertExpectedDialogs(page, nativeDialog);
+    await assertNewGuestStay(page);
+    if (await page.locator('.x-window[id^="childagespopup"]:visible').count()) throw new Error('UNEXPECTED_DIALOG');
+    const windows = page.locator('.x-window:visible:not(.x-menu)');
+    if (!await windows.count()) { lastSearch.delete(page); return { outcome: 'not_open' }; }
+    if (await windows.count() !== 1) throw new Error('UNEXPECTED_DIALOG');
+    const win = windows.first();
+    const titles = await win.locator('.x-window-header-text:visible').allTextContents();
+    const kind = Object.keys(LOOKUPS).find((key) => titles.length === 1 && titles[0].trim() === LOOKUPS[key].title);
+    const windowId = await win.getAttribute('id'), previous = lastSearch.get(page);
+    if (!kind || !windowId || (previous && (previous.kind !== kind || previous.windowId !== windowId))) {
+      throw new Error('PARTY_PICKER_UNAVAILABLE');
+    }
+    const before = await readForm(page);
+    const cancel = win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ });
+    if (await cancel.count() !== 1) throw new Error('PARTY_CANCEL_NOT_UNIQUE');
+    await page.route('**/*', guard);
+    attempted = true;
+    await cancel.click({ timeout: 5000 });
+    await page.waitForFunction((id) => !Ext.getCmp(id)?.isVisible(), windowId, { timeout: 10000 });
+    await win.waitFor({ state: 'hidden', timeout: 10000 });
+    await page.waitForTimeout(500);
+    await assertExpectedDialogs(page, nativeDialog);
+    await checkDraft();
+    await assertNewGuestStay(page);
+    const after = await readForm(page);
+    if (blocked || await windows.count() || JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error('PARTY_CANCEL_UNVERIFIED');
+    }
+    lastSearch.delete(page);
+    return { outcome: 'closed_unsaved', kind, draftUnchanged: true };
+  } catch (error) {
+    if (attempted) lastSearch.delete(page);
+    return { outcome: attempted ? 'close_uncertain' : 'execution_failure',
+      issue: nativeDialog ? 'UNEXPECTED_DIALOG' : issue(error, 'PARTY_CLOSE_FAILED') };
+  } finally {
+    await page.unroute('**/*', guard).catch(() => {});
+    page.off('dialog', onDialog);
+    busyPages.delete(page);
+  }
+}
+
 // Legacy callers may still pass only an ID; field-named selection requires the search ID too.
 export const selectBookingAgency = (page, selection, options = {}) =>
   select(page, 'agency', selection, options, false);

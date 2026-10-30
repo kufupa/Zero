@@ -12,14 +12,14 @@ import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
-  selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount,
+  selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount, closeGuestStayPartyPicker,
 } from './lookup.mjs';
 import {
   searchGuestProfiles, inspectGuestProfileCandidates, selectGuestProfile, closeGuestProfilePicker,
 } from './guest-profile.mjs';
 import {
   readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
-  setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, setCmsSendCheckbox,
+  setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
 } from './guest-stay-form.mjs';
 import {
   searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
@@ -270,11 +270,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       agency: searchPrimaryBookingAgency, searchPrimaryBookingAgency,
       organization: searchOrganization, searchOrganization,
       arAccount: searchArAccount, searchArAccount,
-      selectAgency: selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount,
+      selectAgency: selectBookingAgency, selectPrimaryBookingAgency, selectOrganization, selectArAccount, closeGuestStayPartyPicker,
       readGuestStay: readUnsavedGuestStay,
       searchGuestProfiles, inspectGuestProfileCandidates, selectGuestProfile, closeGuestProfilePicker,
       readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
-      setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, setCmsSendCheckbox,
+      setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
       searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
       searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker,
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
@@ -320,6 +320,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       'searchGuestProfiles', 'inspectGuestProfileCandidates', 'selectGuestProfile',
       'readGuestStayForm', 'setGuestStayText', 'setGuestStayDate', 'listGuestStayDropdown',
       'selectGuestStayDropdown', 'setGuestStayChildAges', 'listCmsMessageIds', 'selectCmsMessageId',
+      'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
       'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',

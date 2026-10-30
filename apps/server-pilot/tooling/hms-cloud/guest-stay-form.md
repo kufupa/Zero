@@ -22,6 +22,7 @@ exercised. The child-age editor is an `.x-window.x-menu` on this property.
 | `setGuestStayChildAges` | `childAges`: explicit array of integer ages 0–17; `[]` explicitly clears children |
 | `listCmsMessageIds` | `propertyCode`; leaves the current CMS picker open |
 | `selectCmsMessageId` | `searchId` and an explicit `code` from that picker on the same page |
+| `closeCmsMessageIdPicker` | `propertyCode`; close the current CMS picker without choosing a code |
 | `setCmsSendCheckbox` | `checked`: explicit boolean |
 
 All inputs are objects passed after `page`. For example:
@@ -59,6 +60,9 @@ Dropdowns and CMS codes come from current UI stores, not historical choices.
 Option coverage is unknown when HMS does not supply a reliable total. CMS
 selection checks the picker, search ID, grid and code again before clicking.
 Callers choose the code; this module does not infer one.
+Closing the CMS picker verifies the unsaved form remained unchanged; an
+`action_uncertain` result means the close may have happened without verified
+readback. Unexpected dialogs are left untouched.
 
 Results use `ok`, `updated_unsaved`, `input_gap`, `unsupported`,
 `execution_failure`, or `action_uncertain`. An uncertain action may have
