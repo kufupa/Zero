@@ -68,10 +68,16 @@ notes. Password fields remain excluded.
 node apps/server-pilot/tooling/playwright-quote/read-confirmation-ui.mjs --confirmation CONFIRMATION-NUMBER
 ```
 
-The command starts the same Centurion browser, searches Stay 360, selects one
-exact confirmation match and prints JSON. No match, duplicate matches, or capped
-search results stop the lookup. `readConfirmationFromStay360(page, confirmation)`
-can also be called with an already-open page so another action can follow it.
+The command starts the same Centurion browser, searches Stay 360, selects an
+exact confirmation match and prints JSON. Each `read-*-ui.mjs` runner also
+accepts `--json-stdin` with `confirmation` and optional `guestName` and
+`arrivalDate` (`YYYY-MM-DD`). `readConfirmationFromStay360(page, confirmation,
+options)` accepts the same hints when composing actions on an open page.
+
+An unresolved duplicate returns `AMBIGUOUS_CONFIRMATION` with candidate names
+and dates instead of guessing. Conflicting or unverifiable hints return errors;
+a blank name in the search row cannot verify a supplied name hint. A date hint
+can adjust the search window. No match or capped search results stop the lookup.
 
 `selectedRow` contains the matching search row. `details.cards` contains the
 rendered Stay 360 cards, their source fields, raw card text and any rendered
@@ -103,7 +109,11 @@ heuristic; it does not prove every possible mutating request is blocked.
 
 ## Guest Details and Notes
 
-After Record View, `readGuestDetailsFromStay360(page, confirmation)` opens and
-reads Guest Details on the same page. The shared browser automatically captures
-and closes explicitly titled Notes popups; other dialogs are not closed.
-See [reader verification](STAY360-READ-VERIFICATION.md) for live checks.
+`read-guest-details-ui.mjs --confirmation CONFIRMATION-NUMBER` runs 1a, 1b and
+1c on one page. It also accepts the JSON input described above. After Record
+View, `readGuestDetailsFromStay360(page, confirmation)` opens Guest Details and
+returns expanded fields and current grid content; it does not paginate.
+
+The shared browser automatically captures and closes explicitly titled Notes
+popups; other dialogs are not closed. See [reader verification](STAY360-READ-VERIFICATION.md)
+for live checks.

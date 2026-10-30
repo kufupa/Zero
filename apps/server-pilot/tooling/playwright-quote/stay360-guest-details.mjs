@@ -167,14 +167,14 @@ export async function readGuestDetailsFromStay360(page, confirmation) {
   return { notes, details };
 }
 
-
 /*
 1c return (reader): { notes, details }. notes[] has title, text, fields
   and privateCapture. details: { activeTab, fields, visibleText, grids,
   gridContents, captureScope }. fields[]: { section, label, name, type,
   value }; gridContents[]: { columns, rows }.
+The CLI returns { ok, confirmation, stay360, recordView, guestDetails, elapsedMs }.
 
-Partial observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
+Observed field inventory from 892 HRCEN reads (2026-10-29/30), including blank
 rendered controls. The guest row was not selected; hidden content and
 unloaded grid pages are excluded. This is not a write schema.
 Below: label [DOM name; type if not text]; no name means name is null.
@@ -202,4 +202,32 @@ Guest Details:
   Profile ID: [guestid] | Reason for Stay: [reasonforstay] | State/Province: [statedesc] | Title: [prefix]
   VIP Level: [viplevel]
 
+Arrival / Departure Information:
+  Arrival Date: [arrivaldate] | Arrival Date: [arrivaldayofweek] | Arrival Information: [arrivalinformation]
+  Arrival Notes: [arrivalnotes; textarea] | Arrival Time: [no name; div] | Arrival Time: [arrivaltime_h]
+  Arrival Time: [arrivaltime_m] | Arrival Type: [arrivaltype] | Departure Date: [departuredate]
+  Departure Date: [departuredayofweek] | Departure Information: [departureinformation]
+  Departure Notes: [departurenotes; textarea] | Departure Time: [no name; div]
+  Departure Time: [departuretime_h] | Departure Time: [departuretime_m] | Departure Type: [departuretype]
+  Hotel Arrival Time: [no name; div] | Hotel Arrival Time: [arrivalhotel_h]
+  Hotel Arrival Time: [arrivalhotel_m] | Hotel Departure Time: [no name; div]
+  Hotel Departure Time: [departurehotel_h] | Hotel Departure Time: [departurehotel_m]
+  Next Destination: [nextdestination]
+
+Identification:
+  Date of Birth: [iddateofbirth] | Gender: [idgender] | ID Description: [iddescription] | ID Type: [idtype]
+  Name: [idname]
+
+Passport / Visa:
+  Gender: [gender] | Passport Issuing Country: [issuingcountrydesc] | Personal Number: [personalnumber]
+  Visa Begin Date: [visabegindate] | Visa Expiration Date: [visaexpirationdate]
+  Visa Issued Date: [visaissueddate] | Visa Name: [visaname] | Visa Number: [visanumber]
+  Visa Status: [visastatus] | Visa Type: [visatype]
+
+Record Details:
+  Created By: [createdby] | Created On: [created] | Updated By: [updatedby] | Updated On: [updated]
+
+Guest grid columns (current rendered page):
+  Last Name | First Name | Primary Guest | Arrival Type | Arrival Time | Departure Type | Departure Time
+  Passport / Visa | ID | No Post
 */
