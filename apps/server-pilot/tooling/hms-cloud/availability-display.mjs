@@ -33,7 +33,7 @@ async function readVisibleGrid(surface) {
   return surface.evaluate(() => {
     const shown = (el) => el && Boolean(el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility === 'visible';
     return (Ext.ComponentQuery.query('treepanel,treegrid') || []).filter((grid) => shown(grid.getEl?.()?.dom)).map((grid) => {
-      const root = grid.getEl().dom, view = grid.getView?.();
+      const root = grid.getEl().dom, view = grid.getView?.(), viewElement = view?.getEl?.()?.dom;
       const columns = (grid.getColumnManager?.()?.getColumns?.() || []).filter((column) =>
         !column.hidden && /^columns\.col\d+\.value$/.test(column.dataIndex || ''));
       const bounds = root.getBoundingClientRect();
@@ -51,8 +51,20 @@ async function readVisibleGrid(surface) {
           const inner = td.querySelector('.x-grid-cell-inner') || td, style = getComputedStyle(inner);
           const clipped = inner.scrollWidth > inner.clientWidth + 1 &&
             (['hidden', 'clip'].includes(style.overflowX) || style.textOverflow === 'ellipsis');
-          const onScreen = shown(td) && rect.left >= Math.max(0, bounds.left) && rect.right <= Math.min(innerWidth, bounds.right) &&
-            rect.top >= Math.max(0, bounds.top) && rect.bottom <= Math.min(innerHeight, bounds.bottom);
+          const viewBounds = viewElement?.getBoundingClientRect();
+          let onScreen = shown(td) && viewBounds && rect.left >= Math.max(0, bounds.left, viewBounds.left) &&
+            rect.right <= Math.min(innerWidth, bounds.right, viewBounds.right) &&
+            rect.top >= Math.max(0, bounds.top, viewBounds.top) && rect.bottom <= Math.min(innerHeight, bounds.bottom, viewBounds.bottom);
+          for (let parent = td.parentElement; onScreen && parent && parent !== root; parent = parent.parentElement) {
+            const style = getComputedStyle(parent), box = parent.getBoundingClientRect();
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowX) && (rect.left < box.left || rect.right > box.right)) onScreen = false;
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowY) && (rect.top < box.top || rect.bottom > box.bottom)) onScreen = false;
+          }
+          const insetX = Math.min(2, rect.width / 4), insetY = Math.min(2, rect.height / 4);
+          const points = [[rect.left + insetX, rect.top + insetY], [rect.right - insetX, rect.top + insetY],
+            [rect.left + insetX, rect.bottom - insetY], [rect.right - insetX, rect.bottom - insetY],
+            [(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2]];
+          if (onScreen && points.some(([x, y]) => !td.contains(document.elementFromPoint(x, y)))) onScreen = false;
           const text = onScreen && !clipped ? inner.innerText?.trim() : '';
           const header = /data-date=["']?([^\s>"']+)/i.exec(column.text || '')?.[1] || null;
           return { dataIndex: column.dataIndex, header, text: text || null };
@@ -101,8 +113,8 @@ function correlate(data, grids) {
 /** Called while the availability search owns the page; no UI actions are taken. */
 export async function captureAvailabilityDisplay(surface, snapshot, { timeoutMs = 4000 } = {}) {
   const data = snapshot?.response?.availabilitydata;
-  if (!data || !Array.isArray(data.datesList) || !Array.isArray(data.children)) return { outcome: 'unavailable' };
-  if (!expectedRows(data).size) return { outcome: 'unavailable', coverage: { visibleRateRows: 0, visiblePriceCells: 0,
+  if (!data || !Array.isArray(data.datesList) || !Array.isArray(data.children)) return { outcome: 'unavailable', source: 'visible_hms_grid' };
+  if (!expectedRows(data).size) return { outcome: 'unavailable', source: 'visible_hms_grid', coverage: { visibleRateRows: 0, visiblePriceCells: 0,
     correlatedPriceCells: 0, exhaustive: false } };
   const deadline = Date.now() + timeoutMs;
   let result;
@@ -111,5 +123,5 @@ export async function captureAvailabilityDisplay(surface, snapshot, { timeoutMs 
     if (result.cells.length) return { outcome: 'captured', source: 'visible_hms_grid', ...result };
     await new Promise((resolve) => setTimeout(resolve, 200));
   } while (Date.now() < deadline);
-  return { outcome: 'unavailable', ...result };
+  return { outcome: 'unavailable', source: 'visible_hms_grid', ...result };
 }

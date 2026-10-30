@@ -306,7 +306,12 @@ export function getAvailabilityView(snapshot, filters = {}) {
       checkoutRestrictions: 'unknown',
       observationTimeKnown: typeof snapshot.observedAt === 'string' && Number.isFinite(Date.parse(snapshot.observedAt)),
       displayedPrices: snapshot.displayedPrices?.source === 'visible_hms_grid' ? {
-        outcome: snapshot.displayedPrices.outcome === 'captured' ? 'captured' : 'unknown',
+        outcome: ['captured', 'unavailable'].includes(snapshot.displayedPrices.outcome)
+          ? snapshot.displayedPrices.outcome : 'unknown',
+        visibleRateRows: Number.isSafeInteger(snapshot.displayedPrices.coverage?.visibleRateRows)
+          ? snapshot.displayedPrices.coverage.visibleRateRows : null,
+        visiblePriceCells: Number.isSafeInteger(snapshot.displayedPrices.coverage?.visiblePriceCells)
+          ? snapshot.displayedPrices.coverage.visiblePriceCells : null,
         correlatedCells: Number.isSafeInteger(snapshot.displayedPrices.coverage?.correlatedPriceCells)
           ? snapshot.displayedPrices.coverage.correlatedPriceCells : null,
         exhaustive: false,

@@ -717,7 +717,8 @@ export async function searchHotelAvailability(page, input) {
       }
       throw new Error('SEARCH_RESPONSE_INVALID');
     }
-    snapshot.displayedPrices = await captureAvailabilityDisplay(surface, snapshot).catch(() => ({ outcome: 'unavailable' }));
+    snapshot.displayedPrices = await captureAvailabilityDisplay(surface, snapshot)
+      .catch(() => ({ outcome: 'unavailable', source: 'visible_hms_grid' }));
     return { outcome: 'ok', snapshot };
   } catch (error) {
     const message = String(error?.message || error).split('\n')[0];
