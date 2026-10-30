@@ -1,5 +1,6 @@
 export const PARTY_FIELDS = ['bookingAgency', 'bookingAgencyContract', 'organization', 'arAccount'];
 export const SOURCES = ['E-Mail', 'Voice Call', 'Call Center'];
+export const HINT_LABELS = { 'rate plan': 'ratePlan', 'room type': 'roomType', 'guarantee type': 'guaranteeType' };
 
 export const text = value => typeof value === 'string' || typeof value === 'number'
   ? String(value).trim().replace(/\s+/g, ' ') : '';

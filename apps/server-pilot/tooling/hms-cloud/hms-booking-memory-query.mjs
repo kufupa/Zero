@@ -1,4 +1,5 @@
-import { PARTY_FIELDS, SOURCES, combinationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
+import { createHash } from 'node:crypto';
+import { HINT_LABELS, PARTY_FIELDS, SOURCES, combinationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
 
 const ROLES = new Set(['outbound-recipient', 'outbound-sender', 'inbound-sender']);
 const DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
@@ -47,18 +48,173 @@ function pmsEvidence(observation, outcome) {
     fieldConflicts: fieldConflicts || null };
 }
 
-function boundedEvidence(record, limit) {
+function boundedEvidence(record, limit, stringLimit = Infinity) {
   const truncations = {};
+  const stringTruncations = {};
   const visit = (value, path) => {
     if (Array.isArray(value)) {
       if (value.length > limit) truncations[path] = value.length;
       return value.slice(0, limit).map((item, index) => visit(item, `${path}[${index}]`));
     }
+    if (typeof value === 'string' && value.length > stringLimit) {
+      stringTruncations[path] = value.length;
+      return value.slice(0, stringLimit);
+    }
     return value && typeof value === 'object'
       ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, path ? `${path}.${key}` : key)]))
       : value;
   };
-  return { ...visit(record, ''), truncated: Object.keys(truncations).length > 0, nestedEvidenceTruncations: truncations };
+  const result = visit(record, '');
+  return { ...result, truncated: Object.keys(truncations).length > 0 || Object.keys(stringTruncations).length > 0,
+    nestedEvidenceTruncations: truncations, ...(Number.isFinite(stringLimit) ? { nestedStringTruncations: stringTruncations } : {}) };
+}
+
+const uncertainLink = item => item.linkMethod === 'confirmation-number-candidate'
+  || item.linkProvenance?.ambiguousAttachment || item.linkProvenance?.labeledConfirmationMatch !== true
+  || item.linkProvenance?.subjectHasOtherConfirmation;
+
+function historicalHintResults(observations, matchedKeys, anchoredKeys, byAddress, queryType, countsBySource,
+  limit, evidenceLimit, includeEvidence, hasNativeAnchor) {
+  const matched = observations.filter(observation => matchedKeys.has(observation.confirmationKey));
+  const count = filter => new Set(matched.filter(filter).map(item => item.confirmationKey)).size;
+  const status = item => item.historicalIdentity?.nativeConfirmation;
+  const eligible = matched.filter(item => anchoredKeys.has(item.confirmationKey)
+    && status(item) === 'matched' && item.historicalHints);
+  const identityCoverage = {
+    countingUnit: 'distinct_observed_confirmations',
+    lookupCompletenessScope: 'reader_reported_searched_range',
+    unverifiedMatchConfirmationCount: [...matchedKeys].filter(key => !anchoredKeys.has(key)).length,
+    nativeConfirmationMatchedCount: count(item => status(item) === 'matched'),
+    nativeConfirmationMismatchCount: count(item => status(item) === 'mismatch'),
+    nativeConfirmationMissingCount: count(item => status(item) === 'missing'),
+    nativeConfirmationUnverifiedViewCount: count(item => status(item) === 'unverified_view'),
+    historicalCoverageUnknownCount: count(item => !anchoredKeys.has(item.confirmationKey) || !item.historicalHints
+      || !['matched', 'mismatch', 'missing', 'unverified_view'].includes(status(item))),
+    multipleMatchSelectionConfirmationCount: count(item => item.historicalIdentity?.selectionMultiplicity === 'multiple'),
+    completeLookupConfirmationCount: count(item => item.historicalIdentity?.lookupResultsComplete === true),
+    incompleteLookupConfirmationCount: count(item => item.historicalIdentity?.lookupResultsComplete === false),
+    unknownLookupCompletenessConfirmationCount: count(item =>
+      typeof item.historicalIdentity?.lookupResultsComplete !== 'boolean'),
+    suppliedVerifiedStayIdConfirmationCount: count(item => Boolean(text(item.provenance?.verifiedStayId))),
+  };
+  const result = { identityCoverage };
+  for (const field of Object.values(HINT_LABELS)) {
+    const groups = new Map();
+    const valuesByConfirmation = new Map();
+    const recorded = new Set();
+    const blank = new Set();
+    const missing = new Set();
+    const unavailable = new Set();
+    const unknown = new Set(matched.filter(item => !anchoredKeys.has(item.confirmationKey)
+      || status(item) !== 'matched' || !item.historicalHints)
+      .map(item => item.confirmationKey));
+    const missingSources = { recordView: new Set(), stay360: new Set() };
+    const unavailableSources = { recordView: new Set(), stay360: new Set() };
+    const unknownSources = { recordView: new Set(), stay360: new Set() };
+    for (const observation of matched) {
+      const fields = observation.historicalHints?.[field];
+      const incompleteSources = Array.isArray(fields?.incompleteSources) ? fields.incompleteSources : [];
+      for (const source of Object.keys(unknownSources)) {
+        if (!Array.isArray(fields?.[source]) || incompleteSources.includes(source)) {
+          unknownSources[source].add(observation.confirmationKey);
+        }
+      }
+    }
+    for (const observation of eligible) {
+      const confirmation = observation.confirmationKey;
+      const fields = observation.historicalHints[field];
+      const arrays = Object.keys(missingSources).map(source => [source,
+        Array.isArray(fields?.[source]) ? fields[source] : null]);
+      const incompleteSources = Array.isArray(fields?.incompleteSources) ? fields.incompleteSources : [];
+      for (const [source, values] of arrays) {
+        if (values === null || incompleteSources.includes(source)) {
+          unknown.add(confirmation);
+        }
+      }
+      if (arrays.every(([source, values]) => values && !values.length && !incompleteSources.includes(source))) {
+        missing.add(confirmation);
+      }
+      const inObservation = new Map();
+      for (const [source, values] of arrays) {
+        if (!values) continue;
+        if (!values.length && !incompleteSources.includes(source)) missingSources[source].add(confirmation);
+        for (const value of values) {
+          if (typeof value !== 'string' && typeof value !== 'number') {
+            unavailable.add(confirmation);
+            unavailableSources[source].add(confirmation);
+            continue;
+          }
+          const normalized = text(value);
+          const key = normalized.normalize('NFKC').toLowerCase();
+          const item = inObservation.get(key) || { value: normalized, sources: new Set() };
+          item.sources.add(source);
+          inObservation.set(key, item);
+        }
+      }
+      for (const [key, item] of inObservation) {
+        recorded.add(confirmation);
+        if (!item.value) blank.add(confirmation);
+        const seen = valuesByConfirmation.get(confirmation) || new Set();
+        seen.add(key);
+        valuesByConfirmation.set(confirmation, seen);
+        const group = groups.get(key) || { value: item.value, confirmations: new Set(), entries: [], sources: new Set() };
+        group.confirmations.add(confirmation);
+        group.entries.push(observation);
+        for (const source of item.sources) group.sources.add(source);
+        groups.set(key, group);
+      }
+    }
+    const sorted = [...groups.entries()].sort(([keyA, a], [keyB, b]) =>
+      b.confirmations.size - a.confirmations.size || keyA.localeCompare(keyB));
+    const values = sorted.slice(0, limit).map(([, group]) => {
+      const item = {
+        value: group.value.slice(0, 256), valueTruncated: group.value.length > 256,
+        confirmationCount: group.confirmations.size,
+        pmsObservationCount: new Set(group.entries.map(entry => entry.observationId)).size,
+        sourceOfBusinessCounts: countsBySource(group.entries.map(observation => ({ observation }))),
+        fieldSources: [...group.sources],
+      };
+      if (item.valueTruncated) {
+        item.valueLength = group.value.length;
+        item.valueSha256 = createHash('sha256').update(group.value).digest('hex');
+      }
+      if (queryType !== 'name') item.uncertainLinkConfirmationCount = [...group.confirmations].filter(key =>
+        (byAddress.get(key) || []).some(link => uncertainLink(link) || !hasNativeAnchor(link))).length;
+      if (includeEvidence) {
+        const records = [...group.confirmations].sort().slice(0, evidenceLimit).map(key => {
+          const pms = group.entries.filter(entry => entry.confirmationKey === key);
+          const addresses = (byAddress.get(key) || []).map(({ confirmationKey: _confirmationKey, ...address }) => ({
+            ...address, linkedPmsSnapshotIds: Array.from(address.linkedPmsSnapshotIds || []), matchedQuery: true,
+          }));
+          return boundedEvidence({
+            confirmationNumber: pms[0]?.confirmationNumber || null,
+            pmsObservations: pms.map(({ observationId, snapshotId, snapshotDate, sourceOfBusiness, sourceType,
+              provenance, historicalIdentity, historicalHints }) => ({
+              observationId, snapshotId, snapshotDate, sourceOfBusiness, sourceType, provenance,
+              historicalIdentity, fieldValues: historicalHints[field],
+            })),
+            addressSources: addresses,
+          }, evidenceLimit, 256);
+        });
+        item.evidence = { confirmationRecords: records, totalConfirmationRecords: group.confirmations.size,
+          truncated: group.confirmations.size > evidenceLimit || records.some(record => record.truncated) };
+      }
+      return item;
+    });
+    result[field] = {
+      coverage: {
+        recordedConfirmationCount: recorded.size, blankConfirmationCount: blank.size,
+        missingConfirmationCount: missing.size, unavailableConfirmationCount: unavailable.size,
+        unknownFieldConfirmationCount: unknown.size,
+        conflictingConfirmationCount: [...valuesByConfirmation.values()].filter(seen => seen.size > 1).length,
+        missingFieldSourceCounts: Object.fromEntries(Object.entries(missingSources).map(([key, set]) => [key, set.size])),
+        unavailableFieldSourceCounts: Object.fromEntries(Object.entries(unavailableSources).map(([key, set]) => [key, set.size])),
+        unknownFieldSourceCounts: Object.fromEntries(Object.entries(unknownSources).map(([key, set]) => [key, set.size])),
+      },
+      valueCount: sorted.length, values, valuesTruncated: sorted.length > limit,
+    };
+  }
+  return result;
 }
 
 function choiceStatus({ combination, entries }) {
@@ -135,9 +291,7 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
         outboundSenderPdfRecordCount: records(item => item.role === 'outbound-sender'),
         outboundRecipientPdfRecordCount: records(item => item.role === 'outbound-recipient'),
         inboundSenderMessageRecordCount: records(item => item.role === 'inbound-sender'),
-        uncertainLinkRecordCount: records(item => item.linkMethod === 'confirmation-number-candidate'
-          || item.linkProvenance?.ambiguousAttachment || item.linkProvenance?.labeledConfirmationMatch !== true
-          || item.linkProvenance?.subjectHasOtherConfirmation),
+        uncertainLinkRecordCount: records(uncertainLink),
       };
     }
     if (includeEvidence) {
@@ -196,6 +350,16 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     [...outcomes.values()].flat().every(({ outcome }) => !outcome.conflictingFields?.length
       && PARTY_FIELDS.every(field => outcome.combination[field] == null))).length;
   const sourceOfBusinessCounts = countsBySource([...groups.values()].flatMap(group => group.entries));
+  const nativeMatchedPairs = new Set(memory.observations.filter(item => item.historicalIdentity?.nativeConfirmation === 'matched')
+    .map(item => JSON.stringify([item.confirmationKey, item.observationId])));
+  const hasNativeAnchor = item => (item.linkedPmsObservationIds || []).some(id =>
+    nativeMatchedPairs.has(JSON.stringify([item.confirmationKey, id])));
+  const anchoredKeys = query.type === 'name'
+    ? new Set([...groups.values()].flatMap(group => group.entries.filter(item =>
+      item.observation.historicalIdentity?.nativeConfirmation === 'matched').map(item => item.observation.confirmationKey)))
+    : new Set(matches.filter(hasNativeAnchor).map(item => item.confirmationKey));
+  const historicalHints = historicalHintResults(observations, matchedKeys, anchoredKeys, byAddress, query.type, countsBySource,
+    bounded(options.hintLimit, 25, 200), evidenceLimit, includeEvidence, hasNativeAnchor);
   return {
     propertyCode: memory.propertyCode, sourceOfBusinessFilter: SOURCES.filter(source => sources.includes(source.toLowerCase())),
     sourceOfBusinessCounts,
@@ -205,6 +369,6 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     noRecordedPartyChoiceConfirmationCount: matchedKeys.size - withChoice.size,
     allBlankObservationConfirmationCount: allBlank.size, candidateCount: sorted.length, candidates,
     candidatesTruncated: sorted.length > limit, conflictConfirmationCount: conflicted.length,
-    conflicts, conflictsTruncated: conflicted.length > conflictLimit,
+    conflicts, conflictsTruncated: conflicted.length > conflictLimit, historicalHints,
   };
 }
