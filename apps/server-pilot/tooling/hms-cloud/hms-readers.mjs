@@ -5,3 +5,4 @@ export { readGuestDetailsFromStay360 as readGuest } from './stay360-guest-detail
 export { readGuestFormsFromStay360 as readGuestForm } from './stay360-guest-form.mjs';
 export { readDocumentsFromStay360 as readDocuments } from './stay360-documents.mjs';
 export { openStay360RecordTab } from './stay360-record-tabs.mjs';
+export { readAssociatedReservationsFromStay360 as readAssociatedReservations } from './stay360-associated-reservations.mjs';
