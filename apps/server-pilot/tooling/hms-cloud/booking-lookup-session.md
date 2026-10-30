@@ -49,8 +49,10 @@ an explicit snapshot and optionally `HMS_MEMORY_OUTBOUND_PATH` to message/PDF
 JSONL; a snapshot without a message file has no address evidence. Inputs must
 already be partitioned to HRCEN; missing property metadata cannot be verified.
 Missing or invalid files return `unavailable`, not an empty match. An address
-query without any message source also returns `unavailable` with the raw query
-result. Query options pass directly to the memory API: defaults are 25
+query returns `unavailable` with the raw result and linkage when no linked
+address evidence exists for its requested role. Other roles cannot establish
+availability; when role evidence exists, a zero-match result is returned as
+such. Query options pass directly to the memory API: defaults are 25
 candidates and conflicts, 20 evidence records, all supported business sources,
 and the `outbound-recipient` address role when none is specified.
 Results preserve role, source, conflict and truncation signals. See

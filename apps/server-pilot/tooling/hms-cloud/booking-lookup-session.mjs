@@ -108,9 +108,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
         return { id, tool, outcome: 'unavailable', issue: 'memory_property_mismatch' };
       }
       const result = queryHmsBookingMemory(memory, request.query, request.options);
-      const addressSources = memory.linkage?.outboundSourceFiles?.length || memory.linkage?.outboundPdfRecordCount
-        || memory.linkage?.inboundMessageRecordCount || memory.addressEvidence?.length;
-      if (['email', 'domain'].includes(result.queryType) && !addressSources) {
+      if (['email', 'domain'].includes(result.queryType)
+          && !memory.addressEvidence.some((item) => item.role === result.role)) {
         return { id, tool, outcome: 'unavailable', issue: 'memory_address_sources_unavailable', result };
       }
       return { id, tool, outcome: 'ok', result };
