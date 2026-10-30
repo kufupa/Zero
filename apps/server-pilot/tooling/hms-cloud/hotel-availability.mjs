@@ -32,6 +32,16 @@ function validate(input) {
   return { nights };
 }
 
+// The animated HMS menu can be visible while its tree is outside the viewport.
+async function clickMenuNode(node) {
+  try { await node.click({ timeout: 2500 }); }
+  catch (error) {
+    const message = String(error);
+    if (!/outside of the viewport/i.test(message) || /intercepts pointer events/i.test(message)) throw error;
+    await node.evaluate((element) => element.click());
+  }
+}
+
 /** Open standalone Hotel Availability from Stay 360, or reuse it when already open. */
 export async function openHotelAvailability(page) {
   await installReadOnlyGuard(page.context());
@@ -44,12 +54,12 @@ export async function openHotelAvailability(page) {
     .filter({ hasText: new RegExp(`^${name}$`) });
   await page.locator('a.app-menu-trigger:visible').click();
   if (!await node('Availability').isVisible()) {
-    await node('Front Desk').click();
+    await clickMenuNode(node('Front Desk'));
     await page.waitForTimeout(900);
   }
-  if (!await node('Hotel Availability').isVisible()) await node('Availability').click();
+  if (!await node('Hotel Availability').isVisible()) await clickMenuNode(node('Availability'));
   await page.waitForTimeout(1200);
-  await node('Hotel Availability').click();
+  await clickMenuNode(node('Hotel Availability'));
   await title.waitFor({ timeout: 25000 });
   await page.locator('input[name="dates"]:visible').first().waitFor({ timeout: 25000 });
 }
