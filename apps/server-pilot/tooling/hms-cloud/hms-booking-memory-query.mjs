@@ -98,10 +98,9 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
   for (const observation of observations) {
     if (query.type !== 'name' && !byAddress.has(observation.confirmationKey)) continue;
     for (const outcome of observation.outcomes) {
-      const fields = query.type === 'name' ? PARTY_FIELDS.filter(field => [
-        outcome.combination[field], ...(outcome.fieldConflicts?.recordView?.[field] || []),
-        ...(outcome.fieldConflicts?.stay360?.[field] || []),
-      ].some(value => nameKey(value).includes(query.normalized))) : [];
+      const fields = query.type === 'name' ? PARTY_FIELDS.filter(field => (outcome.combination[field] == null
+        ? [...(outcome.fieldConflicts?.recordView?.[field] || []), ...(outcome.fieldConflicts?.stay360?.[field] || [])]
+        : [outcome.combination[field]]).some(value => nameKey(value).includes(query.normalized))) : [];
       if (query.type === 'name' && !fields.length) continue;
       const key = combinationKey(outcome.combination);
       const group = groups.get(key) || { combination: outcome.combination, confirmations: new Set(), entries: [], fields: new Set() };
@@ -188,8 +187,9 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     }
     return detail;
   });
-  const withChoice = new Set(sorted.filter(group => ['has_recorded_choice', 'conflicting_observations']
-    .includes(choiceStatus(group))).flatMap(group => [...group.confirmations]));
+  const withChoice = new Set(sorted.flatMap(group => group.entries.filter(({ outcome }) =>
+    PARTY_FIELDS.some(field => text(outcome.combination[field])) || outcome.conflictingFields?.length)
+    .map(item => item.observation.confirmationKey)));
   const allBlank = new Set(sorted.filter(group => choiceStatus(group) === 'all_party_fields_observed_blank')
     .flatMap(group => [...group.confirmations]));
   const unresolvedConfirmationCount = [...allOutcomes.values()].filter(outcomes =>
