@@ -33,6 +33,11 @@ means an action may have occurred; inspect the draft before retrying. If an
 unsupported identifier is discovered in the native request after typing, the
 request is blocked and `draftMayHaveChanged` is true.
 
+After any uncertain attempted selection, the page refuses further rate
+selections and other actions using the shared fence; use a fresh page after
+inspecting the draft. A page-lifetime fence blocks later unapproved rate-change
+requests while allowing unrelated operations.
+
 One live Proof Labtest observation on 2027 dates changed meal plan, market
 segment and track; a later rate replacement changed meal plan. Other property,
 name and date combinations have not been established by that example. The

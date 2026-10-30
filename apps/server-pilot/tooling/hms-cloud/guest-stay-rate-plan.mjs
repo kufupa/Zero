@@ -1,6 +1,7 @@
 // Select a current rate code on a verified blank HRCEN Guest Stay.
 import { createHash } from 'node:crypto';
 import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -182,7 +183,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
   if (busy.has(page)) return {outcome:'execution_failure',issue:'RATE_SELECTION_IN_PROGRESS'};
   busy.add(page);
-  let nativeDialog = false, attempted = false, unsupportedId = null, before = null, after = null, guard = null;
+  let nativeDialog = false, attempted = false, unsupportedId = null, before = null, after = null, guard = null, fence = null, scope = null;
   const blocked = [], requests = new Map(), responses = [], sessions = [];
   const onDialog = () => {nativeDialog = true;};
   const onRequest = request => {
@@ -205,6 +206,8 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
   };
   page.on('dialog',onDialog); page.on('request',onRequest); page.on('response',onResponse);
   try {
+    fence = await installPageRequestFence(page,[CHANGE]);
+    scope = fence.open();
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const dates = checkedDraft(before);
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
@@ -232,7 +235,11 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
       if (!Array.from(requests.values()).includes('validation') && validationRequest(request,code,dates)) kind = 'validation';
       else if (Array.from(requests.values()).includes('validation') && !Array.from(requests.values()).includes('change') &&
           rateChangeRequest(request,code,dates,sessionId,before)) kind = 'change';
-      if (kind) {requests.set(request,kind); return route.fallback();}
+      if (kind) {
+        if (kind === 'change' && !scope?.allow(request)) return route.abort();
+        requests.set(request,kind);
+        return route.fallback();
+      }
       unsupportedId = draftIdIssue(request) || unsupportedId;
       const url = new URL(request.url());
       blocked.push({method:request.method(),path:url.pathname,originMatches:url.origin === ORIGIN,query:Boolean(url.search)});
@@ -274,7 +281,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
       changedFields:changedFields(before.fields,after.fields),
       effects:{validationStatus:validation[0].response.status(),rateChangeStatus:change[0].response.status(),blockedRequests:blocked}};
   } catch (error) {
-    if (attempted) selectedOnPage.delete(page);
+    if (attempted) { selectedOnPage.delete(page); fence?.quarantine(); }
     const unsupported = unsupportedId || (error?.message === 'GUEST_PROFILE_ID_UNSUPPORTED' ? error.message : null);
     return {outcome:unsupported ? 'unsupported' : attempted ? 'selection_uncertain' : 'execution_failure',
       issue:unsupported || (nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error)),
@@ -282,6 +289,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
       ...(blocked.length ? {blockedRequests:blocked} : {}),
       ...(before && after ? {changedFields:changedFields(before.fields,after.fields)} : {})};
   } finally {
+    scope?.close();
     if (guard) await page.unroute('**/*',guard).catch(() => {});
     page.off('dialog',onDialog); page.off('request',onRequest); page.off('response',onResponse); busy.delete(page);
   }
