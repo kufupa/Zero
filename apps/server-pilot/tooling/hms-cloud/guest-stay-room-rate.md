@@ -36,6 +36,12 @@ Use `offset` or inspection for more detail. Rate Shop controls are included in
 its catalog result. A `no_match` means no match in a verified complete catalog;
 otherwise an empty partial catalog is `incomplete`.
 
+Room results include `criteria.nativeFilters` from the native picker request.
+When HMS prefilters a reopened picker, `coverage.nativeFiltered` is true,
+`total` is unknown for the whole catalog, and `filteredResultTotal` and
+`filteredResultComplete` describe only the returned subset. The tool does not
+clear this filter; an absent room remains unverified.
+
 Search leaves the picker open. A further search of that picker refines the same
 observation and issues a new `searchId`; it does not refresh HMS data. Close the
 picker and search again for a new observation. Inspection and selection require

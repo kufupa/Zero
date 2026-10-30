@@ -242,6 +242,10 @@ async function collectCatalog(page, kind, nativeDialog) {
   searches.set(page, { kind, windowId: id, shopId: searches.get(page)?.shopId, formState, cleanupOnly: true });
   const response = await initial;
   if (!response || response.status() !== 200) throw new Error('PICKER_REQUEST_UNVERIFIED');
+  const nativeFilters = kind === 'roomType'
+    ? [...new URLSearchParams(response.request().postData() || '')]
+      .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }))
+    : [];
   let { rows, metadata } = responseGrid(parseResponse(await responseText(response)));
   const initialMetadata = metadata;
   if (clean(metadata.GRIDNAME) !== spec.grid) throw new Error('PICKER_RESPONSE_INVALID');
@@ -269,6 +273,10 @@ async function collectCatalog(page, kind, nativeDialog) {
   const c = coverage(metadata, rows.length);
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
+  const catalogCoverage = kind !== 'roomType' ? c : nativeFilters.length
+    ? { ...c, total: null, complete: false, possiblyTruncated: true, nativeFiltered: true,
+      filteredResultTotal: c.total, filteredResultComplete: c.complete }
+    : { ...c, nativeFiltered: false };
   const key = (row) => signature([row], spec);
   const candidates = rows.map((row) => {
     const matches = current.records.filter((record) => key(record) === key(row));
@@ -277,7 +285,7 @@ async function collectCatalog(page, kind, nativeDialog) {
       responseData: row, gridData: matches.length === 1 ? matches[0] : null,
       ...(matches.length > 1 ? { possibleGridData: matches } : {}) };
   });
-  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: c,
+  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: catalogCoverage, nativeFilters,
     columns: current.columns, metadata, pickerState: JSON.stringify(current),
     formState: JSON.stringify(await formFields(page)),
     shopState: kind === 'ratePlan' ? JSON.stringify(await shopControls(page)) : null };
@@ -335,6 +343,7 @@ async function search(page, kind, input = {}) {
     return { outcome, kind, searchId, observedAt: state.observedAt,
       criteria: { propertyCode: PROPERTY, scope: kind === 'ratePlan' ? 'guest_stay_rate_shop_catalog' : 'guest_stay_room_catalog',
         query: filter.query, offset: filter.offset, limit: filter.limit,
+        ...(kind === 'roomType' ? { nativeFilters: state.nativeFilters.map((item) => ({ ...item })) } : {}),
         ...(state.shopState ? { rateShopControls: JSON.parse(state.shopState) } : {}) },
       coverage: { ...state.coverage, matchingLoaded: matches.length, returned: Math.min(filter.limit, Math.max(0, matches.length - filter.offset)) },
       columns: state.columns, metadata: state.metadata, candidates: matches.slice(filter.offset, filter.offset + filter.limit), effects };
