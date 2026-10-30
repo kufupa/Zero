@@ -180,17 +180,19 @@ export function isCanonicalMailbox(value: string): boolean {
 function normalizeOriginalMailbox(raw: string): string | null {
   const trimmed = raw.trim();
   // Locate only angle brackets outside quoted display names or quoted local parts.
-  let quoted = false, escaped = false, open = -1, close = -1;
+  let quoted = false, literal = false, escaped = false, open = -1, close = -1;
   for (let index = 0; index < trimmed.length; index++) {
     const character = trimmed[index]!;
     if (escaped) { escaped = false; continue; }
-    if (quoted && character === '\\') { escaped = true; continue; }
-    if (character === '"') { quoted = !quoted; continue; }
+    if ((quoted || literal) && character === '\\') { escaped = true; continue; }
+    if (!literal && character === '"') { quoted = !quoted; continue; }
     if (quoted) continue;
+    if (literal) { if (character === ']') literal = false; continue; }
+    if (character === '[') { literal = true; continue; }
     if (character === '<') { if (open !== -1 || close !== -1) return null; open = index; }
     if (character === '>') { if (open === -1 || close !== -1) return null; close = index; }
   }
-  if (quoted || escaped || (open === -1) !== (close === -1) ||
+  if (quoted || literal || escaped || (open === -1) !== (close === -1) ||
       (close !== -1 && trimmed.slice(close + 1).trim())) return null;
   const display = open === -1 ? '' : trimmed.slice(0, open).trim();
   quoted = false; escaped = false;
@@ -200,7 +202,7 @@ function normalizeOriginalMailbox(raw: string): string | null {
     if (escaped) { escaped = false; continue; }
     if (quoted && character === '\\') { escaped = true; continue; }
     if (character === '"') { quoted = !quoted; continue; }
-    if (!quoted && /[@,:;]/.test(character)) return null;
+    if (!quoted && /[@,:;()\\[\]]/.test(character)) return null;
   }
   if (quoted || escaped) return null;
   const candidate = (open === -1 ? trimmed : trimmed.slice(open + 1, close)).trim();
@@ -211,18 +213,20 @@ function normalizeOriginalMailbox(raw: string): string | null {
 export function normalizeOriginal(value: unknown): string[] | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const parts: string[] = [];
-  let quoted = false, escaped = false, angled = false, start = 0;
+  let quoted = false, literal = false, escaped = false, angled = false, start = 0;
   for (let i = 0; i < value.length; i++) {
     const ch = value[i]!;
     if (escaped) { escaped = false; continue; }
-    if (quoted && ch === '\\') { escaped = true; continue; }
-    if (ch === '"') { quoted = !quoted; continue; }
+    if ((quoted || literal) && ch === '\\') { escaped = true; continue; }
+    if (!literal && ch === '"') { quoted = !quoted; continue; }
     if (quoted) continue;
+    if (literal) { if (ch === ']') literal = false; continue; }
+    if (ch === '[') { literal = true; continue; }
     if (ch === '<') { if (angled) return null; angled = true; continue; }
     if (ch === '>') { if (!angled) return null; angled = false; continue; }
     if (ch === ',' && !angled) { parts.push(value.slice(start, i)); start = i + 1; }
   }
-  if (quoted || angled || escaped) return null;
+  if (quoted || literal || angled || escaped) return null;
   parts.push(value.slice(start));
   const normalized = parts.map(normalizeOriginalMailbox);
   return normalized.some((item) => item === null) ? null : normalized as string[];

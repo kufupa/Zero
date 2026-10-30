@@ -35,11 +35,19 @@ describe('original address normalization', () => {
       .toEqual(['"local<part>"@example.test']);
   });
 
+  it('handles domain literal punctuation without splitting or treating it as an angle address', () => {
+    expect(normalizeOriginal('one@[tag:a,b], two@example.test')).toEqual(['one@[tag:a,b]', 'two@example.test']);
+    expect(normalizeOriginal('Name <one@[tag:a<b>]>, two@example.test'))
+      .toEqual(['one@[tag:a<b>]', 'two@example.test']);
+  });
+
   it('rejects malformed or ambiguous input as a whole, never a partial list', () => {
     for (const value of [
       null, undefined, 1, [], '', '   ', 'not an address',
       'one@example.test, broken', 'one@example.test,', ',one@example.test',
       'Group: one@example.test;', 'Name; Other <one@example.test>',
+      'John ("Nick" Doe <one@example.test>, two@example.test',
+      'John \\ "Nick" <one@example.test>', 
       'Name <<one@example.test>>', 'Name <one@example.test', 'Name one@example.test>',
       '"Unclosed <one@example.test>',
       'one@@example.test', 'one @example.test', 'Name <one@example.test> trailing',
