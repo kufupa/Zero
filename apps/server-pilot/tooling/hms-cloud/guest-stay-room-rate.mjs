@@ -1,9 +1,11 @@
 // Current room/rate catalogs and explicit room selection on an unsaved HRCEN Guest Stay.
 import { randomUUID } from 'node:crypto';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
 const PROPERTY = 'HRCEN';
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+const ROOM_CHANGE_PATHS = ['/web/base/OSRESV.HDR.roomtypechange', '/web/base/OSRESV.HDR.attributerefresh'];
 const SPECS = {
   roomType: { title: 'Room Types', grid: 'LVROOMTYPE2', code: 'roomtypecode', id: 'roomtypeid', name: 'roomtypedesc' },
   ratePlan: { title: 'Rate Plans', grid: 'LVMULTIRATEPLANS3', code: 'rateplancode', name: 'rateplanname' },
@@ -157,7 +159,7 @@ function allowedSearch(request, kind, origin) {
   }
   return false;
 }
-async function withFence(page, allowed, action) {
+async function withFence(page, allowed, action, scope = null, quarantine = null) {
   const effects = [];
   const requests = new Map();
   const inFlight = new Set();
@@ -182,12 +184,14 @@ async function withFence(page, allowed, action) {
     requests.set(request, effect);
     inFlight.add(request);
     if (!permitted) { blocked = true; return route.abort(); }
+    if (scope && !scope.allow(request)) { blocked = true; return route.abort(); }
     return route.fallback();
   };
   page.on('response', onResponse);
   page.on('requestfinished', onFinished);
   page.on('requestfailed', onFailed);
   await page.route('**/*', handler);
+  let verified = false;
   try {
     let result;
     try { result = await action(); }
@@ -198,8 +202,11 @@ async function withFence(page, allowed, action) {
     if (inFlight.size || failed || effects.some((effect) => effect.permitted && (!effect.status || effect.status >= 400))) {
       throw new Error('PICKER_NETWORK_UNVERIFIED');
     }
+    verified = true;
     return { result, effects };
   } finally {
+    if (!verified) quarantine?.();
+    scope?.close();
     await page.unroute('**/*', handler).catch(() => {});
     page.off('response', onResponse);
     page.off('requestfinished', onFinished);
@@ -385,13 +392,14 @@ function changedFields(before, after) {
 export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {}) {
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
-  let native = false, attempted = false;
+  let native = false, attempted = false, fence, scope;
   const onDialog = () => { native = true; };
   const responses = [];
-  const paths = ['/web/base/OSRESV.HDR.roomtypechange', '/web/base/OSRESV.HDR.attributerefresh'];
-  const onResponse = (response) => { if (paths.includes(new URL(response.url()).pathname)) responses.push(response); };
+  const onResponse = (response) => { if (ROOM_CHANGE_PATHS.includes(new URL(response.url()).pathname)) responses.push(response); };
   page.on('dialog', onDialog);
   try {
+    fence = await installPageRequestFence(page, ROOM_CHANGE_PATHS);
+    scope = fence.open();
     const state = searches.get(page);
     if (!state || state.kind !== 'roomType' || !input.searchId || input.searchId !== state.searchId) throw new Error('SEARCH_STALE');
     await assertCurrent(page, state, () => native);
@@ -410,11 +418,14 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
     const { result: after, effects } = await withFence(page, (request, origin) => {
       const url = new URL(request.url());
       const body = new URLSearchParams(request.postData() || '');
-      const keys = ['propertycode', 'confirmationnumber', 'PKID', 'recordid', 'reservationid', 'roomtype', 'roomtypeid'];
-      return url.origin === origin && !url.search && paths.includes(url.pathname) && keys.every((key) => body.getAll(key).length === 1) &&
+      const keys = ['propertycode', 'confirmationnumber', 'PKID', 'recordid', 'reservationid', 'roomtype', 'roomtypeid', 'ONLY_DATA_REQUIRED'];
+      const bodyKeys = [...body.keys()];
+      return url.origin === origin && !url.search && ROOM_CHANGE_PATHS.includes(url.pathname) &&
+        keys.every((key) => body.getAll(key).length === 1 && bodyKeys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
         body.get('propertycode') === PROPERTY && !clean(body.get('confirmationnumber')) &&
         body.get('PKID') === `@[EMPTY]#@[EMPTY]#${PROPERTY}#` && !clean(body.get('recordid')) &&
-        !clean(body.get('reservationid')) && body.get('roomtype') === chosen.code && body.get('roomtypeid') === chosen.nativeId;
+        !clean(body.get('reservationid')) && body.get('ONLY_DATA_REQUIRED') === 'true' &&
+        body.get('roomtype') === chosen.code && body.get('roomtypeid') === chosen.nativeId;
     }, async () => {
       attempted = true;
       await rows.nth(indexes[0]).click({ timeout: timeoutMs });
@@ -427,7 +438,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
       await win.waitFor({ state: 'hidden', timeout: timeoutMs }); searches.delete(page);
       await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: timeoutMs });
       await assertWindows(page, [], () => native);
-      for (const path of paths) {
+      for (const path of ROOM_CHANGE_PATHS) {
         const matched = responses.filter((response) => new URL(response.url()).pathname === path);
         if (matched.length !== 1 || matched[0].status() !== 200) throw new Error('ROOM_CHANGE_UNVERIFIED');
         const values = parseResponse(await responseText(matched[0])).values;
@@ -439,16 +450,17 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
       const fields = await formFields(page);
       if (clean(fields.find((item) => item.name === 'roomtype')?.value) !== chosen.code) throw new Error('ROOM_READBACK_MISMATCH');
       return fields;
-    });
+    }, scope, () => { if (attempted) fence.quarantine(); });
     searches.delete(page);
     return { outcome: 'selected_unsaved', searchId: state.searchId, observedAt: state.observedAt,
       nativeId: chosen.nativeId, code: chosen.code, selectedField: after.find((field) => field.name === 'roomtype'),
       nativeIdEvidence: 'form_change_and_attribute_refresh_responses',
       form: { fields: after, changedFields: changedFields(before, after) }, effects };
   } catch (error) {
+    if (attempted) fence?.quarantine();
     if (attempted && searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
     return { outcome: attempted ? 'selection_uncertain' : 'execution_failure', issue: issue(error, 'ROOM_SELECTION_FAILED') };
-  } finally { page.off('response', onResponse); page.off('dialog', onDialog); busy.delete(page); }
+  } finally { scope?.close(); page.off('response', onResponse); page.off('dialog', onDialog); busy.delete(page); }
 }
 
 /** Explicitly discard the open picker (and Rate Shop's pending selection). */
