@@ -296,9 +296,10 @@ export function getAvailabilityView(snapshot, filters = {}) {
 
   if (data.children.some((item) => !item || typeof item !== 'object')) throw new TypeError('INVALID_AVAILABILITY_SNAPSHOT');
   const propertyRows = data.children.filter((item) => item.isprop && !item.issummary);
-  if (propertyRows.some((property) => !Array.isArray(property.children) || property.children.some((room) =>
-    !room || typeof room !== 'object' || !Array.isArray(room.children) ||
-    room.children.some((rate) => !rate || typeof rate !== 'object')))) {
+  const hasCode = (item) => typeof item?.code === 'string' && Boolean(item.code.trim());
+  if (propertyRows.some((property) => !hasCode(property) || !Array.isArray(property.children) || property.children.some((room) =>
+    !room || typeof room !== 'object' || !hasCode(room) || !Array.isArray(room.children) ||
+    room.children.some((rate) => !rate || typeof rate !== 'object' || !hasCode(rate))))) {
     throw new TypeError('INVALID_AVAILABILITY_SNAPSHOT');
   }
   const submittedProperties = submittedCodes(snapshot.appliedCriteria?.propertyCodes)?.map((code) => code.toUpperCase());
