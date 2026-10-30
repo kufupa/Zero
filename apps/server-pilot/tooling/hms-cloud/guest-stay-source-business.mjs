@@ -325,8 +325,8 @@ export async function inspectGuestStaySourceBusiness(page, { searchId, nativeCod
   try {
     const scope = scopes.get(page), { state } = await requireCurrent(page, scope || {}, searchId);
     const all = nativeCode == null ? state.result.candidates : state.result.candidates.filter((row) => row.nativeCode === clean(nativeCode));
-    return { outcome: 'ok', searchId, coverage: state.result.coverage, offset, returned: Math.min(limit, Math.max(0, all.length - offset)),
-      hasMoreLoaded: offset + limit < all.length, candidates: all.slice(offset, offset + limit) };
+    return structuredClone({ outcome: 'ok', searchId, coverage: state.result.coverage, offset, returned: Math.min(limit, Math.max(0, all.length - offset)),
+      hasMoreLoaded: offset + limit < all.length, candidates: all.slice(offset, offset + limit) });
   } catch (error) {
     const scope = scopes.get(page);
     if (error?.message === 'SOURCE_SEARCH_STALE' && scope?.search?.searchId === searchId) invalidate(scope);
