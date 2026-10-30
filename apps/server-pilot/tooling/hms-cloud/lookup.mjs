@@ -166,20 +166,27 @@ function parseGridResponse(body) {
 }
 
 async function waitForResponseRows(page, windowId, columns, rows, timeoutMs) {
-  const expected = signature(rows, columns);
-  await page.waitForFunction(({ id, keys, expectedRows }) => {
+  const result = await page.waitForFunction(({ id, baseKeys, responseRows }) => {
     const win = Ext.getCmp(id);
     const store = win?.query('grid,readonlygrid')?.[0]?.getStore?.();
     if (!win?.isVisible?.() || !store) return false;
+    const records = store.getRange().map(({ data }) => data);
+    const scalar = (value) => value == null || ['string', 'number', 'boolean'].includes(typeof value);
+    const extraKeys = [...new Set(responseRows.flatMap((row) => Object.keys(row)))].filter((key) =>
+      !/date|time/i.test(key) && records.some((record) => Object.hasOwn(record, key)) &&
+      responseRows.every((row) => scalar(row[key])) && records.every((record) => scalar(record[key])));
+    const keys = [...new Set([...baseKeys, ...extraKeys])].sort();
     const cleanValue = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
-    const actual = store.getRange().map(({ data }) => JSON.stringify(keys.map((key) => cleanValue(data[key])))).sort();
-    return JSON.stringify(actual) === expectedRows;
-  }, { id: windowId, keys: columns, expectedRows: expected }, { timeout: timeoutMs });
-  return expected;
+    const sig = (items) => JSON.stringify(items.map((row) => JSON.stringify(keys.map((key) => cleanValue(row[key])))).sort());
+    return sig(records) === sig(responseRows) ? keys : false;
+  }, { id: windowId, baseKeys: columns, responseRows: rows }, { timeout: timeoutMs });
+  const keys = await result.jsonValue();
+  await result.dispose();
+  return { keys, expected: signature(rows, keys) };
 }
 
-function candidate(row, records, kind, spec) {
-  const matches = records.filter((record) => rowKey(record, spec.columns) === rowKey(row, spec.columns));
+function candidate(row, records, kind, spec, keys) {
+  const matches = records.filter((record) => rowKey(record, keys) === rowKey(row, keys));
   return {
     nativeId: clean(row[spec.id]), name: clean(row[spec.name]),
     ...(kind === 'agency' ? {
@@ -259,29 +266,32 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     stage = 'reading_response';
     const { rows, metadata } = parseGridResponse(await response.text());
     stage = 'waiting_for_grid';
-    const expectedRows = await waitForResponseRows(page, windowId, spec.columns, rows, timeoutMs);
+    const { keys, expected } = await waitForResponseRows(page, windowId, spec.columns, rows, timeoutMs);
     await assertExpectedDialogs(page);
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     const externalError = page.getByText(/Cannot retrieve profile:\s*External system|External system unavailable/i)
       .filter({ visible: true });
     if (await externalError.count()) throw new Error('EXTERNAL_SYSTEM_UNAVAILABLE');
     const grid = await readGrid(page, windowId);
-    if (signature(grid.records, spec.columns) !== expectedRows || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
+    if (signature(grid.records, keys) !== expected || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
       throw new Error('LOOKUP_RESULTS_UNVERIFIED');
     }
     const resultCoverage = coverage(metadata, grid.records.length);
     if (!rows.length && (resultCoverage.serverMoreRecords !== false || (resultCoverage.total != null && resultCoverage.total !== 0))) {
       throw new Error('LOOKUP_EMPTY_UNVERIFIED');
     }
-    const candidates = rows.map((row) => candidate(row, grid.records, kind, spec));
+    const candidates = rows.map((row) => candidate(row, grid.records, kind, spec, keys));
     const searchId = randomUUID();
-    lastSearch.set(page, { kind, windowId, searchId, controls, grid: JSON.stringify(grid.records), candidates });
+    lastSearch.set(page, { kind, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),
+      candidates: candidates.map(({ nativeId, name }) => ({ nativeId, name })) });
+    const unverified = (records) => [...new Set(records.flatMap((row) => Object.keys(row)))].filter((key) => !keys.includes(key));
     return {
       outcome: candidates.length ? 'matches' : 'no_match', kind, field: spec.label, query, searchId,
       criteria: { field: spec.filter, query, controls, requestFilters }, coverage: resultCoverage,
       loaded: resultCoverage.loaded, total: resultCoverage.total,
       possiblyTruncated: resultCoverage.possiblyTruncated, serverMoreRecords: resultCoverage.serverMoreRecords,
       columns: grid.columns, metadata, candidates,
+      correlation: { verifiedFields: keys, unverifiedResponseFields: unverified(rows), unverifiedGridFields: unverified(grid.records) },
     };
   } catch (error) {
     return { outcome: 'execution_failure', kind, query, stage, candidates: [], issue: issue(error, 'LOOKUP_FAILED') };
@@ -380,7 +390,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
     const win = lookupWindow(page, kind);
     if (!await win.isVisible() || await win.getAttribute('id') !== previous.windowId) throw new Error('LOOKUP_STALE');
     const grid = await readGrid(page, previous.windowId);
-    if (JSON.stringify(grid.records) !== previous.grid || JSON.stringify(await readCriteria(win)) !== JSON.stringify(previous.controls)) {
+    if (JSON.stringify(grid.records) !== previous.grid || JSON.stringify(await readCriteria(win)) !== previous.controls) {
       throw new Error('LOOKUP_STALE');
     }
     const before = await readForm(page);

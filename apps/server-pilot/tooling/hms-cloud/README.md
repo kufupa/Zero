@@ -24,7 +24,9 @@ Searches return the applied UI and request filters, column labels, server
 metadata, and both response and loaded-grid data for each candidate. Coverage
 includes loaded and reported totals, the server's more-records flag, and an
 unknown truncation state when completeness cannot be established. Searches do
-not paginate. `no_match` requires a verified empty response and grid;
+not paginate. Correlation identifies fields that could not be compared between
+the response and grid, including dates converted by the UI. `no_match` requires
+a verified empty response and grid;
 `execution_failure` is not an empty result.
 
 Field-named selection requires the `searchId` and a unique native ID from that
