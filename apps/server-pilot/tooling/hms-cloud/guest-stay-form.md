@@ -64,8 +64,11 @@ Option coverage is unknown when HMS does not supply a reliable total. CMS
 selection checks the picker, search ID, grid and code again before clicking.
 Callers choose the code; this module does not infer one.
 Guarantee selection is currently limited to an HRCEN Proof Labtest draft with
-2027+ dates and all guarded guest, stay and profile IDs blank. A selected guest
-profile or nonblank A/R profile ID is unsupported. Selecting the current value
+2027+ dates and guarded guest, stay and other profile IDs blank. A selected
+guest profile is unsupported. A nonblank A/R profile is supported only after `selectArAccount`
+verifies the account and profile on the same page, draft record and session;
+another A/R search invalidates that proof. Pre-populated or unverified A/R
+profiles remain unsupported. Selecting the current value
 returns `unchanged_unsaved` without another guarantee-change request. On one
 live draft, guarantee first, rate second and fake guest third retained all three
 values; guarantee changes after the guest were refused. In a separate live
