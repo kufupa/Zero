@@ -44,6 +44,10 @@ loaded rows again. They reject changed or closed visible state; hidden identity 
 server changes are not detected. Even matching criteria and an unchanged picker
 do not guarantee current inventory, prices or eligibility.
 
+If loading fails after this module opens a picker, call `closeRoomRatePicker`
+before retrying. Cleanup checks the recorded window and blank draft and refuses
+unexpected dialogs; it never makes the incomplete catalog selectable.
+
 Room selection requires a unique current candidate with both a native ID and a
 code. A non-unique supplied identifier returns `ambiguous` on inspection and selection
 refuses; a distinguishing ID/code pair can resolve it. The tool checks the selected row, fences both observed
@@ -53,6 +57,9 @@ fields added, removed or changed. If it returns `selection_uncertain`, an action
 may have occurred: inspect the draft before retrying. Closing a Rate Shop picker
 explicitly discards its pending shopping selection and can send a session-cancel
 request; it does not cancel a stay.
+In one live blank draft, that request's session ID matched the two room-change
+responses and the Rate Shop inquiry. The cancel guard does not independently
+bind the ID, and isolation from other shopping sessions remains unverified.
 
 The Rate Plans picker filters **Rate Shop**; selecting a catalog entry does not
 itself set a rate on the stay. Rate-plan selection and transfer of a Hotel

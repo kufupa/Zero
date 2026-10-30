@@ -29,7 +29,6 @@ async function assertWindows(page, allowed, nativeDialog) {
   }
   if (new Set(titles).size !== titles.length) throw new Error('UNEXPECTED_DIALOG');
 }
-
 async function formFields(page) {
   if (new URL(page.url()).origin !== HMS_ORIGIN) throw new Error('TARGET_MISMATCH');
   return page.evaluate(() => {
@@ -55,7 +54,6 @@ async function formFields(page) {
         disabled: el.disabled, readOnly: Boolean(el.readOnly) }));
   });
 }
-
 async function readWindow(page, id) {
   return page.evaluate((windowId) => {
     const win = Ext.getCmp(windowId);
@@ -74,7 +72,6 @@ async function readWindow(page, id) {
       })), footer: footer ? { loaded: Number(footer[1]), total: Number(footer[2]) } : null };
   }, id);
 }
-
 async function shopControls(page) {
   const win = picker(page, 'Rate Shop');
   if (!await win.isVisible().catch(() => false)) throw new Error('RATE_SHOP_UNAVAILABLE');
@@ -82,7 +79,6 @@ async function shopControls(page) {
     elements.map((el) => ({ name: el.name || null,
       value: ['checkbox', 'radio'].includes(el.type) ? el.checked : el.value })));
 }
-
 async function responseText(response) {
   let timer;
   try { return await Promise.race([response.text(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('PICKER_RESPONSE_TIMEOUT')), 20000); })]); }
@@ -211,18 +207,16 @@ async function withFence(page, allowed, action) {
     page.off('requestfailed', onFailed);
   }
 }
-
 async function waitGrid(page, id, count, timeout = 15000) {
   await page.waitForFunction(({ id, count }) => {
     const store = Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.();
     return store && !store.isLoading() && store.getCount() === count;
   }, { id, count }, { timeout });
 }
-
 async function collectCatalog(page, kind, nativeDialog) {
   const spec = SPECS[kind];
   await assertWindows(page, [], nativeDialog);
-  await formFields(page);
+  const formState = JSON.stringify(await formFields(page));
   const initial = page.waitForResponse((response) => {
     const req = response.request();
     const path = new URL(req.url()).pathname;
@@ -235,6 +229,8 @@ async function collectCatalog(page, kind, nativeDialog) {
     const shop = picker(page, 'Rate Shop');
     await shop.waitFor({ state: 'visible', timeout: 20000 });
     await assertWindows(page, ['Rate Shop'], nativeDialog);
+    const shopId = await shop.getAttribute('id'); if (!shopId) throw new Error('PICKER_UNAVAILABLE');
+    searches.set(page, { kind, shopId, formState, cleanupOnly: true });
     const ratePlans = shop.locator('input[name="rateplans"]:visible').first();
     await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
   } else {
@@ -243,13 +239,13 @@ async function collectCatalog(page, kind, nativeDialog) {
   }
   const win = picker(page, spec.title);
   await win.waitFor({ state: 'visible', timeout: 20000 });
+  const id = await win.getAttribute('id'); if (!id) throw new Error('PICKER_UNAVAILABLE');
+  searches.set(page, { kind, windowId: id, shopId: searches.get(page)?.shopId, formState, cleanupOnly: true });
   const response = await initial;
   if (!response || response.status() !== 200) throw new Error('PICKER_REQUEST_UNVERIFIED');
   let { rows, metadata } = responseGrid(parseResponse(await responseText(response)));
   const initialMetadata = metadata;
   if (clean(metadata.GRIDNAME) !== spec.grid) throw new Error('PICKER_RESPONSE_INVALID');
-  const id = await win.getAttribute('id');
-  if (!id) throw new Error('PICKER_UNAVAILABLE');
   await waitGrid(page, id, rows.length);
   let current = await readWindow(page, id);
   for (let attempt = 0; attempt < 20 && coverage(metadata, rows.length).complete === false; attempt += 1) {
@@ -282,12 +278,11 @@ async function collectCatalog(page, kind, nativeDialog) {
       responseData: row, gridData: matches.length === 1 ? matches[0] : null,
       ...(matches.length > 1 ? { possibleGridData: matches } : {}) };
   });
-  return { windowId: id, observedAt: new Date().toISOString(), candidates, coverage: c,
+  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: c,
     columns: current.columns, metadata, pickerState: JSON.stringify(current),
     formState: JSON.stringify(await formFields(page)),
     shopState: kind === 'ratePlan' ? JSON.stringify(await shopControls(page)) : null };
 }
-
 async function assertCurrent(page, state, nativeDialog) {
   const spec = SPECS[state.kind];
   await assertWindows(page, state.kind === 'ratePlan' ? ['Rate Shop', spec.title] : [spec.title], nativeDialog);
@@ -322,10 +317,10 @@ async function search(page, kind, input = {}) {
     await installReadOnlyGuard(page.context());
     let state = searches.get(page);
     let effects = [];
+    if (state?.cleanupOnly || (state && state.kind !== kind)) throw new Error('PICKER_CLOSE_REQUIRED');
     if (state?.kind === kind) {
       await assertCurrent(page, state, () => native);
     } else {
-      searches.delete(page);
       const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin),
         () => collectCatalog(page, kind, () => native));
       state = { kind, ...capture.result };
@@ -344,7 +339,7 @@ async function search(page, kind, input = {}) {
       coverage: { ...state.coverage, matchingLoaded: matches.length, returned: Math.min(filter.limit, Math.max(0, matches.length - filter.offset)) },
       columns: state.columns, metadata: state.metadata, candidates: matches.slice(filter.offset, filter.offset + filter.limit), effects };
   } catch (error) {
-    searches.delete(page);
+    if (searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
     return { outcome: 'execution_failure', kind, issue: issue(error, 'PICKER_SEARCH_FAILED') };
   } finally {
     page.off('dialog', onDialog);
@@ -354,7 +349,6 @@ async function search(page, kind, input = {}) {
 
 export const searchRoomTypes = (page, input) => search(page, 'roomType', input);
 export const searchRatePlans = (page, input) => search(page, 'ratePlan', input);
-
 function matchingCandidates(state, input) {
   const nativeId = clean(input?.nativeId);
   const code = clean(input?.code);
@@ -380,7 +374,6 @@ export async function inspectRoomRateCandidate(page, input = {}) {
     return { outcome: 'execution_failure', issue: issue(error, 'INSPECTION_FAILED') };
   } finally { page.off('dialog', onDialog); busy.delete(page); }
 }
-
 function changedFields(before, after) {
   const key = (field, index) => field.id || `${field.name}:${index}`;
   const previous = new Map(before.map((field, index) => [key(field, index), field]));
@@ -471,16 +464,23 @@ export async function closeRoomRatePicker(page) {
   try {
     const state = searches.get(page);
     if (!state) throw new Error('SEARCH_STALE');
-    await assertCurrent(page, state, () => native);
+    if (state.cleanupOnly) {
+      await assertWindows(page, state.kind === 'ratePlan' ? ['Rate Shop', ...(state.windowId ? ['Rate Plans'] : [])] : state.windowId ? ['Room Types'] : [], () => native);
+      if (JSON.stringify(await formFields(page)) !== state.formState ||
+          (state.windowId && await picker(page, SPECS[state.kind].title).getAttribute('id') !== state.windowId) ||
+          (state.shopId && await picker(page, 'Rate Shop').getAttribute('id') !== state.shopId)) throw new Error('SEARCH_STALE');
+    } else await assertCurrent(page, state, () => native);
     const result = await withFence(page, (req, origin) => {
       const url = new URL(req.url());
       if (state.kind !== 'ratePlan' || url.origin !== origin || url.search ||
           url.pathname !== `/api/internalBooking/${PROPERTY}/rateshop/rateSelection`) return false;
       try { return JSON.parse(req.postData() || '{}').action === 'CANCEL'; } catch { return false; }
     }, async () => {
-      const win = picker(page, SPECS[state.kind].title);
-      await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).click();
-      await win.waitFor({ state: 'hidden', timeout: 10000 });
+      if (state.windowId) {
+        const win = picker(page, SPECS[state.kind].title);
+        await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).click();
+        await win.waitFor({ state: 'hidden', timeout: 10000 }); state.windowId = null;
+      }
       if (state.kind === 'ratePlan') {
         const shop = picker(page, 'Rate Shop');
         const close = shop.locator('.x-tool-close:visible');
@@ -494,7 +494,7 @@ export async function closeRoomRatePicker(page) {
     searches.delete(page);
     return { outcome: 'closed_unsaved', effects: result.effects };
   } catch (error) {
-    searches.delete(page);
+    if (searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
     return { outcome: 'execution_failure', issue: issue(error, 'PICKER_CLOSE_FAILED') };
   } finally { page.off('dialog', onDialog); busy.delete(page); }
 }
