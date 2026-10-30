@@ -54,8 +54,11 @@ The child-age editor validates actual numbers with HMS and returns those
 numbers plus the visible age-band counts. An omitted list, `null`, and unknown
 ages are rejected; zero is accepted only when explicitly supplied. The blank
 initial spinner is interpreted as zero only when HMS returned an explicit empty
-age list. HMS can omit zero bands or the entire count object for an empty
-selection; returned band counts come from the visible form. The native count
+age list. For an explicit empty list on a blank spinner, the native up/down
+controls establish numeric zero and both transitions are checked before the
+unchanged request guard permits validation. A live unsaved draft verified zero,
+one child aged eight, and zero again. HMS can omit zero bands or the entire
+count object for an empty selection; returned band counts come from the visible form. The native count
 object and its presence are returned separately. A Guest Stay age selection
 does not apply criteria to Hotel Availability; set and verify that screen separately.
 
