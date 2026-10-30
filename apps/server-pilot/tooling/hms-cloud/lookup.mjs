@@ -25,6 +25,7 @@ const LOOKUPS = {
 
 const busyPages = new WeakSet();
 const lastSearch = new WeakMap();
+const verifiedArSelections = new WeakMap();
 const clean = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
 const rowKey = (row, columns) => JSON.stringify(columns.map((column) => clean(row[column])));
 const signature = (rows, columns) => JSON.stringify(rows.map((row) => rowKey(row, columns)).sort());
@@ -32,6 +33,75 @@ const issue = (error, fallback) => {
   const message = String(error?.message || error).split('\n')[0];
   return /^[A-Z][A-Z0-9_]{2,100}$/.test(message) ? message : fallback;
 };
+
+function forgetVerifiedAr(page) {
+  const previous = verifiedArSelections.get(page);
+  verifiedArSelections.delete(page);
+  if (previous) void previous.record.dispose().catch(() => {});
+}
+
+// Retain the native record object, not a caller-supplied draft identifier.
+async function arDraftRecord(page) {
+  let record;
+  try {
+    record = await page.evaluateHandle((origin) => {
+      if (location.origin !== origin) return null;
+      const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const names = ['guaranteetype', 'araccountname', 'confirmationnumber'];
+      const fields = names.map((name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible));
+      if (fields.some((items) => items.length !== 1) || fields[2][0].value.trim()) return null;
+      const component = (el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      const form = component(fields[0][0])?.up?.('form');
+      if (!form?.el?.dom || fields.some(([el]) => !form.el.dom.contains(el) || component(el)?.up?.('form') !== form)) return null;
+      return form.getRecord?.() ?? null;
+    }, ORIGIN);
+    const session = await record.evaluate((item) => {
+      const data = item?.data, keys = data && Object.keys(data);
+      const exact = (key, value) => keys && Object.hasOwn(data, key) &&
+        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
+      if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+          !keys.includes('bookingsessionid') || keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length !== 1) return null;
+      return String(data.bookingsessionid ?? '').trim() || null;
+    });
+    if (session) return { record, session };
+  } catch { /* A selection can still succeed without a guarantee proof. */ }
+  await record?.dispose().catch(() => {});
+  return null;
+}
+
+async function arRecordMatches(page, identity) {
+  try {
+    return await page.evaluate(({ origin, record, session, accountId, profileId }) => {
+      if (location.origin !== origin) return false;
+      const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const names = ['guaranteetype', 'araccountname', 'confirmationnumber'];
+      const fields = names.map((name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible));
+      if (fields.some((items) => items.length !== 1) || fields[2][0].value.trim()) return false;
+      const component = (el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      const form = component(fields[0][0])?.up?.('form');
+      if (!form?.el?.dom || form.getRecord?.() !== record ||
+          fields.some(([el]) => !form.el.dom.contains(el) || component(el)?.up?.('form') !== form)) return false;
+      const data = record?.data, keys = data && Object.keys(data);
+      const exact = (key, value) => keys && Object.hasOwn(data, key) &&
+        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
+      return Boolean(exact('propertycode', 'HRCEN') && exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status', 'New') &&
+        exact('bookingsessionid', session) && exact('araccountid', accountId) && exact('arprofileid', profileId));
+    }, { origin: ORIGIN, ...identity });
+  } catch { return false; }
+}
+
+export async function verifiedArSelectionToken(page, identity) {
+  const proof = verifiedArSelections.get(page);
+  if (!proof || proof.session !== identity.session || proof.accountId !== identity.accountId || proof.profileId !== identity.profileId ||
+      !await arRecordMatches(page, proof) || verifiedArSelections.get(page) !== proof) return null;
+  return proof.token;
+}
+
+export function isVerifiedArSelectionCurrent(page, identity) {
+  const proof = verifiedArSelections.get(page);
+  return Boolean(proof && proof.token === identity.token && proof.session === identity.session &&
+    proof.accountId === identity.accountId && proof.profileId === identity.profileId);
+}
 
 function lookupWindow(page, kind) {
   return page.locator('.x-window:visible').filter({ hasText: LOOKUPS[kind].title }).last();
@@ -268,6 +338,7 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
   const spec = LOOKUPS[kind];
   const query = typeof input === 'string' ? input.trim() : '';
   if (busyPages.has(page)) return { outcome: 'execution_failure', kind, query, candidates: [], issue: 'lookup_in_progress' };
+  if (kind === 'arAccount') forgetVerifiedAr(page);
   if (!query || query.length > 200 || /[\r\n]/.test(query)) {
     lastSearch.delete(page);
     return { outcome: 'input_gap', candidates: [], issue: `${kind}_name_required` };
@@ -393,12 +464,14 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   if (!nativeId) return { outcome: 'input_gap', issue: `${kind}_id_required` };
   if (requireSearchId && !searchId) return { outcome: 'input_gap', issue: 'search_id_required' };
   if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'lookup_in_progress' };
+  if (kind === 'arAccount') forgetVerifiedAr(page);
   busyPages.add(page);
   let attempted = false;
   let nativeDialog = false;
   let requestFailed = false;
   let observed = null;
   let nativeReadback = null;
+  let arDraft = null, arRequestBound = false, arResponseIdentity = null;
   let requestProperty = null;
   let requestIdVerified = false;
   let changeResponseVerified = false;
@@ -425,6 +498,12 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
           if (changeResponseVerified && kind === 'arAccount') {
             nativeReadback = Object.fromEntries(['araccountid', 'araccountname', 'arstatuscodedesc']
               .filter((key) => Object.hasOwn(values, key)).map((key) => [key, values[key]]));
+            const keys = Object.keys(values);
+            const unique = (key) => Object.hasOwn(values, key) && keys.filter((name) => name.toLowerCase() === key).length === 1;
+            if (arDraft && ['araccountid', 'arprofileid', 'bookingsessionid'].every(unique) &&
+                clean(values.araccountid) === nativeId && clean(values.arprofileid) && clean(values.bookingsessionid) === arDraft.session) {
+              arResponseIdentity = { session: arDraft.session, accountId: nativeId, profileId: clean(values.arprofileid) };
+            }
           }
           if (!changeResponseVerified) requestFailed = true;
         }).catch(() => { requestFailed = true; }).finally(() => { pendingChangeResponses -= 1; });
@@ -451,7 +530,12 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
         await route.abort();
         return;
       }
-      if (kind === 'arAccount') requestProperty = pageProperty;
+      if (kind === 'arAccount') {
+        requestProperty = pageProperty;
+        const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+        arRequestBound = Boolean(arDraft && body.getAll('bookingsessionid').length === 1 &&
+          keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length === 1 && body.get('bookingsessionid') === arDraft.session);
+      }
       requestIdVerified = true;
     }
     await route.fallback();
@@ -474,6 +558,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
       throw new Error('LOOKUP_STALE');
     }
     const before = await readForm(page);
+    if (kind === 'arAccount') arDraft = await arDraftRecord(page);
     const rows = win.locator('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row');
     const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
       const grid = (Ext.ComponentQuery.query('grid,readonlygrid') || [])
@@ -514,6 +599,13 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
         if (snapshot !== lastSnapshot || inFlight.size) stableSince = Date.now();
         else if (requestIdVerified && changeResponseVerified && !pendingChangeResponses && Date.now() - stableSince >= 500 &&
             value.trim().toLocaleLowerCase() === candidates[0].name.toLocaleLowerCase()) {
+          if (arDraft && arRequestBound && arResponseIdentity &&
+              await arRecordMatches(page, { record: arDraft.record, ...arResponseIdentity }) &&
+              !nativeDialog && !requestFailed && !inFlight.size) {
+            verifiedArSelections.set(page, { record: arDraft.record, ...arResponseIdentity, token: randomUUID() });
+            arDraft = null;
+          }
+          if (nativeDialog || requestFailed || inFlight.size) throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
           lastSearch.delete(page);
           return {
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
@@ -536,6 +628,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   } finally {
     scope?.close();
     await page.unroute('**/*', guardChange).catch(() => {});
+    await arDraft?.record.dispose().catch(() => {});
     page.off('dialog', onDialog);
     page.off('request', onRequest);
     page.off('requestfinished', onFinished);
