@@ -1,0 +1,468 @@
+// Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
+import { randomUUID } from 'node:crypto';
+
+const LOOKUPS = {
+  agency: {
+    title: 'Booking Agencies', field: 'ta1', label: 'Primary Booking Agency',
+    filter: 'Booking Agency Name', alias: 'travelagencyname', id: 'travelagencyid', name: 'travelagencyname',
+    changePath: '/web/base/OSRESV.HDR.changetravelagency', requestId: 'taid1',
+    columns: ['travelagencyid', 'travelagencyname', 'iatanumber', 'referencenumbertype',
+      'internalreferencenumber', 'address', 'city', 'country', 'contactfirstname', 'contactlastname', 'contactphone'],
+  },
+  organization: {
+    title: 'Organizations', field: 'company', label: 'Organization',
+    filter: 'Name', alias: 'companyname', id: 'companyid', name: 'companyname',
+    changePath: '/web/base/OSRESV.HDR.changeorganization', requestId: 'companyid',
+    columns: ['companyid', 'companyname', 'corporateaccountnumber', 'address', 'city', 'country',
+      'contactfirstname', 'contactlastname', 'contactphone'],
+  },
+  arAccount: {
+    title: 'A/R Account', field: 'araccountname', label: 'A/R Account',
+    filter: 'A/R Account', alias: 'araccountname', id: 'araccountid', name: 'araccountname',
+    columns: ['araccountid', 'araccountname', 'araccountnumber', 'arstatuscodedesc', 'accttype',
+      'accountstanding', 'address', 'city', 'country', 'firstname', 'lastname', 'phonenumber'],
+  },
+};
+
+const busyPages = new WeakSet();
+const lastSearch = new WeakMap();
+const clean = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
+const rowKey = (row, columns) => JSON.stringify(columns.map((column) => clean(row[column])));
+const signature = (rows, columns) => JSON.stringify(rows.map((row) => rowKey(row, columns)).sort());
+const issue = (error, fallback) => {
+  const message = String(error?.message || error).split('\n')[0];
+  return /^[A-Z][A-Z0-9_]{2,100}$/.test(message) ? message : fallback;
+};
+
+function lookupWindow(page, kind) {
+  return page.locator('.x-window:visible').filter({ hasText: LOOKUPS[kind].title }).last();
+}
+
+async function assertExpectedDialogs(page) {
+  const windows = page.locator('.x-window:visible:not(.x-menu)');
+  for (let index = 0; index < await windows.count(); index += 1) {
+    const titles = await windows.nth(index).locator('.x-window-header-text:visible').allTextContents();
+    if (titles.length !== 1 || !Object.values(LOOKUPS).some((spec) => titles[0].trim() === spec.title)) {
+      throw new Error('UNEXPECTED_DIALOG');
+    }
+  }
+}
+
+async function clickTreeNode(node) {
+  try {
+    await node.click({ timeout: 2500 });
+  } catch (error) {
+    const message = String(error);
+    if (!/outside of the viewport/i.test(message) || /intercepts pointer events/i.test(message)) throw error;
+    await node.evaluate((element) => element.click());
+  }
+}
+
+async function assertNewGuestStay(page) {
+  const agency = page.locator('input[name="ta1"]:visible').first();
+  const confirmation = page.locator('input[name="confirmationnumber"]:visible').first();
+  if (!await agency.isVisible() || !await confirmation.isVisible() || (await confirmation.inputValue()).trim()) {
+    throw new Error('NOT_A_NEW_GUEST_STAY');
+  }
+}
+
+/** Open a new, unsaved Guest Stay on the supplied authenticated page. */
+export async function openNewGuestStay(page) {
+  let nativeDialog = false;
+  const onDialog = () => { nativeDialog = true; };
+  page.on('dialog', onDialog);
+  try {
+    await assertExpectedDialogs(page);
+    const agency = page.locator('input[name="ta1"]:visible').first();
+    if (!await agency.isVisible().catch(() => false)) {
+      await page.locator('a.app-menu-trigger:visible').click();
+      const nodes = page.locator('span.x-tree-node-text:visible');
+      const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
+      if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }));
+      await clickTreeNode(guestStay);
+      await page.locator('input[name="ff_confirmationnumber"]:visible').first().waitFor({ timeout: 25000 });
+      await assertExpectedDialogs(page);
+      await page.locator('[data-qtip="New Record (Ctrl+N)"]:visible').first().click();
+      await agency.waitFor({ timeout: 25000 });
+    }
+    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    await assertExpectedDialogs(page);
+    await assertNewGuestStay(page);
+  } finally {
+    page.off('dialog', onDialog);
+  }
+}
+
+async function openLookupWindow(page, kind) {
+  await assertExpectedDialogs(page);
+  const win = lookupWindow(page, kind);
+  if (await win.isVisible().catch(() => false)) {
+    await assertNewGuestStay(page);
+    return win;
+  }
+  for (const other of Object.keys(LOOKUPS).filter((name) => name !== kind)) {
+    const otherWindow = lookupWindow(page, other);
+    if (await otherWindow.isVisible().catch(() => false)) {
+      await otherWindow.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).first().click();
+      await otherWindow.waitFor({ state: 'hidden', timeout: 10000 });
+    }
+  }
+  await openNewGuestStay(page);
+  const field = page.locator(`input[name="${LOOKUPS[kind].field}"]:visible`).first();
+  await field.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').first().click();
+  await win.waitFor({ state: 'visible', timeout: 20000 });
+  await assertExpectedDialogs(page);
+  return win;
+}
+
+async function readGrid(page, windowId) {
+  return page.evaluate((id) => {
+    const win = Ext.getCmp(id);
+    const grid = win?.query('grid,readonlygrid')?.[0];
+    const store = grid?.getStore?.();
+    if (!win?.isVisible?.() || !store) throw new Error('LOOKUP_GRID_UNAVAILABLE');
+    const columns = grid.getColumnManager?.()?.getColumns?.() || grid.columns || [];
+    return {
+      records: store.getRange().map((record) => ({ ...record.data })),
+      columns: columns.map((column) => ({
+        label: column.text ?? null, field: column.dataIndex ?? null, hidden: Boolean(column.hidden),
+      })),
+    };
+  }, windowId);
+}
+
+async function readCriteria(win) {
+  return win.locator('input:visible, select:visible, textarea:visible').evaluateAll((elements) =>
+    elements.map((element) => ({
+      name: element.name || null,
+      label: element.closest('.x-form-item, .x-field')?.querySelector('label')?.innerText?.trim() || null,
+      value: element.type === 'checkbox' || element.type === 'radio' ? element.checked : element.value,
+      type: element.type || element.tagName.toLowerCase(),
+    })));
+}
+
+function matchesRun(request, query, alias) {
+  try {
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/web/base/GRIDDATA') return false;
+    const body = new URLSearchParams(request.postData() || '');
+    return body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
+      body.get('MADDON_FILTER_VALUE_1')?.trim().toLocaleLowerCase() === query.toLocaleLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function parseGridResponse(body) {
+  try {
+    const payload = JSON.parse(body.replace(/^(\s*\{\s*)pageData\s*:/, '$1"pageData":'));
+    const data = payload?.pageData;
+    const grid = data?.grid?.GRIDRESULT?.GRID;
+    const failed = [payload, data].some((part) => part && Object.hasOwn(part, 'success') && part.success !== true);
+    if (failed || data?.messages != null || !Array.isArray(grid?.DATA) || !grid?.METADATA) throw new Error();
+    return { rows: grid.DATA, metadata: grid.METADATA };
+  } catch {
+    throw new Error('LOOKUP_RESPONSE_INVALID');
+  }
+}
+
+async function waitForResponseRows(page, windowId, columns, rows, timeoutMs) {
+  const expected = signature(rows, columns);
+  await page.waitForFunction(({ id, keys, expectedRows }) => {
+    const win = Ext.getCmp(id);
+    const store = win?.query('grid,readonlygrid')?.[0]?.getStore?.();
+    if (!win?.isVisible?.() || !store) return false;
+    const cleanValue = (value) => value == null || String(value).trim() === '' ? null : String(value).trim();
+    const actual = store.getRange().map(({ data }) => JSON.stringify(keys.map((key) => cleanValue(data[key])))).sort();
+    return JSON.stringify(actual) === expectedRows;
+  }, { id: windowId, keys: columns, expectedRows: expected }, { timeout: timeoutMs });
+  return expected;
+}
+
+function candidate(row, records, kind, spec) {
+  const matches = records.filter((record) => rowKey(record, spec.columns) === rowKey(row, spec.columns));
+  return {
+    nativeId: clean(row[spec.id]), name: clean(row[spec.name]),
+    ...(kind === 'agency' ? {
+      referenceNumber: clean(row.iatanumber), referenceNumberType: clean(row.referencenumbertype),
+      internalReferenceNumber: clean(row.internalreferencenumber),
+    } : kind === 'organization' ? { corporateAccountNumber: clean(row.corporateaccountnumber) } : {
+      accountNumber: clean(row.araccountnumber), status: clean(row.arstatuscodedesc),
+      accountType: clean(row.accttype), accountStanding: clean(row.accountstanding),
+    }),
+    address: clean(row.address), city: clean(row.city), country: clean(row.country),
+    contactFirstName: clean(kind === 'arAccount' ? row.firstname : row.contactfirstname),
+    contactLastName: clean(kind === 'arAccount' ? row.lastname : row.contactlastname),
+    contactPhone: clean(kind === 'arAccount' ? row.phonenumber : row.contactphone),
+    responseData: row, gridData: matches.length === 1 ? matches[0] : null,
+    ...(matches.length > 1 ? { possibleGridData: matches } : {}),
+  };
+}
+
+function coverage(metadata, loaded) {
+  const more = String(metadata.MORERECORDPRESENT ?? '').trim();
+  const serverMoreRecords = more === '+' ? true : more === '-' ? false : null;
+  const reportedTotal = metadata.RECORDS ?? null;
+  const numericTotal = /^\d+$/.test(String(reportedTotal)) ? Number(reportedTotal) : null;
+  const total = numericTotal != null && numericTotal >= loaded && !(serverMoreRecords && numericTotal === loaded)
+    ? numericTotal : null;
+  const pageSize = /^\d+$/.test(String(metadata.CLIENTROWS)) ? Number(metadata.CLIENTROWS) : null;
+  const truncated = serverMoreRecords === true || (total != null && total > loaded) ? true
+    : serverMoreRecords === false && ((total != null && total === loaded) || (pageSize != null && loaded < pageSize))
+      ? false : null;
+  return { loaded, total, reportedTotal, pageSize, serverMoreRecords, truncated, possiblyTruncated: truncated !== false };
+}
+
+async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
+  const spec = LOOKUPS[kind];
+  const query = typeof input === 'string' ? input.trim() : '';
+  if (busyPages.has(page)) return { outcome: 'execution_failure', kind, query, candidates: [], issue: 'lookup_in_progress' };
+  if (!query || query.length > 200 || /[\r\n]/.test(query)) {
+    lastSearch.delete(page);
+    return { outcome: 'input_gap', candidates: [], issue: `${kind}_name_required` };
+  }
+  busyPages.add(page);
+  lastSearch.delete(page);
+  let captureRequest;
+  let stage = 'opening_lookup';
+  let nativeDialog = false;
+  const onDialog = () => { nativeDialog = true; };
+  page.on('dialog', onDialog);
+  try {
+    const win = await openLookupWindow(page, kind);
+    const windowId = await win.getAttribute('id');
+    if (!windowId) throw new Error('LOOKUP_WINDOW_UNAVAILABLE');
+    stage = 'applying_filter';
+    const selector = win.locator('input[name="filterfields"]:visible').first();
+    if ((await selector.inputValue()).trim() !== spec.filter) {
+      await selector.click();
+      await page.locator('.x-boundlist-item:visible').filter({ hasText: new RegExp(`^\\s*${spec.filter}\\s*$`) }).first().click();
+    }
+    if ((await selector.inputValue()).trim() !== spec.filter) throw new Error('LOOKUP_FILTER_NOT_SELECTED');
+    const inputField = win.locator('input[name="selfiltervaluectrl"]:visible').first();
+    await inputField.fill(query);
+    if ((await inputField.inputValue()).trim() !== query) throw new Error('LOOKUP_FILTER_NOT_APPLIED');
+    const controls = await readCriteria(win);
+    const requests = new Set();
+    captureRequest = (request) => { if (matchesRun(request, query, spec.alias)) requests.add(request); };
+    page.on('request', captureRequest);
+    const responsePromise = page.waitForResponse((response) => requests.has(response.request()), { timeout: timeoutMs })
+      .catch(() => null);
+    stage = 'running_search';
+    await assertExpectedDialogs(page);
+    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Run\s*$/ }).first().click();
+    const response = await responsePromise;
+    if (!response || response.status() !== 200 || await response.finished()) throw new Error('LOOKUP_SEARCH_UNVERIFIED');
+    const requestFilters = [...new URLSearchParams(response.request().postData() || '')]
+      .filter(([name]) => name.startsWith('MADDON_FILTER_'))
+      .map(([name, value]) => ({ name, value }));
+    stage = 'reading_response';
+    const { rows, metadata } = parseGridResponse(await response.text());
+    stage = 'waiting_for_grid';
+    const expectedRows = await waitForResponseRows(page, windowId, spec.columns, rows, timeoutMs);
+    await assertExpectedDialogs(page);
+    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    const externalError = page.getByText(/Cannot retrieve profile:\s*External system|External system unavailable/i)
+      .filter({ visible: true });
+    if (await externalError.count()) throw new Error('EXTERNAL_SYSTEM_UNAVAILABLE');
+    const grid = await readGrid(page, windowId);
+    if (signature(grid.records, spec.columns) !== expectedRows || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
+      throw new Error('LOOKUP_RESULTS_UNVERIFIED');
+    }
+    const resultCoverage = coverage(metadata, grid.records.length);
+    if (!rows.length && (resultCoverage.serverMoreRecords !== false || (resultCoverage.total != null && resultCoverage.total !== 0))) {
+      throw new Error('LOOKUP_EMPTY_UNVERIFIED');
+    }
+    const candidates = rows.map((row) => candidate(row, grid.records, kind, spec));
+    const searchId = randomUUID();
+    lastSearch.set(page, { kind, windowId, searchId, controls, grid: JSON.stringify(grid.records), candidates });
+    return {
+      outcome: candidates.length ? 'matches' : 'no_match', kind, field: spec.label, query, searchId,
+      criteria: { field: spec.filter, query, controls, requestFilters }, coverage: resultCoverage,
+      loaded: resultCoverage.loaded, total: resultCoverage.total,
+      possiblyTruncated: resultCoverage.possiblyTruncated, serverMoreRecords: resultCoverage.serverMoreRecords,
+      columns: grid.columns, metadata, candidates,
+    };
+  } catch (error) {
+    return { outcome: 'execution_failure', kind, query, stage, candidates: [], issue: issue(error, 'LOOKUP_FAILED') };
+  } finally {
+    if (captureRequest) page.off('request', captureRequest);
+    page.off('dialog', onDialog);
+    busyPages.delete(page);
+  }
+}
+
+async function readForm(page) {
+  return page.evaluate(() => {
+    const visible = (element) => (element.offsetWidth || element.offsetHeight) && !element.closest('.x-window');
+    const agency = [...document.querySelectorAll('input[name="ta1"]')].find(visible);
+    let root = agency;
+    while (root && ![...root.querySelectorAll('input[name="confirmationnumber"]')].some(visible)) root = root.parentElement;
+    if (!root) throw new Error('LOOKUP_FORM_UNAVAILABLE');
+    const components = new Map(Ext.ComponentQuery.query('field').filter((field) => field.inputEl?.id)
+      .map((field) => [field.inputEl.id, field]));
+    return [...root.querySelectorAll('input:not([type="hidden"]):not([type="password"]), textarea, select')]
+      .filter(visible).map((element) => {
+        const component = components.get(element.id);
+        const label = element.closest('.x-form-item, .x-field')?.querySelector('label')?.innerText?.trim() ||
+          [...(element.labels || [])].map((item) => item.innerText?.trim()).filter(Boolean).join(' ') ||
+          element.getAttribute('aria-label') || component?.getFieldLabel?.() || component?.boxLabel || null;
+        return {
+          id: element.id || null, name: element.name || null, label,
+          type: element.type || element.tagName.toLowerCase(),
+          value: element.type === 'checkbox' || element.type === 'radio' ? element.checked : element.value,
+          disabled: element.disabled, readOnly: element.readOnly || false,
+        };
+      });
+  });
+}
+
+function changedFields(before, after) {
+  const key = (field, index) => field.id || `${field.name || ''}\u0000${index}`;
+  const previous = new Map(before.map((field, index) => [key(field, index), field]));
+  const current = new Map(after.map((field, index) => [key(field, index), field]));
+  return [...new Set([...previous.keys(), ...current.keys()])].flatMap((id) => {
+    const oldField = previous.get(id) ?? null;
+    const newField = current.get(id) ?? null;
+    return JSON.stringify(oldField) === JSON.stringify(newField) ? [] : [{ before: oldField, after: newField }];
+  });
+}
+
+async function select(page, kind, selection, { timeoutMs = 20000 } = {}, requireSearchId = true) {
+  const spec = LOOKUPS[kind];
+  const nativeId = clean(typeof selection === 'object' && selection !== null ? selection.nativeId : selection);
+  const searchId = typeof selection === 'object' && selection !== null ? selection.searchId : null;
+  if (!nativeId) return { outcome: 'input_gap', issue: `${kind}_id_required` };
+  if (requireSearchId && !searchId) return { outcome: 'input_gap', issue: 'search_id_required' };
+  if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'lookup_in_progress' };
+  busyPages.add(page);
+  let attempted = false;
+  let nativeDialog = false;
+  let requestFailed = false;
+  let observed = null;
+  let requestIdVerified = false;
+  let changeResponseVerified = false;
+  const inFlight = new Set();
+  const onDialog = () => { nativeDialog = true; };
+  const onRequest = (request) => { if (request.method() === 'POST') inFlight.add(request); };
+  const onFinished = (request) => { inFlight.delete(request); };
+  const onFailed = (request) => { if (inFlight.delete(request)) requestFailed = true; };
+  const onResponse = (response) => {
+    if (!inFlight.has(response.request())) return;
+    if (new URL(response.url()).pathname === spec.changePath) {
+      changeResponseVerified = response.status() === 200;
+      if (!changeResponseVerified) requestFailed = true;
+    } else if (response.status() >= 400) requestFailed = true;
+  };
+  const guardChange = async (route) => {
+    const request = route.request();
+    if (request.method() === 'POST' && new URL(request.url()).pathname === spec.changePath) {
+      const body = new URLSearchParams(request.postData() || '');
+      if (!body.get('PKID')?.startsWith('@[EMPTY]#@[EMPTY]#') || !body.has('confirmationnumber') ||
+          body.get('confirmationnumber').trim() || !body.get('propertycode')?.trim() ||
+          body.get(spec.requestId) !== nativeId) {
+        requestFailed = true;
+        await route.abort();
+        return;
+      }
+      requestIdVerified = true;
+    }
+    await route.fallback();
+  };
+  page.on('dialog', onDialog);
+  try {
+    const previous = lastSearch.get(page);
+    if (previous?.kind !== kind || (searchId && searchId !== previous.searchId)) throw new Error('LOOKUP_STALE');
+    const candidates = previous.candidates.filter((item) => item.nativeId === nativeId);
+    if (candidates.length !== 1 || !candidates[0].name) throw new Error('LOOKUP_ID_NOT_UNIQUE');
+    await assertExpectedDialogs(page);
+    await assertNewGuestStay(page);
+    const win = lookupWindow(page, kind);
+    if (!await win.isVisible() || await win.getAttribute('id') !== previous.windowId) throw new Error('LOOKUP_STALE');
+    const grid = await readGrid(page, previous.windowId);
+    if (JSON.stringify(grid.records) !== previous.grid || JSON.stringify(await readCriteria(win)) !== JSON.stringify(previous.controls)) {
+      throw new Error('LOOKUP_STALE');
+    }
+    const before = await readForm(page);
+    const rows = win.locator('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row');
+    const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
+      const grid = (Ext.ComponentQuery.query('grid,readonlygrid') || [])
+        .find((item) => item.getEl?.()?.dom?.contains(element));
+      const data = grid?.getView?.()?.getRecord?.(element)?.data;
+      return String(data?.[wanted.key] ?? '').trim() === wanted.id ? [index] : [];
+    }), { key: spec.id, id: nativeId });
+    if (indexes.length !== 1) throw new Error('LOOKUP_ID_NOT_UNIQUE');
+    page.on('request', onRequest);
+    page.on('requestfinished', onFinished);
+    page.on('requestfailed', onFailed);
+    page.on('response', onResponse);
+    await page.route('**/*', guardChange);
+    attempted = true;
+    await rows.nth(indexes[0]).click();
+    const selectedId = await page.evaluate(({ id, key }) => {
+      const selected = Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getSelectionModel?.()?.getSelection?.() || [];
+      return selected.length === 1 ? String(selected[0].data?.[key] ?? '').trim() : null;
+    }, { id: previous.windowId, key: spec.id });
+    if (selectedId !== nativeId || JSON.stringify((await readGrid(page, previous.windowId)).records) !== previous.grid) {
+      throw new Error('LOOKUP_SELECTION_CHANGED');
+    }
+    await assertExpectedDialogs(page);
+    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    await win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).first().click();
+    const deadline = Date.now() + timeoutMs;
+    let lastSnapshot = null;
+    let stableSince = Date.now();
+    while (Date.now() < deadline) {
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      await assertExpectedDialogs(page);
+      if (requestFailed) throw new Error('LOOKUP_CHANGE_REQUEST_FAILED');
+      if (!await win.isVisible()) {
+        await assertNewGuestStay(page);
+        const value = await page.locator(`input[name="${spec.field}"]:visible`).first().inputValue();
+        const fields = await readForm(page);
+        observed = { selectedField: { label: spec.label, name: spec.field, value },
+          form: { fields, changedFields: changedFields(before, fields) } };
+        const snapshot = JSON.stringify(fields);
+        if (snapshot !== lastSnapshot || inFlight.size) stableSince = Date.now();
+        else if (requestIdVerified && changeResponseVerified && Date.now() - stableSince >= 500 &&
+            value.trim().toLocaleLowerCase() === candidates[0].name.toLocaleLowerCase()) {
+          lastSearch.delete(page);
+          return {
+            outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
+            nativeIdEvidence: 'form_change_request',
+            ...observed,
+            ...(kind === 'agency' ? { displayedAgency: value } : { displayedOrganization: value }),
+          };
+        }
+        lastSnapshot = snapshot;
+      }
+      await page.waitForTimeout(200);
+    }
+    throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
+  } catch (error) {
+    if (attempted) lastSearch.delete(page);
+    return { outcome: attempted ? 'selection_uncertain' : 'execution_failure', nativeId,
+      issue: issue(error, 'LOOKUP_SELECTION_FAILED'), ...(observed ? { observed } : {}) };
+  } finally {
+    await page.unroute('**/*', guardChange).catch(() => {});
+    page.off('dialog', onDialog);
+    page.off('request', onRequest);
+    page.off('requestfinished', onFinished);
+    page.off('requestfailed', onFailed);
+    page.off('response', onResponse);
+    busyPages.delete(page);
+  }
+}
+
+export const searchBookingAgencies = (page, query, options) => search(page, 'agency', query, options);
+export const searchOrganizations = (page, query, options) => search(page, 'organization', query, options);
+export const searchArAccounts = (page, query, options) => search(page, 'arAccount', query, options);
+export const searchPrimaryBookingAgency = searchBookingAgencies;
+export const searchOrganization = searchOrganizations;
+export const searchArAccount = searchArAccounts;
+
+// Legacy callers may still pass only an ID; field-named selection requires the search ID too.
+export const selectBookingAgency = (page, selection, options = {}) =>
+  select(page, 'agency', selection, options, false);
+export const selectPrimaryBookingAgency = (page, selection, options) => select(page, 'agency', selection, options);
+export const selectOrganization = (page, selection, options) => select(page, 'organization', selection, options);
