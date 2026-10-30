@@ -1,7 +1,8 @@
-// Select a current rate code on a verified blank HRCEN Guest Stay.
+// Select a current rate code on a verified new HRCEN Guest Stay.
 import { createHash } from 'node:crypto';
 import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { isVerifiedLabtestProfile } from './guest-profile.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -11,7 +12,7 @@ const ASSET = '/web/resources/inforhms/images/toolbar/add-ons.svg';
 const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 const busy = new WeakSet();
 const selectedOnPage = new WeakMap();
-const BLANK_DRAFT_IDS = ['reservationshareid','guestid','reservationstayid','guaranteecardprofileid','arprofileid',
+const BLANK_DRAFT_IDS = ['reservationshareid','reservationstayid','guaranteecardprofileid','arprofileid',
   'guestnameinfoid','externalprofileid','guestfoliocomptempresstayid','gueststaycouponids','additionalprofileids',
   'reservationid','addlplayerprofileid','sourceprofileid','recordid'];
 const fingerprint = fields => createHash('sha256').update(JSON.stringify(fields)).digest('hex');
@@ -64,12 +65,14 @@ async function readDraft(page) {
   },ORIGIN);
 }
 
-function checkedDraft(draft) {
-  if (clean(draft.guestId) || clean(draft.guestNativeId)) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+function checkedDraft(draft, guestId, page) {
+  if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   const arrival = dateParts(draft.arrival), departure = dateParts(draft.departure);
   if (draft.property !== PROPERTY || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
     throw new Error('NEW_DRAFT_UNVERIFIED');
   }
+  if (guestId && (!isVerifiedLabtestProfile(page,guestId) || clean(draft.first) !== 'Proof' || clean(draft.last) !== 'Labtest' ||
+      arrival.iso < '2027-01-01')) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   return {arrival,departure};
 }
 function changedFields(before, after) {
@@ -103,12 +106,15 @@ function validationRequest(request, code, dates) {
   return [...body.keys()].length === Object.keys(expected).length &&
     Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value);
 }
-function draftIdIssue(request) {
+function draftIdIssue(request, guestId) {
   if (!requestUrl(request,CHANGE)) return null;
   const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
-  if (!BLANK_DRAFT_IDS.every(key => body.getAll(key).length === 1 && body.get(key) === '' &&
-      keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return 'DRAFT_ID_UNSUPPORTED';
-  if (keys.filter(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key)).some(key => clean(body.get(key)))) {
+  if (body.getAll('guestid').length !== 1 || body.get('guestid') !== guestId ||
+      keys.filter(key => key.toLowerCase() === 'guestid').length !== 1 ||
+      !BLANK_DRAFT_IDS.every(key => body.getAll(key).length === 1 && body.get(key) === '' &&
+        keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return 'DRAFT_ID_UNSUPPORTED';
+  if (keys.filter(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) &&
+      !/^is/i.test(key) && key.toLowerCase() !== 'guestid').some(key => clean(body.get(key)))) {
     return 'DRAFT_ID_UNSUPPORTED';
   }
   return null;
@@ -119,7 +125,7 @@ function rateChangeRequest(request, code, dates, sessionId, draft) {
   if (new Set(keys).size !== keys.length) return false;
   const expected = {
     propertycode:PROPERTY,PKID:`@[EMPTY]#@[EMPTY]#${PROPERTY}#`,confirmationnumber:'',recordid:'',reservationid:'',
-    reservationstayid:'',reservationshareid:'',guestid:'',firstname:draft.first,lastname:draft.last,status:'New',
+    reservationstayid:'',reservationshareid:'',guestid:clean(draft.guestId),firstname:draft.first,lastname:draft.last,status:'New',
     arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,
     ONLY_DATA_REQUIRED:'true',bookingsessionid:sessionId,
     newprofileclick:'',linkprofileflag:'',savecctoprofile:'0',createinactiveprofileflag:'0',reqguestprofilelookup:'',
@@ -127,7 +133,7 @@ function rateChangeRequest(request, code, dates, sessionId, draft) {
   };
   if (!Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value &&
       keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return false;
-  return !draftIdIssue(request);
+  return !draftIdIssue(request,clean(draft.guestId));
 }
 
 // Normalize the vendor's data-only object literal without executing it.
@@ -162,9 +168,12 @@ function validateResponses(validation, change, code, dates, sessionId, draft) {
     if (!grid?.METADATA || clean(grid.METADATA.GRIDNAME) !== 'LVRATEPLANS2' || !Array.isArray(grid.DATA) ||
         grid.DATA.filter(row => clean(row.rateplancode) === code).length !== 1) throw new Error('RATE_VALIDATION_UNVERIFIED');
     const values = parseResponse(changeText)?.values;
-    const expected = {propertycode:PROPERTY,confirmationnumber:'',recordid:'',reservationid:'',reservationstayid:'',guestid:'',
+    const expected = {propertycode:PROPERTY,confirmationnumber:'',recordid:'',reservationid:'',reservationstayid:'',guestid:clean(draft.guestId),
       firstname:clean(draft.first),lastname:clean(draft.last),arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,bookingsessionid:sessionId};
-    if (!values || !Object.entries(expected).every(([key,value]) => Object.hasOwn(values,key) && clean(values[key]) === value)) {
+    if (!values || !Object.entries(expected).every(([key,value]) => Object.hasOwn(values,key) && clean(values[key]) === value) ||
+        !BLANK_DRAFT_IDS.every(key => Object.hasOwn(values,key) && !clean(values[key])) ||
+        Object.keys(values).some(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) &&
+          !/^is/i.test(key) && key.toLowerCase() !== 'guestid' && clean(values[key]))) {
       throw new Error('RATE_CHANGE_UNVERIFIED');
     }
   });
@@ -176,7 +185,11 @@ function bounded(promise, ms, issue) {
 }
 
 /** Select an explicit current code on a verified unsaved draft, without saving. */
-export async function selectGuestStayRatePlan(page, { code } = {}) {
+export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {}) {
+  if (guestProfileId !== undefined && (typeof guestProfileId !== 'string' || !/^\d{1,100}$/.test(guestProfileId))) {
+    return {outcome:'input_gap',issue:'GUEST_PROFILE_ID_INVALID'};
+  }
+  const guestId = guestProfileId ?? '';
   if (typeof code !== 'string' || !code.trim() || code !== code.trim() || code.length > 100 || /[\r\n]/.test(code)) {
     return {outcome:'input_gap',issue:'RATE_CODE_REQUIRED'};
   }
@@ -209,7 +222,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
     fence = await installPageRequestFence(page,[CHANGE]);
     scope = fence.open();
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    const dates = checkedDraft(before);
+    const dates = checkedDraft(before,guestId,page);
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
     const previousRateEvidence = !previousCode ? 'blank' : prior?.code === previousCode && prior.fingerprint === fingerprint(before.fields)
       ? 'selected_by_this_tool_same_page' : 'observed_on_draft';
@@ -227,7 +240,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
         inquiry[0].status !== 200 || cancel[0].status !== 200) throw new Error('BOOKING_SESSION_UNVERIFIED');
     const sessionId = inquiry[0].id;
     const ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    checkedDraft(ready);
+    checkedDraft(ready,guestId,page);
     if (JSON.stringify(ready.fields) !== JSON.stringify(before.fields)) throw new Error('DRAFT_CHANGED_DURING_SEARCH');
     guard = async route => {
       const request = route.request();
@@ -240,7 +253,7 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
         requests.set(request,kind);
         return route.fallback();
       }
-      unsupportedId = draftIdIssue(request) || unsupportedId;
+      unsupportedId = draftIdIssue(request,guestId) || unsupportedId;
       const url = new URL(request.url());
       blocked.push({method:request.method(),path:url.pathname,originMatches:url.origin === ORIGIN,query:Boolean(url.search)});
       return route.abort();
@@ -263,7 +276,8 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
     if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
       throw new Error('DRAFT_DATES_CHANGED');
     }
-    checkedDraft(after);
+    checkedDraft(after,guestId,page);
+    if (clean(after.first) !== clean(before.first) || clean(after.last) !== clean(before.last)) throw new Error('DRAFT_IDENTITY_CHANGED');
     if (after.rate !== code || after.rateValue !== code || after.rateSubmit !== code || after.rateErrors.length || after.rateInvalid === 'true') {
       throw new Error('RATE_READBACK_UNVERIFIED');
     }
