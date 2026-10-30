@@ -16,6 +16,9 @@ describe('original address normalization', () => {
     expect(normalizeOriginal('"Last, First" <ONE@EXAMPLE.TEST>, two@example.test, two@example.test'))
       .toEqual(['one@example.test', 'two@example.test', 'two@example.test']);
     expect(normalizeOriginal('one@example.test,two@example.test')).toEqual(['one@example.test', 'two@example.test']);
+    expect(normalizeOriginal('"guest@example.test" <guest@example.test>, other@example.test'))
+      .toEqual(['guest@example.test', 'other@example.test']);
+    expect(normalizeOriginal('"A \\"B\\"" <one@example.test>')).toEqual(['one@example.test']);
   });
 
   it('rejects malformed or ambiguous input as a whole, never a partial list', () => {
@@ -24,7 +27,7 @@ describe('original address normalization', () => {
       'one@example.test, broken', 'one@example.test,', ',one@example.test',
       'Group: one@example.test;', 'Name; Other <one@example.test>',
       'Name <<one@example.test>>', 'Name <one@example.test', 'Name one@example.test>',
-      '"Unclosed <one@example.test>', '"A \\"B\\"" <one@example.test>',
+      '"Unclosed <one@example.test>',
       'one@@example.test', 'one @example.test', 'Name <one@example.test> trailing',
     ]) {
       expect(normalizeOriginal(value), String(value)).toBeNull();

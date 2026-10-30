@@ -179,10 +179,15 @@ export function isCanonicalMailbox(value: string): boolean {
 
 function normalizeOriginalMailbox(raw: string): string | null {
   const trimmed = raw.trim();
-  const bracketed = trimmed.match(/^([^<>@]*)<([^<>]+)>$/);
+  const bracketed = trimmed.match(/^([^<>]*)<([^<>]+)>$/);
   const display = bracketed?.[1]?.trim() ?? '';
-  if ((display.includes('"') || display.includes(',')) && !/^"[^"]*"$/.test(display)) return null;
-  if (/[;:]/.test(display)) return null;
+  for (const character of display) {
+    const code = character.charCodeAt(0);
+    if ((code < 32 && code !== 9) || code === 127) return null;
+  }
+  if (display.startsWith('"')) {
+    if (!/^"(?:[^"\\\r\n]|\\[^\r\n])*"$/.test(display)) return null;
+  } else if (/["@,:;]/.test(display)) return null;
   const candidate = (bracketed ? bracketed[2]! : trimmed).trim();
   return isCanonicalMailbox(candidate) ? candidate.toLowerCase() : null;
 }
