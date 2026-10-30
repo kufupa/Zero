@@ -85,9 +85,12 @@ function attempt(item, includeName) {
       if (code === 0) {
         try {
           const result = JSON.parse(stdout);
-          if (result.ok === true && result.confirmation === item.confirmation && result.guestForms?.guests?.length > 0 &&
-              result.guestForms.guests.length === result.guestForms.grid?.rows?.length) {
-            resolveResult(result);
+          const guests = result.guestForms?.guests;
+          if (result.ok === true && result.confirmation === item.confirmation && Array.isArray(guests) &&
+              guests.length > 0 && guests.length === result.guestForms.grid?.rows?.length) {
+            const complete = result.guestForms.grid?.coverage?.complete !== false &&
+              guests.every((guest) => guest?.form && !guest.error);
+            resolveResult(complete ? result : { ...result, ok: false, error: 'INCOMPLETE_GUEST_FORMS' });
             return;
           }
         } catch { /* Return an explicit invalid-output result below. */ }
