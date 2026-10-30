@@ -83,6 +83,17 @@ view without changing the snapshot; omit a filter to retain all its rows. The
 view keeps the original details on returned rows, including inventory, prices
 and restrictions. Neither function chooses a room or rate for the agent.
 
+For a successful search, `snapshot.displayedPrices` also records price text
+that passed visibility checks within the Hotel Availability grid's own
+viewport. Each captured cell is matched to the response's property, room, rate,
+promotion, date, currency, value and selected flags. The checks do not detect
+an overlay or clipping in the iframe's parent page, so a captured cell is not
+proof that a user could see it. Offscreen, clipped within the grid or ambiguous
+cells are omitted; coverage is not exhaustive. If no cells can be matched,
+display text is unavailable. These strings are observations, not calculated
+totals. The optional capture's deadline is best-effort: a stalled browser
+evaluation can outlast it.
+
 For a standalone run, pass a private output path and JSON on standard input:
 
 ```sh
