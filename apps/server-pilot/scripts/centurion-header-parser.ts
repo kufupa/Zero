@@ -55,6 +55,11 @@ function tokenizeHeaderValue(raw: string, allowMany: boolean): { ids: string[]; 
     token.lastIndex = position;
     const match = token.exec(raw);
     if (!match || (!allowMany && ids.length)) return { ids, malformed: true };
+    // Quoted IDs and domain literals cannot contain ASCII controls other than tab.
+    for (const character of match[0]) {
+      const code = character.charCodeAt(0);
+      if ((code < 32 && code !== 9) || code === 127) return { ids, malformed: true };
+    }
     position = token.lastIndex;
     separated = match[1] !== undefined;
     // A match must end at a legal boundary, not in the middle of junk.

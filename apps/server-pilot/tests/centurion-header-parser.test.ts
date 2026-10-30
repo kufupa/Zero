@@ -33,6 +33,17 @@ describe('synthetic header-token parser', () => {
     }
   });
 
+  it('rejects controls in quoted and domain-literal IDs without losing earlier tokens', () => {
+    for (const control of ['\x00', '\x01', '\x1f', '\x7f']) {
+      for (const value of [`<"left${control}right"@example.test>`, `<local@[literal${control}part]>`,
+        `<"left\\${control}right"@example.test>`, `<local@[literal\\${control}part]>`]) {
+        expect(isValidHeaderValue(value, 'messageIds')).toBe(false);
+        expect(normalizedHeaders([`<safe@example.test> ${value}`], null, 'complete', true))
+          .toEqual({ ids: ['safe@example.test'], completeness: 'incomplete' });
+      }
+    }
+  });
+
   it('allows adjacent angle tokens and rejects partial or joined bare tokens', () => {
     expect(normalizedHeaders(['<a@example.test><b@example.test>'], null, 'complete', true))
       .toEqual({ ids: ['a@example.test', 'b@example.test'], completeness: 'complete' });
