@@ -111,10 +111,10 @@ async function exactSearchMatches(popup, wanted) {
   });
 }
 
-function nameTokens(value) {
+function nameTokens(value, stripLeadingTitle = false) {
   const titles = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'judge']);
-  const words = (value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/\p{L}+/gu) ?? [])
-    .filter((word) => !titles.has(word));
+  const words = value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/\p{L}+/gu) ?? [];
+  if (stripLeadingTitle && words.length > 1 && titles.has(words[0]) && !value.includes(',')) words.shift();
   return words.filter((word, index) => word !== 'and' || index === 0 || index === words.length - 1).sort();
 }
 
@@ -149,6 +149,7 @@ function lookupError(code, matches, searchedDateRange, searchResults) {
 
 function matchHints(matches, guestName, arrivalDate) {
   const expectedName = guestName ? nameTokens(guestName) : null;
+  const expectedWithoutTitle = guestName ? nameTokens(guestName, true) : null;
   const expectedDate = arrivalDate?.toISOString().slice(0, 10);
   return matches.map((match) => {
     let contradicted = false;
@@ -157,7 +158,12 @@ function matchHints(matches, guestName, arrivalDate) {
       const candidateName = nameTokens(match.candidate.guestName || '');
       if (expectedName.filter((word) => word.length > 1).length < 2 ||
           candidateName.filter((word) => word.length > 1).length < 2) verified = false;
-      else if (candidateName.join('\0') !== expectedName.join('\0')) contradicted = true;
+      else if (candidateName.join('\0') !== expectedName.join('\0')) {
+        const candidateWithoutTitle = nameTokens(match.candidate.guestName || '', true);
+        if (expectedWithoutTitle.filter((word) => word.length > 1).length < 2 ||
+            candidateWithoutTitle.filter((word) => word.length > 1).length < 2) verified = false;
+        else if (candidateWithoutTitle.join('\0') !== expectedWithoutTitle.join('\0')) contradicted = true;
+      }
     }
     if (expectedDate) {
       if (!match.candidate.arrivalDate) verified = false;
