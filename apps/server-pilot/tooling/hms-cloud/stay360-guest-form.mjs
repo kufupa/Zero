@@ -62,6 +62,15 @@ export async function readGuestFormsFromStay360(page, confirmation) {
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
     if (signature(await gridState()) !== signature(initial)) throw new Error('GUEST_GRID_CHANGED');
+    const sameNameRows = initial.rows.filter((candidate) =>
+      candidate.firstName.toLowerCase() === row.firstName.toLowerCase() &&
+      candidate.lastName.toLowerCase() === row.lastName.toLowerCase());
+    const ids = sameNameRows.map((candidate) => candidate.nativeGuestId?.toLowerCase() || null);
+    if (sameNameRows.length > 1 && (ids.some((id) => !id) || new Set(ids).size !== ids.length)) {
+      guests.push({ row, profileId: null, profileIdStatus: 'unverified', identityVerifiedBy: null,
+        duplicateNameInGrid: true, error: 'GUEST_IDENTITY_AMBIGUOUS', form: null });
+      continue;
+    }
     const selected = grid.locator('.x-grid-row:visible').nth(row.index);
     await selected.locator('.x-grid-cell').first().click();
     await frame.waitForFunction(({ gridId, rowIndex, firstName, lastName, nativeGuestId }) => {
@@ -144,16 +153,14 @@ export async function readGuestFormsFromStay360(page, confirmation) {
       throw new Error('GUEST_FORM_IDENTITY_CHANGED');
     }
     const profileId = profile.length === 1 ? profile[0].value || null : null;
-    const sameNameRows = initial.rows.filter((candidate) =>
-      candidate.firstName.toLowerCase() === row.firstName.toLowerCase() &&
-      candidate.lastName.toLowerCase() === row.lastName.toLowerCase()).length;
     guests.push({ row, profileId, profileIdStatus: !profile.length ? 'missing' : profile.length > 1
       ? 'ambiguous' : profileId ? 'present' : 'empty',
-      identityVerifiedBy: row.nativeGuestId ? 'row_name_and_native_id' : sameNameRows > 1
-        ? 'selected_row_name_not_unique' : 'selected_row_and_name',
-      duplicateNameInGrid: sameNameRows > 1, form });
+      identityVerifiedBy: row.nativeGuestId ? 'row_name_and_native_id' : 'selected_row_and_name',
+      duplicateNameInGrid: sameNameRows.length > 1, form });
   }
   notes.push(...await takeHandledNotes(page));
-  return { notes, grid: { ...initial, coverage: { ...initial.coverage, formsRead: guests.length } }, guests,
-    captureScope: 'Selected every currently rendered guest row and read rendered form controls; hidden content and unloaded grid pages excluded.' };
+  const formsRead = guests.filter((guest) => guest.form !== null).length;
+  return { notes, grid: { ...initial, coverage: { ...initial.coverage, formsRead,
+    unresolvedIdentities: guests.length - formsRead } }, guests,
+    captureScope: 'Read rendered forms for identifiable guest rows; ambiguous identities have no form. Hidden content and unloaded grid pages excluded.' };
 }
