@@ -38,7 +38,8 @@ export async function readQuote(page, { criteria, roomQuantity, roomCount, quant
   } catch {
     return { outcome: 'input_gap', issue: 'OUTPUT_DIRECTORY_NOT_PRIVATE' };
   }
-  const requested = { ...criteria, ...(roomQuantity == null ? {} : { roomQuantity }) };
+  const requested = { ...criteria, ...(roomQuantity == null ? {} : { roomQuantity }),
+    ...(roomCount === undefined ? {} : { roomCount }), ...(quantity === undefined ? {} : { quantity }) };
   const result = await searchHotelAvailability(page, requested);
   if (result.outcome !== 'ok' && result.outcome !== 'criteria_unavailable') return result;
   try {

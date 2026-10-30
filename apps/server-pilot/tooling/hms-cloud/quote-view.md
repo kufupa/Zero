@@ -53,6 +53,8 @@ Supply `roomQuantity` at the top level or in `criteria`, and keep any
 conflicting representations return `input_gap` with `ROOM_QUANTITY_INVALID` or
 `ROOM_QUANTITY_MISMATCH` before the search. Supplying `roomQuantity`,
 `roomCount` or `quantity` inside `view` returns `ROOM_QUANTITY_IN_VIEW`.
+Top-level aliases are retained in the private snapshot's requested criteria,
+so later projections continue to check them without inferring a room quantity.
 The room quantity is recorded with the request; it is not sent as an HMS
 inventory reservation or proof of joint availability.
 
