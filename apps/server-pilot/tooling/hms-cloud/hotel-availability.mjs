@@ -49,8 +49,7 @@ async function clickMenuNode(node) {
 export async function openHotelAvailability(page) {
   await installReadOnlyGuard(page.context());
   const title = page.locator('h1.pagetitle:visible').filter({ hasText: /^Hotel Availability$/ });
-  if (await title.count() === 1 && await page.locator('input[name="dates"]:visible').count() === 1 &&
-      await page.locator('input[name="rateplans"]:visible').count() === 1) return;
+  if (await title.count() === 1 && await page.locator('input[name="dates"]:visible').count() === 1) return;
   // The Stay 360 bootstrap returns during navigation; wait for it to settle first.
   await page.locator('input[name="search"]:visible').first().waitFor({ timeout: 25000 });
   const node = (name) => page.locator('span.x-tree-node-text:visible')
@@ -92,6 +91,21 @@ async function openPicker(page, name) {
   const input = page.locator(`input[name="${name}"]:visible`).first();
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-trigger:visible').first().click();
   return input;
+}
+
+// Hotel Availability can collapse its extra filters after showing search results.
+async function ensureAdvancedCriteria(page) {
+  const expander = page.locator('[data-testid="subheaderexpander"]:visible');
+  if (await expander.count() !== 1) throw new Error('CRITERIA_EXPANDER_UNAVAILABLE');
+  const buttonId = await expander.evaluate((element) => element.closest('a')?.id);
+  const pressed = await page.evaluate((id) => Ext.getCmp(id)?.pressed, buttonId);
+  if (typeof pressed !== 'boolean') throw new Error('CRITERIA_EXPANDER_UNAVAILABLE');
+  if (!pressed) await expander.click();
+  await page.waitForFunction((id) => {
+    const visible = (name) => [...document.querySelectorAll(`input[name="${name}"]`)].some((element) =>
+      (element.offsetWidth || element.offsetHeight) && getComputedStyle(element).visibility === 'visible');
+    return Ext.getCmp(id)?.pressed === true && visible('roomtypes') && visible('rateplans');
+  }, buttonId, { timeout: 10000 });
 }
 
 async function chooseDate(page, iso) {
@@ -158,6 +172,7 @@ async function setGuests(page, input) {
 }
 
 async function readCatalog(page, name, propertyCode) {
+  await ensureAdvancedCriteria(page);
   await openPicker(page, name);
   const title = name === 'roomtypes' ? 'Room Types' : 'Rate Plans';
   const win = page.locator('.x-window:visible:not(.x-menu)').filter({
@@ -171,18 +186,24 @@ async function readCatalog(page, name, propertyCode) {
       return { records: store?.getRange?.().map((record) => ({ ...record.data })) ?? null,
         reportedLoaded: match ? Number(match[1]) : null, reportedTotal: match ? Number(match[2]) : null };
     });
-    await page.waitForFunction((id) => Boolean(Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()),
-      await win.getAttribute('id'), { timeout: 20000 });
-    await page.waitForTimeout(700);
+    const windowId = await win.getAttribute('id');
+    const waitForCatalog = async (minimum) => {
+      await page.waitForFunction(({ id, minimum }) => {
+        const element = document.getElementById(id);
+        const store = Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.();
+        const match = element?.innerText.match(/Records:\s*(\d+)\s+of\s+(\d+)/i);
+        const count = store?.getCount?.();
+        return store && !store.isLoading() && !Ext.Ajax.isLoading() && match &&
+          count >= minimum && Number(match[1]) === count;
+      }, { id: windowId, minimum }, { timeout: 20000 });
+    };
+    await waitForCatalog(1);
     let current = await state();
     for (let pageNumber = 0; current.records && current.reportedTotal > current.records.length && pageNumber < 20; pageNumber += 1) {
       const previous = current.records.length;
       await win.locator('.x-grid-view:visible').last().evaluate((element) => { element.scrollTop = element.scrollHeight; });
-      await page.waitForFunction(({ id, previousCount }) =>
-        Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()?.getCount?.() > previousCount,
-      { id: await win.getAttribute('id'), previousCount: previous }, { timeout: 6000 }).catch(() => {});
+      await waitForCatalog(previous + 1);
       current = await state();
-      if (current.records?.length === previous) break;
     }
     const codeField = name === 'roomtypes' ? 'roomtypecode' : 'rateplancode';
     const selectedCodes = (current.records || []).map((row) => clean(row[codeField]));
@@ -203,6 +224,7 @@ async function readCatalog(page, name, propertyCode) {
 }
 
 async function setCodes(page, name, selected) {
+  await ensureAdvancedCriteria(page);
   const input = page.locator(`input[name="${name}"]:visible`).first();
   await input.fill(selected.join(','));
   await input.press('Tab');
