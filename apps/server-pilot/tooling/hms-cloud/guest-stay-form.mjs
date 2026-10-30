@@ -11,6 +11,10 @@ const DATE_FIELDS = { arrivalDate: 'arrivaldate', departureDate: 'departuredate'
 const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType: 'guaranteetype' };
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
 const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
+const GUARANTEE_CHANGE = '/web/base/OSRESV.HDR.changeguaranteemethod';
+const GUARANTEE_BLANK_IDS = ['reservationshareid', 'guestid', 'reservationstayid', 'guaranteecardprofileid', 'arprofileid',
+  'guestnameinfoid', 'externalprofileid', 'guestfoliocomptempresstayid', 'gueststaycouponids', 'additionalprofileids',
+  'reservationid', 'addlplayerprofileid', 'sourceprofileid', 'recordid'];
 const busyPages = new WeakSet();
 const cmsSearches = new WeakMap();
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -72,7 +76,7 @@ function changes(before, after) {
 }
 
 async function verifySettled(page, result, fields) {
-  if (result.outcome !== 'updated_unsaved') return;
+  if (!['updated_unsaved', 'unchanged_unsaved'].includes(result.outcome)) return;
   const name = TEXT_FIELDS[result.field] || DATE_FIELDS[result.field] || COMBOS[result.field] ||
     ({ cmsSend: 'udfchkbox04', cmsMessageId: 'udfchar09' })[result.field];
   if (name) {
@@ -120,6 +124,109 @@ function allowedPost(request, origin, propertyCode, kind, expectedAges) {
   } catch { return false; }
 }
 
+function wireDate(value) {
+  const match = /^(\d{2})-([A-Z]{3})-(\d{4})$/i.exec(clean(value));
+  if (!match) return null;
+  const day = Number(match[1]), month = MONTHS.indexOf(match[2].toUpperCase()) + 1, year = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (year < 2027 || !month || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return { iso: `${year}-${String(month).padStart(2, '0')}-${match[1]}`,
+    wire: `${String(month).padStart(2, '0')}/${match[1]}/${year}` };
+}
+
+// The current form's record holds the session ID even though it is not a form input.
+async function guaranteeDraft(page, propertyCode) {
+  if (propertyCode !== 'HRCEN') return null;
+  const state = await page.evaluate(({ origin, blankIds }) => {
+    if (location.origin !== origin) return null;
+    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const names = ['guaranteetype', 'ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
+    const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible)]));
+    if (names.some((name) => fields[name].length !== 1)) return null;
+    const component = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
+    const form = component('guaranteetype')?.up?.('form');
+    if (!form?.el?.dom || names.some((name) => !form.el.dom.contains(fields[name][0]) || component(name)?.up?.('form') !== form)) return null;
+    const data = form.getRecord?.()?.data, keys = data && Object.keys(data);
+    const unique = (key) => keys && Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
+    const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
+    const guest = component('guestid');
+    if (!data || !exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+        !blankIds.every((key) => exact(key, '')) || !unique('bookingsessionid') || !String(data.bookingsessionid ?? '').trim() ||
+        typeof guest?.getValue !== 'function' || String(guest.getValue() ?? '').trim() || fields.guestid[0].value.trim() ||
+        fields.confirmationnumber[0].value.trim() || fields.firstname[0].value !== 'Proof' || fields.lastname[0].value !== 'Labtest') return null;
+    return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value };
+  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS });
+  if (!state) return null;
+  const arrival = wireDate(state.arrival), departure = wireDate(state.departure);
+  if (!arrival || !departure || arrival.iso >= departure.iso) return null;
+  return { session: state.session, arrival, departure };
+}
+
+function guaranteeRequest(request, expected) {
+  try {
+    const url = new URL(request.url());
+    if (request.method() !== 'POST' || url.origin !== CLOUD_ORIGIN || url.pathname !== GUARANTEE_CHANGE || url.search || url.hash ||
+        !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
+    const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+    const fields = {
+      propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', firstname: 'Proof', lastname: 'Labtest',
+      arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire, guaranteetype: expected.value,
+      ONLY_DATA_REQUIRED: 'true', bookingsessionid: expected.draft.session,
+      confirmationnumber: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
+      newprofileclick: '', linkprofileflag: '', savecctoprofile: '0', createinactiveprofileflag: '0', reqguestprofilelookup: '',
+      pagemode: 'display', isafterreservationsave: '', savesettlementcctoprofile: '0', linkedprofileflag: '0',
+      ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
+    };
+    return new Set(keys).size === keys.length && Object.entries(fields).every(([key, value]) => body.getAll(key).length === 1 &&
+      body.get(key) === value && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
+      !keys.some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) && clean(body.get(key)));
+  } catch { return false; }
+}
+
+function parseGuaranteeResponse(text) {
+  if (typeof text !== 'string' || !text.trim() || /^\s*</.test(text)) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+  let badEscape = false;
+  const strings = text.replace(/("(?:\\.|[^"\\])*")|'((?:\\.|[^'\\])*)'/gs, (all, double, single) => {
+    if (double) return double;
+    const value = single.replace(/\\(u[\da-fA-F]{4}|x[\da-fA-F]{2}|.)/gs, (match, escape) => {
+      const values = { "'": "'", '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', 0: '\0' };
+      if (Object.hasOwn(values, escape)) return values[escape];
+      if (escape[0] === 'u' || escape[0] === 'x') return String.fromCharCode(parseInt(escape.slice(1), 16));
+      badEscape = true; return '';
+    });
+    return JSON.stringify(value);
+  });
+  if (badEscape) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+  const json = strings.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
+  let payload; try { payload = JSON.parse(json); } catch { throw new Error('GUARANTEE_RESPONSE_UNVERIFIED'); }
+  const data = payload?.pageData;
+  const content = (value) => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
+  if (!data || [payload, data].some((part) => part && ((Object.hasOwn(part, 'success') && part.success !== true) ||
+      content(part.error) || content(part.errors))) || content(data.messages)) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+  return data.values;
+}
+
+function bounded(promise, ms, issue) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(issue)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+async function verifyGuaranteeResponse(response, expected) {
+  if (!response || response.status() !== 200) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+  const values = parseGuaranteeResponse(await bounded(response.text(), 5000, 'GUARANTEE_RESPONSE_TIMEOUT'));
+  const fields = { propertycode: 'HRCEN', status: 'New', firstname: 'Proof', lastname: 'Labtest',
+    arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire,
+    guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '',
+    guaranteecreditcardid: '', leaseguaranteecreditcardid: '', ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])) };
+  if (!values || !Object.entries(fields).every(([key, value]) => Object.hasOwn(values, key) && clean(values[key]) === value &&
+      Object.keys(values).filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) ||
+      Object.keys(values || {}).some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) && clean(values[key]))) {
+    throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+  }
+}
+
 async function dialogs(page, nativeDialog, allowed) {
   if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
   const windows = page.locator('.x-window:visible:not(.x-menu)');
@@ -132,23 +239,34 @@ async function dialogs(page, nativeDialog, allowed) {
   if (allowed !== 'ages' && await page.locator('.x-window[id^="childagespopup"]:visible').count()) throw new Error('UNEXPECTED_DIALOG');
 }
 
-async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null } = {}, operation) {
+async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null, guaranteeFence = false } = {}, operation) {
   if (typeof propertyCode !== 'string' || !/^[A-Z0-9]+$/.test(propertyCode)) return inputGap('PROPERTY_CODE_REQUIRED');
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return inputGap('PAGE_REQUIRED');
   if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'ACTION_IN_PROGRESS' };
   busyPages.add(page);
-  let attempted = false, nativeDialog = false, before = null, blocked = [];
+  let attempted = false, nativeDialog = false, before = null, blocked = [], active = true;
   let fence = null, approval = null, ageValidationReady = false, ageValidationCount = 0;
-  const onDialog = () => { nativeDialog = true; };
+  let guaranteeExpected = null, guaranteeApproved = null, rejectDialog;
+  const guaranteeResponses = [];
+  const dialogPromise = new Promise((_, reject) => { rejectDialog = reject; });
+  const onDialog = () => { nativeDialog = true; if (post === 'guarantee') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
+  const onResponse = (response) => { if (response.request() === guaranteeApproved) guaranteeResponses.push(response); };
+  const ensureActive = () => { if (!active) throw new Error('ACTION_EXPIRED'); };
   const guard = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
     const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(method) && !DANGEROUS_PATH.test(url.pathname);
-    const allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
+    let allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
+    if (post === 'guarantee' && method === 'POST' && url.pathname === GUARANTEE_CHANGE && guaranteeExpected &&
+        guaranteeRequest(request, guaranteeExpected)) {
+      if (active && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
+      else if (active) fence?.quarantine();
+    }
     const ageValidation = method === 'POST' && url.pathname === CHILD_AGE_VALIDATE;
     if ((!safeRead && !allowed) || (ageValidation &&
         (!ageValidationReady || ageValidationCount !== 0 || !approval?.allow(request)))) {
+      if (post === 'guarantee' && attempted) fence?.quarantine();
       blocked.push({ method, path: url.pathname });
       await route.abort();
     } else {
@@ -157,41 +275,73 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     }
   };
   const check = async (which = allowed) => {
+    ensureActive();
     await dialogs(page, () => nativeDialog, which);
+    ensureActive();
     if (blocked.length) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
     await assertForm(page, propertyCode);
+    ensureActive();
   };
   page.on('dialog', onDialog);
+  if (post === 'guarantee') page.on('response', onResponse);
   try {
-    await check();
-    before = await readFields(page);
-    if (post === 'ages') {
-      fence = await installPageRequestFence(page, [CHILD_AGE_VALIDATE]);
-      approval = fence.open();
-    }
-    await page.route('**/*', guard);
-    const result = await operation({ check, mark: () => { attempted = true; },
-      allowAgeValidation: () => { ageValidationReady = true; } });
-    await page.waitForTimeout(1000);
-    await check();
-    const after = await readFields(page);
-    await verifySettled(page, result, after);
-    const changedFields = changes(before, after);
-    if (result.outcome === 'closed_unsaved' && changedFields.length) throw new Error('CMS_CANCEL_FORM_CHANGED');
-    return { ...result, changedFields };
+    const execute = async () => {
+      await check();
+      before = await readFields(page); ensureActive();
+      const paths = [...(post === 'ages' ? [CHILD_AGE_VALIDATE] : []),
+        ...(post === 'guarantee' || guaranteeFence ? [GUARANTEE_CHANGE] : [])];
+      if (paths.length) {
+        fence = await installPageRequestFence(page, paths); ensureActive();
+        if (post === 'ages' || post === 'guarantee') approval = fence.open();
+      }
+      await page.route('**/*', guard);
+      if (!active) { await page.unroute('**/*', guard).catch(() => {}); throw new Error('ACTION_EXPIRED'); }
+      const result = await operation({ check, mark: () => { ensureActive(); attempted = true; },
+        allowAgeValidation: () => { ensureActive(); ageValidationReady = true; },
+        allowGuarantee: (expected) => { ensureActive(); guaranteeExpected = expected; } });
+      ensureActive();
+      if (post === 'guarantee' && result.outcome === 'updated_unsaved') {
+        const deadline = Date.now() + 10000;
+        while (!guaranteeResponses.length && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100)); ensureActive();
+        }
+        if (!guaranteeApproved || guaranteeResponses.length !== 1) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
+        await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: 10000 }); ensureActive();
+      }
+      await page.waitForTimeout(1000);
+      await check();
+      const after = await readFields(page); ensureActive();
+      await verifySettled(page, result, after); ensureActive();
+      if (post === 'guarantee' && result.outcome === 'updated_unsaved') {
+        const current = await guaranteeDraft(page, propertyCode); ensureActive();
+        if (JSON.stringify(current) !== JSON.stringify(guaranteeExpected?.draft)) throw new Error('GUARANTEE_DRAFT_CHANGED');
+        await verifyGuaranteeResponse(guaranteeResponses[0], guaranteeExpected); ensureActive();
+        await check();
+      }
+      const changedFields = changes(before, after);
+      if (result.outcome === 'closed_unsaved' && changedFields.length) throw new Error('CMS_CANCEL_FORM_CHANGED');
+      return { ...result, changedFields };
+    };
+    return post === 'guarantee' ? await bounded(Promise.race([execute(), dialogPromise]), 30000, 'GUARANTEE_ACTION_TIMEOUT') : await execute();
   } catch (error) {
+    active = false;
     if (attempted && fence) fence.quarantine();
     let observed;
     if (!nativeDialog) {
-      try { await assertForm(page, propertyCode); observed = await readFields(page); } catch { /* No safe readback. */ }
+      try {
+        const readback = async () => { await assertForm(page, propertyCode); return readFields(page); };
+        observed = post === 'guarantee' ? await bounded(readback(), 5000, 'GUARANTEE_READBACK_TIMEOUT') : await readback();
+      } catch { /* No safe readback. */ }
     }
     return { outcome: attempted ? 'action_uncertain' : 'execution_failure',
       issue: blocked.length ? 'UNEXPECTED_REQUEST_BLOCKED' : nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error),
       ...(blocked.length ? { blockedRequests: blocked } : {}), ...(observed && before ? { changedFields: changes(before, observed) } : {}) };
   } finally {
+    active = false;
     approval?.close();
     await page.unroute('**/*', guard).catch(() => {});
     page.off('dialog', onDialog);
+    if (post === 'guarantee') page.off('response', onResponse);
     busyPages.delete(page);
   }
 }
@@ -259,7 +409,7 @@ async function openCombo(page, input) {
 
 export async function listGuestStayDropdown(page, { propertyCode, field } = {}) {
   if (!Object.hasOwn(COMBOS, field || '')) return inputGap('DROPDOWN_FIELD_UNSUPPORTED');
-  return run(page, propertyCode, {}, async ({ check, mark }) => {
+  return run(page, propertyCode, { guaranteeFence: field === 'guaranteeType' }, async ({ check, mark }) => {
     const input = await uniqueInput(page, COMBOS[field]);
     await check(); mark();
     await openCombo(page, input);
@@ -274,25 +424,50 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
   if (!Object.hasOwn(COMBOS, field || '')) return inputGap('DROPDOWN_FIELD_UNSUPPORTED');
   if (!['string', 'number'].includes(typeof value) || clean(value) === '') return inputGap('DROPDOWN_VALUE_REQUIRED');
   if (field === 'adults' && (!Number.isInteger(value) || value < 0)) return inputGap('ADULT_COUNT_INVALID');
-  return run(page, propertyCode, {}, async ({ check, mark }) => {
+  const guarantee = field === 'guaranteeType';
+  return run(page, propertyCode, { post: guarantee ? 'guarantee' : null }, async ({ check, mark, allowGuarantee }) => {
+    const draft = guarantee ? await guaranteeDraft(page, propertyCode) : null;
+    if (guarantee && !draft) return { outcome: 'unsupported', issue: 'GUARANTEE_DRAFT_UNSUPPORTED', field, requested: value };
     const input = await uniqueInput(page, COMBOS[field]);
     await check(); mark();
     const list = await openCombo(page, input);
     const options = await comboOptions(input);
     const matches = options.filter((option) => clean(option.value) === clean(value));
     if (matches.length === 0) {
-      await page.keyboard.press('Escape'); await check();
+      await check(); await page.keyboard.press('Escape'); await check();
       return { outcome: 'unsupported', issue: 'DROPDOWN_VALUE_UNAVAILABLE', field, requested: value };
     }
     if (matches.length !== 1 || typeof matches[0].label !== 'string') throw new Error('DROPDOWN_VALUE_NOT_UNIQUE');
     const items = list.locator('.x-boundlist-item:visible');
     const indexes = await items.evaluateAll((nodes, label) => nodes.flatMap((node, index) => node.textContent.trim() === label.trim() ? [index] : []), matches[0].label);
     if (indexes.length !== 1) throw new Error('DROPDOWN_OPTION_NOT_UNIQUE');
-    await check();
+    if (guarantee) {
+      const existing = await input.evaluate((el) => {
+        const cmp = Ext.getCmp(el.id.replace(/-inputEl$/, ''));
+        return { value: cmp?.getValue?.(), display: el.value, submitted: cmp?.getSubmitData?.()?.guaranteetype };
+      });
+      await check();
+      const ready = await guaranteeDraft(page, propertyCode);
+      if (!ready || JSON.stringify(ready) !== JSON.stringify(draft)) throw new Error('GUARANTEE_DRAFT_CHANGED');
+      if (clean(existing.value) === clean(value)) {
+        if (clean(existing.display) !== clean(matches[0].label) || clean(existing.submitted) !== clean(value)) {
+          throw new Error('DROPDOWN_READBACK_MISMATCH');
+        }
+        await check(); await page.keyboard.press('Escape'); await check();
+        return { outcome: 'unchanged_unsaved', field, requested: value, actual: existing };
+      }
+      allowGuarantee({ draft: ready, value: clean(value) });
+    } else await check();
     await items.nth(indexes[0]).click({ timeout: 5000 });
     await page.waitForTimeout(500); await check();
-    const actual = await input.evaluate((el) => ({ value: Ext.getCmp(el.id.replace(/-inputEl$/, ''))?.getValue?.(), display: el.value }));
+    const actual = await input.evaluate((el, includeSubmitted) => {
+      const cmp = Ext.getCmp(el.id.replace(/-inputEl$/, ''));
+      return { value: cmp?.getValue?.(), display: el.value, ...(includeSubmitted ? { submitted: cmp?.getSubmitData?.()?.guaranteetype } : {}) };
+    }, guarantee);
     if (clean(actual.value) !== clean(value)) throw new Error('DROPDOWN_READBACK_MISMATCH');
+    if (guarantee && (clean(actual.display) !== clean(matches[0].label) || clean(actual.submitted) !== clean(value))) {
+      throw new Error('DROPDOWN_READBACK_MISMATCH');
+    }
     return { outcome: 'updated_unsaved', field, requested: value, actual };
   });
 }
