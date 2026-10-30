@@ -1,6 +1,7 @@
 // Read prices and inventory from cloud Hotel Availability on the caller's page.
 import { randomUUID } from 'node:crypto';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { captureAvailabilityDisplay } from './availability-display.mjs';
 
 const busyPages = new WeakSet();
 const lastPartySearch = new WeakMap();
@@ -716,6 +717,8 @@ export async function searchHotelAvailability(page, input) {
       }
       throw new Error('SEARCH_RESPONSE_INVALID');
     }
+    snapshot.displayedPrices = await captureAvailabilityDisplay(surface, snapshot)
+      .catch(() => ({ outcome: 'unavailable', source: 'visible_hms_grid' }));
     return { outcome: 'ok', snapshot };
   } catch (error) {
     const message = String(error?.message || error).split('\n')[0];
