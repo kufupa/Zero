@@ -13,9 +13,11 @@ status. A verified shortfall is `shortfall`; `shortfall_unverified` still shows
 the observed difference when other evidence is incomplete. Missing inventory
 remains unknown. `count_sufficient` means only that the observed count is
 large enough for that night. It does not establish rate eligibility, a hold,
-combined availability across room types or a reservation. The option-level
-status is `partial` when later nights have not been returned. Follow the view's
-night-page cursor before using the whole stay.
+combined availability across room types or a reservation. When later nights
+have not been returned, the option-level status is `partial` only if all shown
+nights are `count_sufficient`; an observed shortfall or unknown can take
+precedence. Check `allNightsShown` and follow the night-page cursor before
+using the whole stay.
 
 Adult and child counts are per search scenario; guest names and room quantity
 are separate inputs. Run separate searches for different dates or occupancies.
