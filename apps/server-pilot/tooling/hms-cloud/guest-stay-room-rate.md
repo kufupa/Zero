@@ -37,10 +37,13 @@ its catalog result. A `no_match` means no match in a verified complete catalog;
 otherwise an empty partial catalog is `incomplete`.
 
 Room results include `criteria.nativeFilters` from the native picker request.
-When HMS prefilters a reopened picker, `coverage.nativeFiltered` is true,
-`total` is unknown for the whole catalog, and `filteredResultTotal` and
-`filteredResultComplete` describe only the returned subset. The tool does not
-clear this filter; an absent room remains unverified.
+When HMS prefilters a reopened picker by its current room code, the tool clears
+that observed filter and verifies the new data-only response and grid. It reports
+the original filter as `initialNativeFilters` and the reset as `nativeFilterReset`.
+Other unverified filters leave `coverage.nativeFiltered` true, whole-catalog
+`total` unknown, and an absent room unverified. `filteredResultTotal` and
+`filteredResultComplete` describe only the returned subset. A failed reset
+returns `execution_failure` and requires picker cleanup.
 
 Search leaves the picker open. A further search of that picker refines the same
 observation and issues a new `searchId`; it does not refresh HMS data. Close the
