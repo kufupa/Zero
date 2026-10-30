@@ -233,7 +233,7 @@ without further evidence.
 A request can be priced from Hotel Availability without saving a Guest Stay,
 then answered with a separate quote. A reservation-based flow can instead use a
 Guest Stay and the CMS correspondence controls. These paths can overlap in
-purpose: in the three-day PDF audit (source report retained in the local research checkout),
+purpose: in the [three-day PDF audit](../2026-10-29-centurion-three-day-reread.md),
 355 of 432 selected PDF records had both a tentative-confirmation heading and a
 pro-forma banner; records include repeats and are not 432 distinct requests.
 The 1,880-record dataset was selected by the outbound confirmation-letter filename,
