@@ -295,11 +295,13 @@ async function dismissUnavailableDialog(page, timeout = 0) {
 }
 
 function requestMatches(actual, input, selected, nights, party) {
+  const appliedAges = !Object.hasOwn(actual, 'childAges') && clean(actual.childCount) === '0'
+    ? [] : actual.childAges;
   return clean(actual.launchedFrom).toLowerCase() === 'hotelavailability' &&
     clean(actual.propertyCodes).toUpperCase() === clean(input.propertyCode).toUpperCase() &&
     clean(actual.startDate).slice(0, 10) === input.arrivalDate && Number(actual.numberOfDays) === nights &&
     Number(actual.adultCount) === input.adults && Number(actual.childCount) === input.childAges.length &&
-    Array.isArray(actual.childAges) && JSON.stringify(actual.childAges) === JSON.stringify(input.childAges) &&
+    Array.isArray(appliedAges) && JSON.stringify(appliedAges) === JSON.stringify(input.childAges) &&
     sameCodes(clean(actual.roomTypeCodes).split(',').map(clean).filter(Boolean), selected.roomTypes) &&
     sameCodes(clean(actual.ratePlanCodes).split(',').map(clean).filter(Boolean), selected.ratePlans) &&
     Object.entries(PARTY_PICKERS).every(([kind, spec]) => Object.hasOwn(actual, spec.requestField) &&
