@@ -19,9 +19,7 @@ function normalizeQuery(input, options) {
   if (input.role != null && options.role != null && input.role !== options.role) throw new TypeError('Conflicting query roles.');
   const roleDefaulted = type !== 'name' && input.role == null && options.role == null;
   const role = input.role ?? options.role ?? (roleDefaulted ? 'outbound-recipient' : null);
-  if (type !== 'name' && !ROLES.has(role)) {
-    throw new TypeError('Address role must be outbound-recipient, outbound-sender, or inbound-sender.');
-  }
+  if (type !== 'name' && !ROLES.has(role)) throw new TypeError('Invalid address role.');
   if (type === 'name' && role !== null) throw new TypeError('Address roles apply only to email and domain queries.');
   const value = text(input[type]);
   if (type === 'email') {
@@ -134,7 +132,9 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
         outboundSenderPdfRecordCount: records(item => item.role === 'outbound-sender'),
         outboundRecipientPdfRecordCount: records(item => item.role === 'outbound-recipient'),
         inboundSenderMessageRecordCount: records(item => item.role === 'inbound-sender'),
-        recordsWithoutLabeledMatch: records(item => item.linkProvenance?.labeledConfirmationMatch !== true),
+        uncertainLinkRecordCount: records(item => item.linkProvenance?.ambiguousAttachment
+          || item.linkProvenance?.labeledConfirmationMatch !== true
+          || item.linkProvenance?.subjectHasOtherConfirmation),
       };
     }
     if (includeEvidence) {

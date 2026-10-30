@@ -19,9 +19,8 @@ function readFields(fields, path) {
     const key = LABELS[labelOf(field)];
     if (!key || (typeof field.value !== 'string' && typeof field.value !== 'number')) continue;
     const value = text(field.value);
-    if (!found[key].some(item => combinationKey({ [key]: item }) === combinationKey({ [key]: value }))) {
-      found[key].push(value);
-    }
+    const alreadyObserved = found[key].some(item => combinationKey({ [key]: item }) === combinationKey({ [key]: value }));
+    if (!alreadyObserved) found[key].push(value);
   }
   return {
     values: Object.fromEntries(PARTY_FIELDS.map(key => [key, found[key].length === 1 ? found[key][0] : null])),
@@ -43,18 +42,19 @@ function outcomeVariants(result) {
   }
   const variant = (first, second, outcomeSource) => ({
     combination: Object.fromEntries(PARTY_FIELDS.map(field => [
-      field, first.sources[field] ? first.values[field] : second.values[field],
+      field, first.sources[field] ? first.values[field] : conflicts.size ? null : second.values[field],
     ])),
     fieldSources: Object.fromEntries(PARTY_FIELDS.map(field => [
-      field, first.sources[field] || second.sources[field],
+      field, first.sources[field] || (conflicts.size ? null : second.sources[field]),
     ])),
     outcomeSource,
     conflictingFields: [...conflicts],
     fieldConflicts: { recordView: record.conflicts, stay360: cards.conflicts },
   });
-  const primary = variant(record, cards, 'recordView-with-stay360-fallback');
-  const alternate = variant(cards, record, 'stay360-with-recordView-fallback');
-  return combinationKey(primary.combination) === combinationKey(alternate.combination)
+  const primary = variant(record, cards, conflicts.size ? 'recordView' : 'recordView-with-stay360-fallback');
+  const alternate = variant(cards, record, conflicts.size ? 'stay360' : 'stay360-with-recordView-fallback');
+  if (!Object.values(record.sources).some(Boolean)) return [alternate];
+  return !Object.values(cards.sources).some(Boolean) || combinationKey(primary.combination) === combinationKey(alternate.combination)
     ? [primary] : [primary, alternate];
 }
 
@@ -92,8 +92,6 @@ function messageRecord(record, index) {
     filenameCandidates: numbersIn(record?.attachment?.filename),
     subjectCandidates: numbersIn(message.subject),
     candidateOnly: typeof record?.candidateOnly === 'boolean' ? record.candidateOnly : null,
-    filenamePatternMatch: typeof record?.qualification?.filenamePatternMatch === 'boolean'
-      ? record.qualification.filenamePatternMatch : null,
   };
 }
 
@@ -106,7 +104,7 @@ export function buildHmsBookingMemory({
   if (!scope) throw new TypeError('propertyCode is required; build one memory per property.');
   const snapshots = [...pmsSnapshots, ...(pmsSnapshot ? [pmsSnapshot] : [])];
   const rawMessages = [...outboundPdfRecords, ...messageRecords];
-  for (const item of [...snapshots, ...rawMessages]) {
+  for (const item of [...snapshots, ...snapshots.flatMap(snapshot => snapshot?.results || []), ...rawMessages]) {
     if (text(item?.propertyCode) && text(item.propertyCode).toUpperCase() !== scope) {
       throw new TypeError('Inputs span multiple properties; build one memory per property.');
     }
@@ -198,9 +196,11 @@ export function buildHmsBookingMemory({
     const { message, confirmationKey: key } = edge;
     const match = candidates => candidates.length ? candidates.includes(key) : null;
     const linkProvenance = {
-      method: edge.method, candidateOnly: message.candidateOnly, filenamePatternMatch: message.filenamePatternMatch,
+      method: edge.method, candidateOnly: message.candidateOnly,
       labeledConfirmationMatch: match(message.candidates), filenameConfirmationMatch: match(message.filenameCandidates),
       subjectConfirmationMatch: match(message.subjectCandidates),
+      ambiguousAttachment: (byAttachment.get(message.attachmentId)?.length || 0) > 1
+        || (attachments.get(message.attachmentId) || []).some(item => item.confirmationKey !== key),
       subjectHasOtherConfirmation: message.subjectCandidates.length
         ? message.subjectCandidates.some(candidate => candidate !== key) : null,
       upstreamPmsEvidence: edge.observations.map(observation => observation.pdfProvenance).filter(Boolean),
@@ -231,8 +231,8 @@ export function buildHmsBookingMemory({
       linkedOutboundPdfRecordCount: linkedOutbound.size, unlinkedOutboundPdfRecordCount: outbound.length - linkedOutbound.size,
       directAttachmentLinkCount: [...edges.values()].filter(edge => edge.method === 'attachment-id').length,
       confirmationCandidateLinkCount: [...edges.values()].filter(edge => edge.method === 'confirmation-number-candidate').length,
-      ambiguousAttachmentIdCount: [...attachments.values()]
-        .filter(items => new Set(items.map(item => item.confirmationKey)).size > 1).length,
+      ambiguousAttachmentIdCount: [...attachments].filter(([id, items]) => (byAttachment.get(id)?.length || 0) > 1
+        || new Set(items.map(item => item.confirmationKey)).size > 1).length,
       outboundAddressEvidenceCount: addressEvidence.filter(item => item.direction === 'outbound').length,
       inboundMessageRecordCount: messages.length - outbound.length,
       duplicateMessageRecordCount: parsedMessages.length - messages.length,

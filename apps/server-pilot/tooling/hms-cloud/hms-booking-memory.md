@@ -61,18 +61,23 @@ proof of identity, or proof that an HMS selection is currently valid.
 ## Evidence and compatibility
 
 A party value of `""` is an observed blank; `null` is unknown or ambiguous.
-Conflicting record-view and Stay 360 combinations remain distinct. Conflicting
-duplicate labels are reported in detailed `fieldConflicts`, with the affected
-value left unresolved instead of inventing a combination.
+Conflicting record-view and Stay 360 combinations remain distinct; missing
+fields are not filled across conflicting views. Conflicting duplicate labels
+are reported in detailed `fieldConflicts`, with the affected value left
+unresolved instead of inventing a combination.
 
 An `attachment-id` link inherits the upstream PMS-to-PDF association; it is
 not independent proof. `confirmation-number-candidate` is a fallback only when
 the PDF has exactly one candidate. Detailed `linkProvenance` records whether
 the linked confirmation matches a labeled PDF candidate, a recognized filename
 or subject candidate, whether a recognized subject candidate conflicts, and
-the upstream snapshot's aggregate PDF evidence. A `null` match means no
-candidate was available for that check. These are source-quality signals, not
-independent identity verification.
+the upstream snapshot's aggregate PDF evidence. `ambiguousAttachment` flags
+an attachment associated with multiple in-scope confirmations or supplied
+message records; it cannot rule out collisions outside the loaded scope.
+A `null` match means no candidate was available for that check. These are
+source-quality signals, not independent identity verification. Candidate
+`uncertainLinkRecordCount` counts records with an ambiguous attachment,
+missing or conflicting labeled match, or a conflicting subject candidate.
 
 Safety corrections to the old query: address roles are no longer mixed, and
 confirmation matching preserves case and punctuation instead of silently
