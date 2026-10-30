@@ -62,11 +62,14 @@ Callers choose the code; this module does not infer one.
 
 Results use `ok`, `updated_unsaved`, `input_gap`, `unsupported`,
 `execution_failure`, or `action_uncertain`. An uncertain action may have
-changed the form: read it before retrying. Unexpected requests are blocked and
+changed the form. After an uncertain child-age action, protected draft-change
+requests remain blocked on that page; start a fresh draft before retrying.
+Successful actions can continue on the same page. Unexpected requests are blocked and
 unexpected dialogs are left untouched. During each action an additional route
 permits only query-free blank-stay age reads/validation and CMS lookup POSTs;
 age requests must also include `ONLY_DATA_REQUIRED=true`. The existing read-only
-guard must remain installed throughout the session.
+guard must remain installed throughout the session. Callers must not install a
+page route that bypasses the fence with `route.continue()`.
 These actions do not save or send. A checked CMS box can affect a later save,
 so treat it as draft state. Form fields, picker results and readbacks can contain
 private data and must remain in approved private storage.
