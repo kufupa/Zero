@@ -212,14 +212,20 @@ function normalizeOriginalMailbox(raw: string): string | null {
 /** Strip balanced RFC-style comments without changing quoted mailboxes or domain literals. */
 function stripAddressComments(value: string): string | null {
   let quoted = false, literal = false, escaped = false, depth = 0, result = '';
-  for (const character of value) {
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]!;
     const code = character.charCodeAt(0);
     if (depth) {
       if ((code < 32 && code !== 9) || code === 127) return null;
       if (escaped) { escaped = false; continue; }
       if (character === '\\') { escaped = true; continue; }
       if (character === '(') depth++;
-      else if (character === ')') depth--;
+      else if (character === ')' && --depth === 0) {
+        // Removing a comment must not join two distinct words into a mailbox.
+        const before = result.at(-1) ?? '', after = value[index + 1] ?? '';
+        if (before && after && !/\s/.test(before) && !/\s/.test(after) &&
+            !'@<>,'.includes(before) && !'@<>,'.includes(after)) return null;
+      }
       continue;
     }
     if (escaped) { result += character; escaped = false; continue; }

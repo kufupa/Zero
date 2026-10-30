@@ -53,6 +53,7 @@ describe('original address normalization', () => {
       null, undefined, 1, [], '', '   ', 'not an address',
       'one@example.test, broken', 'one@example.test,', ',one@example.test',
       'Group: one@example.test;', 'Name; Other <one@example.test>',
+      'one(comment)two@example.test', 'one(comment).two@example.test',
       'John ("Nick" Doe <one@example.test>, two@example.test',
       'John \\ "Nick" <one@example.test>',
       'Name <<one@example.test>>', 'Name <one@example.test', 'Name one@example.test>',
