@@ -16,6 +16,7 @@ const LOOKUPS = {
   arAccount: {
     title: 'A/R Account', field: 'araccountname', label: 'A/R Account',
     filter: 'A/R Account', alias: 'araccountname', id: 'araccountid', name: 'araccountname',
+    changePath: '/web/base/OSRESV.HDR.araccountchange', requestId: 'araccountid',
   },
 };
 
@@ -364,6 +365,8 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   let nativeDialog = false;
   let requestFailed = false;
   let observed = null;
+  let nativeReadback = null;
+  let requestProperty = null;
   let requestIdVerified = false;
   let changeResponseVerified = false;
   let pendingChangeResponses = 0;
@@ -381,7 +384,13 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
         void response.text().then((body) => {
           const values = responseData(body).values;
           changeResponseVerified = Boolean(values && Object.hasOwn(values, 'confirmationnumber') &&
-            !clean(values.confirmationnumber) && clean(values[spec.requestId]) === nativeId);
+            !clean(values.confirmationnumber) && clean(values[spec.requestId]) === nativeId &&
+            (kind !== 'arAccount' || (requestProperty && clean(values.propertycode) === requestProperty &&
+              ['recordid', 'reservationid'].every((key) => Object.hasOwn(values, key) && !clean(values[key])))));
+          if (changeResponseVerified && kind === 'arAccount') {
+            nativeReadback = Object.fromEntries(['araccountid', 'araccountname', 'arstatuscodedesc']
+              .filter((key) => Object.hasOwn(values, key)).map((key) => [key, values[key]]));
+          }
           if (!changeResponseVerified) requestFailed = true;
         }).catch(() => { requestFailed = true; }).finally(() => { pendingChangeResponses -= 1; });
       }
@@ -389,15 +398,28 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   };
   const guardChange = async (route) => {
     const request = route.request();
-    if (request.method() === 'POST' && new URL(request.url()).pathname === spec.changePath) {
+    const url = new URL(request.url());
+    if (kind === 'arAccount' && request.method() === 'POST' && url.pathname !== spec.changePath) {
+      requestFailed = true;
+      await route.abort();
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === spec.changePath) {
       const body = new URLSearchParams(request.postData() || '');
+      const property = clean(body.get('propertycode'));
+      const invalidArRequest = kind === 'arAccount' && (url.origin !== new URL(page.url()).origin ||
+        ['PKID', 'confirmationnumber', 'propertycode', spec.requestId, 'recordid', 'reservationid']
+          .some((key) => body.getAll(key).length !== 1) || !property ||
+        body.get('PKID') !== `@[EMPTY]#@[EMPTY]#${property}#` ||
+        clean(body.get('recordid')) || clean(body.get('reservationid')));
       if (!body.get('PKID')?.startsWith('@[EMPTY]#@[EMPTY]#') || !body.has('confirmationnumber') ||
           body.get('confirmationnumber').trim() || !body.get('propertycode')?.trim() ||
-          body.get(spec.requestId) !== nativeId) {
+          body.get(spec.requestId) !== nativeId || invalidArRequest) {
         requestFailed = true;
         await route.abort();
         return;
       }
+      if (kind === 'arAccount') requestProperty = property;
       requestIdVerified = true;
     }
     await route.fallback();
@@ -462,7 +484,8 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
             nativeIdEvidence: 'form_change_response',
             ...observed,
-            ...(kind === 'agency' ? { displayedAgency: value } : { displayedOrganization: value }),
+            ...(kind === 'agency' ? { displayedAgency: value } : kind === 'organization'
+              ? { displayedOrganization: value } : { displayedArAccount: value, nativeReadback }),
           };
         }
         lastSnapshot = snapshot;
@@ -497,3 +520,4 @@ export const selectBookingAgency = (page, selection, options = {}) =>
   select(page, 'agency', selection, options, false);
 export const selectPrimaryBookingAgency = (page, selection, options) => select(page, 'agency', selection, options);
 export const selectOrganization = (page, selection, options) => select(page, 'organization', selection, options);
+export const selectArAccount = (page, selection, options) => select(page, 'arAccount', selection, options);

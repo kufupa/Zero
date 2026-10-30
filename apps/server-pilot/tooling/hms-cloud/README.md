@@ -8,7 +8,7 @@ chooses a candidate; the tools do not infer an identity.
 ```js
 import {
   openNewGuestStay, searchOrganization, selectOrganization,
-  searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchArAccount,
+  searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchArAccount, selectArAccount,
 } from './lookup.mjs';
 
 await openNewGuestStay(page);
@@ -17,6 +17,12 @@ const result = await searchOrganization(page, query);
 const selected = await selectOrganization(page, {
   nativeId: chosenId,
   searchId: result.searchId,
+});
+
+const accounts = await searchArAccount(page, accountQuery);
+const selectedAccount = await selectArAccount(page, {
+  nativeId: chosenAccountId,
+  searchId: accounts.searchId,
 });
 ```
 
@@ -32,16 +38,19 @@ a verified empty response and grid;
 Field-named selection requires the `searchId` and a unique native ID from that
 search. It checks the current picker, criteria and grid again before acting.
 On success it returns the selected field and visible form fields with their
-changes. Organization and agency selections send a field-change request before
-Save; the selection guard allows that request only for a blank confirmation,
-empty reservation keys and the chosen ID. The reply must confirm that ID and
-contain no HMS message. A `selection_uncertain` outcome means
+changes. A/R selection also returns `nativeReadback` with the account ID, name
+and status fields present in the HMS response. Organization, agency and A/R
+selections send a field-change request before Save; the selection guard allows
+that request only for a blank confirmation, empty reservation keys and the
+chosen ID. A/R selection also checks the property and record IDs and blocks
+unexpected POSTs during selection. The reply must confirm the ID and contain no
+HMS message. A `selection_uncertain` outcome means
 the action may have occurred: inspect the form before trying again. Unexpected
 dialogs are left untouched.
 
 The compatibility path `../playwright-quote/hms-party-search.mjs` retains
 `searchBookingAgencies`, `searchOrganizations`, `searchArAccounts`, and
 `selectBookingAgency`. The legacy agency selection also accepts an ID alone and
-checks it against the latest live grid. A/R selection is not implemented.
+checks it against the latest live grid.
 
 Results can contain personal, business and financial details. Keep them private.
