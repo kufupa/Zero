@@ -75,8 +75,10 @@ candidate was available for that check. These are source-quality signals, not
 independent identity verification.
 
 Safety corrections to the old query: address roles are no longer mixed, and
-`sourceOfBusinessFilter` now lists the selected labels instead of saying only
-`E-Mail`. The old `excludedNonEmailPmsResultCount` is a deprecated alias for
+confirmation matching preserves case and punctuation instead of silently
+merging differently formatted identifiers. `sourceOfBusinessFilter` now lists
+the selected labels instead of saying only `E-Mail`. The old
+`excludedNonEmailPmsResultCount` is a deprecated alias for
 the count outside the three-source cohort. `ignoredNonOutboundRecordCount` is
 replaced by `ignoredUnrecognizedDirectionRecordCount`, since valid inbound
 records can now be retained.

@@ -7,7 +7,8 @@ export function text(value) {
 }
 
 export function confirmationKey(value) {
-  return text(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const key = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  return /[\p{L}\p{N}]/u.test(key) ? key : '';
 }
 
 export function combinationKey(combination) {

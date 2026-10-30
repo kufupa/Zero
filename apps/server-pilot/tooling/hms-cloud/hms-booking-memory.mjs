@@ -144,7 +144,7 @@ export function buildHmsBookingMemory({
       const source = SOURCES.find(item => item.toLowerCase() === distinct[0]);
       if (!source) { excludedOtherSourcePmsResultCount++; continue; }
       const confirmationNumber = text(result.confirmation);
-      const key = confirmationKey(confirmationNumber);
+      const key = confirmationKey(result.confirmation);
       if (!key) { excludedMissingConfirmationPmsResultCount++; continue; }
       sourceCounts[source]++;
       const pdf = result.sourcePdfEvidence || {};
