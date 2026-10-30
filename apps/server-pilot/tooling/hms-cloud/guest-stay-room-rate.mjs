@@ -141,6 +141,7 @@ function propertyAlias(body) {
 function allowedSearch(request, kind, origin) {
   const url = new URL(request.url());
   if (url.origin !== origin || request.method() !== 'POST') return false;
+  if (url.search && (url.pathname !== '/api/internalBooking/rateshop/inquiryForGrid' || url.search !== '?houseAvailabilityOnly=true')) return false;
   const body = new URLSearchParams(request.postData() || '');
   const spec = SPECS[kind];
   if (url.pathname === '/web/base/GETCACHE') return body.get('GRID_NAME') === spec.grid;
@@ -420,7 +421,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
       const url = new URL(request.url());
       const body = new URLSearchParams(request.postData() || '');
       const keys = ['propertycode', 'confirmationnumber', 'PKID', 'recordid', 'reservationid', 'roomtype', 'roomtypeid'];
-      return url.origin === origin && paths.includes(url.pathname) && keys.every((key) => body.getAll(key).length === 1) &&
+      return url.origin === origin && !url.search && paths.includes(url.pathname) && keys.every((key) => body.getAll(key).length === 1) &&
         body.get('propertycode') === PROPERTY && !clean(body.get('confirmationnumber')) &&
         body.get('PKID') === `@[EMPTY]#@[EMPTY]#${PROPERTY}#` && !clean(body.get('recordid')) &&
         !clean(body.get('reservationid')) && body.get('roomtype') === chosen.code && body.get('roomtypeid') === chosen.nativeId;
@@ -473,7 +474,7 @@ export async function closeRoomRatePicker(page) {
     await assertCurrent(page, state, () => native);
     const result = await withFence(page, (req, origin) => {
       const url = new URL(req.url());
-      if (state.kind !== 'ratePlan' || url.origin !== origin ||
+      if (state.kind !== 'ratePlan' || url.origin !== origin || url.search ||
           url.pathname !== `/api/internalBooking/${PROPERTY}/rateshop/rateSelection`) return false;
       try { return JSON.parse(req.postData() || '{}').action === 'CANCEL'; } catch { return false; }
     }, async () => {
