@@ -179,7 +179,7 @@ export function isCanonicalMailbox(value: string): boolean {
 
 function normalizeOriginalMailbox(raw: string): string | null {
   const trimmed = raw.trim();
-  const bracketed = trimmed.match(/^([^<>]*)<([^<>]+)>$/);
+  const bracketed = trimmed.match(/^("(?:[^"\\\r\n]|\\[^\r\n])*"\s*|[^<>]*)<([^<>]+)>$/);
   const display = bracketed?.[1]?.trim() ?? '';
   for (const character of display) {
     const code = character.charCodeAt(0);
