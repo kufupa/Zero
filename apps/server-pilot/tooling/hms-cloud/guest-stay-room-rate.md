@@ -44,18 +44,21 @@ loaded rows again. They reject changed or closed visible state; hidden identity 
 server changes are not detected. Even matching criteria and an unchanged picker
 do not guarantee current inventory, prices or eligibility.
 
-If loading fails after this module opens a picker, or selection is uncertain
-while the picker remains open, call `closeRoomRatePicker` before retrying.
+If loading fails after this module opens a picker, call `closeRoomRatePicker`
+before retrying. If selection is uncertain while the picker remains open,
+call `closeRoomRatePicker` to clean up when possible.
 Cleanup checks the recorded window and unchanged blank draft and refuses
 unexpected dialogs; it never makes the incomplete catalog selectable.
 
 Room selection requires a unique current candidate with both a native ID and a
 code. A non-unique supplied identifier returns `ambiguous` on inspection and selection
 refuses; a distinguishing ID/code pair can resolve it. The tool checks the selected row, fences both observed
-field-change requests to the empty HRCEN reservation keys and chosen ID/code,
+field-change requests to `ONLY_DATA_REQUIRED=true`, the empty HRCEN reservation keys and chosen ID/code,
 checks their responses, and reads back the form. `changedFields` includes visible
 fields added, removed or changed. If it returns `selection_uncertain`, an action
-may have occurred: inspect the draft before retrying. Closing a Rate Shop picker
+may have occurred. The page is quarantined for later selections using the shared
+request fence; inspect the draft and start a new page before retrying. The fence
+blocks late room-change requests for the remaining lifetime of the page. Closing a Rate Shop picker
 explicitly discards its pending shopping selection and can send a session-cancel
 request; it does not cancel a stay.
 If Rate Shop closes but that request fails or cannot be verified, cleanup can be
