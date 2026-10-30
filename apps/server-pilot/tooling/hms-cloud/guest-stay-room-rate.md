@@ -58,6 +58,9 @@ fields added, removed or changed. If it returns `selection_uncertain`, an action
 may have occurred: inspect the draft before retrying. Closing a Rate Shop picker
 explicitly discards its pending shopping selection and can send a session-cancel
 request; it does not cancel a stay.
+If Rate Shop closes but that request fails or cannot be verified, cleanup can be
+retried, but returns `close_uncertain`: the server-side shopping-session cancel
+is unverified even when the picker has disappeared.
 In one live blank draft, that request's session ID matched the two room-change
 responses and the Rate Shop inquiry. The cancel guard does not independently
 bind the ID, and isolation from other shopping sessions remains unverified.

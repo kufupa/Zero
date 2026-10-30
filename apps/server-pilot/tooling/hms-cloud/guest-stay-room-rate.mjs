@@ -157,7 +157,6 @@ function allowedSearch(request, kind, origin) {
   }
   return false;
 }
-
 async function withFence(page, allowed, action) {
   const effects = [];
   const requests = new Map();
@@ -356,7 +355,6 @@ function matchingCandidates(state, input) {
   return state.candidates.filter((candidate) => (!nativeId || candidate.nativeId === nativeId) &&
     (!code || candidate.code === code));
 }
-
 export async function inspectRoomRateCandidate(page, input = {}) {
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
@@ -384,7 +382,6 @@ function changedFields(before, after) {
     return JSON.stringify(old) === JSON.stringify(field) ? [] : [{ before: old, after: field }];
   });
 }
-
 export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {}) {
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
@@ -458,7 +455,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
 export async function closeRoomRatePicker(page) {
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
-  let native = false;
+  let native = false, cancelAttempted = false;
   const onDialog = () => { native = true; };
   page.on('dialog', onDialog);
   try {
@@ -481,20 +478,23 @@ export async function closeRoomRatePicker(page) {
         await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).click();
         await win.waitFor({ state: 'hidden', timeout: 10000 }); state.windowId = null;
       }
-      if (state.kind === 'ratePlan') {
+      if (state.kind === 'ratePlan' && state.shopId) {
         const shop = picker(page, 'Rate Shop');
         const close = shop.locator('.x-tool-close:visible');
         if (await close.count() !== 1) throw new Error('RATE_SHOP_CLOSE_UNAVAILABLE');
-        await close.click();
-        await shop.waitFor({ state: 'hidden', timeout: 10000 });
+        cancelAttempted = true; await close.click();
+        await shop.waitFor({ state: 'hidden', timeout: 10000 }); state.shopId = null;
       }
       await assertWindows(page, [], () => native);
       await formFields(page);
     });
     searches.delete(page);
-    return { outcome: 'closed_unsaved', effects: result.effects };
+    return { outcome: state.cancelUncertain ? 'close_uncertain' : 'closed_unsaved',
+      ...(state.cancelUncertain ? { issue: 'RATE_SHOP_CANCEL_UNVERIFIED' } : {}), effects: result.effects };
   } catch (error) {
-    if (searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
-    return { outcome: 'execution_failure', issue: issue(error, 'PICKER_CLOSE_FAILED') };
+    const state = searches.get(page);
+    if (state && cancelAttempted && !native && !await picker(page, 'Rate Shop').isVisible().catch(() => true)) state.shopId = null;
+    if (state) searches.set(page, { ...state, searchId: null, cleanupOnly: true, cancelUncertain: state.cancelUncertain || cancelAttempted });
+    return { outcome: cancelAttempted || state?.cancelUncertain ? 'close_uncertain' : 'execution_failure', issue: issue(error, 'PICKER_CLOSE_FAILED') };
   } finally { page.off('dialog', onDialog); busy.delete(page); }
 }
