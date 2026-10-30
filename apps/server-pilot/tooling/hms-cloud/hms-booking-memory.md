@@ -54,9 +54,12 @@ loaded PMS observations before the query filter, including repeated reads.
 The default candidate and conflict limits are 25; `limit` and `conflictLimit`
 are capped at 200. `includeEvidence: true` (or `includeDetail`) returns private
 evidence; `evidenceLimit` defaults to 20 and is capped at 100 per list.
-Results mark truncation. Counts deduplicate confirmation support, not evidence
-records. Counts and ordering are historical evidence, not an automatic choice,
-proof of identity, or proof that an HMS selection is currently valid.
+Nested evidence lists are also limited. A confirmation record or conflict
+evidence reports `truncated` and maps each truncated list's path to its full
+count in `nestedEvidenceTruncations`. Counts deduplicate confirmation support,
+not evidence records. Counts and ordering are historical evidence, not an
+automatic choice, proof of identity, or proof that an HMS selection is currently
+valid.
 
 ## Evidence and compatibility
 
@@ -74,6 +77,8 @@ or subject candidate, whether a recognized subject candidate conflicts, and
 the upstream snapshot's aggregate PDF evidence. `ambiguousAttachment` flags
 an attachment associated with multiple in-scope confirmations or supplied
 message records; it cannot rule out collisions outside the loaded scope.
+Overlapping exports of the same message are deduplicated while retaining their
+distinct `sourceSnapshotIds`; conflicting copies of a record ID are rejected.
 A `null` match means no candidate was available for that check. These are
 source-quality signals, not independent identity verification. Candidate
 `uncertainLinkRecordCount` counts records with an ambiguous attachment,

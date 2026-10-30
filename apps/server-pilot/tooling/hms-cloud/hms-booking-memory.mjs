@@ -19,8 +19,7 @@ function readFields(fields, path) {
     const key = LABELS[labelOf(field)];
     if (!key || (typeof field.value !== 'string' && typeof field.value !== 'number')) continue;
     const value = text(field.value);
-    const alreadyObserved = found[key].some(item => combinationKey({ [key]: item }) === combinationKey({ [key]: value }));
-    if (!alreadyObserved) found[key].push(value);
+    if (!found[key].some(item => combinationKey({ [key]: item }) === combinationKey({ [key]: value }))) found[key].push(value);
   }
   return {
     values: Object.fromEntries(PARTY_FIELDS.map(key => [key, found[key].length === 1 ? found[key][0] : null])),
@@ -62,14 +61,11 @@ function messageRecord(record, index) {
   const message = record?.parentMessage || {};
   const directions = [message.direction, record?.qualification?.direction]
     .map(value => text(value).toLowerCase()).filter(Boolean);
-  if (!directions.length || new Set(directions).size !== 1 || !['inbound', 'outbound'].includes(directions[0])) {
-    return null;
-  }
   const direction = directions[0];
+  if (!['inbound', 'outbound'].includes(direction) || directions.some(value => value !== direction)) return null;
   const addresses = [];
-  const add = (value, role, fieldPath) => {
-    for (const address of emailsIn(value)) addresses.push({ address, role, fieldPath });
-  };
+  const add = (value, role, fieldPath) => addresses.push(
+    ...emailsIn(value).map(address => ({ address, role, fieldPath })));
   add(message.storedFromAddress, direction + '-sender', 'parentMessage.storedFromAddress');
   if (direction === 'outbound') {
     for (const field of ['to', 'cc', 'bcc']) {
@@ -123,27 +119,24 @@ export function buildHmsBookingMemory({
   }));
   const observations = [];
   const sourceCounts = Object.fromEntries(SOURCES.map(source => [source, 0]));
-  let pmsResultCount = 0;
-  let failedPmsResultCount = 0;
-  let excludedOtherSourcePmsResultCount = 0;
-  let excludedUnknownSourcePmsResultCount = 0;
-  let excludedAmbiguousSourcePmsResultCount = 0;
-  let excludedMissingConfirmationPmsResultCount = 0;
+  const exclusions = {
+    failedPmsResultCount: 0, excludedOtherSourcePmsResultCount: 0, excludedUnknownSourcePmsResultCount: 0,
+    excludedAmbiguousSourcePmsResultCount: 0, excludedMissingConfirmationPmsResultCount: 0,
+  };
   for (const [index, snapshot] of snapshots.entries()) {
     const metadata = snapshotMetadata[index];
     for (const [resultIndex, result] of (snapshot?.results || []).entries()) {
-      pmsResultCount++;
-      if (!result || result.ok === false) { failedPmsResultCount++; continue; }
+      if (!result || result.ok === false) { exclusions.failedPmsResultCount++; continue; }
       const values = (result?.recordView?.details?.fields || [])
         .filter(field => labelOf(field) === 'source of business').map(field => text(field.value)).filter(Boolean);
       const distinct = [...new Set(values.map(value => value.toLowerCase()))];
-      if (!distinct.length) { excludedUnknownSourcePmsResultCount++; continue; }
-      if (distinct.length > 1) { excludedAmbiguousSourcePmsResultCount++; continue; }
+      if (!distinct.length) { exclusions.excludedUnknownSourcePmsResultCount++; continue; }
+      if (distinct.length > 1) { exclusions.excludedAmbiguousSourcePmsResultCount++; continue; }
       const source = SOURCES.find(item => item.toLowerCase() === distinct[0]);
-      if (!source) { excludedOtherSourcePmsResultCount++; continue; }
+      if (!source) { exclusions.excludedOtherSourcePmsResultCount++; continue; }
       const confirmationNumber = text(result.confirmation);
       const key = confirmationKey(result.confirmation);
-      if (!key) { excludedMissingConfirmationPmsResultCount++; continue; }
+      if (!key) { exclusions.excludedMissingConfirmationPmsResultCount++; continue; }
       sourceCounts[source]++;
       const pdf = result.sourcePdfEvidence || {};
       observations.push({
@@ -162,12 +155,12 @@ export function buildHmsBookingMemory({
   const byConfirmation = Map.groupBy(observations, observation => observation.confirmationKey);
   const parsedMessages = rawMessages.map(messageRecord).filter(Boolean);
   const messageGroups = Map.groupBy(parsedMessages, message => message.recordId);
-  for (const copies of messageGroups.values()) {
-    if (copies.some(copy => JSON.stringify(copy) !== JSON.stringify(copies[0]))) {
-      throw new TypeError('A message record ID has conflicting contents.');
-    }
-  }
-  const messages = [...messageGroups.values()].map(copies => copies[0]);
+  const messages = [...messageGroups.values()].map(copies => {
+    const sourceSnapshotIds = [...new Set(copies.map(copy => copy.sourceSnapshotId).filter(Boolean))];
+    const contents = copies.map(({ sourceSnapshotId: _sourceSnapshotId, ...content }) => JSON.stringify(content));
+    if (new Set(contents).size > 1) throw new TypeError('A message record ID has conflicting contents.');
+    return { ...copies[0], sourceSnapshotIds };
+  });
   const byAttachment = Map.groupBy(messages.filter(message => message.attachmentId), message => message.attachmentId);
   const edges = new Map();
   const addLink = (observation, message, method) => {
@@ -189,9 +182,8 @@ export function buildHmsBookingMemory({
     }
   }
   const addressEvidence = [];
-  const attachments = Map.groupBy(observations.flatMap(observation => observation.pdfAttachmentIds.map(
-    attachmentId => ({ attachmentId, confirmationKey: observation.confirmationKey }),
-  )), item => item.attachmentId);
+  const attachments = Map.groupBy(observations.flatMap(({ pdfAttachmentIds, confirmationKey }) =>
+    pdfAttachmentIds.map(attachmentId => ({ attachmentId, confirmationKey }))), item => item.attachmentId);
   for (const edge of edges.values()) {
     const { message, confirmationKey: key } = edge;
     const match = candidates => candidates.length ? candidates.includes(key) : null;
@@ -209,7 +201,8 @@ export function buildHmsBookingMemory({
       addressEvidence.push({
         confirmationKey: key, ...address, direction: message.direction,
         domain: address.address.split('@')[1].replace(/^\.+|\.+$/g, ''),
-        recordId: message.recordId, sourceSnapshotId: message.sourceSnapshotId, attachmentId: message.attachmentId,
+        recordId: message.recordId, attachmentId: message.attachmentId,
+        sourceSnapshotId: message.sourceSnapshotId, sourceSnapshotIds: message.sourceSnapshotIds,
         messageDbId: message.messageDbId, sentAt: message.sentAt, linkMethod: edge.method, linkProvenance,
         linkedPmsSnapshotIds: [...new Set(edge.observations.map(observation => observation.snapshotId))],
       });
@@ -222,10 +215,9 @@ export function buildHmsBookingMemory({
     schemaVersion: 2, propertyCode: scope, sourceOfBusinessFilter: [...SOURCES], snapshots: snapshotMetadata,
     observations, addressEvidence,
     linkage: {
-      pmsResultCount, failedPmsResultCount, excludedOtherSourcePmsResultCount,
-      excludedNonEmailPmsResultCount: excludedOtherSourcePmsResultCount,
-      excludedUnknownSourcePmsResultCount, excludedAmbiguousSourcePmsResultCount,
-      excludedMissingConfirmationPmsResultCount, pmsSourceCounts: sourceCounts,
+      pmsResultCount: snapshotMetadata.reduce((sum, item) => sum + item.resultCount, 0),
+      ...exclusions, excludedNonEmailPmsResultCount: exclusions.excludedOtherSourcePmsResultCount,
+      pmsSourceCounts: sourceCounts,
       pmsObservationCount: observations.length, pmsConfirmationCount: byConfirmation.size,
       outboundPdfRecordCount: outbound.length,
       linkedOutboundPdfRecordCount: linkedOutbound.size, unlinkedOutboundPdfRecordCount: outbound.length - linkedOutbound.size,

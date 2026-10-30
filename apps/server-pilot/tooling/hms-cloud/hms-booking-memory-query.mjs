@@ -52,6 +52,21 @@ function pmsEvidence(observation, outcome) {
   };
 }
 
+function boundedEvidence(record, limit) {
+  const truncations = {};
+  const visit = (value, path) => {
+    if (Array.isArray(value)) {
+      if (value.length > limit) truncations[path] = value.length;
+      return value.slice(0, limit).map((item, index) => visit(item, `${path}[${index}]`));
+    }
+    return value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, path ? `${path}.${key}` : key)]))
+      : value;
+  };
+  const result = visit(record, '');
+  return { ...result, truncated: Object.keys(truncations).length > 0, nestedEvidenceTruncations: truncations };
+}
+
 function choiceStatus({ combination, entries }) {
   if (PARTY_FIELDS.some(field => text(combination[field]))) return 'has_recorded_choice';
   if (PARTY_FIELDS.every(field => combination[field] === '')) return 'all_party_fields_observed_blank';
@@ -84,8 +99,6 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
       ? item.address === query.normalized : item.domain === query.normalized)
   ));
   const byAddress = Map.groupBy(matches, item => item.confirmationKey);
-  const matchedKeys = new Set();
-  const matchedOutcomes = new Map();
   const groups = new Map();
   for (const observation of observations) {
     if (query.type !== 'name' && !byAddress.has(observation.confirmationKey)) continue;
@@ -96,10 +109,6 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
       ].some(value => nameKey(value).includes(query.normalized))) : [];
       if (query.type === 'name' && !fields.length) continue;
       const key = combinationKey(outcome.combination);
-      matchedKeys.add(observation.confirmationKey);
-      const selected = matchedOutcomes.get(observation.confirmationKey) || new Set();
-      selected.add(key);
-      matchedOutcomes.set(observation.confirmationKey, selected);
       const group = groups.get(key) || { combination: outcome.combination, confirmations: new Set(), entries: [], fields: new Set() };
       group.confirmations.add(observation.confirmationKey);
       group.entries.push({ observation, outcome });
@@ -138,49 +147,45 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
       };
     }
     if (includeEvidence) {
-      const records = [...group.confirmations].sort().map(key => {
+      const records = [...group.confirmations].sort().slice(0, evidenceLimit).map(key => {
         const pms = group.entries.filter(item => item.observation.confirmationKey === key)
           .map(item => pmsEvidence(item.observation, item.outcome));
         const addresses = (byAddress.get(key) || []).map(({ confirmationKey: _confirmationKey, ...item }) => ({
           ...item, linkedPmsSnapshotIds: Array.from(item.linkedPmsSnapshotIds || []), matchedQuery: true,
         }));
-        return {
+        return boundedEvidence({
           confirmationNumber: pms[0]?.confirmationNumber || null,
-          pmsObservations: pms.slice(0, evidenceLimit),
-          addressSources: addresses.slice(0, evidenceLimit),
-          outboundSources: addresses.filter(item => item.direction === 'outbound').slice(0, evidenceLimit),
-          truncated: pms.length > evidenceLimit || addresses.length > evidenceLimit,
-        };
+          pmsObservations: pms, addressSources: addresses,
+          outboundSources: addresses.filter(item => item.direction === 'outbound'),
+        }, evidenceLimit);
       });
       candidate.evidence = {
-        confirmationRecords: records.slice(0, evidenceLimit),
-        totalConfirmationRecords: records.length, truncated: records.length > evidenceLimit,
+        confirmationRecords: records, totalConfirmationRecords: group.confirmations.size,
+        truncated: group.confirmations.size > evidenceLimit || records.some(record => record.truncated),
       };
     }
     return candidate;
   });
+  const matchedKeys = new Set([...groups.values()].flatMap(group => [...group.confirmations]));
   const entries = observations.filter(observation => matchedKeys.has(observation.confirmationKey))
     .flatMap(observation => observation.outcomes.map(outcome => ({ observation, outcome })));
-  const byConfirmation = Map.groupBy(entries, item => item.observation.confirmationKey);
-  const allOutcomes = new Map([...byConfirmation].map(([key, items]) => [
-    key, Map.groupBy(items, item => combinationKey(item.outcome.combination)),
-  ]));
+  const allOutcomes = new Map([...Map.groupBy(entries, item => item.observation.confirmationKey)]
+    .map(([key, items]) => [key, Map.groupBy(items, item => combinationKey(item.outcome.combination))]));
   const conflicted = [...allOutcomes].filter(([, outcomes]) => outcomes.size > 1
     || [...outcomes.values()].flat().some(item => item.outcome.conflictingFields?.length));
   const conflicts = conflicted.slice(0, conflictLimit).map(([confirmation, outcomes]) => {
     const variants = [...outcomes].map(([key, entries]) => ({
       combination: entries[0].outcome.combination, confirmationCount: 1,
       pmsObservationCount: new Set(entries.map(item => item.observation.observationId)).size,
-      matchedQuery: matchedOutcomes.get(confirmation)?.has(key) || false,
+      matchedQuery: groups.get(key)?.confirmations.has(confirmation) || false,
     }));
     const detail = { outcomeCount: variants.length, outcomes: variants.slice(0, limit), outcomesTruncated: variants.length > limit };
     if (includeEvidence) {
       const entries = [...outcomes.values()].flat();
-      detail.evidence = {
+      detail.evidence = boundedEvidence({
         confirmationNumber: entries[0]?.observation.confirmationNumber || null,
-        pmsObservations: entries.slice(0, evidenceLimit).map(item => pmsEvidence(item.observation, item.outcome)),
-        truncated: entries.length > evidenceLimit,
-      };
+        pmsObservations: entries.map(item => pmsEvidence(item.observation, item.outcome)),
+      }, evidenceLimit);
     }
     return detail;
   });
