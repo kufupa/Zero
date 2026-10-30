@@ -1,5 +1,6 @@
 // Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
 import { randomUUID } from 'node:crypto';
+import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 
 const LOOKUPS = {
   agency: {
@@ -43,13 +44,17 @@ async function assertExpectedDialogs(page, nativeDialog = false) {
   }
 }
 
-async function clickTreeNode(node) {
-  try {
-    await node.click({ timeout: 2500 });
-  } catch (error) {
-    const message = String(error);
-    if (!/outside of the viewport/i.test(message) || /intercepts pointer events/i.test(message)) throw error;
-    await node.evaluate((element) => element.click());
+async function clickTreeNode(node, hasNativeDialog) {
+  for (const timeout of [2500, 17500]) {
+    try {
+      await node.click({ timeout });
+      return;
+    } catch (error) {
+      await assertExpectedDialogs(node.page(), hasNativeDialog());
+      const masked = await node.page().locator('.x-mask:visible, .x-mask-msg:visible').count();
+      if (treeClickFallback(error) === 'dom' && !masked) return node.evaluate((element) => element.click());
+      if (timeout === 17500) throw error;
+    }
   }
 }
 
@@ -73,12 +78,12 @@ export async function openNewGuestStay(page) {
       await page.locator('a.app-menu-trigger:visible').click();
       const nodes = page.locator('span.x-tree-node-text:visible');
       const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
-      if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }));
+      if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }), () => nativeDialog);
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
         await page.waitForTimeout(800);
         if (!await guestStay.isVisible().catch(() => false)) await page.locator('a.app-menu-trigger:visible').click();
-        await clickTreeNode(guestStay);
+        await clickTreeNode(guestStay, () => nativeDialog);
         opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
           .waitFor({ timeout: 8000 }).then(() => true, () => false);
         if (!opened) await assertExpectedDialogs(page, nativeDialog);
@@ -434,15 +439,13 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
     if (selectedId !== nativeId || JSON.stringify((await readGrid(page, previous.windowId)).records) !== previous.grid) {
       throw new Error('LOOKUP_SELECTION_CHANGED');
     }
-    await assertExpectedDialogs(page);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    await assertExpectedDialogs(page, nativeDialog);
     await win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).first().click();
     const deadline = Date.now() + timeoutMs;
     let lastSnapshot = null;
     let stableSince = Date.now();
     while (Date.now() < deadline) {
-      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-      await assertExpectedDialogs(page);
+      await assertExpectedDialogs(page, nativeDialog);
       if (requestFailed) throw new Error('LOOKUP_CHANGE_REQUEST_FAILED');
       if (!await win.isVisible()) {
         await assertNewGuestStay(page);
