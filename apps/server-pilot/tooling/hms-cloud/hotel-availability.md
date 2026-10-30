@@ -5,8 +5,10 @@ combines dated room inventory and rate information, and considers children's
 ages. This is a read: it does not create or save a Guest Stay.
 
 `searchHotelAvailability(page, criteria)` takes an authenticated Playwright
-page from the Stay 360 bootstrap and leaves the page open on Hotel Availability
-for subsequent searches. The caller owns the page. Required criteria are:
+page and leaves Hotel Availability open for subsequent searches. It opens the
+standalone screen from Stay 360, or the Hotel Availability iframe from a new,
+unsaved Guest Stay. The caller owns the page and serializes actions. Required
+criteria are:
 
 - `propertyCode`: expected property, currently verified with `HRCEN`.
 - `arrivalDate`, `departureDate`: calendar dates in `YYYY-MM-DD`.
@@ -27,12 +29,53 @@ specific message so the same page can be searched again. This does not mean the
 whole hotel is sold out. A malformed response without that message remains an
 execution failure.
 
-The search currently requires blank Group, Organization and Booking Agency
-context. HMS has those controls, but this module does not yet select them. It
-returns the other applied search settings, including restricted-sell options;
-check them and the returned restriction details before using a result. A
-missing room/rate combination is not automatically evidence of no availability
-or eligibility. Rate cells have not been turned into a calculated stay total.
+The Guest Stay's dates, occupancy and parties are not assumed to carry over to
+the availability iframe. Set the quote criteria explicitly. Party context
+defaults to blank; a nonblank field is rejected unless the caller selected it
+in the current Hotel Availability picker and supplied its native ID in
+`partyContext`. The request's Group, Organization and Booking Agency IDs are
+checked along with property, dates, occupancy and room/rate codes.
+
+```js
+import {
+  searchHotelAvailabilityParty, selectHotelAvailabilityParty,
+  cancelHotelAvailabilityParty, searchHotelAvailability,
+} from './hotel-availability.mjs';
+
+const found = await searchHotelAvailabilityParty(page, {
+  propertyCode: 'HRCEN', kind: 'organization', query: organizationName,
+});
+// Inspect candidates and choose one native ID from this current search.
+const choice = await selectHotelAvailabilityParty(page, {
+  kind: 'organization', nativeId: chosenId, searchId: found.searchId,
+});
+if (choice.outcome === 'selected') {
+  const quote = await searchHotelAvailability(page, {
+    ...criteria, partyContext: { organization: chosenId },
+  });
+}
+```
+
+Picker kinds are `organization`, `bookingAgency` and `group`; the matching
+`partyContext` keys carry their native IDs. A group candidate must identify the
+current property before it can be selected. Search returns full candidate
+details, loaded/total coverage, and a `searchId`; another search invalidates
+that token. Selection checks the current grid, reads back the field and returns
+the other visible criteria and changes. `requestVerified: false` on selection
+means the ID has not yet been verified in a search request; a successful
+availability snapshot supplies that verification. `cancelHotelAvailabilityParty`
+closes a current picker and invalidates its search without clearing a prior
+selection. A stale token, ambiguous ID, unexpected dialog or unverified field is
+not success.
+
+HMS can change other settings when a party is selected. Check selection
+`criteria.changedFields` and the snapshot's `appliedCriteria`, including
+restricted-sell options, before using a result. In one live group example, the
+sales strategy and restricted-sell setting changed along with the group; no
+rate rows came back. That does not establish which change caused the result.
+A missing room/rate combination is unknown, not automatically sold out or
+ineligible. Priced cells can have zero inventory or be closed/restricted.
+Preserve those separate facts; a rate cell is not a calculated stay total.
 
 The full snapshot can be retained privately for later use.
 `filterHotelAvailability(snapshot, { roomTypes, ratePlans })` creates a smaller
