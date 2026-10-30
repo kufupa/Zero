@@ -179,16 +179,31 @@ export function isCanonicalMailbox(value: string): boolean {
 
 function normalizeOriginalMailbox(raw: string): string | null {
   const trimmed = raw.trim();
-  const bracketed = trimmed.match(/^("(?:[^"\\\r\n]|\\[^\r\n])*"\s*|[^<>]*)<([^<>]+)>$/);
-  const display = bracketed?.[1]?.trim() ?? '';
+  // Locate only angle brackets outside quoted display names or quoted local parts.
+  let quoted = false, escaped = false, open = -1, close = -1;
+  for (let index = 0; index < trimmed.length; index++) {
+    const character = trimmed[index]!;
+    if (escaped) { escaped = false; continue; }
+    if (quoted && character === '\\') { escaped = true; continue; }
+    if (character === '"') { quoted = !quoted; continue; }
+    if (quoted) continue;
+    if (character === '<') { if (open !== -1 || close !== -1) return null; open = index; }
+    if (character === '>') { if (open === -1 || close !== -1) return null; close = index; }
+  }
+  if (quoted || escaped || (open === -1) !== (close === -1) ||
+      (close !== -1 && trimmed.slice(close + 1).trim())) return null;
+  const display = open === -1 ? '' : trimmed.slice(0, open).trim();
+  quoted = false; escaped = false;
   for (const character of display) {
     const code = character.charCodeAt(0);
     if ((code < 32 && code !== 9) || code === 127) return null;
+    if (escaped) { escaped = false; continue; }
+    if (quoted && character === '\\') { escaped = true; continue; }
+    if (character === '"') { quoted = !quoted; continue; }
+    if (!quoted && /[@,:;]/.test(character)) return null;
   }
-  if (display.startsWith('"')) {
-    if (!/^"(?:[^"\\\r\n]|\\[^\r\n])*"$/.test(display)) return null;
-  } else if (/["@,:;]/.test(display)) return null;
-  const candidate = (bracketed ? bracketed[2]! : trimmed).trim();
+  if (quoted || escaped) return null;
+  const candidate = (open === -1 ? trimmed : trimmed.slice(open + 1, close)).trim();
   return isCanonicalMailbox(candidate) ? candidate.toLowerCase() : null;
 }
 

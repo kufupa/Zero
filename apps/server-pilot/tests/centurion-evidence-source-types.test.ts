@@ -26,6 +26,15 @@ describe('original address normalization', () => {
       .toEqual(['guest@example.test', 'other@example.test']);
   });
 
+  it('preserves mixed quoted words in display names and quoted mailbox brackets', () => {
+    expect(normalizeOriginal('John "Nick <VIP>" Doe <one@example.test>, two@example.test'))
+      .toEqual(['one@example.test', 'two@example.test']);
+    expect(normalizeOriginal('John "Nick" Doe <one@example.test>, two@example.test'))
+      .toEqual(['one@example.test', 'two@example.test']);
+    expect(normalizeOriginal('Name <"local<part>"@example.test>'))
+      .toEqual(['"local<part>"@example.test']);
+  });
+
   it('rejects malformed or ambiguous input as a whole, never a partial list', () => {
     for (const value of [
       null, undefined, 1, [], '', '   ', 'not an address',
