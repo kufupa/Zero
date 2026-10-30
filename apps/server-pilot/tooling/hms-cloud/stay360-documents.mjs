@@ -35,6 +35,7 @@ export async function readDocumentsFromStay360(page, confirmation) {
     const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
     const documents = [];
     let unloadedFolders = 0;
+    let unrecognizedLeaves = 0;
     root.cascadeBy((node) => {
       if (!node.isLeaf()) {
         if (!node.isLoaded?.()) unloadedFolders += 1;
@@ -45,16 +46,21 @@ export async function readDocumentsFromStay360(page, confirmation) {
       const parsed = label.match(/^(\d+):\s*(.+)$/);
       const name = clean(data.documentFileName) || parsed?.[2] || null;
       const documentCode = clean(data.documentcode) || clean(data.documentCode) || parsed?.[1] || null;
-      if (!name && !documentCode) return; // HMS can render a placeholder leaf for an empty folder.
+      if (!name && !documentCode) {
+        // HMS renders "No Documents" as a leaf; other unknown leaves cannot prove emptiness.
+        if (!/^no\s+documents?[.!]?$/i.test(label)) unrecognizedLeaves += 1;
+        return;
+      }
       documents.push({ name, documentCode, label });
     });
     return {
       documents,
       hasUnloadedFolders: unloadedFolders > 0,
       coverage: {
-        status: unloadedFolders ? 'partial' : documents.length ? 'loaded' : 'empty',
+        status: unloadedFolders || unrecognizedLeaves ? 'partial' : documents.length ? 'loaded' : 'empty',
         loadedDocuments: documents.length,
         unloadedFolders,
+        unrecognizedLeaves,
         unnamedDocuments: documents.filter((document) => !document.name).length,
         complete: null,
       },
