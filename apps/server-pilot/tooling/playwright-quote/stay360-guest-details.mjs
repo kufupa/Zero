@@ -1,39 +1,9 @@
 // Read Guest Details from the already-open Guest Stay record, without editing it.
-import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
-import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
+import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
+import { openStay360RecordTab } from '../hms-cloud/stay360-record-tabs.mjs';
 
 export async function readGuestDetailsFromStay360(page, confirmation) {
-  const wanted = typeof confirmation === 'string' ? confirmation.trim() : '';
-  if (!wanted) throw new Error('INVALID_CONFIRMATION');
-  await installReadOnlyGuard(page.context());
-  await installStay360NotesHandler(page);
-
-  const headers = page.locator('h1.recordcode:visible');
-  if (await headers.count() !== 1 || (await headers.innerText()).trim() !== wanted) {
-    throw new Error('CONFIRMATION_HEADER_MISMATCH');
-  }
-  const notes = await dismissNotesOrThrow(page, { allowRecordFrame: true });
-  const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
-  if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
-  const handle = await frames.elementHandle();
-  const frame = await handle?.contentFrame();
-  if (!frame) throw new Error('RECORD_FRAME_NOT_LOADED');
-  const isRecordFrame = await frames.evaluate((element) => {
-    const url = new URL(element.src, location.href);
-    return url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV';
-  });
-  if (!isRecordFrame) throw new Error('RECORD_FRAME_MISMATCH');
-  notes.push(...await dismissNotesOrThrow(frame));
-
-  const recordTab = frame.locator('.x-tab-active:visible').filter({ hasText: /^Record View$/ });
-  const recordConfirmation = frame.locator('input[name="confirmationnumber"]:visible');
-  if (await recordTab.count() !== 1 || await recordConfirmation.count() !== 1 ||
-      (await recordConfirmation.inputValue()).trim() !== wanted) {
-    throw new Error('RECORD_CONFIRMATION_MISMATCH');
-  }
-  const guestTab = frame.locator('.x-tab:visible').filter({ hasText: /^Guest Details$/ });
-  if (await guestTab.count() !== 1) throw new Error('GUEST_DETAILS_TAB_NOT_UNIQUE');
-  await guestTab.click();
+  const { frame, notes } = await openStay360RecordTab(page, confirmation, 'Guest Details');
 
   const deadline = Date.now() + 30_000;
   let readySince = null;
