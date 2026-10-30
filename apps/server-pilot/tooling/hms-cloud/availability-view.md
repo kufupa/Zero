@@ -59,9 +59,12 @@ detected blocking flags; it is not a guarantee of eligibility or bookability.
 Conditional flags are retained without interpreting whether they apply.
 Individual nightly categories are also provided.
 
-In the saved responses inspected so far, rate-cell `value` is a JSON number;
-rendered price text was not captured. `price.responseValue` retains the raw
-number, `displayedText` is null, and `displayedTextStatus` is `unknown`. A
-native response string, if present, is kept as `responseText` without claiming
-it appeared on screen. Currency and every native cell flag remain available.
-No total, tax, eligibility, hold or combined-room availability is calculated.
+`price.responseValue` retains the raw value. When the reader captured an
+unambiguous, fully visible HMS grid cell for the same row, date, value and
+currency, `displayedTextStatus` is `captured` and `displayedTextSource` is
+`visible_hms_grid`. Offscreen, clipped, unmatched or duplicate cells remain
+`unknown`. `coverage.displayedPrices` reports capture coverage, which is not
+exhaustive. A native response string, if present, is kept as `responseText`
+without claiming it appeared on screen. Currency and every native cell flag
+remain available. No total, tax, eligibility, hold or combined-room availability
+is calculated.
