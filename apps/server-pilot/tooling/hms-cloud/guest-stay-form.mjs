@@ -93,7 +93,7 @@ async function verifySettled(page, result, fields) {
 
 function allowedPost(request, origin, propertyCode, kind, expectedAges) {
   const url = new URL(request.url());
-  if (url.origin !== origin) return false;
+  if (url.origin !== origin || url.href.includes('?')) return false;
   const body = new URLSearchParams(request.postData() || '');
   if (kind === 'cms' && url.pathname === '/web/base/LOVPOP') {
     return Object.entries({ GRID_NAME: 'LVUDFCD', GRID_TYPE: 'LOV', LOV_TAGNAME: 'udfchar09',
@@ -102,7 +102,7 @@ function allowedPost(request, origin, propertyCode, kind, expectedAges) {
   }
   if (kind !== 'ages' || !['/web/base/OSRESV.HDR.getChildAges', '/web/base/OSRESV.HDR.validateChildAgeDetails'].includes(url.pathname)) return false;
   try {
-    if (body.getAll('params').length !== 1 || body.getAll('ONLY_DATA_REQUIRED').length !== 1 ||
+    if (body.getAll('params').length !== 1 || body.getAll('ONLY_DATA_REQUIRED').length !== 1 || body.get('ONLY_DATA_REQUIRED') !== 'true' ||
         [...body.keys()].some((key) => !['params', 'ONLY_DATA_REQUIRED'].includes(key))) return false;
     const params = JSON.parse(body.get('params'));
     const isRead = url.pathname.endsWith('.getChildAges');
