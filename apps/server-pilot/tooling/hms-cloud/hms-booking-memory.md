@@ -23,6 +23,13 @@ field, observation date, `sourceType`, and any `result.provenance`; do not
 fabricate a PMS read. Newly supplied evidence is caller-verified, and staff
 feedback is not automatically collected or learned.
 
+Confirmation numbers can identify more than one stay. If a confirmation is
+repeated across inputs, every observation must include the same caller-verified
+`result.provenance.verifiedStayId`; otherwise the build fails closed. Partition
+distinct stays that share a confirmation into separate inputs or resolve their
+identity before combining them. Do not infer a stay ID from contact details.
+This safety correction prevents histories from being silently mixed.
+
 ## Queries and roles
 
 Search using a string or `{ email }`, `{ domain }`, or `{ name }`. Address
@@ -67,7 +74,9 @@ A party value of `""` is an observed blank; `null` is unknown or ambiguous.
 Conflicting record-view and Stay 360 combinations remain distinct; missing
 fields are not filled across conflicting views. Conflicting duplicate labels
 are reported in detailed `fieldConflicts`, with the affected value left
-unresolved instead of inventing a combination.
+unresolved instead of inventing a combination. Across snapshots, a missing
+value and a later known value remain distinct but do not count as a conflict;
+different known values, including an observed blank, do.
 
 An `attachment-id` link inherits the upstream PMS-to-PDF association; it is
 not independent proof. `confirmation-number-candidate` is a fallback only when
@@ -81,8 +90,9 @@ Overlapping exports of the same message are deduplicated while retaining their
 distinct `sourceSnapshotIds`; conflicting copies of a record ID are rejected.
 A `null` match means no candidate was available for that check. These are
 source-quality signals, not independent identity verification. Candidate
-`uncertainLinkRecordCount` counts records with an ambiguous attachment,
-missing or conflicting labeled match, or a conflicting subject candidate.
+`uncertainLinkRecordCount` counts confirmation-only links, ambiguous
+attachments, missing or conflicting labeled matches, and conflicting subject
+candidates.
 
 Safety corrections to the old query: address roles are no longer mixed, and
 confirmation matching preserves case and punctuation instead of silently

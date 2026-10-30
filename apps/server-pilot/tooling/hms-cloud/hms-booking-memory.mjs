@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { PARTY_FIELDS, SOURCES, combinationKey, confirmationKey, emailsIn, text } from './hms-booking-memory-common.mjs';
+import { PARTY_FIELDS, SOURCES, combinationKey, confirmationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
 
 export { queryHmsBookingMemory } from './hms-booking-memory-query.mjs';
 
@@ -59,25 +59,25 @@ function outcomeVariants(result) {
 
 function messageRecord(record, index) {
   const message = record?.parentMessage || {};
-  const directions = [message.direction, record?.qualification?.direction]
+  const [direction, otherDirection] = [message.direction, record?.qualification?.direction]
     .map(value => text(value).toLowerCase()).filter(Boolean);
-  const direction = directions[0];
-  if (!['inbound', 'outbound'].includes(direction) || directions.some(value => value !== direction)) return null;
+  if (!['inbound', 'outbound'].includes(direction) || (otherDirection && otherDirection !== direction)) return null;
   const addresses = [];
   const add = (value, role, fieldPath) => addresses.push(
     ...emailsIn(value).map(address => ({ address, role, fieldPath })));
   add(message.storedFromAddress, direction + '-sender', 'parentMessage.storedFromAddress');
   if (direction === 'outbound') {
     for (const field of ['to', 'cc', 'bcc']) {
-      const values = Array.isArray(message[field]) ? message[field] : [message[field]];
-      for (const value of values) add(value, 'outbound-recipient', 'parentMessage.' + field);
+      for (const value of [message[field]].flat()) add(value, 'outbound-recipient', 'parentMessage.' + field);
     }
   }
   const extraction = record?.pdfExtraction || {};
-  const candidates = [...(extraction.confirmationNumberCandidates || []),
-    ...(extraction.extractedFields?.confirmationNumber || [])]
-    .map(item => confirmationKey(item?.value)).filter(Boolean);
   const numbersIn = value => (text(value).match(/(?<!\d)\d{6,10}-\d{1,2}(?!\d)/g) || []).map(confirmationKey);
+  const cleaned = (extraction.confirmationNumberCandidates || []).map(item => confirmationKey(item?.value));
+  const candidates = [...cleaned, ...(extraction.extractedFields?.confirmationNumber || []).map(item => {
+    const numbers = numbersIn(item?.value);
+    return numbers.length === 1 && cleaned.includes(numbers[0]) ? numbers[0] : confirmationKey(item?.value);
+  })].filter(Boolean);
   return {
     recordId: text(record?.recordId) || 'message-record-' + (index + 1),
     attachmentId: text(record?.source?.attachmentId) || null,
@@ -118,7 +118,6 @@ export function buildHmsBookingMemory({
     failedCount: Number.isFinite(snapshot?.failed) ? snapshot.failed : null,
   }));
   const observations = [];
-  const sourceCounts = Object.fromEntries(SOURCES.map(source => [source, 0]));
   const exclusions = {
     failedPmsResultCount: 0, excludedOtherSourcePmsResultCount: 0, excludedUnknownSourcePmsResultCount: 0,
     excludedAmbiguousSourcePmsResultCount: 0, excludedMissingConfirmationPmsResultCount: 0,
@@ -132,12 +131,10 @@ export function buildHmsBookingMemory({
       const distinct = [...new Set(values.map(value => value.toLowerCase()))];
       if (!distinct.length) { exclusions.excludedUnknownSourcePmsResultCount++; continue; }
       if (distinct.length > 1) { exclusions.excludedAmbiguousSourcePmsResultCount++; continue; }
-      const source = SOURCES.find(item => item.toLowerCase() === distinct[0]);
-      if (!source) { exclusions.excludedOtherSourcePmsResultCount++; continue; }
+      if (!SOURCES.some(source => source.toLowerCase() === distinct[0])) { exclusions.excludedOtherSourcePmsResultCount++; continue; }
       const confirmationNumber = text(result.confirmation);
       const key = confirmationKey(result.confirmation);
       if (!key) { exclusions.excludedMissingConfirmationPmsResultCount++; continue; }
-      sourceCounts[source]++;
       const pdf = result.sourcePdfEvidence || {};
       observations.push({
         confirmationKey: key, confirmationNumber, sourceOfBusiness: values[0],
@@ -152,7 +149,7 @@ export function buildHmsBookingMemory({
       });
     }
   }
-  const byConfirmation = Map.groupBy(observations, observation => observation.confirmationKey);
+  const byConfirmation = verifiedConfirmations(observations);
   const parsedMessages = rawMessages.map(messageRecord).filter(Boolean);
   const messageGroups = Map.groupBy(parsedMessages, message => message.recordId);
   const messages = [...messageGroups.values()].map(copies => {
@@ -217,7 +214,8 @@ export function buildHmsBookingMemory({
     linkage: {
       pmsResultCount: snapshotMetadata.reduce((sum, item) => sum + item.resultCount, 0),
       ...exclusions, excludedNonEmailPmsResultCount: exclusions.excludedOtherSourcePmsResultCount,
-      pmsSourceCounts: sourceCounts,
+      pmsSourceCounts: Object.fromEntries(SOURCES.map(source => [source,
+        observations.filter(item => item.sourceOfBusiness.toLowerCase() === source.toLowerCase()).length])),
       pmsObservationCount: observations.length, pmsConfirmationCount: byConfirmation.size,
       outboundPdfRecordCount: outbound.length,
       linkedOutboundPdfRecordCount: linkedOutbound.size, unlinkedOutboundPdfRecordCount: outbound.length - linkedOutbound.size,

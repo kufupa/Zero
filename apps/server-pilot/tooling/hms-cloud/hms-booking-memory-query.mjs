@@ -1,6 +1,7 @@
-import { PARTY_FIELDS, SOURCES, combinationKey, emailsIn, text } from './hms-booking-memory-common.mjs';
+import { PARTY_FIELDS, SOURCES, combinationKey, emailsIn, text, verifiedConfirmations } from './hms-booking-memory-common.mjs';
 
 const ROLES = new Set(['outbound-recipient', 'outbound-sender', 'inbound-sender']);
+const DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const nameKey = value => text(value).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const bounded = (value, fallback, max) => Number.isFinite(value)
@@ -24,16 +25,13 @@ function normalizeQuery(input, options) {
   const value = text(input[type]);
   if (type === 'email') {
     const addresses = emailsIn(value);
-    if (addresses.length !== 1 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addresses[0])) {
-      throw new TypeError('Email query must contain exactly one address.');
-    }
+    if (addresses.length !== 1) throw new TypeError('Email query must contain exactly one address.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addresses[0])) throw new TypeError('Invalid email address.');
     return { type, role, roleDefaulted, normalized: addresses[0] };
   }
   if (type === 'domain') {
     const domain = value.toLowerCase().replace(/^@/, '');
-    if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(domain)) {
-      throw new TypeError('Domain query must be an exact domain name.');
-    }
+    if (!DOMAIN.test(domain)) throw new TypeError('Domain query must be an exact domain name.');
     return { type, role, roleDefaulted, normalized: domain };
   }
   const name = nameKey(value);
@@ -42,14 +40,11 @@ function normalizeQuery(input, options) {
 }
 
 function pmsEvidence(observation, outcome) {
-  return {
-    confirmationNumber: observation.confirmationNumber, observationId: observation.observationId,
-    snapshotId: observation.snapshotId, snapshotDate: observation.snapshotDate,
-    sourceOfBusiness: observation.sourceOfBusiness || null, sourceType: observation.sourceType || null,
-    provenance: observation.provenance || null, outcomeSource: outcome.outcomeSource,
-    fieldSources: outcome.fieldSources, conflictingFields: outcome.conflictingFields,
-    fieldConflicts: outcome.fieldConflicts || null,
-  };
+  const { confirmationNumber, observationId, snapshotId, snapshotDate, sourceOfBusiness, sourceType, provenance } = observation;
+  const { outcomeSource, fieldSources, conflictingFields, fieldConflicts } = outcome;
+  return { confirmationNumber, observationId, snapshotId, snapshotDate, sourceOfBusiness: sourceOfBusiness || null,
+    sourceType: sourceType || null, provenance: provenance || null, outcomeSource, fieldSources, conflictingFields,
+    fieldConflicts: fieldConflicts || null };
 }
 
 function boundedEvidence(record, limit) {
@@ -63,8 +58,7 @@ function boundedEvidence(record, limit) {
       ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, path ? `${path}.${key}` : key)]))
       : value;
   };
-  const result = visit(record, '');
-  return { ...result, truncated: Object.keys(truncations).length > 0, nestedEvidenceTruncations: truncations };
+  return { ...visit(record, ''), truncated: Object.keys(truncations).length > 0, nestedEvidenceTruncations: truncations };
 }
 
 function choiceStatus({ combination, entries }) {
@@ -79,6 +73,7 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
   if (!memory || !Array.isArray(memory.observations) || !Array.isArray(memory.addressEvidence)) {
     throw new TypeError('memory must come from buildHmsBookingMemory or loadHmsBookingMemory.');
   }
+  verifiedConfirmations(memory.observations);
   const query = normalizeQuery(queryInput, options);
   const sources = [options.sourceOfBusiness ?? SOURCES].flat().map(value => text(value).toLowerCase());
   if (!sources.length || sources.some(value => !SOURCES.some(source => source.toLowerCase() === value))) {
@@ -141,8 +136,8 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
         outboundSenderPdfRecordCount: records(item => item.role === 'outbound-sender'),
         outboundRecipientPdfRecordCount: records(item => item.role === 'outbound-recipient'),
         inboundSenderMessageRecordCount: records(item => item.role === 'inbound-sender'),
-        uncertainLinkRecordCount: records(item => item.linkProvenance?.ambiguousAttachment
-          || item.linkProvenance?.labeledConfirmationMatch !== true
+        uncertainLinkRecordCount: records(item => item.linkMethod === 'confirmation-number-candidate'
+          || item.linkProvenance?.ambiguousAttachment || item.linkProvenance?.labeledConfirmationMatch !== true
           || item.linkProvenance?.subjectHasOtherConfirmation),
       };
     }
@@ -171,8 +166,12 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     .flatMap(observation => observation.outcomes.map(outcome => ({ observation, outcome })));
   const allOutcomes = new Map([...Map.groupBy(entries, item => item.observation.confirmationKey)]
     .map(([key, items]) => [key, Map.groupBy(items, item => combinationKey(item.outcome.combination))]));
-  const conflicted = [...allOutcomes].filter(([, outcomes]) => outcomes.size > 1
-    || [...outcomes.values()].flat().some(item => item.outcome.conflictingFields?.length));
+  const conflicted = [...allOutcomes].filter(([, outcomes]) => {
+    const items = [...outcomes.values()].flat();
+    return items.some(item => item.outcome.conflictingFields?.length) || PARTY_FIELDS.some(field =>
+      new Set(items.map(item => item.outcome.combination[field]).filter(value => value != null)
+        .map(value => combinationKey({ [field]: value }))).size > 1);
+  });
   const conflicts = conflicted.slice(0, conflictLimit).map(([confirmation, outcomes]) => {
     const variants = [...outcomes].map(([key, entries]) => ({
       combination: entries[0].outcome.combination, confirmationCount: 1,
