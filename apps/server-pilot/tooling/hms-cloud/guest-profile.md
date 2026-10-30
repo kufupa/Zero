@@ -58,8 +58,11 @@ grid and draft identity before selecting. It permits one observed data-only
 other non-read requests are blocked. Success requires the same ID and names in
 the HMS response and visible form, with the confirmation still blank. It
 returns the selected candidate, native readback, visible form and changed
-fields. `selection_uncertain` means the action may have occurred: inspect the
-form before deciding what to do. Unexpected dialogs are left untouched.
+fields. A failure after a selection interaction quarantines the page for
+further fenced actions, including when the outcome is `execution_failure`.
+The action may have occurred: inspect the form if useful, then start a fresh
+page before selecting again. `PAGE_ACTION_UNCERTAIN` also signals a quarantined
+page. Unexpected dialogs are left untouched.
 
 The response, form and screenshots can contain personal data. Keep them in
 approved private storage with mode `0600`; do not log them or commit them.

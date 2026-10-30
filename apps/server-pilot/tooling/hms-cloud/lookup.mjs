@@ -1,7 +1,10 @@
 // Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
 import { randomUUID } from 'node:crypto';
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+const PROPERTY = 'HRCEN';
 const LOOKUPS = {
   agency: {
     title: 'Booking Agencies', field: 'ta1', label: 'Primary Booking Agency',
@@ -65,6 +68,36 @@ async function assertNewGuestStay(page) {
   if (!await agency.isVisible() || !await confirmation.isVisible() || (await confirmation.inputValue()).trim()) {
     throw new Error('NOT_A_NEW_GUEST_STAY');
   }
+}
+
+async function assertSelectionProperty(page) {
+  if (new URL(page.url()).origin !== ORIGIN) throw new Error('HMS_TARGET_MISMATCH');
+  const property = page.locator('[data-qtip="Property"]:visible');
+  if (await property.count() !== 1 || (await property.innerText()).trim().toUpperCase() !== PROPERTY) {
+    throw new Error('PROPERTY_MISMATCH');
+  }
+  return PROPERTY;
+}
+
+/** True only for the expected data-only change on the verified blank HRCEN stay. */
+export function isSafePartySelectionRequest({ method, url, postData }, { kind, nativeId, propertyCode, pageOrigin } = {}) {
+  try {
+    const spec = LOOKUPS[kind];
+    const target = new URL(url);
+    if (!spec || !clean(nativeId) || method !== 'POST' || target.origin !== ORIGIN || target.origin !== pageOrigin ||
+        target.pathname !== spec.changePath || target.search || target.hash || propertyCode !== PROPERTY) return false;
+    const body = new URLSearchParams(postData || '');
+    const required = ['PKID', 'confirmationnumber', 'propertycode', spec.requestId,
+      'recordid', 'reservationid', 'ONLY_DATA_REQUIRED'];
+    const keys = [...body.keys()].map((key) => key.toLowerCase());
+    if (required.some((key) => keys.filter((actual) => actual === key.toLowerCase()).length !== 1 || !body.has(key))) {
+      return false;
+    }
+    return body.get('PKID') === `@[EMPTY]#@[EMPTY]#${propertyCode}#` &&
+      body.get('propertycode') === propertyCode && body.get(spec.requestId) === nativeId &&
+      body.get('ONLY_DATA_REQUIRED') === 'true' &&
+      ['confirmationnumber', 'recordid', 'reservationid'].every((key) => !clean(body.get(key)));
+  } catch { return false; }
 }
 
 /** Open a new, unsaved Guest Stay on the supplied authenticated page. */
@@ -370,6 +403,8 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
   let requestIdVerified = false;
   let changeResponseVerified = false;
   let pendingChangeResponses = 0;
+  let pageProperty;
+  let fence, scope;
   const inFlight = new Set();
   const onDialog = () => { nativeDialog = true; };
   const onRequest = (request) => { if (request.method() === 'POST') inFlight.add(request); };
@@ -405,33 +440,33 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
       return;
     }
     if (request.method() === 'POST' && url.pathname === spec.changePath) {
-      const body = new URLSearchParams(request.postData() || '');
-      const property = clean(body.get('propertycode'));
-      const invalidArRequest = kind === 'arAccount' && (url.origin !== new URL(page.url()).origin ||
-        ['PKID', 'confirmationnumber', 'propertycode', spec.requestId, 'recordid', 'reservationid']
-          .some((key) => body.getAll(key).length !== 1) || !property ||
-        body.get('PKID') !== `@[EMPTY]#@[EMPTY]#${property}#` ||
-        clean(body.get('recordid')) || clean(body.get('reservationid')));
-      if (!body.get('PKID')?.startsWith('@[EMPTY]#@[EMPTY]#') || !body.has('confirmationnumber') ||
-          body.get('confirmationnumber').trim() || !body.get('propertycode')?.trim() ||
-          body.get(spec.requestId) !== nativeId || invalidArRequest) {
+      if (!attempted || requestIdVerified || !isSafePartySelectionRequest({ method: request.method(), url: request.url(), postData: request.postData() },
+        { kind, nativeId, propertyCode: pageProperty, pageOrigin: new URL(page.url()).origin })) {
         requestFailed = true;
         await route.abort();
         return;
       }
-      if (kind === 'arAccount') requestProperty = property;
+      if (!scope?.allow(request)) {
+        requestFailed = true;
+        await route.abort();
+        return;
+      }
+      if (kind === 'arAccount') requestProperty = pageProperty;
       requestIdVerified = true;
     }
     await route.fallback();
   };
   page.on('dialog', onDialog);
   try {
+    fence = await installPageRequestFence(page, Object.values(LOOKUPS).map(({ changePath }) => changePath));
+    scope = fence.open();
     const previous = lastSearch.get(page);
     if (previous?.kind !== kind || (searchId && searchId !== previous.searchId)) throw new Error('LOOKUP_STALE');
     const candidates = previous.candidates.filter((item) => item.nativeId === nativeId);
     if (candidates.length !== 1 || !candidates[0].name) throw new Error('LOOKUP_ID_NOT_UNIQUE');
     await assertExpectedDialogs(page);
     await assertNewGuestStay(page);
+    pageProperty = await assertSelectionProperty(page);
     const win = lookupWindow(page, kind);
     if (!await win.isVisible() || await win.getAttribute('id') !== previous.windowId) throw new Error('LOOKUP_STALE');
     const grid = await readGrid(page, previous.windowId);
@@ -494,10 +529,12 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
     }
     throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
   } catch (error) {
+    if (attempted) fence?.quarantine();
     if (attempted) lastSearch.delete(page);
     return { outcome: attempted ? 'selection_uncertain' : 'execution_failure', nativeId,
       issue: issue(error, 'LOOKUP_SELECTION_FAILED'), ...(observed ? { observed } : {}) };
   } finally {
+    scope?.close();
     await page.unroute('**/*', guardChange).catch(() => {});
     page.off('dialog', onDialog);
     page.off('request', onRequest);
