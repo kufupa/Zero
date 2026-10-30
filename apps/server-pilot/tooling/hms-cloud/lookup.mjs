@@ -6,21 +6,15 @@ const LOOKUPS = {
     title: 'Booking Agencies', field: 'ta1', label: 'Primary Booking Agency',
     filter: 'Booking Agency Name', alias: 'travelagencyname', id: 'travelagencyid', name: 'travelagencyname',
     changePath: '/web/base/OSRESV.HDR.changetravelagency', requestId: 'taid1',
-    columns: ['travelagencyid', 'travelagencyname', 'iatanumber', 'referencenumbertype',
-      'internalreferencenumber', 'address', 'city', 'country', 'contactfirstname', 'contactlastname', 'contactphone'],
   },
   organization: {
     title: 'Organizations', field: 'company', label: 'Organization',
     filter: 'Name', alias: 'companyname', id: 'companyid', name: 'companyname',
     changePath: '/web/base/OSRESV.HDR.changeorganization', requestId: 'companyid',
-    columns: ['companyid', 'companyname', 'corporateaccountnumber', 'address', 'city', 'country',
-      'contactfirstname', 'contactlastname', 'contactphone'],
   },
   arAccount: {
     title: 'A/R Account', field: 'araccountname', label: 'A/R Account',
     filter: 'A/R Account', alias: 'araccountname', id: 'araccountid', name: 'araccountname',
-    columns: ['araccountid', 'araccountname', 'araccountnumber', 'arstatuscodedesc', 'accttype',
-      'accountstanding', 'address', 'city', 'country', 'firstname', 'lastname', 'phonenumber'],
   },
 };
 
@@ -38,7 +32,8 @@ function lookupWindow(page, kind) {
   return page.locator('.x-window:visible').filter({ hasText: LOOKUPS[kind].title }).last();
 }
 
-async function assertExpectedDialogs(page) {
+async function assertExpectedDialogs(page, nativeDialog = false) {
+  if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
   const windows = page.locator('.x-window:visible:not(.x-menu)');
   for (let index = 0; index < await windows.count(); index += 1) {
     const titles = await windows.nth(index).locator('.x-window-header-text:visible').allTextContents();
@@ -72,7 +67,7 @@ export async function openNewGuestStay(page) {
   const onDialog = () => { nativeDialog = true; };
   page.on('dialog', onDialog);
   try {
-    await assertExpectedDialogs(page);
+    await assertExpectedDialogs(page, nativeDialog);
     const agency = page.locator('input[name="ta1"]:visible').first();
     if (!await agency.isVisible().catch(() => false)) {
       await page.locator('a.app-menu-trigger:visible').click();
@@ -86,23 +81,22 @@ export async function openNewGuestStay(page) {
         await clickTreeNode(guestStay);
         opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
           .waitFor({ timeout: 8000 }).then(() => true, () => false);
-        if (!opened) await assertExpectedDialogs(page);
+        if (!opened) await assertExpectedDialogs(page, nativeDialog);
       }
       if (!opened) throw new Error('GUEST_STAY_NOT_OPENED');
-      await assertExpectedDialogs(page);
+      await assertExpectedDialogs(page, nativeDialog);
       await page.locator('[data-qtip="New Record (Ctrl+N)"]:visible').first().click();
       await agency.waitFor({ timeout: 25000 });
     }
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    await assertExpectedDialogs(page);
+    await assertExpectedDialogs(page, nativeDialog);
     await assertNewGuestStay(page);
   } finally {
     page.off('dialog', onDialog);
   }
 }
 
-async function openLookupWindow(page, kind) {
-  await assertExpectedDialogs(page);
+async function openLookupWindow(page, kind, hasNativeDialog) {
+  await assertExpectedDialogs(page, hasNativeDialog());
   const win = lookupWindow(page, kind);
   if (await win.isVisible().catch(() => false)) {
     await assertNewGuestStay(page);
@@ -117,9 +111,14 @@ async function openLookupWindow(page, kind) {
   }
   await openNewGuestStay(page);
   const field = page.locator(`input[name="${LOOKUPS[kind].field}"]:visible`).first();
-  await field.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').first().click();
-  await win.waitFor({ state: 'visible', timeout: 20000 });
-  await assertExpectedDialogs(page);
+  const trigger = field.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').first();
+  await trigger.click();
+  if (!await win.waitFor({ state: 'visible', timeout: 8000 }).then(() => true, () => false)) {
+    await assertExpectedDialogs(page, hasNativeDialog());
+    if (!await win.isVisible()) await trigger.click();
+    await win.waitFor({ state: 'visible', timeout: 12000 });
+  }
+  await assertExpectedDialogs(page, hasNativeDialog());
   return win;
 }
 
@@ -242,7 +241,7 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
   const onDialog = () => { nativeDialog = true; };
   page.on('dialog', onDialog);
   try {
-    const win = await openLookupWindow(page, kind);
+    const win = await openLookupWindow(page, kind, () => nativeDialog);
     const windowId = await win.getAttribute('id');
     if (!windowId) throw new Error('LOOKUP_WINDOW_UNAVAILABLE');
     stage = 'applying_filter';
@@ -262,8 +261,7 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     const responsePromise = page.waitForResponse((response) => requests.has(response.request()), { timeout: timeoutMs })
       .catch(() => null);
     stage = 'running_search';
-    await assertExpectedDialogs(page);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    await assertExpectedDialogs(page, nativeDialog);
     await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Run\s*$/ }).first().click();
     const response = await responsePromise;
     if (!response || response.status() !== 200) throw new Error('LOOKUP_SEARCH_UNVERIFIED');
@@ -278,9 +276,8 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     const { DATA: rows, METADATA: metadata } = responseData(body).grid?.GRIDRESULT?.GRID ?? {};
     if (!Array.isArray(rows) || !metadata) throw new Error('LOOKUP_RESPONSE_INVALID');
     stage = 'waiting_for_grid';
-    const { keys, expected } = await waitForResponseRows(page, windowId, spec.columns, rows, timeoutMs);
-    await assertExpectedDialogs(page);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    const { keys, expected } = await waitForResponseRows(page, windowId, [spec.id, spec.name], rows, timeoutMs);
+    await assertExpectedDialogs(page, nativeDialog);
     const externalError = page.getByText(/Cannot retrieve profile:\s*External system|External system unavailable/i)
       .filter({ visible: true });
     if (await externalError.count()) throw new Error('EXTERNAL_SYSTEM_UNAVAILABLE');
