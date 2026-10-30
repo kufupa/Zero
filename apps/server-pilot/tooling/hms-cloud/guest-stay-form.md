@@ -10,9 +10,10 @@ configurations and origins are unverified; other origins are rejected.
 The live draft covered both dates, adults, reason for stay, first and last name,
 child ages, CMS recipient, CMS message ID, and the send checkbox. A separate
 unsaved Labtest draft also read back booker name, booker contact, reservation
-note and guest email. Guarantee selection has narrower live coverage; see the
-current implementation notes. The child-age editor is an `.x-window.x-menu` on
-this property.
+note and guest email. On an unsaved test draft the guarantee selector changed
+between a non-guaranteed option and Guaranteed by Agent with matching native,
+submitted and visible readbacks; a separate final-head draft verified Deposit
+Requested. The child-age editor is an `.x-window.x-menu` on this property.
 
 | Function | Explicit input |
 | --- | --- |
@@ -62,15 +63,23 @@ Dropdowns and CMS codes come from current UI stores, not historical choices.
 Option coverage is unknown when HMS does not supply a reliable total. CMS
 selection checks the picker, search ID, grid and code again before clicking.
 Callers choose the code; this module does not infer one.
+Guarantee selection is currently limited to an HRCEN Proof Labtest draft with
+2027+ dates and all guarded guest, stay and profile IDs blank. A selected guest
+profile or nonblank A/R profile ID is unsupported. Selecting the current value
+returns `unchanged_unsaved` without another guarantee-change request. On one
+live draft, guarantee first, rate second and fake guest third retained all three
+values; guarantee changes after the guest were refused. In a separate live
+draft, Deposit Requested remained selected after agency, organization and A/R
+selection. Other guarantee options and action orders require their own evidence.
 Closing the CMS picker returns `closed_unsaved` after verifying the form is
 unchanged, or `not_open` if no picker is open. An `action_uncertain` result
 means the close may have happened without verified readback. Unexpected dialogs
 are left untouched.
 
-Results use `ok`, `updated_unsaved`, `closed_unsaved`, `not_open`, `input_gap`,
+Results use `ok`, `updated_unsaved`, `unchanged_unsaved`, `closed_unsaved`, `not_open`, `input_gap`,
 `unsupported`, `execution_failure`, or `action_uncertain`. An uncertain action
 may have changed the form, and a request already dispatched to HMS may still
-complete. After an uncertain child-age action, protected draft-change requests
+complete. After an uncertain child-age or guarantee action, protected draft-change requests
 remain blocked on that page; use a new Playwright page with the read-only guard
 before retrying. Reloading or reopening a draft on the same page does not clear
 the quarantine. Successful actions can continue on the same page. Unexpected requests are blocked and
