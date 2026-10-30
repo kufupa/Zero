@@ -203,7 +203,9 @@ async function snapshotBytes(path) {
 const snapshotHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 async function registerQuoteSnapshot(page, result, roomQuantity) {
+  if (page.isClosed()) throw new Error('SESSION_CLOSED');
   const bytes = await snapshotBytes(result.snapshotPath);
+  if (page.isClosed()) throw new Error('SESSION_CLOSED');
   const handle = randomUUID();
   let snapshots = quoteSnapshots.get(page);
   if (!snapshots) {
@@ -216,6 +218,7 @@ async function registerQuoteSnapshot(page, result, roomQuantity) {
 }
 
 async function viewQuoteSnapshot(page, request) {
+  if (page.isClosed()) return { outcome: 'execution_failure', issue: 'SESSION_CLOSED' };
   if (Object.hasOwn(request, 'snapshotPath')) return { outcome: 'input_gap', issue: 'SNAPSHOT_PATH_NOT_ACCEPTED' };
   if (Object.hasOwn(request, 'roomQuantity') ||
       (request.criteria && typeof request.criteria === 'object' && Object.hasOwn(request.criteria, 'roomQuantity'))) {
@@ -233,6 +236,7 @@ async function viewQuoteSnapshot(page, request) {
   let bytes;
   try { bytes = await snapshotBytes(snapshot.path); }
   catch { return { outcome: 'execution_failure', issue: 'PRIVATE_SNAPSHOT_UNAVAILABLE' }; }
+  if (page.isClosed()) return { outcome: 'execution_failure', issue: 'SESSION_CLOSED' };
   if (snapshotHash(bytes) !== snapshot.hash) return { outcome: 'execution_failure', issue: 'SNAPSHOT_CHANGED' };
   try {
     const view = getQuoteView(JSON.parse(bytes.toString('utf8')), { ...request.view, roomQuantity: snapshot.roomQuantity });
@@ -305,7 +309,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       if (typeof result.snapshotPath === 'string') {
         const roomQuantity = request.roomQuantity ?? request.criteria?.roomQuantity ?? null;
         try { result.snapshotHandle = await registerQuoteSnapshot(page, result, roomQuantity); }
-        catch { result = { outcome: 'execution_failure', issue: 'SNAPSHOT_REGISTRATION_FAILED', snapshotPath: result.snapshotPath }; }
+        catch (error) { result = { outcome: 'execution_failure',
+          issue: error?.message === 'SESSION_CLOSED' ? 'SESSION_CLOSED' : 'SNAPSHOT_REGISTRATION_FAILED', snapshotPath: result.snapshotPath }; }
       }
     } else if (tool === 'viewQuoteSnapshot') {
       result = await action(page, request);
