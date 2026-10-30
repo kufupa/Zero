@@ -2,7 +2,7 @@
 // Log in once, then compose read shallow -> read record -> read guest -> guest forms.
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readShallow, readRecord, readGuest, readGuestForm } from './hms-readers.mjs';
-import { lookupFailure, readLookupInput } from '../playwright-quote/stay360-lookup-cli.mjs';
+import { lookupFailure, readLookupInput } from './stay360-lookup-cli.mjs';
 
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === '--help') {

@@ -1,5 +1,5 @@
 // Read each rendered Guest Details row's form in the already-open Guest Stay.
-import { dismissNotesOrThrow, takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
+import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
 import { openStay360RecordTab } from './stay360-record-tabs.mjs';
 
 /** Run after readGuest: select each loaded guest row and return its rendered form. */
