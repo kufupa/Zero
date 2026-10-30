@@ -47,7 +47,7 @@ describe('original address normalization', () => {
       'one@example.test, broken', 'one@example.test,', ',one@example.test',
       'Group: one@example.test;', 'Name; Other <one@example.test>',
       'John ("Nick" Doe <one@example.test>, two@example.test',
-      'John \\ "Nick" <one@example.test>', 
+      'John \\ "Nick" <one@example.test>',
       'Name <<one@example.test>>', 'Name <one@example.test', 'Name one@example.test>',
       '"Unclosed <one@example.test>',
       'one@@example.test', 'one @example.test', 'Name <one@example.test> trailing',
