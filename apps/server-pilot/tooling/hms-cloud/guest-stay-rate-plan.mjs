@@ -250,6 +250,10 @@ export async function selectGuestStayRatePlan(page, { code } = {}) {
     await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     after = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
+    const afterArrival = dateParts(after.arrival), afterDeparture = dateParts(after.departure);
+    if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
+      throw new Error('DRAFT_DATES_CHANGED');
+    }
     checkedDraft(after);
     if (after.rate !== code || after.rateValue !== code || after.rateSubmit !== code || after.rateErrors.length || after.rateInvalid === 'true') {
       throw new Error('RATE_READBACK_UNVERIFIED');
