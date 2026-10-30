@@ -1,6 +1,7 @@
 // Guest profiles on one authenticated, guarded, blank HRCEN Guest Stay.
 import { randomUUID } from 'node:crypto';
 import { readUnsavedGuestStay } from './booking-lookup-session.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -416,7 +417,8 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
   if (!searchId || !id) return { outcome: 'input_gap', issue: 'GUEST_SEARCH_ID_AND_NATIVE_ID_REQUIRED' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS' };
   busy.add(page);
-  let attempted = false, nativeDialog = false, blocked = false, allowedChanges = 0, observed = null;
+  let attempted = false, interactionStarted = false, nativeDialog = false, blocked = false, allowedChanges = 0, observed = null;
+  let fence, scope;
   const onDialog = () => { nativeDialog = true; };
   const guard = async (route) => {
     const request = route.request();
@@ -424,13 +426,15 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     if (safeRead(request)) return route.fallback();
     const safe = attempted && allowedChanges === 0 &&
       isSafeGuestProfileChangeRequest({ method, url: request.url(), postData: request.postData() }, id);
-    if (safe) { allowedChanges += 1; return route.fallback(); }
+    if (safe && scope?.allow(request)) { allowedChanges += 1; return route.fallback(); }
     blocked = true;
     return route.abort();
   };
   page.on('dialog', onDialog);
   let state;
   try {
+    fence = await installPageRequestFence(page, [CHANGE_PATH]);
+    scope = fence.open();
     state = currentSearches.get(page);
     const { win, form: before, grid } = await requireCurrent(page, state, searchId, () => nativeDialog);
     const candidates = state.result.candidates.filter((item) => item.nativeId === id);
@@ -443,6 +447,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     }), id);
     if (indexes.length !== 1) throw new Error('GUEST_ID_NOT_UNIQUE');
     await page.route('**/*', guard);
+    interactionStarted = true;
     await rows.nth(indexes[0]).click();
     const selected = await page.evaluate(({ windowId, wanted }) => {
       const rows = Ext.getCmp(windowId)?.query('grid,readonlygrid')?.[0]?.getSelectionModel?.()?.getSelection?.() || [];
@@ -489,10 +494,12 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     }
     throw new Error('GUEST_FORM_READBACK_UNVERIFIED');
   } catch (error) {
+    if (interactionStarted) fence?.quarantine();
     if ((attempted || error?.message === 'GUEST_SEARCH_STALE') && state?.searchId === searchId) forget(page);
     return { outcome: attempted ? 'selection_uncertain' : 'execution_failure',
       issue: errorCode(error, 'GUEST_SELECTION_FAILED'), ...(observed ? { observed } : {}) };
   } finally {
+    scope?.close();
     await page.unroute('**/*', guard).catch(() => {});
     page.off('dialog', onDialog);
     busy.delete(page);

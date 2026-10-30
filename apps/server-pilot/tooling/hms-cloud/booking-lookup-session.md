@@ -29,8 +29,10 @@ at the top level.
 
 Selections also accept `selection: {nativeId, searchId}`. They return the
 underlying selection result, including its form readback and changed fields.
-`selection_uncertain` means the change may have occurred; use `readGuestStay`
-before deciding what to do. Readback includes any automatically handled Notes.
+After a failed selection interaction, the change may have occurred and the page
+is quarantined for further fenced actions. Use `readGuestStay` if useful, then
+start a fresh session before selecting again. Readback includes any automatically
+handled Notes.
 A blocked form read returns `FORM_READ_TIMEOUT`;
 unexpected dialogs are left untouched. Results retain all candidates, search IDs, raw
 response and grid details, coverage and truncation flags. Search again to
