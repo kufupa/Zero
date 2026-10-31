@@ -137,8 +137,8 @@ describe('fieldEventsBetween', () => {
       { type: 'duplicate_stay', stayId: 'st-1', token: 'copy' },
     );
     const copiedStayEvents = fieldEventsBetween(READY.refs, withTotals, copiedStay.groups);
-    expect(copiedStayEvents).toContain({ path: 'stays[s_copy].totalAdults', value: 5 });
-    expect(copiedStayEvents).toContain({ path: 'stays[s_copy].totalChildren', value: 0 });
+    expect(copiedStayEvents).toContainEqual({ path: 'stays[s_copy].totalAdults', value: 5 });
+    expect(copiedStayEvents).toContainEqual({ path: 'stays[s_copy].totalChildren', value: 0 });
     expect(fieldEventsBetween(READY.refs, withTotals, [G1, G2])).toEqual([
       { path: 'stays[st-1].totalAdults', value: null },
       { path: 'stays[st-1].totalChildren', value: null },
