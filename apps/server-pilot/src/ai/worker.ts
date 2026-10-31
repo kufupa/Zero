@@ -4907,6 +4907,10 @@ export async function executeAiRun(
       // Off mode still uses the normal prepared-input/assessment boundary.
       // It must not enter the registered Mastra workflow with raw body text.
       if (hmsMode === 'off') {
+        if (candidateDraftRoute?.reservationist) {
+          const { runReservationistWorkerCandidate } = await import('./reservationist-worker.js');
+          return await runReservationistWorkerCandidate({ db, run, fence, route: candidateDraftRoute, replyTo, subject, signal });
+        }
         const requestText = trigger.textBody ?? trigger.htmlBody ?? '';
         const replyAsks = options.candidateReplyAsks ?? deriveWorkerReplyAsks(requestText);
         const preparedReply = await runPreparedWorkerCandidateReply({

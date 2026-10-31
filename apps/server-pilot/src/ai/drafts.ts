@@ -15,6 +15,7 @@ import { computeThreadStateVersion } from './thread-context.js';
 import { getS3Storage, type S3Storage } from '../storage/s3.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DB } from '../db/client.js';
+import { sealReservationistDraftSource, type ReservationistDraftSource } from './reservationist-draft-source.js';
 
 export class ThreadStateStaleError extends Error {
   constructor(message = 'thread state version stale') {
@@ -230,6 +231,7 @@ export interface PersistAiCandidateDraftInput {
   workflowRunId?: string;
   runFence?: { claimOwner: string; claimToken: string; deadlineAt: Date };
   reservationistResult?: ReservationistPersistedResult;
+  reservationistDraftSource?: Omit<ReservationistDraftSource, 'resultDigest'>;
   generatedArtifacts?: GeneratedDraftArtifact[];
   artifactStorage?: DraftArtifactStorage;
   signal?: AbortSignal;
@@ -242,6 +244,12 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
   const persistDraft = input.persistDraft ?? false;
   const outcome = input.outcome ?? 'candidate';
   const evidence = input.evidence ?? [];
+  const source = input.reservationistDraftSource && structuredClone(input.reservationistDraftSource);
+  if (source && (!input.reservationistResult || !persistDraft || source.runId !== input.workflowRunId ||
+      source.generationId !== input.generationId || source.transportId !== input.transportId ||
+      source.threadId !== input.threadId || source.requestedByUserId !== input.createdByUserId ||
+      source.triggerMessageId !== input.replyToMessageId)) throw new Error('draft_source_scope_invalid');
+  const sealedSource = (resultDigest: string) => source && sealReservationistDraftSource({ ...source, resultDigest });
 
   if (
     input.reservationistResult &&
@@ -317,6 +325,9 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
               )
           )
             throw new Error('draft_retry_result_mismatch');
+          if (source && canonicalJson(run.metrics?.reservationistDraftSource) !== canonicalJson(sealedSource(
+            typedResultDigest(input.reservationistResult!, existingDraft[0].attachments as PersistedGeneratedArtifact[]),
+          ))) throw new Error('draft_retry_source_mismatch');
           if (!input.revalidateSources || !(await input.revalidateSources()))
             throw new Error('draft_source_revalidation_failed');
         });
@@ -527,6 +538,7 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
           .update(aiDraftGeneration)
           .set({
             outcome,
+            contextMessageIds: input.contextMessageIds,
             threadStateVersion: input.threadStateVersion ?? null,
             evidence,
             status: 'succeeded',
@@ -549,6 +561,7 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
           )
           .limit(1);
         if (!run) throw new Error('artifact_run_scope_invalid');
+        const resultDigest = typedResultDigest(input.reservationistResult, artifacts);
         await tx
           .update(aiWorkflowRun)
           .set({
@@ -556,7 +569,8 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
             metrics: {
               ...run.metrics,
               reservationistResult: input.reservationistResult,
-              resultDigest: typedResultDigest(input.reservationistResult, artifacts),
+              resultDigest,
+              ...(source ? { reservationistDraftSource: sealedSource(resultDigest) } : {}),
             },
           })
           .where(eq(aiWorkflowRun.id, run.id));
