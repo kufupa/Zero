@@ -113,6 +113,7 @@ import {
   quoteStrategyStayRevision,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
@@ -896,7 +897,7 @@ export function NavaPane({
           dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
       };
       const candidateQuery = (trpcClient as unknown as { ai?: { hmsCandidateState?: {
-        query?: (input: { threadId: string }) => Promise<{ activeRun?: unknown; visibleCandidate?: { replyToMessageId?: string } | null }>;
+        query?: (input: { threadId: string }, options?: ReturnType<typeof inMailbox>) => Promise<{ activeRun?: unknown }>;
       } } }).ai?.hmsCandidateState?.query;
       void (async () => {
         await refreshActions();
@@ -904,11 +905,11 @@ export function NavaPane({
         let sawActive = false, idleChecks = 0;
         const watch = async () => {
           try {
-            const state = await candidateQuery({ threadId: source.source.threadId });
+            const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
             if (cancelled) return;
             if (state.activeRun) sawActive = true;
-            else if (sawActive) { await refreshActions(); return; }
-            else if (state.visibleCandidate?.replyToMessageId === source.source.messageId) { await refreshActions(); return; }
+            else { await refreshActions(); if (sawActive) return; }
+            if (cancelled) return;
             if (state.activeRun || ++idleChecks < 12) candidateTimer = setTimeout(() => void watch(), 5000);
           } catch { /* Candidate assistance may be unavailable for this mailbox. */ }
         };
