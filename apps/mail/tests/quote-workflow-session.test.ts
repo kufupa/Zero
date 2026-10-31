@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -425,13 +424,23 @@ describe('quote session', () => {
               sourceLabel: 'scan.pdf',
               blocking: true,
             },
+            {
+              id: 'spreadsheet-review:rooming',
+              kind: 'document_failure',
+              rank: 'unread_source',
+              text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+              sourceLabel: 'rooming.xlsx',
+              readable: true,
+              blocking: false,
+            },
           ],
         },
       },
     );
     expect(s.phase).toBe('non_quote');
-    expect(s.reviewItems).toHaveLength(1);
+    expect(s.reviewItems).toHaveLength(2);
     expect(s.reviewItems[0]?.kind).toBe('document_failure');
+    expect(s.reviewItems[1]?.readable).toBe(true);
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {

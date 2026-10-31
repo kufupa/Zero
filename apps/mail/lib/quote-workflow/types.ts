@@ -138,6 +138,8 @@ export type QuoteReviewItem = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  /** The source was read; only masked numbers or truncated content needs review. */
+  readable?: boolean;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
 };
@@ -148,7 +150,8 @@ export type ReservationistStaffAction = {
   kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
   text: string;
   sourceRef: string;
-  sourceHash: string;
+  sourceHash?: string;
+  sourceIdentity?: 'metadata_only';
   sourceKind?: 'message' | 'attachment';
   messageId?: string;
   filename?: string;

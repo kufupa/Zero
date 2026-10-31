@@ -40,6 +40,7 @@ import {
   currentSourceText,
   documentFailureItems,
   hmsTodoCardFromLuna,
+  numberGroupReviewItems,
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
@@ -607,6 +608,17 @@ export function storedAnalysis(
       })),
     'text',
   );
+  const numberReviews = numberGroupReviewItems(
+    (read.attachments ?? [])
+      .filter((item) => item.status === 'read' && item.reviewReason !== undefined)
+      .map((item) => ({
+        id: item.id,
+        filename: item.filename,
+        mimeType: item.mimeType,
+        byteSize: item.byteSize,
+        reviewReason: item.reviewReason,
+      })),
+  );
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
   const stays = formStays(payload, state);
@@ -765,7 +777,7 @@ export function storedAnalysis(
       missingQuoteReplyFields: mapped.missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
-      reviewItems: [...failures, ...questionItems(mapped.missing)],
+      reviewItems: [...failures, ...numberReviews, ...questionItems(mapped.missing)],
       requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,

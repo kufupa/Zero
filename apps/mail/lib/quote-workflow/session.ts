@@ -1745,9 +1745,7 @@ export function reduceQuoteSession(
         };
       }
       if (action.analysis.intent !== 'quote') {
-        const unreadItems = (action.analysis.reviewItems ?? []).filter(
-          (item) => item.kind === 'document_failure',
-        );
+        const reviewItems = (action.analysis.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);
         return {
@@ -1767,7 +1765,7 @@ export function reduceQuoteSession(
                   )
                 ? session.selectedStayKey
                 : null,
-          reviewItems: unreadItems,
+          reviewItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
             session.staffHeader,
@@ -1909,7 +1907,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

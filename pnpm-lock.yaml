@@ -784,6 +784,9 @@ importers:
       '@mastra/libsql':
         specifier: 1.23.2
         version: 1.23.2(@mastra/core@1.70.0(ai@6.0.307(zod@3.25.67))(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))
+      '@office-kit/xlsx':
+        specifier: 0.25.0
+        version: 0.25.0
       '@smithy/signature-v4':
         specifier: 5.6.2
         version: 5.6.2
@@ -3805,6 +3808,10 @@ packages:
   '@npmcli/promise-spawn@6.0.2':
     resolution: {integrity: sha512-gGq0NJkIGSwdbUt4yhdF8ZrmkGKVz9vAdVzpOfnom+V8PLSmSOVhZwbNvZZS1EYcJN5hzzKBxmmVVAInM6HQLg==}
     engines: {node: ^14.17.0 || ^16.13.0 || >=18.0.0}
+
+  '@office-kit/xlsx@0.25.0':
+    resolution: {integrity: sha512-htMr30WuX1P0oYrhsBONxRy77Md+3bNh5QAY1ql7R5cavIeKQCcFaukf632EYS2ipg6PLk2Gx/LEXbcQ+T2iDA==}
+    engines: {node: '>=22.0.0'}
 
   '@one-ini/wasm@0.1.1':
     resolution: {integrity: sha512-XuySG1E38YScSJoMlqovLru4KTUNSjgVTIjyh7qMX6aNN5HY5Ct5LhRJdxO79JtTzKfzV/bnWpz+zquYrISsvw==}
@@ -17269,6 +17276,11 @@ snapshots:
     dependencies:
       which: 3.0.1
 
+  '@office-kit/xlsx@0.25.0':
+    dependencies:
+      fflate: 0.8.3
+      saxes: 6.0.0
+
   '@one-ini/wasm@0.1.1': {}
 
   '@open-draft/deferred-promise@2.2.0': {}
@@ -23080,8 +23092,7 @@ snapshots:
 
   fflate@0.8.2: {}
 
-  fflate@0.8.3:
-    optional: true
+  fflate@0.8.3: {}
 
   fft.js@4.0.4: {}
 
