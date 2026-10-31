@@ -70,7 +70,10 @@ function launchCenturionChromium(headless) {
   if (require('playwright/package.json').version !== playwrightVersion) {
     throw new Error('PLAYWRIGHT_VERSION_MISMATCH');
   }
-  return require('playwright').chromium.launch({ headless });
+  return require('playwright').chromium.launch({
+    headless,
+    executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined,
+  });
 }
 
 async function openCenturionStay360(page) {

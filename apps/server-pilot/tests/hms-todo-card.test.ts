@@ -653,7 +653,7 @@ describe('extractPopFacts', () => {
 });
 
 describe('buildHmsTodoCard send_document', () => {
-  it('shows the asked kind, stay, reply line and HMS → Documents, never a filename', () => {
+  it('shows the asked kind and stay without claiming the document is attached', () => {
     const card = buildHmsTodoCard({
       workflow: 'send_document',
       confirmationNumber: '57291630-1',
@@ -670,8 +670,8 @@ describe('buildHmsTodoCard send_document', () => {
     expect(stepValue(card!, 'Document')).toBe('invoice');
     expect(stepValue(card!, 'Confirmation number')).toBe('57291630-1');
     expect(stepValue(card!, 'Guest last name')).toBe('Example');
-    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
     expect(labelsOf(card!).some((label) => /filename/i.test(label))).toBe(false);
   });
 
@@ -682,7 +682,21 @@ describe('buildHmsTodoCard send_document', () => {
       documentKind: null,
     });
     expect(stepValue(card!, 'Document')).toBe('invoice / pro forma / folio / statement / credit note');
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
+  });
+
+  it('does not treat document metadata or an incoming attachment as an outgoing attachment', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'send_document',
+      confirmationNumber: '57291630-1',
+      documentKind: 'invoice',
+      billingDocuments: [{ id: 'doc-1', filename: 'invoice_57291630-1.pdf', kind: 'invoice' }],
+      attachmentFilenames: ['request.pdf'],
+    });
+
+    expect(stepValue(card!, 'Document')).toBe('invoice_57291630-1.pdf');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toContain('attach it to the reply');
   });
 
   it('uses luna arrival and departure when stayAsk is absent', () => {
@@ -809,7 +823,7 @@ describe('analyseSyncedSelection payment and billing cards', () => {
     const card = todoCardOf(payload);
     expect(card).toMatchObject({ kind: 'send_document', title: 'Send document' });
     expect(stepValue(card!, 'Document')).toBe('invoice');
-    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
   });
 });
