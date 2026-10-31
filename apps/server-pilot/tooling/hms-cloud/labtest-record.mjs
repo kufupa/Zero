@@ -1,4 +1,6 @@
 // Identify one rendered saved Labtest record before an action on its page.
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
+
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -25,7 +27,7 @@ export async function currentLabtestRecord(page, expected) {
   if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
-  const state = await frame.evaluate(({ expected, start, end, origin }) => {
+  const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
@@ -47,37 +49,61 @@ export async function currentLabtestRecord(page, expected) {
         value('rateplan') !== expected.ratePlan || !value('track') || value('reservationnote') !== expected.note ||
         value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== 'NGI' ||
         value('udfchar13') || value('emailaddress') || cmp('udfchkbox04')?.getValue?.() !== false) return null;
+    const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
+      visible(el) && blankSavedPartyFields.includes(el.name.toLowerCase()));
+    if (blankSavedPartyFields.some((key) => !unique(key) || data[key] !== '' ||
+        partyInputs.filter((el) => el.name.toLowerCase() === key).length > 1) ||
+        partyInputs.some((el) => el.name !== el.name.toLowerCase() || el.value !== '')) {
+      return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+    }
     const native = {};
     for (const key of ['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid']) {
       if (!unique(key) || !String(data[key] ?? '').trim()) return null;
       native[key] = String(data[key]).trim();
     }
     return { native, track: value('track') };
-  }, { expected, start, end, origin: ORIGIN });
+  }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields });
+  if (state?.issue) throw new Error(state.issue);
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
 }
 
 // The saved-record form is submitted as a whole, so preserve its entire clean baseline.
 export async function snapshotLabtestRecord(frame) {
-  return frame.evaluate(() => {
+  return frame.evaluate((blankSavedPartyFields) => {
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const inputs = [...document.querySelectorAll('input[name="guestid"]')].filter(visible);
     if (inputs.length !== 1) return null;
     const panel = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''))?.up?.('form');
     const form = panel?.getForm?.(), record = panel?.getRecord?.(), fields = form?.getFields?.()?.items;
-    if (!form || !record?.data || !Array.isArray(fields) || !fields.length ||
+    if (!panel?.el?.dom || !form || !record?.data || !Array.isArray(fields) || !fields.length ||
         typeof form.isDirty !== 'function' || typeof record.dirty !== 'boolean' ||
         fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
+    const partyInputs = [...panel.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
+      visible(el) && blankSavedPartyFields.includes(el.name.toLowerCase()));
+    const partyInputsBlank = blankSavedPartyFields.every((name) =>
+      partyInputs.filter((el) => el.name.toLowerCase() === name).length <= 1) &&
+      partyInputs.every((el) => el.name === el.name.toLowerCase() && el.value === '');
     return { values: form.getValues(), data: record.data, formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
-      modifiedFields: Object.keys(record.modified || {}) };
-  });
+      modifiedFields: Object.keys(record.modified || {}), partyInputsBlank };
+  }, blankSavedPartyFields);
 }
 
 export function cleanLabtestRecord(snapshot) {
   return Boolean(snapshot && snapshot.formDirty === false && snapshot.recordDirty === false &&
     snapshot.dirtyFields.length === 0 && snapshot.modifiedFields.length === 0);
+}
+
+// Recheck the full snapshot: a clean record can change after the identity check.
+export function blankLabtestParties(snapshot) {
+  const data = snapshot?.data, values = snapshot?.values;
+  if (snapshot?.partyInputsBlank !== true || !data || typeof data !== 'object' || Array.isArray(data) ||
+      !values || typeof values !== 'object' || Array.isArray(values)) return false;
+  const dataKeys = Object.keys(data), valueKeys = Object.keys(values);
+  return blankSavedPartyFields.every((key) => Object.hasOwn(data, key) && data[key] === '' &&
+    dataKeys.filter((name) => name.toLowerCase() === key).length === 1 &&
+    valueKeys.filter((name) => name.toLowerCase() === key).every((name) => name === key && values[name] === ''));
 }
 
 export function unchangedLabtestRecord(before, after, changes) {

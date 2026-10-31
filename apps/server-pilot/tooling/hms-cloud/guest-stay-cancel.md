@@ -24,6 +24,12 @@ record and the expected cancellation changes. The context read guard remains
 installed; other mutations are blocked. A native dialog or action deadline
 disarms the action and quarantines the page.
 
+Agency, organization, group, A/R and guarantee-card fields must be present
+and blank in the saved model; any corresponding form values and visible
+controls must also be blank. Linked, missing or ambiguous fields return
+`LABTEST_LINKED_PARTY_UNVERIFIED` in the identity or clean baseline checks;
+later changes also block the cancellation save.
+
 Never accept a fee or penalty dialog. `fee_dialog_pending` can occur after the
 cancellation save: reopen the confirmation in a fresh guarded session and
 verify its status and cancellation details. `awaiting_readback` also requires

@@ -3,6 +3,7 @@ import {
   currentLabtestRecord,
   snapshotLabtestRecord as recordSnapshot,
   cleanLabtestRecord,
+  blankLabtestParties,
   unchangedLabtestRecord as unchangedExcept,
   matchesLabtestBody as bodyMatchesSnapshot,
 } from './labtest-record.mjs';
@@ -74,6 +75,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const baseline = await recordSnapshot(frame);
     action.check();
     if (!cleanSnapshot(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+    if (!blankLabtestParties(baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
     if (await page.locator('.x-window:visible:not(.x-menu)').count() !== 1 ||
         await frame.locator('.x-window:visible:not(.x-menu)').count()) throw new Error('UNEXPECTED_DIALOG');
     const cancel = frame.locator('[data-qtip="Cancel Reservation"]:visible');
@@ -136,7 +138,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     action.check();
     const reasonReady = !fee && policyReady && dispatched && response?.status() === 200 &&
       dialogs.length === 1 && /cancellation reason/i.test(dialogs[0]) && !nativeDialog &&
-      cleanSnapshot(afterOpen) && unchangedExcept(baseline, afterOpen, {}) && !fence.isQuarantined();
+      cleanSnapshot(afterOpen) && blankLabtestParties(afterOpen) && unchangedExcept(baseline, afterOpen, {}) && !fence.isQuarantined();
     if (reasonReady) pendingPages.set(page, { frame, expected: { ...expected }, native: { ...state.native }, track: state.track,
       blocked, baseline: afterOpen, fence, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
@@ -214,7 +216,9 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     }
     const before = await recordSnapshot(frame);
     action.check();
-    if (!cleanSnapshot(before) || !unchangedExcept(opened.baseline, before, {})) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+    if (!cleanSnapshot(before)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+    if (!blankLabtestParties(before)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    if (!unchangedExcept(opened.baseline, before, {})) throw new Error('RECORD_HAS_DIRTY_FIELDS');
     const windows = frame.locator('.x-window:visible:not(.x-menu)');
     const dialog = windows.filter({ hasText: /Cancellation Reason/i });
     if (await windows.count() !== 1 || await dialog.count() !== 1 ||
@@ -281,7 +285,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       reservationstaystatus: 'CANCELED', cancelpolicyoverride: '0' };
     if (!filled || !selected || blocked.length || opened.blocked.length || nativeDialog || opened.dialogSeen() ||
         frame !== after.frame || JSON.stringify(state.native) !== JSON.stringify(after.native) ||
-        !unchangedExcept(before, afterFields, changes) || fence.isQuarantined() ||
+        !blankLabtestParties(afterFields) || !unchangedExcept(before, afterFields, changes) || fence.isQuarantined() ||
         await windows.count() !== 1 || /penalt|fee|charge|deposit/i.test(await dialog.innerText())) {
       throw new Error('CANCEL_REASON_CHANGED');
     }
