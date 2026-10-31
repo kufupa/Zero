@@ -141,7 +141,7 @@ describe('document facts', () => {
     const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
     const plan={facts:[{id:'dates',kind:'dates' as const,value,disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
     if(conflict)expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow(/alternate stay dates/);
-    else expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival: value.arrival.startsWith('11 November')?'2026-11-11':'2026-11-12',departure:value.departure.startsWith('16 November')?'2026-11-16':'2026-11-14'});
+    else expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival: value.arrival.startsWith('11 November')?'2026-11-11':value.arrival==='13/11'?'2026-11-13':'2026-11-12',departure:value.departure.startsWith('16 November')?'2026-11-16':value.departure==='15/11'?'2026-11-15':'2026-11-14'});
   });
   it.each([
     ['For 2027: arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
