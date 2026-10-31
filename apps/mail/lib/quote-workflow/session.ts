@@ -1745,7 +1745,11 @@ export function reduceQuoteSession(
         };
       }
       if (action.analysis.intent !== 'quote') {
-        const reviewItems = (action.analysis.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
+        const reviewItems = projectQuoteReviewItems(action.analysis, [], [], [
+          ...session.staffActions, ...(action.analysis.staffActions ?? []),
+        ]).filter(
+          (item) => item.kind === 'document_failure' || item.kind === 'question',
+        );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);
         return {
