@@ -64,6 +64,18 @@ describe('quote occupancy input', () => {
       error: expect.stringMatching(/stay says 3 children.*allocations add up to 2/i),
     });
   });
+
+  it('blocks adult allocations that contradict the stay total but accepts a correct split', () => {
+    expect(staffQuoteGroupsFromStay([stay({ quantity: 2, adults: 3, adultsTotal: 5 })])).toEqual({
+      error: expect.stringMatching(/stay says 5 adults.*allocations add up to 6/i),
+    });
+    expect(
+      staffQuoteGroupsFromStay([
+        stay({ id: 'g1', stayId: 's1', quantity: 1, adults: 2, adultsTotal: 5 }),
+        stay({ id: 'g2', stayId: 's1', quantity: 1, adults: 3, adultsTotal: 5 }),
+      ]),
+    ).toMatchObject({ ok: [{ adults: 2 }, { adults: 3 }] });
+  });
 });
 
 describe('HRDAV native room and board maps', () => {

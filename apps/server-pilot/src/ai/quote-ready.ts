@@ -130,12 +130,15 @@ function groupForStay(
 
   const groups: StaffQuoteInput['groups'] = [];
   const knownRoomCounts = stay.rows.map((row) => row.rooms);
-  const stayRoomCount =
-    stay.totalRooms ??
-    (knownRoomCounts.every((count): count is number => typeof count === 'number')
-      ? knownRoomCounts.reduce((sum, count) => sum + count, 0)
-      : null);
+  const rowRoomCount = knownRoomCounts.every((count): count is number => typeof count === 'number')
+    ? knownRoomCounts.reduce((sum, count) => sum + count, 0)
+    : null;
+  if (stay.totalRooms != null && rowRoomCount != null && stay.totalRooms !== rowRoomCount) {
+    return { groups: [], reason: 'missing_rooms' };
+  }
+  const stayRoomCount = stay.totalRooms ?? rowRoomCount;
   let allocatedChildren = 0;
+  let allocatedAdults = 0;
   for (const row of stay.rows) {
     const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
@@ -144,10 +147,7 @@ function groupForStay(
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }
-    const oneRoomStay =
-      stay.rows.length === 1 &&
-      (stayRoomCount === 1 || (stay.totalRooms == null && quantity === 1)) &&
-      (row.rooms == null || row.rooms === 1);
+    const oneRoomStay = stay.rows.length === 1 && stayRoomCount === 1 && (row.rooms == null || row.rooms === 1);
     const adults =
       row.adultsPerRoom ??
       (typeof stay.totalAdults === 'number' ? (oneRoomStay ? stay.totalAdults : null) : 2);
@@ -164,6 +164,7 @@ function groupForStay(
     ) {
       return { groups: [], reason: 'missing_occupancy' };
     }
+    allocatedAdults += quantity * adults;
     const roomType = row.roomType?.trim();
     const roomMatch = roomType ? matchRoomType(roomType, propertyCode) : null;
     const roomCode =
@@ -181,6 +182,9 @@ function groupForStay(
     });
   }
   if (typeof stay.totalChildren === 'number' && allocatedChildren !== stay.totalChildren) {
+    return { groups: [], reason: 'missing_occupancy' };
+  }
+  if (typeof stay.totalAdults === 'number' && allocatedAdults !== stay.totalAdults) {
     return { groups: [], reason: 'missing_occupancy' };
   }
   return { groups };

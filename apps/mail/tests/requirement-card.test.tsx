@@ -159,7 +159,7 @@ describe('StayCard rooms', () => {
       stay({ childrenTotal: 4, quantity: 1, childCount: 1, childrenAges: [6] }),
       stay({ id: 'g2', childrenTotal: 4, quantity: 2, childCount: 1, childrenAges: [8] }),
     ]);
-    expect(screen.getByRole('alert').textContent).toMatch(/stay says 4 children.*add up to 3/i);
+    expect(screen.getByRole('alert').textContent).toMatch(/review the stated occupancy totals/i);
     const total = screen.getByLabelText('Children total');
     expect((total as HTMLInputElement).value).toBe('4');
     fireEvent.change(total, { target: { value: '3' } });
@@ -167,6 +167,13 @@ describe('StayCard rooms', () => {
       ['g1', { childrenTotal: 3 }],
       ['g2', { childrenTotal: 3 }],
     ]);
+  });
+
+  it('shows the stated adult total and warns before a contradictory allocation can be quoted', () => {
+    renderStay([stay({ adultsTotal: 5, quantity: 2, adults: 3 })]);
+
+    expect(screen.getByText('Stated adults total: 5')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(/review the stated occupancy totals/i);
   });
 
   it('shows the dates once for the stay, under Check-in and Check-out', () => {

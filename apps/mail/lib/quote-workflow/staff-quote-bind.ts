@@ -35,8 +35,10 @@ import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
+  childCountForQuoteGroup,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
+  stayOccupancyAllocation,
 } from './types';
 import { knownRoomCode, matchConfiguredRoomType, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
@@ -513,14 +515,7 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
-    const childCount =
-      typeof group.childCount === 'number'
-        ? group.childCount
-        : group.childCount === null || group.fields.childAges === 'missing'
-          ? null
-          : group.childrenAges.length > 0
-            ? group.childrenAges.length
-            : 0;
+    const childCount = childCountForQuoteGroup(group);
     if (
       childCount === null ||
       childCount !== group.childrenAges.length ||
@@ -557,20 +552,15 @@ export function staffQuoteGroupsFromStay(
   if (dates.size !== 1) {
     return { error: 'Each date range needs its own quote. Run them one at a time.' };
   }
-  const statedChildrenTotals = [...new Set(
-    groups.flatMap((group) => (typeof group.childrenTotal === 'number' ? [group.childrenTotal] : [])),
-  )];
-  if (statedChildrenTotals.some((total) => !Number.isInteger(total) || total < 0) || statedChildrenTotals.length > 1) {
+  const occupancy = stayOccupancyAllocation(groups);
+  if (occupancy.children.conflict) {
     return { error: 'Room rows have conflicting stay-wide child totals. Correct the stay total before running the quote.' };
   }
-  const statedChildrenTotal = statedChildrenTotals[0];
-  if (typeof statedChildrenTotal === 'number') {
-    const allocatedChildren = out.reduce((sum, group) => sum + group.quantity * group.childrenAges.length, 0);
-    if (allocatedChildren !== statedChildrenTotal) {
-      return {
-        error: `The stay says ${statedChildrenTotal} children, but the room allocations add up to ${allocatedChildren}. Correct the stay total or per-room counts before running the quote.`,
-      };
-    }
+  if (typeof occupancy.children.total === 'number' && occupancy.children.allocated !== occupancy.children.total) {
+    return { error: `The stay says ${occupancy.children.total} children, but the room allocations add up to ${occupancy.children.allocated}. Correct the stay total or per-room counts before running the quote.` };
+  }
+  if (occupancy.adults.conflict || (typeof occupancy.adults.total === 'number' && occupancy.adults.allocated !== occupancy.adults.total)) {
+    return { error: 'Resolve the stay-wide adult total against per-room allocations before running the quote.' };
   }
   return { ok: out };
 }

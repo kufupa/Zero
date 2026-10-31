@@ -22,7 +22,7 @@ import {
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
 import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
-import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, stayOccupancyAllocation } from '@/lib/quote-workflow/types';
 import type {
   HmsQuotePropertyCode,
   QuoteBoard,
@@ -181,38 +181,15 @@ export function StayCard({
   const totals = stayTotals(rows);
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
-  const declaredChildrenTotals = [...new Set(
-    rows.flatMap((row) => (typeof row.childrenTotal === 'number' ? [row.childrenTotal] : [])),
-  )];
-  const childrenTotal = declaredChildrenTotals[0] ?? first?.childrenTotal;
-  const allocatedChildren = rows.reduce<number | null>((sum, row) => {
-    const childCount =
-      typeof row.childCount === 'number'
-        ? row.childCount
-        : row.childCount === null || row.fields.childAges === 'missing'
-          ? null
-          : row.childrenAges.length;
-    if (
-      sum === null ||
-      typeof row.quantity !== 'number' ||
-      !Number.isInteger(row.quantity) ||
-      row.quantity < 1 ||
-      childCount === null ||
-      !Number.isInteger(childCount) ||
-      childCount < 0
-    ) return null;
-    return sum + row.quantity * childCount;
-  }, 0);
-  const childAllocationIssue =
-    declaredChildrenTotals.length > 1
-      ? 'Room rows have conflicting stay-wide child totals. Correct the total before quoting.'
-      : childrenTotal === 0 && rows.some((row) => row.childrenAges.length > 0)
-        ? 'The stay says there are no children, but child ages are listed in the room rows. Correct the total or per-room occupancy before quoting.'
-      : typeof childrenTotal === 'number' &&
-          allocatedChildren !== null &&
-          allocatedChildren !== childrenTotal
-        ? `The stay says ${childrenTotal} children, but the room allocations add up to ${allocatedChildren}. Correct the stay total or per-room counts before quoting.`
-        : null;
+  const occupancy = stayOccupancyAllocation(rows);
+  const childrenTotal = occupancy.children.conflict ? null : occupancy.children.total;
+  const adultsTotal = occupancy.adults.conflict ? null : occupancy.adults.total;
+  const occupancyConflict = occupancy.adults.conflict || occupancy.children.conflict ||
+    (typeof adultsTotal === 'number' && occupancy.adults.allocated !== null && occupancy.adults.allocated !== adultsTotal) ||
+    (typeof childrenTotal === 'number' && occupancy.children.allocated !== null && occupancy.children.allocated !== childrenTotal);
+  const occupancyIssue = occupancyConflict
+    ? 'Review the stated occupancy totals and per-room counts before quoting.'
+    : null;
   // The dates are one fact for the whole stay, so a change goes to every room in it.
   const onDates = (patch: StayDatePatch) => rows.forEach((row) => onPatch?.(row.id, patch));
   const onChildrenTotal = (value: number | null) =>
@@ -271,6 +248,7 @@ export function StayCard({
           {splitNotSet
             ? `${requestedRoomsTotal} rooms requested · split not set`
             : `${totals.rooms} ${totals.rooms === 1 ? 'room' : 'rooms'} · ${totals.guests === null ? 'guest count incomplete' : `${totals.guests} ${totals.guests === 1 ? 'guest' : 'guests'} total`}`}
+          {adultsTotal !== null ? <span className="ml-1 font-normal text-[#64748b]">{`· Stated adults total: ${adultsTotal}`}</span> : null}
           {!splitNotSet && requestedRoomsTotal !== undefined && requestedRoomsTotal !== totals.rooms ? (
             <span className="ml-1 font-normal text-[#64748b]">{`· Email requested ${requestedRoomsTotal} rooms in total`}</span>
           ) : null}
@@ -345,9 +323,9 @@ export function StayCard({
               </Field>
             </div>
           </div>
-          {childAllocationIssue ? (
+          {occupancyIssue ? (
             <p role="alert" className="rounded-[3px] border border-[#f3c7c7] bg-[#fff7f7] px-2 py-1.5 text-[12px] text-[#9b1c1c]">
-              {childAllocationIssue}
+              {occupancyIssue}
             </p>
           ) : null}
           <div role="table" aria-label="Room types & occupancy" className="overflow-hidden rounded-[3px] border border-[#dbe2ea]">

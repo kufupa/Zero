@@ -310,6 +310,65 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.stays[0]?.reason).toBe('missing_occupancy');
   });
 
+  it('blocks a quote when known row room counts contradict the stay total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 2,
+        rows: [{ ...stay.rows[0]!, rooms: 1, adultsPerRoom: 2 }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('missing_rooms');
+  });
+
+  it('blocks a known per-room adult allocation that contradicts the stay total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 2,
+        totalAdults: 5,
+        rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: 3 }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('missing_occupancy');
+  });
+
+  it('uses the adult total only when the stay has one room', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 1,
+        totalAdults: 2,
+        rows: [{ ...stay.rows[0]!, rooms: 1, adultsPerRoom: null }],
+      }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2 });
+    expect(plan.stays[0]?.reason).toBeUndefined();
+  });
+
+  it('does not use a stay-wide adult total when the room count is only defaulted', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: null,
+        totalAdults: 2,
+        rows: [{ ...stay.rows[0]!, rooms: null, adultsPerRoom: null, childAges: [6] }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('missing_occupancy');
+  });
+
   it('defaults a missing room count to one when dates and a guest row exist', () => {
     const stay = payload().stays[0]!;
     const plan = build({

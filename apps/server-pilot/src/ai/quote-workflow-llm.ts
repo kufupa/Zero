@@ -49,8 +49,7 @@ export const K2_MAPPING = [
   'Never paraphrase, tidy, complete, or invent a quoted amount.',
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
-  'Adults and children totals are never divided across rooms, even when they divide evenly; preserve them as adultsTotal / childrenTotal and leave per-room occupancy null unless explicitly allocated.',
-  'adultsPerRoom is adults in EACH room; adultsTotal may be used only for one room.',
+  'Never divide adultsTotal or childrenTotal across rooms, even when they divide evenly. adultsPerRoom is per room; adultsTotal may resolve it only for one known room.',
   'childCount is children in EACH room: for HRCEN, an ordinary adult-only request with no children mentioned has childCount=0 and childAges=[]; do not ask staff to confirm no children. For other properties, use that property’s established no-child convention or null when none is established. When children are mentioned but the count/allocation is unknown, use null. childAges are exact per-room ages and must match a positive childCount; never infer a count from a partial age list, invent age 0, or call quote tools with missing ages.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
@@ -331,13 +330,8 @@ function childCountForGroup(
   onlyGroupInStay: boolean,
 ): number | null {
   if (typeof group.childCount === 'number') return group.childCount;
-  if (group.childCount === null || group.childCount === undefined) {
-    if (group.childrenTotal === 0) return 0;
-    if (onlyGroupInStay && typeof group.childrenTotal === 'number' && group.rooms === 1) {
-      return group.childrenTotal;
-    }
-    return null;
-  }
+  if (group.childrenTotal === 0) return 0;
+  if (onlyGroupInStay && typeof group.childrenTotal === 'number' && group.rooms === 1) return group.childrenTotal;
   return null;
 }
 

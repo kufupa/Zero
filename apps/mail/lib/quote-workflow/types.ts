@@ -89,6 +89,8 @@ export type StayGroupRequirement = {
   /** Explicit native room-type codes. A name is accepted only when it resolves to exactly one code. */
   roomCodes?: string[];
   adults?: number;
+  /** Stay-wide total; repeated across room rows, null unknown and zero explicit. */
+  adultsTotal?: number | null;
   /** Number of children in each identical room; null is unknown, zero is explicit. */
   childCount?: number | null;
   /** Stay-wide child total; repeated across the stay's rows, null unknown and zero explicit. */
@@ -107,6 +109,26 @@ export type StayGroupRequirement = {
   /** The price staff chose for this row instead of HMS's nightly rate. Absent means HMS prices the row. */
   rowPrice?: RowPriceChoice;
 };
+
+export function childCountForQuoteGroup(group: StayGroupRequirement): number | null {
+  if (typeof group.childCount === 'number') return group.childCount;
+  return group.childCount === null || group.fields.childAges === 'missing' ? null : group.childrenAges.length;
+}
+
+export function stayOccupancyAllocation(groups: readonly StayGroupRequirement[]) {
+  const summary = (field: 'adultsTotal' | 'childrenTotal', perRoom: (group: StayGroupRequirement) => number | null) => {
+    const totals = new Set(groups.flatMap((group) => typeof group[field] === 'number' ? [group[field]!] : []));
+    const allocated = groups.reduce<number | null>((sum, group) => {
+      const count = perRoom(group);
+      return sum === null || group.quantity == null || count === null ? null : sum + group.quantity * count;
+    }, 0);
+    return { total: totals.size === 1 ? [...totals][0]! : null, conflict: totals.size > 1, allocated };
+  };
+  return {
+    adults: summary('adultsTotal', (group) => typeof group.adults === 'number' ? group.adults : null),
+    children: summary('childrenTotal', childCountForQuoteGroup),
+  };
+}
 
 /** Staff's price for one row (KTD6). A saved rate is named by id; its name and amount are copied for display. */
 export type RowPriceChoice =

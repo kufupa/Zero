@@ -68,9 +68,6 @@ function groupFromStayAsk(
   let childCount: number | null;
   if (typeof stay.childCount === 'number') {
     childCount = stay.childCount;
-  } else if (stay.childCount === null) {
-    childCount =
-      stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;
   } else {
     childCount =
       stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;

@@ -25,6 +25,7 @@ import {
   emptyStaffQuoteHeader,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
+  stayOccupancyAllocation,
   type StaffExtraField,
 } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
@@ -186,24 +187,12 @@ export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
 
 /** Rooms and guests over the rows given; children in a row are counted once per room. */
 export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number | null } {
-  return groups.reduce(
-    (sum, group) => {
-      const childCount =
-        typeof group.childCount === 'number'
-          ? group.childCount
-          : group.childCount === null || group.fields.childAges === 'missing'
-            ? null
-            : group.childrenAges.length;
-      return {
-        rooms: sum.rooms + (group.quantity ?? 0),
-        guests:
-          sum.guests === null || group.quantity == null || group.adults == null || childCount === null
-            ? null
-            : sum.guests + group.quantity * (group.adults + childCount),
-      };
-    },
-    { rooms: 0, guests: 0 as number | null },
-  );
+  const occupancy = stayOccupancyAllocation(groups);
+  const rooms = groups.reduce((sum, group) => sum + (group.quantity ?? 0), 0);
+  const guests = occupancy.adults.allocated === null || occupancy.children.allocated === null
+    ? null
+    : occupancy.adults.allocated + occupancy.children.allocated;
+  return { rooms, guests };
 }
 
 export type StayAskGuest = { name: string; confirmationNumber: string | null };

@@ -404,6 +404,50 @@ describe('U10 availability probe (pure)', () => {
     ).toEqual([]);
   });
 
+  it('does not probe availability when per-room adults contradict the stay total', () => {
+    expect(
+      availabilityRequestsFor({
+        stays: [{
+          ...STAY_B,
+          totalRooms: 2,
+          totalAdults: 5,
+          rows: [{ ...STAY_B.rows[0]!, rooms: 2, adultsPerRoom: 3, childAges: [] }],
+        }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('does not probe availability when row room counts contradict the stay total', () => {
+    expect(availabilityRequestsFor({
+      stays: [{
+        ...STAY_B,
+        totalRooms: 2,
+        rows: [{ ...STAY_B.rows[0]!, rooms: 1 }],
+      }],
+    })).toEqual([]);
+  });
+
+  it('uses a stay-wide adult total only for a single room', () => {
+    const requests = availabilityRequestsFor({
+      stays: [{
+        ...STAY_B,
+        totalRooms: 1,
+        totalAdults: 2,
+        rows: [{ ...STAY_B.rows[0]!, rooms: 1, adultsPerRoom: null }],
+      }],
+    });
+
+    expect(requests[0]?.rooms[0]?.adults).toBe(2);
+    expect(availabilityRequestsFor({
+      stays: [{
+        ...STAY_B,
+        totalRooms: null,
+        totalAdults: 2,
+        rows: [{ ...STAY_B.rows[0]!, rooms: null, adultsPerRoom: null }],
+      }],
+    })).toEqual([]);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,
