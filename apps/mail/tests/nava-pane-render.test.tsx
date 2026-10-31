@@ -85,6 +85,9 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     staffQuoteJobQuery: vi.fn().mockResolvedValue(null),
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
+    candidateStateQuery: null as null | ((input: unknown) => Promise<unknown>),
+    draftsListQuery: null as null | ((input: unknown) => Promise<unknown>),
+    draftsGetQuery: null as null | ((input: unknown) => Promise<unknown>),
     quotePaneConfig: null as null | Record<string, unknown>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
@@ -318,7 +321,14 @@ vi.mock('../providers/query-provider', () => ({
         mutate: async () => AUTHORISED_QUOTE_PDF,
       },
     },
-    drafts: { saveReply: { mutate: saveReplyMutate } },
+    get ai() {
+      return bridgeMockState.candidateStateQuery ? { hmsCandidateState: { query: bridgeMockState.candidateStateQuery } } : undefined;
+    },
+    get drafts() {
+      return { saveReply: { mutate: saveReplyMutate },
+        ...(bridgeMockState.draftsListQuery ? { list: { query: bridgeMockState.draftsListQuery } } : {}),
+        ...(bridgeMockState.draftsGetQuery ? { get: { query: bridgeMockState.draftsGetQuery } } : {}) };
+    },
   },
 }));
 
@@ -437,6 +447,9 @@ describe('NavaPane', () => {
     bridgeMockState.staffQuoteJobCalls.length = 0;
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
+    bridgeMockState.candidateStateQuery = null;
+    bridgeMockState.draftsListQuery = null;
+    bridgeMockState.draftsGetQuery = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
       outcome: 'no_match',
@@ -486,6 +499,26 @@ describe('NavaPane', () => {
     expect(container.querySelector('main')).not.toBeNull();
     expect(container.querySelector('footer')?.textContent).not.toContain('Pilot feedback');
     expect(screen.getByRole('button', { name: 'More' })).toBeDefined();
+  });
+
+  it('shows prepared tasks when the background candidate completes', async () => {
+    vi.useFakeTimers();
+    const candidate = vi.fn().mockResolvedValueOnce({ activeRun: { state: 'running' } })
+      .mockResolvedValue({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } });
+    const list = vi.fn().mockResolvedValueOnce({ threads: [] }).mockResolvedValue({ threads: [
+      { id: 'candidate-1', replyToMessageId: 'mail-1' },
+    ] });
+    bridgeMockState.candidateStateQuery = candidate;
+    bridgeMockState.draftsListQuery = list;
+    bridgeMockState.draftsGetQuery = vi.fn().mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+      tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
+    } });
+    render(<NavaPane bridge={fakeBridge} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(candidate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('Reservation ABC-1')).toBeDefined();
   });
 
   it('keeps the feedback and tour actions in the ⋯ menu, not the footer', () => {
