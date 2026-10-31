@@ -4,6 +4,7 @@ import type { AiRunFence } from './run-ledger.js';
 import type { DraftArtifactStorage, GeneratedDraftArtifact } from './drafts.js';
 import type { ReservationistRuntimeInput, runReservationistRuntime } from './reservationist-runtime.js';
 import type { LocalModelAdapterConfig, LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
 import { AzureLunaModelAdapter } from './bedrock/luna.js';
 import { createRequire } from 'node:module';
 
@@ -41,6 +42,8 @@ export const AZURE_DRAFT_ROUTE: AzureDraftModelRouteEvidence = {
 export type ReservationistProviderContext = {
   db: DB; transportId: string; threadId: string; requestedByUserId: string;
   generationId: string; admissions: readonly AttachmentAdmission[]; input: ReservationistRuntimeInput; signal: AbortSignal; fence: AiRunFence;
+  /** Recheck the active claim, mailbox grant and admitted source identities. */
+  revalidateSources: () => Promise<boolean>;
 };
 export type ReservationistProvider = (context: ReservationistProviderContext) => Promise<{
   dependencies: Parameters<typeof runReservationistRuntime>[1];
@@ -197,8 +200,7 @@ function parseConfiguredDraftRouteDescriptor(): ConfiguredDraftRouteDescriptor |
   }
 }
 
-function createAzureDraftModelRoute(): DraftModelRouteConfig {
-  const adapter = new AzureLunaModelAdapter();
+export function createAzureDraftModelRoute(adapter: ModelAdapter = new AzureLunaModelAdapter()): DraftModelRouteConfig {
   return {
     route: AZURE_DRAFT_ROUTE,
     async transport(request) {
