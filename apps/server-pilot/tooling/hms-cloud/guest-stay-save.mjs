@@ -1,4 +1,5 @@
 // One narrowly authorized save on a verified, unsaved HRCEN Labtest draft.
+import { createHash } from 'node:crypto';
 import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './guest-profile.mjs';
 import { consumeLabtestPreimage } from './labtest-preimage.mjs';
 import { blankPartyFields } from './labtest-party-fields.mjs';
@@ -10,6 +11,17 @@ const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
+const CREATE_MODEL_FIELD_COUNT = 985;
+// SHA-256 of the captured 988-key request's field set, excluding its three
+// fixed controls.
+const CREATE_MODEL_FIELD_KEYS_SHA256 = '03a9432f20d5b59c1cc7daee4e519639b82b978d1e78b2de110964a98828292e';
+
+function matchesCreateModelFieldSchema(formData) {
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return false;
+  const keys = Object.keys(formData).sort();
+  return keys.length === CREATE_MODEL_FIELD_COUNT &&
+    createHash('sha256').update(keys.join('\n')).digest('hex') === CREATE_MODEL_FIELD_KEYS_SHA256;
+}
 
 function normalizeChildSelection(selection) {
   if (!selection || !['updated_unsaved', 'unchanged_unsaved'].includes(selection.outcome) ||
@@ -33,6 +45,14 @@ function normalizeSourceSelection(selection) {
       selection.nativeCodeReadback?.outcome !== 'unsupported' ||
       selection.nativeCodeReadback?.issue !== 'SOURCE_CODE_NOT_EXPOSED_ON_FORM') return null;
   return { nativeCode, description };
+}
+
+function normalizeCreateFieldProof(proof) {
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof) || !Number.isInteger(proof.adults) || proof.adults < 0) return null;
+  const child = normalizeChildSelection(proof.childAgeSelection);
+  const source = normalizeSourceSelection(proof.sourceSelection);
+  if (!child || !source) return null;
+  return { adults: String(proof.adults), childAge: child.age, childAgeBands: child.bands, sourceBusiness: source };
 }
 
 function normalizeAgencySelection(selection) {
@@ -65,7 +85,7 @@ async function draft(page, expected) {
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress',
-      'adults', 'children', 'child1', 'child2', 'child3', 'sourceofbusinessdesc'];
+      ...(expected.createFieldProof ? ['adults', 'children', 'child1', 'child2', 'child3', 'sourceofbusinessdesc'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return null;
@@ -83,7 +103,6 @@ async function draft(page, expected) {
         partyInputs.filter((el) => el.name.toLowerCase() === name).length > 1) ||
         partyInputs.some((el) => el.name !== el.name.toLowerCase() ||
           String(el.value ?? '').trim() !== (partyValues[el.name.toLowerCase()] ?? ''))) return null;
-    const activeChildCategories = String(data.activechildcategories ?? '').trim();
     if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
         !exact('guestid', expected.guestId) || !exact('firstname', 'Proof') || !exact('lastname', 'Labtest') ||
         ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid', 'arprofileid', 'araccountid',
@@ -93,24 +112,50 @@ async function draft(page, expected) {
         value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' || value('arrivaldate') !== expected.arrivalDisplay ||
         value('departuredate') !== expected.departureDisplay || value('roomtype') !== expected.roomType ||
         value('rateplan') !== expected.ratePlan || !value('track') || value('reservationnote') !== expected.note ||
-        !exact('adults', String(expected.adults)) || String(globalThis.Ext?.getCmp?.(fields.adults[0].id.replace(/-inputEl$/, ''))?.getValue?.() ?? '').trim() !== String(expected.adults) ||
-        !exact('children', '1') || !exact('childages', String(expected.childAge)) || Array.isArray(data.childages) ||
-        childBands.some((name) => !exact(name, String(expected.childAgeBands[name]))) ||
-        !exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true') ||
-        !exact('sourceofbus', expected.sourceBusiness.nativeCode) || !exact('sourceofbusinessdesc', expected.sourceBusiness.description) ||
-        value('adults') !== String(expected.adults) || value('children') !== '1' ||
-        childBands.some((name) => value(name) !== String(expected.childAgeBands[name])) ||
-        value('sourceofbusinessdesc') !== expected.sourceBusiness.description ||
         value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== expected.guaranteeType ||
         value('udfchar13') || value('emailaddress') || typeof cmp('udfchkbox04')?.getValue !== 'function' ||
         cmp('udfchkbox04').getValue() !== false) return null;
+    let activeChildCategories, submittedData;
+    if (expected.createFieldProof) {
+      const proof = expected.createFieldProof;
+      submittedData = record.getData?.();
+      if (!submittedData || typeof submittedData !== 'object' || Array.isArray(submittedData)) return null;
+      activeChildCategories = String(data.activechildcategories ?? '').trim();
+      if (!exact('adults', proof.adults) || String(globalThis.Ext?.getCmp?.(fields.adults[0].id.replace(/-inputEl$/, ''))?.getValue?.() ?? '').trim() !== proof.adults ||
+          !exact('children', '1') || !exact('childages', String(proof.childAge)) || Array.isArray(data.childages) ||
+          childBands.some((name) => !exact(name, String(proof.childAgeBands[name]))) ||
+          !exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true') ||
+          !exact('sourceofbus', proof.sourceBusiness.nativeCode) || !exact('sourceofbusinessdesc', proof.sourceBusiness.description) ||
+          value('adults') !== proof.adults || value('children') !== '1' ||
+          childBands.some((name) => value(name) !== String(proof.childAgeBands[name])) ||
+          value('sourceofbusinessdesc') !== proof.sourceBusiness.description) return null;
+    }
     const blankRequired = [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).some((el) => {
       const component = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       return component?.allowBlank === false && !String(el.value ?? '').trim();
     });
     if (blankRequired) return null;
-    return { session: String(data.bookingsessionid).trim(), track: value('track'), activeChildCategories };
+    return { session: String(data.bookingsessionid).trim(), track: value('track'),
+      ...(expected.createFieldProof ? { activeChildCategories,
+        formData: Object.fromEntries(Object.keys(submittedData).map((key) => [key, submittedData[key]])) } : {}) };
   }, { origin: ORIGIN, expected, blankPartyFields, childBands: CHILD_BANDS });
+}
+
+function matchesFullCreateBody(body, formData) {
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return false;
+  const fields = Object.keys(formData);
+  const controls = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' };
+  const expectedKeys = [...fields, ...Object.keys(controls)], expected = new Set(expectedKeys), keys = [...body.keys()];
+  if (expected.size !== expectedKeys.length || keys.length !== expected.size || new Set(keys).size !== keys.length ||
+      keys.some((key) => !expected.has(key))) return false;
+  return Object.entries(controls).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value) &&
+    fields.every((key) => {
+      let value = formData[key];
+      if (key === 'sessionID' && value && typeof value === 'object' && Object.keys(value).length === 1 &&
+          typeof value.sessionID === 'string') value = value.sessionID;
+      else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
+      return body.getAll(key).length === 1 && body.get(key) === String(value ?? '');
+    });
 }
 
 function matchesSave(page, request, expected) {
@@ -124,11 +169,13 @@ function matchesSave(page, request, expected) {
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: '0', udfchar13: '', emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
       arprofileid: '', araccountid: '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
-      adults: String(expected.adults), children: '1', childages: String(expected.childAge),
-      child1: String(expected.childAgeBands.child1), child2: String(expected.childAgeBands.child2),
-      child3: String(expected.childAgeBands.child3), activechildcategories: expected.activeChildCategories,
-      updatechildcategories: 'true', sourceofbus: expected.sourceBusiness.nativeCode,
-      sourceofbusinessdesc: expected.sourceBusiness.description,
+      ...(expected.createFieldProof ? {
+        adults: expected.createFieldProof.adults, children: '1', childages: String(expected.createFieldProof.childAge),
+        child1: String(expected.createFieldProof.childAgeBands.child1), child2: String(expected.createFieldProof.childAgeBands.child2),
+        child3: String(expected.createFieldProof.childAgeBands.child3), activechildcategories: expected.activeChildCategories,
+        updatechildcategories: 'true', sourceofbus: expected.createFieldProof.sourceBusiness.nativeCode,
+        sourceofbusinessdesc: expected.createFieldProof.sourceBusiness.description,
+      } : {}),
       ...Object.fromEntries(blankPartyFields.map((name) => [name, expected.partyValues[name] ?? ''])),
     };
     const profileControls = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
@@ -139,6 +186,7 @@ function matchesSave(page, request, expected) {
       isVerifiedLabtestProfileCurrent(page, { nativeId: expected.guestId, session: expected.session, token: expected.profileToken }) &&
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
+      (!expected.createFieldProof || matchesFullCreateBody(body, expected.formData)) &&
       profileControls.every((key) => {
         const matches = keys.filter((name) => name.toLowerCase() === key);
         return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
@@ -149,19 +197,19 @@ function matchesSave(page, request, expected) {
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
-  adults, childAgeSelection, sourceSelection, agencySelection,
+  createFieldProof, agencySelection,
 } = {}, { timeoutMs = 20_000 } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || guaranteeType !== 'NGI' || typeof note !== 'string' || !note.trim() || note.length > 200 ||
       !preimageId) return { outcome: 'input_gap', issue: 'INVALID_LABTEST_SAVE_INPUT' };
-  if (!Number.isInteger(adults) || adults < 0) return { outcome: 'input_gap', issue: 'ADULT_COUNT_REQUIRED' };
-  const child = normalizeChildSelection(childAgeSelection);
-  if (!child) return { outcome: 'input_gap', issue: 'SINGLE_CHILD_AGE_SELECTION_REQUIRED' };
-  const source = normalizeSourceSelection(sourceSelection);
-  if (!source) return { outcome: 'input_gap', issue: 'SOURCE_SELECTION_REQUIRED' };
-  const agency = normalizeAgencySelection(agencySelection);
-  if (agencySelection && !agency) return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_UNVERIFIED' };
+  const createFieldProofProvided = createFieldProof !== undefined && createFieldProof !== null;
+  const createFields = createFieldProofProvided ? normalizeCreateFieldProof(createFieldProof) : null;
+  if (createFieldProofProvided && !createFields) return { outcome: 'input_gap', issue: 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED' };
+  const agencySelectionProvided = agencySelection !== undefined && agencySelection !== null;
+  const agency = agencySelectionProvided ? normalizeAgencySelection(agencySelection) : null;
+  if (agencySelectionProvided && !agency) return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_UNVERIFIED' };
+  if (agency && !createFields) return { outcome: 'input_gap', issue: 'AGENCY_REQUIRES_CREATE_FIELD_PROOF' };
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, requestSeen = false, blocked = 0, sendRequests = 0, nativeDialog = null, response = null, armed = false;
@@ -182,9 +230,10 @@ export async function saveNewLabtestStay(page, {
       taid1: agency.nativeId, ta1: agency.name, bookingagency1iatanumber: agency.iataNumber,
     } : {};
     const expected = { ...formatted, guestId: clean(guestId), roomType, ratePlan, guaranteeType, note,
-      adults: String(adults), childAge: child.age, childAgeBands: child.bands, sourceBusiness: source, partyValues };
+      ...(createFields ? { createFieldProof: createFields } : {}), partyValues };
     const state = await bounded(draft(page, expected));
     if (!state) throw new Error('LABTEST_DRAFT_UNVERIFIED');
+    if (createFields && !matchesCreateModelFieldSchema(state.formData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
     if (!profileToken) throw new Error('LABTEST_PROFILE_PROOF_STALE');
     Object.assign(expected, state, { profileToken });
