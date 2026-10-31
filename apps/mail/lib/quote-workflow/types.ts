@@ -160,6 +160,7 @@ export type ReservationistStaffAction = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  readable?: boolean;
   blockingQuote: boolean;
   status: 'open';
 };

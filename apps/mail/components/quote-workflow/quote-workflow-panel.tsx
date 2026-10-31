@@ -738,11 +738,13 @@ export function QuoteWorkflowPanel({
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
             {item.text}
+            {item.reason ? <span className="mt-0.5 block text-[11px]">{item.reason}</span> : null}
           </Notice>
         ))}
         {readableWarnings.map((item) => (
           <Notice key={item.id} tone="warn">
             {item.text}
+            {item.reason ? <span className="mt-0.5 block text-[11px]">{item.reason}</span> : null}
           </Notice>
         ))}
         <ItemsForYou

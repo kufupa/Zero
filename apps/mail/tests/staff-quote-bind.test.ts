@@ -47,6 +47,16 @@ it('keeps a metadata-only unread attachment visible to staff without a file hash
   expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
 });
 
+it('keeps a number-masked workbook warning visibly readable', () => {
+  const reason='Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.';
+  const action={id:'source:sheet:hash',kind:'business_document_failure',text:`rooms.xlsx: ${reason}`,
+    sourceRef:'sheet',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'mail-1',filename:'rooms.xlsx',
+    reason,readable:true,blockingQuote:false,status:'open'} as const;
+  expect(mapStaffActions(readStaffActions({staffActions:[action]}))).toMatchObject([{
+    kind:'document_failure',text:'rooms.xlsx: read with some number values masked or hidden',reason,readable:true,
+  }]);
+});
+
 it('loads the current review for the selected message', async () => {
   const action = { id:'request:shuttle',kind:'unanswered_question',text:'Can we arrange a shuttle?',
     sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
