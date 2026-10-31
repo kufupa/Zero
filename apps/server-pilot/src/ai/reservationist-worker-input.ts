@@ -1,5 +1,6 @@
 import { maskCardNumbers } from './card-mask.js';
 import { normalizeMessageText } from './thread-context.js';
+import { load } from 'cheerio';
 import {
   isReservationistSignatureNoise,
   type AttachmentAdmission,
@@ -37,6 +38,20 @@ export type ReservationistWorkerAttachment = {
 
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
+
+/** Separate inspection view: preserve inline CID positions without sending markup to the filter. */
+function signatureInspectionText(row: ReservationistWorkerMessage, normalized: string): string {
+  if (row.textBody?.trim() || !normalized.includes('<')) return normalized;
+  const $ = load(normalized, null, false);
+  $('details.quoted-toggle, blockquote').before('\nFrom: quoted history\n');
+  $('img').each((_, element) => {
+    const src = $(element).attr('src')?.trim() ?? '';
+    $(element).replaceWith($('<span>').text(/^cid:/i.test(src) ? ` ${src} ` : ' '));
+  });
+  $('br').replaceWith('\n');
+  $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
+  return $.root().text();
+}
 
 /**
  * Compose the runtime's actual causal thread and admitted business files.
@@ -90,21 +105,21 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  const triggerAt = time(trigger.receivedAt) ?? time(trigger.sentAt) ?? time(trigger.createdAt);
-  const triggerArrival = time(trigger.arrivedAt) ?? time(trigger.createdAt);
-  if (triggerAt === null || triggerArrival === null || Date.parse(options.sourceAt) < triggerAt ||
+  // The mailbox arrival clock, rather than a sender-supplied Date header,
+  // establishes both ordering and the runtime's causal cutoff.
+  const triggerAt = time(trigger.arrivedAt) ?? time(trigger.createdAt);
+  if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
 
   const selected: Array<{ row: ReservationistWorkerMessage; at: number }> = [];
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
     const arrived = time(row.arrivedAt) ?? time(row.createdAt);
-    const at = row.direction === 'outbound' ? arrived : time(row.receivedAt) ?? time(row.sentAt) ?? time(row.createdAt);
-    if (arrived === null || at === null) throw new Error('worker_intake_clock_invalid');
+    if (arrived === null) throw new Error('worker_intake_clock_invalid');
     // Later mailbox arrivals are never context, even if their authored date is backdated.
-    if (arrived > triggerArrival) continue;
-    if (arrived === triggerArrival || at > triggerAt) throw new Error('worker_intake_order_ambiguous');
-    selected.push({ row, at });
+    if (arrived > triggerAt) continue;
+    if (arrived === triggerAt) throw new Error('worker_intake_order_ambiguous');
+    selected.push({ row, at: arrived });
   }
   // Bound raw inputs before HTML sanitization; the normalized limits below
   // still govern what the model receives.
@@ -132,6 +147,8 @@ export async function buildReservationistWorkerInput(options: {
       options.attachments.some((a) => !messageIds.has(a.messageId)))
     throw new Error('worker_intake_attachment_identity_invalid');
   const selectedById = new Map(selected.map(({ row, at }) => [row.id, { row, at }]));
+  const signatureTexts = new Map(messages.map((message) => [message.id,
+    signatureInspectionText(selectedById.get(message.id)!.row, message.text)]));
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
   const admissions: AttachmentAdmission[] = [];
@@ -139,11 +156,11 @@ export async function buildReservationistWorkerInput(options: {
   for (const attachment of relevant) {
     check();
     const entry = selectedById.get(attachment.messageId)!;
-    const text = messages.find((m) => m.id === attachment.messageId)!.text;
+    const text = signatureTexts.get(attachment.messageId)!;
     // An intervening causal message can make a prior footer image relevant.
     const signatureNoise = messages.every((message) => isReservationistSignatureNoise({
       messageText: text,
-      currentRequestText: message.text,
+      currentRequestText: signatureTexts.get(message.id)!,
       attachment,
       attachments: relevant,
     }));

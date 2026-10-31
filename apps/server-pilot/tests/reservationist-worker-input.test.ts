@@ -87,6 +87,34 @@ describe('reservationist worker input', () => {
     expect(admit).toHaveBeenCalledTimes(1);
   });
 
+  it('orders a backdated inbound after an earlier staff reply by mailbox arrival', async () => {
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('staff', 2, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(2) }),
+        row('current', 4, { receivedAt: at(1), textBody: 'Please proceed.' })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal,
+      admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    expect(result.input.messages.map((m) => [m.id, m.at])).toEqual([
+      ['staff', at(2).toISOString()], ['current', at(4).toISOString()],
+    ]);
+    expect(result.input.clock.causalAt).toBe(at(4).toISOString());
+  });
+
+  it('recognizes a harmless HTML-only signature image without reading its bytes', async () => {
+    const admit = vi.fn();
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: null, htmlBody: '<p>Please amend the stay.</p><p>Kind regards</p><p><img src="cid:logo"></p>' })],
+      attachments: [{ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'logo', disclosure: 'guest' }],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal, admit,
+    });
+    expect(result.ignoredSignatures).toBe(1);
+    expect(result.admissions).toEqual([]);
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {
     let receivedSignal: AbortSignal | undefined;
     const admission = buildReservationistWorkerInput({
