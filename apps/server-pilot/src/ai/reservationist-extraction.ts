@@ -460,7 +460,8 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     }
     const unresolvedAsks=[...new Set(plans.flatMap(plan=>plan.unresolvedAsks))];
     if(facts.length>64||tasks.length>32||unresolvedAsks.length>32||tasks.some(t=>t.factIds.length>64))throw new Error('Merged extraction plan exceeds bounds');
-    input.signal.throwIfAborted();return{facts,tasks,unresolvedAsks,draftReady:false,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(sourceIncomplete.length?['attachment_batch_unavailable']:[])]};
+    const emptySelection=!tasks.length&&!facts.length&&!unresolvedAsks.length&&!sourceIncomplete.length&&plans.length>0;
+    input.signal.throwIfAborted();return{facts,tasks,unresolvedAsks,draftReady:false,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(sourceIncomplete.length?['attachment_batch_unavailable']:[])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
   }
   if ((admitted.length > 8&&input.factEnrichmentMode!=='source_batches') || admitted.some(a => !a.source)) throw new Error('Invalid admitted source inventory');
   const files = admitted.filter(a => a.metadata.mimeType === 'application/pdf').map(a => {
