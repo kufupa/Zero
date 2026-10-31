@@ -8,6 +8,7 @@ import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mj
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { lookupFailure } from './stay360-lookup-cli.mjs';
 import { amendLabtestNote } from './guest-stay-amend.mjs';
+import { amendLabtestContact } from './guest-stay-amend-contact.mjs';
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs';
 
@@ -53,7 +54,7 @@ export async function withSavedStayAgentSession(operation) {
         return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
       }
       const { tool } = request;
-      if (!['read', 'prepareCancellation', 'amendNote', 'openCancel', 'confirmCancel'].includes(tool)) {
+      if (!['read', 'prepareCancellation', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
@@ -123,6 +124,13 @@ export async function withSavedStayAgentSession(operation) {
           return result;
         } catch { sealed = true; return { outcome: 'uncertain', issue: 'AMEND_FAILED' }; }
       }
+      if (tool === 'amendContact') {
+        try {
+          const result = await amendLabtestContact(page, expected, { field: request.field, value: request.value });
+          if (result.outcome !== 'input_gap') sealed = true;
+          return result;
+        } catch { sealed = true; return { outcome: 'uncertain', issue: 'AMEND_FAILED' }; }
+      }
       try {
         const result = await openLabtestCancellation(page, expected);
         if (result.outcome === 'reason_ready') pendingCancel = expected;
@@ -158,7 +166,7 @@ const writeLine = (value) => new Promise((done, fail) => {
 export async function runSavedStayAgentSessionCli(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
     process.stdout.write('Usage: node saved-stay-agent-session.mjs --jsonl\n' +
-      'Tools: read, prepareCancellation, amendNote, openCancel, confirmCancel, quit. Results contain private data.\n');
+      'Tools: read, prepareCancellation, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
     return;
   }
   if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');
