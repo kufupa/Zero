@@ -4,6 +4,7 @@ import type { AiRunFence } from './run-ledger.js';
 import type { DraftArtifactStorage, GeneratedDraftArtifact } from './drafts.js';
 import type { ReservationistRuntimeInput, runReservationistRuntime } from './reservationist-runtime.js';
 import type { LocalModelAdapterConfig, LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
 import { AzureLunaModelAdapter } from './bedrock/luna.js';
 import { createRequire } from 'node:module';
 
@@ -199,8 +200,7 @@ function parseConfiguredDraftRouteDescriptor(): ConfiguredDraftRouteDescriptor |
   }
 }
 
-function createAzureDraftModelRoute(): DraftModelRouteConfig {
-  const adapter = new AzureLunaModelAdapter();
+export function createAzureDraftModelRoute(adapter: ModelAdapter = new AzureLunaModelAdapter()): DraftModelRouteConfig {
   return {
     route: AZURE_DRAFT_ROUTE,
     async transport(request) {
