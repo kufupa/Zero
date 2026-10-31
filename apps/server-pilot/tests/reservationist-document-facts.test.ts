@@ -68,7 +68,10 @@ describe('document facts', () => {
     'Please quote. Stay 13-15 November.',
     'Please quote. Stay November 13, 2026 to November 15, 2026.',
     'Please quote. Stay 13-11-2026 to 15-11-2026.',
-    'Please quote. Arrival 13/11, departure 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
+    'Please quote. Arrival 13/11, departure 15/11.',
+    'Please quote. Do not change arrival 13/11, departure 15/11.',
+    'Please quote. Don’t cancel the stay 13/11 to 15/11.',
+    'Please quote without changing the booking 13/11 to 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
     const html='Please quote. Stay 12/11 to 14/11.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,

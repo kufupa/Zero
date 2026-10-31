@@ -356,7 +356,8 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const start=Math.max(authored.lastIndexOf('\n',match.index-1),authored.lastIndexOf('.',match.index-1),authored.lastIndexOf(';',match.index-1))+1;
    const tail=authored.slice(match.index+match.text.length).search(/[\n.;]/),end=tail<0?authored.length:match.index+match.text.length+tail;
    const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
-   const excluded=/\b(?:do not|don['’]t|never|not|without|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
+   // A negated change/cancellation preserves the cited dates; it does not exclude them.
+   const excluded=/\b(?:(?:do not|don['’]t|never|not|without)(?!\s+(?:change|changing|alter|altering|modify|modifying|move|moving|reschedule|rescheduling|cancel|canceling|cancelling)\b)|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const row=authored.slice(start,end);
    const suffix=authored.slice(match.index+match.text.length,end);
    const trailingExclusion=/^\s*(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)\b/i;
