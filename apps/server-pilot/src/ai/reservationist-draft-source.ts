@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {z} from 'zod';
 import {canonicalJson} from './draft-approval.js';
-import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
+import {assertReservationistChannelBookingSyncPacket,isReservationistCancellationReviewPacket,type ReservationistPendingAction} from './reservationist-pending-action.js';
 import {deriveRequestedArrivalAcknowledgement} from './reservationist-execution.js';
 import type {ReservationistRuntimeInput,RuntimePlan} from './reservationist-runtime.js';
 import type {ReservationistPersistedResult} from './drafts.js';
@@ -72,6 +72,11 @@ export function assertChannelPacketDraftSource(value:unknown,source:Reservationi
  for(const proof of value.sourceProofs!){const message=source.messages.find(message=>`message:${message.id}`===proof.sourceRef),attachment=source.attachments.find(attachment=>attachment.attachmentId===proof.sourceRef),at=message?.at??source.messages.find(message=>message.id===attachment?.messageId)?.at;
   if(proof.sourceHash!==(message?.sourceHash??attachment?.sourceHash)||proof.observedAt!==at)throw new Error('channel_draft_source_proof_invalid');
  }
+}
+export function assertCancellationPacketDraftSource(value:unknown,source:ReservationistDraftSource):void{
+ if(!isReservationistCancellationReviewPacket(value))throw new Error('cancellation_packet_unproven');
+ const packet=value as ReservationistPendingAction,binding=packet.requestBinding,trigger=source.messages.find(message=>message.id===source.triggerMessageId),current=packet.sourceProofs?.filter(proof=>proof.kind==='current')??[];
+ if(!binding||!trigger||trigger.direction!=='inbound'||packet.propertyCode!==source.propertyCode||binding.requestId!==source.triggerMessageId||binding.ownerRef!==source.transportId||binding.threadId!==source.threadId||binding.taskId!==packet.taskId||binding.sourceRef!==`message:${source.triggerMessageId}`||binding.sourceHash!==trigger.sourceHash||binding.observedAt!==trigger.at||current.length!==1||current[0]!.authorizationId!==packet.authorizationId||current[0]!.propertyCode!==packet.propertyCode||current[0]!.reservationRef!==packet.reservationRef||!packet.sourceProofs?.some(proof=>proof.kind==='causal'&&proof.sourceRef===binding.sourceRef&&proof.sourceHash===binding.sourceHash&&proof.observedAt===binding.observedAt))throw new Error('cancellation_draft_source_scope_invalid');
 }
 
 /** Every source-only prepared fact must have a narrow independently recomputed typed receipt. */

@@ -83,7 +83,8 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  expect(scoreRuntimeReplay({...runtime,tasks:[{...tasks[0],status:'complete'}]},{...approved,tasks:[{...approved.tasks[0],status:'complete'}]},'authoritative_source_replay').pass).toBe(false);
  expect(scoreRuntimeReplay({...runtime,readiness:'ready_for_staff_review'},approved,'authoritative_source_replay').pass).toBe(false);
  const cancelInput={...input,kind:'cancel_request' as const,taskId:'cancel',changes:undefined};
- const cancel=await prepareReservationistPendingAction(cancelInput,{signal:new AbortController().signal,resolveEvidence:async()=>({...evidence,requestSource:{...evidence.requestSource,taskId:'cancel',changes:undefined}}),authorizeSource:async()=>true});
+ const cancellationReview={outcome:'prepared_for_human_review' as const,roomScope:{state:'unresolved' as const,complete:false as const},policy:{state:'unknown' as const},fee:{state:'unknown_precommit' as const,amount:null,currency:null},action:{actor:'human' as const,cancellationStarted:false as const,commitAvailable:false as const}};
+ const cancel=await prepareReservationistPendingAction(cancelInput,{signal:new AbortController().signal,resolveEvidence:async()=>({...evidence,requestSource:{...evidence.requestSource,taskId:'cancel',changes:undefined},cancellationReview}),authorizeSource:async()=>true});
  const cancelAction={kind:cancel.kind,taskId:cancel.taskId,reservationRef:cancel.reservationRef,current:cancel.current,sourceRefs:cancel.sourceRefs};
  const cancelTasks=[{id:'cancel',kind:'cancel_request',status:'pending_pms_action',evidenceRefs:cancel.sourceRefs}];
  const cancelApproved={...approved,tasks:cancelTasks.map(({kind: _kind,...task})=>task),pendingActions:[cancelAction]};

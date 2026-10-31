@@ -5,7 +5,7 @@ import { admitReservationistAttachment } from '../src/ai/reservationist-attachme
 import { runReservationistRuntime, type ReservationistRuntimeInput } from '../src/ai/reservationist-runtime.js';
 import type { ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 
-const state = vi.hoisted(() => ({ locked: false, quoteReads: 0, originProperty: 'HRCEN' }));
+const state = vi.hoisted(() => ({ locked: false, quoteReads: 0, originProperty: 'HRCEN', quoteConfigAvailable: true, cancellationCalls: [] as string[] }));
 vi.mock('../src/hms/hms-read-target.js', async (original) => ({
   ...await original<typeof import('../src/hms/hms-read-target.js')>(),
   assertHmsReadOriginAllowed: async () => ({ propertyCode: state.originProperty }),
@@ -19,7 +19,7 @@ vi.mock('../src/hms/property-read-lock.js', async (original) => ({
 }));
 vi.mock('../src/ai/staff-quote-installation.js', async (original) => ({
   ...await original<typeof import('../src/ai/staff-quote-installation.js')>(),
-  readInstalledStaffQuoteConfiguration: () => ({ tenantId: 'tenant', owner: { propertyCode: 'HRCEN' } }),
+  readInstalledStaffQuoteConfiguration: () => { if (!state.quoteConfigAvailable) throw new Error('quote_configuration_unavailable'); return { tenantId: 'tenant', owner: { propertyCode: 'HRCEN' } }; },
   getInstalledStaffQuoteServices: (options: { authorizeContext: (ctx: unknown) => Promise<boolean> }) => ({
     resolveQuoteTask: async (ctx: unknown) => {
       if (!state.locked || !await options.authorizeContext(ctx)) throw new Error('quote_not_authorized');
@@ -28,7 +28,7 @@ vi.mock('../src/ai/staff-quote-installation.js', async (original) => ({
     },
   }),
 }));
-afterEach(() => { vi.unstubAllEnvs(); state.locked = false; state.quoteReads = 0; state.originProperty = 'HRCEN'; });
+afterEach(() => { vi.unstubAllEnvs(); state.locked = false; state.quoteReads = 0; state.originProperty = 'HRCEN'; state.quoteConfigAvailable = true; state.cancellationCalls.length = 0; });
 
 function input(text: string, artifacts: unknown[] = []): ReservationistRuntimeInput {
   const at = new Date(Date.now() - 1000).toISOString();
@@ -118,6 +118,58 @@ it('runs the installed quote service only while the property lock and source gra
   expect(state.quoteReads).toBe(1);
   expect(state.locked).toBe(false);
   expect(result.tasks[0]?.status).toBe('needs_clarification');
+});
+
+it('prepares cancellation from a locked exact-stay read without quote config, opening or committing cancellation', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  state.quoteConfigAvailable = false;
+  const text = 'Please cancel reservation ABC123.';
+  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  const start = text.indexOf('ABC123');
+  const referenceSource = { attachmentId: 'message:message', sourceHash: hash, page: 1,
+    quote: 'ABC123', start, end: start + 'ABC123'.length };
+  const taskSource = { attachmentId: 'message:message', sourceHash: hash, page: 1,
+    quote: text, start: 0, end: text.length };
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+    ...response(),
+    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: referenceSource, disclosure: 'guest' }],
+      tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: taskSource }], unresolvedAsks: [] },
+  })) };
+  const observedAt = new Date().toISOString();
+  const provider = await createInstalledReservationistProvider(model, async (operation) => {
+    expect(state.locked).toBe(true);
+    return operation({ runTool: async (request) => {
+      expect(state.locked).toBe(true);
+      state.cancellationCalls.push(request.tool);
+      if (request.tool === 'read') {
+        expect(request.confirmation).toBe('ABC123');
+        return { outcome: 'ok' };
+      }
+      return {
+        outcome: 'prepared_for_human_review', observedAt,
+        target: { confirmation: 'ABC123', verified: true },
+        stay: {
+          arrivalDate: { state: 'observed', value: 'Mon 12-Oct-2026' },
+          departureDate: { state: 'observed', value: 'Wed 14-Oct-2026' },
+        },
+        roomScope: { requested: 'unspecified', state: 'unresolved', complete: false },
+        policy: { state: 'unknown' }, fee: { state: 'unknown_precommit', amount: null, currency: null },
+        action: { actor: 'human', cancellationStarted: false, commitAvailable: false },
+      };
+    } });
+  })(context(value));
+  const result = await runReservationistRuntime(value, provider.dependencies);
+
+  expect(result.readiness).toBe('pending_pms_action');
+  expect(result.packets[0]).toMatchObject({
+    kind: 'cancel_request', saved: false, businessRulesValidated: false,
+    current: { arrivalDate: '2026-10-12', departureDate: '2026-10-14' },
+    cancellationReview: { fee: { state: 'unknown_precommit', amount: null, currency: null },
+      action: { cancellationStarted: false, commitAvailable: false } },
+  });
+  expect(state.cancellationCalls).toEqual(['read', 'prepareCancellation']);
+  expect(state.locked).toBe(false);
 });
 
 it('does not start live quote reads for a different mailbox property', async () => {

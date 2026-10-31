@@ -1,6 +1,6 @@
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
-import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
+import {assertReservationistChannelBookingSyncPacket,isReservationistCancellationReviewPacket} from './reservationist-pending-action.js';
 import {assertReservationistExistingDocumentReceiptFresh,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
 import {
   isDraftRouteReleaseDescriptor,
@@ -166,13 +166,14 @@ export function assertReservationistResultFreshForAction(result: unknown, now = 
   const acceptedRevisionDigests = new Set<string>();
   for (const raw of value.packets ?? []) {
     type PacketProof = {kind?: string; sourceRef?: string; sourceHash?: string; authorizationId?: string; propertyCode?: string; scopeDigest?: string; reservationRef?: string; observedAt?: string; expiresAt?: string; maxSourceAgeMs?: number};
-    const packet = raw as {kind?: string; taskId?: string; status?: string; saved?: boolean; businessRulesValidated?: boolean; authorizationId?: string; propertyCode?: string; revisionId?: string; scopeDigest?: string; reservationRef?: string; sourceRefs?: string[]; sourceProofs?: PacketProof[]; acceptanceProof?: BookingAcceptanceProof; requestBinding?: {requestId?: string;ownerRef?: string;threadId?: string;taskId?: string;sourceRef?: string;sourceHash?: string;observedAt?: string;changes?: unknown}; requested?: unknown; digest?: string};
+    const packet = raw as {kind?: string; taskId?: string; status?: string; saved?: boolean; businessRulesValidated?: boolean; authorizationId?: string; propertyCode?: string; revisionId?: string; scopeDigest?: string; reservationRef?: string; sourceRefs?: string[]; sourceProofs?: PacketProof[]; acceptanceProof?: BookingAcceptanceProof; requestBinding?: {requestId?: string;ownerRef?: string;threadId?: string;taskId?: string;sourceRef?: string;sourceHash?: string;observedAt?: string;changes?: unknown}; requested?: unknown; cancellationReview?: unknown; digest?: string};
     // Failed packets remain review evidence. They do not assert action readiness.
     if (packet.status !== 'pending_pms_action') continue;
     const fail = () => { throw new DraftApprovalError('reservationist packet source authority unavailable or expired'); };
     if(packet.kind==='channel_booking_sync'){try{assertReservationistChannelBookingSyncPacket(packet,now);}catch{fail();}continue;}
     const {digest, ...packetData} = packet;
-    if (!['accepted_quote','new_booking','change','cancel_request'].includes(packet.kind ?? '') || !packet.taskId || packet.saved !== false || packet.businessRulesValidated !== true || !packet.authorizationId || !packet.propertyCode || !digest || digest !== quoteDigest(packetData) || !Array.isArray(packet.sourceRefs) || !packet.sourceRefs.length || !Array.isArray(packet.sourceProofs) || !packet.sourceProofs.length || packet.sourceProofs.length > 256) fail();
+    const cancellationReviewValid=packet.kind==='cancel_request'&&isReservationistCancellationReviewPacket(packet);
+    if (!['accepted_quote','new_booking','change','cancel_request'].includes(packet.kind ?? '') || !packet.taskId || packet.saved !== false || (packet.kind==='cancel_request'?!cancellationReviewValid:packet.businessRulesValidated!==true) || !packet.authorizationId || !packet.propertyCode || !digest || digest !== quoteDigest(packetData) || !Array.isArray(packet.sourceRefs) || !packet.sourceRefs.length || !Array.isArray(packet.sourceProofs) || !packet.sourceProofs.length || packet.sourceProofs.length > 256) fail();
     const proofs = packet.sourceProofs!;
     if (!proofs.some(proof => proof.kind === 'current') || new Set(packet.sourceRefs).size !== packet.sourceRefs!.length || packet.sourceRefs!.some(ref => !proofs.some(proof => proof.sourceRef === ref))) fail();
     for (const proof of proofs) {
