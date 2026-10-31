@@ -11,11 +11,17 @@ import {
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
+import { AMBIGUOUS_NUMBER_GROUPS } from './card-mask.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
 import {
   extractReservationistOfficeText,
   type ReservationistOfficeConverter,
 } from './reservationist-attachment-input.js';
+import {
+  extractReservationistXlsxText,
+  isReservationistXlsxMimeType,
+  RESERVATIONIST_XLSX_MAX_INPUT_BYTES,
+} from './reservationist-xlsx.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 
@@ -281,6 +287,10 @@ function isDocxAttachment(row: Pick<QuoteAttachmentRow, 'mimeType'>): boolean {
   return isDocxMimeType(row.mimeType);
 }
 
+function isXlsxAttachment(row: Pick<QuoteAttachmentRow, 'mimeType'>): boolean {
+  return isReservationistXlsxMimeType(row.mimeType);
+}
+
 function reviewFacts(row: QuoteAttachmentRow) {
   return {
     filename: row.filename,
@@ -304,17 +314,20 @@ export async function readQuoteAttachments(
   const visionImages =
     options.includeVisionImages || options.trackVisionImages ? rows.filter(isPngJpegAttachment) : [];
   const matters = [...documents, ...visionImages];
-  // PDFs then DOCX claim the caps before unknown parts, so a logo cannot push a request document out.
+  // PDFs, DOCX and XLSX claim the caps before unknown parts, so a logo cannot push a request document out.
   const claimOrder = [
     ...documents.filter((row) => isPdfAttachment(row) && !isDocxAttachment(row)),
     ...documents.filter(isDocxAttachment),
-    ...documents.filter((row) => !isPdfAttachment(row) && !isDocxAttachment(row)),
+    ...documents.filter(isXlsxAttachment),
+    ...documents.filter((row) => !isPdfAttachment(row) && !isDocxAttachment(row) && !isXlsxAttachment(row)),
   ];
   let files = 0;
   let bytes = 0;
   const failures = new Map<string, string>();
   for (const row of claimOrder) {
-    if (!isPdfAttachment(row) && !isGenericAttachment(row) && !isDocxAttachment(row)) {
+    if (isXlsxAttachment(row) && row.sizeBytes > RESERVATIONIST_XLSX_MAX_INPUT_BYTES) {
+      failures.set(row.id, 'spreadsheet too large');
+    } else if (!isPdfAttachment(row) && !isGenericAttachment(row) && !isDocxAttachment(row) && !isXlsxAttachment(row)) {
       failures.set(row.id, 'not a PDF');
     } else if (files >= QUOTE_ATTACHMENT_MAX_FILES || bytes + row.sizeBytes > QUOTE_ATTACHMENT_MAX_TOTAL_BYTES) {
       failures.set(row.id, OVER_LIMIT);
@@ -356,7 +369,12 @@ export async function readQuoteAttachments(
           if (read.image) return { ...base, bytesPresent: true, image: read.image };
           return { ...base, bytesPresent: false, readFailure: read.reason ?? 'image bytes unavailable' };
         }
-        if (read.text?.trim()) return { ...base, bytesPresent: true, text: read.text };
+        if (read.text?.trim()) return {
+          ...base,
+          bytesPresent: true,
+          text: read.text,
+          ...(read.text.includes(AMBIGUOUS_NUMBER_GROUPS) ? { readFailure: 'ambiguous number groups' } : {}),
+        };
         if (read.pdf) return { ...base, bytesPresent: true, pdf: read.pdf };
         return { ...base, bytesPresent: false, readFailure: read.reason ?? 'no readable text' };
       } catch {
@@ -447,6 +465,26 @@ export function createArtifactReader(
       return extracted.pages
         ? { text: extracted.pages.join('\n') }
         : { text: null, reason: extracted.reason.replaceAll('_', ' ') };
+    }
+    if (isXlsxAttachment(row)) {
+      if (!options.revalidateOffice || !/^[a-f0-9]{64}$/.test(row.sha256 ?? ''))
+        return { text: null, reason: 'identity or authorization changed' };
+      if (row.sizeBytes > RESERVATIONIST_XLSX_MAX_INPUT_BYTES)
+        return { text: null, reason: 'spreadsheet too large' };
+      const expectedLocator = await resolveLocator(row.id);
+      if (!expectedLocator) return { text: null, reason: 'identity or authorization changed' };
+      const raw = await readAuthorizedArtifactBytes({
+        ...common,
+        allowSpreadsheet: true,
+        expectedLocator,
+        expectedSha256: row.sha256!,
+        revalidate: () => options.revalidateOffice!(row),
+      });
+      if (!raw) return { text: null, reason: 'identity or authorization changed' };
+      const extracted = await extractReservationistXlsxText({ body: raw.body, signal });
+      if (!extracted.text) return { text: null, reason: extracted.reason.replaceAll('_', ' ') };
+      if (!await options.revalidateOffice(row)) return { text: null, reason: 'identity or authorization changed' };
+      return { text: extracted.text };
     }
     if (!isPdfAttachment(row)) {
       // A part of unknown type is a logo or a file Nava does not read. Its magic bytes say which; no text is read.

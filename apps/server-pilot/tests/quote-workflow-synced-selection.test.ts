@@ -6,7 +6,11 @@ import { attachment } from '../src/db/schema/mail.js';
 import { attachmentReads, buildInboundPrompt } from '../src/ai/extraction/extract.js';
 import { buildQuoteWorkflowPrompt } from '../src/ai/quote-workflow-llm.js';
 import { readAuthorizedArtifactBytes } from '../src/mail/artifacts/read-artifact.js';
+import { workbookToBytes } from '@office-kit/xlsx/io';
+import { addWorksheet, createWorkbook } from '@office-kit/xlsx/workbook';
+import { setCell } from '@office-kit/xlsx/worksheet';
 import { storedAnalysis } from '../src/ai/work-items.js';
+import { RESERVATIONIST_XLSX_MAX_INPUT_BYTES } from '../src/ai/reservationist-xlsx.js';
 import {
   createArtifactReader,
   loadSyncedQuoteSelectionFromMailbox,
@@ -71,6 +75,7 @@ function row(overrides: Partial<QuoteAttachmentRow> & { id: string }): QuoteAtta
 
 const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const docxMimeWithParams = 'Application/vnd.openxmlformats-officedocument.wordprocessingml.document; name="x.docx"';
+const xlsxMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function crc32(bytes: Buffer): number {
   let crc = 0xffffffff;
@@ -218,7 +223,7 @@ describe('readQuoteAttachments', () => {
           mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           sizeBytes: 50_000,
         }),
-        row({ id: 'rooms', filename: 'rooms.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: 9_000 }),
+      row({ id: 'rooms', filename: 'rooms.xlsx', mimeType: xlsxMime, sizeBytes: 9_000 }),
         row({ id: 'terms', filename: 'terms.odt', mimeType: 'application/vnd.oasis.opendocument.text', sizeBytes: 9_000 }),
         row({ id: 'legacy', filename: 'rooms.doc', mimeType: 'application/msword', sizeBytes: 9_000 }),
         row({ id: 'forward', filename: 'forward.msg', mimeType: 'application/vnd.ms-outlook', sizeBytes: 60_000 }),
@@ -228,7 +233,7 @@ describe('readQuoteAttachments', () => {
     );
     expect(result.map((part) => [part.id, part.readFailure])).toEqual([
       ['rooming', 'no readable text'],
-      ['rooms', 'not a PDF'],
+      ['rooms', 'no readable text'],
       ['terms', 'not a PDF'],
       ['legacy', 'not a PDF'],
       ['forward', 'not a PDF'],
@@ -356,6 +361,74 @@ describe('readQuoteAttachments', () => {
     expect(prompt).toContain('ARRIVAL: 30 September 2026');
     expect(prompt).toContain('DEPARTURE: 02 October 2026');
     expect(buildQuoteWorkflowPrompt(selection).user).toContain('DEPARTURE: 02 October 2026');
+  });
+
+  it('reads an authorized XLSX attachment through bounded sheet extraction', async () => {
+    const workbook = createWorkbook();
+    const arrivals = addWorksheet(workbook, 'Arrivals');
+    setCell(arrivals, 1, 1, 'Room');
+    setCell(arrivals, 1, 3, 'Guest');
+    setCell(arrivals, 2, 1, 12);
+    setCell(arrivals, 2, 3, 'Proof Guest');
+    setCell(arrivals, 3, 1, 'Rooms 4111 1111 1111 1111');
+    const body = Buffer.from(await workbookToBytes(workbook));
+    const sha256 = createHash('sha256').update(body).digest('hex');
+    const sheet = row({
+      id: 'rooming',
+      filename: 'rooming.xlsx',
+      mimeType: xlsxMime,
+      sizeBytes: body.length,
+      sha256,
+    });
+    vi.mocked(readAuthorizedArtifactBytes).mockImplementation(async (input) => {
+      expect(input.allowSpreadsheet).toBe(true);
+      expect(input.expectedLocator).toMatchObject({
+        s3Key: sheet.s3Key,
+        mimeType: xlsxMime,
+        sizeBytes: body.length,
+        messageId: sheet.messageId,
+        sha256,
+      });
+      expect(input.expectedSha256).toBe(sha256);
+      expect(await input.revalidate?.()).toBe(true);
+      return {
+        body,
+        contentType: xlsxMime,
+        sha256,
+        locator: input.expectedLocator!,
+      };
+    });
+    const reader = createArtifactReader([sheet], new AbortController().signal, {
+      revalidateOffice: async () => true,
+    });
+
+    const attachments = await readQuoteAttachments([sheet], reader);
+    expect(attachments).toMatchObject([
+      {
+        id: 'rooming',
+        bytesPresent: true,
+        text: expect.stringContaining('"sheetName":"Arrivals"'),
+      },
+    ]);
+    expect(attachments[0]?.text).toContain('"columnNumber":3,"value":"Guest"');
+    expect(attachments[0]?.text).toContain('"rowNumber":2');
+    expect(attachments[0]?.text).not.toContain('4111 1111 1111 1111');
+    expect(attachments[0]?.readFailure).toBe('ambiguous number groups');
+  });
+
+  it('makes oversized XLSX attachments visible without reading them', async () => {
+    const reader = vi.fn(async () => ({ text: 'must not be read' }));
+    const attachments = await readQuoteAttachments([row({
+      id: 'oversized-sheet',
+      filename: 'rooming.xlsx',
+      mimeType: xlsxMime,
+      sizeBytes: RESERVATIONIST_XLSX_MAX_INPUT_BYTES + 1,
+    })], reader);
+
+    expect(reader).not.toHaveBeenCalled();
+    expect(attachments).toMatchObject([
+      { id: 'oversized-sheet', bytesPresent: false, readFailure: 'spreadsheet too large' },
+    ]);
   });
 
   it('does not report DOCX as an identity change when office revalidation is unavailable', async () => {

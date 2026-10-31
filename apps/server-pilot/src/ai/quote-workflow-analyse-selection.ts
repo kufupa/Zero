@@ -172,12 +172,12 @@ function unreadAttachments(
   );
 }
 
-/** One item per unreadable file. The plain reason goes in the text, so the one notice says why. */
+/** One item per unread source, plus a staff warning when card-like number groups were masked. */
 export function documentFailureItems(
   attachments: SyncedQuoteAttachment[],
   mode: 'bytes' | 'text' = 'bytes',
 ) {
-  return unreadAttachments(attachments, mode).map((attachment) => {
+  const unread = unreadAttachments(attachments, mode).map((attachment) => {
     const words = unreadReasonWords(attachment.readFailure);
     return {
       id: `unread:${attachment.id}`,
@@ -193,6 +193,25 @@ export function documentFailureItems(
       blocking: false as const,
     };
   });
+  const maskedNumbers = attachments
+    .filter((attachment) => attachment.readFailure === 'ambiguous number groups')
+    .filter((attachment) => attachmentMattersForReview({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      byteSize: attachment.byteSize,
+    }))
+    .map((attachment) => ({
+      id: `number-review:${attachment.id}`,
+      kind: 'document_failure' as const,
+      rank: 'unread_source' as const,
+      text: 'Some number groups may be room numbers or card details. Check the original source.',
+      sourceLabel: attachment.filename,
+      sourceRef: attachment.id,
+      sourceKind: 'attachment' as const,
+      filename: attachment.filename,
+      blocking: false as const,
+    }));
+  return [...unread, ...maskedNumbers];
 }
 
 export function questionItems(missing: Array<{ field: string; question: string }>) {
