@@ -41,6 +41,8 @@ export const AZURE_DRAFT_ROUTE: AzureDraftModelRouteEvidence = {
 export type ReservationistProviderContext = {
   db: DB; transportId: string; threadId: string; requestedByUserId: string;
   generationId: string; admissions: readonly AttachmentAdmission[]; input: ReservationistRuntimeInput; signal: AbortSignal; fence: AiRunFence;
+  /** Recheck the active claim, mailbox grant and admitted source identities. */
+  revalidateSources: () => Promise<boolean>;
 };
 export type ReservationistProvider = (context: ReservationistProviderContext) => Promise<{
   dependencies: Parameters<typeof runReservationistRuntime>[1];
