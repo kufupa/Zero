@@ -118,7 +118,7 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   });
   $('br').replaceWith('\n');
   $('td, th').append('\t');
-  $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => { $(element).prepend('\n').append('\n'); });
   const htmlText = $.root().text();
   // A multipart message can contain a request only in its HTML alternative.
   // Omit an image only when every available view agrees it is signature noise.
