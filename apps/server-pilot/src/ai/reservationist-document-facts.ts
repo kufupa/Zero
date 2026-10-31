@@ -393,7 +393,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const pair=(m:{arrival:string;departure:string;context:string;nights?:number},verifiedYear?:number)=>{
   // A booking reference or amount in the same sentence is not a stay year.
   const printedYears=[...`${m.arrival} ${m.departure}`.matchAll(/\b(?:19|20|21|22)\d{2}\b/g)].map(year=>Number(year[0]));
-  const labeledYears=[...m.context.matchAll(/\b(?:for|during|in|year|dates?|stay|reservation|booking)(?:\s+dates?)?(?:\s+(?:for|in|during))?\s*[:(]?\s*((?:19|20|21|22)\d{2})\b/gi)].map(year=>Number(year[1]));
+  const labeledYears=[...m.context.matchAll(/\b(?:for|during|in|year|dates?|(?:stay|reservation|booking)\s+dates?)(?:\s+(?:for|in|during))?\s*[:(]?\s*((?:19|20|21|22)\d{2})\b/gi)].map(year=>Number(year[1]));
   const years=[...new Set([...printedYears,...labeledYears])];
   const explicit=(text:string)=>/\b(?:19|20|21|22)\d{2}\b/.test(text);
   if(years.length>1&&(!explicit(m.arrival)||!explicit(m.departure)))throw new Error('Ambiguous alternate stay year');

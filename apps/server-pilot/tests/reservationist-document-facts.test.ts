@@ -146,6 +146,7 @@ describe('document facts', () => {
     ['For 2027: arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
     ['For 2027:\narrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
     ['Stay dates (2027): arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
+    ['Booking dates: 2027, arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
     ['Please quote rooms:\nStay 13/11 to 15/11.\nStay 20/11 to 22/11.', 'Please quote rooms from 12/11 to 14/11.', '12/11 to 14/11'],
   ])('rejects alternate years or multiple differing stays', (plain,html,quote) => {
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,start=text.lastIndexOf(quote);
@@ -191,6 +192,8 @@ describe('document facts', () => {
     ['Stay 12/11 to 14/11. Stay 28/12 to 02/01.', 'Stay 12/11 to 14/11. Stay 28/12 to 02/01.'],
     ['Stay 12/11 to 14/11. Stay 12/11 to 14/11.', 'Stay 12/11 to 14/11.'],
     ['Stay 12/11 to 14/11, booking reference 2027.', 'Stay 12/11 to 14/11.'],
+    ['Stay 12/11 to 14/11, booking: 2027.', 'Stay 12/11 to 14/11.'],
+    ['Stay 12/11 to 14/11, reservation: 2027.', 'Stay 12/11 to 14/11.'],
     ['Please quote rooms 12/11 to 14/11 for the conference 13/11 to 14/11.', 'Stay 12/11 to 14/11.'],
     ['Stay 12/11 to 14/11. Stay 10 January 2027 to 12 January 2027.', 'Stay 12/11 to 14/11. Stay 10 January to 12 January.'],
   ])('accepts matching dates despite rollover, repeats or a reference', (plain,html) => {
