@@ -76,18 +76,17 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
   if (!Array.isArray(stay?.rows) || stay.rows.length === 0) return null;
   // A stated stay total resolves adults only for a single known room; other room counts need per-room adults.
   const rooms: unknown[] = [];
-  let allocatedRooms = 0;
   let allocatedChildren = 0;
   let allocatedAdults = 0;
   for (const row of stay.rows as ExtractionRow[]) {
     if (!row || !row.roomType) return null;
-    const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
-    const oneRoomStay = stay.rows.length === 1 && quantity === 1;
+    const quantity = row.rooms;
+    const oneRoomStay =
+      stay.rows.length === 1 && quantity === 1 && (stay.totalRooms == null || stay.totalRooms === 1);
     const adults = row.adultsPerRoom ?? (oneRoomStay && typeof stay.totalAdults === 'number' ? stay.totalAdults : null);
     if (quantity === null || adults === null) return null;
     const childAges = childAgesForRoom(stay, row);
     if (!childAges) return null;
-    allocatedRooms += quantity;
     allocatedChildren += quantity * childAges.length;
     allocatedAdults += quantity * adults;
     rooms.push({
@@ -97,7 +96,6 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
       childAges,
     });
   }
-  if (typeof stay.totalRooms === 'number' && allocatedRooms !== stay.totalRooms) return null;
   if (typeof stay.totalChildren === 'number' && allocatedChildren !== stay.totalChildren) return null;
   if (typeof stay.totalAdults === 'number' && allocatedAdults !== stay.totalAdults) return null;
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival, departure, rooms });

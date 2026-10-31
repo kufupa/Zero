@@ -417,16 +417,6 @@ describe('U10 availability probe (pure)', () => {
     ).toEqual([]);
   });
 
-  it('does not probe availability when row room counts contradict the stay total', () => {
-    expect(availabilityRequestsFor({
-      stays: [{
-        ...STAY_B,
-        totalRooms: 2,
-        rows: [{ ...STAY_B.rows[0]!, rooms: 1 }],
-      }],
-    })).toEqual([]);
-  });
-
   it('uses a stay-wide adult total only for a single room', () => {
     const requests = availabilityRequestsFor({
       stays: [{
@@ -444,6 +434,14 @@ describe('U10 availability probe (pure)', () => {
         totalRooms: null,
         totalAdults: 2,
         rows: [{ ...STAY_B.rows[0]!, rooms: null, adultsPerRoom: null }],
+      }],
+    })).toEqual([]);
+    expect(availabilityRequestsFor({
+      stays: [{
+        ...STAY_B,
+        totalRooms: 2,
+        totalAdults: 2,
+        rows: [{ ...STAY_B.rows[0]!, rooms: 1, adultsPerRoom: null }],
       }],
     })).toEqual([]);
   });

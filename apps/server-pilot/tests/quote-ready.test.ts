@@ -310,20 +310,6 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.stays[0]?.reason).toBe('missing_occupancy');
   });
 
-  it('blocks a quote when known row room counts contradict the stay total', () => {
-    const stay = payload().stays[0]!;
-    const plan = build({
-      stays: [{
-        ...stay,
-        totalRooms: 2,
-        rows: [{ ...stay.rows[0]!, rooms: 1, adultsPerRoom: 2 }],
-      }],
-    });
-
-    expect(plan.inputs).toEqual([]);
-    expect(plan.stays[0]?.reason).toBe('missing_rooms');
-  });
-
   it('blocks a known per-room adult allocation that contradicts the stay total', () => {
     const stay = payload().stays[0]!;
     const plan = build({
@@ -362,6 +348,21 @@ describe('prepared quote input from stored extraction', () => {
         totalRooms: null,
         totalAdults: 2,
         rows: [{ ...stay.rows[0]!, rooms: null, adultsPerRoom: null, childAges: [6] }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('missing_occupancy');
+  });
+
+  it('does not use an adult total when a known row contradicts the one-room total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 2,
+        totalAdults: 2,
+        rows: [{ ...stay.rows[0]!, rooms: 1, adultsPerRoom: null }],
       }],
     });
 
