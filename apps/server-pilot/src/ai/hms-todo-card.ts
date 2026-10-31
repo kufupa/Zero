@@ -415,10 +415,14 @@ function buildPaymentCard(input: HmsTodoCardInput, files: string | null): HmsTod
   pushFact(steps, missing, 'Payment date', text(pop.paidOn), false, amountSource);
   pushFact(steps, missing, 'Payment reference', text(pop.reference), false);
   if (!match.stay) pushFact(steps, missing, 'Payer', text(pop.payerName), false);
-  if (match.status === 'none') pushFact(steps, missing, 'Next step', 'find the stay', true);
-  if (match.status === 'unsure') pushFact(steps, missing, 'Next step', 'check conf#', true);
+  const nextStep = match.status === 'none'
+    ? 'Find the stay; check the proof and hotel payment records before posting'
+    : match.status === 'unsure'
+      ? 'Check the confirmation number, proof and hotel payment records before posting'
+      : 'Check the stay, proof and hotel payment records before posting';
+  pushFact(steps, missing, 'Next step', nextStep, true);
   pushFact(steps, missing, 'Attachments', files, false, 'attachment');
-  return { kind: 'payment_proof', title: 'Post payment', steps, missing, writesEnabled: false };
+  return { kind: 'payment_proof', title: 'Verify payment proof', steps, missing, writesEnabled: false };
 }
 
 function buildBillingCard(input: HmsTodoCardInput, files: string | null): HmsTodoCard {
