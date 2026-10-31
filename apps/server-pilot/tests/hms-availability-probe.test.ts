@@ -390,6 +390,20 @@ describe('U10 availability probe (pure)', () => {
     expect(requestFor({ childCount: 2, childAges: undefined })).toHaveLength(0);
   });
 
+  it('does not probe availability when known room allocations contradict the stay total', () => {
+    expect(
+      availabilityRequestsFor({
+        stays: [
+          {
+            ...STAY_B,
+            totalChildren: 2,
+            rows: [{ ...STAY_B.rows[0]!, rooms: 1, childCount: 1, childAges: [6] }],
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,

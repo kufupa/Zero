@@ -91,6 +91,8 @@ export type StayGroupRequirement = {
   adults?: number;
   /** Number of children in each identical room; null is unknown, zero is explicit. */
   childCount?: number | null;
+  /** Stay-wide child total; repeated across the stay's rows, null unknown and zero explicit. */
+  childrenTotal?: number | null;
   childrenAges: number[];
   board: QuoteBoard;
   organisation?: string;

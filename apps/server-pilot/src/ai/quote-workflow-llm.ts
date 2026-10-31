@@ -51,7 +51,7 @@ export const K2_MAPPING = [
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'Adults and children totals are never divided across rooms, even when they divide evenly; preserve them as adultsTotal / childrenTotal and leave per-room occupancy null unless explicitly allocated.',
   'adultsPerRoom is adults in EACH room; adultsTotal may be used only for one room.',
-  'childCount is children in EACH room: 0 only when the request says there are no children, null when the count/allocation is unknown. childAges are exact per-room ages and must match a positive childCount; never invent age 0 or call quote tools with missing ages.',
+  'childCount is children in EACH room: for HRCEN, an ordinary adult-only request with no children mentioned has childCount=0 and childAges=[]; do not ask staff to confirm no children. For other properties, use that property’s established no-child convention or null when none is established. When children are mentioned but the count/allocation is unknown, use null. childAges are exact per-room ages and must match a positive childCount; never infer a count from a partial age list, invent age 0, or call quote tools with missing ages.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
@@ -166,6 +166,7 @@ export type MappedQuoteDecision = {
     quantity?: number;
     adults?: number;
     childCount?: number | null;
+    childrenTotal?: number | null;
     childrenAges: number[];
     board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
@@ -328,28 +329,15 @@ function childCountForGroup(
   group: LunaAnalysis['groups'][number],
   onlyGroupInStay: boolean,
 ): number | null {
-  if (
-    group.childrenTotal === 0 &&
-    (group.childAges.length > 0 || (typeof group.childCount === 'number' && group.childCount > 0))
-  ) return null;
   if (typeof group.childCount === 'number') return group.childCount;
-  if (group.childAges.length > 0) return group.childAges.length;
-  if (group.childCount === null) {
+  if (group.childCount === null || group.childCount === undefined) {
     if (group.childrenTotal === 0) return 0;
     if (onlyGroupInStay && typeof group.childrenTotal === 'number' && group.rooms === 1) {
       return group.childrenTotal;
     }
     return null;
   }
-  if (group.childrenTotal !== undefined) {
-    if (group.childrenTotal === 0) return 0;
-    if (onlyGroupInStay && typeof group.childrenTotal === 'number' && group.rooms === 1) {
-      return group.childrenTotal;
-    }
-    return null;
-  }
-  // Older Luna payloads carried only the age array; keep their existing contract.
-  return 0;
+  return null;
 }
 
 function missingQuoteReplyFields(
@@ -607,6 +595,7 @@ export function mapLlmDecision(
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
       childCount,
+      ...(group.childrenTotal !== undefined ? { childrenTotal: group.childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),
@@ -621,6 +610,8 @@ export function mapLlmDecision(
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        childCount: fieldState(childCount),
+        childrenTotal: fieldState(group.childrenTotal),
         childAges: childAgesMissing ? ('missing' as const) : ('extracted' as const),
         ...(quoteDefaults
           ? {

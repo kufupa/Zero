@@ -82,22 +82,23 @@ import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-pers
  * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
  */
 
-export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
+export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childCount', 'childAges', 'board'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
-  | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
+  | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'totalChildren' | 'removed' }
   | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
 
 const ID = '[A-Za-z0-9_-]{1,40}';
 const PATH = new RegExp(
-  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|(removed)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}|removed))$`,
+  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|(totalChildren)|(removed)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}|removed))$`,
 );
 /** Row field to the extraction's key. The path names the form's word, the payload the model's. */
 const ROW_KEYS = {
   count: 'rooms',
   adults: 'adultsPerRoom',
   roomType: 'roomType',
+  childCount: 'childCount',
   childAges: 'childAges',
   board: 'board',
 } as const;
@@ -106,8 +107,9 @@ const BOARDS = new Set(['room_only', 'bb', 'dbb']);
 export function parseFieldPath(path: string): FieldPath | null {
   const match = PATH.exec(path);
   if (!match) return null;
-  const [, stayId = '', dateField, stayRemoved, rowId, rowField] = match;
+  const [, stayId = '', dateField, totalChildren, stayRemoved, rowId, rowField] = match;
   if (dateField) return { stayId, rowId: null, field: dateField as 'arrival' | 'departure' };
+  if (totalChildren) return { stayId, rowId: null, field: 'totalChildren' };
   if (stayRemoved) return { stayId, rowId: null, field: 'removed' };
   return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
 }
@@ -405,6 +407,10 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return isInt(value, 1, 999);
     case 'adults':
       return isInt(value, 1, 9);
+    case 'childCount':
+      return isInt(value, 0, 9);
+    case 'totalChildren':
+      return isInt(value, 0, 999);
     case 'roomType':
       return typeof value === 'string' && value.length > 0 && value.length <= 120;
     case 'childAges':
@@ -426,7 +432,11 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   const parsed = parseFieldPath(path);
   const stay = parsed ? payload?.stays.find((item) => item.id === parsed.stayId) : undefined;
   if (!parsed || !stay) return null;
-  if (parsed.rowId === null) return parsed.field === 'removed' ? false : stay.requested[parsed.field];
+  if (parsed.rowId === null) {
+    if (parsed.field === 'removed') return false;
+    if (parsed.field === 'totalChildren') return stay.totalChildren ?? null;
+    return stay.requested[parsed.field];
+  }
   const row = stay.rows.find((item) => item.id === parsed.rowId);
   if (!row) return null;
   return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
@@ -471,7 +481,11 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
       }
       return row;
     });
-    return [{ ...stay, rows: projectedRows }];
+    const totalChildrenPath = `stays[${stay.id}].totalChildren`;
+    const totalChildren = Object.hasOwn(state, totalChildrenPath)
+      ? (state[totalChildrenPath] as number | null)
+      : stay.totalChildren;
+    return [{ ...stay, totalChildren, rows: projectedRows }];
   });
 }
 
@@ -668,9 +682,9 @@ export function storedAnalysis(
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
       const rooms = pick(at('count'), row.rooms);
       const childAges = pick<number[] | null>(at('childAges'), row.childAges) ?? [];
-      const childAgesCorrected = Object.hasOwn(state, at('childAges'));
-      const childCount = childAgesCorrected
-        ? childAges.length
+      const childCountPath = at('childCount');
+      const childCount = Object.hasOwn(state, childCountPath)
+        ? (pick<number | null>(childCountPath, row.childCount ?? null))
         : typeof row.childCount === 'number'
           ? row.childCount
           : childCountForRoom(stay, { ...row, rooms, childAges });
@@ -690,7 +704,7 @@ export function storedAnalysis(
         rooms,
         adultsTotal: stay.totalAdults,
         adultsPerRoom,
-        childrenTotal: childAgesCorrected ? undefined : stay.totalChildren,
+        childrenTotal: stay.totalChildren,
         childCount,
         childAges,
         board: pick(at('board'), row.board),
@@ -747,12 +761,15 @@ export function storedAnalysis(
     const corrected: Array<[string, string]> = [
       ['arrivalDate', `${stayPath}.arrival`],
       ['departureDate', `${stayPath}.departure`],
+      ['childrenTotal', `stays[${slot.stayId}].totalChildren`],
     ];
     if (slot.rowId) {
       const rowPath = `stays[${slot.stayId}].rows[${slot.rowId}]`;
       corrected.push(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
+        ['childCount', `${rowPath}.childCount`],
+        ['childAges', `${rowPath}.childAges`],
         ['board', `${rowPath}.board`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.

@@ -265,6 +265,34 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.groups[0]).toMatchObject({ id: 'row-no-children', childrenAges: [] });
   });
 
+  it('does not prepare a quote when known room allocations contradict the stay total', () => {
+    const base = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        {
+          ...base,
+          id: 'stay-total-conflict',
+          totalRooms: 2,
+          totalChildren: 3,
+          rows: [
+            {
+              ...base.rows[0]!,
+              id: 'row-total-conflict',
+              rooms: 2,
+              childCount: 1,
+              childAges: [6],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(plan.stays.map(({ stayId, reason }) => [stayId, reason])).toEqual([
+      ['stay-total-conflict', 'missing_occupancy'],
+    ]);
+    expect(plan.inputs).toHaveLength(0);
+  });
+
   it('does not divide a stay-wide adult total across multiple rooms', () => {
     const stay = payload().stays[0]!;
     const plan = build({

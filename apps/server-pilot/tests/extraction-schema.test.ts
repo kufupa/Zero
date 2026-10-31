@@ -28,7 +28,7 @@ describe('mail extraction contract', () => {
       rooms: 1,
       adultsPerRoom: null,
       childCount: null,
-      childAges: [] as number[],
+      childAges: [6] as number[],
       board: null,
     };
     const multiRoomStay = {
@@ -38,6 +38,17 @@ describe('mail extraction contract', () => {
     };
     expect(childCountForRoom(multiRoomStay, multiRoomStay.rows[0])).toBeNull();
     expect(childAgesForRoom(multiRoomStay, multiRoomStay.rows[0])).toBeNull();
+
+    const conflictingKnownAllocation = {
+      totalRooms: 2,
+      totalChildren: 0,
+      rows: [{ rooms: 2, childCount: 1, childAges: [6] }],
+    };
+    expect(childCountForRoom(conflictingKnownAllocation, conflictingKnownAllocation.rows[0])).toBe(1);
+    expect(childAgesForRoom(conflictingKnownAllocation, conflictingKnownAllocation.rows[0])).toEqual([6]);
+
+    const legacyStay = { totalRooms: 1, rows: [{ rooms: 1, childAges: [6] }] };
+    expect(childCountForRoom(legacyStay, legacyStay.rows[0])).toBe(1);
 
     const oneRoomStay = {
       totalRooms: 1,

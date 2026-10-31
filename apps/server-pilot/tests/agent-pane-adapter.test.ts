@@ -157,6 +157,31 @@ describe('agentDecisionToLunaAnalysis', () => {
     expect(mapped.missing.map((item) => item.field)).toEqual(['adultsPerRoom', 'childAges']);
   });
 
+  it('keeps an explicit unknown child allocation when only some ages are known', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 4,
+            children: 2,
+            rooms: 2,
+            childCount: null,
+            childAges: [6],
+          },
+        }),
+        selection,
+      ),
+    );
+    expect(parsed.groups[0]).toMatchObject({ childCount: null, childAges: [6], childrenTotal: 2 });
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      childCount: null,
+      childrenAges: [6],
+      fields: { childCount: 'missing', childAges: 'missing' },
+    });
+  });
+
   it('preserves a supplied per-room adult allocation and child ages', () => {
     const parsed = lunaAnalysisSchema.parse(
       agentDecisionToLunaAnalysis(

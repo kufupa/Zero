@@ -76,10 +76,12 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
   if (!Array.isArray(stay?.rows) || stay.rows.length === 0) return null;
   // Every row must be complete. A group with no room count or no adults is not invented from a headcount.
   const rooms: unknown[] = [];
+  let allocatedChildren = 0;
   for (const row of stay.rows as ExtractionRow[]) {
     if (!row || !row.roomType || row.rooms === null || row.adultsPerRoom === null) return null;
     const childAges = childAgesForRoom(stay, row);
     if (!childAges) return null;
+    allocatedChildren += row.rooms * childAges.length;
     rooms.push({
       roomType: row.roomType,
       quantity: row.rooms,
@@ -87,6 +89,7 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
       childAges,
     });
   }
+  if (typeof stay.totalChildren === 'number' && allocatedChildren !== stay.totalChildren) return null;
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival, departure, rooms });
   return parsed.success ? parsed.data : null;
 }

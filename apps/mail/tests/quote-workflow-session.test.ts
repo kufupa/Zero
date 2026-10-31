@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -3967,6 +3966,17 @@ describe('stay edits: rows, stays and their rates', () => {
   it('counts rooms and guests over every row', () => {
     const groups = [row('t', dateA, { quantity: 20, adults: 2 }), row('s', dateA, { quantity: 10, adults: 1, roomPreference: 'STQN' })];
     expect(stayTotals(groups)).toEqual({ rooms: 30, guests: 50 });
+  });
+
+  it('uses the declared child count for totals and does not show an exact total when it is unknown', () => {
+    expect(stayTotals([row('c', dateA, { quantity: 2, adults: 1, childCount: 2, childrenAges: [6] })])).toEqual({
+      rooms: 2,
+      guests: 6,
+    });
+    expect(stayTotals([row('u', dateA, { quantity: 1, adults: 2, childCount: null, childrenAges: [6] })])).toEqual({
+      rooms: 1,
+      guests: null,
+    });
   });
 });
 

@@ -322,19 +322,13 @@ export function childCountForRoom(
     ((stay.totalRooms === 1 && (row.rooms == null || row.rooms === 1)) ||
       (stay.totalRooms == null && row.rooms === 1));
 
-  if (
-    totalChildren === 0 &&
-    (ages.length > 0 || (typeof childCount === 'number' && childCount !== 0))
-  ) return null;
-
   if (typeof childCount === 'number') {
     return childCount;
   }
-  if (ages.length > 0) return ages.length;
   if (totalChildren === 0) return 0;
   if (typeof totalChildren === 'number' && oneRoomStay) return totalChildren;
   if (childCount === null || totalChildren !== undefined) return null;
-  // Legacy rows had no count field: retain the previous age-array contract.
+  // Legacy stored rows had no count field: their age array was the only per-room occupancy evidence.
   return ages.length;
 }
 

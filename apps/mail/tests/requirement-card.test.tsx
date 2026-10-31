@@ -144,6 +144,31 @@ describe('StayCard rooms', () => {
     expect(screen.getByText('Default')).toBeTruthy();
   });
 
+  it('lets staff set the child count explicitly and clears ages when confirming zero', () => {
+    const { onPatch } = renderStay([
+      stay({ childCount: 2, childrenAges: [6, 8], fields: { childAges: 'missing' } }),
+    ]);
+    const childCount = screen.getByLabelText('Children per room');
+    expect((childCount as HTMLInputElement).value).toBe('2');
+    fireEvent.change(childCount, { target: { value: '0' } });
+    expect(onPatch).toHaveBeenLastCalledWith('g1', { childCount: 0, childrenAges: [] });
+  });
+
+  it('shows a stay-total allocation conflict and edits the stay total on every row', () => {
+    const { onPatch } = renderStay([
+      stay({ childrenTotal: 4, quantity: 1, childCount: 1, childrenAges: [6] }),
+      stay({ id: 'g2', childrenTotal: 4, quantity: 2, childCount: 1, childrenAges: [8] }),
+    ]);
+    expect(screen.getByRole('alert').textContent).toMatch(/stay says 4 children.*add up to 3/i);
+    const total = screen.getByLabelText('Children total');
+    expect((total as HTMLInputElement).value).toBe('4');
+    fireEvent.change(total, { target: { value: '3' } });
+    expect(onPatch.mock.calls).toEqual([
+      ['g1', { childrenTotal: 3 }],
+      ['g2', { childrenTotal: 3 }],
+    ]);
+  });
+
   it('shows the dates once for the stay, under Check-in and Check-out', () => {
     renderStay([stay(), stay({ id: 'g2' })]);
     expect(screen.getByText('Check-in')).toBeTruthy();

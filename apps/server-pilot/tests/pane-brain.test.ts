@@ -45,6 +45,7 @@ function quoteLuna() {
         dateEvidence: null,
         rooms: 1,
         adultsPerRoom: 1,
+        childCount: 0,
         childAges: [],
         board: 'bb',
         roomPreference: null,

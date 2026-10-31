@@ -135,6 +135,7 @@ function groupForStay(
     (knownRoomCounts.every((count): count is number => typeof count === 'number')
       ? knownRoomCounts.reduce((sum, count) => sum + count, 0)
       : null);
+  let allocatedChildren = 0;
   for (const row of stay.rows) {
     const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
@@ -152,6 +153,7 @@ function groupForStay(
       (typeof stay.totalAdults === 'number' ? (oneRoomStay ? stay.totalAdults : null) : 2);
     const childAges = childAgesForRoom(stay, row);
     if (childAges === null) return { groups: [], reason: 'missing_occupancy' };
+    allocatedChildren += quantity * childAges.length;
     if (
       !Number.isInteger(adults) ||
       adults === null ||
@@ -177,6 +179,9 @@ function groupForStay(
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
     });
+  }
+  if (typeof stay.totalChildren === 'number' && allocatedChildren !== stay.totalChildren) {
+    return { groups: [], reason: 'missing_occupancy' };
   }
   return { groups };
 }

@@ -65,16 +65,22 @@ function groupFromStayAsk(
 ): LunaAnalysis['groups'][number] {
   const rooms = stay.rooms;
   const childAges = stay.childAges ?? [];
-  const childCount =
-    typeof stay.childCount === 'number'
-      ? stay.childCount
-      : childAges.length > 0
+  let childCount: number | null;
+  if (typeof stay.childCount === 'number') {
+    childCount = stay.childCount;
+  } else if (stay.childCount === null) {
+    childCount =
+      stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;
+  } else {
+    childCount =
+      childAges.length > 0
         ? childAges.length
         : stay.children === 0
           ? 0
           : rooms === 1 && typeof stay.children === 'number'
             ? stay.children
             : null;
+  }
   return {
     arrival: stay.arrivalDate,
     departure: stay.departureDate,

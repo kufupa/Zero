@@ -184,14 +184,25 @@ export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
   return rowRoomTypeCode(group);
 }
 
-/** Rooms and guests over the rows given; children in a row are counted once per room. */
-export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number } {
+/** Rooms and guests over the rows given; unknown child occupancy leaves the guest total incomplete. */
+export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number | null } {
   return groups.reduce(
-    (sum, group) => ({
-      rooms: sum.rooms + (group.quantity ?? 0),
-      guests: sum.guests + (group.quantity ?? 0) * ((group.adults ?? 0) + group.childrenAges.length),
-    }),
-    { rooms: 0, guests: 0 },
+    (sum, group) => {
+      const childCount =
+        typeof group.childCount === 'number'
+          ? group.childCount
+          : group.childCount === null || group.fields.childAges === 'missing'
+            ? null
+            : group.childrenAges.length;
+      return {
+        rooms: sum.rooms + (group.quantity ?? 0),
+        guests:
+          sum.guests === null || group.quantity == null || group.adults == null || childCount === null
+            ? null
+            : sum.guests + group.quantity * (group.adults + childCount),
+      };
+    },
+    { rooms: 0, guests: 0 as number | null },
   );
 }
 
@@ -1909,7 +1920,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

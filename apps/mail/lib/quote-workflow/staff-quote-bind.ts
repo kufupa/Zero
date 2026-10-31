@@ -513,16 +513,19 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
-    if (group.fields.childAges === 'missing') {
-      return { error: 'Confirm the number of children in each room and enter every child’s age before running the quote.' };
-    }
     const childCount =
-      group.childrenAges.length > 0
-        ? group.childrenAges.length
-        : group.childCount === undefined
-          ? 0
-          : group.childCount;
-    if (childCount === null || childCount !== group.childrenAges.length) {
+      typeof group.childCount === 'number'
+        ? group.childCount
+        : group.childCount === null || group.fields.childAges === 'missing'
+          ? null
+          : group.childrenAges.length > 0
+            ? group.childrenAges.length
+            : 0;
+    if (
+      childCount === null ||
+      childCount !== group.childrenAges.length ||
+      (childCount > 0 && group.fields.childAges === 'missing')
+    ) {
       return { error: 'Confirm the number of children in each room and enter every child’s age before running the quote.' };
     }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
@@ -553,6 +556,21 @@ export function staffQuoteGroupsFromStay(
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {
     return { error: 'Each date range needs its own quote. Run them one at a time.' };
+  }
+  const statedChildrenTotals = [...new Set(
+    groups.flatMap((group) => (typeof group.childrenTotal === 'number' ? [group.childrenTotal] : [])),
+  )];
+  if (statedChildrenTotals.some((total) => !Number.isInteger(total) || total < 0) || statedChildrenTotals.length > 1) {
+    return { error: 'Room rows have conflicting stay-wide child totals. Correct the stay total before running the quote.' };
+  }
+  const statedChildrenTotal = statedChildrenTotals[0];
+  if (typeof statedChildrenTotal === 'number') {
+    const allocatedChildren = out.reduce((sum, group) => sum + group.quantity * group.childrenAges.length, 0);
+    if (allocatedChildren !== statedChildrenTotal) {
+      return {
+        error: `The stay says ${statedChildrenTotal} children, but the room allocations add up to ${allocatedChildren}. Correct the stay total or per-room counts before running the quote.`,
+      };
+    }
   }
   return { ok: out };
 }

@@ -45,6 +45,25 @@ describe('quote occupancy input', () => {
       error: expect.stringMatching(/number of children/i),
     });
   });
+
+  it('keeps a declared child count authoritative until staff explicitly corrects it', () => {
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 2, childrenAges: [6] })])).toEqual({
+      error: expect.stringMatching(/every child’s age/i),
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 1, childrenAges: [6] })])).toMatchObject({
+      ok: [{ childrenAges: [6] }],
+    });
+  });
+
+  it('blocks a quote when the stay total contradicts known per-room allocations', () => {
+    expect(
+      staffQuoteGroupsFromStay([
+        stay({ quantity: 2, childCount: 1, childrenAges: [6], childrenTotal: 3 }),
+      ]),
+    ).toEqual({
+      error: expect.stringMatching(/stay says 3 children.*allocations add up to 2/i),
+    });
+  });
 });
 
 describe('HRDAV native room and board maps', () => {
