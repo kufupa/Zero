@@ -2172,7 +2172,19 @@ export function reduceQuoteSession(
       );
     }
     case 'patch_stay_total': {
-      const targetIds = new Set(groupsForStayAction(session.groups, action.stayId).map((group) => group.id));
+      const stayRows = groupsForStayAction(session.groups, action.stayId);
+      if (
+        !stayRows.length &&
+        !session.groups.length &&
+        action.stayId === stayIdOf(draftStayGroup())
+      ) {
+        return reduceQuoteSession(session, {
+          type: 'patch_group',
+          groupId: DRAFT_GROUP_ID,
+          patch: { [action.field]: action.value },
+        });
+      }
+      const targetIds = new Set(stayRows.map((group) => group.id));
       if (!targetIds.size) return session;
       const groups = session.groups.map((group) =>
         targetIds.has(group.id) ? applyGroupPatch(group, { [action.field]: action.value }) : group,
