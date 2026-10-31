@@ -426,7 +426,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const labelMatch=clause.match(new RegExp(`\\b(${monthPattern})\\s+(?:stay|accommodation|rooms?|reservation|booking)\\b`,'i'));
    // "Move this booking to a December stay" names the replacement, not
    // the month of the stay being changed.
-   const replacementMonth=labelMatch&&/\b(?:to|into)\s+(?:(?:a|an|the)\s+)?$/i.test(clause.slice(0,labelMatch.index));
+   const replacementMonth=labelMatch&&/\b(?:move|moved|moving|reschedule|rescheduled|rescheduling|change|changed|changing|shift|shifted|shifting|switch|switched|switching)\b[^.!?;\n]{0,80}\b(?:to|into)\s+(?:(?:a|an|the)\s+)?$/i.test(clause.slice(0,labelMatch.index));
    const label=replacementMonth?undefined:labelMatch?.[1]?.toLowerCase();
    const month=label?months.findIndex(value=>value.startsWith(label.slice(0,3)))+1:0;
    try{
