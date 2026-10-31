@@ -32,6 +32,7 @@ describe('document facts', () => {
     'Please quote.\nKind regards\nGuest',
     'Please quote.\nKind regards\nOffice closed 01/12 to 03/12',
     'Please quote. Conference 01/12 to 03/12.\nKind regards\nGuest',
+    'Please quote accommodation:\nConference 01/12 to 03/12.',
   ])('anchors yearless HTML dates to their complete authored alternative', (plain) => {
     const html = 'Please quote. Stay 12/11 to 14/11.';
     const text = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
@@ -49,8 +50,10 @@ describe('document facts', () => {
     expect(() => validateDocumentPlan(plan, [{ ...dateSource, sourceViews: [dateSource.sourceViews[0]!,
       { ...dateSource.sourceViews[1]!, end: text.length - 1 }] }])).toThrow('Invalid document source views');
   });
-  it('rejects a conflicting single stay range in the other email alternative', () => {
-    const plain='Please quote. Stay 13/11 to 15/11.\nKind regards\nGuest',html='Please quote. Stay 12/11 to 14/11.';
+  it.each(['Please quote. Stay 13/11 to 15/11.\nKind regards\nGuest',
+    'Please quote accommodation:\n13/11 to 15/11.',
+    'Please quote accommodation:\nDates: 13/11 to 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
+    const html='Please quote. Stay 12/11 to 14/11.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
