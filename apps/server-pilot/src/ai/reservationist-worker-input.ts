@@ -50,12 +50,11 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     $(element).children('summary').remove();
   });
   $('br, hr').each((_, element) => {
-    $(element).replaceWith($(element).closest('td, th').length ? ' ' : '\n');
+    $(element).replaceWith('\n');
   });
   $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
-    const separator = $(element).closest('td, th').length ? ' ' : '\n';
-    $(element).prepend(separator).append(separator);
+    $(element).prepend('\n').append('\n');
   });
   $('img').each((_, element) => {
     const alt = $(element).attr('alt')?.trim() ?? '';

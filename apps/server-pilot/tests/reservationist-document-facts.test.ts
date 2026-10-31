@@ -3,6 +3,7 @@ import {
   validateDocumentPlan,
   guestDocumentFacts,
 } from '../src/ai/reservationist-document-facts.js';
+import { HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 import { describe, expect, it } from 'vitest';
 const source = {
   attachmentId: 'a',
@@ -235,6 +236,17 @@ describe('explicit document calendars', () => {
     const { original, candidate } = sourcedPlanFact('dates', { arrival: '12/10', departure: '14/10', yearContext: 2026 }, text);
     candidate.facts[0].source = { ...candidate.facts[0].source, start: 5, quote: text.slice(5) };
     expect(() => validateDocumentPlan(candidate, [original])).toThrow();
+  });
+  it('keeps date context within the cited plain or HTML alternative', () => {
+    const plain = 'Arrival 11 December 2026; departure 15 December 2026\nKind regards\nGuest';
+    const check = (html: string, value: { arrival: string; departure: string }) => {
+      const prefix = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}`, text = prefix + html, attachmentId = 'message:current';
+      const original = { ...source, attachmentId, pages: [text], causalMessage: { at: '2026-10-01T08:00:00.000Z', direction: 'inbound' as const }, sourceViews: [{ name: 'plain' as const, start: 0, end: plain.length }, { name: 'html' as const, start: prefix.length, end: text.length }] };
+      const span = { attachmentId, sourceHash: source.sourceHash, page: 1, quote: html, start: prefix.length, end: text.length };
+      return validateDocumentPlan({ facts: [{ id: 'stay', kind: 'dates', value, disclosure: 'guest', source: span }], tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source: span }], unresolvedAsks: [] }, [original]).facts[0].value;
+    };
+    expect(check('Please quote one room: Arrival 21 December; departure 23 December', { arrival: '21 December', departure: '23 December' })).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
+    expect(check('Please quote one room: Arrival 21 December 2026; departure 23 December 2026', { arrival: '21 December 2026', departure: '23 December 2026' })).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
   });
 });
 

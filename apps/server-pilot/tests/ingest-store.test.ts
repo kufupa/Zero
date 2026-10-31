@@ -500,6 +500,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             'From: centurion@legacyhotels.co.za',
             'To: guest@example.com',
             'Subject: centurion outbound copy',
+            'Date: Fri, 23 Oct 2026 08:00:00 +0200',
             'MIME-Version: 1.0',
             'Content-Type: text/plain; charset=utf-8',
             '',
@@ -541,6 +542,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           if (result.kind !== 'stored') return;
           expect(result.transportId).toBe('transport-centurion');
           expect(stored?.direction).toBe('outbound');
+          expect(stored?.receivedAt).toBeInstanceOf(Date);
+          expect(stored?.sentAt).toBeNull();
           // BCC sink copies routinely arrive with Bcc: stripped — Sent must not depend on it.
           expect(stored?.bccAddresses).toEqual([]);
           expect(triageRuns.length).toBe(0);
