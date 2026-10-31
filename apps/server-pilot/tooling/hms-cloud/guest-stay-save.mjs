@@ -8,6 +8,10 @@ const SAVE_PATH = '/web/base/OSRESV.HDR';
 const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
+const blankPartyFields = ['taid1', 'companyid', 'groupid', 'groupcompanyid', 'grouptaid', 'groupta2id', 'groupta3id',
+  'bookingagency2id', 'bookingagency3id', 'bookingagencycontractid', 'ta1', 'company', 'companyname', 'groupname', 'araccountname',
+  'bacontract', 'bookingagency2name', 'bookingagency3name', 'bookingagency1iatanumber', 'bookingagency2iatanumber',
+  'bookingagency3iatanumber'];
 
 function dates(arrival, departure) {
   const parse = (value) => {
@@ -24,10 +28,10 @@ function dates(arrival, departure) {
 }
 
 async function draft(page, expected) {
-  return page.evaluate(({ origin, expected }) => {
+  return page.evaluate(({ origin, expected, blankPartyFields }) => {
     if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
-    const names = ['ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
+    const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress'];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
@@ -39,6 +43,11 @@ async function draft(page, expected) {
     const exact = (key, value) => Object.hasOwn(data, key) && keys.filter((k) => k.toLowerCase() === key.toLowerCase()).length === 1 &&
       String(data[key] ?? '').trim() === value;
     const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
+    const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
+      visible(el) && blankPartyFields.includes(el.name.toLowerCase()));
+    if (blankPartyFields.some((name) => !exact(name, '') ||
+        partyInputs.filter((el) => el.name.toLowerCase() === name).length > 1) ||
+        partyInputs.some((el) => el.name !== el.name.toLowerCase() || String(el.value ?? '').trim())) return null;
     if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
         !exact('guestid', expected.guestId) || !exact('firstname', 'Proof') || !exact('lastname', 'Labtest') ||
         ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid', 'arprofileid', 'araccountid',
@@ -57,7 +66,7 @@ async function draft(page, expected) {
     });
     if (blankRequired) return null;
     return { session: String(data.bookingsessionid).trim(), track: value('track') };
-  }, { origin: ORIGIN, expected });
+  }, { origin: ORIGIN, expected, blankPartyFields });
 }
 
 function matchesSave(page, request, expected) {
@@ -71,6 +80,7 @@ function matchesSave(page, request, expected) {
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: '0', udfchar13: '', emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
       arprofileid: '', araccountid: '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
+      ...Object.fromEntries(blankPartyFields.map((name) => [name, ''])),
     };
     const profileControls = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
       'reqguestprofilelookup', 'linkedprofileflag'];
