@@ -390,17 +390,21 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const previous=authored.slice(previousStart,lineStart-1).trim();
    // Scope year labels to this range; another stay in the same sentence is not its year context.
    const priorEnd=paired.filter(other=>other!==match&&other.index+other.text.length<=match.index).reduce((last,other)=>Math.max(last,other.index+other.text.length),start);
-   const suffix=authored.slice(match.index+match.text.length,end).match(new RegExp(`^\\s*[,–-]?\\s*(?:for|during|in|year|dates?)\\s*[:(]?\\s*(?:(?:${monthPattern})\\s+)?(?:19|20|21|22)\\d{2}\\b`,'i'))?.[0]??'';
+   const trailing=authored.slice(match.index+match.text.length,end);
+   const suffix=trailing.match(new RegExp(`^\\s*[,–-]?\\s*(?:for|during|in|year|dates?)\\s*[:(]?\\s*(?:(?:${monthPattern})\\s+)?(?:19|20|21|22)\\d{2}\\b`,'i'))?.[0]??'';
+   const duration=trailing.slice(suffix.length).match(/^\s*(?:for\s+)?(\d{1,3}|one)\s+nights?\b/i);
+   const relativeYear=/^\s*(?:(?:for|in|during)\s+)?(?:this|next|following|last)\s+year\b/i.test(trailing.slice(suffix.length+(duration?.[0].length??0)));
    const local=authored.slice(Math.max(start,priorEnd),match.index);
    // A sentence-wide "For 2027:" heading also applies to its later stays,
    // unless that stay has an explicit year of its own.
    const heading=priorEnd>start&&!/\b(?:19|20|21|22)\d{2}\b/.test(local+match.text+suffix)
     ? authored.slice(start,priorEnd).match(/^\s*(?:for|in)\s+(?:19|20|21|22)\d{2}\s*:/i)?.[0]??'' : '';
-   return {...match,context:(/^\s*(?:(?:for\s+)?(?:19|20|21|22)\d{2}\s*:|(?:stay\s+)?dates?\s*:\s*(?:19|20|21|22)\d{2})\s*$/i.test(previous)?`${previous} `:'')+heading+local+match.text+suffix};
+   return {...match,relativeYear,tailNights:duration?(/^one$/i.test(duration[1]!)?1:Number(duration[1])):undefined,context:(/^\s*(?:(?:for\s+)?(?:19|20|21|22)\d{2}\s*:|(?:stay\s+)?dates?\s*:\s*(?:19|20|21|22)\d{2})\s*$/i.test(previous)?`${previous} `:'')+heading+local+match.text+suffix};
   });
  };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
- const pair=(m:{arrival:string;departure:string;context:string;nights?:number},verifiedYear?:number)=>{
+ const pair=(m:{arrival:string;departure:string;context:string;nights?:number;tailNights?:number;relativeYear?:boolean},verifiedYear?:number)=>{
+  if(m.relativeYear||/\b(?:this|next|following|last)\s+year\b/i.test(m.context))throw new Error('Ambiguous alternate stay year');
   // A booking reference or amount in the same sentence is not a stay year.
   const printedYears=[...`${m.arrival} ${m.departure}`.matchAll(/\b(?:19|20|21|22)\d{2}\b/g)].map(year=>Number(year[0]));
   const labeledYears=[...m.context.matchAll(new RegExp(`\\b(?:for|during|in|year|dates?|(?:stay|reservation|booking)\\s+dates?)(?:\\s+(?:for|in|during))?\\s*[:(]?\\s*(?:(?:${monthPattern})\\s+)?((?:19|20|21|22)\\d{2})\\b`,'gi'))].map(year=>Number(year[1]));
@@ -414,6 +418,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
   let departure=date(m.departure,year);
   if(departure<=arrival&&!explicit(m.departure)&&years.length<=1)departure=date(m.departure,year+1);
   if(departure<=arrival)throw new Error('Invalid alternate stay dates');
+  if(m.tailNights!==undefined&&(Date.parse(`${departure}T00:00:00Z`)-Date.parse(`${arrival}T00:00:00Z`))/86400000!==m.tailNights)throw new Error('Ambiguous alternate stay duration');
   return [arrival,departure];
  };
  const corrects=(text:string,targets:string[])=>{
@@ -471,8 +476,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    if(!otherGroup||otherGroup.count!==stated.count||otherGroup.arrival!==stated.arrival||corrects(otherText,[overall.join('/')]))return false;
    try{return keys(uniquePairs(ranges(otherText).map(m=>pair(m))))===keys(ownPairs);}catch{return false;}
   }))return;
-  if(/\b\d+\s+(?:guests?|people|persons?|adults?|officials?)\s+arriving\s+on\b/i.test(authoredText(ownText)))throw new Error('Ambiguous alternate stay dates');
-  return;
+  throw new Error('Ambiguous alternate stay dates');
  }
  if(corrects(ownText,[target]))throw new Error('Conflicting alternate stay dates');
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length){

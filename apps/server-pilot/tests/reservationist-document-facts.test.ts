@@ -280,6 +280,18 @@ describe('document facts', () => {
     const validate=()=>validateDocumentPlan(plan,[dateSource]);
     if(conflict)expect(validate).toThrow(/alternate stay dates/);else expect(validate().facts[0]!.verification).toBe('text_verified');
   });
+  it.each([
+    {plain:'Please quote 2 rooms for 2 nights from 12 November.',html:'Please quote 2 rooms for 2 nights from 12 November next year.',quote:'2 nights from 12 November',arrival:'12 November',departure:'2 nights'},
+    {plain:'Stay 12 November 2026 to 14 November 2026.',html:'Stay 12 November 2026 to 14 November 2026 for 3 nights.',quote:'12 November 2026 to 14 November 2026',arrival:'12 November 2026',departure:'14 November 2026'},
+    {plain:'Stay 13/11 to 15/11. Stay 20/12 to 22/12.',html:'Arrival: 12/11. Departure: 14/11. Stay 20/12 to 22/12.',quote:'Arrival: 12/11. Departure: 14/11',arrival:'12/11',departure:'14/11'},
+  ])('requires review when an alternate stay cannot be compared',({plain,html,quote,arrival,departure})=>{
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival,departure},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow(/alternate stay dates/);
+  });
   it.each(['plain','html'] as const)('does not accept an uncomparable occupied-night alternative when citing %s', (selected) => {
     const plain='Please quote accommodation from 12 November 2026 to 14 November 2026.';
     const html='Please quote accommodation for 12 and 13 November next year; we require 2 nights per date set.';
