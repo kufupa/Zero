@@ -8,6 +8,7 @@ import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mj
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { lookupFailure } from './stay360-lookup-cli.mjs';
 import { amendLabtestNote } from './guest-stay-amend.mjs';
+import { amendLabtestContact } from './guest-stay-amend-contact.mjs';
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 
 const RETRYABLE_LOOKUPS = new Set([
@@ -52,7 +53,7 @@ export async function withSavedStayAgentSession(operation) {
         return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
       }
       const { tool } = request;
-      if (!['read', 'amendNote', 'openCancel', 'confirmCancel'].includes(tool)) {
+      if (!['read', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
@@ -110,6 +111,13 @@ export async function withSavedStayAgentSession(operation) {
       if (tool === 'amendNote') {
         try {
           const result = await amendLabtestNote(page, expected);
+          if (result.outcome !== 'input_gap') sealed = true;
+          return result;
+        } catch { sealed = true; return { outcome: 'uncertain', issue: 'AMEND_FAILED' }; }
+      }
+      if (tool === 'amendContact') {
+        try {
+          const result = await amendLabtestContact(page, expected, { field: request.field, value: request.value });
           if (result.outcome !== 'input_gap') sealed = true;
           return result;
         } catch { sealed = true; return { outcome: 'uncertain', issue: 'AMEND_FAILED' }; }
