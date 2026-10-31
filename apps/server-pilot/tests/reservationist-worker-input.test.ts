@@ -67,6 +67,22 @@ describe('reservationist worker input', () => {
     expect(referenced.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
   });
 
+  it('filters a signature CID in HTML when the plain alternative omits it', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote two rooms.\nKind regards\nGuest',
+      htmlBody: '<p>Please quote two rooms.</p><p>Kind regards</p><p>Guest</p><img src="cid:logo" alt="Company Logo">',
+    })], [{ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'logo', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(1);
+    expect(result.admissions).toEqual([]);
+
+    const referencedByPlain = await build([row('current', 4, {
+      textBody: 'Please use the image below for rooming.\nKind regards\nGuest',
+      htmlBody: '<p>Please quote two rooms.</p><p>Kind regards</p><p>Guest</p><img src="cid:logo" alt="Company Logo">',
+    })], [{ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
+    expect(referencedByPlain.ignoredSignatures).toBe(0);
+    expect(referencedByPlain.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
+  });
+
   it('keeps an inline image requested only by the HTML alternative', async () => {
     const result = await build([
       row('prior', 1, { textBody: 'Hello\nKind regards\ncid:logo' }),

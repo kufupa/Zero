@@ -237,8 +237,14 @@ export async function buildReservationistWorkerInput(options: {
     const entry = selectedById.get(attachment.messageId)!;
     const sourceView = signatureViews.get(attachment.messageId)!;
     const cid = attachment.contentId ? normalizeContentId(attachment.contentId) : null;
+    const cidSourceViews = cid
+      ? sourceView.texts.filter((text) => [...text.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)]
+        .some((reference) => normalizeContentId(reference[1]!) === cid))
+      : [];
     // An intervening causal message can make a prior footer image relevant.
-    const signatureNoise = !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && sourceView.texts.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
+    // A plain alternative need not repeat a CID that appears in its HTML sibling.
+    // It remains part of every current-request/dependency check below.
+    const signatureNoise = cidSourceViews.length > 0 && !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && cidSourceViews.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
       messageText: sourceText,
       currentSubject: message.subject,
       currentRequestText: requestText,
