@@ -2,7 +2,8 @@
 import { createHash } from 'node:crypto';
 import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
-import { isVerifiedLabtestProfile } from './guest-profile.mjs';
+import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
+import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -30,7 +31,7 @@ function dateParts(value) {
 }
 
 async function readDraft(page) {
-  return page.evaluate(expectedOrigin => {
+  return page.evaluate(({ expectedOrigin, blankIds }) => {
     if (location.origin !== expectedOrigin) throw new Error('HMS_ORIGIN_MISMATCH');
     const visible = element => Boolean((element.offsetWidth || element.offsetHeight) &&
       getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
@@ -38,6 +39,7 @@ async function readDraft(page) {
     const one = name => { const elements=named(name); if (elements.length !== 1) throw new Error('DRAFT_FIELD_UNAVAILABLE'); return elements[0]; };
     const props = [...document.querySelectorAll('[data-qtip="Property"]')].filter(visible);
     const confirmation = one('confirmationnumber'), agency = one('ta1'), rate = one('rateplan');
+    const arAccount = one('araccountname'), guarantee = one('guaranteetype');
     const first = one('firstname'), last = one('lastname'), arrival = one('arrivaldate'), departure = one('departuredate');
     const guestIds = named('guestid');
     if (guestIds.length !== 1) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
@@ -48,12 +50,32 @@ async function readDraft(page) {
     if (!root) throw new Error('DRAFT_UNAVAILABLE');
     if (!root.contains(guestId)) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
     const cmp = rate.id && globalThis.Ext?.getCmp?.(rate.id.replace(/-inputEl$/, ''));
+    const component = element => element.id && globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+    const arCmp = component(arAccount), form = component(guarantee)?.up?.('form');
+    const bound = form?.el?.dom && [confirmation,agency,rate,arAccount,guarantee,first,last,arrival,departure,guestId]
+      .every(element => form.el.dom.contains(element) && component(element)?.up?.('form') === form);
+    const data = bound && form.getRecord?.()?.data, keys = data && Object.keys(data);
+    const unique = key => keys && Object.hasOwn(data,key) && keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+    const value = key => unique(key) ? String(data[key] ?? '').trim() : null;
+    const exact = (key,expected) => unique(key) && value(key) === expected;
+    const accountKeys = keys?.filter(key => key.toLowerCase() === 'araccountid') || [];
+    const identity = data ? {
+      valid:exact('propertycode','HRCEN') && exact('PKID','@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status','New') &&
+        exact('confirmationnumber','') && unique('guestid') && unique('arprofileid') && accountKeys.length <= 1 &&
+        unique('bookingsessionid') && Boolean(value('bookingsessionid')) &&
+        blankIds.filter(key => key !== 'arprofileid').every(key => exact(key,'')) &&
+        !keys.some(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
+          !['guestid','arprofileid'].includes(key) && String(data[key] ?? '').trim()),
+      session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:value('araccountid') || '',
+      arProfileId:value('arprofileid'),arAccountName:value('araccountname'),
+    } : null;
     let submit = null;
     try { submit = cmp?.getSubmitData?.() || null; } catch { /* Fail the readback if unavailable. */ }
     const windows = [...document.querySelectorAll('.x-window:not(.x-menu)')].filter(element =>
       Boolean((element.offsetWidth || element.offsetHeight) && getComputedStyle(element).visibility !== 'hidden'));
     return {property:props.length === 1 ? props[0].textContent.trim() : null, confirmation:confirmation.value,
       first:first.value,last:last.value,guestId:guestId.value,guestNativeId:guestCmp.getValue(),arrival:arrival.value,departure:departure.value,rate:rate.value,
+      arAccountName:arAccount.value,arAccountNativeName:arCmp?.getValue?.() ?? null,identity,
       rateValue:cmp?.getValue?.() ?? null,rateSubmit:submit?.rateplan ?? null,rateErrors:cmp?.getActiveErrors?.() || [],
       rateInvalid:rate.getAttribute('aria-invalid'),windows:windows.length,
       fields:[...root.querySelectorAll('input,textarea,select')].filter(element => visible(element) && !['hidden','password'].includes(element.type))
@@ -62,19 +84,42 @@ async function readDraft(page) {
           type:element.type || element.tagName.toLowerCase(),
           value:['checkbox','radio'].includes(element.type) ? element.checked : element.value,
           disabled:element.disabled,readOnly:Boolean(element.readOnly)}))};
-  },ORIGIN);
+  },{expectedOrigin:ORIGIN,blankIds:BLANK_DRAFT_IDS});
 }
 
-function checkedDraft(draft, guestId, page) {
+async function checkedDraft(draft, guestId, page) {
   if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   const arrival = dateParts(draft.arrival), departure = dateParts(draft.departure);
   if (draft.property !== PROPERTY || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
     throw new Error('NEW_DRAFT_UNVERIFIED');
   }
-  if (guestId && (!isVerifiedLabtestProfile(page,guestId) || clean(draft.first) !== 'Proof' || clean(draft.last) !== 'Labtest' ||
-      arrival.iso < '2027-01-01')) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
-  return {arrival,departure};
+  const identity = draft.identity;
+  const hasAr = Boolean(clean(draft.arAccountName) || identity?.arAccountId || identity?.arProfileId);
+  const issue = hasAr ? 'AR_SELECTION_UNVERIFIED' : 'GUEST_PROFILE_ID_UNSUPPORTED';
+  if ((hasAr || guestId) && (!identity?.valid || identity.guestId !== guestId ||
+      clean(draft.first) !== 'Proof' || clean(draft.last) !== 'Labtest' || arrival.iso < '2027-01-01')) throw new Error(issue);
+  let guest = null, ar = null;
+  if (guestId) {
+    const token = await verifiedLabtestProfileToken(page,{nativeId:guestId,session:identity.session});
+    if (!token) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+    guest = {nativeId:guestId,token};
+  }
+  if (hasAr) {
+    const {session,arAccountId:accountId,arProfileId:profileId,arAccountName} = identity;
+    const sameName = name => clean(name).toLocaleLowerCase() === clean(draft.arAccountName).toLocaleLowerCase();
+    if (!accountId || !profileId || !clean(draft.arAccountName) || !sameName(draft.arAccountNativeName) ||
+        !sameName(arAccountName)) throw new Error('AR_SELECTION_UNVERIFIED');
+    const token = await verifiedArSelectionToken(page,{session,accountId,profileId});
+    if (!token) throw new Error('AR_SELECTION_UNVERIFIED');
+    ar = {accountId,profileId,token};
+  }
+  return {arrival,departure,session:guest || ar ? identity.session : null,guest,ar};
 }
+function proofsCurrent(page, proof) {
+  return (!proof.guest || isVerifiedLabtestProfileCurrent(page,{session:proof.session,...proof.guest})) &&
+    (!proof.ar || isVerifiedArSelectionCurrent(page,{session:proof.session,...proof.ar}));
+}
+const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
 function changedFields(before, after) {
   const key = (field,index) => field.id || `${field.name || ''}:${index}`;
   const a = new Map(before.map((field,index) => [key(field,index),field]));
@@ -106,21 +151,26 @@ function validationRequest(request, code, dates) {
   return [...body.keys()].length === Object.keys(expected).length &&
     Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value);
 }
-function draftIdIssue(request, guestId) {
+function draftIdIssue(request, guestId, ar) {
   if (!requestUrl(request,CHANGE)) return null;
   const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+  const exact = (key,value) => body.getAll(key).length === 1 && body.get(key) === value &&
+    keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+  const accountKeys = keys.filter(key => key.toLowerCase() === 'araccountid');
   if (body.getAll('guestid').length !== 1 || body.get('guestid') !== guestId ||
       keys.filter(key => key.toLowerCase() === 'guestid').length !== 1 ||
-      !BLANK_DRAFT_IDS.every(key => body.getAll(key).length === 1 && body.get(key) === '' &&
-        keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return 'DRAFT_ID_UNSUPPORTED';
+      !BLANK_DRAFT_IDS.every(key => exact(key,key === 'arprofileid' && ar ? ar.profileId : '')) ||
+      (ar ? !exact('araccountid',ar.accountId) : accountKeys.length > 1 || accountKeys.some(key => clean(body.get(key))))) {
+    return 'DRAFT_ID_UNSUPPORTED';
+  }
   if (keys.filter(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) &&
-      !/^is/i.test(key) && key.toLowerCase() !== 'guestid').some(key => clean(body.get(key)))) {
+      !/^is/i.test(key) && key !== 'guestid' && !(ar && key === 'arprofileid')).some(key => clean(body.get(key)))) {
     return 'DRAFT_ID_UNSUPPORTED';
   }
   return null;
 }
-function rateChangeRequest(request, code, dates, sessionId, draft) {
-  if (!requestUrl(request,CHANGE) || !sessionId) return false;
+function rateChangeRequest(page, request, code, dates, sessionId, draft) {
+  if (!requestUrl(request,CHANGE) || !sessionId || !proofsCurrent(page,dates)) return false;
   const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
   if (new Set(keys).size !== keys.length) return false;
   const expected = {
@@ -130,10 +180,11 @@ function rateChangeRequest(request, code, dates, sessionId, draft) {
     ONLY_DATA_REQUIRED:'true',bookingsessionid:sessionId,
     newprofileclick:'',linkprofileflag:'',savecctoprofile:'0',createinactiveprofileflag:'0',reqguestprofilelookup:'',
     pagemode:'display',isafterreservationsave:'',savesettlementcctoprofile:'0',linkedprofileflag:'0',
+    ...(dates.ar ? {araccountid:dates.ar.accountId,arprofileid:dates.ar.profileId,araccountname:draft.arAccountName} : {}),
   };
   if (!Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value &&
       keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return false;
-  return !draftIdIssue(request,clean(draft.guestId));
+  return !draftIdIssue(request,clean(draft.guestId),dates.ar);
 }
 
 // Normalize the vendor's data-only object literal without executing it.
@@ -169,11 +220,16 @@ function validateResponses(validation, change, code, dates, sessionId, draft) {
         grid.DATA.filter(row => clean(row.rateplancode) === code).length !== 1) throw new Error('RATE_VALIDATION_UNVERIFIED');
     const values = parseResponse(changeText)?.values;
     const expected = {propertycode:PROPERTY,confirmationnumber:'',recordid:'',reservationid:'',reservationstayid:'',guestid:clean(draft.guestId),
-      firstname:clean(draft.first),lastname:clean(draft.last),arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,bookingsessionid:sessionId};
-    if (!values || !Object.entries(expected).every(([key,value]) => Object.hasOwn(values,key) && clean(values[key]) === value) ||
-        !BLANK_DRAFT_IDS.every(key => Object.hasOwn(values,key) && !clean(values[key])) ||
-        Object.keys(values).some(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) &&
-          !/^is/i.test(key) && key.toLowerCase() !== 'guestid' && clean(values[key]))) {
+      firstname:clean(draft.first),lastname:clean(draft.last),arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,bookingsessionid:sessionId,
+      ...(dates.ar ? {araccountid:dates.ar.accountId,arprofileid:dates.ar.profileId,araccountname:clean(draft.arAccountName)} : {})};
+    const keys = Object.keys(values || {});
+    const exact = (key,value) => Object.hasOwn(values,key) && clean(values[key]) === value &&
+      keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+    if (!values || !Object.entries(expected).every(([key,value]) => exact(key,value)) ||
+        !BLANK_DRAFT_IDS.every(key => exact(key,key === 'arprofileid' && dates.ar ? dates.ar.profileId : '')) ||
+        (!dates.ar && keys.some(key => key.toLowerCase() === 'araccountid' && clean(values[key]))) ||
+        keys.some(key => /(?:guest|profile|reservation|record|stay).*id/i.test(key) &&
+          !/^is/i.test(key) && key !== 'guestid' && !(dates.ar && key === 'arprofileid') && clean(values[key]))) {
       throw new Error('RATE_CHANGE_UNVERIFIED');
     }
   });
@@ -222,9 +278,9 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     fence = await installPageRequestFence(page,[CHANGE]);
     scope = fence.open();
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    const dates = checkedDraft(before,guestId,page);
+    const dates = await bounded(checkedDraft(before,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
-    const previousRateEvidence = !previousCode ? 'blank' : prior?.code === previousCode && prior.fingerprint === fingerprint(before.fields)
+    const previousRateEvidence = !previousCode ? 'blank' : prior?.code === previousCode && prior.fingerprint === draftFingerprint(before)
       ? 'selected_by_this_tool_same_page' : 'observed_on_draft';
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     const search = await searchRatePlans(page,{query:code,limit:100});
@@ -237,23 +293,26 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
         search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
     const inquiry = sessions.filter(item => item.kind === 'inquiry'), cancel = sessions.filter(item => item.kind === 'cancel');
     if (inquiry.length !== 1 || cancel.length !== 1 || !inquiry[0].id || inquiry[0].id !== cancel[0].id ||
-        inquiry[0].status !== 200 || cancel[0].status !== 200) throw new Error('BOOKING_SESSION_UNVERIFIED');
+        inquiry[0].status !== 200 || cancel[0].status !== 200 ||
+        (dates.session && inquiry[0].id !== dates.session)) throw new Error('BOOKING_SESSION_UNVERIFIED');
     const sessionId = inquiry[0].id;
     const ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    checkedDraft(ready,guestId,page);
-    if (JSON.stringify(ready.fields) !== JSON.stringify(before.fields)) throw new Error('DRAFT_CHANGED_DURING_SEARCH');
+    const readyProof = await bounded(checkedDraft(ready,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+    if (JSON.stringify(ready.fields) !== JSON.stringify(before.fields) || JSON.stringify(readyProof) !== JSON.stringify(dates)) {
+      throw new Error('DRAFT_CHANGED_DURING_SEARCH');
+    }
     guard = async route => {
       const request = route.request();
       let kind = null;
       if (!Array.from(requests.values()).includes('validation') && validationRequest(request,code,dates)) kind = 'validation';
       else if (Array.from(requests.values()).includes('validation') && !Array.from(requests.values()).includes('change') &&
-          rateChangeRequest(request,code,dates,sessionId,before)) kind = 'change';
+          rateChangeRequest(page,request,code,dates,sessionId,before)) kind = 'change';
       if (kind) {
         if (kind === 'change' && !scope?.allow(request)) return route.abort();
         requests.set(request,kind);
         return route.fallback();
       }
-      unsupportedId = draftIdIssue(request,guestId) || unsupportedId;
+      unsupportedId = draftIdIssue(request,guestId,dates.ar) || unsupportedId;
       const url = new URL(request.url());
       blocked.push({method:request.method(),path:url.pathname,originMatches:url.origin === ORIGIN,query:Boolean(url.search)});
       return route.abort();
@@ -276,8 +335,11 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
       throw new Error('DRAFT_DATES_CHANGED');
     }
-    checkedDraft(after,guestId,page);
-    if (clean(after.first) !== clean(before.first) || clean(after.last) !== clean(before.last)) throw new Error('DRAFT_IDENTITY_CHANGED');
+    const afterProof = await bounded(checkedDraft(after,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+    if (JSON.stringify(afterProof) !== JSON.stringify(dates) || clean(after.first) !== clean(before.first) ||
+        clean(after.last) !== clean(before.last) || clean(after.arAccountName) !== clean(before.arAccountName)) {
+      throw new Error('DRAFT_IDENTITY_CHANGED');
+    }
     if (after.rate !== code || after.rateValue !== code || after.rateSubmit !== code || after.rateErrors.length || after.rateInvalid === 'true') {
       throw new Error('RATE_READBACK_UNVERIFIED');
     }
@@ -286,17 +348,20 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     const validation = responses.filter(item => item.kind === 'validation'), change = responses.filter(item => item.kind === 'change');
     if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
     await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
+    if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
     if (nativeDialog || blocked.some(item => item.method !== 'GET' || !item.originMatches || item.query || item.path !== ASSET)) {
       throw new Error(nativeDialog ? 'UNEXPECTED_DIALOG' : 'UNEXPECTED_REQUEST_BLOCKED');
     }
-    selectedOnPage.set(page,{code,fingerprint:fingerprint(after.fields)});
+    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after)});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
       nativeCodeEvidence:'validated_row_and_draft_change_response',nativeRatePlanId:'unsupported',
+      identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
+        profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
       changedFields:changedFields(before.fields,after.fields),
       effects:{validationStatus:validation[0].response.status(),rateChangeStatus:change[0].response.status(),blockedRequests:blocked}};
   } catch (error) {
     if (attempted) { selectedOnPage.delete(page); fence?.quarantine(); }
-    const unsupported = unsupportedId || (error?.message === 'GUEST_PROFILE_ID_UNSUPPORTED' ? error.message : null);
+    const unsupported = unsupportedId || (['GUEST_PROFILE_ID_UNSUPPORTED','AR_SELECTION_UNVERIFIED'].includes(error?.message) ? error.message : null);
     return {outcome:unsupported ? 'unsupported' : attempted ? 'selection_uncertain' : 'execution_failure',
       issue:unsupported || (nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error)),
       ...(attempted && unsupported ? {draftMayHaveChanged:true} : {}),
