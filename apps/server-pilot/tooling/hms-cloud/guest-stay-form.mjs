@@ -503,7 +503,9 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
     if (guarantee && (clean(actual.display) !== clean(matches[0].label) || clean(actual.submitted) !== clean(value))) {
       throw new Error('DROPDOWN_READBACK_MISMATCH');
     }
-    return { outcome: 'updated_unsaved', field, requested: value, actual };
+    const profileProofToken = field === 'adults' ? await currentVerifiedLabtestProfileToken(page) : null;
+    return { outcome: 'updated_unsaved', field, requested: value, actual,
+      ...(profileProofToken ? { profileProofToken } : {}) };
   });
 }
 

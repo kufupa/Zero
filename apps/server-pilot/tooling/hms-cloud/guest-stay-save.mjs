@@ -30,17 +30,26 @@ function matchesCreateModelFieldSchema(formData) {
 function normalizeChildSelection(selection) {
   if (!selection || !['updated_unsaved', 'unchanged_unsaved'].includes(selection.outcome) ||
       !Array.isArray(selection.requestedChildAges) || !Array.isArray(selection.actualChildAges) ||
-      selection.requestedChildAges.length !== 1 || selection.actualChildAges.length !== 1 ||
-      !Number.isInteger(selection.actualChildAges[0]) || selection.actualChildAges[0] < 0 || selection.actualChildAges[0] > 17 ||
+      !selection.requestedChildAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) ||
+      !selection.actualChildAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) ||
       !clean(selection.profileProofToken) ||
       JSON.stringify(selection.requestedChildAges) !== JSON.stringify(selection.actualChildAges)) return null;
   const counts = selection.ageBandCounts;
   if (!counts || typeof counts !== 'object' || Array.isArray(counts) ||
       JSON.stringify(Object.keys(counts).sort()) !== JSON.stringify([...CHILD_BANDS].sort()) ||
       CHILD_BANDS.some((name) => !Number.isInteger(counts[name]) || counts[name] < 0) ||
-      CHILD_BANDS.reduce((sum, name) => sum + counts[name], 0) !== 1) return null;
-  return { age: selection.actualChildAges[0], bands: Object.fromEntries(CHILD_BANDS.map((name) => [name, counts[name]])),
+      CHILD_BANDS.reduce((sum, name) => sum + counts[name], 0) !== selection.actualChildAges.length) return null;
+  return { ages: [...selection.actualChildAges], bands: Object.fromEntries(CHILD_BANDS.map((name) => [name, counts[name]])),
     profileProofToken: clean(selection.profileProofToken) };
+}
+
+function normalizeAdultSelection(selection) {
+  const adults = selection?.requested;
+  if (!selection || !['updated_unsaved', 'unchanged_unsaved'].includes(selection.outcome) ||
+      selection.field !== 'adults' || !Number.isInteger(adults) || adults < 0 ||
+      clean(selection.actual?.value) !== String(adults) || !clean(selection.actual?.display) ||
+      !clean(selection.profileProofToken)) return null;
+  return { adults: String(adults), profileProofToken: clean(selection.profileProofToken) };
 }
 
 function normalizeSourceSelection(selection) {
@@ -55,27 +64,53 @@ function normalizeSourceSelection(selection) {
 }
 
 function normalizeCreateFieldProof(proof) {
-  if (!proof || typeof proof !== 'object' || Array.isArray(proof) || !Number.isInteger(proof.adults) || proof.adults < 0) return null;
-  const child = normalizeChildSelection(proof.childAgeSelection);
-  const source = normalizeSourceSelection(proof.sourceSelection);
-  if (!child || !source || child.profileProofToken !== source.profileProofToken) return null;
-  return { adults: String(proof.adults), childAge: child.age, childAgeBands: child.bands, sourceBusiness: source,
-    profileProofToken: child.profileProofToken };
+  const allowed = ['adultSelection', 'childAgeSelection', 'sourceSelection'];
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof) ||
+      Object.keys(proof).some((key) => !allowed.includes(key)) ||
+      !allowed.some((key) => Object.hasOwn(proof, key))) return null;
+  const adult = Object.hasOwn(proof, 'adultSelection') ? normalizeAdultSelection(proof.adultSelection) : null;
+  const child = Object.hasOwn(proof, 'childAgeSelection') ? normalizeChildSelection(proof.childAgeSelection) : null;
+  const source = Object.hasOwn(proof, 'sourceSelection') ? normalizeSourceSelection(proof.sourceSelection) : null;
+  if ((Object.hasOwn(proof, 'adultSelection') && !adult) ||
+      (Object.hasOwn(proof, 'childAgeSelection') && !child) ||
+      (Object.hasOwn(proof, 'sourceSelection') && !source)) return null;
+  const tokens = [adult?.profileProofToken, child?.profileProofToken, source?.profileProofToken].filter(Boolean);
+  if (!tokens.length || tokens.some((token) => token !== tokens[0])) return null;
+  return { adults: adult?.adults ?? null, childAges: child?.ages ?? null,
+    childAgeBands: child?.bands ?? null, sourceBusiness: source,
+    profileProofToken: tokens[0] };
 }
 
 function normalizeAgencySelection(selection) {
   if (!selection) return null;
   const nativeId = clean(selection.nativeId);
   const name = clean(selection.displayedAgency);
-  const iataNumber = clean(selection.agencyIataNumber);
-  if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name || !iataNumber ||
-      !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response') return undefined;
-  return { nativeId, name, iataNumber, profileProofToken: clean(selection.profileProofToken) };
+  const rawIataNumber = selection.agencyIataNumber;
+  const rawReferenceType = selection.agencyReferenceNumberType;
+  const hasPickerReferenceEvidence = Object.hasOwn(selection, 'agencyIataNumber') &&
+    (rawIataNumber === null || (typeof rawIataNumber === 'string' && clean(rawIataNumber) === rawIataNumber)) &&
+    Object.hasOwn(selection, 'agencyReferenceNumberType') &&
+    (rawReferenceType === null || (typeof rawReferenceType === 'string' && clean(rawReferenceType) === rawReferenceType));
+  if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name || !hasPickerReferenceEvidence ||
+      !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response' ||
+      selection.observed?.selectedField?.name !== 'ta1' || clean(selection.observed.selectedField.value) !== name) return undefined;
+  return { nativeId, name, referenceNumber: rawIataNumber ?? '', referenceNumberType: rawReferenceType ?? '',
+    profileProofToken: clean(selection.profileProofToken) };
 }
 
-export function createSelectionProofTokensMatch(createFields, agency, profileToken) {
-  return Boolean(profileToken && (!createFields || createFields.profileProofToken === profileToken) &&
-    (!agency || agency.profileProofToken === profileToken));
+function normalizeOrganizationSelection(selection) {
+  if (!selection) return null;
+  const nativeId = clean(selection.nativeId);
+  const name = clean(selection.displayedOrganization);
+  if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name ||
+      !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response' ||
+      selection.observed?.selectedField?.name !== 'company' || clean(selection.observed.selectedField.value) !== name) return undefined;
+  return { nativeId, name, profileProofToken: clean(selection.profileProofToken) };
+}
+
+export function createSelectionProofTokensMatch(createFields, agency, organization, profileToken) {
+  return Boolean(profileToken && [createFields, agency, organization].every((proof) =>
+    !proof || proof.profileProofToken === profileToken));
 }
 
 function dates(arrival, departure) {
@@ -98,7 +133,9 @@ async function draft(page, expected) {
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress',
-      ...(expected.createFieldProof ? ['adults', 'children', 'child1', 'child2', 'child3', 'sourceofbusinessdesc'] : [])];
+      ...(expected.createFieldProof?.adults != null ? ['adults'] : []),
+      ...(expected.createFieldProof?.childAges != null ? ['children', ...childBands] : []),
+      ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return null;
@@ -112,10 +149,17 @@ async function draft(page, expected) {
     const partyValues = expected.partyValues || {};
     const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
       visible(el) && blankPartyFields.includes(el.name.toLowerCase()));
-    if (blankPartyFields.some((name) => !exact(name, partyValues[name] ?? '') ||
-        partyInputs.filter((el) => el.name.toLowerCase() === name).length > 1) ||
+    const organizationName = expected.organizationSelection?.name ?? null;
+    const partyValueAllowed = (name, actual) => name === 'companyname' && organizationName
+      ? ['', organizationName].includes(actual) : actual === (partyValues[name] ?? '');
+    if (blankPartyFields.some((name) => {
+      const actual = Object.hasOwn(data, name) ? String(data[name] ?? '').trim() : null;
+      return actual === null || !partyValueAllowed(name, actual) ||
+        keys.filter((key) => key.toLowerCase() === name).length !== 1 ||
+        partyInputs.filter((el) => el.name.toLowerCase() === name).length > 1;
+    }) ||
         partyInputs.some((el) => el.name !== el.name.toLowerCase() ||
-          String(el.value ?? '').trim() !== (partyValues[el.name.toLowerCase()] ?? ''))) return null;
+          !partyValueAllowed(el.name.toLowerCase(), String(el.value ?? '').trim()))) return null;
     if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
         !exact('guestid', expected.guestId) || !exact('firstname', 'Proof') || !exact('lastname', 'Labtest') ||
         ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid', 'arprofileid', 'araccountid',
@@ -128,29 +172,64 @@ async function draft(page, expected) {
         value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== expected.guaranteeType ||
         value('udfchar13') || value('emailaddress') || typeof cmp('udfchkbox04')?.getValue !== 'function' ||
         cmp('udfchkbox04').getValue() !== false) return null;
-    let activeChildCategories, submittedData;
-    if (expected.createFieldProof) {
+    let activeChildCategories, modelData, formData;
+    if (expected.strictCreateProof) {
+      modelData = record.getData?.();
+      const formValues = form.getForm?.()?.getValues?.();
+      if (!modelData || typeof modelData !== 'object' || Array.isArray(modelData) ||
+          !formValues || typeof formValues !== 'object' || Array.isArray(formValues)) return null;
+      const modelKeys = Object.keys(modelData), formValueKeys = Object.keys(formValues);
+      if (formValueKeys.some((key) => !modelKeys.includes(key)) ||
+          formValueKeys.some((key) => formValueKeys.filter((candidate) => candidate.toLowerCase() === key.toLowerCase()).length !== 1)) return null;
+      const currentFormValue = (name) => {
+        const matches = formValueKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
+        return matches.length === 1 ? { found: true, value: formValues[matches[0]] } : { found: false };
+      };
+      formData = Object.fromEntries(modelKeys.map((key) => [key, modelData[key]]));
+      const override = (name, expectedValue) => {
+        const current = currentFormValue(name);
+        const modelMatches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
+        if (!current.found || modelMatches.length !== 1 || String(current.value ?? '').trim() !== expectedValue) return false;
+        formData[modelMatches[0]] = current.value;
+        return true;
+      };
       const proof = expected.createFieldProof;
-      submittedData = record.getData?.();
-      if (!submittedData || typeof submittedData !== 'object' || Array.isArray(submittedData)) return null;
-      activeChildCategories = String(data.activechildcategories ?? '').trim();
-      if (!exact('adults', proof.adults) || String(globalThis.Ext?.getCmp?.(fields.adults[0].id.replace(/-inputEl$/, ''))?.getValue?.() ?? '').trim() !== proof.adults ||
-          !exact('children', '1') || !exact('childages', String(proof.childAge)) || Array.isArray(data.childages) ||
-          childBands.some((name) => !exact(name, String(proof.childAgeBands[name]))) ||
-          !exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true') ||
-          !exact('sourceofbus', proof.sourceBusiness.nativeCode) || !exact('sourceofbusinessdesc', proof.sourceBusiness.description) ||
-          value('adults') !== proof.adults || value('children') !== '1' ||
-          childBands.some((name) => value(name) !== String(proof.childAgeBands[name])) ||
-          value('sourceofbusinessdesc') !== proof.sourceBusiness.description) return null;
+      if (proof && proof.adults !== null && !override('adults', proof.adults)) return null;
+      if (proof && proof.childAges !== null) {
+        const childCount = String(proof.childAges.length);
+        const ages = proof.childAges.join(',');
+        if (!override('children', childCount) ||
+            childBands.some((name) => !override(name, String(proof.childAgeBands[name])))) return null;
+        if (!exact('childages', ages) || Array.isArray(data.childages)) return null;
+        activeChildCategories = String(modelData.activechildcategories ?? '').trim();
+        if (!exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true')) return null;
+      }
+      if (proof?.sourceBusiness &&
+          (!exact('sourceofbus', proof.sourceBusiness.nativeCode) ||
+            !exact('sourceofbusinessdesc', proof.sourceBusiness.description) ||
+            value('sourceofbusinessdesc') !== proof.sourceBusiness.description)) return null;
+      if (proof && proof.adults !== null && (value('adults') !== proof.adults ||
+          String(cmp('adults')?.getValue?.() ?? '').trim() !== proof.adults)) return null;
+      if (proof && proof.childAges !== null && (value('children') !== String(proof.childAges.length) ||
+          childBands.some((name) => value(name) !== String(proof.childAgeBands[name])))) return null;
+      if (proof?.sourceBusiness && value('sourceofbusinessdesc') !== proof.sourceBusiness.description) return null;
+      for (const [name, selected] of Object.entries(partyValues)) {
+        if (organizationName && name === 'companyname') continue;
+        if (!exact(name, selected)) return null;
+      }
+      if (organizationName && !['', organizationName].includes(String(data.companyname ?? '').trim())) return null;
     }
     const blankRequired = [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).some((el) => {
       const component = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       return component?.allowBlank === false && !String(el.value ?? '').trim();
     });
     if (blankRequired) return null;
+    const verifiedPartyValues = { ...partyValues };
+    if (expected.organizationSelection) verifiedPartyValues.companyname = String(data.companyname ?? '').trim();
     return { session: String(data.bookingsessionid).trim(), track: value('track'),
-      ...(expected.createFieldProof ? { activeChildCategories,
-        formData: Object.fromEntries(Object.keys(submittedData).map((key) => [key, submittedData[key]])) } : {}) };
+      ...(expected.strictCreateProof ? { ...(expected.createFieldProof?.childAges != null ? { activeChildCategories } : {}),
+        modelData: Object.fromEntries(Object.keys(modelData).map((key) => [key, modelData[key]])),
+        formData: Object.fromEntries(Object.keys(formData).map((key) => [key, formData[key]])), partyValues: verifiedPartyValues } : {}) };
   }, { origin: ORIGIN, expected, blankPartyFields, childBands: CHILD_BANDS });
 }
 
@@ -183,6 +262,13 @@ export function guestStaySaveOutcome({
 function matchesSave(page, request, expected) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+    const proof = expected.createFieldProof;
+    const childAgeFields = proof?.childAges != null ? {
+      children: String(proof.childAges.length), childages: proof.childAges.join(','),
+      child1: String(proof.childAgeBands.child1), child2: String(proof.childAgeBands.child2),
+      child3: String(proof.childAgeBands.child3), activechildcategories: expected.activeChildCategories,
+      updatechildcategories: 'true',
+    } : {};
     const required = {
       SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
       propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', firstname: 'Proof', lastname: 'Labtest',
@@ -191,13 +277,10 @@ function matchesSave(page, request, expected) {
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: '0', udfchar13: '', emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
       arprofileid: '', araccountid: '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
-      ...(expected.createFieldProof ? {
-        adults: expected.createFieldProof.adults, children: '1', childages: String(expected.createFieldProof.childAge),
-        child1: String(expected.createFieldProof.childAgeBands.child1), child2: String(expected.createFieldProof.childAgeBands.child2),
-        child3: String(expected.createFieldProof.childAgeBands.child3), activechildcategories: expected.activeChildCategories,
-        updatechildcategories: 'true', sourceofbus: expected.createFieldProof.sourceBusiness.nativeCode,
-        sourceofbusinessdesc: expected.createFieldProof.sourceBusiness.description,
-      } : {}),
+      ...(proof?.adults != null ? { adults: proof.adults } : {}),
+      ...childAgeFields,
+      ...(proof?.sourceBusiness ? { sourceofbus: proof.sourceBusiness.nativeCode,
+        sourceofbusinessdesc: proof.sourceBusiness.description } : {}),
       ...Object.fromEntries(blankPartyFields.map((name) => [name, expected.partyValues[name] ?? ''])),
     };
     const profileControls = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
@@ -208,7 +291,7 @@ function matchesSave(page, request, expected) {
       isVerifiedLabtestProfileCurrent(page, { nativeId: expected.guestId, session: expected.session, token: expected.profileToken }) &&
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
-      (!expected.createFieldProof || matchesFullCreateBody(body, expected.formData)) &&
+      (!expected.strictCreateProof || matchesFullCreateBody(body, expected.formData)) &&
       profileControls.every((key) => {
         const matches = keys.filter((name) => name.toLowerCase() === key);
         return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
@@ -316,7 +399,7 @@ export async function installLabtestCreateSaveRouteChain(page, {
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
-  createFieldProof, agencySelection,
+  createFieldProof, agencySelection, organizationSelection,
 } = {}, { timeoutMs = 20_000 } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
@@ -328,10 +411,10 @@ export async function saveNewLabtestStay(page, {
   const agencySelectionProvided = agencySelection !== undefined && agencySelection !== null;
   const agency = agencySelectionProvided ? normalizeAgencySelection(agencySelection) : null;
   if (agencySelectionProvided && !agency) return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_UNVERIFIED' };
-  if (agency && !createFields) return { outcome: 'input_gap', issue: 'AGENCY_REQUIRES_CREATE_FIELD_PROOF' };
-  if (agency && agency.profileProofToken !== createFields.profileProofToken) {
-    return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_PROOF_MISMATCH' };
-  }
+  const organizationSelectionProvided = organizationSelection !== undefined && organizationSelection !== null;
+  const organization = organizationSelectionProvided ? normalizeOrganizationSelection(organizationSelection) : null;
+  if (organizationSelectionProvided && !organization) return { outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_UNVERIFIED' };
+  const strictCreateProof = Boolean(createFields || agency || organization);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
@@ -356,17 +439,21 @@ export async function saveNewLabtestStay(page, {
   page.on('dialog', onDialog);
   try {
     if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
-    const partyValues = agency ? {
-      taid1: agency.nativeId, ta1: agency.name, bookingagency1iatanumber: agency.iataNumber,
-    } : {};
+    const partyValues = Object.fromEntries(blankPartyFields.map((name) => [name, '']));
+    if (agency) Object.assign(partyValues, {
+      taid1: agency.nativeId, ta1: agency.name, bookingagency1iatanumber: agency.referenceNumber,
+    });
+    if (organization) Object.assign(partyValues, { companyid: organization.nativeId, company: organization.name });
     const expected = { ...formatted, guestId: clean(guestId), roomType, ratePlan, guaranteeType, note,
-      ...(createFields ? { createFieldProof: createFields } : {}), partyValues };
+      ...(createFields ? { createFieldProof: createFields } : {}),
+      ...(agency ? { agencySelection: agency } : {}), ...(organization ? { organizationSelection: organization } : {}),
+      strictCreateProof, partyValues };
     const state = await bounded(draft(page, expected));
     if (!state) throw new Error('LABTEST_DRAFT_UNVERIFIED');
-    if (createFields && !matchesCreateModelFieldSchema(state.formData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
+    if (strictCreateProof && !matchesCreateModelFieldSchema(state.modelData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
     if (!profileToken) throw new Error('LABTEST_PROFILE_PROOF_STALE');
-    if (!createSelectionProofTokensMatch(createFields, agency, profileToken)) throw new Error('CREATE_SELECTION_PROOF_STALE');
+    if (!createSelectionProofTokensMatch(createFields, agency, organization, profileToken)) throw new Error('CREATE_SELECTION_PROOF_STALE');
     Object.assign(expected, state, { profileToken });
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();

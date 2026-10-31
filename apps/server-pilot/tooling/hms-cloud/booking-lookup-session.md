@@ -64,7 +64,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
-| `saveNewLabtestStay` | Labtest-only: current `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note` |
+| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` with any `adultSelection`, `childAgeSelection`, `sourceSelection` results, and independent top-level `agencySelection` / `organizationSelection` results |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
 closing use the current picker. The availability party kinds are `organization`,
@@ -93,6 +93,16 @@ is bound to its page and dates and can expire or be invalidated. Independently
 reopen and verify the confirmation, and reconcile any uncertain outcome before
 trying another write. See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
+
+Each strict create option is independent. Pass the corresponding helper result
+directly: `adultSelection` from `selectGuestStayDropdown`, including its current
+profile token; `childAgeSelection` from `setGuestStayChildAges` (empty, one, or
+multiple ages); `sourceSelection` from Source of Business selection; and/or the
+top-level `agencySelection` and `organizationSelection` from their current
+search-bound selectors. Agency must carry the picker's reference value or
+explicit `null`; a blank is accepted only when the draft and outgoing request
+also prove blank. None of the other selections implies an agency, source or
+child selection.
 
 The programmatic equivalent passes `{labtestDates: {arrival, departure}}` to
 `withBookingLookupSession`. The callback receives `labtestPreimage` and the
