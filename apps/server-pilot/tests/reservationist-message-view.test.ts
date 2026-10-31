@@ -15,4 +15,12 @@ describe('reservationist message views', () => {
       { name: 'plain', start: 0, end: 5 }, { name: 'html', start: 4, end: 10 },
     ])).toBe(false);
   });
+
+  it('keeps quoted history outside the view but rejects a truncated current alternative', () => {
+    const text = `plain\n\n${HTML_ALTERNATIVE_MARKER}html\n\nFrom: earlier@example.invalid\nEarlier message`;
+    const htmlStart = text.indexOf('html', text.indexOf(HTML_ALTERNATIVE_MARKER) + HTML_ALTERNATIVE_MARKER.length);
+    const plain = { name: 'plain', start: 0, end: 5 };
+    expect(validReservationistMessageViews(text, [plain, { name: 'html', start: htmlStart, end: htmlStart + 4 }])).toBe(true);
+    expect(validReservationistMessageViews(text, [plain, { name: 'html', start: htmlStart, end: htmlStart + 1 }])).toBe(false);
+  });
 });
