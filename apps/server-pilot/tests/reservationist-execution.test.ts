@@ -3,6 +3,7 @@ import type {ModelInvokeResult} from '../src/ai/bedrock/adapter.js';
 import {describe,it,expect,vi} from 'vitest';
 import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
 import {runReservationistRuntime} from '../src/ai/reservationist-runtime.js';
+import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 import {HTML_ALTERNATIVE_MARKER} from '../src/ai/reservationist-message-view.js';
@@ -190,6 +191,22 @@ it('cross-binds source admissions to runtime scope and never omits unreadable bu
  const make=()=>createReservationistDependencies({adapter:model,admissions:[admission],header,converter:{url:'unused'},services:{}});
  const scoped={...input,authorizedArtifacts:[{attachmentId:'doc',sourceHash:'a'.repeat(64)}]};const result=await runReservationistRuntime(scoped,make().dependencies);expect(result.tasks).toHaveLength(1);expect((result as any).sourceRecoveries).toEqual([{kind:'attachment_manual',reason:'unreadable',sourceRef:'doc',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'message',mimeType:'application/pdf',signatureNoise:false,disclosure:'staff_only'}]);expect(result.readiness).toBe('needs_clarification');expect(result.textBody).not.toContain('source_review');
  await expect(runReservationistRuntime({...scoped,authorizationScope:{ownerRef:'foreign',threadId:'thread'}},make().dependencies)).rejects.toThrow(/scope/);
+});
+it.each([false,true])('surfaces masked attachment number groups for staff even with a completed model selection (%s)',async(withTask)=>{
+ const body=Buffer.from('synthetic rooming list'),sourceHash=createHash('sha256').update(body).digest('hex');
+ const metadata={attachmentId:'doc',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'text/plain',sizeBytes:body.length,sourceHash,disclosure:'guest' as const};
+ const admission:any={status:'admitted',reason:'text',metadata,source:{attachmentId:'doc',sourceHash,disclosure:'guest',pages:[AMBIGUOUS_NUMBER_GROUPS],pageCount:1},bytes:{body,sha256:sourceHash},draftReady:false};
+ const model=adapter(withTask?[{id:'parking',kind:'question',factIds:[]}]:[]);
+ const services={authorizeAnswerSource:async()=>true,resolveTaskAnswer:async()=>({kind:'parking' as const,value:true,disclosure:'guest' as const,evidenceRefs:['parking-proof'],preparedFacts:[{key:'parking',label:'Parking',value:true,source:'property',authority:'authorized',status:'known',evidenceRef:'parking-proof',scopeVerified:true,disclosure:'guest'}]})} as any;
+ const factory=createReservationistDependencies({adapter:model,admissions:[admission],header,converter:{url:'unused'},services});
+ const scoped={...input,...(!withTask?{messages:[{...input.messages[0],text:'Thanks.'}]}:{}),authorizedArtifacts:[metadata],requiredTaskKinds:[],requiredAskSpans:[]};
+ const result=await runReservationistRuntime(scoped,factory.dependencies);
+ if(withTask)expect(result.tasks[0]!.status).toBe('complete');
+ expect(result.readiness).toBe('needs_clarification');
+ expect(result.sourceRecoveries).toContainEqual(expect.objectContaining({sourceRef:'doc',sourceHash,reason:'ambiguous_number_groups'}));
+ const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
+ const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'doc',messageId:'message',filename:'rooms.txt'}]);
+ expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.txt',reason:'Some number groups may be room numbers or card details. Check the original source.'}));
 });
 it.each(['combined','task_first','batched'] as const)('keeps an unread current attachment visible when %s finds no text task',async(mode)=>{
  const metadata={attachmentId:'sheet',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',sizeBytes:100,sourceHash:'a'.repeat(64),disclosure:'guest' as const,inline:false};
