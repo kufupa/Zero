@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {deriveDocumentRequestContinuations,type DocumentRequestContinuation} from './reservationist-document-continuation.js';
 import {zodToJsonSchema} from 'zod-to-json-schema';
 import type { ModelAdapter } from './bedrock/adapter.js';
+import { validReservationistMessageViews, type ReservationistMessageView } from './reservationist-message-view.js';
 import {validateReservationistRaster,type AttachmentAdmission} from './reservationist-attachment-input.js';
 import { documentPlanSchema, normalizeDocumentDecimal, validateDocumentPlan, type ValidatedDocumentPlan, type ValidatedDocumentFact } from './reservationist-document-facts.js';
 export const RESERVATIONIST_EXTRACTION_VERSION = 'reservationist-extraction-v75-distinct-stay-task-selection';
@@ -421,10 +422,11 @@ function unreadSourcesIndependentOfNoAction(input:{messages:readonly {id:string;
  });
 }
 export type ExtractionUnresolvedDiagnostic={phase:'task_selection';reason:string}|({phase:'fact_enrichment'}&import('./reservationist-runtime.js').FactRecoveryProvenance);
-export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only' }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
+export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only'; sourceViews?:ReservationistMessageView[] }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
   input.signal.throwIfAborted();
   const causal = Date.parse(input.causalAt);
   if (!Number.isFinite(causal) || input.messages.length > 64 || input.messages.reduce((sum, m) => sum + m.text.length+(m.subject?.length??0), 0) > 1280000 || input.messages.some(m => !Number.isFinite(Date.parse(m.at)) || Date.parse(m.at) > causal || m.text.length > 40000 || m.subject!==undefined&&(typeof m.subject!=='string'||m.subject.length>4096))) throw new Error('Invalid bounded causal extraction input');
+  if (input.messages.some(m => !validReservationistMessageViews(m.text, m.sourceViews))) throw new Error('message_views_invalid');
   // Reuse the worker's coverage contract; it supplies no facts or execution authority.
   const obligationMessage=input.messages.find(m=>m.id===input.triggerMessageId);
   const authoredEnd=obligationMessage?.text.search(/^[\t ]*(?:From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{0,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)|>|--[\t ]*(?:\r?$)|(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards[^\p{L}\p{N}\r\n]*$|regards[^\p{L}\p{N}\r\n]*$)/imu)??-1;
@@ -474,7 +476,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     return {filename:`${a.source!.attachmentId}.${a.metadata.mimeType.split('/')[1]}`,mediaType:a.metadata.mimeType as 'image/png'|'image/jpeg'|'image/webp',data:a.bytes.body};
   });
   if(new Set(input.messages.map(message=>message.id)).size!==input.messages.length)throw new Error('Duplicate causal message source');
-  const messageSources=input.messages.map(message=>({attachmentId:`message:${message.id}`,sourceHash:createHash('sha256').update(message.text).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.text],pageCount:1,...(message.direction?{causalMessage:{at:message.at,direction:message.direction}}:{})}));
+  const messageSources=input.messages.map(message=>({attachmentId:`message:${message.id}`,sourceHash:createHash('sha256').update(message.text).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.text],pageCount:1,...(message.sourceViews?{sourceViews:message.sourceViews}:{}),...(message.direction?{causalMessage:{at:message.at,direction:message.direction}}:{})}));
   const subjectSources=input.messages.filter(message=>message.id===(input.triggerMessageId??input.messages.at(-1)?.id)&&message.direction==='inbound'&&message.at===input.causalAt&&message.disclosure!=='staff_only'&&typeof message.subject==='string'&&message.subject.length>0&&isReservationistSubjectSourceEligible(message.subject)).map(message=>({attachmentId:`message-subject:${message.id}`,sourceHash:createHash('sha256').update(message.subject!).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.subject!],pageCount:1}));
   const sources = [...admitted.map(a => a.source!),...messageSources,...subjectSources];
   const triggerMessageId=input.triggerMessageId??input.messages.at(-1)?.id;
@@ -558,7 +560,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
           if(enriched.facts.some((f:any)=>!batch.sources.some(s=>s.attachmentId===f?.source?.attachmentId&&s.sourceHash===f?.source?.sourceHash)))throw new Error('source_batch_fact_identity_invalid');
           const tasks=selectedTasks.map(t=>({...t,factIds:enriched.assignments.find(a=>a.taskId===t.id)!.factIds}));
           if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
-          const validated=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:enriched.unresolvedAsks},sources),sources),ids=new Map<string,string>();
+          const validated=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:enriched.unresolvedAsks},sources),sources,{retainAlternateDateConflicts:true}),ids=new Map<string,string>();
           for(const fact of validated.facts){if(fact.source.attachmentId.startsWith('message-subject:')&&fact.kind!=='reservation_reference')throw new Error('subject_fact_kind_forbidden');assertEntailed(fact,batch.sources,validated.facts,validated.tasks);const{id,...identity}=fact,key=JSON.stringify(identity);let aggregate=keys.get(key);if(!aggregate){aggregate=`fact-${merged.length+1}`;keys.set(key,aggregate);merged.push({...fact,id:aggregate});}ids.set(id,aggregate);}
           for(const task of validated.tasks)for(const id of task.factIds){const aggregate=ids.get(id);if(!aggregate)throw new Error('source_batch_assignment_identity_invalid');const target=refs.get(task.id)!;if(!target.includes(aggregate))target.push(aggregate);}
           for(const reason of validated.unresolvedAsks){if(!unresolved.includes(reason))unresolved.push(reason);unresolvedDiagnostics.push({phase:'fact_enrichment',reason,taskIds:selectedTasks.map(task=>task.id),sources:batch.sources.map(({attachmentId,sourceHash})=>({attachmentId,sourceHash}))});}
@@ -573,7 +575,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
         }
       }
       const wireFacts=merged.map(({id,kind,value,disclosure,source,convention})=>({id,kind,value:convention?.originalValue??value,disclosure,source}));
-      const mergedPlan=validateDocumentPlan({facts:wireFacts,tasks:selectedTasks.map(t=>({...t,factIds:refs.get(t.id)!})),unresolvedAsks:unresolved},sources);
+      const mergedPlan=validateDocumentPlan({facts:wireFacts,tasks:selectedTasks.map(t=>({...t,factIds:refs.get(t.id)!})),unresolvedAsks:unresolved},sources,{retainAlternateDateConflicts:true});
       for(const fact of mergedPlan.facts)assertEntailed(fact,sources,mergedPlan.facts,mergedPlan.tasks);
       if(JSON.stringify(mergedPlan.facts)!==JSON.stringify(merged))throw new Error('source_batch_normalized_identity_changed');
       for(const task of mergedPlan.tasks)assertNewBookingTask(task,sources,triggerMessageId);unchanged();
@@ -587,14 +589,14 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       if(JSON.stringify(selectedTasks)!==selectedIdentity)throw new Error('Selected task source identity changed');
       const tasks=selectedTasks.map(task=>({...task,factIds:enriched.assignments!.find(a=>a.taskId===task.id)!.factIds}));
       if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
-      plan=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:[...selected.unresolvedAsks,...(Array.isArray(enriched.unresolvedAsks)?enriched.unresolvedAsks:[])]},sources),sources);
+      plan=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:[...selected.unresolvedAsks,...(Array.isArray(enriched.unresolvedAsks)?enriched.unresolvedAsks:[])]},sources),sources,{retainAlternateDateConflicts:true});
     }catch(error){
       unchanged();
       if(!/azure_luna_completion_incomplete|replay_cost_unknown|model_usage_unknown|Invalid bounded document plan|fetch failed|timeout|transport.*unavailable/i.test(error instanceof Error?error.message:''))throw error;
       return{...selected,unresolvedAsks:[...selected.unresolvedAsks,'Source fact extraction unavailable; selected requests require independent source review'].slice(0,32),version:RESERVATIONIST_EXTRACTION_VERSION,sourceContinuations:boundContinuations,sourceIncomplete:sources.map(source=>({attachmentId:source.attachmentId,sourceHash:source.sourceHash,reason:'fact_enrichment_unavailable'})),manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),'fact_enrichment_unavailable']};
     }
   }else{
-    plan=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(await invoke(RESERVATIONIST_EXTRACTION_INSTRUCTIONS,responseSchema(requestSpans.map(c=>c.id),sources.map(s=>s.sourceHash),'combined',[],[],[],sources.map(s=>s.attachmentId))),requestSpans),sources),sources);
+    plan=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(await invoke(RESERVATIONIST_EXTRACTION_INSTRUCTIONS,responseSchema(requestSpans.map(c=>c.id),sources.map(s=>s.sourceHash),'combined',[],[],[],sources.map(s=>s.attachmentId))),requestSpans),sources),sources,{retainAlternateDateConflicts:true});
   }
   if(plan.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
   if (!plan.tasks.length){if(plan.facts.length||plan.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}

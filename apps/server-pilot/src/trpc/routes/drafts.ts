@@ -245,6 +245,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       business_selected_joint_inventory_unavailable: 'Combined availability for the requested room allocation is unproven.',
       business_selected_price_unavailable: 'No available option with qualified pricing covers every requested room-night.',
       business_party_identity_unavailable: 'A unique applicable party identity has not been established.',
+      alternate_stay_dates_conflict: 'The email contains conflicting stay dates; confirm the arrival and departure.',
       payment_claim_ledger_mismatch: 'The claimed payment differs from the recorded deposit.', payment_clearance_unproven: 'Payment clearance remains unverified.', payment_claim_ledger_missing: 'Payment ledger evidence is unavailable; staff must verify it.', read_inquiry_partial: 'The available ledger information is partial.', read_source_unavailable: 'The requested reservation or ledger record is unavailable.', read_capture_unavailable: 'The requested record evidence is unavailable.', booking_native_prerequisites_unavailable: 'Staff must verify booking availability, duplicate-search evidence and applicable source, track and guarantee rules before preparing the booking.', booking_native_fields_unavailable: 'Staff must verify the required booking system fields and guest assignments before preparing the booking.' } as Record<string, string>)[reason!] ?? 'Requested record details need staff verification.';
   };
   const staffActions: ReservationistStaffAction[] = [];
@@ -253,6 +254,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     business_room_allocation_unavailable: 'Confirm the rooms and adult/child occupancy.',
     business_room_quantity_unavailable: 'Confirm the number of rooms.',
     business_room_allocation_ambiguous: 'Resolve the conflicting room allocation.',
+    alternate_stay_dates_conflict: 'The email contains conflicting stay dates; confirm the arrival and departure.',
     business_board_unavailable: 'Confirm the meal plan.',
     business_quote_policy_unavailable: 'Quote inclusions and tax terms are unavailable.',
     business_selected_joint_inventory_unavailable: 'Combined availability for the requested rooms is unproven.',
