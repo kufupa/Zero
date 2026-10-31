@@ -582,6 +582,23 @@ describe('mapLlmDecision', () => {
     });
   });
 
+  it('treats out-of-range model stay totals as unknown', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, adultsTotal: -1, childrenTotal: 1000 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      adultsTotal: null,
+      childrenTotal: null,
+      fields: { adultsTotal: 'missing', childrenTotal: 'missing' },
+    });
+  });
+
   it('defaults a one-date quote to one night and marks departure defaulted', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

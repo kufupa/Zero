@@ -75,23 +75,54 @@ describe('StayCard rooms', () => {
     expect(onPatch).toHaveBeenLastCalledWith('g1', { adults: 3 });
   });
 
-  it('lets staff edit both stay totals once across room rows and keeps zero distinct from unknown', () => {
-    const { onPatch } = renderStay([
-      stay({ adultsTotal: 5, childrenTotal: 0 }),
-      stay({ id: 'g2', adultsTotal: 5, childrenTotal: 0 }),
+  it('edits both stay totals with one stay-scoped action and keeps zero distinct from unknown', () => {
+    const { onPatch, onStayAction } = renderStay([
+      stay({ stayId: 'stay-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'g2', stayId: 'stay-a', adultsTotal: 5, childrenTotal: 0 }),
     ]);
 
     const adults = screen.getByLabelText('Adults total');
     expect((adults as HTMLInputElement).value).toBe('5');
     fireEvent.change(adults, { target: { value: '6' } });
-    expect(onPatch).toHaveBeenNthCalledWith(1, 'g1', { adultsTotal: 6 });
-    expect(onPatch).toHaveBeenNthCalledWith(2, 'g2', { adultsTotal: 6 });
+    expect(onStayAction).toHaveBeenNthCalledWith(1, {
+      type: 'patch_stay_total', stayId: 'stay-a', field: 'adultsTotal', value: 6,
+    });
 
     const children = screen.getByLabelText('Children total');
     expect((children as HTMLInputElement).value).toBe('0');
     fireEvent.change(children, { target: { value: '' } });
-    expect(onPatch).toHaveBeenNthCalledWith(3, 'g1', { childrenTotal: null });
-    expect(onPatch).toHaveBeenNthCalledWith(4, 'g2', { childrenTotal: null });
+    expect(onStayAction).toHaveBeenNthCalledWith(2, {
+      type: 'patch_stay_total', stayId: 'stay-a', field: 'childrenTotal', value: null,
+    });
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps same-date saved stays in separate total controls and patches only the selected stay', () => {
+    const rows = [
+      stay({ id: 'a1', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'a2', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'b1', stayId: 'booking-b', adultsTotal: 2, childrenTotal: 1 }),
+    ];
+    const { onPatch, onStayAction } = renderStay(rows);
+
+    const adultsA = screen.getByLabelText('Adults total · booking 1');
+    const adultsB = screen.getByLabelText('Adults total · booking 2');
+    expect((adultsA as HTMLInputElement).value).toBe('5');
+    expect((adultsB as HTMLInputElement).value).toBe('2');
+    fireEvent.change(adultsB, { target: { value: '3' } });
+    expect(onStayAction).toHaveBeenCalledWith({
+      type: 'patch_stay_total', stayId: 'booking-b', field: 'adultsTotal', value: 3,
+    });
+    expect(onStayAction).toHaveBeenCalledTimes(1);
+    expect(onPatch).not.toHaveBeenCalled();
+
+    const updated = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: rows },
+      onStayAction.mock.calls[0]![0] as never,
+    );
+    expect(updated.groups.map((row) => [row.id, row.adultsTotal])).toEqual([
+      ['a1', 5], ['a2', 5], ['b1', 3],
+    ]);
   });
 
   it('keeps stay totals visible after adding a replacement room row and removing the original', () => {
