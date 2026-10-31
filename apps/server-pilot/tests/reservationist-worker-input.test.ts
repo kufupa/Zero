@@ -87,6 +87,53 @@ describe('reservationist worker input', () => {
     expect(admit).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { subject: 'Use the prior image for the room allocation', textBody: 'Please proceed.' },
+    { subject: null, textBody: 'Please proceed.\nKind regards\nStaff\nP.S. Please use that image.' },
+  ])('keeps a prior image referenced in a subject or postscript', async (request) => {
+    const image = { id: 'logo', messageId: 'first', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' as const };
+    const admit = vi.fn(async (metadata: any) => ({ status: 'manual_required' as const, reason: 'needs_review', metadata, draftReady: false as const }));
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('first', 1, { textBody: 'Hello\nKind regards\ncid:logo' }), row('current', 3, request)],
+      attachments: [image], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit,
+    });
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((a) => a.metadata.attachmentId)).toEqual(['logo']);
+  });
+
+  it.each([null, 'Please proceed.\nKind regards\ncid:rooms'])('keeps a CID image with a business description, including multipart mail', async (textBody) => {
+    const admit = vi.fn(async (metadata: any) => ({ status: 'manual_required' as const, reason: 'needs_review', metadata, draftReady: false as const }));
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody, htmlBody: '<p>Please proceed.</p><p>Kind regards</p><img src="cid:rooms" alt="Attached room allocation">' })],
+      attachments: [{ id: 'rooms', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rooms', disclosure: 'guest' }],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal, admit,
+    });
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((a) => a.metadata.attachmentId)).toEqual(['rooms']);
+  });
+
+  it('keeps an over-budget attachment as manual review without reading it', async () => {
+    const admit = vi.fn(async (metadata: any) => ({
+      status: 'admitted' as const, reason: 'text', metadata, draftReady: false as const,
+      bytes: { body: Buffer.from('x'), contentType: metadata.mimeType, sha256: metadata.sourceHash, locator: {} as any },
+    }));
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4)], attachments: [
+        { id: 'a', messageId: 'current', mimeType: 'text/plain', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: false, contentId: null, disclosure: 'guest' },
+        { id: 'b', messageId: 'current', mimeType: 'application/pdf', sizeBytes: 20 * 1024 * 1024, sha256: 'b'.repeat(64), isInline: false, contentId: null, disclosure: 'guest' },
+      ], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal, admit,
+    });
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(result.admissions.map((a) => [a.metadata.attachmentId, a.status, a.reason])).toEqual([
+      ['a', 'admitted', 'text'], ['b', 'manual_required', 'attachment_total_resource_unavailable'],
+    ]);
+    expect(result.input.authorizedArtifacts).toHaveLength(2);
+  });
+
   it('orders a backdated inbound after an earlier staff reply by mailbox arrival', async () => {
     const result = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
@@ -136,5 +183,22 @@ describe('reservationist worker input', () => {
       sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     })).rejects.toThrow('worker_intake_context_limit');
+  });
+
+  it('enforces normalized per-message and total context boundaries', async () => {
+    const options = {
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal,
+      admit: async (metadata: any) => ({ status: 'manual_required' as const, reason: 'unused', metadata, draftReady: false as const }),
+    };
+    await expect(buildReservationistWorkerInput({ ...options, messages: [row('current', 4, { textBody: 'x'.repeat(40_000) })] })).resolves.toBeDefined();
+    await expect(buildReservationistWorkerInput({ ...options, messages: [row('current', 4, { textBody: 'x'.repeat(40_001) })] })).rejects.toThrow('worker_intake_context_limit');
+    const rows = Array.from({ length: 32 }, (_, index) => row(index === 31 ? 'current' : `m${index}`, 0, {
+      textBody: 'x'.repeat(40_000), arrivedAt: new Date(base + index * 1000), createdAt: new Date(base + index * 1000),
+    }));
+    await expect(buildReservationistWorkerInput({ ...options, messages: rows })).resolves.toBeDefined();
+    const extra = row('extra', 0, { textBody: 'x', arrivedAt: new Date(base + 30_500), createdAt: new Date(base + 30_500) });
+    await expect(buildReservationistWorkerInput({ ...options, messages: [...rows, extra] })).rejects.toThrow('worker_intake_context_limit');
   });
 });

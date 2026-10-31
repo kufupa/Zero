@@ -1,6 +1,7 @@
 import { maskCardNumbers } from './card-mask.js';
 import { normalizeMessageText } from './thread-context.js';
 import { load } from 'cheerio';
+import { normalizeContentId } from '../mail/cid-images.js';
 import {
   isReservationistSignatureNoise,
   type AttachmentAdmission,
@@ -39,18 +40,29 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
-/** Separate inspection view: preserve inline CID positions without sending markup to the filter. */
-function signatureInspectionText(row: ReservationistWorkerMessage, normalized: string): string {
-  if (row.textBody?.trim() || !normalized.includes('<')) return normalized;
-  const $ = load(normalized, null, false);
+/** Separate inspection view: preserve CID positions and meaningful image descriptions. */
+function signatureInspection(row: ReservationistWorkerMessage, normalized: string, inspectAlternateHtml: boolean) {
+  const hasText = Boolean(row.textBody?.trim());
+  const html = hasText ? row.htmlBody : normalized;
+  const describedCids = new Set<string>();
+  if (!html || !html.includes('<')) return { text: normalized, describedCids, preserveAll: false };
+  // An oversized unused HTML alternative is never parsed; keep its images instead.
+  if (hasText && (!inspectAlternateHtml || html.length > 2_000_000))
+    return { text: normalized, describedCids, preserveAll: true };
+  const $ = load(html, null, false);
   $('details.quoted-toggle, blockquote').before('\nFrom: quoted history\n');
   $('img').each((_, element) => {
     const src = $(element).attr('src')?.trim() ?? '';
-    $(element).replaceWith($('<span>').text(/^cid:/i.test(src) ? ` ${src} ` : ' '));
+    const alt = $(element).attr('alt')?.trim() ?? '';
+    const cid = /^cid:/i.test(src) ? normalizeContentId(src) : null;
+    // Unknown descriptions can describe business content; only generic signature labels are disposable.
+    if (cid && alt && !/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt)) describedCids.add(cid);
+    $(element).replaceWith($('<span>').text(cid ? ` ${alt} ${src} ` : ` ${alt} `));
   });
+  if (hasText) return { text: normalized, describedCids, preserveAll: false };
   $('br').replaceWith('\n');
   $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
-  return $.root().text();
+  return { text: $.root().text(), describedCids, preserveAll: false };
 }
 
 /**
@@ -147,30 +159,35 @@ export async function buildReservationistWorkerInput(options: {
       options.attachments.some((a) => !messageIds.has(a.messageId)))
     throw new Error('worker_intake_attachment_identity_invalid');
   const selectedById = new Map(selected.map(({ row, at }) => [row.id, { row, at }]));
-  const signatureTexts = new Map(messages.map((message) => [message.id,
-    signatureInspectionText(selectedById.get(message.id)!.row, message.text)]));
+  const alternateHtmlSize = selected.reduce((sum, { row }) => sum + (row.textBody?.trim() ? row.htmlBody?.length ?? 0 : 0), 0);
+  const signatureViews = new Map(messages.map((message) => [message.id,
+    signatureInspection(selectedById.get(message.id)!.row, message.text, alternateHtmlSize <= 8_000_000)]));
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
   const admissions: AttachmentAdmission[] = [];
   let ignoredSignatures = 0;
+  let retainedBytes = 0;
   for (const attachment of relevant) {
     check();
     const entry = selectedById.get(attachment.messageId)!;
-    const text = signatureTexts.get(attachment.messageId)!;
+    const sourceView = signatureViews.get(attachment.messageId)!;
+    const cid = attachment.contentId ? normalizeContentId(attachment.contentId) : null;
     // An intervening causal message can make a prior footer image relevant.
-    const signatureNoise = messages.every((message) => isReservationistSignatureNoise({
-      messageText: text,
-      currentRequestText: signatureTexts.get(message.id)!,
+    const signatureNoise = !sourceView.preserveAll && !(cid && sourceView.describedCids.has(cid)) && messages.every((message) => isReservationistSignatureNoise({
+      messageText: sourceView.text,
+      currentRequestText: `${message.subject ?? ''}\n${signatureViews.get(message.id)!.text}`,
       attachment,
       attachments: relevant,
     }));
     if (signatureNoise) { ignoredSignatures++; continue; }
     if (admissions.length >= 64) throw new Error('worker_intake_attachment_limit');
+    if (!attachment.id || !Number.isSafeInteger(attachment.sizeBytes) || attachment.sizeBytes < 0)
+      throw new Error('worker_intake_attachment_identity_invalid');
     const sourceHash = attachment.sha256 ?? (options.resolveSourceHash
       ? await bounded((edge) => options.resolveSourceHash!({ ...attachment }, edge))
       : undefined);
     check();
-    if (!attachment.id || !sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash))
+    if (!sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash))
       throw new Error('worker_intake_attachment_identity_invalid');
     const metadata: ReservationistAttachmentMetadata = {
       attachmentId: attachment.id,
@@ -189,11 +206,19 @@ export async function buildReservationistWorkerInput(options: {
         (entry.row.disclosure === 'staff_only' && metadata.disclosure !== 'staff_only'))
       throw new Error('worker_intake_attachment_disclosure_invalid');
     const metadataIdentity = JSON.stringify(metadata);
-    const admission = await bounded((edge) => options.admit(metadata, edge));
+    // Keep over-budget files visible to staff without reading or retaining their bytes.
+    const admission: AttachmentAdmission = retainedBytes + metadata.sizeBytes > 20 * 1024 * 1024
+      ? { status: 'manual_required', reason: 'attachment_total_resource_unavailable', metadata, draftReady: false }
+      : await bounded((edge) => options.admit(metadata, edge));
     if (!admission || JSON.stringify(metadata) !== metadataIdentity ||
         JSON.stringify(admission.metadata) !== metadataIdentity || admission.draftReady !== false ||
         !['admitted', 'manual_required'].includes(admission.status))
       throw new Error('worker_intake_admission_mismatch');
+    if (admission.bytes) {
+      if (admission.bytes.body.length !== metadata.sizeBytes || retainedBytes + admission.bytes.body.length > 20 * 1024 * 1024)
+        throw new Error('worker_intake_attachment_limit');
+      retainedBytes += admission.bytes.body.length;
+    }
     admissions.push(admission);
   }
   check();
