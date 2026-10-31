@@ -5,9 +5,9 @@ import { existsSync } from 'node:fs';
 import test from 'node:test';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import {
   guestStaySaveOutcome,
-  installLabtestCreateSaveRouteChain,
   matchesFullCreateBody,
   createSelectionProofTokensMatch,
   saveNewLabtestStay,
@@ -111,6 +111,7 @@ function sourceSelection(token = 'current-draft-token') {
 function agencySelection(token = 'current-draft-token') {
   return { outcome: 'selected_unsaved', searchId: 'current-agency-search', nativeId: '77',
     displayedAgency: 'Test Agency', agencyIataNumber: '123456', agencyReferenceNumberType: 'IATA', nativeIdEvidence: 'form_change_response',
+    agencyReferenceEvidence: { iataNumber: 'response_grid_correlated', referenceNumberType: 'response_grid_correlated' },
     observed: { selectedField: { label: 'Primary Booking Agency', name: 'ta1', value: 'Test Agency' } },
     profileProofToken: token };
 }
@@ -242,6 +243,20 @@ test('rejects unsupported create selections without a current identity or exact 
     ...saveInputs, agencySelection: agencyWithoutIataEvidence,
   });
   assert.equal(missingIataEvidence.issue, 'AGENCY_SELECTION_UNVERIFIED');
+
+  const agencyWithoutCorrelatedBlankEvidence = agencySelection();
+  agencyWithoutCorrelatedBlankEvidence.agencyIataNumber = null;
+  agencyWithoutCorrelatedBlankEvidence.agencyReferenceNumberType = null;
+  delete agencyWithoutCorrelatedBlankEvidence.agencyReferenceEvidence;
+  const missingPickerEvidence = await saveNewLabtestStay(pageStub(), {
+    ...saveInputs, agencySelection: agencyWithoutCorrelatedBlankEvidence,
+  });
+  assert.equal(missingPickerEvidence.issue, 'AGENCY_SELECTION_UNVERIFIED');
+
+  const pickerProvenNoIata = await saveNewLabtestStay(pageStub(), {
+    ...saveInputs, agencySelection: { ...agencySelection(), agencyIataNumber: null, agencyReferenceNumberType: null },
+  });
+  assert.equal(pickerProvenNoIata.issue, 'LABTEST_DRAFT_UNVERIFIED');
 
   const wrongOrganizationField = await saveNewLabtestStay(pageStub(), {
     ...saveInputs, organizationSelection: { ...organizationSelection(), observed: { selectedField: { name: 'ta1', value: 'Test Organization' } } },

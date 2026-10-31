@@ -27,18 +27,21 @@ combination of these selector results; each option is independent:
   occupancy/source combination.
 
 All supplied selections must carry the same current Proof Labtest draft token.
-The current agency picker exposes `iatanumber` and `referencenumbertype`, which
-the selection result carries as `agencyIataNumber` and
-`agencyReferenceNumberType`; the number can be `null`. Missing properties are
-not proof of blank. The writer accepts picker-proven `null` only when the current draft's
-`bookingagency1iatanumber` is blank and the exact outgoing request is blank;
-nonblank values must match exactly. This keeps agencies without a reference
-number in scope without asserting a server-side IATA requirement. No agency
-save has yet proved either case. Organization selection binds its returned
-native ID and displayed name. The writer checks the current `companyid` and
-`company` values, and permits `companyname` only when blank or equal to that
-same organization. It does not infer that selecting an agency requires a child
-or source. Do not reuse selector results across pages or profile selections.
+The current agency picker may expose `iatanumber` and
+`referencenumbertype`. Each value is usable only when the selected response and
+grid row both contain that property and the values correlate; an absent or
+uncorrelated property stays unproven and blocks selection. A correlated blank
+is returned as explicit `null`, with `agencyReferenceEvidence` marking both
+fields `response_grid_correlated`. The writer accepts that blank only when the
+current draft and exact outgoing request also prove a blank;
+nonblank values must match exactly. This does not assert a server-side IATA
+requirement, and agencies whose picker omits either reference property are not
+currently selectable through strict create proof. No agency save has yet
+proved either case. Organization selection binds its returned native ID and
+displayed name. The writer checks the current `companyid` and `company` values,
+and permits `companyname` only when blank or equal to that same organization.
+It does not infer that selecting an agency requires a child or source. Do not
+reuse selector results across pages or profile selections.
 
 ```js
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
@@ -96,10 +99,11 @@ description and child count/bands, not exact child ages.
 In strict proof mode, `agencySelection` may be the direct result of a current,
 search-ID-bound `selectPrimaryBookingAgency` call from the same Proof Labtest
 draft. Its token must match the other selections and current native profile
-proof. It carries the selector's response evidence and picker reference value
+proof. It carries the selector's response/grid-correlated reference values
 (possibly explicit `null`); the draft and request must match its native ID,
 display name and auto-populated reference value. The picker reference type is
-preserved as evidence but is not claimed to be a separate save field.
+preserved as evidence but is not claimed to be a separate save field. A blank
+is not inferred when the picker omits either property.
 `organizationSelection` may likewise be the current, search-bound
 `selectOrganization` result; the draft and request must match its native ID and
 displayed name. Unselected party fields (group, secondary agency, contract,

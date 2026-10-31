@@ -4,12 +4,10 @@ import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './
 import { consumeLabtestPreimage } from './labtest-preimage.mjs';
 import { blankPartyFields } from './labtest-party-fields.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
-const DANGEROUS_PATH = /save|delete|cancel|checkin|checkout|send|email|mail|crs/i;
-const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
@@ -87,10 +85,15 @@ function normalizeAgencySelection(selection) {
   const name = clean(selection.displayedAgency);
   const rawIataNumber = selection.agencyIataNumber;
   const rawReferenceType = selection.agencyReferenceNumberType;
+  const referenceEvidence = selection.agencyReferenceEvidence;
   const hasPickerReferenceEvidence = Object.hasOwn(selection, 'agencyIataNumber') &&
     (rawIataNumber === null || (typeof rawIataNumber === 'string' && clean(rawIataNumber) === rawIataNumber)) &&
     Object.hasOwn(selection, 'agencyReferenceNumberType') &&
-    (rawReferenceType === null || (typeof rawReferenceType === 'string' && clean(rawReferenceType) === rawReferenceType));
+    (rawReferenceType === null || (typeof rawReferenceType === 'string' && clean(rawReferenceType) === rawReferenceType)) &&
+    referenceEvidence && typeof referenceEvidence === 'object' && !Array.isArray(referenceEvidence) &&
+    Object.keys(referenceEvidence).length === 2 &&
+    referenceEvidence.iataNumber === 'response_grid_correlated' &&
+    referenceEvidence.referenceNumberType === 'response_grid_correlated';
   if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name || !hasPickerReferenceEvidence ||
       !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response' ||
       selection.observed?.selectedField?.name !== 'ta1' || clean(selection.observed.selectedField.value) !== name) return undefined;
@@ -297,103 +300,6 @@ function matchesSave(page, request, expected) {
         return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
       });
   } catch { return false; }
-}
-
-/** Keep the one allowed create request behind the page fence and deny context writes for its lifetime. */
-export async function installLabtestCreateSaveRouteChain(page, {
-  frame, fence, scope, isArmed, matches, onCandidate, onDispatch, onBlocked,
-} = {}) {
-  if (!page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
-      typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
-      typeof isArmed !== 'function' || typeof matches !== 'function') throw new Error('SAVE_ROUTE_CHAIN_INPUT_INVALID');
-  const context = page.context();
-  if (typeof context?.route !== 'function') throw new Error('SAVE_ROUTE_CHAIN_INPUT_INVALID');
-  let active = true, candidateRequest = null, continuedRequest = null;
-  const observeBlocked = (request) => {
-    try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
-  };
-  const isSameFrame = (request) => {
-    try { return request.frame() === frame; } catch { return false; }
-  };
-  const denyUnapprovedContextRequest = async (route, request) => {
-    const method = String(request.method() || '').toUpperCase();
-    let sendEmailPath = false;
-    try { sendEmailPath = /send|email|mail/i.test(new URL(request.url()).pathname); }
-    catch { /* Invalid write targets are still rejected by the method check below. */ }
-    let sharedGuardWouldBlock = false;
-    try {
-      sharedGuardWouldBlock = shouldAbortReadOnlyRequest({
-        method, url: request.url(), postData: request.postData?.(),
-      });
-    } catch { /* Diagnostics cannot weaken the route decision. */ }
-    if (!SAFE_READ_METHODS.has(method) || sendEmailPath || sharedGuardWouldBlock) {
-      observeBlocked(request);
-      return route.abort();
-    }
-    return route.fallback();
-  };
-  const contextRoute = async (route) => {
-    const request = route.request();
-    if (active && candidateRequest === request && continuedRequest !== request && isSameFrame(request) &&
-        isArmed() && !fence.isQuarantined()) {
-      // The page fence has consumed this exact request; never authorize it twice.
-      continuedRequest = request;
-      try { onDispatch?.(request); } catch { /* Preserve the exact-request decision. */ }
-      return route.continue();
-    }
-    return denyUnapprovedContextRequest(route, request);
-  };
-  const pageRoute = async (route) => {
-    const request = route.request();
-    let url;
-    try { url = new URL(request.url()); }
-    catch {
-      observeBlocked(request);
-      return route.abort();
-    }
-    const method = String(request.method() || '').toUpperCase();
-    if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === SAVE_PATH.toLowerCase()) {
-      observeBlocked(request);
-      return route.fallback();
-    }
-    if (SAFE_READ_METHODS.has(method) && url.pathname && !DANGEROUS_PATH.test(url.pathname)) return route.fallback();
-    if (url.pathname === SAVE_PATH) {
-      if (active && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) && matches(request, frame)) {
-        let allowed = false;
-        try { allowed = scope.allow(request); } catch { /* The lifetime fence stays fail-closed. */ }
-        if (allowed) {
-          candidateRequest = request;
-          try { onCandidate?.(request); } catch { /* Do not bypass the page and context fences. */ }
-        } else observeBlocked(request);
-      } else observeBlocked(request);
-      return route.fallback();
-    }
-    observeBlocked(request);
-    return route.abort();
-  };
-
-  let contextInstalled = false, pageInstalled = false;
-  try {
-    // Install after the shared context read guard so only the exact candidate may continue.
-    await context.route('**/*', contextRoute);
-    contextInstalled = true;
-    await page.route('**/*', pageRoute);
-    pageInstalled = true;
-  } catch (error) {
-    active = false;
-    if (pageInstalled) await page.unroute('**/*', pageRoute).catch(() => {});
-    if (contextInstalled) await context.unroute('**/*', contextRoute).catch(() => {});
-    throw error;
-  }
-  return {
-    candidate: () => candidateRequest,
-    continued: () => continuedRequest,
-    disarm: () => { active = false; },
-    async close() {
-      active = false;
-      // Keep both deny routes for the context lifetime; only one exact candidate was eligible.
-    },
-  };
 }
 
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */

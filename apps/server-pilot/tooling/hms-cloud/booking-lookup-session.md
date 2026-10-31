@@ -100,7 +100,10 @@ profile token; `childAgeSelection` from `setGuestStayChildAges` (empty, one, or
 multiple ages); `sourceSelection` from Source of Business selection; and/or the
 top-level `agencySelection` and `organizationSelection` from their current
 search-bound selectors. Agency must carry the picker's reference value or
-explicit `null`; a blank is accepted only when the draft and outgoing request
+explicit `null`, with both reference properties present and correlated between
+the current response and grid row. Its `agencyReferenceEvidence` reports
+`response_grid_correlated` for each field; a missing or mismatched property
+blocks selection. A blank is accepted only when the draft and outgoing request
 also prove blank. None of the other selections implies an agency, source or
 child selection.
 
