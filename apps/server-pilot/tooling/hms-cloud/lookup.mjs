@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -608,10 +609,12 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
           }
           if (nativeDialog || requestFailed || inFlight.size) throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
           lastSearch.delete(page);
+          const profileProofToken = kind === 'agency' ? await currentVerifiedLabtestProfileToken(page) : null;
           return {
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
             nativeIdEvidence: 'form_change_response',
             ...(kind === 'agency' ? { agencyIataNumber: candidates[0].referenceNumber } : {}),
+            ...(kind === 'agency' && profileProofToken ? { profileProofToken } : {}),
             ...observed,
             ...(kind === 'agency' ? { displayedAgency: value } : kind === 'organization'
               ? { displayedOrganization: value } : { displayedArAccount: value, nativeReadback }),

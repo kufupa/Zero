@@ -9,6 +9,7 @@ import {
   guestStaySaveOutcome,
   installLabtestCreateSaveRouteChain,
   matchesFullCreateBody,
+  createSelectionProofTokensMatch,
   saveNewLabtestStay,
 } from './guest-stay-save.mjs';
 
@@ -130,6 +131,31 @@ test('preserves the legacy childless core-only input path', async () => {
   assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
 });
 
+test('requires field and agency selections to share the current Labtest draft token', async () => {
+  const currentToken = 'draft-token-current';
+  const createFields = { profileProofToken: currentToken };
+  const agency = { profileProofToken: currentToken };
+  assert.equal(createSelectionProofTokensMatch(createFields, agency, currentToken), true);
+  assert.equal(createSelectionProofTokensMatch(createFields, agency, 'draft-token-other'), false);
+  assert.equal(createSelectionProofTokensMatch(createFields, { profileProofToken: 'draft-token-other' }, currentToken), false);
+  assert.equal(createSelectionProofTokensMatch(null, null, currentToken), true);
+
+  const result = await saveNewLabtestStay(pageStub(), {
+    ...saveInputs,
+    createFieldProof: {
+      adults: 2,
+      childAgeSelection: { outcome: 'updated_unsaved', requestedChildAges: [8], actualChildAges: [8],
+        ageBandCounts: { child1: 0, child2: 1, child3: 0 } },
+      sourceSelection: { outcome: 'selected_unsaved', searchId: 'old-search', nativeCode: 'EMAIL',
+        candidate: { nativeCode: 'EMAIL', description: 'E-Mail' },
+        nativeCodeReadback: { outcome: 'unsupported', issue: 'SOURCE_CODE_NOT_EXPOSED_ON_FORM' },
+        identityEvidence: 'unique_current_picker_row_and_description_readback' },
+    },
+  });
+  assert.equal(result.outcome, 'input_gap');
+  assert.equal(result.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
+});
+
 test('keeps the context-wide save/send fence through delayed and cross-page requests', {
   skip: !chromiumBinary,
   timeout: 30_000,
@@ -138,7 +164,10 @@ test('keeps the context-wide save/send fence through delayed and cross-page requ
   let sendArrivals = 0;
   const releaseApprovedResponses = [];
   let markApprovedReachedServer;
-  const approvedReachedServer = new Promise((resolve) => { markApprovedReachedServer = resolve; });
+  let approvedArrivalTimer;
+  const approvedReachedServer = new Promise((resolve) => {
+    markApprovedReachedServer = () => { clearTimeout(approvedArrivalTimer); resolve(); };
+  });
   const server = createServer((request, response) => {
     const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
     if (request.method === 'POST' && pathname === '/web/base/send-email') {
@@ -229,7 +258,10 @@ test('keeps the context-wide save/send fence through delayed and cross-page requ
 
     armed = true;
     const approvedResponse = post(page, 'approved-once');
-    await approvedReachedServer;
+    const approvedArrivalTimeout = new Promise((_, reject) => {
+      approvedArrivalTimer = setTimeout(() => reject(new Error('APPROVED_REQUEST_NOT_RECEIVED')), 5000);
+    });
+    await Promise.race([approvedReachedServer, approvedArrivalTimeout]);
     assert.equal(dispatched, true);
 
     const otherPage = await context.newPage();
@@ -257,6 +289,7 @@ test('keeps the context-wide save/send fence through delayed and cross-page requ
     assert.equal(passedFence, 1);
     assert.ok(blocked >= 6);
   } finally {
+    clearTimeout(approvedArrivalTimer);
     releaseApprovedResponses.forEach((release) => release());
     scope?.close();
     await chain?.close();

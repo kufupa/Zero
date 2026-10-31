@@ -14,6 +14,7 @@ const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
+// Exact body/model equality does not classify newly added fields or their write effects.
 const CREATE_MODEL_FIELD_COUNT = 985;
 // SHA-256 of the captured 988-key request's field set, excluding its three
 // fixed controls.
@@ -31,31 +32,35 @@ function normalizeChildSelection(selection) {
       !Array.isArray(selection.requestedChildAges) || !Array.isArray(selection.actualChildAges) ||
       selection.requestedChildAges.length !== 1 || selection.actualChildAges.length !== 1 ||
       !Number.isInteger(selection.actualChildAges[0]) || selection.actualChildAges[0] < 0 || selection.actualChildAges[0] > 17 ||
+      !clean(selection.profileProofToken) ||
       JSON.stringify(selection.requestedChildAges) !== JSON.stringify(selection.actualChildAges)) return null;
   const counts = selection.ageBandCounts;
   if (!counts || typeof counts !== 'object' || Array.isArray(counts) ||
       JSON.stringify(Object.keys(counts).sort()) !== JSON.stringify([...CHILD_BANDS].sort()) ||
       CHILD_BANDS.some((name) => !Number.isInteger(counts[name]) || counts[name] < 0) ||
       CHILD_BANDS.reduce((sum, name) => sum + counts[name], 0) !== 1) return null;
-  return { age: selection.actualChildAges[0], bands: Object.fromEntries(CHILD_BANDS.map((name) => [name, counts[name]])) };
+  return { age: selection.actualChildAges[0], bands: Object.fromEntries(CHILD_BANDS.map((name) => [name, counts[name]])),
+    profileProofToken: clean(selection.profileProofToken) };
 }
 
 function normalizeSourceSelection(selection) {
   const nativeCode = clean(selection?.nativeCode);
   const description = clean(selection?.candidate?.description);
   if (selection?.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeCode || !description ||
+      !clean(selection.profileProofToken) ||
       selection.candidate?.nativeCode !== nativeCode || selection.identityEvidence !== 'unique_current_picker_row_and_description_readback' ||
       selection.nativeCodeReadback?.outcome !== 'unsupported' ||
       selection.nativeCodeReadback?.issue !== 'SOURCE_CODE_NOT_EXPOSED_ON_FORM') return null;
-  return { nativeCode, description };
+  return { nativeCode, description, profileProofToken: clean(selection.profileProofToken) };
 }
 
 function normalizeCreateFieldProof(proof) {
   if (!proof || typeof proof !== 'object' || Array.isArray(proof) || !Number.isInteger(proof.adults) || proof.adults < 0) return null;
   const child = normalizeChildSelection(proof.childAgeSelection);
   const source = normalizeSourceSelection(proof.sourceSelection);
-  if (!child || !source) return null;
-  return { adults: String(proof.adults), childAge: child.age, childAgeBands: child.bands, sourceBusiness: source };
+  if (!child || !source || child.profileProofToken !== source.profileProofToken) return null;
+  return { adults: String(proof.adults), childAge: child.age, childAgeBands: child.bands, sourceBusiness: source,
+    profileProofToken: child.profileProofToken };
 }
 
 function normalizeAgencySelection(selection) {
@@ -64,8 +69,13 @@ function normalizeAgencySelection(selection) {
   const name = clean(selection.displayedAgency);
   const iataNumber = clean(selection.agencyIataNumber);
   if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name || !iataNumber ||
-      selection.nativeIdEvidence !== 'form_change_response') return undefined;
-  return { nativeId, name, iataNumber };
+      !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response') return undefined;
+  return { nativeId, name, iataNumber, profileProofToken: clean(selection.profileProofToken) };
+}
+
+export function createSelectionProofTokensMatch(createFields, agency, profileToken) {
+  return Boolean(profileToken && (!createFields || createFields.profileProofToken === profileToken) &&
+    (!agency || agency.profileProofToken === profileToken));
 }
 
 function dates(arrival, departure) {
@@ -319,6 +329,9 @@ export async function saveNewLabtestStay(page, {
   const agency = agencySelectionProvided ? normalizeAgencySelection(agencySelection) : null;
   if (agencySelectionProvided && !agency) return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_UNVERIFIED' };
   if (agency && !createFields) return { outcome: 'input_gap', issue: 'AGENCY_REQUIRES_CREATE_FIELD_PROOF' };
+  if (agency && agency.profileProofToken !== createFields.profileProofToken) {
+    return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_PROOF_MISMATCH' };
+  }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
@@ -353,6 +366,7 @@ export async function saveNewLabtestStay(page, {
     if (createFields && !matchesCreateModelFieldSchema(state.formData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
     if (!profileToken) throw new Error('LABTEST_PROFILE_PROOF_STALE');
+    if (!createSelectionProofTokensMatch(createFields, agency, profileToken)) throw new Error('CREATE_SELECTION_PROOF_STALE');
     Object.assign(expected, state, { profileToken });
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();

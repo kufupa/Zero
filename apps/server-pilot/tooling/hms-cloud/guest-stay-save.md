@@ -11,7 +11,7 @@ If the property's calendar date and UTC differ, it refuses the preimage rather
 than guessing the offset anchor; retry when the dates agree.
 
 The legacy core-only save call remains available for existing callers. It does
-not claim occupancy or Source of Business parity and cannot save a linked
+not claim full occupancy or Source of Business coverage and cannot save a linked
 agency. To opt into the stricter create-field proof, provide an explicitly
 selected adult count, exactly one child age, the age-band counts returned by
 `setGuestStayChildAges`, and a current Source of Business selection. The
@@ -19,7 +19,10 @@ current serialized save shape has only been proved for one child (`childages`
 is a scalar); zero or multiple children are rejected in this proof mode until
 their native payloads are separately observed. Source selection verifies the
 current picker row and displayed description; the save binds both its native
-code and description to the form model and request.
+code and description to the form model and request. Select the Proof Labtest
+profile before these fields: strict selector results carry its opaque token,
+which the writer compares with the still-current native record on that page.
+Do not reuse selector results across pages or profile selections.
 
 ```js
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
@@ -48,15 +51,19 @@ const saved = await saveNewLabtestStay(page, {
 // Reopen in a fresh guarded session and reconcile against census.candidates.
 ```
 
-The required selection results must come from the same page. The draft model
-and save request must match the explicit adult count, single exact child age,
-child count/bands, source code and description. In proof mode, the save route
+The required selection results must carry the same current Proof Labtest draft
+token. The draft model and save request must match the explicit adult count,
+single exact child age, child count/bands, source code and description. In proof mode, the save route
 snapshots the full native `record.getData()` projection and compares it to the
 outgoing form payload: key set, uniqueness and every serialized value must
 match, alongside the three fixed OSRESV/HDR request controls. A read-only
 comparison found 985 unique `record.getData()` keys, matching the 985
 non-control keys in the captured 988-key save request; proof mode pins that
-observed field-key set and fails closed if it changes. Raw `record.data` had
+observed field-key set and fails closed if it changes. This is a schema
+allowlist: complete model/body equality alone would also accept a newly added
+field, without establishing whether that field carries a create-side effect.
+Any field-set change therefore needs re-review before proof mode is enabled.
+Raw `record.data` had
 1,109 keys, including 123 extra metadata fields and `extId`. Missing, extra,
 duplicate or unrepresentable fields fail closed. This compares all submitted
 party/card/profile fields and catches collateral changes beyond the explicit
@@ -68,12 +75,14 @@ not supported; the independent saved-record reader currently exposes only the
 description and child count/bands, not exact child ages.
 
 In proof mode, an optional `agencySelection` may be the direct result of a
-current, search-ID-bound `selectPrimaryBookingAgency` call. It must include
-the selector's response evidence and nonblank `agencyIataNumber`; the draft
-and request must match its native ID, display name and auto-populated IATA
-number. All organization/company, group, secondary-agency, contract, A/R and
-card fields remain blank. Organization selection is not enabled for this save
-path until an explicit synthetic identity is unambiguous.
+current, search-ID-bound `selectPrimaryBookingAgency` call from the same
+Proof Labtest draft. Its token must match the child/source selections and
+current native profile proof. It must include the selector's response evidence
+and nonblank `agencyIataNumber`; the draft and request must match its native
+ID, display name and auto-populated IATA number. All organization/company,
+group, secondary-agency, contract, A/R and card fields remain blank.
+Organization selection is not enabled for this save path until an explicit
+synthetic identity is unambiguous.
 
 The save also requires the current verified Proof Labtest profile, a new HRCEN
 stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
