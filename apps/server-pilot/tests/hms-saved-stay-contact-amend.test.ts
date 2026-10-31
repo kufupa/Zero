@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import {
+  contactAmendOutcome,
   installLabtestContactSaveRouteChain,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
@@ -105,16 +106,46 @@ describe('saved Labtest Booker contact amendment guards', () => {
       requestFrame, expected, state, baseline, 'toString', value)).toBe(false);
   });
 
+  it('reports uncertain when any unexpected request was blocked after dispatch, even after HTTP 200', () => {
+    const common = { dispatched: true, possiblyDispatched: true, httpStatus: 200, nativeDialog: null, dialogs: 0 };
+    expect(contactAmendOutcome({ ...common, blockedAfterDispatch: 0 })).toBe('awaiting_readback');
+    expect(contactAmendOutcome({ ...common, blockedAfterDispatch: 1 })).toBe('uncertain');
+    expect(contactAmendOutcome({ ...common, httpStatus: null, blockedAfterDispatch: 0 })).toBe('uncertain');
+    expect(contactAmendOutcome({ ...common, dispatched: false, possiblyDispatched: false, blockedAfterDispatch: 0 }))
+      .toBe('not_dispatched');
+  });
+
   const routeTestName = chromiumBinary
     ? 'the later page writer falls through the page fence before its one context exception'
     : 'the later page writer falls through the page fence before its one context exception (SKIP: Chromium not found)';
 
   it.skipIf(!chromiumBinary)(routeTestName, async () => {
     const arrivals: string[] = [];
+    let delayedSendArrivals = 0;
+    let approvedReachedServer = false;
+    let releaseApprovedResponse: (() => void) | undefined;
     const server: Server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-      if (request.method === 'POST' && pathname === SAVE_PATH) arrivals.push('POST');
-      request.resume();
+      if (request.method === 'POST' && pathname === '/web/base/send-email') delayedSendArrivals += 1;
+      if (request.method === 'POST' && pathname === SAVE_PATH) {
+        arrivals.push('POST');
+        let body = '';
+        request.setEncoding('utf8');
+        request.on('data', (chunk: string) => { body += chunk; });
+        request.on('end', () => {
+          if (new URLSearchParams(body).get('intent') === 'approved-once') {
+            approvedReachedServer = true;
+            releaseApprovedResponse = () => {
+              response.writeHead(200, { 'content-type': 'text/plain' });
+              response.end('ok');
+            };
+            return;
+          }
+          response.writeHead(200, { 'content-type': 'text/plain' });
+          response.end('unexpected');
+        });
+        return;
+      }
       response.writeHead(200, { 'content-type': 'text/plain' });
       response.end('ok');
     });
@@ -143,6 +174,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       let candidates = 0;
       let dispatches = 0;
       let blockedOnPage = 0;
+      let blockedAfterDispatch = 0;
       chain = await installLabtestContactSaveRouteChain(page, {
         frame: pageFrame,
         fence,
@@ -156,34 +188,59 @@ describe('saved Labtest Booker contact amendment guards', () => {
         },
         onCandidate: () => { candidates += 1; },
         onDispatch: () => { dispatches += 1; armed = false; },
-        onBlocked: () => { blockedOnPage += 1; },
+        onBlocked: () => {
+          blockedOnPage += 1;
+          if (dispatches > 0) blockedAfterDispatch += 1;
+        },
       });
 
-      const post = (targetPage: Page) => targetPage.evaluate(async () => {
+      const post = (targetPage: Page, intent = 'approved-once') => targetPage.evaluate(async (postIntent: string) => {
         try {
           const response = await fetch('/web/base/OSRESV.HDR?pageaction=SAVE', {
-            method: 'POST', body: new URLSearchParams({ intent: 'approved-once' }),
+            method: 'POST', body: new URLSearchParams({ intent: postIntent }),
+          });
+          return response.status;
+        } catch {
+          return 'blocked';
+        }
+      }, intent);
+      const send = (targetPage: Page) => targetPage.evaluate(async () => {
+        try {
+          const response = await fetch('/web/base/send-email', {
+            method: 'POST', body: new URLSearchParams({ intent: 'delayed-synthetic-send' }),
           });
           return response.status;
         } catch {
           return 'blocked';
         }
       });
-      const unapproved = await page.evaluate(async () => {
-        try {
-          const response = await fetch('/web/base/OSRESV.HDR?pageaction=SAVE', {
-            method: 'POST', body: new URLSearchParams({ intent: 'not-approved' }),
-          });
-          return response.status;
-        } catch {
-          return 'blocked';
-        }
-      });
+      const unapproved = await post(page, 'not-approved');
       expect(unapproved).toBe('blocked');
       expect(arrivals).toHaveLength(0);
       expect(passedFence).toBe(0);
 
-      expect(await post(page)).toBe(200);
+      // Hold the one authorized local request in flight, then block another save.
+      // The 200 response must not mask the post-dispatch blocked-request signal.
+      const approvedResponseStatus = post(page);
+      await expect.poll(() => approvedReachedServer, { timeout: 5_000 }).toBe(true);
+      expect(dispatches).toBe(1);
+      const otherPage = await context.newPage();
+      await otherPage.goto(origin);
+      const unexpectedDuringResponse = await post(otherPage, 'unexpected-during-response');
+      expect(unexpectedDuringResponse).toBe('blocked');
+      expect(blockedAfterDispatch).toBe(1);
+      expect(releaseApprovedResponse).toBeTypeOf('function');
+      releaseApprovedResponse?.();
+      const httpStatus = await approvedResponseStatus;
+      expect(httpStatus).toBe(200);
+      expect(contactAmendOutcome({
+        dispatched: true,
+        possiblyDispatched: true,
+        httpStatus,
+        nativeDialog: null,
+        dialogs: 0,
+        blockedAfterDispatch,
+      })).toBe('uncertain');
       expect(arrivals).toEqual(['POST']);
       expect(passedFence).toBe(1);
       expect(candidates).toBe(1);
@@ -191,15 +248,20 @@ describe('saved Labtest Booker contact amendment guards', () => {
 
       chain.disarm();
       expect(await post(page)).toBe('blocked');
-      const otherPage = await context.newPage();
-      await otherPage.goto(origin);
+      await chain.close();
+      scope.close();
+      // close() removes only the one-request context exception. The used page
+      // retains its writer-local deny route; other pages use the shared guard.
+      expect(await send(page)).toBe('blocked');
+      expect(delayedSendArrivals).toBe(0);
       expect(await post(otherPage)).toBe('blocked');
       expect(arrivals).toEqual(['POST']);
       expect(passedFence).toBe(1);
       expect(candidates).toBe(1);
       expect(dispatches).toBe(1);
-      expect(blockedOnPage).toBeGreaterThanOrEqual(2);
+      expect(blockedOnPage).toBeGreaterThanOrEqual(3);
     } finally {
+      releaseApprovedResponse?.();
       scope?.close();
       await chain?.close();
       await context?.close();
@@ -208,5 +270,5 @@ describe('saved Labtest Booker contact amendment guards', () => {
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       }
     }
-  });
+  }, 30_000);
 });

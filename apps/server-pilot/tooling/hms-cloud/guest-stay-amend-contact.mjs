@@ -8,6 +8,7 @@ import {
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
@@ -85,6 +86,16 @@ export function matchesLabtestContactAmendRequest(request, frame, expected, stat
   return typeof value === 'string' && matchesAmend(request, frame, expected, state, baseline, field, value);
 }
 
+/** A 200 is only awaiting fresh readback when no unexpected request was blocked after dispatch. */
+export function contactAmendOutcome({
+  dispatched, possiblyDispatched, httpStatus, nativeDialog, dialogs, blockedAfterDispatch,
+}) {
+  if (dispatched && httpStatus === 200 && !nativeDialog && dialogs === 0 && blockedAfterDispatch === 0) {
+    return 'awaiting_readback';
+  }
+  return possiblyDispatched ? 'uncertain' : 'not_dispatched';
+}
+
 /**
  * Install the writer-local route chain after the existing context read-only guard
  * and page request fence. The page handler always falls back for the one exact
@@ -116,6 +127,15 @@ export async function installLabtestContactSaveRouteChain(page, {
   const isSameFrame = (request) => {
     try { return request.frame() === frame; } catch { return false; }
   };
+  const reportReadOnlyGuardBlock = (request) => {
+    try {
+      if (shouldAbortReadOnlyRequest({
+        method: request.method(),
+        url: request.url(),
+        postData: request.postData?.(),
+      })) observeBlocked(request);
+    } catch { /* Diagnostics cannot weaken the route decision. */ }
+  };
   const contextRoute = async (route) => {
     const request = route.request();
     if (active && candidateRequest === request && continuedRequest !== request &&
@@ -126,6 +146,10 @@ export async function installLabtestContactSaveRouteChain(page, {
       onDispatch?.(request);
       return route.continue();
     }
+    // This later writer route falls back to the shared read-only guard. Mirror
+    // its pure predicate here so blocked writes from context pages without this
+    // page-local route also invalidate a clean awaiting-readback result.
+    reportReadOnlyGuardBlock(request);
     return route.fallback();
   };
   const pageRoute = async (route) => {
@@ -183,7 +207,9 @@ export async function installLabtestContactSaveRouteChain(page, {
     disarm: () => { active = false; },
     async close() {
       active = false;
-      await page.unroute('**/*', pageRoute).catch(() => {});
+      // Keep the page-local denial route for the page lifetime. The context
+      // exception is temporary; removing the page guard would reopen delayed
+      // send/email POSTs that the shared context guard does not classify.
       await context.unroute('**/*', contextRoute).catch(() => {});
     },
   };
@@ -244,17 +270,20 @@ export async function amendLabtestContact(page, expected = {}, {
   let armed = false;
   let possiblyDispatched = false;
   let dispatched = false;
+  let blockedAtDispatch = 0;
   let blocked = 0;
   let sendRequests = 0;
   let nativeDialog = null;
   let response = null;
   let authorizedRequest = null;
+  let stopReason = null;
   let scope;
   let fence;
   let routeChain;
   let signalStop;
   const stopped = new Promise((resolve) => { signalStop = resolve; });
   const stop = (reason) => {
+    stopReason ||= reason;
     armed = false;
     routeChain?.disarm();
     fence?.quarantine();
@@ -293,7 +322,7 @@ export async function amendLabtestContact(page, expected = {}, {
 
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();
-    routeChain = await installLabtestContactSaveRouteChain(page, {
+    const routeSetup = installLabtestContactSaveRouteChain(page, {
       frame,
       fence,
       scope,
@@ -308,6 +337,7 @@ export async function amendLabtestContact(page, expected = {}, {
       onDispatch: (request) => {
         if (request === authorizedRequest) {
           dispatched = true;
+          blockedAtDispatch = blocked;
           armed = false;
         }
       },
@@ -317,7 +347,19 @@ export async function amendLabtestContact(page, expected = {}, {
           if (/send|email|mail/i.test(new URL(request.url()).pathname)) sendRequests += 1;
         } catch { /* Do not expose or retry malformed request targets. */ }
       },
+    }).then(async (chain) => {
+      if (stopReason) {
+        // A registration that completes after the deadline may not grant its
+        // exception. Retain only the page-local deny route and prevent reuse.
+        usedPages.add(page);
+        chain.disarm();
+        await chain.close();
+        return null;
+      }
+      return chain;
     });
+    routeChain = await bounded(routeSetup);
+    if (!routeChain) throw new Error(stopReason || 'AMEND_TIMEOUT');
     usedPages.add(page);
 
     const changed = await bounded(control.evaluate((element, newValue) => {
@@ -348,13 +390,16 @@ export async function amendLabtestContact(page, expected = {}, {
     armed = false;
     await bounded(page.waitForTimeout(500));
     const dialogs = await bounded(frame.locator('.x-window:visible:not(.x-menu)').count());
+    const httpStatus = response?.status() || null;
+    const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
     return {
-      outcome: dispatched && response?.status() === 200 && !nativeDialog && dialogs === 0
-        ? 'awaiting_readback'
-        : possiblyDispatched ? 'uncertain' : 'not_dispatched',
+      outcome: contactAmendOutcome({
+        dispatched, possiblyDispatched, httpStatus, nativeDialog, dialogs, blockedAfterDispatch,
+      }),
       field: fieldKey,
-      httpStatus: response?.status() || null,
+      httpStatus,
       blockedRequests: blocked,
+      blockedRequestsAfterDispatch: blockedAfterDispatch,
       browserSendRequests: sendRequests,
       nativeDialog,
     };
