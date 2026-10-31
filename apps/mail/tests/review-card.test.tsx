@@ -127,7 +127,7 @@ describe('ReviewCard decision', () => {
     await waitFor(() =>
       expect(client.review).toHaveBeenCalledWith({ workItemId: WORK_ITEM, runId: 'run-1', decision: 'ok' }),
     );
-    expect(await screen.findByText('Reviewed OK. This item is done.')).toBeTruthy();
+    expect(await screen.findByText('HMS write reviewed.')).toBeTruthy();
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: 'Review OK' })).toBeNull();
   });
@@ -183,7 +183,7 @@ describe('ReviewCard decision', () => {
     const client = fakeClient();
     renderReview(client);
     fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
-    expect(await screen.findByText('Reviewed OK. This item is done.')).toBeTruthy();
+    expect(await screen.findByText('HMS write reviewed.')).toBeTruthy();
     expect(client.reread).not.toHaveBeenCalled();
   });
 

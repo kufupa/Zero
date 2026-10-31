@@ -125,7 +125,7 @@ export const HMS_WRITE_COPY = {
   reviewLabel: 'What is wrong? A note is needed to flag.',
   reviewOk: 'Review OK',
   flag: 'Flag',
-  reviewedOk: 'Reviewed OK. This item is done.',
+  reviewedOk: 'HMS write reviewed.',
   flagged: 'Flagged. This item is back in Needs you.',
   flagNoteNeeded: 'Add a note saying what is wrong before you flag this write.',
   rereadNeeded: 'HMS was not read again. Re-read HMS before you approve.',
