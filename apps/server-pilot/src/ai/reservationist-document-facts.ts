@@ -355,7 +355,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    .map(m=>({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!}));
   for(const m of authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:`${m[1]} ${m[3]} ${m[4]??''}`.trim(),departure:`${m[2]} ${m[3]} ${m[4]??''}`.trim()});
-  for(const m of authored.matchAll(new RegExp(`\\b(?:arriv(?:al|ing|e)|check[ -]?in|in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure|ing)?|check[ -]?out|out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
+  for(const m of authored.matchAll(new RegExp(`\\b(?:arriv(?:al|ing|e)|check[ -]?in|in)\\s*(?:date\\s*)?(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure|ing)?|check[ -]?out|out)\\s*(?:date\\s*)?(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!});
   for(const m of authored.matchAll(new RegExp(`\\b(\\d{1,3}|one)\\s+nights?\\s+(?:from|starting)\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[2]!,departure:m[2]!,nights:/^one$/i.test(m[1]!)?1:Number(m[1])});
@@ -390,11 +390,11 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const previous=authored.slice(previousStart,lineStart-1).trim();
    // Scope year labels to this range; another stay in the same sentence is not its year context.
    const priorEnd=paired.filter(other=>other!==match&&other.index+other.text.length<=match.index).reduce((last,other)=>Math.max(last,other.index+other.text.length),start);
-   const suffix=authored.slice(match.index+match.text.length,end).match(new RegExp(`^\\s*(?:for|during|in|year|dates?)\\s*[:(]?\\s*(?:(?:${monthPattern})\\s+)?(?:19|20|21|22)\\d{2}\\b`,'i'))?.[0]??'';
+   const suffix=authored.slice(match.index+match.text.length,end).match(new RegExp(`^\\s*[,–-]?\\s*(?:for|during|in|year|dates?)\\s*[:(]?\\s*(?:(?:${monthPattern})\\s+)?(?:19|20|21|22)\\d{2}\\b`,'i'))?.[0]??'';
    const local=authored.slice(Math.max(start,priorEnd),match.index);
    // A sentence-wide "For 2027:" heading also applies to its later stays,
    // unless that stay has an explicit year of its own.
-   const heading=priorEnd>start&&!/\b(?:19|20|21|22)\d{2}\b/.test(local+match.text)
+   const heading=priorEnd>start&&!/\b(?:19|20|21|22)\d{2}\b/.test(local+match.text+suffix)
     ? authored.slice(start,priorEnd).match(/^\s*(?:for|in)\s+(?:19|20|21|22)\d{2}\s*:/i)?.[0]??'' : '';
    return {...match,context:(/^\s*(?:(?:for\s+)?(?:19|20|21|22)\d{2}\s*:|(?:stay\s+)?dates?\s*:\s*(?:19|20|21|22)\d{2})\s*$/i.test(previous)?`${previous} `:'')+heading+local+match.text+suffix};
   });
@@ -476,7 +476,8 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  }
  if(corrects(ownText,[target]))throw new Error('Conflicting alternate stay dates');
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length){
-   if(new RegExp(`\\b\\d{1,2}\\s+and\\s+\\d{1,2}\\s+(?:${monthPattern})\\b`,'i').test(otherText)&&/\bnights?\b/i.test(otherText))throw new Error('Ambiguous alternate stay dates');
+   const otherAuthored=authoredText(otherText);
+   if(new RegExp(`\\b\\d{1,2}\\s+and\\s+\\d{1,2}\\s+(?:${monthPattern})\\b`,'i').test(otherAuthored)&&/\bnights?\b/i.test(otherAuthored))throw new Error('Ambiguous alternate stay dates');
    continue;
   }
   let otherPairs:string[][];try{otherPairs=uniquePairs(found.map(m=>pair(m)));}catch{throw new Error('Ambiguous alternate stay dates');}
