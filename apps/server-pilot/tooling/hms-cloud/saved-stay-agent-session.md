@@ -37,14 +37,17 @@ needed. See [cancellation preflight](guest-stay-cancel-preflight.md).
 
 Writes require the currently read Reserved record and delegate to the Labtest
 actions. The caller must identify the exact authorized Proof Labtest stay and
-respect holds; a matching name alone is not authorization. The underlying
-actions verify HRCEN, 2027+ dates, the fake guest, current fields, NGI, CMS Send
-unchecked, blank CMS recipient and guest email, and blank agency, organization,
-group, A/R and guarantee-card fields. Missing or unverified linked fields are
-refused. The Labtest note and Booker contact amendments and the Test
-Reservations cancellation flow are supported. Single-field and paired Booker
-changes remain subject to the full-form guard and fresh readback described in
-`guest-stay-amend-contact.md`.
+respect holds; a matching name alone is not authorization. The note and Booker
+contact amendments verify HRCEN, 2027+ dates, the fake guest, current fields,
+NGI, CMS Send unchecked, and blank CMS recipient and guest email. They may
+preserve populated primary agency/company fields only when each saved-model
+value and every present form/control value agree and the exact full-record Save
+leaves them unchanged. Missing, ambiguous or changed links, plus nonblank
+secondary-agency, group, A/R or guarantee-card fields, are refused. Cancellation
+retains the stricter rule that all linked-party fields must be blank. The Labtest
+note and Booker contact amendments and the Test Reservations cancellation flow
+are supported. Single-field and paired Booker changes remain subject to the
+full-form guard and fresh readback described in `guest-stay-amend-contact.md`.
 
 After `openCancel` returns `reason_ready`, only `confirmCancel` or closing the
 session is available. Outcomes such as `fee_dialog_pending`, `uncertain` and
