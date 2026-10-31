@@ -201,7 +201,9 @@ export type ReservationistStaffAction = {
   kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
   text: string;
   sourceRef: string;
-  sourceHash: string;
+  /** Missing only when an unread attachment has metadata identity but no verified byte hash. */
+  sourceHash?: string;
+  sourceIdentity?: 'metadata_only';
   sourceKind?: 'message' | 'attachment';
   messageId?: string;
   filename?: string;
@@ -289,7 +291,14 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   }
   for (const recovery of rows(result.sourceRecoveries).slice(0, 64)) {
     if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true) continue;
-    const identity = originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
+    const metadataOnly = recovery.sourceIdentity === 'metadata_only' && recovery.sourceHash === undefined &&
+      recovery.sourceKind === 'attachment' && typeof recovery.sourceRef === 'string' &&
+      typeof recovery.messageId === 'string' && attachmentSources.some(source =>
+        source.sourceRef === recovery.sourceRef && source.messageId === recovery.messageId);
+    if (recovery.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
+    const identity = metadataOnly
+      ? {sourceRef: recovery.sourceRef as string, sourceKind: 'attachment' as const, messageId: recovery.messageId as string, sourceIdentity: 'metadata_only' as const}
+      : originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
     if (!identity || recovery.sourceKind !== identity.sourceKind || typeof recovery.reason !== 'string' || typeof recovery.messageId !== 'string' || !recovery.messageId || (identity.messageId && recovery.messageId !== identity.messageId)) continue;
     const filenameSource = attachmentSources.find(s => s.sourceRef === identity.sourceRef && s.messageId === recovery.messageId);
     const filename = filenameSource && filenameSource.filename.length <= 255 ? filenameSource.filename : undefined;
@@ -301,6 +310,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       no_embedded_text: 'Document text could not be extracted.', page_boundaries_unavailable: 'Document pages could not be identified.',
       ambiguous_number_groups: 'Some number groups may be room numbers or card details. Check the original source.',
       too_large: 'This document exceeds the reading limit.', attachment_total_resource_unavailable: 'This attachment exceeds the available reading budget.', identity_or_authorization_changed: 'The source changed or access is unavailable.',
+      attachment_identity_unavailable: 'This attachment could not be checked; open the original source.',
       encrypted: 'This document is password protected.', timeout: 'Document reading timed out.',
       parser_failure: 'Document reading failed.', too_many_pages: 'This document exceeds the page limit.',
     };
@@ -308,7 +318,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
     if (!reason) continue;
     const sourceLabel = identity.sourceKind === 'message' ? 'Email' : filename ?? 'Attachment';
-    staffActions.push({id: `source:${identity.sourceRef}:${identity.sourceHash}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
+    staffActions.push({id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
       ...(typeof recovery.messageId === 'string' ? {messageId: recovery.messageId} : {}), ...(filename ? {filename} : {}), reason,
       blockingQuote: rows(result.tasks).some(t => t.kind === 'quote' && ['needs_clarification', 'blocked'].includes(String(t.status)) && (
         record(t.requestSource).attachmentId === identity.sourceRef || Array.isArray(t.evidenceRefs) && t.evidenceRefs.includes(identity.sourceRef) ||
