@@ -241,10 +241,12 @@ describe('saved Labtest Booker contact amendment guards', () => {
       await otherPage.goto(origin);
       const unexpectedDuringResponse = await post(otherPage, 'unexpected-during-response');
       expect(unexpectedDuringResponse).toBe('blocked');
+      const unexpectedSendDuringResponse = await send(otherPage);
+      expect(unexpectedSendDuringResponse).toBe('blocked');
       const unexpectedProtectedRead = await readProtectedHeader(page);
       expect(unexpectedProtectedRead).toBe('blocked');
       expect(protectedHeaderArrivals).toBe(0);
-      expect(blockedAfterDispatch).toBe(2);
+      expect(blockedAfterDispatch).toBe(3);
       expect(releaseApprovedResponse).toBeTypeOf('function');
       releaseApprovedResponse?.();
       const httpStatus = await approvedResponseStatus;
@@ -266,16 +268,18 @@ describe('saved Labtest Booker contact amendment guards', () => {
       expect(await post(page)).toBe('blocked');
       await chain.close();
       scope.close();
-      // close() removes only the one-request context exception. The used page
-      // retains its writer-local deny route; other pages use the shared guard.
+      // The exact exception is disarmed, but page and context deny routes stay
+      // installed until their page/context closes.
       expect(await send(page)).toBe('blocked');
       expect(delayedSendArrivals).toBe(0);
       expect(await post(otherPage)).toBe('blocked');
+      expect(await send(otherPage)).toBe('blocked');
+      expect(delayedSendArrivals).toBe(0);
       expect(arrivals).toEqual(['POST']);
       expect(passedFence).toBe(1);
       expect(candidates).toBe(1);
       expect(dispatches).toBe(1);
-      expect(blockedRequests).toBeGreaterThanOrEqual(4);
+      expect(blockedRequests).toBeGreaterThanOrEqual(8);
     } finally {
       releaseApprovedResponse?.();
       scope?.close();

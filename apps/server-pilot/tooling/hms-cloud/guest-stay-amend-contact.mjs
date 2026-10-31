@@ -127,14 +127,25 @@ export async function installLabtestContactSaveRouteChain(page, {
   const isSameFrame = (request) => {
     try { return request.frame() === frame; } catch { return false; }
   };
-  const reportReadOnlyGuardBlock = (request) => {
+  const denyUnapprovedContextRequest = async (route, request) => {
+    const method = String(request.method() || '').toUpperCase();
+    let sendEmailPath = false;
     try {
-      if (shouldAbortReadOnlyRequest({
+      sendEmailPath = /send|email|mail/i.test(new URL(request.url()).pathname);
+    } catch { /* Invalid write targets are still rejected by method below. */ }
+    let sharedGuardWouldBlock = false;
+    try {
+      sharedGuardWouldBlock = shouldAbortReadOnlyRequest({
         method: request.method(),
         url: request.url(),
         postData: request.postData?.(),
-      })) observeBlocked(request);
+      });
     } catch { /* Diagnostics cannot weaken the route decision. */ }
+    if (!SAFE_READ_METHODS.has(method) || sendEmailPath || sharedGuardWouldBlock) {
+      observeBlocked(request);
+      return route.abort();
+    }
+    return route.fallback();
   };
   const contextRoute = async (route) => {
     const request = route.request();
@@ -146,11 +157,9 @@ export async function installLabtestContactSaveRouteChain(page, {
       onDispatch?.(request);
       return route.continue();
     }
-    // This later writer route falls back to the shared read-only guard. Mirror
-    // its pure predicate here so blocked writes from context pages without this
-    // page-local route also invalidate a clean awaiting-readback result.
-    reportReadOnlyGuardBlock(request);
-    return route.fallback();
+    // Deny unexpected mutations and send/email paths throughout this context,
+    // including popup/other-page requests the page-local route cannot see.
+    return denyUnapprovedContextRequest(route, request);
   };
   const pageRoute = async (route) => {
     const request = route.request();
@@ -195,8 +204,8 @@ export async function installLabtestContactSaveRouteChain(page, {
   let contextInstalled = false;
   let pageInstalled = false;
   try {
-    // Registered after installReadOnlyGuard(context): this admits only the exact
-    // candidate object; every other request falls through to the normal guard.
+    // Registered after installReadOnlyGuard(context): only the exact candidate
+    // may continue; unapproved mutations/send paths are denied context-wide.
     await context.route('**/*', contextRoute);
     contextInstalled = true;
     await page.route('**/*', pageRoute);
@@ -214,10 +223,8 @@ export async function installLabtestContactSaveRouteChain(page, {
     disarm: () => { active = false; },
     async close() {
       active = false;
-      // Keep the page-local denial route for the page lifetime. The context
-      // exception is temporary; removing the page guard would reopen delayed
-      // send/email POSTs that the shared context guard does not classify.
-      await context.unroute('**/*', contextRoute).catch(() => {});
+      // Keep both deny routes for the context lifetime. Only the one exact
+      // candidate was ever eligible for the temporary context exception.
     },
   };
 }

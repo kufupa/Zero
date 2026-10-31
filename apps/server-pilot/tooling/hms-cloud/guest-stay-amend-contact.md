@@ -24,10 +24,10 @@ Ext field in that same form, and a preimage matching the saved model. The
 complete submitted record must match that snapshot except for the selected
 contact field. The save request is approved once for its exact request object;
 the writer falls through the page-lifetime request fence, and only its later
-context route can continue that request. The temporary context exception is
-removed when the action ends, but the used page retains its disarmed deny route
-for the rest of its lifetime so delayed send/email requests remain blocked.
-Other pages continue to use only the shared read-only guard.
+context route can continue that request. Once disarmed, the page and context
+deny routes remain installed until their page/context closes. They block
+unapproved mutations and send/email paths on every page in the context; ordinary
+safe reads fall through to the shared read-only guard.
 
 `awaiting_readback` means only that one approved save returned HTTP 200 without
 a dialog or any unexpected blocked request after dispatch. It is not proof HMS
