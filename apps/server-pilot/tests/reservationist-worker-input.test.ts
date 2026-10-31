@@ -37,6 +37,30 @@ describe('reservationist worker input', () => {
     expect(input.capabilities).toEqual({ pmsWrite: false, emailSend: false });
   });
 
+  it('binds quoted history to its own plain or HTML alternative', async () => {
+    const { input } = await build([row('current', 4, {
+      textBody: 'Please rebook the same stay as previously quoted.\nFrom: plain@example.invalid\nSubject: Prior stay\n\nArrival 21 December 2026; departure 23 December 2026',
+      htmlBody: '<p>Please confirm the earlier requested dates.</p><blockquote><p>From: html@example.invalid</p><p>Subject: Alternate prior stay</p><p>Arrival 22 December 2026; departure 24 December 2026</p></blockquote>',
+    })]);
+    const message = input.messages[0]!, [plain, html] = message.sourceViews ?? [];
+    expect(plain?.quoted).toBeDefined();
+    expect(html?.quoted).toBeDefined();
+    expect(message.text.slice(plain!.quoted!.start, plain!.quoted!.end)).toContain('Arrival 21 December 2026');
+    expect(message.text.slice(html!.quoted!.start, html!.quoted!.end)).toContain('Arrival 22 December 2026');
+    expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
+  });
+
+  it('keeps HTML room rows when the plain alternative flattens them', async () => {
+    const { input } = await build([row('current', 4, {
+      textBody: 'Room 1: 1 adult Room 2: 2 adults',
+      htmlBody: '<table><tr><td>Room 1: 1 adult</td></tr><tr><td>Room 2: 2 adults</td></tr></table>',
+    })]);
+    const message = input.messages[0]!;
+    expect(message.text).toContain(HTML_ALTERNATIVE_MARKER);
+    expect(message.text).toMatch(/Room 1: 1 adult[ \t]*\n+Room 2: 2 adults/);
+    expect(message.sourceViews).toHaveLength(2);
+  });
+
   it('uses mailbox arrival for chronological context and excludes later messages and files', async () => {
     const result = await build([
       row('first', 1, { textBody: 'Earlier guest request' }),

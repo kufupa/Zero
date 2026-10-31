@@ -190,8 +190,10 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  if(!page)throw new Error('Cited text source page missing');
  if(!source.sourceViews)return{page,start,end};
  const view=source.sourceViews.find(view=>start>=view.start&&end<=view.end);
- if(!view)throw new Error('Cited text crosses message alternatives');
- return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
+ if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
+ const quoted=source.sourceViews.find(view=>view.quoted&&start>=view.quoted.start&&end<=view.quoted.end)?.quoted;
+ if(!quoted)throw new Error('Cited text crosses message alternatives');
+ return{page:page.slice(quoted.start,quoted.end),start:start-quoted.start,end:end-quoted.start};
 }
 /** The existing next-occurrence convention derives a year, never a printed yearContext. */
 function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource,verification:ValidatedDocumentFact['verification']):{value:{arrival:string;departure:string};convention:NonNullable<ValidatedDocumentFact['convention']>}|undefined{

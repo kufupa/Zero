@@ -67,7 +67,7 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
 
 /** Keep each complete authored alternative, including postscripts, before quoted history. */
 function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
-  const comparable = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const comparable = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
   if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
   const boundary = /^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu;
   const split = (text: string) => {
@@ -78,22 +78,28 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   const [alternativeBody, alternativeTail] = split(alternative);
   let text = '';
   const sourceViews: ReservationistMessageView[] = [];
-  const add = (value: string, name?: ReservationistMessageView['name'], prefix = '') => {
+  const quoted: Partial<Record<ReservationistMessageView['name'], { start: number; end: number }>> = {};
+  const add = (value: string, name?: ReservationistMessageView['name'], prefix = '', history?: ReservationistMessageView['name']) => {
     if (!value) return;
     if (text) text += '\n\n';
     text += prefix;
     const start = text.length;
     text += value;
     if (name) sourceViews.push({ name, start, end: text.length });
+    if (history) quoted[history] = { start, end: text.length };
   };
   add(primaryBody?.trim() ?? '', 'plain');
   // Keep each authored view intact: deleting a repeated line can detach a negation or condition from the next line.
   if (alternativeBody?.trim() && comparable(primaryBody ?? '') !== comparable(alternativeBody))
     add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
-  if (primaryTail?.trim()) add(primaryTail.trim());
+  if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
-    add(alternativeTail.trim(), undefined, '[HTML alternative context]\n');
-  return { text, ...(sourceViews.length === 2 ? { sourceViews } : {}) };
+    add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
+  const views = sourceViews.length === 2 ? sourceViews.map(view => {
+    const history = quoted[view.name];
+    return history ? { ...view, quoted: history } : view;
+  }) : undefined;
+  return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
 /** Separate inspection view: preserve CID positions and meaningful image descriptions. */
