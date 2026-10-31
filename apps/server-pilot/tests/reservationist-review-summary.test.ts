@@ -165,6 +165,16 @@ it('does not silently ignore an unread unknown image or borrow a filename from a
  expect(review.staffActions![0].text).toBe('Attachment: This image could not be read.');
 });
 
+it('shows an unread metadata-only attachment without inventing a content hash',()=>{
+ const recovery={kind:'attachment_manual',sourceRef:'large',sourceIdentity:'metadata_only',sourceKind:'attachment',messageId:'inbound',disclosure:'staff_only',reason:'attachment_identity_unavailable'};
+ const raw={version:1,tasks:[],sourceRecoveries:[recovery]};
+ const review=drafts.buildReservationistReviewSummary(raw,now,[{sourceRef:'large',filename:'rooming.xlsx',messageId:'inbound'}])!;
+ expect(review.staffActions).toHaveLength(1);
+ expect(review.staffActions![0]).toMatchObject({sourceRef:'large',sourceIdentity:'metadata_only',filename:'rooming.xlsx'});
+ expect(review.staffActions![0].sourceHash).toBeUndefined();
+ expect(drafts.buildReservationistReviewSummary(raw,now,[{sourceRef:'large',filename:'other.xlsx',messageId:'other'}])!.staffActions).toEqual([]);
+});
+
 it('does not manufacture actions from generated prose, unbound diagnostics or malformed source identities',()=>{
  const source=requestSource('Is a shuttle available?');
  const review=summary({tasks:[{id:'missing',kind:'question',status:'needs_clarification',guestText:'Please ask about a shuttle.'},{id:'bad',kind:'question',status:'blocked',requestSource:{...source,sourceHash:source.sourceHash+'x'}}],sourceRecoveries:[{kind:'unresolved_fact',reason:'A shuttle may be needed.'},{kind:'attachment_manual',sourceRef:'pdf',reason:'encrypted',sourceKind:'attachment'}]});

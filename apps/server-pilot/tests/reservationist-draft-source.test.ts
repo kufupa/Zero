@@ -1,5 +1,5 @@
 import {afterEach,expect,it,vi} from 'vitest';
-import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
+import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
 import {prepareReservationistChannelBookingSync} from '../src/ai/reservationist-pending-action.js';
 import {validateDocumentPlan} from '../src/ai/reservationist-document-facts.js';
 import {createHash} from 'node:crypto';
@@ -10,6 +10,21 @@ it('rejects changed text, incomplete and malformed source snapshots',()=>{const 
 it('rejects noncausal messages, missing trigger and unknown attachment ownership',()=>{expect(()=>sealReservationistDraftSource({...source,messages:[{...source.messages[0]!,at:'2026-10-06T01:00:00.000Z'}]})).toThrow();expect(()=>sealReservationistDraftSource({...source,messages:[]})).toThrow();expect(()=>sealReservationistDraftSource({...source,attachments:[{attachmentId:'a',messageId:'foreign',s3Key:'attachments/foreign/a',mimeType:'application/pdf',sizeBytes:10,sourceHash:'d'.repeat(64),inline:false}]})).toThrow();});
 
 it('retains more than eight original descriptors but denies an oversized aggregate',()=>{const attachments=Array.from({length:12},(_,i)=>({attachmentId:'a'+i,messageId:'trigger',s3Key:'attachments/trigger/'+i,mimeType:'image/png',sizeBytes:10,sourceHash:'d'.repeat(64),inline:true}));expect(()=>sealReservationistDraftSource({...source,attachments})).not.toThrow();expect(()=>sealReservationistDraftSource({...source,attachments:attachments.map(a=>({...a,sizeBytes:2*1024*1024}))})).toThrow();});
+
+it('seals an unread oversized file by metadata without claiming a content hash',()=>{
+ const file={attachmentId:'large',messageId:'trigger',s3Key:'attachments/trigger/large',mimeType:'application/pdf',sizeBytes:21*1024*1024,inline:false,contentId:null,sourceIdentity:'metadata_only' as const},current={...source,attachments:[file]},sealed=sealReservationistDraftSource(current);
+ expect(sealed.attachments[0]?.sourceHash).toBeUndefined();expect(()=>assertReservationistDraftSource(sealed,current)).not.toThrow();
+ expect(()=>assertReservationistDraftSource(sealed,{...current,attachments:[{...file,contentId:'changed'}]})).toThrow();
+ expect(()=>sealReservationistDraftSource({...current,attachments:[{...file,sourceHash:'d'.repeat(64)}]})).toThrow();
+});
+
+it('requires a visible staff-only recovery for each metadata-only source',()=>{
+ const file={attachmentId:'large',messageId:'trigger',s3Key:'attachments/trigger/large',mimeType:'application/pdf',sizeBytes:21*1024*1024,inline:false,contentId:null,sourceIdentity:'metadata_only' as const},current={...source,attachments:[file]};
+ const recovery={kind:'attachment_manual' as const,reason:'too_large',sourceRef:'large',messageId:'trigger',sourceKind:'attachment' as const,sourceIdentity:'metadata_only' as const,disclosure:'staff_only' as const};
+ const result={version:1 as const,readiness:'needs_clarification',tasks:[],quoteRevisionIds:[],artifactRefs:[],actionDigest:'a'.repeat(64),sourceRecoveries:[recovery]};
+ expect(()=>assertMetadataSourceRecoveries(current,result)).not.toThrow();
+ for(const changed of [{...result,sourceRecoveries:[]},{...result,readiness:'no_action'},{...result,sourceRecoveries:[{...recovery,messageId:'other'}]},{...result,sourceRecoveries:[{...recovery,signatureNoise:true}]}])expect(()=>assertMetadataSourceRecoveries(current,changed)).toThrow();
+});
 
 it('binds a genuine canonical channel receipt to the exact original draft source scope',()=>{
  const text='Please ensure you UPDATE your system. Booking reference CH-123. Arrival 2026-10-12 departure 2026-10-14. Room A: quantity 1, 2 adults, 0 children. Guest Jane Smith room A.',sourceHash=createHash('sha256').update(text).digest('hex'),at=source.causalAt,document={attachmentId:'message:trigger',sourceHash,disclosure:'guest' as const,pages:[text],pageCount:1,observedAt:at};

@@ -1,6 +1,7 @@
 // Source of Business on one guarded, unsaved HRCEN Guest Stay.
 import { randomUUID } from 'node:crypto';
 import { readUnsavedGuestStay } from './booking-lookup-session.mjs';
+import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -393,9 +394,11 @@ export async function selectGuestStaySourceBusiness(page, { searchId, nativeCode
         if (snapshot !== current) stableSince = Date.now();
         else if (Date.now() - stableSince >= 500 && same(fields[0].value, matches[0].description)) {
           await release(page, scope);
+          const profileProofToken = await currentVerifiedLabtestProfileToken(page);
           return { outcome: 'selected_unsaved', searchId, nativeCode: code, candidate: matches[0], ...observed,
             nativeCodeReadback: { outcome: 'unsupported', issue: 'SOURCE_CODE_NOT_EXPOSED_ON_FORM' },
-            identityEvidence: 'unique_current_picker_row_and_description_readback' };
+            identityEvidence: 'unique_current_picker_row_and_description_readback',
+            ...(profileProofToken ? { profileProofToken } : {}) };
         }
         snapshot = current;
       }
