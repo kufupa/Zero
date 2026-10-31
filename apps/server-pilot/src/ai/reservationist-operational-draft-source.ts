@@ -49,7 +49,9 @@ export function deriveOperationalDraftSources(plan:RuntimePlan,result:Pick<Reser
    const answer={kind:topic,value:fact.value as string|boolean,messageId:message.id,sourceHash:sha(message.text),start:match.index!,end:match.index!+match[0].length,quote:match[0],disclosure:'guest' as const};
    try{validateReservationistMailAnswers([answer],input);return[answer];}catch{return[];}
   });
-  if(candidates.length!==1)continue;const answer=candidates[0]!;
+  // MIME alternatives may repeat the same independently validated answer.
+  if(message.sourceViews?message.sourceViews.some(view=>candidates.filter(answer=>answer.start>=view.start&&answer.end<=view.end).length!==1):candidates.length!==1)continue;
+  const answer=candidates[0];if(!answer)continue;
   const proof=operationalDraftProofSchema.parse({task:parsed.data,binding,answer,authority:'causal_guest_mail'});
   if(!isDeepStrictEqual(fact,operationalDraftFact(proof))||result.tasks.filter(t=>isDeepStrictEqual(t,expectedTask(proof))).length!==1)continue;
   proofs.push(proof);

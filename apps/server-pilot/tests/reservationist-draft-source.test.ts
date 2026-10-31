@@ -4,7 +4,8 @@ import {prepareReservationistChannelBookingSync} from '../src/ai/reservationist-
 import {validateDocumentPlan} from '../src/ai/reservationist-document-facts.js';
 import {createHash} from 'node:crypto';
 import {renderReservationistMessage} from '../src/ai/reservationist-worker-input.js';
-import {operationalDraftMessages} from '../src/ai/reservationist-operational-draft-source.js';
+import {deriveOperationalDraftSources,operationalDraftMessages} from '../src/ai/reservationist-operational-draft-source.js';
+import {validateReservationistMailAnswers} from '../src/ai/reservationist-mail-answer-source.js';
 const source={version:1 as const,runId:'run',generationId:'generation',transportId:'owner',propertyCode:'HRCEN',threadId:'thread',requestedByUserId:'user',triggerMessageId:'trigger',causalAt:'2026-10-05T01:00:00.000Z',resultDigest:'e'.repeat(64),messages:[{id:'trigger',at:'2026-10-05T01:00:00.000Z',direction:'inbound' as const,sourceHash:'a'.repeat(64),identityHash:'b'.repeat(64)}],attachments:[]};
 it('seals exact bounded source scope and accepts only its unchanged live contract',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,source)).not.toThrow();});
 it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
@@ -14,6 +15,24 @@ it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  const live=operationalDraftMessages([{...row,transportId:'owner',threadId:'thread'}],{requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN',triggerMessageId:'trigger',causalAt:row.arrivedAt.toISOString()});
  expect(live[0]?.text).toBe(renderReservationistMessage(row).text);expect(live[0]?.at).toBe(original.at);
  const fallback={...row,arrivedAt:null,createdAt:new Date('2026-10-05T02:00:00.000Z')};expect(draftSourceMessage(fallback).at).toBe(fallback.createdAt.toISOString());
+});
+it('proves the same parking answer in both MIME alternatives but rejects a conflict',()=>{
+ const at=new Date('2026-10-05T01:00:00.000Z'),sent=new Date('2026-10-04T01:00:00.000Z');
+ const addresses={transportId:'owner',threadId:'thread',subject:null,ccAddresses:[],bccAddresses:[]};
+ const trigger={...addresses,id:'trigger',direction:'inbound',arrivedAt:at,createdAt:at,receivedAt:at,sentAt:null,textBody:'Is parking available?',htmlBody:null,fromAddress:'guest@example.invalid',toAddresses:['hotel@example.invalid']};
+ const prior={...addresses,id:'reply',direction:'outbound',arrivedAt:sent,createdAt:sent,receivedAt:sent,sentAt:sent,textBody:'Parking is available',htmlBody:'<p>Parking is available.</p>',fromAddress:'hotel@example.invalid',toAddresses:['guest@example.invalid']};
+ const binding={requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN' as const,triggerMessageId:'trigger',causalAt:at.toISOString()};
+ const messages=operationalDraftMessages([prior,trigger],binding),reply=messages.find(m=>m.id==='reply')!,request=messages.find(m=>m.id==='trigger')!;
+ const sourceHash=createHash('sha256').update(reply.text).digest('hex'),quote='Parking is available',start=reply.text.indexOf(quote);
+ const answer={kind:'parking' as const,value:true,messageId:'reply',sourceHash,start,end:start+quote.length,quote,disclosure:'guest' as const};
+ const input={version:1 as const,requestId:'trigger',propertyCode:'HRCEN',trigger:{id:'trigger',at:at.toISOString()},messages,authorizationScope:{ownerRef:'owner',threadId:'thread'},authorizedArtifacts:[],clock:{causalAt:at.toISOString(),sourceAt:at.toISOString(),deadlineAt:Date.now()+10000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+ expect(()=>validateReservationistMailAnswers([answer],input)).not.toThrow();
+ const requestSource={attachmentId:'message:trigger',sourceHash:createHash('sha256').update(request.text).digest('hex'),page:1,start:0,end:request.text.length,quote:request.text};
+ const result={tasks:[{id:'parking',status:'complete',guestText:'Parking is available.',evidenceRefs:['message:reply'],disclosure:'guest',kind:'question',required:true}],preparedFacts:[{key:'parking_parking',label:'parking',value:true,source:'mail',authority:'authorized',status:'known',evidenceRef:'message:reply',sourceHash,scopeVerified:true,disclosure:'guest'}]} as any;
+ expect(deriveOperationalDraftSources({tasks:[{id:'parking',kind:'question',required:true,source:requestSource}],facts:[]},result,binding,[prior,trigger],new AbortController().signal)).toHaveLength(1);
+ const conflict=operationalDraftMessages([{...prior,htmlBody:'<p>Parking is not available.</p>'},trigger],binding);
+ const changed=conflict.find(m=>m.id==='reply')!;
+ expect(()=>validateReservationistMailAnswers([{...answer,sourceHash:createHash('sha256').update(changed.text).digest('hex')}],{...input,messages:conflict})).toThrow('local_answer_source_invalid');
 });
 it.each(['transportId','threadId','requestedByUserId','triggerMessageId'] as const)('rejects foreign %s',key=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,[key]:'foreign'})).toThrow();});
 it('rejects changed text, incomplete and malformed source snapshots',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,messages:[{...source.messages[0]!,sourceHash:'c'.repeat(64)}]})).toThrow();for(const value of [null,{version:1}, {...receipt,extra:true},{...receipt,digest:'0'.repeat(64)}])expect(()=>assertReservationistDraftSource(value,source)).toThrow();});
