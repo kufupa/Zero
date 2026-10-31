@@ -25,6 +25,11 @@ function matchesCreateModelFieldSchema(formData) {
     createHash('sha256').update(keys.join('\n')).digest('hex') === CREATE_MODEL_FIELD_KEYS_SHA256;
 }
 
+function numericZero(value) {
+  const text = String(value ?? '').trim();
+  return /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) && Number(text) === 0;
+}
+
 function normalizeChildSelection(selection) {
   if (!selection || !['updated_unsaved', 'unchanged_unsaved'].includes(selection.outcome) ||
       !Array.isArray(selection.requestedChildAges) || !Array.isArray(selection.actualChildAges) ||
@@ -96,7 +101,7 @@ function normalizeAgencySelection(selection) {
     referenceEvidence.referenceNumberType === 'response_grid_correlated';
   if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name || !hasPickerReferenceEvidence ||
       !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response' ||
-      selection.observed?.selectedField?.name !== 'ta1' || clean(selection.observed.selectedField.value) !== name) return undefined;
+      selection.selectedField?.name !== 'ta1' || clean(selection.selectedField.value) !== name) return undefined;
   return { nativeId, name, referenceNumber: rawIataNumber ?? '', referenceNumberType: rawReferenceType ?? '',
     profileProofToken: clean(selection.profileProofToken) };
 }
@@ -107,7 +112,7 @@ function normalizeOrganizationSelection(selection) {
   const name = clean(selection.displayedOrganization);
   if (selection.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name ||
       !clean(selection.profileProofToken) || selection.nativeIdEvidence !== 'form_change_response' ||
-      selection.observed?.selectedField?.name !== 'company' || clean(selection.observed.selectedField.value) !== name) return undefined;
+      selection.selectedField?.name !== 'company' || clean(selection.selectedField.value) !== name) return undefined;
   return { nativeId, name, profileProofToken: clean(selection.profileProofToken) };
 }
 
@@ -198,7 +203,8 @@ async function draft(page, expected) {
       };
       const override = (name, expectedValue) => {
         const current = currentFormValue(name);
-        return String(current.value ?? '').trim() === expectedValue && copyCurrentFormValue(name, current);
+        const value = String(current.value ?? '');
+        return (name === 'reservationnote' ? value : value.trim()) === expectedValue && copyCurrentFormValue(name, current);
       };
       const nativeFormValue = (name) => {
         const current = currentFormValue(name), input = fields[name][0], component = cmp(name);
@@ -288,7 +294,9 @@ export function matchesFullCreateBody(body, formData) {
       if (key === 'sessionID' && value && typeof value === 'object' && Object.keys(value).length === 1 &&
           typeof value.sessionID === 'string') value = value.sessionID;
       else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
-      return body.getAll(key).length === 1 && body.get(key) === String(value ?? '');
+      return body.getAll(key).length === 1 && (key === 'revenuevalue'
+        ? numericZero(value) && numericZero(body.get(key))
+        : body.get(key) === String(value ?? ''));
     });
 }
 

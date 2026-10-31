@@ -99,12 +99,17 @@ the full 985-key expected snapshot; all other values stay pinned to the model.
 
 The current path has not yet been proven by a dispatched create request. In a
 fresh 2027+ Proof Labtest draft, the intercepted 988-key POST matched the
-selected two-night dates and every reported field check except the exact
-`revenuevalue` string; the route refused it before network dispatch. The
-diagnostic retained only the mismatch flag, not that request value, so no
-alternate revenue serialization is assumed and the full-body guard stays
-fail-closed. A historical one-child POST carried selected adults, child
-count/band, age CSV and source, but does not prove the current path or
+selected two-night dates and every reported field check except the
+`revenuevalue` comparison; the route refused it before network dispatch. The
+diagnostic retained only a mismatch flag, not the request value, so it does
+not establish whether that value was absent, duplicated, nonzero or simply a
+different zero format. Strict proof accepts only a single decimal numeric
+zero in the outgoing field when the read-only model and native form values
+also prove zero; every other key and value remains exact. A historical
+successful one-child POST carried selected adults, child count/band, age CSV
+and source; its captured 988-key body had one `revenuevalue` serialized as `0`
+and an exact two-night date pair. It predates this strict full-body guard and
+does not explain the blocked request or prove the current path or
 zero/multiple-child payloads.
 The selected source's native code is checked in its current model and outgoing
 request, but persisted native-code readback is unsupported; the independent
