@@ -136,6 +136,19 @@ describe('document facts', () => {
     const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'11 November 2026',departure:'16 November 2026'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
     expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
   });
+  it.each([
+    ['Please quote rooms from 12 November 2026 to 14 November 2026.', false],
+    ['Please quote rooms from 13 November 2026 to 16 November 2026.', true],
+  ])('compares a night-count stay with the other alternative', (plain,conflict) => {
+    const html='Please quote 2 rooms for 2 nights from 12 November.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12 November',departure:'2 nights'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    const validate=()=>validateDocumentPlan(plan,[dateSource]);
+    if(conflict)expect(validate).toThrow('Conflicting alternate stay dates');else expect(validate().facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
+  });
   it('keeps the same explicit group arrival valid across alternatives', () => {
     const plain='25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.',html='Stay 11 to 16 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
