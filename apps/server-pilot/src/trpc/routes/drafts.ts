@@ -168,7 +168,7 @@ async function verifyGeneratedAttachments(
   }
 }
 
-async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect) {
+async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect, runId?: string) {
   if (!draft.generationId) return undefined;
   const [run] = await db
     .select({ metrics: aiWorkflowRun.metrics })
@@ -179,6 +179,7 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
         eq(aiWorkflowRun.transportId, draft.transportId),
         eq(aiWorkflowRun.threadId, draft.threadId!),
         eq(aiWorkflowRun.runKind, 'candidate_draft'),
+        runId ? eq(aiWorkflowRun.id, runId) : undefined,
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt))
@@ -1212,7 +1213,7 @@ export const draftsRouter = tRouter({
     .query(async ({ input, ctx }) => {
       const db = getDb(), transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
-      const [match] = await db.select({ draft: mailDraft }).from(aiWorkflowRun)
+      const [match] = await db.select({ draft: mailDraft, runId: aiWorkflowRun.id }).from(aiWorkflowRun)
         .innerJoin(mailDraft, and(eq(mailDraft.generationId, aiWorkflowRun.generationId),
           eq(mailDraft.transportId, aiWorkflowRun.transportId), eq(mailDraft.threadId, aiWorkflowRun.threadId)))
         .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
@@ -1223,7 +1224,7 @@ export const draftsRouter = tRouter({
         .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)).limit(1);
       if (!match) return null;
       return { replyToMessageId: match.draft.replyToMessageId,
-        reviewSummary: await loadDraftReviewSummary(db, match.draft) };
+        reviewSummary: await loadDraftReviewSummary(db, match.draft, match.runId) };
     }),
 
   /**
