@@ -16,6 +16,7 @@ import {
   type AopQuoteRatePlan,
 } from './aop-playbook.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
+import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
 import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
@@ -31,7 +32,6 @@ import {
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
-const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
@@ -252,9 +252,10 @@ export function buildQuoteWorkflowPrompt(
   const attachmentChunks: string[] = [];
   for (const attachment of selection.attachments) {
     if (attachment.text) {
-      attachmentChunks.push(
-        `--- ${attachment.filename} ---\n${maskCardNumbers(attachment.text).slice(0, ATTACHMENT_TEXT_MAX)}`,
-      );
+      const incompleteSpreadsheet = attachment.reviewReason === 'spreadsheet text truncated';
+      const notice = '\n[Later spreadsheet rows were omitted; review the original file.]';
+      const limit = QUOTE_ATTACHMENT_TEXT_MAX_CHARS - (incompleteSpreadsheet ? notice.length : 0);
+      attachmentChunks.push(`--- ${attachment.filename} ---\n${maskCardNumbers(attachment.text).slice(0, limit)}${incompleteSpreadsheet ? notice : ''}`);
     }
     // Scanned PDF bytes cannot be PAN-masked; accepted for model file input only.
     if (attachment.pdf && files.length < MAX_SCANNED_PDFS && isPdfMagic(attachment.pdf)) {

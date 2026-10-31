@@ -47,7 +47,6 @@ import {
   LinkButton,
   Notice,
   PrimaryButton,
-  Section,
   SecondaryButton,
   paneFieldClass,
   paneTextareaClass,
@@ -659,8 +658,9 @@ export function QuoteWorkflowPanel({
       ? undefined
       : session.analysis?.hmsTodoCard;
   if (session.phase === 'non_quote') {
-    // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
-    const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
+    // One notice, plus unread files and readable-source warnings staff need to see.
+    const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && !item.readable);
+    const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
     const amendStays = groupStays(session.groups).filter((stay) => {
       const action = stayAskAction(session, stay.id);
       return action === 'amend' || action === 'cancel';
@@ -681,13 +681,18 @@ export function QuoteWorkflowPanel({
             {item.text}
           </Notice>
         ))}
+        {readableWarnings.map((item) => (
+          <Notice key={item.id} tone="warn">
+            {item.text}
+          </Notice>
+        ))}
       </div>
     );
   }
 
   const openItems = openReviewItems(session);
   // Each unread file has its own notice in the items below, so the generic unread-attachment flag line is left out.
-  const hasUnreadFiles = (session.reviewItems ?? []).some((item) => item.kind === 'document_failure');
+  const hasUnreadFiles = (session.reviewItems ?? []).some((item) => item.kind === 'document_failure' && !item.readable);
   const handledItems = (session.reviewItems ?? []).filter(
     (item) =>
       notNoise(item) &&
