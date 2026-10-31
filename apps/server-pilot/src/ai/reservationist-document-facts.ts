@@ -412,7 +412,10 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const at=marker.index!,start=Math.max(authored.lastIndexOf('\n',at-1),authored.lastIndexOf('.',at-1),authored.lastIndexOf(';',at-1))+1;
    const tail=authored.slice(at).search(/[\n.;!?]/),end=tail<0?authored.length:at+tail,clause=authored.slice(start,end);
    if(!/\b(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|ing|e)|depart(?:ure|ing)?|check[ -]?(?:in|out))\b/i.test(clause)||!new RegExp(token,'iu').test(clause))continue;
-   const prior=found.find(range=>range.index<at);
+   // "New dates instead" places the replacement before the marker; the
+   // superseded range is the one before this correction clause.
+   const replacementBefore=marker[0]!.toLowerCase()==='instead'&&found.some(range=>range.index>=start&&range.index<at);
+   const prior=found.find(range=>range.index<(replacementBefore?start:at));
    try{if(prior&&targets.includes(pair(prior).join('/')))return true;}catch{throw new Error('Ambiguous alternate stay dates');}
   }
   return false;
