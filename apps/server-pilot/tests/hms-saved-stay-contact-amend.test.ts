@@ -123,6 +123,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     const arrivals: string[] = [];
     let delayedSendArrivals = 0;
     let approvedReachedServer = false;
+    let approvedResponseReleased = false;
     let releaseApprovedResponse: (() => void) | undefined;
     const server: Server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
@@ -136,6 +137,8 @@ describe('saved Labtest Booker contact amendment guards', () => {
           if (new URLSearchParams(body).get('intent') === 'approved-once') {
             approvedReachedServer = true;
             releaseApprovedResponse = () => {
+              if (approvedResponseReleased) return;
+              approvedResponseReleased = true;
               response.writeHead(200, { 'content-type': 'text/plain' });
               response.end('ok');
             };
