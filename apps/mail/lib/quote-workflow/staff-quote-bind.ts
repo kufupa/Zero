@@ -827,22 +827,22 @@ export async function bindStaffActions(args: {
           : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
           ? (listed as { drafts: unknown[] }).drafts
           : [];
-      const collected: ReservationistStaffAction[] = [];
       for (const row of rows) {
         if (args.messageId && (!row || typeof row !== 'object' || (row as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
-        const fromList = readStaffActions(row);
-        if (fromList.length) {
-          collected.push(...fromList);
-          continue;
-        }
+        let source = row;
         const id = row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
           ? (row as { id: string }).id
           : '';
-        if (id && args.get) {
-          collected.push(...readStaffActions(await args.get({ id })));
+        const hasSummary = (value: unknown) => value && typeof value === 'object' &&
+          (Boolean((value as { reviewSummary?: unknown }).reviewSummary) || Array.isArray((value as { staffActions?: unknown }).staffActions));
+        if (!hasSummary(source) && id && args.get) {
+          source = await args.get({ id });
+          if (args.messageId && (!source || typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
         }
+        // The server lists newest first. A newer empty summary means older tasks are stale.
+        if (hasSummary(source)) return { kind: 'ready', actions: readStaffActions(source) };
       }
-      return { kind: 'ready', actions: collected };
+      return { kind: 'ready', actions: [] };
     }
     return { kind: 'ready', actions: [] };
   } catch (error) {

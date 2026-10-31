@@ -52,10 +52,17 @@ it('loads review items from the server draft list for the selected message', asy
     sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
     blockingQuote:false,status:'open' };
   const list = vi.fn().mockResolvedValue({threads:[{id:'old',replyToMessageId:'mail-0'},{id:'current',replyToMessageId:'mail-1'}],nextPageToken:null});
-  const get = vi.fn().mockResolvedValue({reviewSummary:{staffActions:[action]}});
+  const get = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
   expect(await bindStaffActions({list,get,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
   expect(get).toHaveBeenCalledOnce();
   expect(get).toHaveBeenCalledWith({id:'current'});
+});
+
+it('does not revive older questions when the newest draft has none', async () => {
+  const list = vi.fn().mockResolvedValue({threads:[{id:'new',replyToMessageId:'mail-1'},{id:'old',replyToMessageId:'mail-1'}]});
+  const get = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[]}});
+  expect(await bindStaffActions({list,get,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[]});
+  expect(get).toHaveBeenCalledOnce();
 });
 
 describe('HRDAV native room and board maps', () => {
