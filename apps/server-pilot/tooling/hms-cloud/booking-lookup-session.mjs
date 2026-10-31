@@ -390,15 +390,21 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
     // A single HMS page has one current picker/form; concurrent tool calls would race it.
-    let queue = Promise.resolve();
+    let queue = Promise.resolve(), accepting = true;
     const runTool = (request) => {
-      const pending = queue.then(() => runBookingLookupTool(context, request));
+      let input;
+      try { input = structuredClone(request); }
+      catch { return Promise.resolve({ id: null, tool: null, outcome: 'input_gap', issue: 'invalid_request' }); }
+      if (!accepting) return Promise.resolve({ id: input?.id ?? null, tool: input?.tool ?? null,
+        outcome: 'refused', issue: 'SESSION_CLOSED' });
+      const pending = queue.then(() => runBookingLookupTool(context, input));
       queue = pending.catch(() => {});
       return pending;
     };
     try {
       return await operation({ ...context, memoryStatus: loaded.status, runTool });
     } finally {
+      accepting = false;
       await queue;
       page.off('dialog', onDialog);
       unexpectedNativeDialogs.delete(page);
