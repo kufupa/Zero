@@ -107,7 +107,7 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   if (hasText && (!inspectAlternateHtml || html.length > 2_000_000))
     return { texts: [normalized], describedCids, preserveAll: true };
   const $ = load(html, null, false);
-  $('details.quoted-toggle, blockquote').before('\nFrom: quoted history\n');
+  $('details.quoted-toggle, blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').before('\nFrom: quoted history\n');
   $('img').each((_, element) => {
     const src = $(element).attr('src')?.trim() ?? '';
     const alt = $(element).attr('alt')?.trim() ?? '';

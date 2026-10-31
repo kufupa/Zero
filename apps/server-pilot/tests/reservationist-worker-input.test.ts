@@ -116,6 +116,23 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
   });
 
+  it('keeps a business image labelled Quote after the signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote one room.\nKind regards\nQuote:\ncid:offer',
+    })], [{ id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+  });
+
+  it('keeps quoted Gmail HTML images after the sender signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote one room.\nKind regards\nGuest',
+      htmlBody: '<p>Please quote one room.</p><p>Kind regards</p><p>Guest</p><div class="gmail_quote"><img src="cid:offer"></div>',
+    })], [{ id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+  });
+
   it('keeps an HTML heading-labelled business image after the signoff', async () => {
     const result = await build([row('current', 4, {
       textBody: null,
