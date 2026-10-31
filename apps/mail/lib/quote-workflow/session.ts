@@ -1909,7 +1909,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,
@@ -2207,11 +2207,19 @@ export function reduceQuoteSession(
       const template = matching[matching.length - 1];
       if (!template) return session;
       const stayId = stayIdOf(template);
-      const row = blankRow(`r_${action.token}`, stayId, {
-        arrivalDate: template.arrivalDate,
-        departureDate: template.departureDate,
-        board: template.board,
-      });
+      const row = {
+        ...blankRow(`r_${action.token}`, stayId, {
+          arrivalDate: template.arrivalDate,
+          departureDate: template.departureDate,
+          board: template.board,
+        }),
+        ...(template.adultsTotal !== undefined ? { adultsTotal: template.adultsTotal } : {}),
+        ...(template.childrenTotal !== undefined ? { childrenTotal: template.childrenTotal } : {}),
+        fields: {
+          ...(template.fields.adultsTotal !== undefined ? { adultsTotal: template.fields.adultsTotal } : {}),
+          ...(template.fields.childrenTotal !== undefined ? { childrenTotal: template.fields.childrenTotal } : {}),
+        },
+      };
       const groups = syncTotalRoomsForStay(
         session,
         insertAfterStay(pinStay(session.groups, stayId), stayId, [row]),
