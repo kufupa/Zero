@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { admitReservationistAttachment } from '../src/ai/reservationist-attachment-input.js';
 import { buildReservationistWorkerInput, type ReservationistWorkerMessage } from '../src/ai/reservationist-worker-input.js';
+import { createReservationistDependencies } from '../src/ai/reservationist-execution.js';
+import { runReservationistRuntime } from '../src/ai/reservationist-runtime.js';
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
 
 const base = Date.now() - 600_000;
 const at = (minutes: number) => new Date(base + minutes * 60_000);
@@ -117,6 +120,24 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((a) => a.metadata.attachmentId)).toEqual(['rooms']);
   });
 
+  it.each([false, true])('keeps an image requested only by an HTML alternative (prior image: %s)', async (prior) => {
+    const admit = vi.fn(async (metadata: any) => ({ status: 'manual_required' as const, reason: 'needs_review', metadata, draftReady: false as const }));
+    const first = row(prior ? 'first' : 'current', prior ? 1 : 4, {
+      textBody: 'Please proceed.\nKind regards\ncid:rooms',
+      htmlBody: prior
+        ? '<p>Please proceed.</p><p>Kind regards</p><img src="cid:rooms">'
+        : '<p>Please use the image below for the room allocation.</p><p>Kind regards</p><img src="cid:rooms">',
+    });
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: prior ? [first, row('current', 4, { textBody: 'Please proceed.', htmlBody: '<p>Please use the prior image for the room allocation.</p>' })] : [first],
+      attachments: [{ id: 'rooms', messageId: first.id, mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rooms', disclosure: 'guest' }],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000, signal: new AbortController().signal, admit,
+    });
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((a) => a.metadata.attachmentId)).toEqual(['rooms']);
+  });
+
   it('keeps an over-budget attachment as manual review without reading it', async () => {
     const admit = vi.fn(async (metadata: any) => ({
       status: 'admitted' as const, reason: 'text', metadata, draftReady: false as const,
@@ -162,6 +183,54 @@ describe('reservationist worker input', () => {
     expect(result.ignoredSignatures).toBe(1);
     expect(result.admissions).toEqual([]);
     expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('turns HTML-only mail into masked text with paragraph and quoted-history boundaries', async () => {
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: null, htmlBody:
+        '<p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p>' +
+        '<p>Card date 2027-05-12</p><div><p>4111</p><p>1111</p><p>1111</p><p>1111</p></div><p>CVV: <span>123</span></p>' +
+        '<blockquote><p>Earlier request.</p></blockquote>' })], attachments: [],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const text = result.input.messages[0]!.text;
+    expect(text).toContain('Please send the invoice.\n');
+    expect(text).toContain('Notify us if this reached you by mistake.');
+    expect(text).toContain('[card ••••1111]');
+    expect(text).toContain('2027-05-12');
+    expect(text).toContain('CVV: [code masked]');
+    expect(text).toContain('From: quoted history');
+    expect(text.indexOf('From: quoted history')).toBeLessThan(text.indexOf('Earlier request.'));
+    expect(text).not.toMatch(/<[^>]+>|4111[\s-]*1111[\s-]*1111[\s-]*1111|CVV:\s*123/i);
+  });
+
+  it('runs an HTML-only invoice request through the actual task boundary with masked model input', async () => {
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: null, htmlBody: '<p>Reservation ABC123.</p><p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p><p>4111<br>1111<br>1111<br>1111</p>' })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const text = built.input.messages[0]!.text;
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote, start: text.indexOf(quote), end: text.indexOf(quote) + quote.length });
+    const adapter: ModelAdapter = { invoke: vi.fn(async (request) => {
+      expect(request.userPrompt).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
+      return { modelId: 'gpt-6-luna', output: {
+        facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source('Reservation ABC123.') }],
+        tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source('Please send the invoice.') }], unresolvedAsks: [],
+      }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } };
+    }) };
+    const resolve = vi.fn(async () => { throw new Error('existing_document_source_unavailable'); });
+    const factory = createReservationistDependencies({ adapter, admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: { resolveExistingDocument: resolve, authorizeExistingDocument: async () => null },
+    });
+    const result = await runReservationistRuntime(built.input, factory.dependencies);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(result.tasks[0]!.status).toBe('needs_clarification');
+    expect(result.tasks[0]!.guestText).toMatch(/invoice/i);
   });
 
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {

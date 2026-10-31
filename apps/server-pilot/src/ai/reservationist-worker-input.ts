@@ -1,4 +1,4 @@
-import { maskCardNumbers } from './card-mask.js';
+import { isLuhnValid, maskCardNumbers } from './card-mask.js';
 import { normalizeMessageText } from './thread-context.js';
 import { load } from 'cheerio';
 import { normalizeContentId } from '../mail/cid-images.js';
@@ -40,15 +40,42 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
+/** Plain text retains paragraph and quote boundaries for source spans and masking. */
+function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
+  if (row.textBody?.trim() || !normalized.includes('<')) return maskCardNumbers(normalized);
+  const $ = load(normalized, null, false);
+  $('details.quoted-toggle, blockquote').each((_, element) => {
+    $(element).prepend('\nFrom: quoted history\n');
+    $(element).children('summary').remove();
+  });
+  $('br, hr').replaceWith('\n');
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
+    $(element).prepend('\n').append('\n');
+  });
+  $('img').each((_, element) => { $(element).replaceWith($('<span>').text($(element).attr('alt') ?? '')); });
+  const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
+  // HTML may put each group of a card number on a separate visual line. Mask
+  // such Luhn-valid spans before the normal line-bounded text masker runs;
+  // split dates first so an adjacent date cannot hide a card or be joined to it.
+  const parts = rendered.split(/((?<!\d)(?:\d{4}[-./]\d{2}[-./]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})(?!\d))/);
+  const cardsMasked = parts.map((part, index) => index % 2 === 1 ? part : part.replace(/(?<!\d)(?:\d[ \t\r\n-]{0,8}){13,19}(?!\d)/g, (candidate) => {
+    const digits = candidate.replace(/[ \t\r\n-]/g, '');
+    if (!isLuhnValid(digits)) return candidate;
+    const tail = candidate.match(/[ \t\r\n-]+$/)?.[0] ?? '';
+    return `[card ••••${digits.slice(-4)}]${tail}`;
+  })).join('');
+  return maskCardNumbers(cardsMasked);
+}
+
 /** Separate inspection view: preserve CID positions and meaningful image descriptions. */
 function signatureInspection(row: ReservationistWorkerMessage, normalized: string, inspectAlternateHtml: boolean) {
   const hasText = Boolean(row.textBody?.trim());
   const html = hasText ? row.htmlBody : normalized;
   const describedCids = new Set<string>();
-  if (!html || !html.includes('<')) return { text: normalized, describedCids, preserveAll: false };
+  if (!html || !html.includes('<')) return { texts: [normalized], describedCids, preserveAll: false };
   // An oversized unused HTML alternative is never parsed; keep its images instead.
   if (hasText && (!inspectAlternateHtml || html.length > 2_000_000))
-    return { text: normalized, describedCids, preserveAll: true };
+    return { texts: [normalized], describedCids, preserveAll: true };
   const $ = load(html, null, false);
   $('details.quoted-toggle, blockquote').before('\nFrom: quoted history\n');
   $('img').each((_, element) => {
@@ -59,10 +86,12 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
     if (cid && alt && !/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt)) describedCids.add(cid);
     $(element).replaceWith($('<span>').text(cid ? ` ${alt} ${src} ` : ` ${alt} `));
   });
-  if (hasText) return { text: normalized, describedCids, preserveAll: false };
   $('br').replaceWith('\n');
   $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
-  return { text: $.root().text(), describedCids, preserveAll: false };
+  const htmlText = $.root().text();
+  // A multipart message can contain a request only in its HTML alternative.
+  // Omit an image only when every available view agrees it is signature noise.
+  return { texts: hasText ? [normalized, htmlText] : [htmlText], describedCids, preserveAll: false };
 }
 
 /**
@@ -142,11 +171,12 @@ export async function buildReservationistWorkerInput(options: {
     throw new Error('worker_intake_context_limit');
   check();
   selected.sort((a, b) => a.at - b.at || a.row.id.localeCompare(b.row.id));
+  const normalized = new Map(selected.map(({ row }) => [row.id, normalizeMessageText(row)]));
   const messages = selected.map(({ row, at }) => ({
     id: row.id,
     at: new Date(at).toISOString(),
     direction: row.direction,
-    text: maskCardNumbers(normalizeMessageText(row)),
+    text: modelMessageText(row, normalized.get(row.id)!),
     ...(row.subject ? { subject: maskCardNumbers(row.subject) } : {}),
     disclosure: row.disclosure,
   }));
@@ -161,7 +191,8 @@ export async function buildReservationistWorkerInput(options: {
   const selectedById = new Map(selected.map(({ row, at }) => [row.id, { row, at }]));
   const alternateHtmlSize = selected.reduce((sum, { row }) => sum + (row.textBody?.trim() ? row.htmlBody?.length ?? 0 : 0), 0);
   const signatureViews = new Map(messages.map((message) => [message.id,
-    signatureInspection(selectedById.get(message.id)!.row, message.text, alternateHtmlSize <= 8_000_000)]));
+    signatureInspection(selectedById.get(message.id)!.row, normalized.get(message.id)!, alternateHtmlSize <= 8_000_000)]));
+  const preserveAllImages = [...signatureViews.values()].some((view) => view.preserveAll);
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
   const admissions: AttachmentAdmission[] = [];
@@ -173,13 +204,13 @@ export async function buildReservationistWorkerInput(options: {
     const sourceView = signatureViews.get(attachment.messageId)!;
     const cid = attachment.contentId ? normalizeContentId(attachment.contentId) : null;
     // An intervening causal message can make a prior footer image relevant.
-    const signatureNoise = !sourceView.preserveAll && !(cid && sourceView.describedCids.has(cid)) && messages.every((message) => isReservationistSignatureNoise({
-      messageText: sourceView.text,
+    const signatureNoise = !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && sourceView.texts.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
+      messageText: sourceText,
       currentSubject: message.subject,
-      currentRequestText: signatureViews.get(message.id)!.text,
+      currentRequestText: requestText,
       attachment,
       attachments: relevant,
-    }));
+    }))));
     if (signatureNoise) { ignoredSignatures++; continue; }
     if (admissions.length >= 64) throw new Error('worker_intake_attachment_limit');
     if (!attachment.id || !Number.isSafeInteger(attachment.sizeBytes) || attachment.sizeBytes < 0)
