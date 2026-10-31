@@ -112,9 +112,10 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
     const src = $(element).attr('src')?.trim() ?? '';
     const alt = $(element).attr('alt')?.trim() ?? '';
     const cid = /^cid:/i.test(src) ? normalizeContentId(src) : null;
+    const usefulAlt = /^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt;
     // Unknown descriptions can describe business content; only generic signature labels are disposable.
-    if (cid && alt && !/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt)) describedCids.add(cid);
-    $(element).replaceWith($('<span>').text(cid ? ` ${alt} ${src} ` : ` ${alt} `));
+    if (cid && usefulAlt) describedCids.add(cid);
+    $(element).replaceWith($('<span>').text(cid ? ` ${usefulAlt} ${src} ` : ` ${usefulAlt} `));
   });
   $('br').replaceWith('\n');
   $('td, th').append('\t');
