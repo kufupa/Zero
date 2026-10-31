@@ -8,5 +8,6 @@ export function validReservationistMessageViews(text: string, views: unknown): v
   const [plain, html] = views as ReservationistMessageView[];
   return plain?.name === 'plain' && html?.name === 'html' && plain.start === 0 &&
     [plain, html].every(v => Number.isSafeInteger(v.start) && Number.isSafeInteger(v.end) && v.start >= 0 && v.end > v.start && v.end <= text.length) &&
-    text.slice(plain.end, html.start) === `\n\n${HTML_ALTERNATIVE_MARKER}`;
+    text.slice(plain.end, html.start) === `\n\n${HTML_ALTERNATIVE_MARKER}` &&
+    (html.end === text.length || /^\n\n(?:\[HTML alternative context\]\n)?(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/i.test(text.slice(html.end)));
 }
