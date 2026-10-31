@@ -26,6 +26,8 @@ export type ReservationistWorkerMessage = {
   /** Mailbox arrival, not a sender-supplied timestamp. */
   arrivedAt: Date | null;
   createdAt: Date;
+  pop3Uidl?: string | null;
+  sourceProvenance?: Record<string, unknown> | null;
 };
 
 export type ReservationistWorkerAttachment = {
@@ -73,8 +75,12 @@ export function renderReservationistMessage(row: Pick<ReservationistWorkerMessag
     ? modelMessageText({ textBody: null, htmlBody: row.htmlBody }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : '');
 }
 
-export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null }) {
-  return row.direction === 'outbound' ? row.sentAt : row.arrivedAt ?? row.createdAt ?? row.receivedAt ?? null;
+/** POP3's sentAt is copied from the email Date header; use its observed arrival instead. */
+export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null; pop3Uidl?: string | null; sourceProvenance?: Record<string, unknown> | null }) {
+  const importedPop3 = row.pop3Uidl != null && row.sourceProvenance?.canonicalContentVersion == null;
+  if (row.direction === 'outbound')
+    return importedPop3 ? row.arrivedAt ?? row.createdAt ?? null : row.sentAt;
+  return row.arrivedAt ?? row.createdAt ?? row.receivedAt ?? null;
 }
 
 /** A past reply is guest-visible only when addressed to the current guest. */
@@ -197,7 +203,7 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  // Use trusted mailbox arrival for inbound and confirmed send time for outbound.
+  // Use mailbox arrival for POP3, and confirmed send time for native outbound mail.
   const triggerAt = time(trigger.arrivedAt);
   if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
@@ -205,8 +211,8 @@ export async function buildReservationistWorkerInput(options: {
   const selected: Array<{ row: ReservationistWorkerMessage; at: number }> = [];
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
-    const at = time(row.direction === 'outbound' ? row.sentAt : row.arrivedAt);
-    // Queued outbound rows and imported outbound rows without a proven send clock are not context.
+    const at = time(reservationistMessageAt(row));
+    // Queued native outbound rows without a confirmed send are not context.
     if (at === null) { if (row.direction === 'outbound') continue; throw new Error('worker_intake_clock_invalid'); }
     if (at > triggerAt) continue;
     if (at === triggerAt) throw new Error('worker_intake_order_ambiguous');
