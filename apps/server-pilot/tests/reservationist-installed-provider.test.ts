@@ -124,20 +124,21 @@ it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a re
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
   vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
   state.quoteConfigAvailable = false;
-  const text = 'Please cancel reservation ABC123.';
+  const text = 'Please cancel reservation 12345678.';
   const value = input(text), hash = createHash('sha256').update(text).digest('hex');
-  const start = text.indexOf('ABC123');
+  const start = text.indexOf('12345678');
   const referenceSource = { attachmentId: 'message:message', sourceHash: hash, page: 1,
-    quote: 'ABC123', start, end: start + 'ABC123'.length };
+    quote: '12345678', start, end: start + '12345678'.length };
   const taskSource = { attachmentId: 'message:message', sourceHash: hash, page: 1,
     quote: text, start: 0, end: text.length };
   const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
     ...response(),
-    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: referenceSource, disclosure: 'guest' }],
+    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: '12345678', source: referenceSource, disclosure: 'guest' }],
       tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: taskSource }], unresolvedAsks: [] },
   })) };
   const observedAt = new Date().toISOString();
   const sessionSignals: AbortSignal[] = [];
+  const readConfirmations: string[] = [];
   const provider = await createInstalledReservationistProvider(model, async (operation, options) => {
     if (options?.signal) sessionSignals.push(options.signal);
     expect(state.locked).toBe(true);
@@ -145,12 +146,15 @@ it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a re
       expect(state.locked).toBe(true);
       state.cancellationCalls.push(request.tool);
       if (request.tool === 'read') {
-        expect(request.confirmation).toBe('ABC123');
-        return { outcome: 'ok' };
+        readConfirmations.push(request.confirmation);
+        if (request.confirmation === '12345678') return {
+          outcome: 'read_failed', issue: 'CONFIRMATION_NOT_FOUND', searchResults: { displayed: 1, total: 1, complete: true },
+        };
+        return { outcome: 'ok', shallow: { confirmation: '12345678-1' } };
       }
       return {
         outcome: 'prepared_for_human_review', observedAt,
-        target: { confirmation: 'ABC123', verified: true },
+        target: { confirmation: '12345678-1', verified: true },
         stay: {
           status: { state: 'observed', value: status },
           arrivalDate: { state: 'observed', value: 'Mon 12-Oct-2026' },
@@ -166,16 +170,49 @@ it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a re
 
   expect(result.readiness).toBe(status === 'Reserved' ? 'pending_pms_action' : 'needs_clarification');
   if (status === 'Reserved') expect(result.packets[0]).toMatchObject({
-    kind: 'cancel_request', saved: false, businessRulesValidated: false,
+    kind: 'cancel_request', saved: false, businessRulesValidated: false, reservationRef: '12345678',
     current: { arrivalDate: '2026-10-12', departureDate: '2026-10-14' },
     cancellationReview: { fee: { state: 'unknown_precommit', amount: null, currency: null },
       action: { cancellationStarted: false, commitAvailable: false } },
   });
   else expect(result.packets).toEqual([]);
-  expect(state.cancellationCalls).toEqual(['read', 'prepareCancellation']);
+  expect(state.cancellationCalls).toEqual(['read', 'read', 'prepareCancellation']);
+  expect(readConfirmations).toEqual(['12345678', '12345678-1']);
   expect(sessionSignals).toHaveLength(1);
   expect(sessionSignals[0]).toBeInstanceOf(AbortSignal);
   expect(state.locked).toBe(false);
+});
+
+it('does not retry a bare reference when the complete base search has multiple records', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  state.quoteConfigAvailable = false;
+  const text = 'Please cancel reservation 12345678.';
+  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  const start = text.indexOf('12345678');
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+    ...response(),
+    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: '12345678', source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: '12345678', start, end: start + 8,
+    }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: text, start: 0, end: text.length,
+    } }], unresolvedAsks: [] },
+  })) };
+  const readConfirmations: string[] = [];
+  const provider = await createInstalledReservationistProvider(model, async (operation) => operation({
+    runTool: async (request) => {
+      state.cancellationCalls.push(request.tool);
+      if (request.tool !== 'read') throw new Error('preflight_must_not_run');
+      readConfirmations.push(request.confirmation);
+      return { outcome: 'read_failed', issue: 'CONFIRMATION_NOT_FOUND', searchResults: { displayed: 2, total: 2, complete: true } };
+    },
+  }))(context(value));
+  const result = await runReservationistRuntime(value, provider.dependencies);
+
+  expect(result.readiness).toBe('needs_clarification');
+  expect(result.packets).toEqual([]);
+  expect(state.cancellationCalls).toEqual(['read']);
+  expect(readConfirmations).toEqual(['12345678']);
 });
 
 it('does not read a reservation reference outside the current cancellation clause', async () => {

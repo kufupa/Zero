@@ -1,6 +1,7 @@
 import { RESERVATION_EVIDENCE_TTL_MS } from '../hms/adapter.js';
 import { createPostgresPropertyReadLock, propertyReadLockKey } from '../hms/property-read-lock.js';
 import { assertHmsReadOriginAllowed } from '../hms/hms-read-target.js';
+import { confirmationMatches, confirmationSearchValues } from '../hms/confirmation-match.js';
 import { isDocxMimeType } from '../mail/artifacts/read-artifact.js';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,7 +19,10 @@ type CancellationToolRequest =
   | { tool: 'prepareCancellation'; requestedScope: 'unspecified' };
 type CancellationToolResult = {
   outcome?: unknown;
+  issue?: unknown;
   observedAt?: unknown;
+  searchResults?: { complete?: unknown; total?: unknown };
+  shallow?: { confirmation?: unknown };
   target?: { confirmation?: unknown; verified?: unknown };
   stay?: {
     status?: { state?: unknown; value?: unknown };
@@ -232,15 +236,34 @@ export function createInstalledReservationistProvider(
 
               await fresh(ctx.input);
               await assertOrigin();
+              let resolvedConfirmation: string | null = null;
               const session = savedStaySession(async ({ runTool }) => {
-                const read = await runTool({ tool: 'read', confirmation: ref.value });
-                if (read.outcome !== 'ok') throw new Error('reservation_read_unavailable');
+                const attempts = confirmationSearchValues(ref.value);
+                for (const [index, attempt] of attempts.entries()) {
+                  const read = await runTool({ tool: 'read', confirmation: attempt.searchValue });
+                  if (read.outcome === 'ok') {
+                    const selected = read.shallow?.confirmation;
+                    if (typeof selected !== 'string' || !confirmationMatches(ref.value, selected))
+                      throw new Error('reservation_read_target_unavailable');
+                    resolvedConfirmation = selected;
+                    break;
+                  }
+                  const next = attempts[index + 1];
+                  const resultCount = read.searchResults?.total;
+                  if (!next || attempt.matchedBy !== 'confirmation' || next.matchedBy !== 'confirmation_leg_retry' ||
+                      read.outcome !== 'read_failed' || read.issue !== 'CONFIRMATION_NOT_FOUND' ||
+                      read.searchResults?.complete !== true || (resultCount !== 0 && resultCount !== 1))
+                    throw new Error('reservation_read_unavailable');
+                }
+                if (!resolvedConfirmation) throw new Error('reservation_read_unavailable');
+                // The source-bound packet retains the reference text the guest actually supplied.
                 return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
               }, { signal: ctx.signal });
               activeCancellationSessions.add(session);
               let preflight: CancellationToolResult;
               try { preflight = await session; }
               finally { activeCancellationSessions.delete(session); }
+              if (!resolvedConfirmation) throw new Error('cancellation_preflight_unavailable');
               ctx.signal.throwIfAborted();
               await fresh(ctx.input);
               await assertOrigin();
@@ -249,7 +272,7 @@ export function createInstalledReservationistProvider(
               const observedAt = typeof preflight.observedAt === 'string' ? preflight.observedAt : '';
               const arrivalDate = await normalizeHmsDate(preflight.stay?.arrivalDate?.value);
               const departureDate = await normalizeHmsDate(preflight.stay?.departureDate?.value);
-              if (!cancellationReview || preflight.target?.confirmation !== ref.value || preflight.target?.verified !== true ||
+              if (!cancellationReview || preflight.target?.confirmation !== resolvedConfirmation || preflight.target?.verified !== true ||
                   preflight.stay?.status?.state !== 'observed' || preflight.stay?.status?.value !== 'Reserved' ||
                   preflight.stay?.arrivalDate?.state !== 'observed' || preflight.stay?.departureDate?.state !== 'observed' ||
                   !arrivalDate || !departureDate || !Number.isFinite(Date.parse(observedAt)) || Date.parse(observedAt) > Date.now())
@@ -262,8 +285,8 @@ export function createInstalledReservationistProvider(
                 authorizationId: context.generationId,
                 propertyCode: ctx.input.propertyCode,
                 reservationRef: ref.value,
-                sourceRef: `hms-record:${quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: ref.value }).slice(0, 24)}`,
-                sourceHash: quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: ref.value, observedAt, current, cancellationReview }),
+                sourceRef: `hms-record:${quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: resolvedConfirmation }).slice(0, 24)}`,
+                sourceHash: quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: resolvedConfirmation, observedAt, current, cancellationReview }),
                 observedAt,
                 expiresAt: new Date(Date.parse(observedAt) + RESERVATION_EVIDENCE_TTL_MS).toISOString(),
                 maxSourceAgeMs: RESERVATION_EVIDENCE_TTL_MS,
