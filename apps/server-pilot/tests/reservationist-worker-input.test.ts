@@ -89,6 +89,8 @@ describe('reservationist worker input', () => {
 
   it.each([
     { subject: 'Use the prior image for the room allocation', textBody: 'Please proceed.' },
+    { subject: 'Subject: use the prior image', textBody: 'Please proceed.' },
+    { subject: 'Subject: room amendment', textBody: 'Please use the prior image.' },
     { subject: null, textBody: 'Please proceed.\nKind regards\nStaff\nP.S. Please use that image.' },
   ])('keeps a prior image referenced in a subject or postscript', async (request) => {
     const image = { id: 'logo', messageId: 'first', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' as const };

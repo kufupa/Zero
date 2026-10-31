@@ -26,7 +26,7 @@ export type ReservationistAttachmentMetadata = {
   signatureNoise?: boolean;
 };
 /** Only a unique exact CID wholly below an original signoff is disposable. */
-export function isReservationistSignatureNoise(input:{messageText:string;currentRequestText:string;attachment:{id:string;messageId:string;isInline:boolean;contentId:string|null;mimeType:string};attachments:readonly {id:string;messageId:string;contentId:string|null}[]}):boolean{
+export function isReservationistSignatureNoise(input:{messageText:string;currentRequestText:string;currentSubject?:string;attachment:{id:string;messageId:string;isInline:boolean;contentId:string|null;mimeType:string};attachments:readonly {id:string;messageId:string;contentId:string|null}[]}):boolean{
  const {attachment,messageText,currentRequestText}=input;
  if(!attachment.isInline||!/^image\/(?:png|jpeg|gif|webp)$/.test(attachment.mimeType)||messageText.length>40000||currentRequestText.length>40000||!attachment.contentId)return false;
  const cid=normalizeContentId(attachment.contentId);
@@ -43,7 +43,7 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  // Explicit dates below refer to the authored calendar text. Preserve every
  // other reference and any separately stated attachment dependency.
  const withoutDateReference=(text:string)=>text.replace(/\bdates\s+below\b/gi,'dates');
- if(dependency.test(withoutDateReference(authored.slice(0,signoffAt)))||dependency.test(withoutDateReference(currentRequest))||/\b(?:please|kindly|can you|could you|request|attached|enclosed)\b[^.!?;\r\n]{0,120}\b(?:quote|quotation|rooms?|stay|booking|reservation|invoice|voucher|payment|allocation|attachment|document|image)\b/i.test(authored.slice(signoffAt))||/\b(?:please|kindly|can you|could you|use|add|include|put|place|copy|show|insert|see|read|refer)\b[^.!?;\r\n]{0,120}\b(?:attachment|image|picture|photo|scan|document|logo|banner|signature|footer|it|this|that|them|these|those)\b/i.test(postscript))return false;
+ if(dependency.test(withoutDateReference(authored.slice(0,signoffAt)))||dependency.test(withoutDateReference(input.currentSubject??''))||dependency.test(withoutDateReference(currentRequest))||/\b(?:please|kindly|can you|could you|request|attached|enclosed)\b[^.!?;\r\n]{0,120}\b(?:quote|quotation|rooms?|stay|booking|reservation|invoice|voucher|payment|allocation|attachment|document|image)\b/i.test(authored.slice(signoffAt))||/\b(?:please|kindly|can you|could you|use|add|include|put|place|copy|show|insert|see|read|refer)\b[^.!?;\r\n]{0,120}\b(?:attachment|image|picture|photo|scan|document|logo|banner|signature|footer|it|this|that|them|these|those)\b/i.test(postscript))return false;
  const refs=[...messageText.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)].filter(ref=>normalizeContentId(ref[1]!)===cid);
  return refs.length>0&&refs.every(ref=>ref.index!>signoffAt&&(historyAt<0||ref.index!<historyAt));
 }

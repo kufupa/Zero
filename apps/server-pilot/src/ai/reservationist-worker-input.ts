@@ -175,7 +175,8 @@ export async function buildReservationistWorkerInput(options: {
     // An intervening causal message can make a prior footer image relevant.
     const signatureNoise = !sourceView.preserveAll && !(cid && sourceView.describedCids.has(cid)) && messages.every((message) => isReservationistSignatureNoise({
       messageText: sourceView.text,
-      currentRequestText: `${message.subject ?? ''}\n${signatureViews.get(message.id)!.text}`,
+      currentSubject: message.subject,
+      currentRequestText: signatureViews.get(message.id)!.text,
       attachment,
       attachments: relevant,
     }));
