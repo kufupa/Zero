@@ -296,6 +296,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     const reasons: Record<string, string> = {
       office_converter_unavailable: 'Document conversion is unavailable.', office_conversion_failed: 'Document conversion failed.',
       office_conversion_invalid: 'Document conversion returned an unreadable result.', unsupported_business_attachment: 'This attachment format could not be read.',
+      visual_content_requires_staff_review: 'Visual content in this attachment needs staff review.',
       malformed_or_unsupported_raster: 'This image could not be read.', malformed: 'This document could not be read.',
       no_embedded_text: 'Document text could not be extracted.', page_boundaries_unavailable: 'Document pages could not be identified.',
       ambiguous_number_groups: 'Some number groups may be room numbers or card details. Check the original source.',
