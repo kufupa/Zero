@@ -423,7 +423,11 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const earlier=found.filter(range=>range.index<(replacementBefore?start:at));
    // When the correction names a stay's month, don't attach it to an
    // unrelated nearer stay in another month.
-   const label=clause.match(new RegExp(`\\b(${monthPattern})\\s+(?:stay|accommodation|rooms?|reservation|booking)\\b`,'i'))?.[1]?.toLowerCase();
+   const labelMatch=clause.match(new RegExp(`\\b(${monthPattern})\\s+(?:stay|accommodation|rooms?|reservation|booking)\\b`,'i'));
+   // "Move this booking to a December stay" names the replacement, not
+   // the month of the stay being changed.
+   const replacementMonth=labelMatch&&/\b(?:to|into)\s+(?:(?:a|an|the)\s+)?$/i.test(clause.slice(0,labelMatch.index));
+   const label=replacementMonth?undefined:labelMatch?.[1]?.toLowerCase();
    const month=label?months.findIndex(value=>value.startsWith(label.slice(0,3)))+1:0;
    try{
     const prior=explicitPrior??(month?earlier.find(range=>pair(range).some(date=>Number(date.slice(5,7))===month)):earlier[0]);
