@@ -176,29 +176,32 @@ it('prepares cancellation from a locked exact-stay read without quote config, op
   expect(state.locked).toBe(false);
 });
 
-it('does not read a reservation reference found only in forwarded history', async () => {
+it('does not read a reservation reference outside the current cancellation clause', async () => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
   vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
   const authored = 'Please cancel my reservation.';
-  const text = `${authored}\n\nBegin forwarded message:\nConfirmation: ABC123`;
-  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
-  const start = text.indexOf('ABC123');
-  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
-    ...response(),
-    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: {
-      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: 'ABC123', start, end: start + 6,
-    }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: {
-      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: authored, start: 0, end: authored.length,
-    } }], unresolvedAsks: [] },
-  })) };
   let sessions = 0;
-  const provider = await createInstalledReservationistProvider(model, async () => {
-    sessions++;
-    throw new Error('forwarded_reference_must_not_be_read');
-  })(context(value));
-  const result = await runReservationistRuntime(value, provider.dependencies);
-
-  expect(result.tasks[0]?.status).toBe('needs_clarification');
+  for (const { text, taskQuote } of [
+    { text: `${authored}\n\nBegin forwarded message:\nConfirmation: ABC123`, taskQuote: authored },
+    { text: `${authored} The reference is ABC123.`, taskQuote: `${authored} The reference is ABC123.` },
+  ]) {
+    const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+    const start = text.indexOf('ABC123');
+    const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+      ...response(),
+      output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: {
+        attachmentId: 'message:message', sourceHash: hash, page: 1, quote: 'ABC123', start, end: start + 6,
+      }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: {
+        attachmentId: 'message:message', sourceHash: hash, page: 1, quote: taskQuote, start: 0, end: taskQuote.length,
+      } }], unresolvedAsks: [] },
+    })) };
+    const provider = await createInstalledReservationistProvider(model, async () => {
+      sessions++;
+      throw new Error('unbound_reference_must_not_be_read');
+    })(context(value));
+    const result = await runReservationistRuntime(value, provider.dependencies);
+    expect(result.tasks[0]?.status).toBe('needs_clarification');
+  }
   expect(sessions).toBe(0);
   expect(state.cancellationCalls).toEqual([]);
 });

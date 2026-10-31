@@ -213,12 +213,20 @@ export function createInstalledReservationistProvider(
               if (refs.length !== 1) throw new Error('pending_action_target_unavailable');
               const ref = refs[0]!;
               const source = ctx.task.source;
+              const requestMessage = ctx.input.messages.find((message) => `message:${message.id}` === source.attachmentId);
+              const cancellationVerb = /\b(?:cancel(?:l?ed|lation)?)\b/i.exec(source.quote ?? '');
+              const cancellationOffset = cancellationVerb && Number.isSafeInteger(source.start)
+                ? source.start! + cancellationVerb.index : null;
+              const referenceStart = ref.source.start, referenceEnd = ref.source.end;
+              const sameCancellationClause = !!requestMessage && cancellationOffset !== null &&
+                Number.isSafeInteger(source.end) && Number.isSafeInteger(referenceStart) && Number.isSafeInteger(referenceEnd) &&
+                referenceStart! >= source.start! && referenceEnd! <= source.end! &&
+                !/[.!?;](?=\s|$)/.test(requestMessage.text.slice(Math.min(cancellationOffset, referenceStart!), Math.max(cancellationOffset, referenceStart!)));
               if (ref.verification !== 'text_verified' || ref.disclosure !== 'guest' || ref.authority !== 'customer_claim' ||
                   ref.source.attachmentId !== source.attachmentId || ref.source.sourceHash !== source.sourceHash ||
                   !ref.source.quote?.includes(ref.value) ||
-                  !currentAuthoredGuestRequest({ ...ctx.task, source: ref.source }, ctx.input))
+                  !currentAuthoredGuestRequest({ ...ctx.task, source: ref.source }, ctx.input) || !sameCancellationClause)
                 throw new Error('pending_action_target_unavailable');
-              const requestMessage = ctx.input.messages.find((message) => `message:${message.id}` === source.attachmentId);
               if (!requestMessage) throw new Error('pending_action_request_unavailable');
 
               await fresh(ctx.input);
