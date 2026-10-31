@@ -37,7 +37,7 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  if(signoffAt<0)return false;
  // A current/delegated attachment dependency or a real request below the
  // signoff keeps every relevant image available to the business path.
- const dependency=/\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)?|voucher|POP|proof of payment|image|picture|photo|scan|document)\b|\b(?:see|use|read|refer|based|shown)\b[^.!?;\r\n]{0,80}\b(?:below|following|previous|prior|forwarded)\b/i;
+ const dependency=/\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)?|voucher|POP|proof of payment|image|picture|photo|scan|document|logo|banner|signature|footer)\b|\b(?:see|use|read|refer|based|shown)\b[^.!?;\r\n]{0,80}\b(?:below|following|previous|prior|forwarded)\b|\b(?:use|add|include|put|place|copy|show|insert)\b[^.!?;\r\n]{0,80}\b(?:it|this|that|them|these|those)\b/i;
  const currentSignoff=current.search(signoff),currentRequest=currentSignoff<0?current:current.slice(0,currentSignoff);
  // Explicit dates below refer to the authored calendar text. Preserve every
  // other reference and any separately stated attachment dependency.

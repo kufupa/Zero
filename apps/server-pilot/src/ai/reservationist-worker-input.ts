@@ -55,14 +55,34 @@ export async function buildReservationistWorkerInput(options: {
   deadlineAt: number;
   signal: AbortSignal;
   /** Optional authorized bounded read for older rows without a stored content hash. */
-  resolveSourceHash?: (attachment: ReservationistWorkerAttachment) => Promise<string | null>;
-  admit: (metadata: ReservationistAttachmentMetadata) => Promise<AttachmentAdmission>;
+  resolveSourceHash?: (attachment: ReservationistWorkerAttachment, signal: AbortSignal) => Promise<string | null>;
+  admit: (metadata: ReservationistAttachmentMetadata, signal: AbortSignal) => Promise<AttachmentAdmission>;
 }): Promise<{ input: ReservationistRuntimeInput; admissions: AttachmentAdmission[]; ignoredSignatures: number }> {
   const { transportId, threadId, triggerMessageId } = options;
   options.signal.throwIfAborted();
   if (!transportId || !threadId || !triggerMessageId || !options.requestId || !options.propertyCode ||
       !Number.isFinite(Date.parse(options.sourceAt)) || !Number.isFinite(options.deadlineAt) ||
       options.deadlineAt <= Date.now()) throw new Error('worker_intake_scope_invalid');
+  const signal = AbortSignal.any([
+    options.signal,
+    AbortSignal.timeout(Math.max(1, Math.min(2_147_483_647, Math.ceil(options.deadlineAt - Date.now())))),
+  ]);
+  const check = () => {
+    signal.throwIfAborted();
+    if (Date.now() >= options.deadlineAt) throw new Error('worker_intake_deadline_exceeded');
+  };
+  const bounded = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    check();
+    const value = await new Promise<T>((resolve, reject) => {
+      const abort = () => reject(signal.reason ?? new Error('worker_intake_aborted'));
+      signal.addEventListener('abort', abort, { once: true });
+      Promise.resolve().then(() => { check(); return operation(signal); }).then(resolve, reject)
+        .finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    });
+    check();
+    return value;
+  };
   if (new Set(options.messages.map((m) => m.id)).size !== options.messages.length ||
       options.messages.some((m) => !m.id || m.transportId !== transportId || m.threadId !== threadId ||
         !['inbound', 'outbound'].includes(m.direction) || !['guest', 'staff_only'].includes(m.disclosure)))
@@ -86,6 +106,14 @@ export async function buildReservationistWorkerInput(options: {
     if (arrived === triggerArrival || at > triggerAt) throw new Error('worker_intake_order_ambiguous');
     selected.push({ row, at });
   }
+  // Bound raw inputs before HTML sanitization; the normalized limits below
+  // still govern what the model receives.
+  const rawBodies = selected.map(({ row }) => row.textBody?.trim() ? row.textBody! : row.htmlBody ?? '');
+  if (selected.length > 64 || rawBodies.some((body) => body.length > 2_000_000) ||
+      rawBodies.reduce((sum, body) => sum + body.length, 0) > 8_000_000 ||
+      selected.some(({ row }) => (row.subject?.length ?? 0) > 4096))
+    throw new Error('worker_intake_context_limit');
+  check();
   selected.sort((a, b) => a.at - b.at || a.row.id.localeCompare(b.row.id));
   const messages = selected.map(({ row, at }) => ({
     id: row.id,
@@ -104,25 +132,27 @@ export async function buildReservationistWorkerInput(options: {
       options.attachments.some((a) => !messageIds.has(a.messageId)))
     throw new Error('worker_intake_attachment_identity_invalid');
   const selectedById = new Map(selected.map(({ row, at }) => [row.id, { row, at }]));
-  const currentText = messages.find((m) => m.id === triggerMessageId)!.text;
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
   const admissions: AttachmentAdmission[] = [];
   let ignoredSignatures = 0;
   for (const attachment of relevant) {
-    options.signal.throwIfAborted();
+    check();
     const entry = selectedById.get(attachment.messageId)!;
     const text = messages.find((m) => m.id === attachment.messageId)!.text;
-    const signatureNoise = isReservationistSignatureNoise({
+    // An intervening causal message can make a prior footer image relevant.
+    const signatureNoise = messages.every((message) => isReservationistSignatureNoise({
       messageText: text,
-      currentRequestText: currentText,
+      currentRequestText: message.text,
       attachment,
       attachments: relevant,
-    });
+    }));
     if (signatureNoise) { ignoredSignatures++; continue; }
     if (admissions.length >= 64) throw new Error('worker_intake_attachment_limit');
-    const sourceHash = attachment.sha256 ?? await options.resolveSourceHash?.({ ...attachment });
-    options.signal.throwIfAborted();
+    const sourceHash = attachment.sha256 ?? (options.resolveSourceHash
+      ? await bounded((edge) => options.resolveSourceHash!({ ...attachment }, edge))
+      : undefined);
+    check();
     if (!attachment.id || !sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash))
       throw new Error('worker_intake_attachment_identity_invalid');
     const metadata: ReservationistAttachmentMetadata = {
@@ -142,14 +172,14 @@ export async function buildReservationistWorkerInput(options: {
         (entry.row.disclosure === 'staff_only' && metadata.disclosure !== 'staff_only'))
       throw new Error('worker_intake_attachment_disclosure_invalid');
     const metadataIdentity = JSON.stringify(metadata);
-    const admission = await options.admit(metadata);
-    options.signal.throwIfAborted();
+    const admission = await bounded((edge) => options.admit(metadata, edge));
     if (!admission || JSON.stringify(metadata) !== metadataIdentity ||
         JSON.stringify(admission.metadata) !== metadataIdentity || admission.draftReady !== false ||
         !['admitted', 'manual_required'].includes(admission.status))
       throw new Error('worker_intake_admission_mismatch');
     admissions.push(admission);
   }
+  check();
   const causalAt = new Date(triggerAt).toISOString();
   return {
     input: {

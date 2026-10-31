@@ -70,4 +70,43 @@ describe('reservationist worker input', () => {
       return { status: 'manual_required', reason: 'unreadable', metadata, draftReady: false };
     } })).rejects.toThrow('worker_intake_admission_mismatch');
   });
+
+  it('keeps a prior footer image when an intervening message asks to use it', async () => {
+    const image = { id: 'logo', messageId: 'first', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' as const };
+    const admit = vi.fn(async (metadata: any) => ({ status: 'manual_required' as const, reason: 'needs_review', metadata, draftReady: false as const }));
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('first', 1, { textBody: 'Hello\nKind regards\ncid:logo' }),
+        row('middle', 2, { textBody: 'Please use that logo on the confirmation.' }),
+        row('current', 3, { textBody: 'Please proceed.' })],
+      attachments: [image], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit,
+    });
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((a) => a.metadata.attachmentId)).toEqual(['logo']);
+    expect(admit).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds admission by the deadline and passes the abort signal to the reader', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const admission = buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4)],
+      attachments: [{ id: 'file', messageId: 'current', mimeType: 'text/plain', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: false, contentId: null, disclosure: 'guest' }],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 150,
+      signal: new AbortController().signal,
+      admit: async (_metadata, signal) => { receivedSignal = signal; return new Promise(() => {}); },
+    });
+    await expect(admission).rejects.toThrow();
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
+  it('rejects oversized raw HTML before parsing it', async () => {
+    await expect(buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: null, htmlBody: 'x'.repeat(2_000_001) })], attachments: [],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    })).rejects.toThrow('worker_intake_context_limit');
+  });
 });
