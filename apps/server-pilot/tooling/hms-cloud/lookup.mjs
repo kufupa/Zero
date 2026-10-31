@@ -402,7 +402,8 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     const candidates = rows.map((row) => candidate(row, grid.records, kind, spec, keys));
     const searchId = randomUUID();
     lastSearch.set(page, { kind, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),
-      candidates: candidates.map(({ nativeId, name }) => ({ nativeId, name })) });
+      candidates: candidates.map(({ nativeId, name, referenceNumber }) => ({ nativeId, name,
+        ...(kind === 'agency' ? { referenceNumber } : {}) })) });
     const unverified = (records) => [...new Set(records.flatMap((row) => Object.keys(row)))].filter((key) => !keys.includes(key));
     return {
       outcome: candidates.length ? 'matches' : 'no_match', kind, field: spec.label, query, searchId,
@@ -610,6 +611,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
           return {
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
             nativeIdEvidence: 'form_change_response',
+            ...(kind === 'agency' ? { agencyIataNumber: candidates[0].referenceNumber } : {}),
             ...observed,
             ...(kind === 'agency' ? { displayedAgency: value } : kind === 'organization'
               ? { displayedOrganization: value } : { displayedArAccount: value, nativeReadback }),
