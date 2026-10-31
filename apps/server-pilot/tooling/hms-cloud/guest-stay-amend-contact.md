@@ -45,6 +45,4 @@ fields and unchanged stay fields. Reconcile every `uncertain` result before
 another mutation; never retry blindly. No live persistence result is claimed
 until an owner-serialized write slot and that fresh readback are complete.
 
-This adapter is not yet exposed through `saved-stay-agent-session.mjs`; that
-shared session registry is coordinator-owned. The module and its route-chain
-test are deliberately separate from the registry change.
+The saved-stay agent session exposes this adapter as `amendContact`.
