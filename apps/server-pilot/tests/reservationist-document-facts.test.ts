@@ -35,6 +35,7 @@ describe('document facts', () => {
     'Please quote accommodation:\nConference 01/12 to 03/12.',
     'Do not quote accommodation:\n13/11 to 15/11.',
     'Do not quote accommodation 13/11 to 15/11.',
+    'Do not quote for 13/11 to 15/11.',
     '13/11 to 15/11: no accommodation is needed.',
     'Previous arrival 13/11, departure 15/11.',
     'Do not check in 13/11, check out 15/11.',
@@ -71,9 +72,20 @@ describe('document facts', () => {
     'Please quote. Arrival 13/11, departure 15/11.',
     'Please quote. Do not change arrival 13/11, departure 15/11.',
     'Please quote. Don’t cancel the stay 13/11 to 15/11.',
-    'Please quote without changing the booking 13/11 to 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
+    'Please quote without changing the booking 13/11 to 15/11.',
+    'Please quote for 13/11 to 15/11.',
+    'Please quote for:\n13/11 to 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
     const html='Please quote. Stay 12/11 to 14/11.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.indexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12/11',departure:'14/11'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
+  });
+  it('rejects conflicting quote-only ranges even when the cited version omits a stay label', () => {
+    const plain='Please quote for 13/11 to 15/11.',html='Please quote for 12/11 to 14/11.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='12/11 to 14/11',start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
     const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};

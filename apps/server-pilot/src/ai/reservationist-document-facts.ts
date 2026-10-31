@@ -362,12 +362,15 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const suffix=authored.slice(match.index+match.text.length,end);
    const trailingExclusion=/^\s*(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)\b/i;
    const leadingLabel=/^(?:arrival|check[ -]?in)\b/i.exec(match.text)?.[0]??'';
-   if(stay.test(row))return !excluded.test(authored.slice(start,match.index)+leadingLabel)&&!trailingExclusion.test(suffix);
+   const before=authored.slice(start,match.index);
+   const directQuote=/\b(?:quote|quotation)(?:\s+(?:us|me))?(?:\s+(?:for|from|on))?\s*:?\s*$/i;
+   const negatedQuote=/\b(?:do not|don['’]t|never|not)\s+(?:quote|request\s+a\s+quotation)\b/i;
+   if(stay.test(row)||directQuote.test(before))return !excluded.test(before+leadingLabel)&&!negatedQuote.test(before)&&!trailingExclusion.test(suffix);
    const lineStart=authored.lastIndexOf('\n',match.index-1)+1;
    const previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
    const previous=authored.slice(previousStart,lineStart-1).trim();
    // A wrapped range can follow a stay label, but not an unrelated new label on the date line.
-   return lineStart>0&&/^\s*(?:[-•]\s*)?(?:dates?\s*:\s*)?$/i.test(authored.slice(lineStart,match.index))&&/:\s*$/.test(previous)&&stay.test(previous)&&!excluded.test(previous);
+   return lineStart>0&&/^\s*(?:[-•]\s*)?(?:dates?\s*:\s*)?$/i.test(authored.slice(lineStart,match.index))&&/:\s*$/.test(previous)&&(stay.test(previous)||directQuote.test(previous))&&!excluded.test(previous)&&!negatedQuote.test(previous);
   });
  };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
