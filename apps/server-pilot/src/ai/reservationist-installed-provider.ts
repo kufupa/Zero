@@ -37,9 +37,9 @@ export function createInstalledReservationistProvider(adapter: ModelAdapter): Re
     // pictures cannot be proved card-free by inspecting their headers, so the
     // unexamined visual content stays visible as a staff task.
     const visualReason = 'visual_content_requires_staff_review';
-    const visualTextSources = context.admissions.filter((admission) => admission.status === 'admitted' &&
-      (admission.metadata.mimeType === 'application/pdf' || isDocxMimeType(admission.metadata.mimeType)) &&
-      admission.source?.pages?.some((page) => page.trim()));
+    const visualTextSources = context.admissions.filter((admission) => admission.status === 'admitted')
+      .filter((admission) => (admission.metadata.mimeType === 'application/pdf' || isDocxMimeType(admission.metadata.mimeType)) &&
+        admission.source?.pages?.some((page) => page.trim()));
     const visualRecoveries: RuntimeSourceRecovery[] = visualTextSources.map(({ metadata: m }) => ({
       kind: 'attachment_manual', reason: visualReason, sourceRef: m.attachmentId, sourceHash: m.sourceHash,
       sourceKind: 'attachment', messageId: m.messageId, mimeType: m.mimeType,
