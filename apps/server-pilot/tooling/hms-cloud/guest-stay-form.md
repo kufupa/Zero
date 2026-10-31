@@ -72,12 +72,18 @@ supported only for the verified fake profile on the same page, draft record and
 session; a new guest search invalidates that guarantee proof. A nonblank A/R
 profile is supported only after `selectArAccount` verifies the account and
 profile on the same page, draft record and session; another A/R search
-invalidates that proof. A selected guest and A/R together, and pre-populated or
-unverified profiles, remain unsupported. Selecting the current value returns
-`unchanged_unsaved` without another guarantee-change request. Live unsaved
-drafts verified guarantee → rate → fake guest, and fake guest → rate →
-guarantee, with matching native and visible readbacks. A later guest search
-invalidated the guarantee proof without invalidating the earlier rate marker.
+invalidates that proof. A selected guest and A/R can be combined when both
+proofs are current. Pre-populated or unverified profiles remain unsupported.
+Selecting the current value returns `unchanged_unsaved` without another
+guarantee-change request. Live unsaved drafts verified guarantee → rate → fake
+guest, and fake guest → rate → guarantee, with matching native and visible
+readbacks. A later guest search invalidated the guarantee proof without
+invalidating the earlier rate marker. Two unsaved drafts verified fake guest →
+rate → A/R → agent guarantee, with both identities and the selected rate retained
+in the request, response and form. A fresh guest or A/R search invalidated its
+own guarantee proof, preserved the other proof and rate, and blocked a further
+guarantee request. Select the rate before A/R: the rate selector does not
+support a nonblank A/R profile.
 In a separate live draft, Deposit Requested remained selected after agency,
 organization and A/R selection. Other guarantee options and action orders
 require their own evidence.
