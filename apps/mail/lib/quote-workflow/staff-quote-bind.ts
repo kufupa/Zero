@@ -853,26 +853,25 @@ export async function bindStaffActions(args: {
           : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
           ? (listed as { drafts: unknown[] }).drafts
           : [];
-      const collected: ReservationistStaffAction[] = [];
-      let tasks: ReservationistPreparedTask[] | undefined;
       for (const row of rows) {
         if (args.messageId && (!row || typeof row !== 'object' || (row as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
         let source = row;
         const id = row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
           ? (row as { id: string }).id
           : '';
-        if (id && args.get && !(row && typeof row === 'object' && 'reviewSummary' in row)) {
+        const hasSummary = (value: unknown) => value && typeof value === 'object' &&
+          (Boolean((value as { reviewSummary?: unknown }).reviewSummary) || Array.isArray((value as { staffActions?: unknown }).staffActions));
+        if (!hasSummary(source) && id && args.get) {
           source = await args.get({ id });
           if (args.messageId && (!source || typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
         }
-        collected.push(...readStaffActions(source));
-        if (args.messageId && tasks === undefined && source && typeof source === 'object' &&
-          Array.isArray((source as { reviewSummary?: { tasks?: unknown } }).reviewSummary?.tasks)) {
+        if (hasSummary(source)) {
           // List is newest first. Do not mix task snapshots from older drafts of the same email.
-          tasks = readPreparedStaffTasks(source);
+          const tasks = args.messageId ? readPreparedStaffTasks(source) : [];
+          return { kind: 'ready', actions: readStaffActions(source), ...(tasks.length ? { tasks } : {}) };
         }
       }
-      return { kind: 'ready', actions: collected, ...(tasks ? { tasks } : {}) };
+      return { kind: 'ready', actions: [] };
     }
     return { kind: 'ready', actions: [] };
   } catch (error) {

@@ -66,6 +66,7 @@ it('binds prepared tasks only to the selected email and newest available snapsho
   const get = vi.fn(async ({id}: {id:string}) => ({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:id==='new'?[newest]:[{...newest,id:'old'}]}}));
   expect(await bindStaffActions({list,get,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[],tasks:[newest]});
   expect(get).not.toHaveBeenCalledWith({id:'other'});
+  expect(get).toHaveBeenCalledOnce();
   const moved = vi.fn().mockResolvedValue({replyToMessageId:'mail-2',reviewSummary:{staffActions:[],tasks:[newest]}});
   expect(await bindStaffActions({list:vi.fn().mockResolvedValue({threads:[{id:'new',replyToMessageId:'mail-1'}]}),get:moved,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[]});
 });
