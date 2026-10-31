@@ -279,7 +279,7 @@ describe('projectCancellationPreflight', () => {
       normalization: 'verified_1b_status_and_cancelnumber',
     });
     expect(result.stay.cancellationNumber).toMatchObject({
-      state: 'observed', value: '1234567', sources: ['1b_record_view'],
+      state: 'observed', value: '1234567', sources: ['1a_stay_card', '1b_record_view'],
     });
   });
 
