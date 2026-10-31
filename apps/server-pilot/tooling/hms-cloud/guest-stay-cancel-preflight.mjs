@@ -5,7 +5,20 @@ const DISPLAY_CURRENCY_CODES = new Set([
   'QAR', 'RWF', 'SAR', 'SEK', 'SGD', 'SZL', 'TZS', 'UGX', 'USD', 'XAF', 'XOF', 'ZAR',
   'ZMW',
 ]);
-const CURRENCY_SYMBOL = /(?:£|\$|€|¥|₹|₦|₱|₫|₩|₺|₽|₴|₪|฿|₡|₲|₵|₭|₮|₼|₾|៛)/u;
+const CURRENCY_SYMBOL_CODES = new Map([
+  ['R', ['ZAR']], ['£', ['GBP']], ['€', ['EUR']], ['₹', ['INR']], ['₦', ['NGN']],
+  ['₵', ['GHS']], ['$', ['AUD', 'CAD', 'NZD', 'SGD', 'USD']],
+  ['¥', ['CNY', 'JPY']],
+]);
+const DISPLAY_CURRENCY_SYMBOLS = new Set([
+  '£', '$', '€', '¥', '₹', '₦', '₱', '₫', '₩', '₺', '₽', '₴', '₪', '฿', '₡', '₲',
+  '₵', '₭', '₮', '₼', '₾', '៛',
+]);
+const MONTHS = new Map([
+  ['JAN', 1], ['FEB', 2], ['MAR', 3], ['APR', 4], ['MAY', 5], ['JUN', 6],
+  ['JUL', 7], ['AUG', 8], ['SEP', 9], ['OCT', 10], ['NOV', 11], ['DEC', 12],
+]);
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function unverified(issue) {
   return { outcome: 'target_unverified', issue };
@@ -19,28 +32,169 @@ function displayString(value) {
   return null;
 }
 
-function explicitZero(value) {
-  let numeric = value.trim();
-  const prefixSymbol = new RegExp(`^${CURRENCY_SYMBOL.source}\\s*(.+)$`, 'u').exec(numeric);
-  const suffixSymbol = new RegExp(`^(.+?)\\s*${CURRENCY_SYMBOL.source}$`, 'u').exec(numeric);
-  if (prefixSymbol) numeric = prefixSymbol[1];
-  else if (suffixSymbol) numeric = suffixSymbol[1];
-
-  const prefixCode = /^([A-Za-z]{3})\s+(.+)$/.exec(numeric);
-  const suffixCode = /^(.+?)\s+([A-Za-z]{3})$/.exec(numeric);
-  if (prefixCode && DISPLAY_CURRENCY_CODES.has(prefixCode[1].toUpperCase())) numeric = prefixCode[2];
-  else if (suffixCode && DISPLAY_CURRENCY_CODES.has(suffixCode[2].toUpperCase())) numeric = suffixCode[1];
-
-  return /^[+-]?(?:0+(?:[.,]0*)?|[.,]0+)$/.test(numeric.trim());
+function currencyCandidates(token) {
+  const trimmed = token.trim();
+  const symbol = CURRENCY_SYMBOL_CODES.get(trimmed);
+  if (symbol) return symbol;
+  const code = trimmed.toUpperCase();
+  return DISPLAY_CURRENCY_CODES.has(code) ? [code] : null;
 }
 
-function comparable(left, right, money) {
+function parseNumericAmount(value) {
+  const parsed = /^([+-]?)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?$/.exec(value.trim());
+  if (!parsed) return null;
+  const whole = parsed[2].replace(/,/g, '').replace(/^0+(?=\d)/, '');
+  const fraction = (parsed[3] ?? '').replace(/0+$/, '');
+  const zero = whole === '0' && fraction === '';
+  const sign = parsed[1] === '-' && !zero ? '-' : '';
+  return `${sign}${whole}${fraction ? `.${fraction}` : ''}`;
+}
+
+function parseMoneyDisplay(value) {
+  let numeric = value.trim();
+  let currencies = null;
+  const prefix = /^([^\d.,+-]+)\s*(.+)$/.exec(numeric);
+  const suffix = /^(.+?)\s*([^\d.,+-]+)$/.exec(numeric);
+  if (prefix) {
+    currencies = currencyCandidates(prefix[1]);
+    if (currencies) numeric = prefix[2];
+  }
+  if (!currencies && suffix) {
+    currencies = currencyCandidates(suffix[2]);
+    if (currencies) numeric = suffix[1];
+  }
+
+  const amount = parseNumericAmount(numeric);
+  return amount === null ? null : { amount, currencies };
+}
+
+function explicitZero(value) {
+  const parsed = parseMoneyDisplay(value);
+  if (parsed) return parsed.amount === '0';
+
+  let numeric = value.trim();
+  const prefix = /^([^\d.,+-]+)\s*(.+)$/.exec(numeric);
+  const suffix = /^(.+?)\s*([^\d.,+-]+)$/.exec(numeric);
+  if (prefix && DISPLAY_CURRENCY_SYMBOLS.has(prefix[1].trim())) numeric = prefix[2];
+  else if (suffix && DISPLAY_CURRENCY_SYMBOLS.has(suffix[2].trim())) numeric = suffix[1];
+  return parseNumericAmount(numeric) === '0';
+}
+
+function basicComparable(value) {
+  return value.replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function canonicalCount(value) {
+  if (value.length > 8 || !/^\d+$/.test(value)) return null;
+  return BigInt(value).toString();
+}
+
+function parseDateDisplay(value) {
+  const text = value.trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?$/.exec(text);
+  const displayed = /^(?:(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+)?(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{2}):(\d{2}))?$/i.exec(text);
+  let year;
+  let month;
+  let day;
+  let weekday;
+  let hour;
+  let minute;
+  if (iso) {
+    [, year, month, day, hour, minute] = iso;
+    year = Number(year);
+    month = Number(month);
+    day = Number(day);
+  } else if (displayed) {
+    [, weekday, day, month, year, hour, minute] = displayed;
+    year = Number(year);
+    month = MONTHS.get(month.toUpperCase());
+    day = Number(day);
+  } else {
+    return null;
+  }
+  if (
+    !month || !Number.isInteger(year) || year < 1 || year > 9999 ||
+    !Number.isInteger(day) || day < 1 || (hour !== undefined && (+hour > 23 || +minute > 59))
+  ) return null;
+
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(0, 0, 0, 0);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  const actualWeekday = WEEKDAYS[date.getUTCDay()];
+  if (weekday && (!actualWeekday || actualWeekday.toLowerCase() !== weekday.toLowerCase())) return null;
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function parseOccupancyDisplay(value) {
+  const text = value.trim().replace(/\s+/g, ' ');
+  const plain = canonicalCount(text);
+  if (plain !== null) return { adults: plain, children: null };
+  const labelled = /^(\d{1,8})\s+Adults?(?:\s*(\d{1,8})\s+Child(?:ren)?)?$/i.exec(text);
+  if (!labelled) return null;
+  return {
+    adults: canonicalCount(labelled[1]),
+    children: labelled[2] === undefined ? null : canonicalCount(labelled[2]),
+  };
+}
+
+function normalizeField(name, value) {
+  if (name === 'arrivaldate' || name === 'departuredate') return parseDateDisplay(value);
+  if (name === 'nights') {
+    const nights = /^(\d{1,8})(?:\s+Nights?)?$/i.exec(value.trim());
+    return nights ? canonicalCount(nights[1]) : null;
+  }
+  if (name === 'adults') return parseOccupancyDisplay(value)?.adults ?? null;
+  if (name === 'children') {
+    const children = /^(\d{1,8})(?:\s+Child(?:ren)?)?$/i.exec(value.trim());
+    return children ? canonicalCount(children[1]) : null;
+  }
+  return basicComparable(value);
+}
+
+function compareMoney(left, right, currencyCode) {
+  const a = parseMoneyDisplay(left);
+  const b = parseMoneyDisplay(right);
+  if (!a || !b) return basicComparable(left) === basicComparable(right) ? 'same' : 'ambiguous_format';
+  if (a.amount !== b.amount) return 'different';
+  const code = typeof currencyCode === 'string' ? currencyCode.trim().toUpperCase() : '';
+  const knownCode = DISPLAY_CURRENCY_CODES.has(code) ? code : null;
+  if (knownCode && [a.currencies, b.currencies].some((candidates) => candidates && !candidates.includes(knownCode))) {
+    return 'different';
+  }
+  if (a.currencies && b.currencies) {
+    if (!a.currencies.some((candidate) => b.currencies.includes(candidate))) return 'different';
+    if (knownCode && a.currencies.includes(knownCode) && b.currencies.includes(knownCode)) return 'same';
+    if (a.currencies.length === 1 && b.currencies.length === 1) return 'same';
+    if (a.currencies.length === b.currencies.length && a.currencies.every((candidate) => b.currencies.includes(candidate))) {
+      return 'same';
+    }
+    return 'ambiguous_currency';
+  }
+  const candidates = a.currencies ?? b.currencies;
+  if (!candidates) return 'same';
+  return knownCode
+    ? (candidates.includes(knownCode) ? 'same' : 'different')
+    : 'ambiguous_currency';
+}
+
+function compareDisplayed(left, right, { name, money = false, currencyCode } = {}) {
   const a = displayString(left);
   const b = displayString(right);
-  if (a === null || b === null) return false;
-  if (a === '' || b === '') return a === b;
-  if (money && explicitZero(a) && explicitZero(b)) return true;
-  return a.replace(/\s+/g, ' ').toLocaleLowerCase() === b.replace(/\s+/g, ' ').toLocaleLowerCase();
+  if (a === null || b === null) return 'different';
+  if (a === '' || b === '') return a === b ? 'same' : 'different';
+  if (money) return compareMoney(a, b, currencyCode);
+  const normalizedA = normalizeField(name, a);
+  const normalizedB = normalizeField(name, b);
+  if (normalizedA === null || normalizedB === null) {
+    return basicComparable(a) === basicComparable(b) ? 'same' : 'ambiguous_format';
+  }
+  return normalizedA === normalizedB ? 'same' : 'different';
+}
+
+function ambiguityReason(relation, money) {
+  if (relation === 'ambiguous_currency') return 'currency_not_reconciled';
+  return money ? 'money_format_not_reconciled' : 'display_format_not_reconciled';
 }
 
 function classified(value, source, money = false) {
@@ -74,7 +228,7 @@ function namedCard(shallow, title) {
   return { state: 'available', card: matches[0] };
 }
 
-function readShallowField(shallow, name, money = false, cardTitle = 'Stay') {
+function readShallowField(shallow, name, money = false, cardTitle = 'Stay', currencyCode, cardOnly = false) {
   const cardResult = namedCard(shallow, cardTitle);
   const cardKey = cardTitle.trim().toLowerCase().replace(/\s+/g, '_');
   if (cardResult.state === 'ambiguous') return ambiguous(`1a_${cardKey}_card`);
@@ -82,7 +236,7 @@ function readShallowField(shallow, name, money = false, cardTitle = 'Stay') {
   const cardFields = cardResult.state === 'available' && Array.isArray(cardResult.card.fields)
     ? cardResult.card.fields
     : [];
-  const visibleFields = Array.isArray(shallow.details.visibleFormFields)
+  const visibleFields = !cardOnly && Array.isArray(shallow.details.visibleFormFields)
     ? shallow.details.visibleFormFields
     : [];
   const cardMatches = cardFields.filter((field) => field?.name === name);
@@ -97,15 +251,21 @@ function readShallowField(shallow, name, money = false, cardTitle = 'Stay') {
       ],
     };
   }
+  if (cardMatches.length === 0 && visibleMatches.length === 0 && name === 'children' && cardTitle === 'Stay') {
+    return readCombinedChildCount(shallow);
+  }
   if (cardMatches.length === 0 && visibleMatches.length === 0) {
     return unavailable(cardResult.reason || 'field_not_rendered');
   }
 
   if (cardMatches.length === 1 && visibleMatches.length === 1) {
-    if (!comparable(cardMatches[0].value, visibleMatches[0].value, money)) {
+    const relation = compareDisplayed(cardMatches[0].value, visibleMatches[0].value, {
+      name, money, currencyCode,
+    });
+    if (relation !== 'same') {
       return {
         state: 'ambiguous',
-        reason: '1a_field_views_disagree',
+        reason: relation === 'different' ? '1a_field_views_disagree' : ambiguityReason(relation, money),
         sources: [`1a_${cardKey}_card`, '1a_visible_form'],
       };
     }
@@ -118,6 +278,31 @@ function readShallowField(shallow, name, money = false, cardTitle = 'Stay') {
   return classified(visibleMatches[0].value, '1a_visible_form', money);
 }
 
+function readCombinedChildCount(shallow) {
+  const adults = readShallowField(shallow, 'adults');
+  if (adults.state === 'ambiguous') {
+    return { ...adults, reason: 'combined_occupancy_source_ambiguous' };
+  }
+  if (adults.state !== 'observed') return unavailable();
+  const occupancy = parseOccupancyDisplay(adults.value);
+  if (occupancy?.children !== null && occupancy?.children !== undefined) {
+    return {
+      state: 'observed',
+      value: occupancy.children,
+      sources: adults.sources,
+      derivedFrom: 'combined_adult_child_display',
+    };
+  }
+  if (/\bChild(?:ren)?\b/i.test(adults.value)) {
+    return {
+      state: 'ambiguous',
+      reason: 'combined_occupancy_format_unrecognized',
+      sources: adults.sources,
+    };
+  }
+  return unavailable();
+}
+
 function readRecordField(record, name, money = false) {
   const fields = record?.details?.fields;
   if (!Array.isArray(fields)) return unavailable('record_fields_unavailable');
@@ -127,8 +312,8 @@ function readRecordField(record, name, money = false) {
   return classified(matches[0].value, '1b_record_view', money);
 }
 
-function reconcileField(shallow, record, name, { money = false, cardTitle = 'Stay' } = {}) {
-  const first = readShallowField(shallow, name, money, cardTitle);
+function reconcileField(shallow, record, name, { money = false, cardTitle = 'Stay', currencyCode } = {}) {
+  const first = readShallowField(shallow, name, money, cardTitle, currencyCode);
   const second = readRecordField(record, name, money);
   if (first.state === 'ambiguous' || second.state === 'ambiguous') {
     return {
@@ -141,10 +326,19 @@ function reconcileField(shallow, record, name, { money = false, cardTitle = 'Sta
   const hasFirst = first.state !== 'unavailable';
   const hasSecond = second.state !== 'unavailable';
   if (hasFirst && hasSecond) {
-    if (!comparable(first.value, second.value, money)) {
+    const relation = compareDisplayed(first.value, second.value, { name, money, currencyCode });
+    if (relation === 'different') {
       return {
         state: 'conflict',
         reason: 'reader_values_disagree',
+        values: [first.value, second.value],
+        sources: [...new Set([...first.sources, ...second.sources])],
+      };
+    }
+    if (relation !== 'same') {
+      return {
+        state: 'ambiguous',
+        reason: ambiguityReason(relation, money),
         values: [first.value, second.value],
         sources: [...new Set([...first.sources, ...second.sources])],
       };
@@ -160,11 +354,15 @@ function reconcileField(shallow, record, name, { money = false, cardTitle = 'Sta
 }
 
 function moneyDisplay(shallow, record, amountName, currencyName = null) {
+  const currency = currencyName
+    ? readRecordField(record, currencyName)
+    : unavailable('currency_not_exposed');
   return {
-    amount: reconcileField(shallow, record, amountName, { money: true }),
-    currency: currencyName
-      ? readRecordField(record, currencyName)
-      : unavailable('currency_not_exposed'),
+    amount: reconcileField(shallow, record, amountName, {
+      money: true,
+      ...(currency.state === 'observed' ? { currencyCode: currency.value } : {}),
+    }),
+    currency,
     basis: 'stay360_display_only_not_ledger',
   };
 }
@@ -236,6 +434,18 @@ export function projectCancellationPreflight({
       depositReceived: moneyDisplay(shallow, record, 'depositreceived', 'depositreceivedcurrency'),
       depositDue: moneyDisplay(shallow, record, 'udfchar02'),
       depositDueDate: readRecordField(record, 'udfdate02'),
+    },
+    folio: {
+      basis: '1a_folio_card_display_only',
+      balance: readShallowField(shallow, 'foliobalance', true, 'Folio', undefined, true),
+      depositReceived: readShallowField(shallow, 'depositreceived', true, 'Folio', undefined, true),
+      depositAmount: readShallowField(shallow, 'depositamount', true, 'Folio', undefined, true),
+      depositDueDate: readShallowField(shallow, 'depositduedate', false, 'Folio', undefined, true),
+      interpretation: {
+        ledgerBalance: 'not_established',
+        depositCleared: 'not_established',
+        depositDue: 'not_verified',
+      },
     },
     policy: { state: 'unknown', reason: 'applicable_policy_not_verified_by_1a_or_1b' },
     fee: { state: 'unknown_precommit', amount: null, currency: null },

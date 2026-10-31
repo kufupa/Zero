@@ -9,12 +9,17 @@ type ShallowOptions = {
   complete?: boolean;
   status?: string;
   room?: string;
+  arrivalDate?: string;
+  departureDate?: string;
+  nights?: string;
   grandTotal?: string;
   ratePlan?: string;
   adults?: string;
   omitStayCard?: boolean;
+  omitFolioCard?: boolean;
   stayFields?: Field[];
   associationFields?: Field[];
+  folioFields?: Field[];
   visibleFields?: Field[];
 };
 type RecordOptions = {
@@ -25,6 +30,10 @@ type RecordOptions = {
   balance?: string;
   balanceCurrency?: string;
   grandTotal?: string;
+  grandTotalCurrency?: string;
+  arrivalDate?: string;
+  departureDate?: string;
+  nights?: string;
   guaranteeType?: string;
   ratePlan?: string;
   adults?: string;
@@ -41,11 +50,21 @@ function read1A({
   complete = true,
   status = 'Reserved',
   room = 'ROOM-TEST',
+  arrivalDate = 'Wed 03-Feb-2027',
+  departureDate = 'Fri 05-Feb-2027',
+  nights = '2 Nights',
   grandTotal = '0.00',
   ratePlan = 'RATE-PLAN-TEST',
-  adults = '2',
+  adults = '2 Adults1 Child',
   omitStayCard = false,
+  omitFolioCard = false,
   stayFields = [],
+  folioFields = [
+    { name: 'foliobalance', value: 'R1,234.50' },
+    { name: 'depositreceived', value: 'R0.00' },
+    { name: 'depositamount', value: 'R500.00' },
+    { name: 'depositduedate', value: 'Tue 02-Feb-2027' },
+  ],
   associationFields = [
     { name: 'ta1', value: 'AGENCY-TEST' },
     { name: 'company', value: 'ORG-TEST' },
@@ -55,9 +74,9 @@ function read1A({
 }: ShallowOptions = {}) {
   const fields: Field[] = [
     { name: 'status', value: status },
-    { name: 'arrivaldate', value: '2027-02-03' },
-    { name: 'departuredate', value: '2027-02-05' },
-    { name: 'nights', value: '2' },
+    { name: 'arrivaldate', value: arrivalDate },
+    { name: 'departuredate', value: departureDate },
+    { name: 'nights', value: nights },
     { name: 'room', value: room },
     { name: 'roomtype', value: 'ROOM-TYPE-TEST' },
     { name: 'grandtotal', value: grandTotal },
@@ -75,6 +94,7 @@ function read1A({
       cards: omitStayCard ? [] : [
         { title: 'Stay', fields, visibleText: 'synthetic', grids: [] },
         { title: 'Associations', fields: associationFields, visibleText: 'synthetic', grids: [] },
+        ...(omitFolioCard ? [] : [{ title: 'Folio', fields: folioFields, visibleText: 'synthetic', grids: [] }]),
       ],
       visibleFormFields: visibleFields,
       visiblePageTextOutsideGrids: 'synthetic only',
@@ -88,9 +108,13 @@ function read1B({
   activeTab = 'Record View',
   status = 'Reserved',
   room = 'ROOM-TEST',
+  arrivalDate = '03-FEB-2027',
+  departureDate = '05-FEB-2027',
+  nights = '2',
   balance = '0.00',
   balanceCurrency = 'GBP',
   grandTotal = '0.00',
+  grandTotalCurrency = 'GBP',
   guaranteeType = 'GUARANTEE-TEST',
   ratePlan = 'RATE-PLAN-TEST',
   adults = '2',
@@ -103,9 +127,9 @@ function read1B({
   const fields: Field[] = [
     { name: 'confirmationnumber', value: confirmation },
     { name: 'status', value: status },
-    { name: 'arrivaldate', value: '2027-02-03' },
-    { name: 'departuredate', value: '2027-02-05' },
-    { name: 'nights', value: '2' },
+    { name: 'arrivaldate', value: arrivalDate },
+    { name: 'departuredate', value: departureDate },
+    { name: 'nights', value: nights },
     { name: 'room', value: room },
     { name: 'scheduledroom', value: '' },
     { name: 'roomtype', value: 'ROOM-TYPE-TEST' },
@@ -120,7 +144,7 @@ function read1B({
     { name: 'balance', value: balance },
     { name: 'balancecurr', value: balanceCurrency },
     { name: 'grandtotal', value: grandTotal },
-    { name: 'grandtotalcurr', value: 'GBP' },
+    { name: 'grandtotalcurr', value: grandTotalCurrency },
     { name: 'firstname', value: 'TEST-GUEST-NAME', section: 'Guest' },
     { name: 'emailaddress', value: 'guest@example.invalid', section: 'Guest' },
     ...extraFields,
@@ -163,8 +187,8 @@ describe('projectCancellationPreflight', () => {
     expect(result.stay.status).toMatchObject({
       state: 'observed', value: 'Reserved', sources: ['1a_stay_card', '1b_record_view'],
     });
-    expect(result.stay.arrivalDate.value).toBe('2027-02-03');
-    expect(result.stay.departureDate.value).toBe('2027-02-05');
+    expect(result.stay.arrivalDate.value).toBe('03-FEB-2027');
+    expect(result.stay.departureDate.value).toBe('05-FEB-2027');
     expect(result.stay.nights.value).toBe('2');
     expect(result.stay.guaranteeType).toMatchObject({
       state: 'observed', value: 'GUARANTEE-TEST', sources: ['1b_record_view'],
@@ -238,6 +262,43 @@ describe('projectCancellationPreflight', () => {
     }).party.organization.state).toBe('ambiguous');
   });
 
+  it('normalizes supported date, night, and occupancy displays but preserves real conflicts and unknown formats', () => {
+    const normalized = project();
+    expect(normalized.stay.arrivalDate).toMatchObject({ state: 'observed', value: '03-FEB-2027' });
+    expect(normalized.stay.departureDate).toMatchObject({ state: 'observed', value: '05-FEB-2027' });
+    expect(normalized.stay.nights).toMatchObject({ state: 'observed', value: '2' });
+    expect(normalized.stay.adults).toMatchObject({ state: 'observed', value: '2' });
+    expect(normalized.stay.children).toMatchObject({ state: 'observed', value: '1' });
+
+    expect(project({
+      shallow: read1A({ arrivalDate: 'Thu 04-Feb-2027' }),
+    }).stay.arrivalDate.state).toBe('conflict');
+    expect(project({
+      shallow: read1A({ arrivalDate: 'Thu 03-Feb-2027' }),
+    }).stay.arrivalDate.state).toBe('ambiguous');
+    expect(project({
+      shallow: read1A({ arrivalDate: 'Wed 03-Feb-2027 09:30' }),
+    }).stay.arrivalDate.state).toBe('observed');
+    expect(project({
+      shallow: read1A({ nights: '3 Nights' }),
+    }).stay.nights.state).toBe('conflict');
+    expect(project({
+      shallow: read1A({ nights: 'about two nights' }),
+    }).stay.nights.state).toBe('ambiguous');
+    expect(project({
+      shallow: read1A({ adults: '3 Adults1 Child' }),
+    }).stay.adults.state).toBe('conflict');
+    expect(project({
+      shallow: read1A({ adults: '2 Adults2 Child' }),
+    }).stay.children.state).toBe('conflict');
+
+    const unrecognizedOccupancy = project({
+      shallow: read1A({ adults: 'two adults and one child' }),
+    });
+    expect(unrecognizedOccupancy.stay.adults.state).toBe('ambiguous');
+    expect(unrecognizedOccupancy.stay.children.state).toBe('ambiguous');
+  });
+
   it('keeps displayed zero, blank, and unavailable money distinct', () => {
     expect(project().money.balance.amount.state).toBe('observed_zero');
     const blank = project({
@@ -264,6 +325,62 @@ describe('projectCancellationPreflight', () => {
     });
     expect(textContainingZero.money.grandTotal.amount).toMatchObject({
       state: 'observed', value: 'not 0',
+    });
+  });
+
+  it('reconciles an R-prefixed amount only when the displayed currency resolves to ZAR', () => {
+    const resolved = project({
+      shallow: read1A({ grandTotal: 'R1,234.50' }),
+      record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: 'ZAR' }),
+    });
+    expect(resolved.money.grandTotal.amount).toMatchObject({
+      state: 'observed', value: '1,234.50', sources: ['1a_stay_card', '1b_record_view'],
+    });
+
+    const unresolved = project({
+      shallow: read1A({ grandTotal: 'R1,234.50' }),
+      record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: '' }),
+    });
+    expect(unresolved.money.grandTotal.amount.state).toBe('ambiguous');
+
+    const mismatchedCurrency = project({
+      shallow: read1A({ grandTotal: 'R1,234.50' }),
+      record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: 'GBP' }),
+    });
+    expect(mismatchedCurrency.money.grandTotal.amount.state).toBe('conflict');
+
+    const mismatchedAmount = project({
+      shallow: read1A({ grandTotal: 'R1,234.50' }),
+      record: read1B({ grandTotal: '1,235.50', grandTotalCurrency: 'ZAR' }),
+    });
+    expect(mismatchedAmount.money.grandTotal.amount.state).toBe('conflict');
+
+    const unsupportedNumberFormat = project({
+      shallow: read1A({ grandTotal: 'R1.234,50' }),
+      record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: 'ZAR' }),
+    });
+    expect(unsupportedNumberFormat.money.grandTotal.amount.state).toBe('ambiguous');
+  });
+
+  it('exposes Folio-card observations without inferring cleared deposits or a verified due date', () => {
+    const result = project();
+    expect(result.folio).toMatchObject({
+      basis: '1a_folio_card_display_only',
+      balance: { state: 'observed', value: 'R1,234.50', sources: ['1a_folio_card'] },
+      depositReceived: { state: 'observed_zero', value: 'R0.00', sources: ['1a_folio_card'] },
+      depositAmount: { state: 'observed', value: 'R500.00', sources: ['1a_folio_card'] },
+      depositDueDate: { state: 'observed', value: 'Tue 02-Feb-2027', sources: ['1a_folio_card'] },
+      interpretation: {
+        ledgerBalance: 'not_established',
+        depositCleared: 'not_established',
+        depositDue: 'not_verified',
+      },
+    });
+    expect(result.money.depositReceived.amount.state).toBe('unavailable');
+
+    const missingCard = project({ shallow: read1A({ omitFolioCard: true }) });
+    expect(missingCard.folio.balance).toMatchObject({
+      state: 'unavailable', reason: 'folio_card_unavailable',
     });
   });
 
