@@ -200,7 +200,7 @@ describe('projectCancellationPreflight', () => {
       state: 'observed', value: '2', sources: ['1a_stay_card', '1b_record_view'],
     });
     expect(result.stay.children).toMatchObject({
-      state: 'observed', value: '1', sources: ['1b_record_view'],
+      state: 'observed', value: '1', sources: ['1a_stay_card', '1b_record_view'],
     });
     expect(result.party.bookingAgency).toMatchObject({
       state: 'observed', value: 'AGENCY-TEST', sources: ['1a_associations_card', '1b_record_view'],
@@ -360,6 +360,16 @@ describe('projectCancellationPreflight', () => {
       record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: 'ZAR' }),
     });
     expect(unsupportedNumberFormat.money.grandTotal.amount.state).toBe('ambiguous');
+  });
+
+  it('keeps equal zero amounts conflicting when their explicit currencies differ', () => {
+    const result = project({
+      shallow: read1A({ grandTotal: 'GBP 0.00' }),
+      record: read1B({ grandTotal: 'USD 0.00', grandTotalCurrency: 'USD' }),
+    });
+    expect(result.money.grandTotal.amount).toMatchObject({
+      state: 'conflict', values: ['GBP 0.00', 'USD 0.00'],
+    });
   });
 
   it('exposes Folio-card observations without inferring cleared deposits or a verified due date', () => {
