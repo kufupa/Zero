@@ -57,7 +57,9 @@ For one guarantee-change request, reading the page from the paused request handl
 
 For saved Labtest actions, bind the verified identity and a clean full record baseline to the exact native request, and reject unrelated dirty fields. A 200 response is only `awaiting_readback`; reconcile a possible dispatch in a fresh session before any retry. The cloud read-only guard must also block saves indicated by a query-string `pageaction=SAVE`, not only by form fields.
 
-In two HRCEN fake cancellations, HMS changed the status to Cancelled before displaying a possible penalty dialog. Leave the dialog untouched and independently read back status; the warning does not prove a charge, and a zero balance at readback does not prove no later charge. A cancellation is not demonstrated to be fee-free merely because the prompt was not accepted.
+The current HRCEN Labtest save, note-amendment and cancellation guards require agency, organization, group, A/R and guarantee-card links to be blank and verified; a linked or ambiguous field is refused. This deliberately limits the fake-write proof, not the read or unsaved-lookup tools. A full fake lifecycle has been checked through the booking and saved-stay agent sessions with a separate readback after each action.
+
+In HRCEN fake cancellations, HMS can change the status to Cancelled before displaying a possible penalty dialog. Leave the dialog untouched and independently read back status; the warning does not prove a charge, and a zero balance at readback does not prove no later charge. A cancellation is not demonstrated to be fee-free merely because the prompt was not accepted.
 
 Opening a blank cloud Guest Stay also triggered a card-entry POST unrelated to lookup. The shared context guard blocks the observed cloud-vault origin and handler, and a live check verified that normal session behavior; these tools do not support card entry. This observation does not establish coverage for other endpoints or older standalone guards. Never print token-bearing request URLs in diagnostics.
 
