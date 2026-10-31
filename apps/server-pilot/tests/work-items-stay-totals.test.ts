@@ -53,8 +53,8 @@ describe('staff stay-total correction projection', () => {
     ).analysis.groups[0]!;
     expect(corrected).toMatchObject({
       adultsTotal: 6,
-      adultsPerRoom: 3,
-      rooms: 2,
+      adults: 3,
+      quantity: 2,
       childrenTotal: null,
       fields: { adultsTotal: 'staff_corrected', childrenTotal: 'staff_corrected' },
     });
