@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   contactAmendOutcome,
   installLabtestContactSaveRouteChain,
+  matchesLabtestContactAmendDraft,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
 import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence.mjs';
@@ -74,6 +75,40 @@ describe('saved Labtest Booker contact amendment guards', () => {
       const body = saveBody(formName, value);
       expect(matchesLabtestContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, field, value))
         .toBe(true);
+    }
+  });
+
+  it('accepts an isolated Ext form-level Booker edit before the loaded record model synchronizes', () => {
+    for (const [field, formName, value] of contactCases) {
+      const staged = {
+        values: { ...baseline.values, [formName]: value },
+        data: { ...baseline.data },
+        formDirty: true,
+        recordDirty: false,
+        dirtyFields: [formName],
+        modifiedFields: [],
+      };
+
+      // Ext updates the form field first; the exact full-record request matcher
+      // remains the only authorization for dispatch.
+      expect(staged.data[formName]).toBe(baseline.data[formName]);
+      expect(matchesLabtestContactAmendDraft(baseline, staged, field, value)).toBe(true);
+
+      const collateralValue = {
+        ...staged,
+        values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+      };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralValue, field, value)).toBe(false);
+
+      const collateralRecord = {
+        ...staged,
+        data: { ...staged.data, udfchar02: 'unexpected record-model change' },
+      };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralRecord, field, value)).toBe(false);
+
+      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'udfchar02'] };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralDirtyField, field, value)).toBe(false);
+      expect(matchesLabtestContactAmendDraft(baseline, { ...staged, dirtyFields: [] }, field, value)).toBe(false);
     }
   });
 

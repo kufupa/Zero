@@ -96,6 +96,14 @@ export function contactAmendOutcome({
   return possiblyDispatched ? 'uncertain' : 'not_dispatched';
 }
 
+/** Accept the staged form value before Ext synchronizes the loaded record model. */
+export function matchesLabtestContactAmendDraft(before, after, field, value) {
+  if (!Object.hasOwn(CONTACT_FIELDS, field) || typeof value !== 'string') return false;
+  const fieldName = CONTACT_FIELDS[field].name;
+  return after?.values?.[fieldName] === value &&
+    unchangedLabtestRecord(before, after, { [fieldName]: value });
+}
+
 /**
  * Install the writer-local route chain after the existing context read-only guard
  * and page request fence. The page handler always falls back for the one exact
@@ -388,10 +396,11 @@ export async function amendLabtestContact(page, expected = {}, {
 
     const after = await bounded(currentLabtestRecord(page, expected));
     const changedForm = await bounded(snapshotLabtestRecord(frame));
-    const changes = { [spec.name]: nextValue };
+    // Ext's form values may update before its loaded record.data; the save
+    // request matcher below is the authoritative full-record check.
     if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
-        !blankLabtestParties(changedForm) || !unchangedLabtestRecord(baseline, changedForm, changes) ||
-        changedForm?.values?.[spec.name] !== nextValue || changedForm?.data?.[spec.name] !== nextValue ||
+        !blankLabtestParties(changedForm) ||
+        !matchesLabtestContactAmendDraft(baseline, changedForm, fieldKey, nextValue) ||
         blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('AMEND_DRAFT_CHANGED');
     }
