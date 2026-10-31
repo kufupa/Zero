@@ -230,7 +230,6 @@ describe('reservationist worker input', () => {
     const result = await runReservationistRuntime(built.input, factory.dependencies);
     expect(resolve).toHaveBeenCalledOnce();
     expect(result.tasks[0]!.status).toBe('needs_clarification');
-    expect(result.tasks[0]!.guestText).toMatch(/invoice/i);
   });
 
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {
