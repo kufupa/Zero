@@ -2,6 +2,7 @@ import { quoteWorkflowLoaders, voucherLoaders } from '../src/trpc/routes/quote-w
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
+import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
 import { readQuoteAttachments } from '../src/ai/quote-workflow-synced-selection.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -265,6 +266,78 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(result.aiUnavailable).toBe(true);
       expect(result.luna).toBeNull();
       expect(result.reviewItems?.some((item) => item.kind === 'document_failure')).toBe(true);
+    }
+  });
+
+  it('asks staff to review masked ambiguous number groups without calling the readable attachment unread', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Room assignments',
+      bodyText: 'Please confirm availability for the listed guests.',
+      preceding: [],
+      attachments: [{
+        id: 'sheet',
+        filename: 'rooming.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        byteSize: 40_000,
+        bytesPresent: true,
+        text: `Rooms ${AMBIGUOUS_NUMBER_GROUPS}`,
+        readFailure: 'ambiguous number groups',
+      }],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<rooming@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.reviewItems).toContainEqual(expect.objectContaining({
+        kind: 'document_failure',
+        text: 'Some number groups may be room numbers or card details. Check the original source.',
+        blocking: false,
+      }));
+      expect(result.reviewItems?.some((item) => item.text?.includes("Nava can't read rooming.xlsx"))).toBe(false);
+    }
+  });
+
+  it('warns that later XLSX rows were omitted without calling the source unread', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Room assignments',
+      bodyText: 'Please quote the listed guests.',
+      preceding: [],
+      attachments: [{
+        id: 'long-rooming',
+        filename: 'rooming.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        byteSize: 40_000,
+        bytesPresent: true,
+        text: 'first rows only',
+        reviewReason: 'spreadsheet text truncated',
+      }],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<rooming-truncated@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 2,
+    });
+
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.reviewItems).toContainEqual(expect.objectContaining({
+        id: 'spreadsheet-review:long-rooming',
+        kind: 'document_failure',
+        readable: true,
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+      }));
+      expect(result.reviewItems?.some((item) => item.text?.includes("Nava can't read rooming.xlsx"))).toBe(false);
+      expect(result.luna?.flags ?? []).not.toContain('attachment_unread');
     }
   });
 

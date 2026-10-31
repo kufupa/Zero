@@ -58,6 +58,8 @@ export function documentFailureIdentity(document: Pick<QuoteDocumentFailure, 'so
 }
 
 export function reviewItemSourceIdentity(item: QuoteReviewItem): string {
+  // Separate asks can cite the same email or attachment; their task IDs identify the actual requests.
+  if (item.kind === 'question' || item.kind === 'pricing_fact') return item.id;
   if (item.sourceHash && item.sourceRef) return `${item.kind}:${item.sourceHash}:${item.sourceRef}`;
   if (item.sourceRef) return `${item.kind}:${item.sourceRef}:${item.filename ?? item.text}`;
   if (item.kind === 'document_failure' && item.filename) {
@@ -175,7 +177,11 @@ export function projectQuoteReviewItems(
   const explicit = (analysis?.reviewItems ?? [])
     .filter(notNoise)
     .filter((item) => item.kind !== 'pricing_fact');
-  const questions = fromStaff.length || explicit.length ? [] : questionReviewItems(analysis);
+  const representedQuestions = new Set([...fromStaff, ...explicit]
+    .filter((item) => item.kind === 'question')
+    .map((item) => item.text.trim().toLowerCase()));
+  const questions = questionReviewItems(analysis)
+    .filter((item) => !representedQuestions.has(item.text.trim().toLowerCase()));
   return mergeReviewItems([pricing, fromStaff, explicit, kept, questions]);
 }
 

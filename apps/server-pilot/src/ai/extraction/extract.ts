@@ -6,6 +6,7 @@ import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import { renderPdfPagesForVision, type VisionPage } from '../../mail/artifacts/read-artifact.js';
 import type {
+  QuoteAttachmentReviewReason,
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
   SyncedThreadMessage,
@@ -314,6 +315,8 @@ export type AttachmentRead = {
   byteSize?: number;
   status: 'read' | 'not_read';
   reason?: string;
+  /** Review cue retained for readable sources with masked numbers or incomplete text. */
+  reviewReason?: QuoteAttachmentReviewReason;
   truncated?: boolean;
 };
 
@@ -331,11 +334,14 @@ export function attachmentReads(
       mimeType: attachment.mimeType,
       byteSize: attachment.byteSize,
     };
+    const reviewReason = attachment.reviewReason ??
+      (attachment.readFailure === 'ambiguous number groups' ? 'ambiguous number groups' : undefined);
+    const review = reviewReason ? { reviewReason } : {};
     const textRead = textById.get(attachment.id);
-    if (textRead) return { ...base, ...textRead };
+    if (textRead) return { ...base, ...textRead, ...review };
     const visionRead = visionById.get(attachment.id);
-    if (visionRead) return { ...base, ...visionRead };
-    if (attachment.text?.trim()) return { ...base, status: 'read' as const };
+    if (visionRead) return { ...base, ...visionRead, ...review };
+    if (attachment.text?.trim()) return { ...base, status: 'read' as const, ...review };
     if (attachment.pdf) {
       return {
         ...base,

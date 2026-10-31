@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   bindExecuteStaffQuote,
   bindReadBackStaffQuote,
+  bindStaffActions,
   bindStaffQuoteStrategy,
   bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
@@ -44,6 +45,20 @@ it('keeps a metadata-only unread attachment visible to staff without a file hash
   expect(parsed).toHaveLength(1);
   expect(mapStaffActions(parsed)).toMatchObject([{sourceRef:'large',messageId:'mail-1',filename:'rooming.xlsx'}]);
   expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
+});
+
+it('loads the current review for the selected message', async () => {
+  const action = { id:'request:shuttle',kind:'unanswered_question',text:'Can we arrange a shuttle?',
+    sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
+    blockingQuote:false,status:'open' };
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
+  expect(await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread-1',messageId:'mail-1'});
+});
+
+it('does not use a review for another message', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-0',reviewSummary:{staffActions:[]}});
+  expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
 });
 
 describe('HRDAV native room and board maps', () => {

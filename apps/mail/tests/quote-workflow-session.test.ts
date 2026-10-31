@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -425,13 +424,37 @@ describe('quote session', () => {
               sourceLabel: 'scan.pdf',
               blocking: true,
             },
+            {
+              id: 'spreadsheet-review:rooming',
+              kind: 'document_failure',
+              rank: 'unread_source',
+              text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+              sourceLabel: 'rooming.xlsx',
+              readable: true,
+              blocking: false,
+            },
           ],
         },
       },
     );
     expect(s.phase).toBe('non_quote');
-    expect(s.reviewItems).toHaveLength(1);
-    expect(s.reviewItems[0]?.kind).toBe('document_failure');
+    expect(s.reviewItems).toHaveLength(2);
+    expect(s.reviewItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({id:'unread:scan',kind:'document_failure'}),
+      expect.objectContaining({id:'spreadsheet-review:rooming',readable:true}),
+    ]));
+  });
+
+  it('keeps an unread file visible whichever request finishes first', () => {
+    const start = withStaffSource(reduceQuoteSession(initialQuoteSession(), {type:'selection',binding:bind()}));
+    const actions = {type:'staff_actions_ready' as const, actions:[{id:'unread',kind:'business_document_failure' as const,
+      text:'Could not read the rooming list',sourceRef:'file-1',sourceIdentity:'metadata_only' as const,
+      sourceKind:'attachment' as const,messageId:'mail-1',filename:'rooming.xlsx',blockingQuote:false,status:'open' as const}]};
+    const analysis = {type:'analysis_ready' as const, analysis:{intent:'other' as const,groups:[],secondaryAsks:[],alternatives:[]}};
+    const actionsFirst = reduceQuoteSession(reduceQuoteSession(start, actions), analysis);
+    const analysisFirst = reduceQuoteSession(reduceQuoteSession(start, analysis), actions);
+    for (const session of [actionsFirst, analysisFirst])
+      expect(session.reviewItems).toEqual(expect.arrayContaining([expect.objectContaining({id:'unread',kind:'document_failure'})]));
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {
@@ -2161,6 +2184,28 @@ describe('quote session staff review items', () => {
         }),
       ]),
     );
+  });
+
+  it('keeps two questions from the same source as separate review items', () => {
+    const base = {kind:'unanswered_question' as const,sourceRef:'message:mail-1',sourceHash:STAFF_HASH,
+      sourceKind:'message' as const,messageId:'mail-1',blockingQuote:false,status:'open' as const};
+    const items = projectQuoteReviewItems(null, [], [], [
+      {...base,id:'request:parking',text:'Is parking available?'},
+      {...base,id:'request:shuttle',text:'Is a shuttle available?'},
+    ]);
+    expect(items.map(item => item.id)).toEqual(['request:parking','request:shuttle']);
+    expect(openReviewItems({reviewItems:items,handledReviewItemIds:['request:parking']}).map(item => item.id)).toEqual(['request:shuttle']);
+  });
+
+  it('keeps other questions when a source already has a question and a document warning', () => {
+    const analysis = {...quoteAnalysis, secondaryAsks: ['Is parking included?', 'Is a shuttle available?'], reviewItems: [
+      {id:'sheet',kind:'document_failure' as const,rank:'unread_source' as const,text:'Review the spreadsheet.',sourceLabel:'Attachment',blocking:false,readable:true},
+    ]};
+    const staff = [{id:'parking',kind:'unanswered_question' as const,text:'Is parking included?',sourceRef:'message:mail-1',
+      sourceHash:STAFF_HASH,sourceKind:'message' as const,messageId:'mail-1',blockingQuote:false,status:'open' as const}];
+    const items = projectQuoteReviewItems(analysis, [], [], staff);
+    expect(items.filter(item => item.kind === 'question').map(item => item.text).sort()).toEqual(['Is a shuttle available?', 'Is parking included?']);
+    expect(items.some(item => item.text === 'Review the spreadsheet.')).toBe(true);
   });
 
   it('uses source identity for document failures so the same filename does not collide', () => {

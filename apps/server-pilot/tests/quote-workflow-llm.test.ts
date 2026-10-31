@@ -184,6 +184,22 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('rooming.pdf');
   });
 
+  it('marks XLSX prompt truncation so later rows are not treated as complete evidence', () => {
+    const prompt = buildQuoteWorkflowPrompt({
+      ...selection,
+      attachments: [{
+        id: 'rooming',
+        filename: 'rooming.xlsx',
+        bytesPresent: true,
+        text: `${'x'.repeat(20_000)}LATE_ROW_GUEST`,
+        reviewReason: 'spreadsheet text truncated',
+      }],
+    });
+
+    expect(prompt.user).toContain('[Later spreadsheet rows were omitted; review the original file.]');
+    expect(prompt.user).not.toContain('LATE_ROW_GUEST');
+  });
+
   it('keeps requested dinner boards for the server-side B&B retry', () => {
     const prompt = buildQuoteWorkflowPrompt(selection).system;
 
