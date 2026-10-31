@@ -439,8 +439,10 @@ describe('quote session', () => {
     );
     expect(s.phase).toBe('non_quote');
     expect(s.reviewItems).toHaveLength(2);
-    expect(s.reviewItems[0]?.kind).toBe('document_failure');
-    expect(s.reviewItems[1]?.readable).toBe(true);
+    expect(s.reviewItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({id:'unread:scan',kind:'document_failure'}),
+      expect.objectContaining({id:'spreadsheet-review:rooming',readable:true}),
+    ]));
   });
 
   it('keeps an unread file visible whichever request finishes first', () => {
