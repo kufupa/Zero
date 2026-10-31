@@ -152,7 +152,7 @@ describe('agentDecisionToLunaAnalysis', () => {
     });
     const mapped = mapLlmDecision(parsed);
     expect(mapped.groups[0]?.adults).toBeUndefined();
-    expect(mapped.groups[0]?.childAges).toEqual([]);
+    expect(mapped.groups[0]?.childAges).toBeUndefined();
     expect(mapped.groups[0]?.fields).toMatchObject({ adults: 'missing', childAges: 'missing' });
     expect(mapped.missing.map((item) => item.field)).toEqual(['adultsPerRoom', 'childAges']);
   });
