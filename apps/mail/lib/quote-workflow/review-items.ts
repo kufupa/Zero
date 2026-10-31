@@ -100,7 +100,9 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
   const items: QuoteReviewItem[] = [];
   for (const action of actions) {
     if (action.status !== 'open') continue;
-    if (!SOURCE_HASH.test(action.sourceHash)) continue;
+    const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
+      action.kind === 'business_document_failure' && action.sourceKind === 'attachment' && !!action.messageId;
+    if (!metadataOnly && (!action.sourceHash || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;
     const sourceLabel =

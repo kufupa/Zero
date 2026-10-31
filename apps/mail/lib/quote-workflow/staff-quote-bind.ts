@@ -561,14 +561,18 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
     if (typeof action.id !== 'string' || !action.id.trim()) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;
-    if (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash)) continue;
+    const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
+      action.kind === 'business_document_failure' && action.sourceKind === 'attachment' &&
+      typeof action.messageId === 'string' && !!action.messageId.trim();
+    if (!metadataOnly && (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.blockingQuote !== 'boolean') continue;
     actions.push({
       id: action.id,
       kind: action.kind,
       text: action.text,
       sourceRef: action.sourceRef,
-      sourceHash: action.sourceHash,
+      ...(typeof action.sourceHash === 'string' ? { sourceHash: action.sourceHash } : {}),
+      ...(metadataOnly ? { sourceIdentity: 'metadata_only' as const } : {}),
       blockingQuote: action.blockingQuote,
       status: 'open',
       ...(action.sourceKind === 'message' || action.sourceKind === 'attachment'
