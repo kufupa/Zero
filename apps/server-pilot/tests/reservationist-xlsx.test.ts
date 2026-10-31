@@ -8,6 +8,7 @@ import {
   isReservationistXlsxMimeType,
 } from '../src/ai/reservationist-xlsx.js';
 import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
+import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
 
 type WorkbookSheet = {
   name: string;
@@ -57,18 +58,18 @@ describe('reservationist XLSX intake', () => {
     expect(JSON.parse(lines[1]!)).toEqual({
       rowNumber: 1,
       cells: [
-        { columnNumber: 1, value: 'Room', displayText: 'Room' },
-        { columnNumber: 4, value: 'Guest', displayText: 'Guest' },
+        { columnNumber: 1, displayText: 'Room' },
+        { columnNumber: 4, displayText: 'Guest' },
       ],
     });
     expect(JSON.parse(lines[2]!)).toEqual({
       rowNumber: 4,
-      cells: [{ columnNumber: 4, value: '[card ••••1111]', displayText: '[card ••••1111]' }],
+      cells: [{ columnNumber: 4, displayText: '[card ••••1111]' }],
     });
     expect(JSON.parse(lines[4]!)).toMatchObject({ sheetName: 'Departures', sheetNumber: 2, sheetCount: 3 });
     expect(JSON.parse(lines[6]!)).toEqual({
       rowNumber: 3,
-      cells: [{ columnNumber: 2, value: '25526053-1', displayText: '25526053-1' }],
+      cells: [{ columnNumber: 2, displayText: '25526053-1' }],
     });
     expect(JSON.parse(lines[8]!)).toMatchObject({
       sheetName: 'No assignments', sheetNumber: 3, rowCount: 0, cellCount: 0, empty: true,
@@ -96,25 +97,22 @@ describe('reservationist XLSX intake', () => {
     expect(result.reason).toBe('text');
     const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
     expect(rows[0]?.cells[0]).toMatchObject({
-      value: `Rooms ${AMBIGUOUS_NUMBER_GROUPS}`,
       displayText: `Rooms ${AMBIGUOUS_NUMBER_GROUPS}`,
     });
     expect(rows[1]?.cells).toHaveLength(4);
-    expect(rows[1]?.cells.every((cell: { value: string; displayText: string }) =>
-      cell.value === AMBIGUOUS_NUMBER_GROUPS && cell.displayText === AMBIGUOUS_NUMBER_GROUPS)).toBe(true);
+    expect(rows[1]?.cells.every((cell: { displayText: string }) =>
+      cell.displayText === AMBIGUOUS_NUMBER_GROUPS)).toBe(true);
     expect(rows[2]?.cells[0]).toMatchObject({
-      value: expect.stringContaining('[card ••••1111]'),
       displayText: expect.stringContaining('[card ••••1111]'),
     });
     expect(rows[3]?.cells[0]).toMatchObject({
-      value: '[card ••••1111]',
       displayText: '[card ••••1111]',
     });
     expect(result.text).not.toContain('4111 1111 1111 1111');
     expect(result.text).not.toContain('4111111111111111');
   });
 
-  it('redacts card-like groups split across adjacent rows and leaves a staff-review marker', async () => {
+  it('sends card-like groups split across adjacent rows to staff review', async () => {
     const body = await makeWorkbook([{
       name: 'Room assignments',
       cells: [
@@ -125,38 +123,71 @@ describe('reservationist XLSX intake', () => {
       ],
     }]);
 
-    const result = await extract(body);
-    expect(result.reason).toBe('text');
-    const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
-    expect(rows[0]?.cells).toEqual([
-      { columnNumber: 1, value: `Room ${AMBIGUOUS_NUMBER_GROUPS}`, displayText: `Room ${AMBIGUOUS_NUMBER_GROUPS}` },
-      { columnNumber: 2, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
-    ]);
-    expect(rows[1]?.cells).toEqual([
-      { columnNumber: 1, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
-      { columnNumber: 2, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
-    ]);
-    expect(result.text).toContain(AMBIGUOUS_NUMBER_GROUPS);
-    expect(result.text).not.toContain('4111');
+    await expect(extract(body)).resolves.toEqual({ reason: 'spreadsheet_card_groups_cross_rows', text: null });
   });
 
-  it('sends non-Luhn digit candidates crossing rows to manual review too', async () => {
+  it('sends PAN candidates split across four rows to staff review, even when OCR-corrupted', async () => {
     const body = await makeWorkbook([{
-      name: 'OCR split',
+      name: 'Four-row split',
       cells: [
-        { row: 1, column: 1, value: '4111 1111' },
-        { row: 2, column: 1, value: '1111 1112' },
+        { row: 1, column: 1, value: '4111' },
+        { row: 2, column: 1, value: '1111' },
+        { row: 3, column: 1, value: '1111' },
+        { row: 4, column: 1, value: '1112' },
+      ],
+    }]);
+
+    await expect(extract(body)).resolves.toEqual({ reason: 'spreadsheet_card_groups_cross_rows', text: null });
+  });
+
+  it('keeps consecutive date rows readable instead of treating them as a PAN', async () => {
+    const body = await makeWorkbook([{
+      name: 'Dates',
+      cells: [
+        { row: 1, column: 1, value: '2026-11-10' },
+        { row: 2, column: 1, value: '2026-11-12' },
       ],
     }]);
 
     const result = await extract(body);
     expect(result.reason).toBe('text');
-    const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
-    expect(rows.every((row) => row.cells.every((cell: { displayText: string }) =>
-      !/\d/.test(cell.displayText)))).toBe(true);
-    expect(result.text).toContain(AMBIGUOUS_NUMBER_GROUPS);
-    expect(result.text).not.toContain('4111');
-    expect(result.text).not.toContain('1112');
+    expect(result.text).toContain('2026-11-10');
+    expect(result.text).toContain('2026-11-12');
+    expect(result.text).not.toContain(AMBIGUOUS_NUMBER_GROUPS);
+  });
+
+  it('leaves a labeled security-code column for staff review', async () => {
+    const body = await makeWorkbook([{
+      name: 'Cards',
+      cells: [
+        { row: 1, column: 1, value: 'Cardholder' },
+        { row: 1, column: 2, value: 'CVV' },
+        { row: 1, column: 3, value: 'Card number' },
+        { row: 2, column: 1, value: 'Example Guest' },
+        { row: 2, column: 2, value: '123' },
+        { row: 2, column: 3, value: '4111 1111 1111 1111' },
+      ],
+    }]);
+
+    await expect(extract(body)).resolves.toEqual({ reason: 'spreadsheet_sensitive_card_code_column', text: null });
+  });
+
+  it('does not duplicate date cells into false arrival and departure mentions on fallback', async () => {
+    const body = await makeWorkbook([{
+      name: 'Dates',
+      cells: [
+        { row: 1, column: 1, value: 'Arrival 2026-11-10' },
+        { row: 2, column: 1, value: 'Departure 2026-11-12' },
+      ],
+    }]);
+    const result = await extract(body);
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote the listed rooms.',
+      attachments: [{ id: 'dates', filename: 'dates.xlsx', bytesPresent: true, text: result.text! }],
+    });
+
+    expect(analysis.groups[0]).toMatchObject({ arrivalDate: '2026-11-10', departureDate: '2026-11-12' });
   });
 
   it('returns a visible manual reason rather than partial text at row or cell limits', async () => {

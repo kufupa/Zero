@@ -11,7 +11,7 @@ import {
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
-import { AMBIGUOUS_NUMBER_GROUPS } from './card-mask.js';
+import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
 import {
   extractReservationistOfficeText,
@@ -24,6 +24,7 @@ import {
 } from './reservationist-xlsx.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
+import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -40,7 +41,11 @@ export type SyncedQuoteAttachment = {
   bytesPresent: boolean;
   /** Why staff must review this attachment themselves. */
   readFailure?: string;
+  /** Readable source still needs review because some rows were omitted or number groups were masked. */
+  reviewReason?: QuoteAttachmentReviewReason;
 };
+
+export type QuoteAttachmentReviewReason = 'ambiguous number groups' | 'spreadsheet text truncated';
 
 export type SyncedThreadMessage = {
   direction: 'inbound' | 'outbound';
@@ -369,12 +374,20 @@ export async function readQuoteAttachments(
           if (read.image) return { ...base, bytesPresent: true, image: read.image };
           return { ...base, bytesPresent: false, readFailure: read.reason ?? 'image bytes unavailable' };
         }
-        if (read.text?.trim()) return {
-          ...base,
-          bytesPresent: true,
-          text: read.text,
-          ...(read.text.includes(AMBIGUOUS_NUMBER_GROUPS) ? { readFailure: 'ambiguous number groups' } : {}),
-        };
+        if (read.text?.trim()) {
+          const ambiguous = read.text.includes(AMBIGUOUS_NUMBER_GROUPS);
+          const reviewReason = isXlsxAttachment(row) &&
+            maskCardNumbers(read.text).length > QUOTE_ATTACHMENT_TEXT_MAX_CHARS
+            ? 'spreadsheet text truncated'
+            : ambiguous ? 'ambiguous number groups' : undefined;
+          return {
+            ...base,
+            bytesPresent: true,
+            text: read.text,
+            ...(ambiguous ? { readFailure: 'ambiguous number groups' } : {}),
+            ...(reviewReason ? { reviewReason } : {}),
+          };
+        }
         if (read.pdf) return { ...base, bytesPresent: true, pdf: read.pdf };
         return { ...base, bytesPresent: false, readFailure: read.reason ?? 'no readable text' };
       } catch {

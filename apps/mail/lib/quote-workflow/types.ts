@@ -138,6 +138,8 @@ export type QuoteReviewItem = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  /** The source was read; only masked numbers or truncated content needs review. */
+  readable?: boolean;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
 };

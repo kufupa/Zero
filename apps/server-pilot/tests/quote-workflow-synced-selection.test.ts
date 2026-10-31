@@ -410,12 +410,28 @@ describe('readQuoteAttachments', () => {
         text: expect.stringContaining('"sheetName":"Arrivals"'),
       },
     ]);
-    expect(attachments[0]?.text).toContain('"columnNumber":3,"value":"Guest"');
+    expect(attachments[0]?.text).toContain('"columnNumber":3,"displayText":"Guest"');
     expect(attachments[0]?.text).toContain('"rowNumber":2');
     expect(attachments[0]?.text).not.toContain('4111 1111 1111 1111');
     expect(attachments[0]?.readFailure).toBe('ambiguous number groups');
     expect(attachmentReads(attachments)).toMatchObject([
       { id: 'rooming', status: 'read', reviewReason: 'ambiguous number groups' },
+    ]);
+  });
+
+  it('marks XLSX text beyond the prompt cap as readable but incomplete', async () => {
+    const attachments = await readQuoteAttachments([row({
+      id: 'long-rooming',
+      filename: 'rooming.xlsx',
+      mimeType: xlsxMime,
+      sizeBytes: 30_000,
+    })], async () => ({ text: 'x'.repeat(20_001) }));
+
+    expect(attachments).toMatchObject([
+      { id: 'long-rooming', bytesPresent: true, reviewReason: 'spreadsheet text truncated' },
+    ]);
+    expect(attachmentReads(attachments)).toMatchObject([
+      { id: 'long-rooming', status: 'read', reviewReason: 'spreadsheet text truncated' },
     ]);
   });
 
@@ -922,6 +938,25 @@ describe('storedAnalysis thread confirmation overlay', () => {
     expect(analysis.reviewItems).toContainEqual(expect.objectContaining({
       id: 'number-review:rooming',
       text: 'Some number groups may be room numbers or card details. Check the original source.',
+      blocking: false,
+    }));
+    expect(analysis.luna.flags).not.toContain('attachment_unread');
+  });
+
+  it('keeps a saved XLSX truncation warning on a readable attachment without marking it unread', () => {
+    const analysis = storedAnalysis(amendmentRead([], [{
+      id: 'rooming',
+      filename: 'rooming.xlsx',
+      mimeType: xlsxMime,
+      byteSize: 40_000,
+      status: 'read',
+      reviewReason: 'spreadsheet text truncated',
+    }]), {}).analysis;
+
+    expect(analysis.reviewItems).toContainEqual(expect.objectContaining({
+      id: 'spreadsheet-review:rooming',
+      readable: true,
+      text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
       blocking: false,
     }));
     expect(analysis.luna.flags).not.toContain('attachment_unread');

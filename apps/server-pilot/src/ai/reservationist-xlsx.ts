@@ -25,49 +25,25 @@ const DECOMPRESSION_LIMITS = {
   maxTotalUncompressedBytes: 16 * 1024 * 1024,
   maxCompressionRatio: 200,
 };
+const DATE_TOKEN_PATTERN = /(?<!\d)(?:\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{4})(?!\d)/g;
+const SECURITY_CODE_HEADER = /\b(?:cvv2?|cvc2?|cvn|csc)\b|\bsecurity\s+code\b|\bcard\s+(?:security|verification)\s+code\b/i;
 
 export function isReservationistXlsxMimeType(mimeType: string): boolean {
   return mimeType.split(';', 1)[0]?.trim().toLowerCase() === XLSX_MIME;
 }
 
-function maskCellValue(value: CellValue, displayText: string): unknown {
-  if (typeof value === 'string') return maskIncomingCardNumbers(value);
-  if (typeof value === 'number') {
-    const raw = String(value);
-    const masked = maskIncomingCardNumbers(raw);
-    return masked === raw ? value : masked;
-  }
-  if (value === null || typeof value === 'boolean') return value;
-  // Rich text and formatted object values can carry source digits outside the primitive `value`.
-  return maskIncomingCardNumbers(displayText);
-}
-
-function maskCellRepresentations(value: CellValue, displayText: string) {
+function safeCellText(value: CellValue, displayText: string): string {
   const hasComparableRawText = typeof value === 'string' || typeof value === 'number';
   const rawText = hasComparableRawText ? String(value) : displayText;
   const maskedRaw = maskIncomingCardNumbers(rawText);
   const maskedDisplay = maskIncomingCardNumbers(displayText);
-  const rawChanged = hasComparableRawText && maskedRaw !== rawText;
-  const displayChanged = maskedDisplay !== displayText;
-  const safeValue = maskCellValue(value, displayText);
 
   // XLSX numeric display can round a PAN candidate into a non-Luhn string. If
-  // only one representation is recognized, carry its redaction to both outputs.
-  if (rawChanged && !displayChanged && typeof safeValue === 'string') {
-    return { value: safeValue, displayText: safeValue };
-  }
-  if (displayChanged && !rawChanged) {
-    return { value: maskedDisplay, displayText: maskedDisplay };
-  }
-  return { value: safeValue, displayText: maskedDisplay };
+  // only the raw representation is recognized, carry that redaction to the one text output.
+  return hasComparableRawText && maskedRaw !== rawText ? maskedRaw : maskedDisplay;
 }
 
-function safeRowCells(
-  workbook: Workbook,
-  cells: Cell[],
-  rowNumber?: number,
-  crossRowCells: ReadonlySet<string> = new Set(),
-) {
+function safeRowCells(workbook: Workbook, cells: Cell[]) {
   const displayTexts = cells.map((cell) => getCellDisplayText(workbook, cell));
   // A PAN can be split into adjacent cells. The shared masker catches the assembled span; redact
   // digit-bearing cells in that row when masking only each cell would otherwise miss it.
@@ -76,59 +52,45 @@ function safeRowCells(
   const spansCells = maskedSeparately !== maskedTogether;
   return cells.map((cell, index) => {
     const displayText = displayTexts[index] ?? '';
-    if (rowNumber !== undefined && crossRowCells.has(`${rowNumber}:${cell.col}`)) {
-      const redacted = redactCrossRowDigits(displayText);
-      return { columnNumber: cell.col, value: redacted, displayText: redacted };
-    }
     const requiresReview = spansCells && /\d/.test(displayText);
-    const representations = maskCellRepresentations(cell.value, displayText);
     return {
       columnNumber: cell.col,
-      value: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : representations.value,
-      displayText: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : representations.displayText,
+      displayText: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : safeCellText(cell.value, displayText),
     };
   });
 }
 
-/**
- * A row boundary is lost when the extracted sheet is serialized as one JSON
- * object per row. Compare adjacent rows as temporary plain text before that
- * boundary disappears; if the existing card masker recognizes a group only
- * when the rows are joined, replace their digit-bearing cells with a visible
- * review marker.
- */
-function crossRowNumberCells(
+/** Reject a sheet for staff review when a card-like number crosses one or more row boundaries. */
+function hasCrossRowPanCandidate(
   workbook: Workbook,
   rows: Array<[number, { values(): Iterable<Cell> }]>,
 ) {
-  const marked = new Set<string>();
-  const textFor = (cells: Cell[]) => cells.map((cell) => getCellDisplayText(workbook, cell)).join(' ');
-  for (let index = 1; index < rows.length; index += 1) {
-    const [previousNumber, previousRow] = rows[index - 1]!;
-    const [rowNumber, row] = rows[index]!;
-    if (rowNumber !== previousNumber + 1) continue;
-    const previousCells = [...previousRow.values()].sort((left, right) => left.col - right.col);
-    const cells = [...row.values()].sort((left, right) => left.col - right.col);
-    const previousText = textFor(previousCells);
-    const rowText = textFor(cells);
-    const joined = `${previousText} ${rowText}`;
-    const together = maskIncomingCardNumbers(joined);
-    const separate = `${maskIncomingCardNumbers(previousText)} ${maskIncomingCardNumbers(rowText)}`;
-    const boundary = previousText.length + 1;
-    const panCandidateCrossesRows = [...joined.matchAll(new RegExp(PAN_CANDIDATE_PATTERN.source, 'g'))]
-      .some((match) => match.index < boundary && match.index + match[0].length > boundary);
-    if (together === separate && !panCandidateCrossesRows) continue;
-    for (const [number, values] of [[previousNumber, previousCells], [rowNumber, cells]] as const) {
-      for (const cell of values) {
-        if (/\d/.test(getCellDisplayText(workbook, cell))) marked.add(`${number}:${cell.col}`);
-      }
+  const crossesBoundary = (text: string, boundaries: number[]) => {
+    const dateSafe = text.replace(new RegExp(DATE_TOKEN_PATTERN.source, 'g'), (date) => 'x'.repeat(date.length));
+    return [...dateSafe.matchAll(new RegExp(PAN_CANDIDATE_PATTERN.source, 'g'))].some((match) => {
+      const start = match.index ?? -1;
+      return boundaries.some((boundary) => start < boundary && start + match[0].length > boundary);
+    });
+  };
+  let text = '';
+  let previousRowNumber: number | undefined;
+  let boundaries: number[] = [];
+  for (const [rowNumber, row] of rows) {
+    if (previousRowNumber !== undefined && rowNumber !== previousRowNumber + 1) {
+      if (crossesBoundary(text, boundaries)) return true;
+      text = '';
+      boundaries = [];
     }
+    const rowText = [...row.values()].sort((left, right) => left.col - right.col)
+      .map((cell) => getCellDisplayText(workbook, cell)).join(' ');
+    if (text) {
+      boundaries.push(text.length + 1);
+      text += ' ';
+    }
+    text += rowText;
+    previousRowNumber = rowNumber;
   }
-  return marked;
-}
-
-function redactCrossRowDigits(text: string): string {
-  return text.replace(/\d+/g, AMBIGUOUS_NUMBER_GROUPS);
+  return crossesBoundary(text, boundaries);
 }
 
 function failureReason(error: unknown): string {
@@ -204,7 +166,11 @@ export async function extractReservationistXlsxText(input: {
       }
       totalRows += rows.length;
 
-      const crossRowCells = crossRowNumberCells(workbook, rows);
+      if (rows.some(([, row]) => [...row.values()].some((cell) =>
+        SECURITY_CODE_HEADER.test(getCellDisplayText(workbook, cell))))) {
+        return fail('spreadsheet_sensitive_card_code_column');
+      }
+      if (hasCrossRowPanCandidate(workbook, rows)) return fail('spreadsheet_card_groups_cross_rows');
 
       const rowLines: string[] = [];
       let sheetCells = 0;
@@ -233,7 +199,7 @@ export async function extractReservationistXlsxText(input: {
 
         const line = JSON.stringify({
           rowNumber,
-          cells: safeRowCells(workbook, cells, rowNumber, crossRowCells),
+          cells: safeRowCells(workbook, cells),
         });
         const additionalBytes = Buffer.byteLength(line, 'utf8') + 1;
         if (rowBytes + additionalBytes > MAX_OUTPUT_BYTES) {

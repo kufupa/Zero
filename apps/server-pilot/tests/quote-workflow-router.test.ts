@@ -304,6 +304,43 @@ describe('quoteWorkflow.analyseSelection', () => {
     }
   });
 
+  it('warns that later XLSX rows were omitted without calling the source unread', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Room assignments',
+      bodyText: 'Please quote the listed guests.',
+      preceding: [],
+      attachments: [{
+        id: 'long-rooming',
+        filename: 'rooming.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        byteSize: 40_000,
+        bytesPresent: true,
+        text: 'first rows only',
+        reviewReason: 'spreadsheet text truncated',
+      }],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<rooming-truncated@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 2,
+    });
+
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.reviewItems).toContainEqual(expect.objectContaining({
+        id: 'spreadsheet-review:long-rooming',
+        kind: 'document_failure',
+        readable: true,
+        text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
+      }));
+      expect(result.reviewItems?.some((item) => item.text?.includes("Nava can't read rooming.xlsx"))).toBe(false);
+      expect(result.luna?.flags ?? []).not.toContain('attachment_unread');
+    }
+  });
+
   it('flags a scanned PDF with bytes but no text as unread on regex fallback', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Quote request',

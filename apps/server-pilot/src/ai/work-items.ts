@@ -610,7 +610,7 @@ export function storedAnalysis(
   );
   const numberReviews = numberGroupReviewItems(
     (read.attachments ?? [])
-      .filter((item) => item.status === 'read' && item.reviewReason === 'ambiguous number groups')
+      .filter((item) => item.status === 'read' && item.reviewReason !== undefined)
       .map((item) => ({
         id: item.id,
         filename: item.filename,
