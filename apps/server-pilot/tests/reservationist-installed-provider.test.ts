@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createInstalledReservationistProvider } from '../src/ai/reservationist-installed-provider.js';
+import { admitReservationistAttachment } from '../src/ai/reservationist-attachment-input.js';
 import { runReservationistRuntime, type ReservationistRuntimeInput } from '../src/ai/reservationist-runtime.js';
 import type { ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 
@@ -41,21 +42,31 @@ function context(value: ReservationistRuntimeInput, admissions: unknown[] = []) 
     admissions: admissions as never, input: value, signal: new AbortController().signal, fence: {} as never, revalidateSources: async () => true };
 }
 
-it('uses masked PDF text while keeping its unseen visual content for staff review', async () => {
+it('masks PDF text through real admission before model input and leaves visuals for staff', async () => {
   const body = Buffer.from('%PDF-1.4 synthetic private bytes 4111111111111111');
   const hash = createHash('sha256').update(body).digest('hex');
   const value = input('Thank you.', [{ attachmentId: 'pdf', sourceHash: hash }]);
   const metadata = { attachmentId: 'pdf', messageId: 'message', threadId: 'thread', ownerRef: 'transport',
-    messageAt: value.trigger.at, mimeType: 'application/pdf', sizeBytes: body.length, sourceHash: hash, disclosure: 'guest' };
-  const admission = { status: 'admitted', reason: 'text', metadata, draftReady: false,
-    source: { attachmentId: 'pdf', sourceHash: hash, disclosure: 'guest', pages: ['Card [masked]'], pageCount: 1 },
-    bytes: { body, sha256: hash, contentType: 'application/pdf', locator: { messageId: 'message', s3Key: 'synthetic', mimeType: 'application/pdf', sizeBytes: body.length } } };
+    messageAt: value.trigger.at, mimeType: 'application/pdf', sizeBytes: body.length, sourceHash: hash, disclosure: 'guest' as const };
+  const locator = { messageId: 'message', s3Key: 'attachments/message/pdf', mimeType: 'application/pdf', sizeBytes: body.length };
+  const admission = await admitReservationistAttachment({ metadata,
+    scope: { ownerRef: 'transport', threadId: 'thread', requestAt: value.trigger.at },
+    read: { attachmentId: 'pdf', authorizedAttachmentIds: new Set(['pdf']), signal: new AbortController().signal,
+      expectedLocator: locator, resolveLocator: async () => locator, revalidate: async () => true,
+      s3: { headObject: async () => ({ sizeBytes: body.length, contentType: 'application/pdf' }),
+        getObjectBounded: async () => ({ body, contentType: 'application/pdf' }) } as never },
+    runner: async (tool) => ({ stdout: Buffer.from(tool === 'pdfinfo' ? 'Pages: 1\nEncrypted: no' : 'Card 4111 1111 1111 1111 CVV: 123\f'),
+      stderr: Buffer.alloc(0), exitCode: 0 }),
+  });
+  expect(admission.status).toBe('admitted');
   const invoke = vi.fn(async (_request: ModelInvokeInput) => response());
   const provider = await createInstalledReservationistProvider({ invoke })(context(value, [admission]));
   const result = await runReservationistRuntime(value, provider.dependencies);
   expect(invoke).toHaveBeenCalledOnce();
   const request = invoke.mock.calls[0]![0] as { userPrompt: string; files?: unknown[]; images?: unknown[] };
-  expect(request.userPrompt).toContain('Card [masked]');
+  expect(request.userPrompt).toContain('[card ••••1111]');
+  expect(request.userPrompt).not.toContain('4111 1111 1111 1111');
+  expect(request.userPrompt).not.toContain('CVV: 123');
   expect(request.userPrompt).not.toContain('4111111111111111');
   expect(request.files).toEqual([]);
   expect(request.images).toEqual([]);
