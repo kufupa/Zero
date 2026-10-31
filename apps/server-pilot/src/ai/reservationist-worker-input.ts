@@ -1,4 +1,4 @@
-import { isLuhnValid, maskCardNumbers } from './card-mask.js';
+import { maskCardNumbers, maskIncomingCardNumbers } from './card-mask.js';
 import { normalizeMessageText } from './thread-context.js';
 import { load } from 'cheerio';
 import { normalizeContentId } from '../mail/cid-images.js';
@@ -40,27 +40,9 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
-/** Keep separate room numbers separate while masking common split-card formats. */
-function maskMessageText(text: string): string {
-  const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
-  return text.split(date).map((part, index) => {
-    if (index % 2 === 1) return part;
-    const separator = '[ \\t\\r\\n-]{1,8}';
-    const formats = [[4, 4, 4, 4], [4, 6, 5], [4, 4, 4, 4, 3], [4, 4, 4, 1]];
-    const masked = formats.reduce((value, groups) => value.replace(
-      new RegExp(`(?<!\\d)${groups.map((size) => `\\d{${size}}`).join(separator)}(?!\\d)`, 'g'),
-      (match) => {
-        const digits = match.replace(/\D/g, '');
-        return isLuhnValid(digits) ? `[card ••••${digits.slice(-4)}]` : match;
-      },
-    ), part);
-    return maskCardNumbers(masked);
-  }).join('');
-}
-
 /** Plain text retains paragraph and quote boundaries for source spans and masking. */
 function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
-  if (row.textBody?.trim() || !normalized.includes('<')) return maskMessageText(normalized);
+  if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
   $('details.quoted-toggle, blockquote').each((_, element) => {
     $(element).prepend('\nFrom: quoted history\n');
@@ -80,7 +62,7 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   });
   const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
   // HTML can split card groups across visual lines; dates stay independent.
-  return maskMessageText(rendered);
+  return maskIncomingCardNumbers(rendered);
 }
 
 /** Put both authored alternatives before either signature or quoted history. */
@@ -217,6 +199,8 @@ export async function buildReservationistWorkerInput(options: {
     throw new Error('worker_intake_context_limit');
   check();
   selected.sort((a, b) => a.at - b.at || a.row.id.localeCompare(b.row.id));
+  if (selected.some((entry, index) => index > 0 && entry.at === selected[index - 1]!.at))
+    throw new Error('worker_intake_order_ambiguous');
   const normalized = new Map(selected.map(({ row }) => [row.id, normalizeMessageText(row)]));
   const messages = selected.map(({ row, at }) => ({
     id: row.id,

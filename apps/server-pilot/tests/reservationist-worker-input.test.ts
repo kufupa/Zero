@@ -17,7 +17,7 @@ const hash = (body: Buffer) => createHash('sha256').update(body).digest('hex');
 
 describe('reservationist worker input', () => {
   it('carries causal messages and business files while omitting later arrivals and a proven signature image', async () => {
-    const rooming = Buffer.from('Two rooms for the earlier request');
+    const rooming = Buffer.from('Two rooms for the earlier request\nRoom 1\n4111\n1111\n1111\n1111\n1 rooms');
     const unsupported = Buffer.from('workbook');
     const attachments = [
       { id: 'rooming', messageId: 'first', mimeType: 'text/plain', sizeBytes: rooming.length, sha256: hash(rooming), isInline: false, contentId: null, disclosure: 'guest' as const },
@@ -51,7 +51,7 @@ describe('reservationist worker input', () => {
     expect(result.input.messages.at(-1)!.text).toContain('[card ••••1111]');
     expect(result.input.capabilities).toEqual({ pmsWrite: false, emailSend: false });
     expect(result.admissions.map((a) => [a.metadata.attachmentId, a.status])).toEqual([['rooming', 'admitted'], ['sheet', 'manual_required']]);
-    expect(result.admissions[0]!.source?.pages).toEqual(['Two rooms for the earlier request']);
+    expect(result.admissions[0]!.source?.pages).toEqual(['Two rooms for the earlier request\nRoom 1\n[card ••••1111]\n1 rooms']);
     expect(result.input.authorizedArtifacts).toHaveLength(2);
     expect(result.ignoredSignatures).toBe(1);
     expect(admit).toHaveBeenCalledTimes(2);
@@ -64,6 +64,7 @@ describe('reservationist worker input', () => {
       signal: new AbortController().signal, admit: async (metadata: any) => ({ status: 'manual_required' as const, reason: 'unreadable', metadata, draftReady: false as const }),
     };
     await expect(buildReservationistWorkerInput({ ...options, messages: [row('tie', 4), row('current', 4)] })).rejects.toThrow('worker_intake_order_ambiguous');
+    await expect(buildReservationistWorkerInput({ ...options, messages: [row('old-a', 2), row('old-b', 2), row('current', 4)] })).rejects.toThrow('worker_intake_order_ambiguous');
     const attachment = { id: 'file', messageId: 'current', mimeType: 'text/plain', sizeBytes: 1, sha256: null, isInline: false, contentId: null, disclosure: 'guest' as const };
     await expect(buildReservationistWorkerInput({ ...options, attachments: [attachment] })).rejects.toThrow('worker_intake_attachment_identity_invalid');
     const recovered = await buildReservationistWorkerInput({ ...options, attachments: [attachment], resolveSourceHash: async () => 'b'.repeat(64) });
@@ -217,6 +218,7 @@ describe('reservationist worker input', () => {
   it.each([
     { textBody: null, htmlBody: '<p>Room 1</p><p>4111<br>1111<br>1111<br>1111<br>12/29</p><p>1 rooms</p><p>101<br>102<br>103<br>104<br>105<br>106<br>107<br>108<br>109<br>110</p>' },
     { textBody: 'Room 1\n4111\n1111\n1111\n1111\n12/29\n1 rooms\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110', htmlBody: null },
+    { textBody: 'Room 1 4111111111111111 1 rooms\n12/29\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110', htmlBody: null },
   ])('masks a split card beside other digits without losing room counts', async (body) => {
     const result = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
