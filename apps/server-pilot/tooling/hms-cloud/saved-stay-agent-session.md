@@ -30,8 +30,10 @@ Writes require the currently read Reserved record and delegate to the Labtest
 actions. The caller must identify the exact authorized Proof Labtest stay and
 respect holds; a matching name alone is not authorization. The underlying
 actions verify HRCEN, 2027+ dates, the fake guest, current fields, NGI, CMS Send
-unchecked, and blank CMS recipient and guest email. Only the note amendment
-and the Test Reservations cancellation flow are supported.
+unchecked, blank CMS recipient and guest email, and blank agency, organization,
+group, A/R and guarantee-card fields. Missing or unverified linked fields are
+refused. Only the note amendment and the Test Reservations cancellation flow
+are supported.
 
 After `openCancel` returns `reason_ready`, only `confirmCancel` or closing the
 session is available. Outcomes such as `fee_dialog_pending`, `uncertain` and

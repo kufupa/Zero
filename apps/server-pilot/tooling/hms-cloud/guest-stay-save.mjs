@@ -1,6 +1,7 @@
 // One narrowly authorized save on a verified, unsaved HRCEN Labtest draft.
 import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './guest-profile.mjs';
 import { consumeLabtestPreimage } from './labtest-preimage.mjs';
+import { blankPartyFields } from './labtest-party-fields.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -8,10 +9,6 @@ const SAVE_PATH = '/web/base/OSRESV.HDR';
 const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
-const blankPartyFields = ['taid1', 'companyid', 'groupid', 'groupcompanyid', 'grouptaid', 'groupta2id', 'groupta3id',
-  'bookingagency2id', 'bookingagency3id', 'bookingagencycontractid', 'ta1', 'company', 'companyname', 'groupname', 'araccountname',
-  'bacontract', 'bookingagency2name', 'bookingagency3name', 'bookingagency1iatanumber', 'bookingagency2iatanumber',
-  'bookingagency3iatanumber'];
 
 function dates(arrival, departure) {
   const parse = (value) => {

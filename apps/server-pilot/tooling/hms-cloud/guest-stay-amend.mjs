@@ -1,5 +1,5 @@
 // Amend only the reservation note on one verified saved Labtest record.
-import { currentLabtestRecord, snapshotLabtestRecord, cleanLabtestRecord,
+import { currentLabtestRecord, snapshotLabtestRecord, cleanLabtestRecord, blankLabtestParties,
   unchangedLabtestRecord, matchesLabtestBody } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
@@ -50,6 +50,7 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     const state = await bounded(currentLabtestRecord(page, expected)), frame = state.frame;
     const baseline = await bounded(snapshotLabtestRecord(frame));
     if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+    if (!blankLabtestParties(baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
     if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
         await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
     const field = frame.locator('textarea[name="reservationnote"]:visible');
@@ -89,6 +90,7 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     const after = await bounded(currentLabtestRecord(page, { ...expected, note: expected.newNote }));
     const changedForm = await bounded(snapshotLabtestRecord(frame));
     if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
+        !blankLabtestParties(changedForm) ||
         !unchangedLabtestRecord(baseline, changedForm, { reservationnote: expected.newNote }) ||
         changedForm?.values?.reservationnote !== expected.newNote ||
         blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
