@@ -66,7 +66,9 @@ export function maskIncomingCardNumbers(text: string): string {
     const digits = match.replace(/\D/g, '');
     if (!isLuhnValid(digits)) return match;
     const preceding = source.slice(Math.max(0, offset - 80), offset);
-    if (/[\r\n]/.test(match) || /\brooms?(?:\s+(?:numbers?|nos?))?\s*[:#-]?\s*$/i.test(preceding))
+    const following = source.slice(offset + match.length);
+    if (/[\r\n]/.test(match) || /^[\p{Zs}\t\r\n-]{1,8}\d{1,4}(?!\d)/u.test(following) ||
+        /\brooms?(?:\s+(?:numbers?|nos?))?\s*[:#-]?\s*$/i.test(preceding))
       return AMBIGUOUS_NUMBER_GROUPS;
     return `[card ••••${digits.slice(-4)}]`;
   };
