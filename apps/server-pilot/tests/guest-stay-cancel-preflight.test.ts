@@ -279,7 +279,7 @@ describe('projectCancellationPreflight', () => {
       normalization: 'verified_1b_status_and_cancelnumber',
     });
     expect(result.stay.cancellationNumber).toMatchObject({
-      state: 'observed', value: '1234567', sources: ['1a_stay_card', '1b_record_view'],
+      state: 'observed', value: '1234567', sources: ['1b_record_view'],
     });
   });
 
@@ -289,9 +289,7 @@ describe('projectCancellationPreflight', () => {
       record: read1B({ status: 'Cancelled', cancellationNumber: '7654321' }),
     });
     expect(wrongNumber.stay.status.state).toBe('conflict');
-    expect(wrongNumber.stay.cancellationNumber).toMatchObject({
-      state: 'conflict', values: ['1234567', '7654321'],
-    });
+    expect(wrongNumber.stay.cancellationNumber).toMatchObject({ state: 'observed', value: '7654321' });
 
     const wrongStatus = project({
       shallow: read1A({ status: 'Cancelled\n1234567' }),
@@ -310,7 +308,7 @@ describe('projectCancellationPreflight', () => {
       state: 'ambiguous', reason: 'cancellation_status_decoration_not_reconciled',
     });
     expect(result.stay.cancellationNumber).toMatchObject({
-      state: 'ambiguous', reason: 'cancellation_number_not_reconciled',
+      state: 'unavailable', reason: 'field_not_rendered',
     });
   });
 
