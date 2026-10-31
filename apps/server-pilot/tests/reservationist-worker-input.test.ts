@@ -4,6 +4,8 @@ import { admitReservationistAttachment } from '../src/ai/reservationist-attachme
 import { buildReservationistWorkerInput, type ReservationistWorkerMessage } from '../src/ai/reservationist-worker-input.js';
 import { createReservationistDependencies } from '../src/ai/reservationist-execution.js';
 import { runReservationistRuntime } from '../src/ai/reservationist-runtime.js';
+import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
 
 const base = Date.now() - 600_000;
@@ -51,7 +53,7 @@ describe('reservationist worker input', () => {
     expect(result.input.messages.at(-1)!.text).toContain('[card ••••1111]');
     expect(result.input.capabilities).toEqual({ pmsWrite: false, emailSend: false });
     expect(result.admissions.map((a) => [a.metadata.attachmentId, a.status])).toEqual([['rooming', 'admitted'], ['sheet', 'manual_required']]);
-    expect(result.admissions[0]!.source?.pages).toEqual(['Two rooms for the earlier request\nRoom 1\n[card ••••1111]\n1 rooms']);
+    expect(result.admissions[0]!.source?.pages).toEqual([`Two rooms for the earlier request\nRoom 1\n${AMBIGUOUS_NUMBER_GROUPS}\n1 rooms`]);
     expect(result.input.authorizedArtifacts).toHaveLength(2);
     expect(result.ignoredSignatures).toBe(1);
     expect(admit).toHaveBeenCalledTimes(2);
@@ -202,7 +204,7 @@ describe('reservationist worker input', () => {
     const text = result.input.messages[0]!.text;
     expect(text).toContain('Please send the invoice.\n');
     expect(text).toContain('Notify us if this reached you by mistake.');
-    expect(text).toContain('[card ••••1111]');
+    expect(text).toContain(AMBIGUOUS_NUMBER_GROUPS);
     expect(text).toContain('2027-05-12');
     expect(text).toContain('19-1-2027');
     expect(text).toContain('20-1-2027');
@@ -230,8 +232,53 @@ describe('reservationist worker input', () => {
     expect(text).toContain('1 rooms');
     expect(text).toContain('12/29');
     expect(text).toMatch(/101\s+102\s+103\s+104\s+105\s+106\s+107\s+108\s+109\s+110/);
-    expect(text).toContain('[card ••••1111]');
+    expect(text).toContain(body.textBody?.includes('4111111111111111') ? '[card ••••1111]' : AMBIGUOUS_NUMBER_GROUPS);
     expect(text).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
+  });
+
+  it.each(['\u00a0', '\u2009', '\u202f'])('masks card groups separated by non-ASCII spaces', async (space) => {
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: `Payment: ${['4111', '1111', '1111', '1111'].join(space)}` })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    expect(result.input.messages[0]!.text).toBe('Payment: [card ••••1111]');
+  });
+
+  it('flags a room-list/card ambiguity for staff even when the model selects no action', async () => {
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: 'Rooms:\n1004\n1005\n1006\n1007' })], attachments: [],
+      sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const text = built.input.messages[0]!.text;
+    expect(text).toContain(AMBIGUOUS_NUMBER_GROUPS);
+    expect(text).not.toContain('1004');
+    const result = await runReservationistRuntime(built.input, {
+      plan: async (input) => ({ tasks: [], facts: [], noAction: {
+        kind: 'no_current_request', modelSelectionCompleted: true, inputDigest: quoteDigest(input),
+        triggerMessageId: input.trigger.id, sourceHash: hash(Buffer.from(input.messages[0]!.text)),
+      } }),
+      execute: async () => { throw new Error('must not execute empty plan'); },
+    });
+    expect(result.readiness).toBe('needs_clarification');
+    const { buildReservationistReviewSummary } = await import('../src/trpc/routes/drafts.js');
+    const summary = buildReservationistReviewSummary(result) as { staffActions?: unknown[] };
+    expect(summary.staffActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: expect.stringContaining('room numbers or card details'), sourceKind: 'message' }),
+    ]));
+  });
+
+  it('keeps an HTML refusal together even when its first line appears in plain text', async () => {
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: 'Please do not cancel the booking.', htmlBody: '<p>Please do not<br>send the invoice.</p>' })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    expect(result.input.messages[0]!.text).toContain('Please do not\nsend the invoice.');
   });
 
   it.each([null, 'Please proceed.\nKind regards\nGuest', 'Reservation ABC123. Please send the invoice.\n> On Monday wrote:\n> Earlier request.'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
@@ -244,13 +291,14 @@ describe('reservationist worker input', () => {
     const text = built.input.messages[0]!.text;
     if (textBody?.includes('Kind regards')) expect(text.indexOf('Please send the invoice.')).toBeLessThan(text.indexOf('Kind regards'));
     if (textBody?.includes('> On Monday')) expect(text.indexOf('Stay 12/11')).toBeLessThan(text.indexOf('> On Monday'));
-    expect(text.split('Please send the invoice.')).toHaveLength(2);
+    const sharedInvoice = textBody?.includes('Please send the invoice.');
+    expect(text.split('Please send the invoice.')).toHaveLength(sharedInvoice ? 3 : 2);
     const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote });
     const adapter: ModelAdapter = { invoke: vi.fn(async (request) => {
       expect(request.userPrompt).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
       return { modelId: 'gpt-6-luna', output: {
-        facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source('Reservation ABC123.') }],
-        tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source('Please send the invoice.') }], unresolvedAsks: [],
+        facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source(sharedInvoice ? 'Reservation ABC123. Please send the invoice.' : 'Reservation ABC123.') }],
+        tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source(sharedInvoice ? 'Reservation ABC123. Please send the invoice.' : 'Please send the invoice.') }], unresolvedAsks: [],
       }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } };
     }) };
     const resolve = vi.fn(async () => { throw new Error('existing_document_source_unavailable'); });

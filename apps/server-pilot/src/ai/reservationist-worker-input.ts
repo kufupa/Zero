@@ -77,17 +77,9 @@ function combineMessageViews(primary: string, alternative: string): string {
   const [primaryBody, primaryTail] = split(primary);
   const [alternativeBody, alternativeTail] = split(alternative);
   const sections = [primaryBody?.trim() ?? ''];
-  const primaryComparable = comparable(primaryBody ?? '');
-  const alreadyPresent = (part: string) => {
-    const needle = comparable(part);
-    const at = primaryComparable.indexOf(needle);
-    const word = /[\p{L}\p{N}]/u;
-    return at >= 0 && !(word.test(needle[0]!) && at > 0 && word.test(primaryComparable[at - 1]!)) &&
-      !(word.test(needle.at(-1)!) && at + needle.length < primaryComparable.length && word.test(primaryComparable[at + needle.length]!));
-  };
-  const additions = (alternativeBody ?? '').split(/\n+|(?<=[.!?])(?=\s)/u)
-    .map((part) => part.trim()).filter((part) => part && !alreadyPresent(part));
-  if (additions.length) sections.push(`[HTML alternative of the same message]\n${additions.join('\n')}`);
+  // Keep each authored view intact: deleting a repeated line can detach a negation or condition from the next line.
+  if (alternativeBody?.trim() && comparable(primaryBody ?? '') !== comparable(alternativeBody))
+    sections.push(`[HTML alternative of the same message]\n${alternativeBody.trim()}`);
   if (primaryTail?.trim()) sections.push(primaryTail.trim());
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     sections.push(`[HTML alternative context]\n${alternativeTail.trim()}`);

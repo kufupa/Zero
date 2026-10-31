@@ -52,16 +52,23 @@ export function maskCardNumbers(text: string): string {
     .replace(SECURITY_CODE, (_match, label: string, gap: string) => `${label}${gap}[code masked]`);
 }
 
-/** Mask common card groupings across lines without joining unrelated room numbers. */
+/** Sent to the model and surfaced to staff when a masked span might also be a room list. */
+export const AMBIGUOUS_NUMBER_GROUPS = '[number groups hidden; may be room numbers or card details; staff review]';
+
+/** Mask common card groupings across lines, making ambiguous room lists visible for review. */
 export function maskIncomingCardNumbers(text: string): string {
   const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
-  const separator = '[ \\t\\r\\n-]{1,8}';
+  const separator = '[\\p{Zs}\\t\\r\\n-]{1,8}';
   // ponytail: common printed groupings only; unusual line splits need a stronger masker.
-  const formats = [[4, 4, 4, 4], [4, 6, 5], [4, 4, 4, 4, 3], [4, 4, 4, 1]];
-  const patterns = formats.map((groups) => new RegExp(`(?<!\\d)${groups.map((size) => `\\d{${size}}`).join(separator)}(?!\\d)`, 'g'));
-  const mask = (match: string) => {
+  const formats = [[4, 4, 4, 4, 3], [4, 4, 4, 4], [4, 6, 5], [4, 4, 4, 1]];
+  const patterns = formats.map((groups) => new RegExp(`(?<!\\d)${groups.map((size) => `\\d{${size}}`).join(separator)}(?!\\d)`, 'gu'));
+  const mask = (match: string, offset: number, source: string) => {
     const digits = match.replace(/\D/g, '');
-    return isLuhnValid(digits) ? `[card ••••${digits.slice(-4)}]` : match;
+    if (!isLuhnValid(digits)) return match;
+    const preceding = source.slice(Math.max(0, offset - 80), offset);
+    if (/[\r\n]/.test(match) || /\brooms?(?:\s+(?:numbers?|nos?))?\s*[:#-]?\s*$/i.test(preceding))
+      return AMBIGUOUS_NUMBER_GROUPS;
+    return `[card ••••${digits.slice(-4)}]`;
   };
   return text.split(date).map((part, index) => {
     if (index % 2 === 1) return part;
