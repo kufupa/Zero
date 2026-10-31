@@ -2174,6 +2174,17 @@ describe('quote session staff review items', () => {
     );
   });
 
+  it('keeps two questions from the same source as separate review items', () => {
+    const base = {kind:'unanswered_question' as const,sourceRef:'message:mail-1',sourceHash:STAFF_HASH,
+      sourceKind:'message' as const,messageId:'mail-1',blockingQuote:false,status:'open' as const};
+    const items = projectQuoteReviewItems(null, [], [], [
+      {...base,id:'request:parking',text:'Is parking available?'},
+      {...base,id:'request:shuttle',text:'Is a shuttle available?'},
+    ]);
+    expect(items.map(item => item.id)).toEqual(['request:parking','request:shuttle']);
+    expect(openReviewItems({reviewItems:items,handledReviewItemIds:['request:parking']}).map(item => item.id)).toEqual(['request:shuttle']);
+  });
+
   it('uses source identity for document failures so the same filename does not collide', () => {
     const documents = [
       {

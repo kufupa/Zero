@@ -1745,10 +1745,10 @@ export function reduceQuoteSession(
         };
       }
       if (action.analysis.intent !== 'quote') {
-        const unreadItems = projectQuoteReviewItems(action.analysis, [], [], [
+        const reviewItems = projectQuoteReviewItems(action.analysis, [], [], [
           ...session.staffActions, ...(action.analysis.staffActions ?? []),
         ]).filter(
-          (item) => item.kind === 'document_failure',
+          (item) => item.kind === 'document_failure' || item.kind === 'question',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);
@@ -1769,7 +1769,7 @@ export function reduceQuoteSession(
                   )
                 ? session.selectedStayKey
                 : null,
-          reviewItems: unreadItems,
+          reviewItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
             session.staffHeader,

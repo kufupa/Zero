@@ -47,7 +47,6 @@ import {
   LinkButton,
   Notice,
   PrimaryButton,
-  Section,
   SecondaryButton,
   paneFieldClass,
   paneTextareaClass,
@@ -659,8 +658,9 @@ export function QuoteWorkflowPanel({
       ? undefined
       : session.analysis?.hmsTodoCard;
   if (session.phase === 'non_quote') {
-    // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
+    const questions = (session.reviewItems ?? []).filter((item) => item.kind === 'question');
+    const handledQuestions = questions.filter((item) => (session.handledReviewItemIds ?? []).includes(item.id));
     const amendStays = groupStays(session.groups).filter((stay) => {
       const action = stayAskAction(session, stay.id);
       return action === 'amend' || action === 'cancel';
@@ -681,6 +681,14 @@ export function QuoteWorkflowPanel({
             {item.text}
           </Notice>
         ))}
+        <ItemsForYou
+          openItems={openReviewItems(session).filter((item) => item.kind === 'question')}
+          handledItems={handledQuestions}
+          onViewSource={onViewSource}
+          onEditReply={onEditReply}
+          onHandle={onHandleReviewItem}
+          onUndo={onUndoReviewItem}
+        />
       </div>
     );
   }
