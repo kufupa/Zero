@@ -128,6 +128,18 @@ describe('fieldEventsBetween', () => {
     ]);
   });
 
+  it('does not clear stay totals when a replacement row remains after the original is removed', () => {
+    const original = row('g1', 'st-1', { adultsTotal: 5, childrenTotal: 0 });
+    const session = { ...initialQuoteSession(), groups: [original] };
+    const added = reduceQuoteSession(session, { type: 'add_row', stayId: 'st-1', token: 'replacement' });
+    expect(added.groups[1]).toMatchObject({ adultsTotal: 5, childrenTotal: 0 });
+    const replaced = reduceQuoteSession(added, { type: 'remove_row', groupId: 'g1' });
+
+    expect(fieldEventsBetween(READY.refs, added.groups, replaced.groups)).toEqual([
+      { path: 'stays[st-1].rows[rw-1].removed', value: true },
+    ]);
+  });
+
   it('logs a stay with no row by its dates and its own row, and an unknown board or empty date as null', () => {
     expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, departureDate: '', quantity: 3 }])).toEqual([
       { path: 'stays[st-2].requested.departure', value: null },

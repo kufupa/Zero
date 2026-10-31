@@ -6,6 +6,7 @@ import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import { resolveNativeRoomCodes } from '../lib/quote-workflow/staff-quote-bind';
+import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
@@ -91,6 +92,24 @@ describe('StayCard rooms', () => {
     fireEvent.change(children, { target: { value: '' } });
     expect(onPatch).toHaveBeenNthCalledWith(3, 'g1', { childrenTotal: null });
     expect(onPatch).toHaveBeenNthCalledWith(4, 'g2', { childrenTotal: null });
+  });
+
+  it('keeps stay totals visible after adding a replacement room row and removing the original', () => {
+    const original = stay({
+      id: 'g1',
+      stayId: 's1',
+      adultsTotal: 5,
+      childrenTotal: 0,
+      fields: { adultsTotal: 'staff_corrected', childrenTotal: 'extracted' },
+    });
+    const session = { ...initialQuoteSession(), groups: [original] };
+    const added = reduceQuoteSession(session, { type: 'add_row', stayId: 's1', token: 'replacement' });
+    const replaced = reduceQuoteSession(added, { type: 'remove_row', groupId: 'g1' });
+
+    renderStay(replaced.groups);
+    expect((screen.getByLabelText('Adults total') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('Children total') as HTMLInputElement).value).toBe('0');
+    expect(screen.getByText('Your note')).toBeTruthy();
   });
 
   it('keeps adults per room between 1 and 9, the values a work item can save', () => {
