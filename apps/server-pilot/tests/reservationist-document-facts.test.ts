@@ -128,14 +128,19 @@ describe('document facts', () => {
   it.each([
     ['Please quote rooms, in 13 November out 15 November 2026.', 'Please quote rooms, in 12 November out 14 November 2026.', 'in 12 November out 14 November 2026', {arrival:'12 November 2026',departure:'14 November 2026'}, true],
     ['Stay 13/11 to 15/11 was cancelled.\nPlease quote rooms 12/11 to 14/11.', 'Cancelled stay 13/11 to 15/11.\nPlease quote. Stay 12/11 to 14/11.', 'Stay 12/11 to 14/11', {arrival:'12/11',departure:'14/11'}, false],
-  ])('compares compact dates and excludes cancelled stays', (plain,html,quote,value,conflict) => {
+    ['Stay 12/11 to 14/11. Correction: stay 13/11 to 15/11 instead.', 'Stay 12/11 to 14/11.', 'Stay 12/11 to 14/11', {arrival:'12/11',departure:'14/11'}, true],
+    ['Stay 12/11 to 14/11. Stay 20/12 to 22/12. Correction: stay 21/12 to 23/12 instead.', 'Stay 12/11 to 14/11. Stay 20/12 to 22/12.', 'Stay 12/11 to 14/11', {arrival:'12/11',departure:'14/11'}, false],
+    ['Stay 12/11 to 14/11. Stay 20/12 to 22/12. Correction: stay 21/12 to 23/12 instead.', 'Stay 12/11 to 14/11. Stay 20/12 to 22/12.', 'Stay 20/12 to 22/12', {arrival:'20/12',departure:'22/12'}, true],
+    ['25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.\nCorrection: check out on 18 November 2026 instead.', '25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.\nCorrection: check out on 18 November 2026 instead.', '25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026', {arrival:'11 November 2026',departure:'16 November 2026'}, true],
+    ['25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.\nCorrection: breakfast is included.', '25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.\nCorrection: breakfast is included.', '25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026', {arrival:'11 November 2026',departure:'16 November 2026'}, false],
+  ])('compares alternative dates and scoped corrections', (plain,html,quote,value,conflict) => {
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,start=text.lastIndexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
     const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
     const plan={facts:[{id:'dates',kind:'dates' as const,value,disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
-    if(conflict)expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
-    else expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
+    if(conflict)expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow(/alternate stay dates/);
+    else expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival: value.arrival.startsWith('11 November')?'2026-11-11':'2026-11-12',departure:value.departure.startsWith('16 November')?'2026-11-16':'2026-11-14'});
   });
   it.each([
     ['For 2027: arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],

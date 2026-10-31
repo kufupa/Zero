@@ -406,6 +406,17 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
   if(departure<=arrival)throw new Error('Invalid alternate stay dates');
   return [arrival,departure];
  };
+ const corrects=(text:string,targets:string[])=>{
+  const authored=authoredText(text),found=ranges(authored).sort((a,b)=>b.index-a.index);
+  for(const marker of authored.matchAll(/\b(?:correction|corrected|changed|amended|revised|instead)\b/gi)){
+   const at=marker.index!,start=Math.max(authored.lastIndexOf('\n',at-1),authored.lastIndexOf('.',at-1),authored.lastIndexOf(';',at-1))+1;
+   const tail=authored.slice(at).search(/[\n.;!?]/),end=tail<0?authored.length:at+tail,clause=authored.slice(start,end);
+   if(!/\b(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|ing|e)|depart(?:ure|ing)?|check[ -]?(?:in|out))\b/i.test(clause)||!new RegExp(token,'iu').test(clause))continue;
+   const prior=found.find(range=>range.index<at);
+   try{if(prior&&targets.includes(pair(prior).join('/')))return true;}catch{throw new Error('Ambiguous alternate stay dates');}
+  }
+  return false;
+ };
  const ownText=page.slice(selected.start,selected.end),own=ranges(ownText);
  if(!own.length)return;
  const uniquePairs=(pairs:string[][])=>[...new Map(pairs.map(pair=>[pair.join('/'),pair])).values()];
@@ -420,16 +431,19 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    try{return{count:matches[0]![1]!,arrival:date(matches[0]![2]!,Number(value.arrival.slice(0,4)))};}catch{return;}
   };
   const stated=group(ownText);
-  if(stated&&stated.arrival===value.arrival&&ownPairs.some(pair=>pair[0]!<=stated.arrival&&pair[1]===value.departure)&&views.filter(v=>v!==selected).every(other=>{
+  const overall=stated&&ownPairs.find(pair=>pair[0]!<=stated.arrival&&pair[1]===value.departure);
+  if(stated&&overall&&stated.arrival===value.arrival&&!corrects(ownText,[overall.join('/')])&&views.filter(v=>v!==selected).every(other=>{
    const otherText=page.slice(other.start,other.end),otherGroup=group(otherText);
-   if(!otherGroup||otherGroup.count!==stated.count||otherGroup.arrival!==stated.arrival)return false;
+   if(!otherGroup||otherGroup.count!==stated.count||otherGroup.arrival!==stated.arrival||corrects(otherText,[overall.join('/')]))return false;
    try{return keys(uniquePairs(ranges(otherText).map(m=>pair(m))))===keys(ownPairs);}catch{return false;}
   }))return;
   if(/\b\d+\s+(?:guests?|people|persons?|adults?|officials?)\s+arriving\s+on\b/i.test(authoredText(ownText)))throw new Error('Ambiguous alternate stay dates');
   return;
  }
+ if(corrects(ownText,[target]))throw new Error('Conflicting alternate stay dates');
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length)continue;
   let otherPairs:string[][];try{otherPairs=uniquePairs(found.map(m=>pair(m)));}catch{throw new Error('Ambiguous alternate stay dates');}
+  if(corrects(otherText,[target]))throw new Error('Conflicting alternate stay dates');
   if(otherPairs.some(pair=>pair.join('/')===target))continue;
   throw new Error('Conflicting alternate stay dates');
  }
