@@ -303,7 +303,7 @@ describe('reservationist worker input', () => {
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     });
     const text = built.input.messages[0]!.text;
-    if (textBody?.includes('Kind regards')) expect(text.indexOf('Please send the invoice.')).toBeLessThan(text.indexOf('Kind regards'));
+    if (textBody?.includes('Kind regards')) expect(text).toContain('Please send the invoice.');
     if (textBody?.includes('> On Monday')) expect(text.indexOf('Stay 12/11')).toBeLessThan(text.indexOf('> On Monday'));
     const sharedInvoice = textBody?.includes('Please send the invoice.');
     expect(text.split('Please send the invoice.')).toHaveLength(sharedInvoice ? 3 : 2);
@@ -346,6 +346,67 @@ describe('reservationist worker input', () => {
       converter: { url: 'unused' }, services: {} });
     const plan = await factory.dependencies.plan(built.input, new AbortController().signal);
     expect(plan.tasks[0]!.source!.start).toBeGreaterThanOrEqual(message.sourceViews![1]!.start);
+  });
+
+  it('keeps a postscript request citable after a multipart signoff', async () => {
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: 'Reservation ABC123.\nKind regards\nGuest\nP.S. Please send the invoice.', htmlBody: '<p>Reservation ABC123.</p><p>Kind regards</p><p>Guest</p><p>We arrive later.</p>' })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const message = built.input.messages[0]!, source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(message.text)), page: 1, quote, view: 'plain' });
+    const adapter: ModelAdapter = { invoke: vi.fn(async () => ({ modelId: 'gpt-6-luna', output: {
+      facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source('Reservation ABC123.') }],
+      tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source('Please send the invoice.') }], unresolvedAsks: [],
+    }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } })) };
+    const resolve = vi.fn(async () => { throw new Error('existing_document_source_unavailable'); });
+    const factory = createReservationistDependencies({ adapter, admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: { resolveExistingDocument: resolve, authorizeExistingDocument: async () => null } });
+    await runReservationistRuntime(built.input, factory.dependencies);
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it('treats a wrapped voucher request as one request across MIME alternatives', async () => {
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: 'Please review the attached voucher\nfor reservation ABC123.\nThank you.', htmlBody: '<p>Please review the attached voucher for reservation ABC123.</p><p>Thank you.</p><p>We arrive later.</p>' })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const message = built.input.messages[0]!, ask = 'Please review the attached voucher for reservation ABC123.';
+    const invoke = vi.fn(async () => ({ modelId: 'gpt-6-luna', output: invoke.mock.calls.length === 1
+      ? { facts: [], tasks: [{ id: 'voucher', kind: 'question', factIds: [], source: { attachmentId: 'message:current', sourceHash: hash(Buffer.from(message.text)), page: 1, quote: ask, view: 'html' } }], unresolvedAsks: [] }
+      : { facts: [], assignments: [{ taskId: 'voucher', factIds: [] }], unresolvedAsks: [] },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } }));
+    const factory = createReservationistDependencies({ adapter: { invoke, reserveCalls: async () => {} }, extractionMode: 'task_first', admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: {} });
+    const plan = await factory.dependencies.plan(built.input, new AbortController().signal);
+    expect(plan.tasks).toHaveLength(1);
+  });
+
+  it.each([false, true])('uses a sole room from its own MIME view and rejects a conflicting alternative: %s', async (conflict) => {
+    const ask = 'Please quote 1 single room for Mr John Smith.';
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: ask, htmlBody: `<p>${conflict ? 'Please quote 2 single rooms for Mr John Smith.' : ask}</p><p>We arrive later.</p>` })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const message = built.input.messages[0]!, source = { attachmentId: 'message:current', sourceHash: hash(Buffer.from(message.text)), page: 1, quote: ask, view: 'plain' };
+    const adapter: ModelAdapter = { invoke: vi.fn(async () => ({ modelId: 'gpt-6-luna', output: {
+      facts: [{ id: 'guest', kind: 'guest', value: { firstName: 'John', lastName: 'Smith', roomRef: '1', roomIndex: 1 }, disclosure: 'guest', source },
+        { id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source }],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['guest', 'room'], source }], unresolvedAsks: [],
+    }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } })) };
+    const factory = createReservationistDependencies({ adapter, admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: {} });
+    const planned = factory.dependencies.plan(built.input, new AbortController().signal);
+    if (conflict) await expect(planned).rejects.toThrow();
+    else expect((await planned).facts).toHaveLength(2);
   });
 
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {

@@ -98,15 +98,24 @@ function candidateTaskKinds(quote:string):RequestCandidate['allowedKinds']{
  if(/\b(?:cancel|cancellation request)\b/i.test(quote)&&! /\bcancellation\s+(?:terms|policy)\b/i.test(quote))kinds.push('cancel_request');
  const nonAction=/\?|\b(?:not|never|no|don't|do not|should|whether|was|were|would|if|unless|without|pending)\b/i.test(quote);return [...new Set(kinds)].filter(kind=>kind==='question'||(!nonAction&&/\b(?:please|kindly|request|book|reserve|accept|cancel|amend|change|resend|provide|send|ensure|update)\b/i.test(quote)));
 }
-function originalRequestCandidates(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only'}[],triggerMessageId:string|undefined):RequestCandidate[]{
+function originalRequestCandidates(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[],triggerMessageId:string|undefined):RequestCandidate[]{
  const message=messages.find(m=>m.id===triggerMessageId);if(!message||message.direction!=='inbound'||message.disclosure==='staff_only')return[];
- const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)\s*-{2,})/im),current=history<0?message.text:message.text.slice(0,history),sourceHash=createHash('sha256').update(message.text).digest('hex'),candidates:RequestCandidate[]=[];
- const signoff=current.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu),requestBody=signoff<0?current:current.slice(0,signoff);
- const sentences=[...requestBody.matchAll(/[^.!?;]+[.!?;]?/g)];
- const add=(start:number,end:number)=>{const parent=sentences.find(m=>m.index!<=start&&m.index!+m[0].length>=end)?.[0]??message.text.slice(start,end),lineStart=message.text.lastIndexOf('\n',start-1)+1,lineEnd=message.text.indexOf('\n',start),line=message.text.slice(lineStart,lineEnd<0?message.text.length:lineEnd);if(/^\s*>/.test(line)||/^\s*>/m.test(parent))return;const slice=message.text.slice(start,end),quote=slice.trim();start+=slice.indexOf(quote);end=start+quote.length;if(!quote||quote.length>4096||/^\s*>/m.test(quote)||candidates.some(c=>c.source.start===start&&c.source.end===end)||candidates.length>=128)return;if(/\b(?:herewith|attached|enclosed)\s+(?:POP|proof of payment)|\b(?:confirm|verify|check|review)\s+(?:the\s+)?payment\b/i.test(quote)&&(/\b(?:if|unless|without|don't|do not|withdraw|disregard|historical|previous)\b/i.test(parent)||/\b(?:not|never|no)\b/i.test(parent.slice(0,parent.indexOf(quote)))||!/\?/.test(parent)&&/\b(?:not|never|no)\b/i.test(parent)))return;const parentKinds=candidateTaskKinds(parent),allowedKinds=candidateTaskKinds(quote).filter(kind=>parentKinds.includes(kind)&&['question','channel_booking_sync'].includes(kind));if(!allowedKinds.length)return;candidates.push({id:`request-${candidates.length+1}`,allowedKinds,source:{attachmentId:`message:${message.id}`,sourceHash,page:1,start,end,quote}});};
- for(const pattern of [/\b(?:herewith|attached|enclosed)\s+(?:POP|proof of payment)\b[^.!?;\r\n]*[.!?;]?/gi,/\b(?:please|kindly)\s+(?:also\s+)?(?:confirm|verify|check|review)\s+(?:the\s+)?payment\b[^.!?;\r\n]*[.!?;]?/gi])for(const match of requestBody.matchAll(pattern))add(match.index!,match.index!+match[0].length);
- for(const match of sentences){if(/\b(?:please|kindly|request|quote|quotation|provide|confirm|send|resend|copy|attached|accept|book|reserve|change|amend|cancel|ensure|update)\b|\?/.test(match[0].toLowerCase()))add(match.index!,match.index!+match[0].length);}
- for(const match of requestBody.matchAll(/\b(?:please|kindly)\s+(?:ensure|update|confirm|send|provide|copy|resend|check|review)\b[^.!?;]*[.!?;]?|\b(?:attached\s+(?:POP|proof of payment|(?:hotel\s+)?vouchers?)|tax(?:es)?|breakfast options|cancellation (?:terms|policy)|payment link|reply all|copy all)\b/gi))add(match.index!,match.index!+match[0].length);
+ const sourceHash=createHash('sha256').update(message.text).digest('hex'),candidates:RequestCandidate[]=[];
+ const scan=(body:string,base:number)=>{
+  const sentences=[...body.matchAll(/[^.!?;]+[.!?;]?/g)];
+  const add=(start:number,end:number)=>{const parent=sentences.find(m=>m.index!<=start&&m.index!+m[0].length>=end)?.[0]??body.slice(start,end),lineStart=body.lastIndexOf('\n',start-1)+1,lineEnd=body.indexOf('\n',start),line=body.slice(lineStart,lineEnd<0?body.length:lineEnd);if(/^\s*>/.test(line)||/^\s*>/m.test(parent))return;const slice=body.slice(start,end),quote=slice.trim();start+=slice.indexOf(quote)+base;end=start+quote.length;if(!quote||quote.length>4096||/^\s*>/m.test(quote)||candidates.some(c=>c.source.start===start&&c.source.end===end)||candidates.length>=128)return;if(/\b(?:herewith|attached|enclosed)\s+(?:POP|proof of payment)|\b(?:confirm|verify|check|review)\s+(?:the\s+)?payment\b/i.test(quote)&&(/\b(?:if|unless|without|don't|do not|withdraw|disregard|historical|previous)\b/i.test(parent)||/\b(?:not|never|no)\b/i.test(parent.slice(0,parent.indexOf(quote)))||!/\?/.test(parent)&&/\b(?:not|never|no)\b/i.test(parent)))return;const parentKinds=candidateTaskKinds(parent),allowedKinds=candidateTaskKinds(quote).filter(kind=>parentKinds.includes(kind)&&['question','channel_booking_sync'].includes(kind));if(!allowedKinds.length)return;candidates.push({id:`request-${candidates.length+1}`,allowedKinds,source:{attachmentId:`message:${message.id}`,sourceHash,page:1,start,end,quote}});};
+  for(const pattern of [/\b(?:herewith|attached|enclosed)\s+(?:POP|proof of payment)\b[^.!?;\r\n]*[.!?;]?/gi,/\b(?:please|kindly)\s+(?:also\s+)?(?:confirm|verify|check|review)\s+(?:the\s+)?payment\b[^.!?;\r\n]*[.!?;]?/gi])for(const match of body.matchAll(pattern))add(match.index!,match.index!+match[0].length);
+  for(const match of sentences){if(/\b(?:please|kindly|request|quote|quotation|provide|confirm|send|resend|copy|attached|accept|book|reserve|change|amend|cancel|ensure|update)\b|\?/.test(match[0].toLowerCase()))add(match.index!,match.index!+match[0].length);}
+  for(const match of body.matchAll(/\b(?:please|kindly)\s+(?:ensure|update|confirm|send|provide|copy|resend|check|review)\b[^.!?;]*[.!?;]?|\b(?:attached\s+(?:POP|proof of payment|(?:hotel\s+)?vouchers?)|tax(?:es)?|breakfast options|cancellation (?:terms|policy)|payment link|reply all|copy all)\b/gi))add(match.index!,match.index!+match[0].length);
+ };
+ for(const range of message.sourceViews??[{start:0,end:message.text.length}]){
+  const part=message.text.slice(range.start,range.end),history=part.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)\s*-{2,})/im),current=history<0?part:part.slice(0,history);
+  const signoff=current.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu);
+  scan(signoff<0?current:current.slice(0,signoff),range.start);
+  if(signoff>=0)for(const postscript of current.slice(signoff).matchAll(/^[\t ]*P\.?S\.?[\t ]*[:-]?[\t ]*(.+)$/gim)){
+   const request=postscript[1]!;scan(request,range.start+signoff+postscript.index!+postscript[0].indexOf(request));
+  }
+ }
  return candidates;
 }
 /** Lexical completeness only: original submitted-voucher request, never a fabricated task or authority. */
@@ -125,11 +134,13 @@ function assertCurrentVoucherReviewCompleteness(plan:ValidatedDocumentPlan,messa
  const clause=(source:ValidatedDocumentPlan['tasks'][number]['source'])=>{
   const view=message?.sourceViews?.find(v=>source.start!>=v.start&&source.end!<=v.end);if(!view)return;
   const text=message!.text.slice(view.start,view.end),start=source.start!-view.start,end=source.end!-view.start;
-  const left=Math.max(...['.','!','?',';','\n'].map(c=>text.lastIndexOf(c,start-1)))+1,right=text.slice(end).search(/[.!?;\n]/);
-  return {view:view.name,text:text.slice(left,right<0?text.length:end+right).replace(/\s+/g,' ').trim().toLowerCase()};
+  const boundaries=[...text.matchAll(/[.!?;]|\r?\n[\t ]*\r?\n/g)],left=[...boundaries].reverse().find(b=>b.index!+b[0].length<=start),right=boundaries.find(b=>b.index!>=end);
+  const from=left?left.index!+left[0].length:0,to=right?.index??text.length;
+  return {view:view.name,text:text.slice(from,to).replace(/\s+/g,' ').trim().toLowerCase(),
+   occurrence:[...text.slice(from,start).matchAll(/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/gi)].length};
  };
  for(const required of requirements){
-  const original=clause(required),equivalents=requirements.filter(other=>other===required||(()=>{const candidate=clause(other);return !!original&&!!candidate&&original.view!==candidate.view&&original.text===candidate.text&&other.quote?.toLowerCase()===required.quote?.toLowerCase();})());
+  const original=clause(required),equivalents=requirements.filter(other=>other===required||(()=>{const candidate=clause(other);return !!original&&!!candidate&&original.view!==candidate.view&&original.text===candidate.text&&original.occurrence===candidate.occurrence&&other.quote?.toLowerCase()===required.quote?.toLowerCase();})());
   const matches=plan.tasks.filter(t=>t.kind==='question'&&t.source.attachmentId===required.attachmentId&&t.source.sourceHash===required.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&equivalents.some(e=>t.source.start!<=e.start!&&t.source.end!>=e.end!)&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??''));
   if(matches.length!==1)throw new Error('current_voucher_review_task_omitted_or_ambiguous');
  }
@@ -239,6 +250,22 @@ function soleExplicitAdultRoom(page:string):boolean{
  if(occupants.length)return occupants.length===1&&/^(?:1|one)$/i.test(occupants[0]![1]!);
  return /\b(?:1|one)\s+single\s+room\b/i.test(authored)&&[...authored.matchAll(/\b(?:Mr|Mrs|Ms|Miss)\.?\s+[\p{L}]/giu)].length===1;
 }
+type TextExtractionSource={attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'};sourceViews?:readonly ReservationistMessageView[]};
+/** Preserve global offsets while judging facts in their own MIME alternative. */
+function citedSemanticPage(fact:ValidatedDocumentFact,sources:readonly TextExtractionSource[]):string{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1]??'';
+ const view=source?.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end);
+ return view?' '.repeat(view.start)+page.slice(view.start,view.end):page;
+}
+/** A different explicit room count in the other alternative is a conflict, not a duplicate. */
+function otherViewConflictsWithSoleRoom(fact:ValidatedDocumentFact,sources:readonly TextExtractionSource[]):boolean{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1];
+ if(!page||!source?.sourceViews)return false;
+ return source.sourceViews.filter(v=>fact.source.start===undefined||fact.source.end===undefined||fact.source.start<v.start||fact.source.end>v.end).some(v=>{
+  const text=page.slice(v.start,v.end),counts=[...text.matchAll(/\b(\d+|one|two)\s+(?:(?:single|standard|executive|deluxe)\s+)?rooms?\b/gi)].map(m=>/^one$/i.test(m[1]!)?1:/^two$/i.test(m[1]!)?2:Number(m[1]));
+  return counts.some(count=>count!==1)||/\b(?:child|children|family|multiple|additional|another)\b[^.!?;]{0,50}\brooms?\b|\b(?:not|never|without|cancel)\b[^.!?;]{0,50}\brooms?\b/i.test(text);
+ });
+}
 /** An explicit singular numbered label is a local allocation, never a native room ID. */
 function numberedRoomLabel(row:string,roomRef:string):boolean{
  const labels=[...row.matchAll(/\b(\d+)(?:st|nd|rd|th)?\s+room\b|\broom\s*[:#-]?\s*(\d+)(?![\p{L}\p{N}_-])/giu)].map(match=>String(Number(match[1]??match[2])));
@@ -250,9 +277,10 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
-function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
- const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1];
+function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly TextExtractionSource[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=citedSemanticPage(fact,sources);
  if(!page||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
+ if(fact.kind==='room'&&fact.value.quantity===1&&otherViewConflictsWithSoleRoom(fact,sources))return;
  const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;
  const requested=fact.source.quote??'';
  // An explicit per-person single allocation has its own accommodation scope;
@@ -301,7 +329,7 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
  if(quantity===1&&(count===1||count===2||!count&&roomCounts[0]===1))return{quantity:1,adults:count||1,at:source.causalMessage.at};
  if(quantity>1&&quantity===named&&!people.length)return{quantity,adults:1,at:source.causalMessage.at};
 }
-function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachmentId: string; pages: readonly string[] | null;causalMessage?:{at:string;direction:'inbound'|'outbound'} }[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[] ) {
+function assertEntailed(fact: ValidatedDocumentFact, sources: readonly TextExtractionSource[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[] ) {
   if (fact.verification !== 'text_verified') return;
   const quote = fact.source.quote!;
   const rows = originalSemanticRows(fact, sources);
@@ -358,7 +386,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachm
       if(/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|old|historical)\b[^.!?;]{0,64}\bguest\b/i.test(row)||new RegExp(`\\b(?:not|no|without)\\s+(?:for\\s+)?${escaped(fact.value.firstName)}\\s+${escaped(fact.value.lastName)}(?![\\p{L}\\p{N}_-])`,'iu').test(row))return false;
       let matches = exactText(row, `${fact.value.firstName} ${fact.value.lastName}`) || coordinatedGuestName(row,quote,fact.value.firstName,fact.value.lastName) ||
         labeled(row, 'first\\s*name', fact.value.firstName) && labeled(row, 'last\\s*name|surname', fact.value.lastName);
-      const page=sources.find(s=>s.attachmentId===fact.source.attachmentId)?.pages?.[fact.source.page-1]??'',authored=page.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;const sole=fact.value.roomRef==='1'&&fact.value.roomIndex===1&&soleExplicitAdultRoom(page)&&fact.source.end!==undefined&&fact.source.end<=authored.length&&exactText(authored,`${fact.value.firstName} ${fact.value.lastName}`);
+      const page=citedSemanticPage(fact,sources),authored=page.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;const sole=fact.value.roomRef==='1'&&fact.value.roomIndex===1&&soleExplicitAdultRoom(page)&&!otherViewConflictsWithSoleRoom(fact,sources)&&fact.source.end!==undefined&&fact.source.end<=authored.length&&exactText(authored,`${fact.value.firstName} ${fact.value.lastName}`);
       if (fact.value.roomRef !== undefined&&!sole) matches &&= labeled(row, 'room|group', fact.value.roomRef)||numberedRoomLabel(row,fact.value.roomRef)&&currentNumberedRoomRow(fact,row,sources);
       if (fact.value.roomIndex !== undefined&&!sole) matches &&= labeled(row, 'room', fact.value.roomIndex) && [...row.matchAll(/\broom\s*(?:index)?\s*[:#-]?\s*(\d+)\b/gi)].every(match => Number(match[1]) === fact.value.roomIndex);
       if (fact.value.age !== undefined) matches &&= labeled(row, 'age|aged', fact.value.age) || new RegExp(`\\b${fact.value.age}\\s+years?\\s+old\\b`, 'i').test(row);
@@ -370,7 +398,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachm
   else if (fact.kind === 'room') {
     const boundTasks=tasks.filter(task=>task.factIds.includes(fact.id));
     if(fact.value.quotationBasis==='per_room_rate'){
-      const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1]??'',authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+      const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=citedSemanticPage(fact,sources),authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       const occupancyBody=authored.replace(/\bfamily\s+offices\b/gi,'corporate offices');
       if(authored.split(/[\n;.!?]/).some(row=>/\b(?:occupancy|single|double|twin|above\s+(?:occupancy\s+)?rates)\b/i.test(row)&&/\b(?:not|no|never|without|cancel|cancelled|canceled|withdraw|withdrawn|disregard|ignore)\b/i.test(row)))throw new Error('Withdrawn per-room rate option');
       if(!fact.source.attachmentId.startsWith('message:')||source?.causalMessage?.direction!=='inbound'||fact.source.end===undefined||fact.source.end>authored.length||!boundTasks.length||boundTasks.some(t=>t.kind!=='quote')||fact.value.roomRef!=='1'||fact.value.quantity!==1||fact.value.childAges.length||![1,2].includes(fact.value.adults)||/\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(occupancyBody)||!authored.split(/[\n;.!?]/).some(row=>/\b(?:rates?|prices?|quote|quotation)\b/i.test(row)&&/\b(?:please|kindly|request|appreciate|provide|quote)\b/i.test(row)&&!/\b(?:not|no|never|without|previous|historical)\b/i.test(row))||! /\b(?:single(?:\s+occupancy)?\s*(?:and|or|&|\/|,)\s*(?:double(?:\s*\/\s*twin)?|twin)|(?:double(?:\s*\/\s*twin)?|twin)(?:\s+occupancy)?\s*(?:and|or|&|\/|,)\s*single)\s+(?:occupancy|rooms?)(?![\p{L}\p{N}_-])/iu.test(quote)||/\b(?:not|no|never|without|cancel|cancelled|canceled|book|reserve|previous|historical)\b/i.test(quote))throw new Error('Per-room rate option not entailed by current source');
@@ -378,7 +406,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachm
     }
     const staff=fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(fact,sources,facts,tasks):undefined;
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
-    const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&soleExplicitAdultRoom(sources.find(s=>s.attachmentId===fact.source.attachmentId)?.pages?.[fact.source.page-1]??'');
+    const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&soleExplicitAdultRoom(citedSemanticPage(fact,sources))&&!otherViewConflictsWithSoleRoom(fact,sources);
     ok = sole||rows.some(row => {
       const numbered=numberedRoomLabel(row,fact.value.roomRef);
       if(numbered&&!currentNumberedRoomRow(fact,row,sources))return false;

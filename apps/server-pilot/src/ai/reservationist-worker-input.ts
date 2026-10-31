@@ -66,11 +66,11 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   return maskIncomingCardNumbers(rendered);
 }
 
-/** Put both authored alternatives before either signature or quoted history. */
+/** Keep each complete authored alternative, including postscripts, before quoted history. */
 function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
   const comparable = (text: string) => text.replace(/\s+/g, ' ').trim();
   if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
-  const boundary = /^(?:[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$|[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)))/imu;
+  const boundary = /^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu;
   const split = (text: string) => {
     const at = text.search(boundary);
     return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at)];
