@@ -177,7 +177,11 @@ export function projectQuoteReviewItems(
   const explicit = (analysis?.reviewItems ?? [])
     .filter(notNoise)
     .filter((item) => item.kind !== 'pricing_fact');
-  const questions = fromStaff.length || explicit.length ? [] : questionReviewItems(analysis);
+  const representedQuestions = new Set([...fromStaff, ...explicit]
+    .filter((item) => item.kind === 'question')
+    .map((item) => item.text.trim().toLowerCase()));
+  const questions = questionReviewItems(analysis)
+    .filter((item) => !representedQuestions.has(item.text.trim().toLowerCase()));
   return mergeReviewItems([pricing, fromStaff, explicit, kept, questions]);
 }
 

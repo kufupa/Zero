@@ -424,13 +424,23 @@ describe('quote session', () => {
               sourceLabel: 'scan.pdf',
               blocking: true,
             },
+            {
+              id: 'spreadsheet-review:rooming',
+              kind: 'document_failure',
+              rank: 'unread_source',
+              text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+              sourceLabel: 'rooming.xlsx',
+              readable: true,
+              blocking: false,
+            },
           ],
         },
       },
     );
     expect(s.phase).toBe('non_quote');
-    expect(s.reviewItems).toHaveLength(1);
+    expect(s.reviewItems).toHaveLength(2);
     expect(s.reviewItems[0]?.kind).toBe('document_failure');
+    expect(s.reviewItems[1]?.readable).toBe(true);
   });
 
   it('keeps an unread file visible whichever request finishes first', () => {
@@ -2183,6 +2193,17 @@ describe('quote session staff review items', () => {
     ]);
     expect(items.map(item => item.id)).toEqual(['request:parking','request:shuttle']);
     expect(openReviewItems({reviewItems:items,handledReviewItemIds:['request:parking']}).map(item => item.id)).toEqual(['request:shuttle']);
+  });
+
+  it('keeps other questions when a source already has a question and a document warning', () => {
+    const analysis = {...quoteAnalysis, secondaryAsks: ['Is parking included?', 'Is a shuttle available?'], reviewItems: [
+      {id:'sheet',kind:'document_failure' as const,rank:'unread_source' as const,text:'Review the spreadsheet.',sourceLabel:'Attachment',blocking:false,readable:true},
+    ]};
+    const staff = [{id:'parking',kind:'unanswered_question' as const,text:'Is parking included?',sourceRef:'message:mail-1',
+      sourceHash:STAFF_HASH,sourceKind:'message' as const,messageId:'mail-1',blockingQuote:false,status:'open' as const}];
+    const items = projectQuoteReviewItems(analysis, [], [], staff);
+    expect(items.filter(item => item.kind === 'question').map(item => item.text).sort()).toEqual(['Is a shuttle available?', 'Is parking included?']);
+    expect(items.some(item => item.text === 'Review the spreadsheet.')).toBe(true);
   });
 
   it('uses source identity for document failures so the same filename does not collide', () => {

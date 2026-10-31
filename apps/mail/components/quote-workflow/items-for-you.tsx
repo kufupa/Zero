@@ -38,7 +38,9 @@ export function ItemsForYou({
             {item.blocking
               ? 'Blocks the quote — fix the stay details first'
               : item.kind === 'document_failure'
-                ? 'Needs review. Nava did not read this file.'
+                ? item.readable
+                  ? 'Needs review. Nava read this file; check its masked or omitted content.'
+                  : 'Needs review. Nava did not read this file.'
                 : 'Needs a reply. Not a price decision.'}
           </p>
           <div className="flex flex-wrap gap-1.5">

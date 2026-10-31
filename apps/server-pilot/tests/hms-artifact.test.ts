@@ -894,6 +894,42 @@ describe('PDF read gates (U6)', () => {
     expect(sniffImageBytes(pdfFixtureBody())).toBe(false);
   });
 
+  it('admits XLSX bytes only through the explicit spreadsheet path and matching source identity', async () => {
+    const body = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x01]);
+    const sha256 = createHash('sha256').update(body).digest('hex');
+    const key = 'attachments/msg-1/000-rooming.xlsx';
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key,
+      body,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const expectedLocator = locator({
+      s3Key: key,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      sizeBytes: body.byteLength,
+      sha256,
+    });
+    const revalidate = vi.fn(async () => true);
+    const request = {
+      attachmentId: 'att-rooming',
+      authorizedAttachmentIds: new Set(['att-rooming']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(expectedLocator),
+      expectedLocator,
+      expectedSha256: sha256,
+      revalidate,
+    };
+
+    expect(await readAuthorizedArtifactBytes(request)).toBeNull();
+    const admitted = await readAuthorizedArtifactBytes({ ...request, allowSpreadsheet: true });
+    expect(admitted?.body).toEqual(body);
+    expect(revalidate).toHaveBeenCalledOnce();
+    expect(await readAuthorizedArtifactBytes({ ...request, allowSpreadsheet: true, expectedSha256: '0'.repeat(64) }))
+      .toBeNull();
+  });
+
   // Real Poppler through the bwrap sandbox. Runs only on a host with the full toolchain, so it skips on a dev VPS.
   const toolchainReady = (() => {
     try {
