@@ -21,6 +21,7 @@ type CancellationToolResult = {
   observedAt?: unknown;
   target?: { confirmation?: unknown; verified?: unknown };
   stay?: {
+    status?: { state?: unknown; value?: unknown };
     arrivalDate?: { state?: unknown; value?: unknown };
     departureDate?: { state?: unknown; value?: unknown };
   };
@@ -249,6 +250,7 @@ export function createInstalledReservationistProvider(
               const arrivalDate = await normalizeHmsDate(preflight.stay?.arrivalDate?.value);
               const departureDate = await normalizeHmsDate(preflight.stay?.departureDate?.value);
               if (!cancellationReview || preflight.target?.confirmation !== ref.value || preflight.target?.verified !== true ||
+                  preflight.stay?.status?.state !== 'observed' || preflight.stay?.status?.value !== 'Reserved' ||
                   preflight.stay?.arrivalDate?.state !== 'observed' || preflight.stay?.departureDate?.state !== 'observed' ||
                   !arrivalDate || !departureDate || !Number.isFinite(Date.parse(observedAt)) || Date.parse(observedAt) > Date.now())
                 throw new Error('cancellation_preflight_unavailable');

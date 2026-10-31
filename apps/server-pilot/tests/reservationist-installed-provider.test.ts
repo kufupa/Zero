@@ -120,7 +120,7 @@ it('runs the installed quote service only while the property lock and source gra
   expect(result.tasks[0]?.status).toBe('needs_clarification');
 });
 
-it('prepares cancellation from a locked exact-stay read without quote config, opening or committing cancellation', async () => {
+it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a reserved stay (%s)', async (status) => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
   vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
   state.quoteConfigAvailable = false;
@@ -152,6 +152,7 @@ it('prepares cancellation from a locked exact-stay read without quote config, op
         outcome: 'prepared_for_human_review', observedAt,
         target: { confirmation: 'ABC123', verified: true },
         stay: {
+          status: { state: 'observed', value: status },
           arrivalDate: { state: 'observed', value: 'Mon 12-Oct-2026' },
           departureDate: { state: 'observed', value: 'Wed 14-Oct-2026' },
         },
@@ -163,13 +164,14 @@ it('prepares cancellation from a locked exact-stay read without quote config, op
   })(context(value));
   const result = await runReservationistRuntime(value, provider.dependencies);
 
-  expect(result.readiness).toBe('pending_pms_action');
-  expect(result.packets[0]).toMatchObject({
+  expect(result.readiness).toBe(status === 'Reserved' ? 'pending_pms_action' : 'needs_clarification');
+  if (status === 'Reserved') expect(result.packets[0]).toMatchObject({
     kind: 'cancel_request', saved: false, businessRulesValidated: false,
     current: { arrivalDate: '2026-10-12', departureDate: '2026-10-14' },
     cancellationReview: { fee: { state: 'unknown_precommit', amount: null, currency: null },
       action: { cancellationStarted: false, commitAvailable: false } },
   });
+  else expect(result.packets).toEqual([]);
   expect(state.cancellationCalls).toEqual(['read', 'prepareCancellation']);
   expect(sessionSignals).toHaveLength(1);
   expect(sessionSignals[0]).toBeInstanceOf(AbortSignal);
