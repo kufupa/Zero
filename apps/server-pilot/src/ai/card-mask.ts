@@ -33,7 +33,7 @@ export function isLuhnValid(value: string): boolean {
 
 /**
  * Replace Luhn-valid card numbers and security codes. A card span stops at a date, so 2027-11-01 2027-11-03 stays.
- * Scanned PDF bytes cannot be masked; callers skip them. Only the digits after a security-code label are replaced, so the label still says what was there.
+ * This masks text only, not original PDF/image bytes. Only the digits after a security-code label are replaced, so the label still says what was there.
  */
 export function maskCardNumbers(text: string): string {
   return text
@@ -50,6 +50,31 @@ export function maskCardNumbers(text: string): string {
     )
     .join('')
     .replace(SECURITY_CODE, (_match, label: string, gap: string) => `${label}${gap}[code masked]`);
+}
+
+/** Sent to the model and surfaced to staff when a masked span might also be a room list. */
+export const AMBIGUOUS_NUMBER_GROUPS = '[number groups hidden; may be room numbers or card details; staff review]';
+
+/** Mask common card groupings across lines, making ambiguous room lists visible for review. */
+export function maskIncomingCardNumbers(text: string): string {
+  const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
+  const separator = '[\\p{Zs}\\t\\r\\n-]{1,8}';
+  // ponytail: common printed groupings only; unusual line splits need a stronger masker.
+  const formats = [[4, 4, 4, 4, 3], [4, 4, 4, 4], [4, 6, 5], [4, 4, 4, 1]];
+  const patterns = formats.map((groups) => new RegExp(`(?<!\\d)${groups.map((size) => `\\d{${size}}`).join(separator)}(?!\\d)`, 'gu'));
+  const mask = (match: string, offset: number, source: string) => {
+    const digits = match.replace(/\D/g, '');
+    if (!isLuhnValid(digits)) return match;
+    const preceding = source.slice(Math.max(0, offset - 80), offset);
+    if (/[\r\n]/.test(match) || /\brooms?(?:\s+(?:numbers?|nos?))?\s*[:#-]?\s*$/i.test(preceding))
+      return AMBIGUOUS_NUMBER_GROUPS;
+    return `[card ••••${digits.slice(-4)}]`;
+  };
+  return text.split(date).map((part, index) => {
+    if (index % 2 === 1) return part;
+    const contiguous = part.replace(/(?<!\d)\d{13,19}(?!\d)/g, mask);
+    return maskCardNumbers(patterns.reduce((value, pattern) => value.replace(pattern, mask), contiguous));
+  }).join('');
 }
 
 const EMAIL_ADDRESS = /[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/gi;

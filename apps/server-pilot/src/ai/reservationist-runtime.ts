@@ -8,9 +8,11 @@ import type { ExecutionRateComparison } from './reservationist-execution.js';
 import type { PreparedFact } from './prepared-draft-input.js';
 import {quoteDigest} from '../quote-proposal/quote-revision.js';
 import {composeReservationistReply} from './reply-playbooks.js';
+import {AMBIGUOUS_NUMBER_GROUPS} from './card-mask.js';
+import {validReservationistMessageViews,type ReservationistMessageView} from './reservationist-message-view.js';
 export const RESERVATIONIST_RUNTIME_VERSION='reservationist-runtime-v1';
 export const RESERVATIONIST_COPY_VERSION='reservationist-copy-v1';
-export type ReservationistRuntimeInput={version:1;requestId:string;propertyCode:string;trigger:{id:string;at:string};messages:{id:string;at:string;direction:'inbound'|'outbound';text:string;subject?:string;disclosure?:'guest'|'staff_only'}[];authorizationScope?:{ownerRef:string;threadId:string};authorizedArtifacts:unknown[];requiredTaskKinds?:string[];requiredAskSpans?:{sourceId:string;start:number;end:number;text:string}[];requiredTaskIds?:string[];requiredArtifactRefs?:string[];clock:{causalAt:string;sourceAt:string;sourceMode?:'historical'|'current_read';deadlineAt:number};capabilities:{pmsWrite:false;emailSend:false}};
+export type ReservationistRuntimeInput={version:1;requestId:string;propertyCode:string;trigger:{id:string;at:string};messages:{id:string;at:string;direction:'inbound'|'outbound';text:string;subject?:string;disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[];authorizationScope?:{ownerRef:string;threadId:string};authorizedArtifacts:unknown[];requiredTaskKinds?:string[];requiredAskSpans?:{sourceId:string;start:number;end:number;text:string}[];requiredTaskIds?:string[];requiredArtifactRefs?:string[];clock:{causalAt:string;sourceAt:string;sourceMode?:'historical'|'current_read';deadlineAt:number};capabilities:{pmsWrite:false;emailSend:false}};
 export type RuntimeTask={id:string;kind:string;required:boolean;source?:{attachmentId:string;sourceHash:string;page:number;start?:number;end?:number;quote?:string}};
 export type RuntimeTaskResult={id:string;status:'complete'|'needs_clarification'|'blocked'|'pending_pms_action';guestText:string;evidenceRefs:string[];disclosure?:'guest'|'staff_only';requestSource?:NonNullable<RuntimeTask['source']>};
 export type FactRecoveryProvenance={reason:string;taskIds:string[];sources:{attachmentId:string;sourceHash:string}[]};
@@ -29,6 +31,7 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
  if(input.version!==1||input.capabilities.pmsWrite!==false||input.capabilities.emailSend!==false)throw new Error('capability_denied');
  const causal=Date.parse(input.clock.causalAt),trigger=Date.parse(input.trigger.at);
  if(!Number.isFinite(causal)||trigger!==causal||!Number.isFinite(Date.parse(input.clock.sourceAt))||(input.clock.sourceMode!=='current_read'&&Date.parse(input.clock.sourceAt)>causal)||!input.requestId||!input.propertyCode||input.messages.length>64||input.messages.reduce((sum,message)=>sum+message.text.length,0)>1280000||new Set(input.messages.map(m=>m.id)).size!==input.messages.length||!input.messages.some(m=>m.id===input.trigger.id&&m.direction==='inbound'&&Date.parse(m.at)===causal)||input.messages.some(m=>!m.id||m.text.length>40000||!['inbound','outbound'].includes(m.direction)||!Number.isFinite(Date.parse(m.at))||Date.parse(m.at)>causal))throw new Error('causal_input_invalid');
+ if(input.messages.some(m=>!validReservationistMessageViews(m.text,m.sourceViews)))throw new Error('message_views_invalid');
  if(!Number.isFinite(input.clock.deadlineAt)||Date.now()>=input.clock.deadlineAt)throw new Error('deadline_exceeded');
  if(deps.currentReadEvaluation&&(input.clock.sourceMode!=='current_read'||Date.parse(input.clock.sourceAt)>Date.now()))throw new Error('current_evaluation_clock_invalid');
  const injectedClock=deps.currentReadEvaluationClock;
@@ -45,13 +48,20 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
  }
  const plan=await deps.plan(input,signal);signal.throwIfAborted();
  if(quoteDigest(input)!==clockInputDigest)throw new Error('causal_input_changed');
+ const messageWarnings:RuntimeSourceRecovery[]=input.messages.filter(m=>m.text.includes(AMBIGUOUS_NUMBER_GROUPS)).map(m=>({
+  kind:'attachment_manual',reason:'ambiguous_number_groups',sourceRef:`message:${m.id}`,
+  sourceHash:createHash('sha256').update(m.text).digest('hex'),sourceKind:'message',messageId:m.id,disclosure:'staff_only',
+ }));
  const factRecoveryProvenance=structuredClone(plan.factRecoveryProvenance??[]),recoveryTaskIdentity=quoteDigest(plan.tasks),recoveryInputIdentity=quoteDigest({messages:input.messages,authorizedArtifacts:input.authorizedArtifacts});
  if(!plan.tasks.length){
   const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!,proof=plan.noAction;
   if(!proof||proof.kind!=='no_current_request'||proof.modelSelectionCompleted!==true||proof.inputDigest!==clockInputDigest||proof.triggerMessageId!==input.trigger.id||proof.sourceHash!==createHash('sha256').update(triggerMessage.text).digest('hex')||!Array.isArray(input.requiredTaskKinds)||input.requiredTaskKinds.length||!Array.isArray(input.requiredAskSpans)||input.requiredAskSpans.length||input.requiredTaskIds?.length||input.requiredArtifactRefs?.length||plan.facts.length||plan.factRecoveryProvenance?.length)throw new Error('no_action_unproven');
   const sourceRecoveries=structuredClone(plan.sourceRecoveries??[]),inventory=input.authorizedArtifacts as {attachmentId?:string;sourceHash?:string}[];
   if(sourceRecoveries.length>64||sourceRecoveries.some(r=>r.kind!=='attachment_manual'||r.disclosure!=='staff_only'||!r.reason||r.reason.length>4096||!r.sourceRef||r.provenance?.reason!==r.reason||r.provenance.taskIds.length!==0||r.provenance.sources.length!==1||r.provenance.sources[0]!.attachmentId!==r.sourceRef||!inventory.some(a=>a.attachmentId===r.sourceRef&&a.sourceHash===r.provenance!.sources[0]!.sourceHash)))throw new Error('no_action_unproven');
-  const work:RuntimeWorkResult={tasks:[],artifacts:[],quoteRefs:[],packets:[],errors:[],preparedFacts:[],sourceRecoveries,approvedGuestClauses:{}},assessment=assessReply({replyText:'',asks:[],facts:[],authorizedAttachmentRefs:[],audience:'guest'}),result={...work,version:RESERVATIONIST_RUNTIME_VERSION,copyVersion:RESERVATIONIST_COPY_VERSION,family:'quote' as const,readiness:'no_action' as const,noAction:proof,tasks:[] as (RuntimeTaskResult&{kind:string;required:boolean})[],assessment,textBody:'',htmlBody:''};return{...result,digest:quoteDigest(result)};
+  const warnings=[...messageWarnings,...sourceRecoveries];
+  if(warnings.length>64)throw new Error('source_recovery_limit');
+  const ambiguous=warnings.some(w=>w.reason==='ambiguous_number_groups');
+  const work:RuntimeWorkResult={tasks:[],artifacts:[],quoteRefs:[],packets:[],errors:[],preparedFacts:[],sourceRecoveries:warnings,approvedGuestClauses:{}},assessment=assessReply({replyText:'',asks:[],facts:[],authorizedAttachmentRefs:[],audience:'guest'}),result={...work,version:RESERVATIONIST_RUNTIME_VERSION,copyVersion:RESERVATIONIST_COPY_VERSION,family:'quote' as const,...(ambiguous?{readiness:'needs_clarification' as const}:{readiness:'no_action' as const,noAction:proof}),tasks:[] as (RuntimeTaskResult&{kind:string;required:boolean})[],assessment,textBody:'',htmlBody:''};return{...result,digest:quoteDigest(result)};
  }
  if(plan.tasks.length>32||new Set(plan.tasks.map(t=>t.id)).size!==plan.tasks.length)throw new Error('task_plan_invalid');
  if(input.requiredAskSpans?.length){
@@ -75,6 +85,8 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
   evaluation.evaluateSourceAt();
  }
  const work=await deps.execute(plan,executionInput,signal,evaluation);signal.throwIfAborted();
+ if(messageWarnings.length)work.sourceRecoveries=[...messageWarnings,...(work.sourceRecoveries??[])];
+ if((work.sourceRecoveries?.length??0)>64)throw new Error('source_recovery_limit');
  evaluation?.evaluateSourceAt();
  const evaluatedAt=new Date(sourceEvaluatedAt);
  if(work.tasks.length!==plan.tasks.length||new Set(work.tasks.map(t=>t.id)).size!==work.tasks.length||plan.tasks.some(t=>!work.tasks.some(w=>w.id===t.id)))throw new Error('task_coverage_missing');

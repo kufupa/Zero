@@ -2,6 +2,7 @@ import {isReservationistConferenceOnlyQuote} from './reservationist-business-ser
 import {assertReservationistSubjectReference} from './reservationist-subject-source.js';
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {createHash} from 'node:crypto';
+import {AMBIGUOUS_NUMBER_GROUPS} from './card-mask.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistResultFreshForAction} from './draft-approval.js';
 import type {ModelAdapter} from './bedrock/adapter.js';
@@ -44,10 +45,13 @@ class SourceRequestClarification extends Error{constructor(readonly reply:string
 function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
- const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
- if(history>=0&&source.end!>history)return false;
- const prefix=message.text.slice(0,source.start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(message.text.slice(source.end)),next=message.text.slice(source.end).search(/[.!?;](?=\s|$)/),sentence=message.text.slice(sentenceStart,terminalBoundary?source.end:next<0?message.text.length:source.end!+next);
- return !(/^\s*>/m.test(message.text.slice(0,source.end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
+ const view=message.sourceViews?.find(v=>source.start!>=v.start&&source.end!<=v.end);
+ if(message.sourceViews&&!view)return false;
+ const body=view?message.text.slice(view.start,view.end):message.text,start=source.start!-(view?.start??0),end=source.end!-(view?.start??0);
+ const history=body.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
+ if(history>=0&&end>history)return false;
+ const prefix=body.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(body.slice(end)),next=body.slice(end).search(/[.!?;](?=\s|$)/),sentence=body.slice(sentenceStart,terminalBoundary?end:next<0?body.length:end+next);
+ return !(/^\s*>/m.test(body.slice(0,end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
 }
 function appendRequestedAmendment(task:Task,input:ReservationistRuntimeInput,reply:string):string{
  if(task.kind!=='change'||!currentAuthoredGuestRequest(task,input))return reply;
@@ -152,6 +156,11 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
  const modeIdentity=()=>quoteDigest({extractionMode:options.extractionMode??'combined',factEnrichmentMode:options.factEnrichmentMode??null,messageBatching:options.messageBatching??null}),originalModeIdentity=modeIdentity();
  const guardModes=()=>{if(modeIdentity()!==originalModeIdentity)throw new Error('extraction_options_mutated');};
  const planScopes=new WeakMap<RuntimePlan,string>(),scopeIdentity=(input:ReservationistRuntimeInput)=>quoteDigest({requestId:input.requestId,scope:input.authorizationScope,propertyCode:input.propertyCode,trigger:input.trigger,messages:input.messages,causalAt:input.clock.causalAt});
+ const ambiguousAttachments=()=>options.admissions.flatMap(a=>a.status==='admitted'&&a.source?.pages?.some(page=>page.includes(AMBIGUOUS_NUMBER_GROUPS))?[{
+  kind:'attachment_manual' as const,reason:'ambiguous_number_groups',sourceRef:a.metadata.attachmentId,
+  sourceHash:a.metadata.sourceHash,sourceKind:'attachment' as const,messageId:a.metadata.messageId,disclosure:'staff_only' as const,
+  provenance:{reason:'ambiguous_number_groups',taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
+ }]:[]);
  const plans=new WeakMap<RuntimePlan,Awaited<ReturnType<typeof extractReservationistPlan>>>(),generated=new Map<string,GeneratedDraftArtifact>(),clauses=new Map<string,string>();
  let extractionDiagnostics:Awaited<ReturnType<typeof extractReservationistPlan>>['extractionDiagnostics'];
  let modelCalls=0,toolCalls=0,usageKnown=true,inputTokens=0,outputTokens=0,totalTokens=0,estimatedCostUsd=0;
@@ -203,7 +212,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     if(fact.source.attachmentId.startsWith('message-subject:'))assertReservationistSubjectReference(fact,task,input);
    }
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
-   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted?{sourceRecoveries:options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,disclosure:'staff_only' as const,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]}})),noAction:{kind:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
+   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted?{sourceRecoveries:[...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,disclosure:'staff_only' as const,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]}})),...ambiguousAttachments()],noAction:{kind:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
   async execute(plan,input,signal,evaluation?:import('./reservationist-runtime.js').ReservationistSourceEvaluation){
    const extracted=plans.get(plan);if(!extracted)throw new Error('validated_plan_required');
@@ -214,7 +223,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     const message=input.messages.find(m=>sourceRef===`message:${m.id}`||sourceRef===`message-subject:${m.id}`);
     return{sourceHash,...(message?{sourceKind:'message' as const,messageId:message.id}:{})};
    };
-   work.sourceRecoveries=[...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,...recoverySource(a.metadata.attachmentId,a.metadata.sourceHash),disclosure:'staff_only' as const})),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
+   work.sourceRecoveries=[...ambiguousAttachments(),...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,...recoverySource(a.metadata.attachmentId,a.metadata.sourceHash),disclosure:'staff_only' as const})),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
    const artifact=(pdf:Uint8Array,fileName:string)=>{const sha256=createHash('sha256').update(pdf).digest('hex'),ref=`generated:${sha256}`;generated.set(ref,{artifactRef:ref,filename:fileName,mimeType:'application/pdf',body:Buffer.from(pdf),sha256});work.artifacts.push({ref,sha256,sizeBytes:pdf.length,fileName,mimeType:'application/pdf'});return ref;};
    const checkRateClaims=async(ctx:Context,revision:QuoteRevision):Promise<string[]>=>{
     const {task,input}=ctx;let evidenceRefs:string[]=[];
