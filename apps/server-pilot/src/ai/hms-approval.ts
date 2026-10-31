@@ -976,9 +976,9 @@ export type HmsReviewResult = { runId: string; status: 'done' | 'needs_you' };
 
 /**
  * Review of an executed write, as an event with actor = session user. Review needs an outcome: a run that succeeded, or
- * one that stopped after sealing evidence. Nothing is reviewed while a needs-check is open. OK closes the item (done).
- * Flag needs a note and returns the item to needs_you. It also drops the stored snapshot: it was read before the write
- * changed HMS, so it must not back the next approval. That approval waits for a fresh read (prepareHmsWriteSnapshot,
+ * one that stopped after sealing evidence. Nothing is reviewed while a needs-check is open. Reviewing one write does not
+ * finish the email: other requests or a reply may still be outstanding. Both decisions keep the item in needs_you and
+ * drop the stored snapshot, which was read before the write changed HMS. The next approval waits for a fresh read (prepareHmsWriteSnapshot,
  * the hmsApproval.reread procedure), which is not run here so HMS is never read under the work-item row lock.
  * Only one decision per run.
  */
@@ -1020,7 +1020,7 @@ export async function reviewHmsWrite(input: {
       throw new HmsApprovalError('no_executed_write');
     if (await reviewForRun(tx as DB, item.id, run.id))
       throw new HmsApprovalError('already_reviewed');
-    // OK closes the item, so the stored form must be the one this write was approved for. A later edit was never written.
+    // The review applies only to the form this write was approved for. A later edit was never written.
     if (input.decision === 'ok') {
       const grantId = grantIdForRun(run);
       if (!grantId) throw new HmsApprovalError('no_grant');
@@ -1028,9 +1028,9 @@ export async function reviewHmsWrite(input: {
       if (formDigest(item.state) !== grant.formDigest) throw new HmsApprovalError('state_changed');
     }
 
-    const status = input.decision === 'ok' ? 'done' : 'needs_you';
+    const status = 'needs_you' as const;
     const state: Record<string, unknown> = { ...item.state };
-    if (input.decision === 'flag') delete state[HMS_SNAPSHOT_KEY];
+    delete state[HMS_SNAPSHOT_KEY];
     await tx.insert(workEvent).values({
       workItemId: item.id,
       at: now,
