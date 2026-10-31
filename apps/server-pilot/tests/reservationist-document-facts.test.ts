@@ -35,6 +35,7 @@ describe('document facts', () => {
     'Please quote accommodation:\nConference 01/12 to 03/12.',
     'Do not quote accommodation:\n13/11 to 15/11.',
     'Do not quote accommodation 13/11 to 15/11.',
+    '13/11 to 15/11: no accommodation is needed.',
   ])('anchors yearless HTML dates to their complete authored alternative', (plain) => {
     const html = 'Please quote. Stay 12/11 to 14/11.';
     const text = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
