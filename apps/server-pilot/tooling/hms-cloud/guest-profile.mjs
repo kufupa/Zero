@@ -100,6 +100,11 @@ export async function verifiedLabtestProfileToken(page, { nativeId, session }) {
   return proof.token;
 }
 
+export async function currentVerifiedLabtestProfileToken(page) {
+  const proof = verifiedGuaranteeProfiles.get(page);
+  return proof ? verifiedLabtestProfileToken(page, { nativeId: proof.nativeId, session: proof.session }) : null;
+}
+
 export function isVerifiedLabtestProfileCurrent(page, { nativeId, session, token }) {
   const proof = verifiedGuaranteeProfiles.get(page);
   return Boolean(isVerifiedLabtestProfile(page, nativeId) && proof?.session === session && proof?.token === token && token);
