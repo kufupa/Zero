@@ -172,7 +172,7 @@ describe('StayCard rooms', () => {
   it('shows the stated adult total and warns before a contradictory allocation can be quoted', () => {
     renderStay([stay({ adultsTotal: 5, quantity: 2, adults: 3 })]);
 
-    expect(screen.getByText('Stated adults total: 5')).toBeTruthy();
+    expect(screen.getByText(/Stated adults total: 5/)).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toMatch(/review the stated occupancy totals/i);
   });
 

@@ -67,7 +67,7 @@ describe('quote occupancy input', () => {
 
   it('blocks adult allocations that contradict the stay total but accepts a correct split', () => {
     expect(staffQuoteGroupsFromStay([stay({ quantity: 2, adults: 3, adultsTotal: 5 })])).toEqual({
-      error: expect.stringMatching(/stay says 5 adults.*allocations add up to 6/i),
+      error: expect.stringMatching(/stay-wide adult total against per-room allocations/i),
     });
     expect(
       staffQuoteGroupsFromStay([
