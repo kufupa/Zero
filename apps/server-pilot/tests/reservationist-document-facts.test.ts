@@ -234,6 +234,8 @@ describe('document facts', () => {
   it.each([
     ['Please quote rooms from 12 November 2026 to 14 November 2026.', false],
     ['Please quote rooms from 13 November 2026 to 16 November 2026.', true],
+    ['Please quote 2 rooms from 12 November 2026 for 2 nights.', false],
+    ['Please quote 2 rooms from 13 November 2026 for 2 nights.', true],
   ])('compares a night-count stay with the other alternative', (plain,conflict) => {
     const html='Please quote 2 rooms for 2 nights from 12 November.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.lastIndexOf(quote);
@@ -243,6 +245,16 @@ describe('document facts', () => {
     const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12 November',departure:'2 nights'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
     const validate=()=>validateDocumentPlan(plan,[dateSource]);
     if(conflict)expect(validate).toThrow('Conflicting alternate stay dates');else expect(validate().facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
+  });
+  it('does not borrow a year from a different group stay on the same line', () => {
+    const plain='Group A stay dates for 2027: 12/11 to 14/11, Group B stay dates for 2028: 20/11 to 22/11.';
+    const html='Group A stay 12 November 2027 to 14 November 2027.\nGroup B stay 20 November 2028 to 22 November 2028.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='12 November 2027 to 14 November 2027',start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12 November 2027',departure:'14 November 2027'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2027-11-12',departure:'2027-11-14'});
   });
   it.each([
     ['\n', 'Accommodation required from 10 to 16 November 2026.'],
