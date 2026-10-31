@@ -113,6 +113,29 @@ function searchRequest(request) {
   } catch { return false; }
 }
 
+// HMS sends dates as day offsets; bind the response's request to the rendered range.
+function requestCoversWindow(request, window) {
+  try {
+    const body = new URLSearchParams(request.postData() || '');
+    const offset = (key) => {
+      const names = [...body.keys()].filter((name) => name.toLowerCase() === key.toLowerCase());
+      const value = body.get(key);
+      return names.length === 1 && names[0] === key && /^[+-]?\d{1,5}$/.test(value || '') ? Number(value) : null;
+    };
+    const from = date(window.from)?.getTime(), to = date(window.to)?.getTime();
+    const fromOffset = offset('MADDON_FILTER_VALUE_1'), toOffset = offset('MADDON_FILTER_VALUE_2');
+    if (from === undefined || to === undefined || fromOffset === null || toOffset === null) return false;
+    const fromBase = from - fromOffset * 86_400_000, toBase = to - toOffset * 86_400_000;
+    const now = new Date(), utcToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const propertyDay = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(now);
+    const propertyToday = date(propertyDay)?.getTime();
+    // Do not guess the offset anchor when the property and UTC dates differ.
+    return propertyToday === utcToday && fromBase === utcToday && toBase === utcToday;
+  } catch { return false; }
+}
+
 function searchResponse(text) {
   const json = text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
     (all, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
@@ -165,7 +188,8 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
       found = await panel(page, box);
       window = await range(found.popup);
     }
-    if (!observed || observed.status() !== 200 || arrival < window.from || arrival > window.to) throw new Error('SEARCH_RESPONSE_UNVERIFIED');
+    if (!observed || observed.status() !== 200 || arrival < window.from || arrival > window.to ||
+        !requestCoversWindow(observed.request(), window)) throw new Error('SEARCH_RESPONSE_UNVERIFIED');
     const candidates = searchResponse(await observed.text());
     const uiRows = await found.popup.locator('.x-grid-row:visible').evaluateAll((rows) => rows.map((row) =>
       [...row.querySelectorAll('td,[role="gridcell"],.x-grid-cell')].filter((cell) => cell.closest('.x-grid-row') === row)

@@ -6,6 +6,9 @@ actions. Search before opening a new Guest Stay; a clear result provides a
 single-use `preimageId` for that page, arrival and departure. A changed search,
 write or five-minute expiry invalidates it. Existing same-name/arrival records,
 incomplete results and stale proof do not authorize a save.
+The search checks that the request's date offsets match the displayed range.
+If the property's calendar date and UTC differ, it refuses the preimage rather
+than guessing the offset anchor; retry when the dates agree.
 
 ```js
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
@@ -27,8 +30,9 @@ or card, CMS Send unchecked, and blank CMS
 recipient and guest email. It checks the observed request's action and key
 identity fields. One exact request is dispatched from its page route; the
 context read guard remains installed. The page then blocks other non-read
-requests and cannot be used for another write. Unexpected dialogs remain
-untouched. `saved_same_form` is only a same-form observation: independently
+requests and cannot be used for another write. An existing page quarantine
+blocks saving. The whole action has a deadline; unexpected native dialogs
+remain untouched and disarm the action. `saved_same_form` is only a same-form observation: independently
 look up the confirmation and record. An `uncertain` outcome may have written;
 reconcile before any further action and do not blindly retry.
 
