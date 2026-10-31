@@ -558,7 +558,7 @@ const SMITH_STAY = {
 };
 
 describe('buildHmsTodoCard payment_proof', () => {
-  it('posts a matched stay and the mail amount, never an amount the mail lacks', () => {
+  it('shows a suggested stay and amount, while asking staff to verify the payment', () => {
     const card = buildHmsTodoCard({
       workflow: 'payment_ack',
       stayCandidates: [SMITH_STAY],
@@ -574,7 +574,7 @@ describe('buildHmsTodoCard payment_proof', () => {
 
     expect(card).toMatchObject({
       kind: 'payment_proof',
-      title: 'Post payment',
+      title: 'Verify payment proof',
       writesEnabled: false,
     });
     expect(stepValue(card!, 'Confirmation number')).toBe('9999901-1');
@@ -582,7 +582,7 @@ describe('buildHmsTodoCard payment_proof', () => {
     expect(stepValue(card!, 'Amount')).toBe('R 1,850.00');
     expect(stepValue(card!, 'Currency')).toBe('ZAR');
     expect(stepValue(card!, 'Payment date')).toBe('2026-11-10');
-    expect(labelsOf(card!)).not.toContain('Next step');
+    expect(stepValue(card!, 'Next step')).toBe('Check the stay, proof and hotel payment records before posting');
   });
 
   it('shows check conf# when the match is unsure and never copies a mail conf#', () => {
@@ -601,9 +601,9 @@ describe('buildHmsTodoCard payment_proof', () => {
       },
     });
 
-    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Post payment' });
+    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Verify payment proof' });
     expect(stepValue(card!, 'Confirmation number')).toBeNull();
-    expect(stepValue(card!, 'Next step')).toBe('check conf#');
+    expect(stepValue(card!, 'Next step')).toBe('Check the confirmation number, proof and hotel payment records before posting');
     expect(stepValue(card!, 'Amount')).toBe('R1850');
   });
 
@@ -624,7 +624,7 @@ describe('buildHmsTodoCard payment_proof', () => {
     expect(stepValue(card!, 'Amount')).toBe('ZAR 2400.00');
     expect(stepValue(card!, 'Payment reference')).toBe('ABSA 123');
     expect(stepValue(card!, 'Payer')).toBe('Jones');
-    expect(stepValue(card!, 'Next step')).toBe('find the stay');
+    expect(stepValue(card!, 'Next step')).toBe('Find the stay; check the proof and hotel payment records before posting');
     expect(stepValue(card!, 'Confirmation number')).toBeNull();
   });
 });
@@ -653,7 +653,7 @@ describe('extractPopFacts', () => {
 });
 
 describe('buildHmsTodoCard send_document', () => {
-  it('shows the asked kind, stay, reply line and HMS → Documents, never a filename', () => {
+  it('shows the asked kind and stay without claiming the document is attached', () => {
     const card = buildHmsTodoCard({
       workflow: 'send_document',
       confirmationNumber: '57291630-1',
@@ -670,8 +670,8 @@ describe('buildHmsTodoCard send_document', () => {
     expect(stepValue(card!, 'Document')).toBe('invoice');
     expect(stepValue(card!, 'Confirmation number')).toBe('57291630-1');
     expect(stepValue(card!, 'Guest last name')).toBe('Example');
-    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
     expect(labelsOf(card!).some((label) => /filename/i.test(label))).toBe(false);
   });
 
@@ -682,7 +682,21 @@ describe('buildHmsTodoCard send_document', () => {
       documentKind: null,
     });
     expect(stepValue(card!, 'Document')).toBe('invoice / pro forma / folio / statement / credit note');
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
+  });
+
+  it('does not treat document metadata or an incoming attachment as an outgoing attachment', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'send_document',
+      confirmationNumber: '57291630-1',
+      documentKind: 'invoice',
+      billingDocuments: [{ id: 'doc-1', filename: 'invoice_57291630-1.pdf', kind: 'invoice' }],
+      attachmentFilenames: ['request.pdf'],
+    });
+
+    expect(stepValue(card!, 'Document')).toBe('invoice_57291630-1.pdf');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toContain('attach it to the reply');
   });
 
   it('uses luna arrival and departure when stayAsk is absent', () => {
@@ -725,7 +739,7 @@ describe('analyseSyncedSelection payment and billing cards', () => {
     };
   }
 
-  it('builds a Post payment card from payment_ack and attachment amount', async () => {
+  it('builds a payment verification card from payment_ack and attachment amount', async () => {
     const { payload } = await analyseSyncedSelection(
       {
         subject: 'POP',
@@ -751,9 +765,9 @@ describe('analyseSyncedSelection payment and billing cards', () => {
     );
 
     const card = todoCardOf(payload);
-    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Post payment', writesEnabled: false });
+    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Verify payment proof', writesEnabled: false });
     expect(stepValue(card!, 'Amount')).toMatch(/1,?850/);
-    expect(stepValue(card!, 'Next step')).toBe('find the stay');
+    expect(stepValue(card!, 'Next step')).toBe('Find the stay; check the proof and hotel payment records before posting');
   });
 
   it('does not inherit a quote amount or date from earlier thread mail', async () => {
@@ -809,7 +823,7 @@ describe('analyseSyncedSelection payment and billing cards', () => {
     const card = todoCardOf(payload);
     expect(card).toMatchObject({ kind: 'send_document', title: 'Send document' });
     expect(stepValue(card!, 'Document')).toBe('invoice');
-    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
-    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(labelsOf(card!)).not.toContain('Reply');
+    expect(stepValue(card!, 'Next step')).toBe('Find the document in HMS, then attach it to the reply');
   });
 });
