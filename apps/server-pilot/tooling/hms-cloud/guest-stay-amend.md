@@ -15,12 +15,15 @@ const result = await amendLabtestNote(page, {
 The action verifies the current fake guest, HRCEN, Reserved status, dates,
 room, rate, NGI guarantee, current note and disabled CMS sending. It changes
 only the note and permits one matching save request from the verified record
-frame. The page is sealed against other non-read requests. The caller must
+frame. The saved form must start clean; the full submitted record must match
+its baseline except for that note. An existing page quarantine prevents the
+action. The page is sealed against other non-read requests. The caller must
 verify that the confirmation belongs to the newly created stay and respect any
 holds; an existing matching fake name alone does not authorize a write.
 
 `awaiting_readback` means the request returned HTTP 200, not that HMS saved
 the change. Reopen the exact record in a fresh guarded session and verify the
 new note and unchanged identity and stay fields. Reconcile `uncertain`
-outcomes before any further mutation. Dialogs are returned, never accepted.
+outcomes before any further mutation. A deadline and native-dialog signal
+disarm the action; dialogs are returned, never accepted.
 Returned observations can contain private data and belong in private storage.

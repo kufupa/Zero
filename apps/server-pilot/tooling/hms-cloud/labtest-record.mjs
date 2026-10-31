@@ -38,7 +38,7 @@ export async function currentLabtestRecord(page, expected) {
     if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
     const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
-    const value = (name) => fields[name][0].value.trim();
+    const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
     if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
         !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', 'Proof') ||
         !exact('lastname', 'Labtest') || value('confirmationnumber') !== expected.confirmation || value('status') !== 'Reserved' ||
@@ -56,4 +56,55 @@ export async function currentLabtestRecord(page, expected) {
   }, { expected, start, end, origin: ORIGIN });
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
+}
+
+// The saved-record form is submitted as a whole, so preserve its entire clean baseline.
+export async function snapshotLabtestRecord(frame) {
+  return frame.evaluate(() => {
+    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const inputs = [...document.querySelectorAll('input[name="guestid"]')].filter(visible);
+    if (inputs.length !== 1) return null;
+    const panel = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''))?.up?.('form');
+    const form = panel?.getForm?.(), record = panel?.getRecord?.(), fields = form?.getFields?.()?.items;
+    if (!form || !record?.data || !Array.isArray(fields) || !fields.length ||
+        typeof form.isDirty !== 'function' || typeof record.dirty !== 'boolean' ||
+        fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
+    return { values: form.getValues(), data: record.data, formDirty: form.isDirty(), recordDirty: record.dirty,
+      dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
+      modifiedFields: Object.keys(record.modified || {}) };
+  });
+}
+
+export function cleanLabtestRecord(snapshot) {
+  return Boolean(snapshot && snapshot.formDirty === false && snapshot.recordDirty === false &&
+    snapshot.dirtyFields.length === 0 && snapshot.modifiedFields.length === 0);
+}
+
+export function unchangedLabtestRecord(before, after, changes) {
+  if (!before || !after) return false;
+  const allowed = new Set(Object.keys(changes));
+  if ([...after.dirtyFields, ...after.modifiedFields].some((name) => !allowed.has(name)) ||
+      (after.recordDirty && !after.modifiedFields.length) || (after.formDirty && !after.dirtyFields.length)) return false;
+  return ['values', 'data'].every((part) => {
+    const a = before[part], b = after[part], keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...keys].every((key) => Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
+      (JSON.stringify(a[key]) === JSON.stringify(b[key]) ||
+       (allowed.has(key) && String(b[key] ?? '') === changes[key])));
+  });
+}
+
+export function matchesLabtestBody(body, snapshot, changes) {
+  const data = snapshot.data, fields = Object.keys(data).filter((key) => key !== 'extId');
+  const controls = ['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME', 'CURRENT_TAB_NAME'];
+  const keys = [...body.keys()], expected = new Set([...fields, ...controls]);
+  if (keys.length !== expected.size || new Set(keys).size !== keys.length ||
+      keys.some((key) => !expected.has(key)) || fields.some((key) => !body.has(key))) return false;
+  return fields.every((key) => {
+    let value = data[key];
+    if (Object.hasOwn(changes, key)) value = changes[key];
+    else if (key === 'sessionID' && value && typeof value === 'object' &&
+      Object.keys(value).length === 1 && typeof value.sessionID === 'string') value = value.sessionID;
+    else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
+    return body.get(key) === String(value ?? '');
+  });
 }
