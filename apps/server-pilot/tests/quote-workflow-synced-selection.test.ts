@@ -956,7 +956,7 @@ describe('storedAnalysis thread confirmation overlay', () => {
     expect(analysis.reviewItems).toContainEqual(expect.objectContaining({
       id: 'spreadsheet-review:rooming',
       readable: true,
-      text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
+      text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
       blocking: false,
     }));
     expect(analysis.luna.flags).not.toContain('attachment_unread');

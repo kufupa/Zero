@@ -428,7 +428,7 @@ describe('quote session', () => {
               id: 'spreadsheet-review:rooming',
               kind: 'document_failure',
               rank: 'unread_source',
-              text: 'Nava read only the first 20,000 characters of this spreadsheet.',
+              text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
               sourceLabel: 'rooming.xlsx',
               readable: true,
               blocking: false,

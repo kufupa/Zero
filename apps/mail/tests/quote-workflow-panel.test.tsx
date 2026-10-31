@@ -2790,7 +2790,7 @@ describe('an unread document is a needs-review row, never a stop', () => {
         id: 'spreadsheet-review:rooming',
         kind: 'document_failure',
         rank: 'unread_source',
-        text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
         sourceLabel: 'rooming.xlsx',
         sourceRef: 'rooming',
         sourceKind: 'attachment',
@@ -2814,7 +2814,7 @@ describe('an unread document is a needs-review row, never a stop', () => {
         id: 'spreadsheet-review:rooming',
         kind: 'document_failure',
         rank: 'unread_source',
-        text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
         sourceLabel: 'rooming.xlsx',
         sourceRef: 'rooming',
         sourceKind: 'attachment',
@@ -2824,7 +2824,7 @@ describe('an unread document is a needs-review row, never a stop', () => {
       }],
     };
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.'))
+    expect(screen.getByText('Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.'))
       .toBeDefined();
     expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
   });

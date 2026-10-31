@@ -334,7 +334,7 @@ describe('quoteWorkflow.analyseSelection', () => {
         id: 'spreadsheet-review:long-rooming',
         kind: 'document_failure',
         readable: true,
-        text: 'Nava read only the first 20,000 characters of this spreadsheet. Review later rows in the original file.',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
       }));
       expect(result.reviewItems?.some((item) => item.text?.includes("Nava can't read rooming.xlsx"))).toBe(false);
       expect(result.luna?.flags ?? []).not.toContain('attachment_unread');
