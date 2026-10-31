@@ -36,6 +36,7 @@ import {
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import {
   applyThreadConfirmationOverlay,
+  type QuoteAttachmentReviewReason,
   type OverlayPayload,
   type SyncedQuoteAttachment,
   type SyncedQuoteSelection,
@@ -172,12 +173,50 @@ function unreadAttachments(
   );
 }
 
-/** One item per unreadable file. The plain reason goes in the text, so the one notice says why. */
+/** Readable attachments can still need a staff review when numbers were masked or later rows were omitted. */
+export function numberGroupReviewItems(
+  attachments: Array<Pick<SyncedQuoteAttachment, 'id' | 'filename' | 'mimeType' | 'byteSize'> & {
+    readFailure?: string;
+    reviewReason?: QuoteAttachmentReviewReason;
+  }>,
+) {
+  return attachments
+    .filter((attachment) =>
+      attachment.reviewReason === 'ambiguous number groups' ||
+      attachment.reviewReason === 'spreadsheet text truncated' ||
+      attachment.readFailure === 'ambiguous number groups',
+    )
+    .filter((attachment) => attachmentMattersForReview({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      byteSize: attachment.byteSize,
+    }))
+    .map((attachment) => {
+      const reason = attachment.reviewReason ?? 'ambiguous number groups';
+      const truncated = reason === 'spreadsheet text truncated';
+      return {
+        id: `${truncated ? 'spreadsheet-review' : 'number-review'}:${attachment.id}`,
+        kind: 'document_failure' as const,
+        rank: 'unread_source' as const,
+        text: truncated
+          ? 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.'
+          : 'Some number groups may be room numbers or card details. Check the original source.',
+        readable: true,
+        sourceLabel: attachment.filename,
+        sourceRef: attachment.id,
+        sourceKind: 'attachment' as const,
+        filename: attachment.filename,
+        blocking: false as const,
+      };
+    });
+}
+
+/** One item per unread source, plus staff warnings for readable but incomplete content. */
 export function documentFailureItems(
   attachments: SyncedQuoteAttachment[],
   mode: 'bytes' | 'text' = 'bytes',
 ) {
-  return unreadAttachments(attachments, mode).map((attachment) => {
+  const unread = unreadAttachments(attachments, mode).map((attachment) => {
     const words = unreadReasonWords(attachment.readFailure);
     return {
       id: `unread:${attachment.id}`,
@@ -193,6 +232,7 @@ export function documentFailureItems(
       blocking: false as const,
     };
   });
+  return [...unread, ...numberGroupReviewItems(attachments)];
 }
 
 export function questionItems(missing: Array<{ field: string; question: string }>) {

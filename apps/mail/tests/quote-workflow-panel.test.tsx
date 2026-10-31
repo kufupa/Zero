@@ -2779,6 +2779,55 @@ describe('an unread document is a needs-review row, never a stop', () => {
     expect(screen.getByText('Needs review. Nava did not read this file.')).toBeDefined();
     expect(screen.queryByText(/Blocks the quote/)).toBeNull();
   });
+
+  it('does not call a readable source warning an unread file', () => {
+    const base = sessionFromFixture('agency-contract');
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      phase: 'requirements',
+      reviewItems: [{
+        id: 'spreadsheet-review:rooming',
+        kind: 'document_failure',
+        rank: 'unread_source',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+        sourceLabel: 'rooming.xlsx',
+        sourceRef: 'rooming',
+        sourceKind: 'attachment',
+        filename: 'rooming.xlsx',
+        readable: true,
+        blocking: false,
+      }],
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Needs review. Nava read this file; check its masked or omitted content.')).toBeDefined();
+    expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
+  });
+
+  it('still surfaces readable attachment warnings on a non-quote email', () => {
+    const base = sessionFromFixture('agency-contract');
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      phase: 'non_quote',
+      reviewItems: [{
+        id: 'spreadsheet-review:rooming',
+        kind: 'document_failure',
+        rank: 'unread_source',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+        sourceLabel: 'rooming.xlsx',
+        sourceRef: 'rooming',
+        sourceKind: 'attachment',
+        filename: 'rooming.xlsx',
+        readable: true,
+        blocking: false,
+      }],
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.'))
+      .toBeDefined();
+    expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
+  });
 });
 
 describe('quote strategy comparison', () => {
