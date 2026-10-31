@@ -42,6 +42,22 @@ function context(value: ReservationistRuntimeInput, admissions: unknown[] = []) 
     admissions: admissions as never, input: value, signal: new AbortController().signal, fence: {} as never, revalidateSources: async () => true };
 }
 
+it('cancels an in-flight model request when its caller aborts', async () => {
+  const value = input('Please quote a room.'), controller = new AbortController();
+  let started!: () => void;
+  const invoked = new Promise<void>((resolve) => { started = resolve; });
+  const invoke = vi.fn((request: ModelInvokeInput) => new Promise<never>((_, reject) => {
+    started();
+    request.signal?.addEventListener('abort', () => reject(request.signal!.reason), { once: true });
+  }));
+  const provider = await createInstalledReservationistProvider({ invoke })({ ...context(value), signal: controller.signal });
+  const run = runReservationistRuntime(value, provider.dependencies);
+  const stopped = expect(run).rejects.toThrow();
+  await invoked;
+  controller.abort();
+  await stopped;
+});
+
 it('masks PDF text through real admission before model input and leaves visuals for staff', async () => {
   const body = Buffer.from('%PDF-1.4 synthetic private bytes 4111111111111111');
   const hash = createHash('sha256').update(body).digest('hex');

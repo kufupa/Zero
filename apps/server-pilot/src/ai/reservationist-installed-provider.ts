@@ -74,6 +74,7 @@ export function createInstalledReservationistProvider(adapter: ModelAdapter): Re
       ...factory,
       dependencies: {
         ...factory.dependencies,
+        signal: context.signal,
         currentReadEvaluation: true,
         plan: async (input, signal) => {
           await fresh(input);
