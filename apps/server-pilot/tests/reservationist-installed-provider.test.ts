@@ -137,7 +137,9 @@ it('prepares cancellation from a locked exact-stay read without quote config, op
       tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: taskSource }], unresolvedAsks: [] },
   })) };
   const observedAt = new Date().toISOString();
-  const provider = await createInstalledReservationistProvider(model, async (operation) => {
+  const sessionSignals: AbortSignal[] = [];
+  const provider = await createInstalledReservationistProvider(model, async (operation, options) => {
+    if (options?.signal) sessionSignals.push(options.signal);
     expect(state.locked).toBe(true);
     return operation({ runTool: async (request) => {
       expect(state.locked).toBe(true);
@@ -169,6 +171,80 @@ it('prepares cancellation from a locked exact-stay read without quote config, op
       action: { cancellationStarted: false, commitAvailable: false } },
   });
   expect(state.cancellationCalls).toEqual(['read', 'prepareCancellation']);
+  expect(sessionSignals).toHaveLength(1);
+  expect(sessionSignals[0]).toBeInstanceOf(AbortSignal);
+  expect(state.locked).toBe(false);
+});
+
+it('does not read a reservation reference found only in forwarded history', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  const authored = 'Please cancel my reservation.';
+  const text = `${authored}\n\nBegin forwarded message:\nConfirmation: ABC123`;
+  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  const start = text.indexOf('ABC123');
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+    ...response(),
+    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: 'ABC123', start, end: start + 6,
+    }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: authored, start: 0, end: authored.length,
+    } }], unresolvedAsks: [] },
+  })) };
+  let sessions = 0;
+  const provider = await createInstalledReservationistProvider(model, async () => {
+    sessions++;
+    throw new Error('forwarded_reference_must_not_be_read');
+  })(context(value));
+  const result = await runReservationistRuntime(value, provider.dependencies);
+
+  expect(result.tasks[0]?.status).toBe('needs_clarification');
+  expect(sessions).toBe(0);
+  expect(state.cancellationCalls).toEqual([]);
+});
+
+it('waits for an aborted cancellation session to finish before releasing the property lock', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  const text = 'Please cancel reservation ABC123.';
+  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  const start = text.indexOf('ABC123');
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+    ...response(),
+    output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: 'ABC123', start, end: start + 6,
+    }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: text, start: 0, end: text.length,
+    } }], unresolvedAsks: [] },
+  })) };
+  const controller = new AbortController();
+  let onStarted!: () => void, onAborted!: () => void, finishSession!: () => void;
+  const started = new Promise<void>((resolve) => { onStarted = resolve; });
+  const aborted = new Promise<void>((resolve) => { onAborted = resolve; });
+  let settled = false, sessionClosed = false;
+  const provider = await createInstalledReservationistProvider(model, async (_operation, options) => {
+    const signal = options?.signal;
+    if (!signal) throw new Error('cancellation_signal_missing');
+    onStarted();
+    await new Promise<void>((resolve) => {
+      finishSession = resolve;
+      signal.addEventListener('abort', onAborted, { once: true });
+    });
+    sessionClosed = true;
+    throw new Error('synthetic_session_closed');
+  })({ ...context(value), signal: controller.signal });
+  const run = runReservationistRuntime(value, { ...provider.dependencies, signal: controller.signal });
+  void run.then(() => { settled = true; }, () => { settled = true; });
+  const stopped = expect(run).rejects.toThrow();
+  await started;
+  controller.abort();
+  await aborted;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(settled).toBe(false);
+  expect(state.locked).toBe(true);
+  finishSession();
+  await stopped;
+  expect(sessionClosed).toBe(true);
   expect(state.locked).toBe(false);
 });
 

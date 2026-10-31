@@ -32,16 +32,17 @@ type CancellationToolResult = {
 type SavedStaySession = {
   runTool(request: CancellationToolRequest): Promise<CancellationToolResult>;
 };
+type SavedStaySessionOptions = { signal?: AbortSignal };
 type SavedStaySessionModule = {
-  withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>): Promise<T>;
+  withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options?: SavedStaySessionOptions): Promise<T>;
 };
 type CancellationPreflightModule = { parseDateDisplay(value: string): string | null };
 const savedStaySessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
 const cancellationPreflightUrl = new URL('../../tooling/hms-cloud/guest-stay-cancel-preflight.mjs', import.meta.url);
 
-async function withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>): Promise<T> {
+async function withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options?: SavedStaySessionOptions): Promise<T> {
   const module = await import(pathToFileURL(fileURLToPath(savedStaySessionUrl)).href) as SavedStaySessionModule;
-  return module.withSavedStayAgentSession(operation);
+  return module.withSavedStayAgentSession(operation, options);
 }
 
 async function normalizeHmsDate(value: unknown): Promise<string | null> {
@@ -196,6 +197,7 @@ export function createInstalledReservationistProvider(
           return lock.withLock(async () => {
             await assertOrigin();
             const traces: Promise<void>[] = [];
+            const activeCancellationSessions = new Set<Promise<unknown>>();
             const installedServices: ReservationistExecutionServices = { ...basicServices };
             if (needsQuote && quoteConfigReady) Object.assign(installedServices, getInstalledStaffQuoteServices({
               authorizationId: context.generationId,
@@ -213,17 +215,23 @@ export function createInstalledReservationistProvider(
               const source = ctx.task.source;
               if (ref.verification !== 'text_verified' || ref.disclosure !== 'guest' || ref.authority !== 'customer_claim' ||
                   ref.source.attachmentId !== source.attachmentId || ref.source.sourceHash !== source.sourceHash ||
-                  !ref.source.quote?.includes(ref.value)) throw new Error('pending_action_target_unavailable');
+                  !ref.source.quote?.includes(ref.value) ||
+                  !currentAuthoredGuestRequest({ ...ctx.task, source: ref.source }, ctx.input))
+                throw new Error('pending_action_target_unavailable');
               const requestMessage = ctx.input.messages.find((message) => `message:${message.id}` === source.attachmentId);
               if (!requestMessage) throw new Error('pending_action_request_unavailable');
 
               await fresh(ctx.input);
               await assertOrigin();
-              const preflight = await savedStaySession(async ({ runTool }) => {
+              const session = savedStaySession(async ({ runTool }) => {
                 const read = await runTool({ tool: 'read', confirmation: ref.value });
                 if (read.outcome !== 'ok') throw new Error('reservation_read_unavailable');
                 return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
-              });
+              }, { signal: ctx.signal });
+              activeCancellationSessions.add(session);
+              let preflight: CancellationToolResult;
+              try { preflight = await session; }
+              finally { activeCancellationSessions.delete(session); }
               ctx.signal.throwIfAborted();
               await fresh(ctx.input);
               await assertOrigin();
@@ -290,6 +298,7 @@ export function createInstalledReservationistProvider(
               await fresh(input);
               return work;
             } finally {
+              while (activeCancellationSessions.size) await Promise.allSettled(activeCancellationSessions);
               await Promise.allSettled(traces);
               activeServices = basicServices;
             }
