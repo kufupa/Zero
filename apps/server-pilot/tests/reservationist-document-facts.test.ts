@@ -28,8 +28,11 @@ const fact = {
   source: span,
 };
 describe('document facts', () => {
-  it('anchors yearless HTML dates to their complete authored alternative', () => {
-    const plain = 'Please quote.\nKind regards\nGuest';
+  it.each([
+    'Please quote.\nKind regards\nGuest',
+    'Please quote.\nKind regards\nOffice closed 01/12 to 03/12',
+    'Please quote. Conference 01/12 to 03/12.\nKind regards\nGuest',
+  ])('anchors yearless HTML dates to their complete authored alternative', (plain) => {
     const html = 'Please quote. Stay 12/11 to 14/11.';
     const text = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
     const start = text.indexOf('Stay 12/11'), quote = 'Stay 12/11 to 14/11';

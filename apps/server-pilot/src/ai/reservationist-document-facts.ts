@@ -344,7 +344,14 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const selected=views?.find(v=>start!==undefined&&end!==undefined&&start>=v.start&&end<=v.end);
  if(!page||!views||!selected)return;
  const token=`(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}/\\d{1,2}(?:/\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?)`;
- const ranges=(text:string)=>[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
+ const ranges=(text:string)=>{
+  const authored=text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+  return [...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))].filter(match=>{
+   const start=Math.max(authored.lastIndexOf('\n',match.index!-1),authored.lastIndexOf('.',match.index!-1),authored.lastIndexOf(';',match.index!-1))+1;
+   const tail=authored.slice(match.index!+match[0].length).search(/[\n.;]/),end=tail<0?authored.length:match.index!+match[0].length+tail;
+   return /\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i.test(authored.slice(start,end));
+  });
+ };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
  const pair=(m:RegExpMatchArray)=>[date(m[1]!,Number(value.arrival.slice(0,4))),date(m[2]!,Number(value.departure.slice(0,4)))];
  const own=ranges(page.slice(selected.start,selected.end));
