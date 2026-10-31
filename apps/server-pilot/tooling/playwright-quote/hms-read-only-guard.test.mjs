@@ -1,10 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installAvailabilityReadOnlyGuard, isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
+import { installAvailabilityReadOnlyGuard, isAvailabilityReadRequest, shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 
 const origin = 'https://hms.example.test';
 const oldPath = '/api/internalBooking/hotelAvail/inquiryForGrid';
 const cloudPath = '/api/internalBooking/rateshop/inquiryForGrid';
+
+test('read-only guard blocks the observed Cloud save action in query or form body', () => {
+  const url = `${origin}/web/base/OSRESV.HDR`;
+  for (const request of [
+    { url: `${url}?pageaction=SAVE` },
+    { url: `${url}?pageaction=LIST&PageAction=%53AVE` },
+    { url, postData: 'SYSTEM_FUNCTION_NAME=OSRESV&pageaction=SAVE' },
+  ]) assert.equal(shouldAbortReadOnlyRequest({ method: 'POST', ...request }), true);
+  assert.equal(shouldAbortReadOnlyRequest({ method: 'GET', url: `${url}?pageaction=SAVE` }), true);
+  assert.equal(shouldAbortReadOnlyRequest({ method: 'POST', url: `${url}?pageaction=LIST` }), false);
+});
 
 test('availability inquiry recognition requires POST, the exact path, and the same origin', () => {
   for (const path of [oldPath, cloudPath]) {
