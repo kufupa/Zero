@@ -85,16 +85,31 @@ extra metadata fields and `extId`.
 
 The live Ext `form.getForm().getValues()` can reflect explicitly selected adult
 and child counts/bands while `record.data` and `record.getData()` remain stale.
-For those explicit occupancy fields only, the writer uses current form values
-in its expected request snapshot; the actual request must still exactly match
-that full 985-key snapshot, while all unselected values stay pinned to the
-model. No current create request has been dispatched to validate that
-serializer path. A historical one-child POST carried the selected adults,
-child count/band, age CSV and source, but does not prove the current code path or
-zero/multiple-child payloads. The selected source's native code is checked in
-its current model and outgoing request, but persisted native-code readback is
-unsupported; the independent saved-record reader currently exposes only the
-description and child count/bands, not exact child ages.
+Strict proof starts with `record.getData()` and substitutes only selected
+occupancy values plus the current reservation note, revenue and lifetime nights
+values. The note must match the synthetic input and the visible control, Ext
+value and submit data. Revenue must be read-only zero; its current native form
+value must agree with the visible control, Ext value and submit data. The
+read-only `Lifetime Nights` value must be nonnegative, match the model, and
+agree across those same native surfaces. It describes the selected guest's
+history, not this stay's duration. Exact arrival and departure values in both
+the visible form and outgoing request define stay length (for example,
+2027-12-11 through 2027-12-13 is two nights). Every request must still match
+the full 985-key expected snapshot; all other values stay pinned to the model.
+
+The current path has not yet been proven by a dispatched create request. In a
+fresh 2027+ Proof Labtest draft, the intercepted 988-key POST matched the
+selected two-night dates and every reported field check except the exact
+`revenuevalue` string; the route refused it before network dispatch. The
+diagnostic retained only the mismatch flag, not that request value, so no
+alternate revenue serialization is assumed and the full-body guard stays
+fail-closed. A historical one-child POST carried selected adults, child
+count/band, age CSV and source, but does not prove the current path or
+zero/multiple-child payloads.
+The selected source's native code is checked in its current model and outgoing
+request, but persisted native-code readback is unsupported; the independent
+saved-record reader currently exposes only the description and child
+count/bands, not exact child ages.
 
 In strict proof mode, `agencySelection` may be the direct result of a current,
 search-ID-bound `selectPrimaryBookingAgency` call from the same Proof Labtest

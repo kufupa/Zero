@@ -135,7 +135,8 @@ async function draft(page, expected) {
     if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
-      'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress',
+      'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote',
+      ...(expected.strictCreateProof ? ['revenuevalue', 'nightsvalue'] : []), 'udfchkbox04', 'udfchar13', 'emailaddress',
       ...(expected.createFieldProof?.adults != null ? ['adults'] : []),
       ...(expected.createFieldProof?.childAges != null ? ['children', ...childBands] : []),
       ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : [])];
@@ -189,12 +190,24 @@ async function draft(page, expected) {
         return matches.length === 1 ? { found: true, value: formValues[matches[0]] } : { found: false };
       };
       formData = Object.fromEntries(modelKeys.map((key) => [key, modelData[key]]));
-      const override = (name, expectedValue) => {
-        const current = currentFormValue(name);
+      const copyCurrentFormValue = (name, current) => {
         const modelMatches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
-        if (!current.found || modelMatches.length !== 1 || String(current.value ?? '').trim() !== expectedValue) return false;
+        if (!current.found || modelMatches.length !== 1) return false;
         formData[modelMatches[0]] = current.value;
         return true;
+      };
+      const override = (name, expectedValue) => {
+        const current = currentFormValue(name);
+        return String(current.value ?? '').trim() === expectedValue && copyCurrentFormValue(name, current);
+      };
+      const nativeFormValue = (name) => {
+        const current = currentFormValue(name), input = fields[name][0], component = cmp(name);
+        const submitted = component?.getSubmitData?.();
+        const submittedKeys = Object.keys(submitted || {}).filter((key) => key.toLowerCase() === name.toLowerCase());
+        if (!current.found || !input || typeof component?.getValue !== 'function' || submittedKeys.length !== 1) return null;
+        const value = String(current.value ?? '');
+        return [input.value, component.getValue(), submitted[submittedKeys[0]]].every((item) => String(item ?? '') === value)
+          ? current : null;
       };
       const proof = expected.createFieldProof;
       if (proof && proof.adults !== null && !override('adults', proof.adults)) return null;
@@ -216,6 +229,32 @@ async function draft(page, expected) {
       if (proof && proof.childAges !== null && (value('children') !== String(proof.childAges.length) ||
           childBands.some((name) => value(name) !== String(proof.childAgeBands[name])))) return null;
       if (proof?.sourceBusiness && value('sourceofbusinessdesc') !== proof.sourceBusiness.description) return null;
+      if (!override('reservationnote', expected.note) || !nativeFormValue('reservationnote')) return null;
+      const modelNumber = (name) => {
+        const matches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
+        if (matches.length !== 1) return null;
+        const value = String(modelData[matches[0]] ?? '').trim();
+        return /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) ? Number(value) : null;
+      };
+      const formNumber = (current) => {
+        if (!current) return null;
+        const value = String(current.value ?? '').trim();
+        return /^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) ? Number(value) : null;
+      };
+      const revenueValue = nativeFormValue('revenuevalue');
+      const revenueModel = modelNumber('revenuevalue'), revenueForm = formNumber(revenueValue);
+      if (!revenueValue || !fields.revenuevalue[0].readOnly || revenueModel !== 0 || revenueForm !== revenueModel ||
+          !copyCurrentFormValue('revenuevalue', revenueValue)) return null;
+      // This is the selected guest's read-only Lifetime Nights field, not this stay's duration.
+      // The exact arrival/departure inputs and POST fields below establish the stay dates.
+      const lifetimeNights = nativeFormValue('nightsvalue');
+      const lifetimeModel = modelNumber('nightsvalue'), lifetimeForm = formNumber(lifetimeNights);
+      const lifetimeLabel = fields.nightsvalue[0].closest('.x-form-item, .x-field')?.querySelector('label')?.innerText ??
+        cmp('nightsvalue')?.getFieldLabel?.() ?? '';
+      if (!lifetimeNights || !fields.nightsvalue[0].readOnly ||
+          String(lifetimeLabel).replace(/\s*:\s*$/, '').trim().toLowerCase() !== 'lifetime nights' ||
+          !Number.isSafeInteger(lifetimeModel) || lifetimeModel < 0 || lifetimeForm !== lifetimeModel ||
+          !copyCurrentFormValue('nightsvalue', lifetimeNights)) return null;
       for (const [name, selected] of Object.entries(partyValues)) {
         if (organizationName && name === 'companyname') continue;
         if (!exact(name, selected)) return null;

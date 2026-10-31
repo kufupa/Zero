@@ -174,6 +174,26 @@ test('matches exact zero, one and multiple-child form payloads', () => {
   }
 });
 
+test('requires exact full-body values and keeps lifetime nights separate from stay length', () => {
+  const modelData = { ...createModelData(), arrivaldate: '12/11/2027', departuredate: '12/13/2027',
+    reservationnote: 'Synthetic note', revenuevalue: '0', nightsvalue: '5' };
+  const formData = { ...modelData, revenuevalue: '0.000' };
+  const body = createSaveBody(formData);
+
+  const parseDate = (value) => {
+    const [month, day, year] = value.split('/').map(Number);
+    return Date.UTC(year, month - 1, day);
+  };
+  assert.equal((parseDate(body.get('departuredate')) - parseDate(body.get('arrivaldate'))) / 86_400_000, 2);
+  assert.equal(matchesFullCreateBody(body, modelData), false);
+  assert.equal(matchesFullCreateBody(body, formData), true);
+  body.set('nightsvalue', '2');
+  assert.equal(matchesFullCreateBody(body, formData), false);
+  body.set('nightsvalue', '5');
+  body.set('revenuevalue', '0');
+  assert.equal(matchesFullCreateBody(body, formData), false);
+});
+
 test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');
