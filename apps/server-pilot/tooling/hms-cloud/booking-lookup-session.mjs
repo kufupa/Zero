@@ -389,9 +389,17 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
+    // A single HMS page has one current picker/form; concurrent tool calls would race it.
+    let queue = Promise.resolve();
+    const runTool = (request) => {
+      const pending = queue.then(() => runBookingLookupTool(context, request));
+      queue = pending.catch(() => {});
+      return pending;
+    };
     try {
-      return await operation({ ...context, memoryStatus: loaded.status, runTool: (request) => runBookingLookupTool(context, request) });
+      return await operation({ ...context, memoryStatus: loaded.status, runTool });
     } finally {
+      await queue;
       page.off('dialog', onDialog);
       unexpectedNativeDialogs.delete(page);
     }
