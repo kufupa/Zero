@@ -78,7 +78,7 @@ describe('reservationist worker input', () => {
   });
 
   it('filters a proven signature image but keeps one referenced by the current subject', async () => {
-    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\ncid:logo' })], [
+    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\nhttps://hotel.example.invalid\ncid:logo' })], [
       { id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'logo', disclosure: 'guest' },
     ]);
     expect(harmless.ignoredSignatures).toBe(1);

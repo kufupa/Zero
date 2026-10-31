@@ -40,7 +40,7 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  const dependency=/\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)?|voucher|POP|proof of payment|image|picture|photo|scan|document|logo|banner|signature|footer)\b|\b(?:see|use|read|refer|based|shown)\b[^.!?;\r\n]{0,80}\b(?:below|following|previous|prior|forwarded)\b|\b(?:use|add|include|put|place|copy|show|insert)\b[^.!?;\r\n]{0,80}\b(?:it|this|that|them|these|those)\b/i;
  const currentSignoff=current.search(signoff),currentRequest=currentSignoff<0?current:current.slice(0,currentSignoff);
  const postscript=currentSignoff<0?'':current.slice(currentSignoff);
- const businessLabel=/^[\t ]*(?!(?:cid|tel|telephone|phone|mobile|cell|fax|e-?mail(?:\s+address)?|web|website|site|url|address|street|city|country|postal(?:\s+code)?|postcode|zip|office|direct|extension|ext|name|title|company|department|contact)\s*:)[\p{L}][\p{L}\p{N}&() /_-]{0,60}:\s*(?:\S|$)/imu;
+ const businessLabel=/^[\t ]*(?!(?:cid|http|https|tel|telephone|phone|mobile|cell|fax|e-?mail(?:\s+address)?|web|website|site|url|address|street|city|country|postal(?:\s+code)?|postcode|zip|office|direct|extension|ext|name|title|company|department|contact)\s*:)[\p{L}][\p{L}\p{N}&() /_-]{0,60}:\s*(?:\S|$)/imu;
  // Explicit dates below refer to the authored calendar text. Preserve every
  // other reference and any separately stated attachment dependency.
  const withoutDateReference=(text:string)=>text.replace(/\bdates\s+below\b/gi,'dates');
