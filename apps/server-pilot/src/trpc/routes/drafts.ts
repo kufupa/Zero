@@ -1001,28 +1001,24 @@ export async function enqueueHmsCandidateRefresh(input: {
     threadStateVersion,
   });
 
-  const run = await enqueueAiRun(
-    {
-      transportId: input.transportId,
-      threadId: input.threadId,
-      triggerMessageId: input.triggerMessageId,
-      runKind: 'candidate_draft',
-      idempotencyKey,
-      modelId: input.modelId ?? draftRouteEnqueueLabels().modelId,
-      promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
-      // Visible drafting is owned by the normal default worker. The isolated
-      // HMS lane remains read/shadow-only and cannot claim this run.
-      executorLane: 'default',
-    },
-    input.db,
-  );
-
-  // The idempotent run insert and this generation link are separate concerns,
-  // but the link must be serialized on the run row. Otherwise two callers can
-  // both observe generationId=NULL and race into the same primary key insert;
-  // one real refresh then fails even though the run itself is idempotent.
-  let generationId = run.generationId ?? `${run.id}-generation`;
-  await input.db.transaction(async (tx) => {
+  // A worker must never see the queued run before its requesting user and
+  // generation exist. The row lock also serializes idempotent refreshes.
+  const run = await input.db.transaction(async (tx) => {
+    const run = await enqueueAiRun(
+      {
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        runKind: 'candidate_draft',
+        idempotencyKey,
+        modelId: input.modelId ?? draftRouteEnqueueLabels().modelId,
+        promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
+        // Visible drafting is owned by the normal default worker. The isolated
+        // HMS lane remains read/shadow-only and cannot claim this run.
+        executorLane: 'default',
+      },
+      tx as unknown as DB,
+    );
     const [lockedRun] = await tx
       .select({ generationId: aiWorkflowRun.generationId })
       .from(aiWorkflowRun)
@@ -1031,7 +1027,7 @@ export async function enqueueHmsCandidateRefresh(input: {
       .for('update');
     if (!lockedRun) throw new Error(`refresh run disappeared before generation link: ${run.id}`);
 
-    generationId = lockedRun.generationId ?? `${run.id}-generation`;
+    const generationId = lockedRun.generationId ?? `${run.id}-generation`;
     if (!lockedRun.generationId) {
       await tx.insert(aiDraftGeneration).values({
         id: generationId,
@@ -1051,6 +1047,7 @@ export async function enqueueHmsCandidateRefresh(input: {
         .set({ generationId, updatedAt: new Date() })
         .where(and(eq(aiWorkflowRun.id, run.id), sql`${aiWorkflowRun.generationId} IS NULL`));
     }
+    return run;
   });
 
   return {
