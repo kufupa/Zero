@@ -137,7 +137,7 @@ export const documentPlanSchema = z
   .strict();
 export type DocumentFactCandidate = z.infer<typeof factSchema>;
 export type ValidatedDocumentFact = DocumentFactCandidate & {
-  verification: 'text_verified' | 'visual_review_required';
+  verification: 'text_verified' | 'visual_review_required' | 'conflicting_views';
   authority: 'customer_claim';
   amountCents?: number;
   convention?: {rule:'centurion_next_occurrence_v1'|'centurion_explicit_nights_v1'|'centurion_staff_occupancy_v1';sourceAt:string;timeZone:'Africa/Johannesburg';originalValue?:{arrival:string;departure:string}};
@@ -347,18 +347,18 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const authoredText=(text:string)=>text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
  const ranges=(text:string)=>{
   const authored=authoredText(text);
-  const paired:Array<{index:number;text:string;arrival:string;departure:string;nights?:number}>=[...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))]
+  const paired:Array<{index:number;text:string;arrival:string;departure:string;nights?:number}>=[...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|until|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))]
    .map(m=>({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!}));
   for(const m of authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:`${m[1]} ${m[3]} ${m[4]??''}`.trim(),departure:`${m[2]} ${m[3]} ${m[4]??''}`.trim()});
-  for(const m of authored.matchAll(new RegExp(`\\b(?:arrival|check[ -]?in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure)?|check[ -]?out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
+  for(const m of authored.matchAll(new RegExp(`\\b(?:arriv(?:al|ing|e)|check[ -]?in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure|ing)?|check[ -]?out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!});
   for(const m of authored.matchAll(new RegExp(`\\b(\\d{1,3}|one)\\s+nights?\\s+(?:from|starting)\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[2]!,departure:m[2]!,nights:/^one$/i.test(m[1]!)?1:Number(m[1])});
   return paired.filter(match=>{
    const start=Math.max(authored.lastIndexOf('\n',match.index-1),authored.lastIndexOf('.',match.index-1),authored.lastIndexOf(';',match.index-1))+1;
    const tail=authored.slice(match.index+match.text.length).search(/[\n.;]/),end=tail<0?authored.length:match.index+match.text.length+tail;
-   const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
+   const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|ing|e)|depart(?:ure|ing)?|check[ -]?(?:in|out))\b/i;
    // A negated change/cancellation preserves the cited dates; it does not exclude them.
    const excluded=/\b(?:(?:do not|don['’]t|never|not|without)(?!\s+(?:change|changing|alter|altering|modify|modifying|move|moving|reschedule|rescheduling|cancel|canceling|cancelling)\b)|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const row=authored.slice(start,end);
@@ -407,29 +407,15 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const uniquePairs=(pairs:string[][])=>[...new Map(pairs.map(pair=>[pair.join('/'),pair])).values()];
  let ownPairs:string[][];try{ownPairs=uniquePairs(own.map(pair));}catch{throw new Error('Ambiguous alternate stay dates');}
  const target=[value.arrival,value.departure].join('/');
- const groupPair=(view:string,range:string[])=>{
-  const text=authoredText(view),stays=ranges(text);
-  // A later correction must not be hidden by the subgroup-arrival shortcut.
-  if(/\b(?:correction|corrected|changed|instead|revised)\b/i.test(text))return;
-  if(uniquePairs(stays.map(pair)).length!==1)return;
-  const groups=[...text.matchAll(new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
-  if(groups.length!==1)return;
-  const group=groups[0]!,before=text.slice(Math.max(text.lastIndexOf('\n',group.index!-1),text.lastIndexOf('.',group.index!-1))+1,group.index);
-  if(/\b(?:not|never|no|previous|old|cancelled|canceled|without)\b/i.test(before))return;
-  const stay=stays[0]!,between=text.slice(Math.min(group.index!,stay.index),Math.max(group.index!+group[0].length,stay.index+stay.text.length));
-  if(between.split('\n').filter(line=>line.trim()).length>2||/\b(?:conference|meeting|event|flight)\b/i.test(between))return;
-  const arrival=date(group[1]!,Number(range[0]!.slice(0,4)));
-  if(arrival>=range[0]!&&arrival<range[1]!)return [arrival,range[1]!];
- };
- if(!ownPairs.some(pair=>pair.join('/')===target)&&!(ownPairs.length===1&&groupPair(ownText,ownPairs[0]!)?.join('/')===target))return;
+ if(!ownPairs.some(pair=>pair.join('/')===target)){
+  // A subgroup arriving later does not establish that the overall block starts later.
+  if(/\b\d+\s+(?:guests?|people|persons?|adults?|officials?)\s+arriving\s+on\b/i.test(authoredText(ownText)))throw new Error('Ambiguous alternate stay dates');
+  return;
+ }
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length)continue;
   let otherPairs:string[][];try{otherPairs=uniquePairs(found.map(pair));}catch{throw new Error('Ambiguous alternate stay dates');}
   const keys=(pairs:string[][])=>pairs.map(pair=>pair.join('/')).sort().join('|');
   if(keys(ownPairs)===keys(otherPairs))continue;
-  if(ownPairs.length===1&&otherPairs.length===1){
-   const ownGroup=groupPair(ownText,ownPairs[0]!),otherGroup=groupPair(otherText,otherPairs[0]!);
-   if(ownGroup?.join('/')===otherPairs[0]!.join('/')||otherGroup?.join('/')===ownPairs[0]!.join('/'))continue;
-  }
   throw new Error('Conflicting alternate stay dates');
  }
 }
@@ -444,6 +430,7 @@ export function assertChannelBookingSyncRequest(quote: string, original: string,
 export function validateDocumentPlan(
   candidate: unknown,
   sources: readonly DocumentSource[],
+  options?: { retainAlternateDateConflicts?: boolean },
 ): ValidatedDocumentPlan {
   const parsed = documentPlanSchema.safeParse(candidate);
   if (!parsed.success) throw new Error('Invalid bounded document plan'); // Do not log customer values through Zod diagnostics.
@@ -517,7 +504,13 @@ export function validateDocumentPlan(
     if(derived){const tasks=parsed.data.tasks.filter(task=>task.factIds.includes(fact.id));if(!tasks.some(task=>task.kind==='quote')||tasks.some(task=>task.kind!=='quote'&&(derived.convention.rule==='centurion_explicit_nights_v1'||!(task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??'')))))throw new Error('Yearless convention requires quote task');}
     const page=original.pages?.[fact.source.page-1];
     const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,page&&reservationistCitedView(page,original.sourceViews,fact.source.start,fact.source.end)),...(derived?{convention:derived.convention}:{}) } : fact;
-    if(fact.kind==='dates'&&normalizedFact.kind==='dates'&&verification==='text_verified')assertMessageViewDates(fact,original,normalizedFact.value);
+    if(fact.kind==='dates'&&normalizedFact.kind==='dates'&&verification==='text_verified'){
+      try{assertMessageViewDates(fact,original,normalizedFact.value);}
+      catch(error){
+        if(!options?.retainAlternateDateConflicts||!(error instanceof Error)||!['Ambiguous alternate stay dates','Conflicting alternate stay dates'].includes(error.message))throw error;
+        verification='conflicting_views';
+      }
+    }
     const amountCents =
       fact.kind === 'rate_claim' || fact.kind === 'payment_claim'
         ? normalizeDocumentDecimal(fact.value.amount)

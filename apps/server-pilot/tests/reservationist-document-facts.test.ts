@@ -72,6 +72,8 @@ describe('document facts', () => {
     'Please quote. Stay November 13, 2026 to November 15, 2026.',
     'Please quote. Stay 13-11-2026 to 15-11-2026.',
     'Please quote. Arrival 13/11, departure 15/11.',
+    'Please quote a room from 13 November 2026 until 15 November 2026.',
+    'Arriving on 13 November 2026 and departing on 15 November 2026.',
     'Please quote. Do not change arrival 13/11, departure 15/11.',
     'Please quote. Don’t cancel the stay 13/11 to 15/11.',
     'Please quote without changing the booking 13/11 to 15/11.',
@@ -165,14 +167,14 @@ describe('document facts', () => {
     ['\n', 'Accommodation required from 10 to 16 November 2026.'],
     ['\n\n', 'Accommodation required from 10 to 16 November 2026.'],
     ['\n', 'Accommodation required for 6 nights from 10 November 2026 to 16 November 2026.'],
-  ])('keeps the same explicit group arrival valid across alternatives', (separator,stay) => {
+  ])('does not equate a subgroup arrival with the overall stay', (separator,stay) => {
     const plain=`25 guests arriving on 11 November 2026${separator}${stay}`,html='Stay 11 to 16 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
     const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
     const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'11 November 2026',departure:'16 November 2026'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
-    expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2026-11-11',departure:'2026-11-16'});
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
   });
   it('rejects different fully dated and shared-month alternatives', () => {
     const plain='Stay 13 to 15 November 2026.',html='Stay 12 November 2026 to 14 November 2026.';
