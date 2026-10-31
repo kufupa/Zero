@@ -3,6 +3,10 @@ import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const unchangedBusinessPartyFields = new Set([
+  'taid1', 'ta1', 'bookingagencycontractid', 'bacontract', 'bookingagency1iatanumber',
+  'companyid', 'company', 'companyname',
+]);
 
 function date(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return null;
@@ -12,12 +16,17 @@ function date(value) {
     wire: `${value.slice(5, 7)}/${value.slice(8, 10)}/${value.slice(0, 4)}` };
 }
 
-export async function currentLabtestRecord(page, expected) {
+export async function currentLabtestRecord(page, expected, options = {}) {
+  const { allowBlankNote = false, allowUnchangedBusinessParties = false } = options || {};
   const { confirmation, guestId, arrival, departure, roomType, ratePlan, note } = expected || {};
   const start = date(arrival), end = date(departure);
-  if (!/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') || !start || !end ||
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).some((key) => !['allowBlankNote', 'allowUnchangedBusinessParties'].includes(key)) ||
+      typeof allowBlankNote !== 'boolean' || typeof allowUnchangedBusinessParties !== 'boolean' ||
+      !/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') || !start || !end ||
       arrival < '2027-01-01' || arrival >= departure || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
-      !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || typeof note !== 'string' || !note || note.length > 200) {
+      !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || typeof note !== 'string' ||
+      (!allowBlankNote && !note) || note.length > 200) {
     throw new Error('LABTEST_RECORD_INPUT_INVALID');
   }
   if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
@@ -27,7 +36,8 @@ export async function currentLabtestRecord(page, expected) {
   if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
-  const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields }) => {
+  const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields,
+    unchangedBusinessPartyFields, allowUnchangedBusinessParties }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
@@ -37,7 +47,9 @@ export async function currentLabtestRecord(page, expected) {
     if (names.some((name) => fields[name].length !== 1)) return null;
     const cmp = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
     const form = cmp('guestid')?.up?.('form'), data = form?.getRecord?.()?.data, keys = data && Object.keys(data);
-    if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
+    const formValues = form?.getForm?.()?.getValues?.();
+    if (!form?.el?.dom || !data || !formValues || typeof formValues !== 'object' || Array.isArray(formValues) ||
+        names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
     const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
@@ -51,9 +63,35 @@ export async function currentLabtestRecord(page, expected) {
         value('udfchar13') || value('emailaddress') || cmp('udfchkbox04')?.getValue?.() !== false) return null;
     const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
       visible(el) && blankSavedPartyFields.includes(el.name.toLowerCase()));
-    if (blankSavedPartyFields.some((key) => !unique(key) || data[key] !== '' ||
-        partyInputs.filter((el) => el.name.toLowerCase() === key).length > 1) ||
-        partyInputs.some((el) => el.name !== el.name.toLowerCase() || el.value !== '')) {
+    const partyPreimage = {};
+    for (const key of blankSavedPartyFields) {
+      if (!unique(key)) return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+      const value = data[key];
+      const valueNames = Object.keys(formValues).filter((name) => name.toLowerCase() === key);
+      const inputs = partyInputs.filter((el) => el.name.toLowerCase() === key);
+      if (valueNames.length > 1 || valueNames.some((name) => name !== key) || inputs.length > 1 ||
+          inputs.some((el) => el.name !== key)) return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+      if (value === '') {
+        if ((valueNames.length && String(formValues[key] ?? '') !== '') ||
+            (inputs.length && String(inputs[0].value ?? '') !== '')) {
+          return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+        }
+      } else {
+        if (!allowUnchangedBusinessParties || !unchangedBusinessPartyFields.includes(key) ||
+            !['string', 'number'].includes(typeof value) || !String(value).trim() ||
+            (!valueNames.length && !inputs.length) ||
+            (valueNames.length && String(formValues[key] ?? '') !== String(value)) ||
+            (inputs.length && String(inputs[0].value ?? '') !== String(value))) {
+          return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+        }
+      }
+      partyPreimage[key] = String(value ?? '');
+    }
+    const linked = (name) => Boolean(partyPreimage[name]?.trim());
+    if ((linked('taid1') !== linked('ta1')) ||
+        (linked('companyid') !== (linked('company') || linked('companyname'))) ||
+        ((linked('bookingagencycontractid') || linked('bacontract') || linked('bookingagency1iatanumber')) &&
+          !linked('taid1'))) {
       return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
     }
     const native = {};
@@ -61,8 +99,9 @@ export async function currentLabtestRecord(page, expected) {
       if (!unique(key) || !String(data[key] ?? '').trim()) return null;
       native[key] = String(data[key]).trim();
     }
-    return { native, track: value('track') };
-  }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields });
+    return { native, track: value('track'), partyPreimage };
+  }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields,
+    unchangedBusinessPartyFields: [...unchangedBusinessPartyFields], allowUnchangedBusinessParties });
   if (state?.issue) throw new Error(state.issue);
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
@@ -76,7 +115,9 @@ export async function snapshotLabtestRecord(frame) {
     if (inputs.length !== 1) return null;
     const panel = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''))?.up?.('form');
     const form = panel?.getForm?.(), record = panel?.getRecord?.(), fields = form?.getFields?.()?.items;
+    const values = form?.getValues?.();
     if (!panel?.el?.dom || !form || !record?.data || !Array.isArray(fields) || !fields.length ||
+        !values || typeof values !== 'object' || Array.isArray(values) ||
         typeof form.isDirty !== 'function' || typeof record.dirty !== 'boolean' ||
         fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
     const partyInputs = [...panel.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
@@ -84,7 +125,8 @@ export async function snapshotLabtestRecord(frame) {
     const partyInputsBlank = blankSavedPartyFields.every((name) =>
       partyInputs.filter((el) => el.name.toLowerCase() === name).length <= 1) &&
       partyInputs.every((el) => el.name === el.name.toLowerCase() && el.value === '');
-    return { values: form.getValues(), data: record.data, formDirty: form.isDirty(), recordDirty: record.dirty,
+    const partyControls = partyInputs.map((el) => ({ name: el.name, value: String(el.value ?? '') }));
+    return { values, data: record.data, partyControls, formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}), partyInputsBlank };
   }, blankSavedPartyFields);
@@ -106,6 +148,31 @@ export function blankLabtestParties(snapshot) {
     valueKeys.filter((name) => name.toLowerCase() === key).every((name) => name === key && values[name] === ''));
 }
 
+/** Permit only verified, unchanged primary agency/company links on an amendment. */
+export function unchangedLabtestBusinessParties(expected, snapshot) {
+  const data = snapshot?.data, values = snapshot?.values, controls = snapshot?.partyControls;
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
+      Object.keys(expected).length !== blankSavedPartyFields.length ||
+      !blankSavedPartyFields.every((key) => Object.hasOwn(expected, key) && typeof expected[key] === 'string') ||
+      !data || typeof data !== 'object' || Array.isArray(data) ||
+      !values || typeof values !== 'object' || Array.isArray(values) || !Array.isArray(controls)) return false;
+  const dataKeys = Object.keys(data), valueKeys = Object.keys(values);
+  for (const key of blankSavedPartyFields) {
+    if (!Object.hasOwn(data, key) || dataKeys.filter((name) => name.toLowerCase() === key).length !== 1 ||
+        String(data[key] ?? '') !== expected[key]) return false;
+    const forms = valueKeys.filter((name) => name.toLowerCase() === key);
+    const inputs = controls.filter((field) => typeof field?.name === 'string' && field.name.toLowerCase() === key);
+    if (forms.length > 1 || forms.some((name) => name !== key) || inputs.length > 1 ||
+        inputs.some((field) => field.name !== key || String(field.value ?? '') !== expected[key]) ||
+        (forms.length && String(values[key] ?? '') !== expected[key])) return false;
+    if (expected[key] !== '' && (!unchangedBusinessPartyFields.has(key) || (!forms.length && !inputs.length))) return false;
+  }
+  const linked = (name) => Boolean(expected[name]?.trim());
+  return linked('taid1') === linked('ta1') &&
+    linked('companyid') === (linked('company') || linked('companyname')) &&
+    (!(linked('bookingagencycontractid') || linked('bacontract') || linked('bookingagency1iatanumber')) || linked('taid1'));
+}
+
 export function unchangedLabtestRecord(before, after, changes) {
   if (!before || !after) return false;
   const allowed = new Set(Object.keys(changes));
@@ -120,8 +187,12 @@ export function unchangedLabtestRecord(before, after, changes) {
 }
 
 export function matchesLabtestBody(body, snapshot, changes) {
-  const data = snapshot.data, fields = Object.keys(data).filter((key) => key !== 'extId');
+  const data = snapshot?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const fields = Object.keys(data).filter((key) => key !== 'extId');
   const controls = ['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME', 'CURRENT_TAB_NAME'];
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
+      Object.keys(changes).some((key) => !Object.hasOwn(data, key))) return false;
   const keys = [...body.keys()], expected = new Set([...fields, ...controls]);
   if (keys.length !== expected.size || new Set(keys).size !== keys.length ||
       keys.some((key) => !expected.has(key)) || fields.some((key) => !body.has(key))) return false;

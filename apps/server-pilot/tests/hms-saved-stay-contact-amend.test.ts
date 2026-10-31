@@ -4,12 +4,20 @@ import { existsSync } from 'node:fs';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import {
+  amendLabtestBookerContact,
   contactAmendOutcome,
-  installLabtestContactSaveRouteChain,
+  matchesLabtestBookerContactAmendRequest,
+  matchesLabtestBookerContactDraft,
   matchesLabtestContactAmendDraft,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
+import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence.mjs';
+import {
+  currentLabtestRecord,
+  unchangedLabtestBusinessParties,
+} from '../tooling/hms-cloud/labtest-record.mjs';
+import { blankSavedPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
 import { installReadOnlyGuard } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
 
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -57,6 +65,16 @@ function saveBody(fieldName: string, value: string) {
   return body;
 }
 
+function saveBodyWithChanges(changes: Record<string, string>) {
+  const entries = Object.entries(changes);
+  const first = entries[0];
+  if (!first) throw new Error('changes_required');
+  const [firstName, firstValue] = first;
+  const body = saveBody(firstName, firstValue);
+  for (const [name, value] of entries.slice(1)) body.set(name, value);
+  return body;
+}
+
 function requestFor(body: URLSearchParams, overrides: {
   url?: string; method?: string; frame?: object; contentType?: string;
 } = {}) {
@@ -76,6 +94,142 @@ describe('saved Labtest Booker contact amendment guards', () => {
       expect(matchesLabtestContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, field, value))
         .toBe(true);
     }
+  });
+
+  it('matches both Booker fields in one exact full-record Save request', () => {
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = saveBodyWithChanges(changes);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
+      .toBe(true);
+
+    const partial = saveBody('caller', changes.caller);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(partial), requestFrame, expected, state, baseline, changes))
+      .toBe(false);
+
+    body.set('udfchar02', 'unexpected collateral change');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
+      .toBe(false);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(saveBodyWithChanges(changes)),
+      requestFrame, expected, state, baseline, { ...changes, udfchar02: 'not allowed' })).toBe(false);
+  });
+
+  it('allows an explicitly blank Booker preimage note only when the full request keeps it blank', async () => {
+    const blankExpected = { ...expected, note: '' };
+    const wrongOriginPage = { url: () => 'https://example.invalid' } as unknown as Page;
+    await expect(currentLabtestRecord(wrongOriginPage, blankExpected)).rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+    await expect(currentLabtestRecord(wrongOriginPage, blankExpected, { allowBlankNote: true }))
+      .rejects.toThrow('PROPERTY_OR_ORIGIN_MISMATCH');
+    await expect(currentLabtestRecord(wrongOriginPage, expected, { allowUnchangedBusinessParties: true }))
+      .rejects.toThrow('PROPERTY_OR_ORIGIN_MISMATCH');
+    await expect(currentLabtestRecord(wrongOriginPage,
+      { ...blankExpected, note: null as unknown as string }, { allowBlankNote: true }))
+      .rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+    await expect(currentLabtestRecord(wrongOriginPage, expected,
+      { allowUnchangedBusinessParties: true, unknown: true })).rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+
+    const blankData = { ...data, reservationnote: '' };
+    const blankBaseline = { values: { ...blankData }, data: { ...blankData } };
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(blankData)) {
+      if (key !== 'extId') body.set(key, String(value ?? ''));
+    }
+    for (const [key, value] of Object.entries(changes)) body.set(key, value);
+    body.set('SYSTEM_FUNCTION_NAME', 'OSRESV');
+    body.set('USER_FUNCTION_NAME', 'OSRESV');
+    body.set('CURRENT_TAB_NAME', 'HDR');
+
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      blankExpected, state, blankBaseline, changes)).toBe(true);
+    body.set('reservationnote', 'unexpected note change');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      blankExpected, state, blankBaseline, changes)).toBe(false);
+  });
+
+  it('preserves only verified primary agency/company links in the exact full-record request', () => {
+    const parties = Object.fromEntries(blankSavedPartyFields.map((name) => [name, '']));
+    Object.assign(parties, {
+      taid1: 'agency-1', ta1: 'Synthetic Agency', companyid: 'company-1', companyname: 'Synthetic Company',
+    });
+    const linkedData = { ...data, ...parties };
+    const linkedBaseline = { values: { ...linkedData }, data: { ...linkedData } };
+    const linkedPartySnapshot = {
+      values: { ...linkedData },
+      data: { ...linkedData },
+      partyControls: [
+        { name: 'ta1', value: 'Synthetic Agency' },
+        { name: 'companyname', value: 'Synthetic Company' },
+      ],
+    };
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(linkedData)) {
+      if (key !== 'extId') body.set(key, String(value ?? ''));
+    }
+    for (const [key, value] of Object.entries(changes)) body.set(key, value);
+    body.set('SYSTEM_FUNCTION_NAME', 'OSRESV');
+    body.set('USER_FUNCTION_NAME', 'OSRESV');
+    body.set('CURRENT_TAB_NAME', 'HDR');
+
+    expect(unchangedLabtestBusinessParties(parties, linkedPartySnapshot)).toBe(true);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      expected, state, linkedBaseline, changes)).toBe(true);
+
+    const changedCompany = new URLSearchParams(body);
+    changedCompany.set('companyid', 'company-2');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(changedCompany), requestFrame,
+      expected, state, linkedBaseline, changes)).toBe(false);
+    expect(unchangedLabtestBusinessParties(parties, {
+      ...linkedPartySnapshot,
+      partyControls: [{ name: 'companyname', value: 'Different Company' }],
+    })).toBe(false);
+    expect(unchangedLabtestBusinessParties({ ...parties, groupid: 'group-1' }, {
+      ...linkedPartySnapshot,
+      data: { ...linkedData, groupid: 'group-1' },
+      values: { ...linkedData, groupid: 'group-1' },
+    })).toBe(false);
+    expect(unchangedLabtestBusinessParties({ ...parties, companyid: '' }, {
+      ...linkedPartySnapshot,
+      data: { ...linkedData, companyid: '' },
+      values: { ...linkedData, companyid: '' },
+    })).toBe(false);
+  });
+
+  it('rejects empty, blank, and unknown paired Booker requests before page use', async () => {
+    await expect(amendLabtestBookerContact(null as never, expected)).resolves.toMatchObject({
+      outcome: 'input_gap', issue: 'CONTACT_CHANGE_REQUIRED',
+    });
+    await expect(amendLabtestBookerContact(null as never, expected, { bookerName: '   ' })).resolves.toMatchObject({
+      outcome: 'input_gap', issue: 'CONTACT_VALUE_INVALID',
+    });
+    await expect(amendLabtestBookerContact(null as never, expected, {
+      bookerName: 'Synthetic Booker', unexpected: 'not supported',
+    })).resolves.toMatchObject({ outcome: 'input_gap', issue: 'CONTACT_CHANGES_INVALID' });
+  });
+
+  it('accepts both staged Booker values before model sync and rejects unrelated changes', () => {
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const staged = {
+      values: { ...baseline.values, ...changes },
+      data: { ...baseline.data },
+      formDirty: true,
+      recordDirty: false,
+      dirtyFields: ['caller', 'udfchar06'],
+      modifiedFields: [],
+    };
+    expect(staged.data.caller).toBe(baseline.data.caller);
+    expect(staged.data.udfchar06).toBe(baseline.data.udfchar06);
+    expect(matchesLabtestBookerContactDraft(baseline, staged, changes)).toBe(true);
+
+    expect(matchesLabtestBookerContactDraft(baseline, {
+      ...staged,
+      values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+    }, changes)).toBe(false);
+    expect(matchesLabtestBookerContactDraft(baseline, {
+      ...staged,
+      dirtyFields: ['caller', 'udfchar06', 'udfchar02'],
+    }, changes)).toBe(false);
+    expect(matchesLabtestBookerContactDraft(baseline, staged, { ...changes, toString: 'blocked' })).toBe(false);
   });
 
   it('accepts an isolated Ext form-level Booker edit before the loaded record model synchronizes', () => {
@@ -191,7 +345,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     });
     let browser: Browser | undefined;
     let context: BrowserContext | undefined;
-    let chain: Awaited<ReturnType<typeof installLabtestContactSaveRouteChain>> | undefined;
+    let chain: Awaited<ReturnType<typeof installLabtestSaveRouteChain>> | undefined;
     let scope: { close: () => void } | undefined;
     try {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -215,7 +369,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       let dispatches = 0;
       let blockedRequests = 0;
       let blockedAfterDispatch = 0;
-      chain = await installLabtestContactSaveRouteChain(page, {
+      chain = await installLabtestSaveRouteChain(page, {
         frame: pageFrame,
         fence,
         scope,
