@@ -36,6 +36,9 @@ describe('document facts', () => {
     'Do not quote accommodation:\n13/11 to 15/11.',
     'Do not quote accommodation 13/11 to 15/11.',
     '13/11 to 15/11: no accommodation is needed.',
+    'Please quote. Stay 12 to 14 November 2026.',
+    'Please quote. Stay November 12, 2026 to November 14, 2026.',
+    'Please quote. Arrival 12/11, departure 14/11.',
   ])('anchors yearless HTML dates to their complete authored alternative', (plain) => {
     const html = 'Please quote. Stay 12/11 to 14/11.';
     const text = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
@@ -56,7 +59,12 @@ describe('document facts', () => {
   it.each(['Please quote. Stay 13/11 to 15/11.\nKind regards\nGuest',
     'Please quote accommodation:\n13/11 to 15/11.',
     'Please quote accommodation:\nDates: 13/11 to 15/11.',
-    'Please quote accommodation 13/11 to 15/11, no other rooms are needed.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
+    'Please quote accommodation 13/11 to 15/11, no other rooms are needed.',
+    'Please quote. Stay 13 to 15 November 2026.',
+    'Please quote. Stay 13-15 November.',
+    'Please quote. Stay November 13, 2026 to November 15, 2026.',
+    'Please quote. Stay 13-11-2026 to 15-11-2026.',
+    'Please quote. Arrival 13/11, departure 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
     const html='Please quote. Stay 12/11 to 14/11.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,

@@ -343,27 +343,33 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const page=source.pages?.[fact.source.page-1],views=source.sourceViews,start=fact.source.start,end=fact.source.end;
  const selected=views?.find(v=>start!==undefined&&end!==undefined&&start>=v.start&&end<=v.end);
  if(!page||!views||!selected)return;
- const token=`(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}/\\d{1,2}(?:/\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?)`;
+ const token=`(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}-\\d{1,2}-\\d{4}|\\d{1,2}/\\d{1,2}(?:/\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?)`;
  const ranges=(text:string)=>{
   const authored=text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
-  return [...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))].filter(match=>{
-   const start=Math.max(authored.lastIndexOf('\n',match.index!-1),authored.lastIndexOf('.',match.index!-1),authored.lastIndexOf(';',match.index!-1))+1;
-   const tail=authored.slice(match.index!+match[0].length).search(/[\n.;]/),end=tail<0?authored.length:match.index!+match[0].length+tail;
+  const paired=[...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))]
+   .map(m=>({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!}));
+  for(const m of authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`,'giu')))
+   paired.push({index:m.index!,text:m[0],arrival:`${m[1]} ${m[3]} ${m[4]??''}`.trim(),departure:`${m[2]} ${m[3]} ${m[4]??''}`.trim()});
+  for(const m of authored.matchAll(new RegExp(`\\b(?:arrival|check[ -]?in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure)?|check[ -]?out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
+   paired.push({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!});
+  return paired.filter(match=>{
+   const start=Math.max(authored.lastIndexOf('\n',match.index-1),authored.lastIndexOf('.',match.index-1),authored.lastIndexOf(';',match.index-1))+1;
+   const tail=authored.slice(match.index+match.text.length).search(/[\n.;]/),end=tail<0?authored.length:match.index+match.text.length+tail;
    const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const excluded=/\b(?:do not|don['’]t|never|not|without|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking)\b/i;
    const row=authored.slice(start,end);
-   const suffix=authored.slice(match.index!+match[0].length,end);
+   const suffix=authored.slice(match.index+match.text.length,end);
    const trailingExclusion=/^\s*(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)\b/i;
-   if(stay.test(row))return !excluded.test(authored.slice(start,match.index!))&&!trailingExclusion.test(suffix);
-   const lineStart=authored.lastIndexOf('\n',match.index!-1)+1;
+   if(stay.test(row))return !excluded.test(authored.slice(start,match.index))&&!trailingExclusion.test(suffix);
+   const lineStart=authored.lastIndexOf('\n',match.index-1)+1;
    const previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
    const previous=authored.slice(previousStart,lineStart-1).trim();
    // A wrapped range can follow a stay label, but not an unrelated new label on the date line.
-   return lineStart>0&&/^\s*(?:[-•]\s*)?(?:dates?\s*:\s*)?$/i.test(authored.slice(lineStart,match.index!))&&/:\s*$/.test(previous)&&stay.test(previous)&&!excluded.test(previous);
+   return lineStart>0&&/^\s*(?:[-•]\s*)?(?:dates?\s*:\s*)?$/i.test(authored.slice(lineStart,match.index))&&/:\s*$/.test(previous)&&stay.test(previous)&&!excluded.test(previous);
   });
  };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
- const pair=(m:RegExpMatchArray)=>[date(m[1]!,Number(value.arrival.slice(0,4))),date(m[2]!,Number(value.departure.slice(0,4)))];
+ const pair=(m:{arrival:string;departure:string})=>[date(m.arrival,Number(value.arrival.slice(0,4))),date(m.departure,Number(value.departure.slice(0,4)))];
  const own=ranges(page.slice(selected.start,selected.end));
  if(own.length!==1)return;
  try{if(pair(own[0]!).join('/')!==[value.arrival,value.departure].join('/'))return;}catch{return;}
