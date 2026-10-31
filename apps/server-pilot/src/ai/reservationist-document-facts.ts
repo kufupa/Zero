@@ -365,6 +365,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const before=authored.slice(start,match.index);
    const directQuote=/\b(?:quote|quotation)(?:\s+(?:us|me))?(?:\s+(?:for|from|on))?\s*:?\s*$/i;
    const negatedQuote=/\b(?:do not|don['’]t|never|not)\s+(?:quote|request\s+a\s+quotation)\b/i;
+   if(!stay.test(row)&&/^\s*(?:for|during|at)\s+(?:(?:the|a|an)\s+)?(?:conference|meeting|event|workshop|flight)\b/i.test(suffix))return false;
    if(stay.test(row)||directQuote.test(before))return !excluded.test(before+leadingLabel)&&!negatedQuote.test(before)&&!trailingExclusion.test(suffix);
    const lineStart=authored.lastIndexOf('\n',match.index-1)+1;
    const previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
