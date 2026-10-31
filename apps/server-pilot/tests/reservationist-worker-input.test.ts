@@ -265,7 +265,7 @@ describe('reservationist worker input', () => {
     });
     expect(result.readiness).toBe('needs_clarification');
     const { buildReservationistReviewSummary } = await import('../src/trpc/routes/drafts.js');
-    const summary = buildReservationistReviewSummary(result) as { staffActions?: unknown[] };
+    const summary = buildReservationistReviewSummary({ ...result, version: 1 }) as { staffActions?: unknown[] };
     expect(summary.staffActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ reason: expect.stringContaining('room numbers or card details'), sourceKind: 'message' }),
     ]));
@@ -278,7 +278,21 @@ describe('reservationist worker input', () => {
       attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     });
-    expect(result.input.messages[0]!.text).toContain('Please do not\nsend the invoice.');
+    const text = result.input.messages[0]!.text;
+    expect(text).toContain('Please do not\nsend the invoice.');
+    const adapter: ModelAdapter = { invoke: vi.fn(async () => ({ modelId: 'gpt-6-luna', output: {
+      facts: [], tasks: [{ id: 'invoice', kind: 'existing_document', factIds: [], source: {
+        attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote: 'send the invoice.', view: 'html',
+      } }], unresolvedAsks: [],
+    }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } })) };
+    const resolve = vi.fn(async () => { throw new Error('must not resolve a refused invoice'); });
+    const factory = createReservationistDependencies({ adapter, admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: { resolveExistingDocument: resolve, authorizeExistingDocument: async () => null },
+    });
+    const output = await runReservationistRuntime(result.input, factory.dependencies);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(output.tasks[0]!.status).not.toBe('complete');
   });
 
   it.each([null, 'Please proceed.\nKind regards\nGuest', 'Reservation ABC123. Please send the invoice.\n> On Monday wrote:\n> Earlier request.'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
@@ -293,12 +307,13 @@ describe('reservationist worker input', () => {
     if (textBody?.includes('> On Monday')) expect(text.indexOf('Stay 12/11')).toBeLessThan(text.indexOf('> On Monday'));
     const sharedInvoice = textBody?.includes('Please send the invoice.');
     expect(text.split('Please send the invoice.')).toHaveLength(sharedInvoice ? 3 : 2);
-    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote });
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote,
+      ...(built.input.messages[0]!.sourceViews ? { view: 'html' } : {}) });
     const adapter: ModelAdapter = { invoke: vi.fn(async (request) => {
       expect(request.userPrompt).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
       return { modelId: 'gpt-6-luna', output: {
-        facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source(sharedInvoice ? 'Reservation ABC123. Please send the invoice.' : 'Reservation ABC123.') }],
-        tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source(sharedInvoice ? 'Reservation ABC123. Please send the invoice.' : 'Please send the invoice.') }], unresolvedAsks: [],
+        facts: [{ id: 'ref', kind: 'reservation_reference', value: 'ABC123', disclosure: 'guest', source: source('Reservation ABC123.') }],
+        tasks: [{ id: 'invoice', kind: 'existing_document', factIds: ['ref'], source: source('Please send the invoice.') }], unresolvedAsks: [],
       }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } };
     }) };
     const resolve = vi.fn(async () => { throw new Error('existing_document_source_unavailable'); });
@@ -309,6 +324,9 @@ describe('reservationist worker input', () => {
     const result = await runReservationistRuntime(built.input, factory.dependencies);
     expect(resolve).toHaveBeenCalledOnce();
     expect(result.tasks[0]!.status).toBe('needs_clarification');
+    if (built.input.messages[0]!.sourceViews) {
+      expect(result.tasks[0]!.requestSource?.start).toBeGreaterThanOrEqual(built.input.messages[0]!.sourceViews![1]!.start);
+    }
   });
 
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {

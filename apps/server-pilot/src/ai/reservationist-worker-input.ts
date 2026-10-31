@@ -8,6 +8,7 @@ import {
   type ReservationistAttachmentMetadata,
 } from './reservationist-attachment-input.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
+import { HTML_ALTERNATIVE_MARKER, type ReservationistMessageView } from './reservationist-message-view.js';
 
 /** Rows must be loaded by the server for one mailbox and thread. */
 export type ReservationistWorkerMessage = {
@@ -66,9 +67,9 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
 }
 
 /** Put both authored alternatives before either signature or quoted history. */
-function combineMessageViews(primary: string, alternative: string): string {
+function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
   const comparable = (text: string) => text.replace(/\s+/g, ' ').trim();
-  if (!alternative || comparable(primary) === comparable(alternative)) return primary;
+  if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
   const boundary = /^(?:[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$|[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)))/imu;
   const split = (text: string) => {
     const at = text.search(boundary);
@@ -76,14 +77,24 @@ function combineMessageViews(primary: string, alternative: string): string {
   };
   const [primaryBody, primaryTail] = split(primary);
   const [alternativeBody, alternativeTail] = split(alternative);
-  const sections = [primaryBody?.trim() ?? ''];
+  let text = '';
+  const sourceViews: ReservationistMessageView[] = [];
+  const add = (value: string, name?: ReservationistMessageView['name'], prefix = '') => {
+    if (!value) return;
+    if (text) text += '\n\n';
+    text += prefix;
+    const start = text.length;
+    text += value;
+    if (name) sourceViews.push({ name, start, end: text.length });
+  };
+  add(primaryBody?.trim() ?? '', 'plain');
   // Keep each authored view intact: deleting a repeated line can detach a negation or condition from the next line.
   if (alternativeBody?.trim() && comparable(primaryBody ?? '') !== comparable(alternativeBody))
-    sections.push(`[HTML alternative of the same message]\n${alternativeBody.trim()}`);
-  if (primaryTail?.trim()) sections.push(primaryTail.trim());
+    add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
+  if (primaryTail?.trim()) add(primaryTail.trim());
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
-    sections.push(`[HTML alternative context]\n${alternativeTail.trim()}`);
-  return sections.filter(Boolean).join('\n\n');
+    add(alternativeTail.trim(), undefined, '[HTML alternative context]\n');
+  return { text, ...(sourceViews.length === 2 ? { sourceViews } : {}) };
 }
 
 /** Separate inspection view: preserve CID positions and meaningful image descriptions. */
@@ -198,7 +209,7 @@ export async function buildReservationistWorkerInput(options: {
     id: row.id,
     at: new Date(at).toISOString(),
     direction: row.direction,
-    text: combineMessageViews(modelMessageText(row, normalized.get(row.id)!), row.textBody?.trim() && row.htmlBody
+    ...combineMessageViews(modelMessageText(row, normalized.get(row.id)!), row.textBody?.trim() && row.htmlBody
       ? modelMessageText({ ...row, textBody: null }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : ''),
     ...(row.subject ? { subject: maskCardNumbers(row.subject) } : {}),
     disclosure: row.disclosure,
