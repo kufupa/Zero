@@ -499,6 +499,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
     });
   });
 
+  it('does not leave a claimable run when generation creation fails', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId, parentMessageId } = await seedThread(db);
+      await expect(enqueueHmsCandidateRefresh({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: parentMessageId,
+        requestedByUserId: null as unknown as string,
+      })).rejects.toThrow();
+      const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+        eq(aiWorkflowRun.transportId, TRANSPORT_ID),
+        eq(aiWorkflowRun.threadId, threadId),
+        eq(aiWorkflowRun.runKind, 'candidate_draft'),
+      ));
+      expect(runs).toHaveLength(0);
+    });
+  });
+
   it('binds one generation when independent refresh callers race on one run', async () => {
     const left = openTestDbSession();
     const right = openTestDbSession();
