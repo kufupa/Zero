@@ -3,10 +3,17 @@ import { HINT_LABELS, PARTY_FIELDS, SOURCES, combinationKey, emailsIn, text, ver
 
 const ROLES = new Set(['outbound-recipient', 'outbound-sender', 'inbound-sender']);
 const DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const NOTE_FIELD_PATHS = {
+  recordView: 'recordView.details.fields',
+  stay360: 'stay360.details.cards[].fields',
+};
+const NOTE_PREVIEW_LIMIT = 256;
+const NOTE_PAGE_LIMIT = 50;
 const nameKey = value => text(value).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const bounded = (value, fallback, max) => Number.isFinite(value)
   ? Math.max(1, Math.min(max, Math.floor(value))) : fallback;
+const notePatternId = value => createHash('sha256').update(value, 'utf8').digest('hex');
 
 function normalizeQuery(input, options) {
   if (typeof input === 'string') {
@@ -38,6 +45,24 @@ function normalizeQuery(input, options) {
   const name = nameKey(value);
   if (!name) throw new TypeError('Name query must contain searchable characters.');
   return { type, role, roleDefaulted, normalized: name };
+}
+
+function normalizeNotePage(input) {
+  if (input == null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) throw new TypeError('notePage must be an object.');
+  const patternId = text(input.patternId);
+  if (patternId && !/^[a-f\d]{64}$/i.test(patternId)) {
+    throw new TypeError('notePage.patternId must be a note pattern ID from this query.');
+  }
+  let offset = 0;
+  if (input.offset != null) {
+    if (!Number.isSafeInteger(input.offset) || input.offset < 0) {
+      throw new TypeError('notePage.offset must be a non-negative safe integer.');
+    }
+    offset = input.offset;
+  }
+  return { patternId: patternId ? patternId.toLowerCase() : null,
+    offset, limit: bounded(input.limit, 10, NOTE_PAGE_LIMIT) };
 }
 
 function pmsEvidence(observation, outcome) {
@@ -217,6 +242,167 @@ function historicalHintResults(observations, matchedKeys, anchoredKeys, byAddres
   return result;
 }
 
+function historicalNoteResults(observations, matchedKeys, anchoredKeys, byAddress, queryType, countsBySource,
+  noteLimit, notePage, hasNativeAnchor) {
+  const matched = observations.filter(observation => matchedKeys.has(observation.confirmationKey));
+  const identityEligible = observation => anchoredKeys.has(observation.confirmationKey)
+    && observation.historicalIdentity?.nativeConfirmation === 'matched';
+  const eligible = matched.filter(identityEligible);
+  const eligibleKeys = new Set(eligible.map(item => item.confirmationKey));
+  const sources = Object.keys(NOTE_FIELD_PATHS);
+  const coverageBySource = Object.fromEntries(sources.map(source => [source, {
+    recorded: new Set(), nonblank: new Set(), blank: new Set(), missing: new Set(),
+    unavailable: new Set(), unknown: new Set(), valuesByConfirmation: new Map(),
+  }]));
+  const valuesByConfirmation = new Map();
+  const groups = new Map();
+  const entries = [];
+  const entryKeys = new Set();
+
+  for (const observation of matched) {
+    const confirmation = observation.confirmationKey;
+    const fields = observation.historicalNoteFields;
+    const incompleteSources = Array.isArray(fields?.incompleteSources) ? fields.incompleteSources : [];
+    const identityIsEligible = identityEligible(observation);
+    for (const source of sources) {
+      const sourceValues = fields?.[source];
+      const coverage = coverageBySource[source];
+      if (!identityIsEligible || !Array.isArray(sourceValues) || incompleteSources.includes(source)) {
+        coverage.unknown.add(confirmation);
+      }
+      if (!identityIsEligible || !Array.isArray(sourceValues)) continue;
+      if (!sourceValues.length && !incompleteSources.includes(source)) coverage.missing.add(confirmation);
+      const knownValues = new Set();
+      for (const value of sourceValues) {
+        if (typeof value !== 'string') {
+          coverage.unavailable.add(confirmation);
+          continue;
+        }
+        knownValues.add(value);
+        if (value.trim()) coverage.nonblank.add(confirmation);
+        else coverage.blank.add(confirmation);
+        if (!value.trim()) continue;
+
+        const patternId = notePatternId(value);
+        const group = groups.get(value) || {
+          text: value, patternId, confirmations: new Set(), entries: new Map(), fieldSources: new Set(),
+        };
+        group.confirmations.add(confirmation);
+        group.fieldSources.add(source);
+        const entry = group.entries.get(observation.observationId) || {
+          observation, fieldSources: new Set(),
+        };
+        entry.fieldSources.add(source);
+        group.entries.set(observation.observationId, entry);
+        groups.set(value, group);
+        const entryKey = JSON.stringify([observation.observationId, source, value]);
+        if (!entryKeys.has(entryKey)) {
+          entryKeys.add(entryKey);
+          entries.push({ text: value, patternId, observation, fieldSource: source });
+        }
+      }
+      if (knownValues.size) coverage.recorded.add(confirmation);
+      if (knownValues.size) {
+        const sourceValuesByConfirmation = coverage.valuesByConfirmation.get(confirmation) || new Set();
+        for (const value of knownValues) sourceValuesByConfirmation.add(value);
+        coverage.valuesByConfirmation.set(confirmation, sourceValuesByConfirmation);
+        const allValues = valuesByConfirmation.get(confirmation) || new Set();
+        for (const value of knownValues) allValues.add(value);
+        valuesByConfirmation.set(confirmation, allValues);
+      }
+    }
+  }
+
+  const sorted = [...groups.values()].sort((a, b) => b.confirmations.size - a.confirmations.size
+    || a.patternId.localeCompare(b.patternId));
+  const patterns = sorted.slice(0, noteLimit).map(group => ({
+    patternId: group.patternId,
+    textPreview: group.text.slice(0, NOTE_PREVIEW_LIMIT),
+    textTruncated: group.text.length > NOTE_PREVIEW_LIMIT,
+    textLength: group.text.length,
+    confirmationCount: group.confirmations.size,
+    pmsObservationCount: group.entries.size,
+    sourceOfBusinessCounts: countsBySource([...group.entries.values()].map(entry => ({ observation: entry.observation }))),
+    fieldSources: [...group.fieldSources].map(source => NOTE_FIELD_PATHS[source]),
+    ...(queryType !== 'name' ? { uncertainLinkConfirmationCount: [...group.confirmations].filter(key =>
+      (byAddress.get(key) || []).some(link => uncertainLink(link) || !hasNativeAnchor(link)))
+      .length } : {}),
+  }));
+
+  const conflictConfirmationCount = [...valuesByConfirmation.values()].filter(values => values.size > 1).length;
+  const coverage = {
+    countingUnit: 'distinct_observed_confirmations',
+    matchedConfirmationCount: matchedKeys.size,
+    identityEligibleConfirmationCount: eligibleKeys.size,
+    unverifiedMatchConfirmationCount: new Set(matched.filter(item => !identityEligible(item))
+      .map(item => item.confirmationKey)).size,
+    conflictingConfirmationCount: conflictConfirmationCount,
+    fieldSources: Object.fromEntries(sources.map(source => {
+      const item = coverageBySource[source];
+      const conflictingConfirmationCount = [...item.valuesByConfirmation.values()]
+        .filter(values => values.size > 1).length;
+      return [source, {
+        identityEligibleConfirmationCount: eligibleKeys.size,
+        recordedConfirmationCount: item.recorded.size,
+        nonblankConfirmationCount: item.nonblank.size,
+        blankConfirmationCount: item.blank.size,
+        missingFieldConfirmationCount: item.missing.size,
+        unavailableValueConfirmationCount: item.unavailable.size,
+        unknownFieldConfirmationCount: item.unknown.size,
+        conflictingConfirmationCount,
+      }];
+    })),
+  };
+
+  const result = { coverage, patternCount: sorted.length, patterns, patternsTruncated: sorted.length > noteLimit };
+  if (!notePage) return result;
+
+  entries.sort((a, b) => (a.observation.snapshotDate || '').localeCompare(b.observation.snapshotDate || '')
+    || (a.observation.sourceOfBusiness || '').localeCompare(b.observation.sourceOfBusiness || '')
+    || a.observation.observationId.localeCompare(b.observation.observationId)
+    || a.fieldSource.localeCompare(b.fieldSource) || a.patternId.localeCompare(b.patternId));
+  const filtered = notePage.patternId ? entries.filter(entry => entry.patternId === notePage.patternId) : entries;
+  const pageEntries = filtered.slice(notePage.offset, notePage.offset + notePage.limit);
+  const hasMore = notePage.offset + pageEntries.length < filtered.length;
+  result.page = {
+    requested: true,
+    patternId: notePage.patternId,
+    offset: notePage.offset,
+    limit: notePage.limit,
+    totalObservationCount: filtered.length,
+    hasMore,
+    nextOffset: hasMore ? notePage.offset + pageEntries.length : null,
+    textTruncated: false,
+    observations: pageEntries.map(({ text, patternId, observation, fieldSource }) => {
+      const addressSources = (byAddress.get(observation.confirmationKey) || []).map(({
+        address: _address, confirmationKey: _confirmationKey, ...addressSource
+      }) => ({
+        ...addressSource,
+        linkedPmsSnapshotIds: Array.from(addressSource.linkedPmsSnapshotIds || []),
+        linkedPmsObservationIds: Array.from(addressSource.linkedPmsObservationIds || []),
+        matchedQuery: true,
+      }));
+      return boundedEvidence({
+        patternId,
+        noteText: text,
+        textLength: text.length,
+        textTruncated: false,
+        sourceField: NOTE_FIELD_PATHS[fieldSource],
+        sourceOfBusiness: observation.sourceOfBusiness,
+        snapshotDate: observation.snapshotDate,
+        sourceType: observation.sourceType,
+        observationId: observation.observationId,
+        snapshotId: observation.snapshotId,
+        confirmationNumber: observation.confirmationNumber || null,
+        provenance: observation.provenance || null,
+        historicalIdentity: observation.historicalIdentity || null,
+        addressSources,
+      }, notePage.limit);
+    }),
+  };
+  return result;
+}
+
 function choiceStatus({ combination, entries }) {
   if (PARTY_FIELDS.some(field => text(combination[field]))) return 'has_recorded_choice';
   if (PARTY_FIELDS.every(field => combination[field] === '')) return 'all_party_fields_observed_blank';
@@ -244,6 +430,8 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
   const limit = bounded(options.limit, 25, 200);
   const evidenceLimit = bounded(options.evidenceLimit, 20, 100);
   const conflictLimit = bounded(options.conflictLimit, 25, 200);
+  const noteLimit = bounded(options.noteLimit, 10, 50);
+  const notePage = normalizeNotePage(options.notePage);
   const includeEvidence = options.includeEvidence === true || options.includeDetail === true;
   const matches = query.type === 'name' ? [] : memory.addressEvidence.filter(item => (
     item.role === query.role && (query.type === 'email'
@@ -360,6 +548,8 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     : new Set(matches.filter(hasNativeAnchor).map(item => item.confirmationKey));
   const historicalHints = historicalHintResults(observations, matchedKeys, anchoredKeys, byAddress, query.type, countsBySource,
     bounded(options.hintLimit, 25, 200), evidenceLimit, includeEvidence, hasNativeAnchor);
+  const historicalNotes = historicalNoteResults(observations, matchedKeys, anchoredKeys, byAddress, query.type,
+    countsBySource, noteLimit, notePage, hasNativeAnchor);
   return {
     propertyCode: memory.propertyCode, sourceOfBusinessFilter: SOURCES.filter(source => sources.includes(source.toLowerCase())),
     sourceOfBusinessCounts,
@@ -369,6 +559,6 @@ export function queryHmsBookingMemory(memory, queryInput, options = {}) {
     noRecordedPartyChoiceConfirmationCount: matchedKeys.size - withChoice.size,
     allBlankObservationConfirmationCount: allBlank.size, candidateCount: sorted.length, candidates,
     candidatesTruncated: sorted.length > limit, conflictConfirmationCount: conflicted.length,
-    conflicts, conflictsTruncated: conflicted.length > conflictLimit, historicalHints,
+    conflicts, conflictsTruncated: conflicted.length > conflictLimit, historicalHints, historicalNotes,
   };
 }

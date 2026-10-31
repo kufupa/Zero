@@ -12,6 +12,7 @@ const LABELS = {
   'a/r account': 'arAccount',
 };
 const labelOf = field => text(field?.label).replace(/:$/, '').trim().toLowerCase();
+const RESERVATION_NOTE_LABEL = 'reservation note / billing instructions';
 
 function historicalHintFields(result) {
   const recordFields = result?.recordView?.details?.fields;
@@ -27,6 +28,25 @@ function historicalHintFields(result) {
         typeof field?.value === 'string' || typeof field?.value === 'number' ? field.value : null),
     ])), incompleteSources },
   ]));
+}
+
+function historicalNoteFields(result) {
+  const recordFields = result?.recordView?.details?.fields;
+  const cards = result?.stay360?.details?.cards;
+  const sources = {
+    recordView: Array.isArray(recordFields) ? recordFields : null,
+    stay360: Array.isArray(cards) ? cards.flatMap(card => Array.isArray(card?.fields) ? card.fields : []) : null,
+  };
+  const incompleteSources = Array.isArray(cards) && cards.some(card => !Array.isArray(card?.fields))
+    ? ['stay360'] : [];
+  return {
+    ...Object.fromEntries(Object.entries(sources).map(([source, fields]) => [source,
+      fields && fields.filter(field => labelOf(field) === RESERVATION_NOTE_LABEL).map(field =>
+        typeof field?.value === 'string' ? field.value
+          : typeof field?.value === 'number' ? String(field.value) : null),
+    ])),
+    incompleteSources,
+  };
 }
 
 function historicalIdentity(result, key) {
@@ -178,6 +198,7 @@ export function buildHmsBookingMemory({
         snapshotId: metadata.snapshotId, snapshotDate: metadata.snapshotDate,
         sourceType: metadata.sourceType, provenance: result.provenance || null,
         historicalIdentity: historicalIdentity(result, key), historicalHints: historicalHintFields(result),
+        historicalNoteFields: historicalNoteFields(result),
         outcomes: outcomeVariants(result),
         pdfAttachmentIds: [...new Set((pdf.pdfAttachmentIds || []).map(text).filter(Boolean))],
         pdfProvenance: Object.fromEntries(['pdfRecordCount', 'labeledPdfCount',

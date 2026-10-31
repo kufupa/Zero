@@ -2,6 +2,9 @@
 
 const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
+const MUTATION_ACTION = /^(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|create|submit|autosave|amend|post)$/i;
+const hasWriteAction = (params) => [...params].some(([key, value]) =>
+  key.toLowerCase() === 'pageaction' && MUTATION_ACTION.test(value.trim()));
 const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
 const CLOUD_CARD_ENTRY_PATH = '/Vault/servlets/showCardEntryHandler';
 // On-prem Hotel Availability posts hotelAvail/; the Infor cloud build (HRCEN, 2026-10-27) posts rateshop/.
@@ -24,24 +27,28 @@ export function isAvailabilityReadRequest({ method, url }, origin) {
 }
 const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-export function shouldAbortReadOnlyRequest({ method, url }) {
+export function shouldAbortReadOnlyRequest({ method, url, postData }) {
   const requestMethod = String(method ?? '').toUpperCase();
-  if (!MUTATION_METHOD.test(requestMethod)) return false;
-  if (requestMethod !== 'POST') return true;
   let target;
   try {
     target = new URL(url);
   } catch {
-    return true;
+    return MUTATION_METHOD.test(requestMethod);
   }
+  // Cloud Guest Stay saves via OSRESV.HDR?pageaction=SAVE; the pathname alone
+  // looks like an ordinary record read. The same switch can appear in a form.
+  if (hasWriteAction(target.searchParams)) return true;
+  if (!MUTATION_METHOD.test(requestMethod)) return false;
+  if (requestMethod !== 'POST') return true;
   return (target.origin === CLOUD_VAULT_ORIGIN && target.pathname === CLOUD_CARD_ENTRY_PATH) ||
-    MUTATION_PATH.test(target.pathname);
+    MUTATION_PATH.test(target.pathname) ||
+    (typeof postData === 'string' && hasWriteAction(new URLSearchParams(postData)));
 }
 
 export async function installReadOnlyGuard(context) {
   await context.route('**/*', async (route) => {
     const request = route.request();
-    if (shouldAbortReadOnlyRequest({ method: request.method(), url: request.url() })) {
+    if (shouldAbortReadOnlyRequest({ method: request.method(), url: request.url(), postData: request.postData?.() })) {
       await route.abort();
       return;
     }
