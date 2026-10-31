@@ -163,7 +163,7 @@ async function guaranteeDraft(page, propertyCode) {
     const profileId = String(data.arprofileid ?? '').trim();
     const accountId = unique('araccountid') ? String(data.araccountid ?? '').trim() : '';
     const guestId = String(data.guestid ?? '').trim();
-    if (Boolean(profileId) !== Boolean(accountId) || (guestId && profileId)) return null;
+    if (Boolean(profileId) !== Boolean(accountId)) return null;
     return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
       guestId, ar: profileId ? { accountId, profileId } : null };
   }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS });
