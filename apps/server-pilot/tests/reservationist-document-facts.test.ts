@@ -4,6 +4,7 @@ import {
   guestDocumentFacts,
 } from '../src/ai/reservationist-document-facts.js';
 import { describe, expect, it } from 'vitest';
+import { HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 const source = {
   attachmentId: 'a',
   sourceHash: 'a'.repeat(64),
@@ -27,6 +28,24 @@ const fact = {
   source: span,
 };
 describe('document facts', () => {
+  it('anchors yearless HTML dates to their complete authored alternative', () => {
+    const plain = 'Please quote.\nKind regards\nGuest';
+    const html = 'Please quote. Stay 12/11 to 14/11.';
+    const text = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
+    const start = text.indexOf('Stay 12/11'), quote = 'Stay 12/11 to 14/11';
+    const dateSource = { attachmentId: 'message:m', sourceHash: 'b'.repeat(64), disclosure: 'guest' as const,
+      pages: [text], pageCount: 1, causalMessage: { at: '2026-10-31T12:00:00.000Z', direction: 'inbound' as const },
+      sourceViews: [{ name: 'plain' as const, start: 0, end: plain.length },
+        { name: 'html' as const, start: text.length - html.length, end: text.length }] };
+    const dateSpan = { attachmentId: dateSource.attachmentId, sourceHash: dateSource.sourceHash, page: 1,
+      quote, start, end: start + quote.length };
+    const plan = { facts: [{ id: 'dates', kind: 'dates' as const, value: { arrival: '12/11', departure: '14/11' },
+      disclosure: 'guest' as const, source: dateSpan }],
+      tasks: [{ id: 'quote', kind: 'quote' as const, factIds: ['dates'], source: dateSpan }], unresolvedAsks: [] };
+    expect(validateDocumentPlan(plan, [dateSource]).facts[0]!.value).toEqual({ arrival: '2026-11-12', departure: '2026-11-14' });
+    expect(() => validateDocumentPlan(plan, [{ ...dateSource, sourceViews: [dateSource.sourceViews[0]!,
+      { ...dateSource.sourceViews[1]!, end: text.length - 1 }] }])).toThrow('Invalid document source views');
+  });
   it('normalizes decimal strings exactly without conflating ADR and nightly', () => {
     expect(normalizeDocumentDecimal('1 234,50')).toBe(123450);
     expect(normalizeDocumentDecimal('1234.50')).toBe(123450);

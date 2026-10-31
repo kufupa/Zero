@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { reservationistCitedView, validReservationistMessageViews, type ReservationistMessageView } from './reservationist-message-view.js';
 
 export type DocumentDisclosure = 'guest' | 'staff_only';
 /** Private extracted pages; derived Office pages are explicitly bound to their PDF rendering. */
@@ -11,6 +12,7 @@ export type DocumentSource = {
   pageCount: number;
   /** Server-bound original email time for the established staff date convention. */
   causalMessage?: {at:string;direction:'inbound'|'outbound'};
+  sourceViews?: readonly ReservationistMessageView[];
   rendering?: {method:'gotenberg_libreoffice';originalSourceHash:string;derivedPdfSHA256:string;pageProvenance:'derived_pdf';textSHA256:string};
 };
 const identifier = z.string().min(1).max(128);
@@ -186,7 +188,8 @@ function normalizedDate(input: string, yearContext?: number): string {
 function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource,verification:ValidatedDocumentFact['verification']):{value:{arrival:string;departure:string};convention:NonNullable<ValidatedDocumentFact['convention']>}|undefined{
  const raw=fact.value;
  if(raw.yearContext!==undefined||[raw.arrival,raw.departure].some(value=>/\b\d{4}\b/.test(value)))return;
- const causal=source.causalMessage,page=source.pages?.[fact.source.page-1],quote=fact.source.quote;
+ const causal=source.causalMessage,originalPage=source.pages?.[fact.source.page-1],quote=fact.source.quote;
+ const page=originalPage && reservationistCitedView(originalPage,source.sourceViews,fact.source.start,fact.source.end);
  if(verification!=='text_verified'||!source.attachmentId.startsWith('message:')||causal?.direction!=='inbound'||!Number.isFinite(Date.parse(causal.at))||!page||!quote)throw new Error('Yearless stay requires original causal email');
  const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  const authored=page.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
@@ -375,6 +378,8 @@ export function validateDocumentPlan(
       !/^[a-f0-9]{64}$/.test(source.rendering.derivedPdfSHA256) ||
       source.rendering.textSHA256 !== createHash('sha256').update(JSON.stringify(source.pages)).digest('hex')
     )) throw new Error('Invalid derived document rendering');
+    if (source.sourceViews && (!source.attachmentId.startsWith('message:') || !source.pages || source.pageCount !== 1 ||
+        !validReservationistMessageViews(source.pages[0]!, source.sourceViews))) throw new Error('Invalid document source views');
     bySource.set(source.attachmentId, source);
   }
   const ids = new Set<string>();
@@ -415,7 +420,8 @@ export function validateDocumentPlan(
     }
     const derived = fact.kind==='dates'?nextOccurrenceStay(fact,original,verification):undefined;
     if(derived){const tasks=parsed.data.tasks.filter(task=>task.factIds.includes(fact.id));if(!tasks.some(task=>task.kind==='quote')||tasks.some(task=>task.kind!=='quote'&&(derived.convention.rule==='centurion_explicit_nights_v1'||!(task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??'')))))throw new Error('Yearless convention requires quote task');}
-    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,original.pages?.[fact.source.page-1]),...(derived?{convention:derived.convention}:{}) } : fact;
+    const page=original.pages?.[fact.source.page-1];
+    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,page&&reservationistCitedView(page,original.sourceViews,fact.source.start,fact.source.end)),...(derived?{convention:derived.convention}:{}) } : fact;
     const amountCents =
       fact.kind === 'rate_claim' || fact.kind === 'payment_claim'
         ? normalizeDocumentDecimal(fact.value.amount)
