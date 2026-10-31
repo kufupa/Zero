@@ -47,22 +47,18 @@ it('keeps a metadata-only unread attachment visible to staff without a file hash
   expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
 });
 
-it('loads review items from the server draft list for the selected message', async () => {
+it('loads the current review for the selected message', async () => {
   const action = { id:'request:shuttle',kind:'unanswered_question',text:'Can we arrange a shuttle?',
     sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
     blockingQuote:false,status:'open' };
-  const list = vi.fn().mockResolvedValue({threads:[{id:'old',replyToMessageId:'mail-0'},{id:'current',replyToMessageId:'mail-1'}],nextPageToken:null});
-  const get = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
-  expect(await bindStaffActions({list,get,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
-  expect(get).toHaveBeenCalledOnce();
-  expect(get).toHaveBeenCalledWith({id:'current'});
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
+  expect(await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread-1',messageId:'mail-1'});
 });
 
-it('does not revive older questions when the newest draft has none', async () => {
-  const list = vi.fn().mockResolvedValue({threads:[{id:'new',replyToMessageId:'mail-1'},{id:'old',replyToMessageId:'mail-1'}]});
-  const get = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[]}});
-  expect(await bindStaffActions({list,get,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[]});
-  expect(get).toHaveBeenCalledOnce();
+it('does not use a review for another message', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-0',reviewSummary:{staffActions:[]}});
+  expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
 });
 
 describe('HRDAV native room and board maps', () => {

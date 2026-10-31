@@ -806,45 +806,22 @@ export type BoundStaffActions =
   | { kind: 'ready'; actions: ReservationistStaffAction[] };
 
 export async function bindStaffActions(args: {
-  list?: (input: { threadId: string; limit?: number }) => Promise<unknown>;
-  get?: (input: { id: string }) => Promise<unknown>;
+  query?: (input: { threadId: string; messageId: string }) => Promise<unknown>;
   threadId?: string;
   messageId?: string;
 }): Promise<BoundStaffActions> {
-  if (!args.threadId?.trim()) {
+  if (!args.threadId?.trim() || !args.messageId?.trim()) {
     return { kind: 'unavailable', reason: 'Actions for this email are not ready yet. Select it again.' };
   }
-  if (!args.list && !args.get) {
+  if (!args.query) {
     return { kind: 'unavailable', reason: 'Email actions cannot be loaded from this pane yet. Refresh the pane and try again.' };
   }
   try {
-    if (args.list) {
-      const listed = await args.list({ threadId: args.threadId, limit: 20 });
-      const rows = Array.isArray(listed)
-        ? listed
-        : listed && typeof listed === 'object' && Array.isArray((listed as { threads?: unknown }).threads)
-          ? (listed as { threads: unknown[] }).threads
-          : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
-          ? (listed as { drafts: unknown[] }).drafts
-          : [];
-      for (const row of rows) {
-        if (args.messageId && (!row || typeof row !== 'object' || (row as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
-        let source = row;
-        const id = row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
-          ? (row as { id: string }).id
-          : '';
-        const hasSummary = (value: unknown) => value && typeof value === 'object' &&
-          (Boolean((value as { reviewSummary?: unknown }).reviewSummary) || Array.isArray((value as { staffActions?: unknown }).staffActions));
-        if (!hasSummary(source) && id && args.get) {
-          source = await args.get({ id });
-          if (args.messageId && (!source || typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
-        }
-        // The server lists newest first. A newer empty summary means older tasks are stale.
-        if (hasSummary(source)) return { kind: 'ready', actions: readStaffActions(source) };
-      }
-      return { kind: 'ready', actions: [] };
-    }
-    return { kind: 'ready', actions: [] };
+    const source = await args.query({ threadId: args.threadId, messageId: args.messageId });
+    if (source == null) return { kind: 'ready', actions: [] };
+    if (typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)
+      return { kind: 'unavailable', reason: 'The email review changed. Select it again.' };
+    return { kind: 'ready', actions: readStaffActions(source) };
   } catch (error) {
     return { kind: 'unavailable', reason: rejectionReason(error) };
   }
@@ -1864,6 +1841,7 @@ type StaffQuoteClient = {
 type DraftsClient = {
   list?: { query: (input: { threadId: string; limit?: number }) => Promise<unknown> };
   get?: { query: (input: { id: string }) => Promise<unknown> };
+  reviewForMessage?: { query: (input: { threadId: string; messageId: string }, options?: StaffQuoteCallOptions) => Promise<unknown> };
 };
 
 function staffQuoteCallOptions(
@@ -1928,6 +1906,12 @@ export function staffQuoteFromTrpc(trpc: unknown): {
         return route;
       },
     }),
-    drafts: row.drafts ?? {},
+    drafts: new Proxy(row.drafts ?? {}, {
+      get(target, property) {
+        const route = Reflect.get(target, property, target);
+        return property === 'reviewForMessage'
+          ? mailboxStaffQuoteQuery(route as DraftsClient['reviewForMessage'], mailbox) : route;
+      },
+    }),
   };
 }

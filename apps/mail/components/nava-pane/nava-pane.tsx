@@ -886,8 +886,7 @@ export function NavaPane({
       if (source.kind !== 'ready') return;
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
       void bindStaffActions({
-        list: staff.drafts.list?.query,
-        get: staff.drafts.get?.query,
+        query: staff.drafts.reviewForMessage?.query,
         threadId: source.source.threadId,
         messageId: source.source.messageId,
       }).then((actions) => {

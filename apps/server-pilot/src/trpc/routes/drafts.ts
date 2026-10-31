@@ -1206,6 +1206,26 @@ export const draftsRouter = tRouter({
     return toDraftWire(r, false, await loadDraftReviewSummary(db, r));
   }),
 
+  /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
+  reviewForMessage: mailboxProcedure
+    .input(z.object({ threadId: z.string(), messageId: z.string() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb(), transportId = ctx.activeTransportId;
+      await requireThreadForTransport(db, input.threadId, transportId);
+      const [match] = await db.select({ draft: mailDraft }).from(aiWorkflowRun)
+        .innerJoin(mailDraft, and(eq(mailDraft.generationId, aiWorkflowRun.generationId),
+          eq(mailDraft.transportId, aiWorkflowRun.transportId), eq(mailDraft.threadId, aiWorkflowRun.threadId)))
+        .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
+          eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
+          eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded'),
+          eq(mailDraft.replyToMessageId, input.messageId), eq(mailDraft.isSent, false),
+          inArray(mailDraft.status, ['active', 'candidate'])))
+        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)).limit(1);
+      if (!match) return null;
+      return { replyToMessageId: match.draft.replyToMessageId,
+        reviewSummary: await loadDraftReviewSummary(db, match.draft) };
+    }),
+
   /**
    * Bind an explicit human review of the current AI draft to one send
    * payload. The token is intentionally opaque and is re-read at send and
