@@ -73,13 +73,7 @@ function groupFromStayAsk(
       stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;
   } else {
     childCount =
-      childAges.length > 0
-        ? childAges.length
-        : stay.children === 0
-          ? 0
-          : rooms === 1 && typeof stay.children === 'number'
-            ? stay.children
-            : null;
+      stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;
   }
   return {
     arrival: stay.arrivalDate,

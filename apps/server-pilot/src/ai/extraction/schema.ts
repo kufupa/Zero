@@ -124,7 +124,9 @@ const mailExtractionObjectSchema = z.object({
             .min(0)
             .max(9)
             .nullable()
-            .describe('Children in EACH room. Zero only when explicitly none; null when room allocation is unknown.'),
+            .describe(
+              'Children in EACH room. Under the HRCEN convention, an ordinary adult-only request with no children mentioned has zero children. Otherwise use zero only when explicitly none; null when room allocation is unknown.',
+            ),
           childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),

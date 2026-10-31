@@ -275,7 +275,7 @@ export function QuoteStayStep({
   session: QuoteSession;
   stays: Array<{ id: string; rows: StayGroupRequirement[] }>;
   stayReady: boolean;
-  roomTotals: { rooms: number; guests: number };
+  roomTotals: { rooms: number; guests: number | null };
   header: StaffQuoteHeader;
   mealPlanForStay: (stayId: string, rows: StayGroupRequirement[]) => QuoteBoard | 'all';
   setMealPlanFilters: Dispatch<SetStateAction<Record<string, QuoteBoard | 'all'>>>;
@@ -344,7 +344,7 @@ export function QuoteStayStep({
       ))}
       {session.groups.length ? (
         <p className="text-center text-[12.5px] font-semibold text-[#475569]">
-          {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}
+          {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests === null ? 'guest count incomplete' : `${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}`}
         </p>
       ) : null}
       <div className="flex flex-col gap-1">

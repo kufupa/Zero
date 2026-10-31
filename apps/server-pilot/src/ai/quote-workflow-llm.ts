@@ -636,6 +636,8 @@ export function mapLlmDecision(
         departureDate: 'missing',
         quantity: 'missing',
         adults: 'missing',
+        childCount: 'missing',
+        childrenTotal: 'missing',
         board: 'defaulted',
       },
     });

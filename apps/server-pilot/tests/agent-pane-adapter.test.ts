@@ -182,6 +182,30 @@ describe('agentDecisionToLunaAnalysis', () => {
     });
   });
 
+  it('does not infer a per-room count from a partial age list when the stay total spans rooms', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 4,
+            children: 2,
+            rooms: 2,
+            childAges: [6],
+          },
+        }),
+        selection,
+      ),
+    );
+    expect(parsed.groups[0]).toMatchObject({ childCount: null, childrenTotal: 2, childAges: [6] });
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      childCount: null,
+      childrenAges: [6],
+      fields: { childCount: 'missing', childAges: 'missing' },
+    });
+  });
+
   it('preserves a supplied per-room adult allocation and child ages', () => {
     const parsed = lunaAnalysisSchema.parse(
       agentDecisionToLunaAnalysis(
