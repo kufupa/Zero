@@ -54,7 +54,8 @@ describe('document facts', () => {
   });
   it.each(['Please quote. Stay 13/11 to 15/11.\nKind regards\nGuest',
     'Please quote accommodation:\n13/11 to 15/11.',
-    'Please quote accommodation:\nDates: 13/11 to 15/11.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
+    'Please quote accommodation:\nDates: 13/11 to 15/11.',
+    'Please quote accommodation 13/11 to 15/11, no other rooms are needed.'])('rejects a conflicting single stay range in the other email alternative', (plain) => {
     const html='Please quote. Stay 12/11 to 14/11.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,

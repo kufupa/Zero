@@ -352,7 +352,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const excluded=/\b(?:do not|don['’]t|never|not|without|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking)\b/i;
    const row=authored.slice(start,end);
-   if(stay.test(row))return !excluded.test(row);
+   if(stay.test(row))return !excluded.test(authored.slice(start,match.index!));
    const lineStart=authored.lastIndexOf('\n',match.index!-1)+1;
    const previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
    const previous=authored.slice(previousStart,lineStart-1).trim();
