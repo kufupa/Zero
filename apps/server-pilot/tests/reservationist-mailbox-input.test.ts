@@ -5,6 +5,7 @@ import type { DB } from '../src/db/client.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { loadReservationistMailboxInput } from '../src/ai/reservationist-mailbox-input.js';
 import { draftSourceMessage } from '../src/ai/reservationist-draft-source.js';
+import { reservationistMessageAt } from '../src/ai/reservationist-worker-input.js';
 
 function setup() {
   const now = Date.now(), deadline = new Date(now + 180_000);
@@ -13,6 +14,7 @@ function setup() {
     htmlBody: null as string | null, subject: null, toAddresses: direction === 'outbound' ? ['Guest <guest@example.invalid>'] : [],
     ccAddresses: [], bccAddresses: [], receivedAt: new Date(now + minutes * 60_000),
     sentAt: direction === 'outbound' ? new Date(now + minutes * 60_000) : null,
+    pop3Uidl: null as string | null, sourceProvenance: null as Record<string, unknown> | null,
     arrivedAt: new Date(now + minutes * 60_000), createdAt: new Date(now + minutes * 60_000),
   });
   const state = {
@@ -34,7 +36,7 @@ function setup() {
         if ('fromAddress' in selection && !('transportId' in selection)) return state.rows.filter((row) => row.id === state.binding.triggerId);
         if ('transportId' in selection) {
           const cutoff = state.rows.find((r) => r.id === state.binding.triggerId)!.arrivedAt;
-          return state.rows.filter((row) => row.direction === 'outbound' ? row.sentAt && row.sentAt <= cutoff : row.arrivedAt <= cutoff);
+          return state.rows.filter((row) => { const at = reservationistMessageAt(row); return at && at <= cutoff; });
         }
         return state.rows;
       }

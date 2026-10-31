@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, lte, not, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, attachment, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
 import { hashAuthorizedArtifactBytes, recheckAuthorizedArtifactIdentity, type AttachmentLocator, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
 import type { S3Storage } from '../storage/s3.js';
 import { loadLiveThreadStateVersion } from './drafts.js';
-import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
+import { MESSAGE_ARRIVED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 import { deriveReplyToAddress } from './workflows/candidate-draft.js';
 import { admitReservationistAttachment, type ReservationistOfficeConverter } from './reservationist-attachment-input.js';
 import { buildReservationistWorkerInput, reservationistDisclosure, type ReservationistWorkerAttachment, type ReservationistWorkerMessage } from './reservationist-worker-input.js';
@@ -64,10 +64,13 @@ export async function loadReservationistMailboxInput(options: {
       direction: message.direction, fromAddress: message.fromAddress, toAddresses: message.toAddresses,
       ccAddresses: message.ccAddresses, bccAddresses: message.bccAddresses, textBody: message.textBody, htmlBody: message.htmlBody,
       subject: message.subject, receivedAt: message.receivedAt, sentAt: message.sentAt,
+      pop3Uidl: message.pop3Uidl, sourceProvenance: message.sourceProvenance,
       arrivedAt: MESSAGE_ARRIVED_AT, createdAt: message.createdAt })
       .from(message).where(and(eq(message.threadId, binding.threadId), eq(message.transportId, binding.transportId),
         or(and(eq(message.direction, 'inbound'), sql`${MESSAGE_ARRIVED_AT} <= ${triggerAt.toISOString()}::timestamp`),
-          and(eq(message.direction, 'outbound'), isNotNull(message.sentAt), lte(message.sentAt, triggerAt)))))
+          and(eq(message.direction, 'outbound'), or(
+            and(isNotNull(message.pop3Uidl), not(OUTLOOK_SYNCED), sql`${MESSAGE_ARRIVED_AT} <= ${triggerAt.toISOString()}::timestamp`),
+            and(or(isNull(message.pop3Uidl), OUTLOOK_SYNCED), isNotNull(message.sentAt), lte(message.sentAt, triggerAt)))))))
       .orderBy(asc(MESSAGE_ARRIVED_AT), asc(message.id)).limit(65);
     if (rows.length > 64 || !rows.some((row) => row.id === trigger.id)) throw new Error('mailbox_input_context_unavailable');
     const ids = rows.map((row) => row.id);

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
-import { isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
+import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -503,7 +503,9 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
     if (guarantee && (clean(actual.display) !== clean(matches[0].label) || clean(actual.submitted) !== clean(value))) {
       throw new Error('DROPDOWN_READBACK_MISMATCH');
     }
-    return { outcome: 'updated_unsaved', field, requested: value, actual };
+    const profileProofToken = field === 'adults' ? await currentVerifiedLabtestProfileToken(page) : null;
+    return { outcome: 'updated_unsaved', field, requested: value, actual,
+      ...(profileProofToken ? { profileProofToken } : {}) };
   });
 }
 
@@ -622,9 +624,11 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
         }) || names.reduce((sum, name) => sum + ageBandCounts[name], 0) !== requested.length) {
       throw new Error('CHILD_COUNT_READBACK_MISMATCH');
     }
+    const profileProofToken = await currentVerifiedLabtestProfileToken(page);
     return { outcome: 'updated_unsaved', requestedChildAges: requested, actualChildAges: native.childAges,
       previousChildAges: initial.childAges, ageBandCounts, nativeAgeBandCounts: nativeCounts ?? null,
-      nativeAgeBandCountsPresent: Object.hasOwn(native, 'childCategoryCounts') };
+      nativeAgeBandCountsPresent: Object.hasOwn(native, 'childCategoryCounts'),
+      ...(profileProofToken ? { profileProofToken } : {}) };
   });
 }
 

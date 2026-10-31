@@ -12,7 +12,7 @@ const id=z.string().min(1).max(512),hash=z.string().regex(/^[a-f0-9]{64}$/);
 const span=z.object({attachmentId:id,sourceHash:hash,page:z.literal(1),start:z.number().int().nonnegative(),end:z.number().int().positive(),quote:z.string().min(1).max(4096)}).strict();
 export const operationalDraftProofSchema=z.object({task:z.object({id,kind:z.literal('question'),required:z.literal(true),source:span}).strict(),binding:z.object({requestId:id,ownerRef:id,threadId:id,propertyCode:z.literal('HRCEN'),triggerMessageId:id,causalAt:z.string().datetime()}).strict(),answer:z.object({kind:z.enum(['parking','check_in','check_out']),value:z.union([z.boolean(),z.string().min(1).max(32)]),messageId:id,sourceHash:hash,start:z.number().int().nonnegative(),end:z.number().int().positive(),quote:z.string().min(1).max(4096),disclosure:z.literal('guest')}).strict(),authority:z.literal('causal_guest_mail')}).strict();
 export type OperationalDraftProof=z.infer<typeof operationalDraftProofSchema>;
-export type OperationalDraftMessageRow={id:string;transportId:string;threadId:string|null;direction:string;arrivedAt?:Date|null;createdAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]};
+export type OperationalDraftMessageRow={id:string;transportId:string;threadId:string|null;direction:string;arrivedAt?:Date|null;createdAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;pop3Uidl?:string|null;sourceProvenance?:Record<string,unknown>|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]};
 type Binding=OperationalDraftProof['binding'];
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 /** Guest disclosure is recomputed from the scoped actual trigger and original outbound To header. */
@@ -49,7 +49,9 @@ export function deriveOperationalDraftSources(plan:RuntimePlan,result:Pick<Reser
    const answer={kind:topic,value:fact.value as string|boolean,messageId:message.id,sourceHash:sha(message.text),start:match.index!,end:match.index!+match[0].length,quote:match[0],disclosure:'guest' as const};
    try{validateReservationistMailAnswers([answer],input);return[answer];}catch{return[];}
   });
-  if(candidates.length!==1)continue;const answer=candidates[0]!;
+  // MIME alternatives may repeat the same independently validated answer.
+  if(message.sourceViews?candidates.length!==message.sourceViews.length||message.sourceViews.some(view=>candidates.filter(answer=>answer.start>=view.start&&answer.end<=view.end).length!==1):candidates.length!==1)continue;
+  const answer=candidates[0];if(!answer)continue;
   const proof=operationalDraftProofSchema.parse({task:parsed.data,binding,answer,authority:'causal_guest_mail'});
   if(!isDeepStrictEqual(fact,operationalDraftFact(proof))||result.tasks.filter(t=>isDeepStrictEqual(t,expectedTask(proof))).length!==1)continue;
   proofs.push(proof);

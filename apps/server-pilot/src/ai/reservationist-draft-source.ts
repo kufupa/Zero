@@ -33,7 +33,7 @@ const sourceSchema=z.object({version:z.literal(1),runId:id,generationId:id,trans
 }).strict();
 export type ReservationistDraftSource=z.infer<typeof sourceSchema>;
 export function draftSourceHash(value:unknown):string{return createHash('sha256').update(canonicalJson(value)).digest('hex');}
-export function draftSourceMessage(row:{id:string;direction:string;arrivedAt?:Date|null;createdAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]}){
+export function draftSourceMessage(row:{id:string;direction:string;arrivedAt?:Date|null;createdAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;pop3Uidl?:string|null;sourceProvenance?:Record<string,unknown>|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]}){
  const text=renderReservationistMessage(row).text;
  return {id:row.id,at:reservationistMessageAt(row)!.toISOString(),direction:row.direction as 'inbound'|'outbound',sourceHash:createHash('sha256').update(text,'utf8').digest('hex'),identityHash:draftSourceHash({subject:row.subject,fromAddress:row.fromAddress,toAddresses:row.toAddresses,ccAddresses:row.ccAddresses,bccAddresses:row.bccAddresses,textBody:row.textBody,htmlBody:row.htmlBody})};
 }

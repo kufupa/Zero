@@ -40,7 +40,7 @@ describe('reservationist worker input', () => {
   it('uses mailbox arrival for chronological context and excludes later messages and files', async () => {
     const result = await build([
       row('first', 1, { textBody: 'Earlier guest request' }),
-      row('staff', 2, { direction: 'outbound', disclosure: 'staff_only', textBody: 'Staff replied.' }),
+      row('staff', 2, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(2), textBody: 'Staff replied.' }),
       row('current', 4, { textBody: 'Please proceed.' }),
       row('late', 0, { arrivedAt: at(5), createdAt: at(5), receivedAt: at(0), textBody: 'Arrived after the request.' }),
     ], [
@@ -50,10 +50,46 @@ describe('reservationist worker input', () => {
     expect(result.input.messages.map((message) => message.id)).toEqual(['first', 'staff', 'current']);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['earlier-file']);
     expect(result.input.authorizedArtifacts).toHaveLength(1);
+    await expect(build([row('current', 4, { arrivedAt: null })])).rejects.toThrow('worker_intake_clock_invalid');
+  });
+
+  it('uses sent time for outbound context and excludes queued or later sends', async () => {
+    const { input } = await build([
+      row('queued', 1, { direction: 'outbound', disclosure: 'staff_only', sentAt: null, receivedAt: at(1), textBody: 'Queued, not sent.' }),
+      row('sent-before', 4, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(2), receivedAt: at(5), arrivedAt: at(5), createdAt: at(1), textBody: 'Actually sent before the guest request.' }),
+      row('sent-after', 1, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(5), receivedAt: at(1), arrivedAt: at(1), createdAt: at(1), textBody: 'Actually sent after the guest request.' }),
+      row('current', 4, { textBody: 'Current guest request.' }),
+    ]);
+    expect(input.messages.map((message) => message.id)).toEqual(['sent-before', 'current']);
+    expect(input.messages[0]!.at).toBe(at(2).toISOString());
+  });
+
+  it('uses observed POP3 arrival, not a backdated email Date header', async () => {
+    const { input } = await build([
+      row('imported-before', 1, { direction: 'outbound', pop3Uidl: 'before', sentAt: null }),
+      row('imported-after', 5, { direction: 'outbound', pop3Uidl: 'after', sentAt: at(1) }),
+      row('outlook-sent-before', 5, { direction: 'outbound', pop3Uidl: 'synced', sourceProvenance: { canonicalContentVersion: '1' }, sentAt: at(2) }),
+      row('current', 4),
+    ]);
+    expect(input.messages.map((message) => message.id)).toEqual(['imported-before', 'outlook-sent-before', 'current']);
+    expect(input.messages[0]!.at).toBe(at(1).toISOString());
+  });
+
+  it('includes earlier timestamp ties without ordering them, but refuses trigger-time ties', async () => {
+    const earlierAt = at(1);
+    const { input } = await build([
+      row('earlier-b', 1, { arrivedAt: earlierAt }),
+      row('earlier-a', 1, { arrivedAt: earlierAt }),
+      row('current', 4),
+    ]);
+    const tied = input.messages.filter((message) => message.id.startsWith('earlier-'));
+    expect(tied.map((message) => message.id).sort()).toEqual(['earlier-a', 'earlier-b']);
+    expect(tied.map((message) => message.at)).toEqual([earlierAt.toISOString(), earlierAt.toISOString()]);
+    await expect(build([row('same-time', 4), row('current', 4)])).rejects.toThrow('worker_intake_order_ambiguous');
   });
 
   it('filters a proven signature image but keeps one referenced by the current subject', async () => {
-    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\ncid:logo' })], [
+    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\nhttps://hotel.example.invalid\ncid:logo' })], [
       { id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'logo', disclosure: 'guest' },
     ]);
     expect(harmless.ignoredSignatures).toBe(1);
@@ -81,6 +117,41 @@ describe('reservationist worker input', () => {
     })], [{ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
     expect(referencedByPlain.ignoredSignatures).toBe(0);
     expect(referencedByPlain.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
+  });
+
+  it('keeps a business image labelled Rates after the signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote one double room.\nKind regards,\nRates:\ncid:rates',
+    })], [{ id: 'rates', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rates', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
+  });
+
+  it('keeps colon-captioned business images after signoff', async () => {
+    const image = { id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' as const };
+    for (const caption of ['Quote:', 'Rooming list:']) {
+      const result = await build([row('current', 4, { textBody: `Please quote one room.\nKind regards\n${caption}\ncid:offer` })], [image]);
+      expect(result.ignoredSignatures).toBe(0);
+      expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+    }
+  });
+
+  it('keeps quoted Gmail HTML images after the sender signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote one room.\nKind regards\nGuest',
+      htmlBody: '<p>Please quote one room.</p><p>Kind regards</p><p>Guest</p><div class="gmail_quote"><img src="cid:offer"></div>',
+    })], [{ id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+  });
+
+  it('keeps an HTML heading-labelled business image after the signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: null,
+      htmlBody: '<p>Please quote one double room.</p><p>Kind regards</p>Guest<h2>Rates:</h2><img src="cid:rates">',
+    })], [{ id: 'rates', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rates', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
   });
 
   it('keeps an inline image requested only by the HTML alternative', async () => {
