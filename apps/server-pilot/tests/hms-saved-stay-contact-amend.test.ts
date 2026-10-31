@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   contactAmendOutcome,
   installLabtestContactSaveRouteChain,
+  matchesLabtestContactAmendDraft,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
 import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence.mjs';
@@ -77,6 +78,40 @@ describe('saved Labtest Booker contact amendment guards', () => {
     }
   });
 
+  it('accepts an isolated Ext form-level Booker edit before the loaded record model synchronizes', () => {
+    for (const [field, formName, value] of contactCases) {
+      const staged = {
+        values: { ...baseline.values, [formName]: value },
+        data: { ...baseline.data },
+        formDirty: true,
+        recordDirty: false,
+        dirtyFields: [formName],
+        modifiedFields: [],
+      };
+
+      // Ext updates the form field first; the exact full-record request matcher
+      // remains the only authorization for dispatch.
+      expect(staged.data[formName]).toBe(baseline.data[formName]);
+      expect(matchesLabtestContactAmendDraft(baseline, staged, field, value)).toBe(true);
+
+      const collateralValue = {
+        ...staged,
+        values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+      };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralValue, field, value)).toBe(false);
+
+      const collateralRecord = {
+        ...staged,
+        data: { ...staged.data, udfchar02: 'unexpected record-model change' },
+      };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralRecord, field, value)).toBe(false);
+
+      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'udfchar02'] };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralDirtyField, field, value)).toBe(false);
+      expect(matchesLabtestContactAmendDraft(baseline, { ...staged, dirtyFields: [] }, field, value)).toBe(false);
+    }
+  });
+
   it('rejects collateral, duplicate, extra, wrong-frame, and wrong-target requests', () => {
     const [field, formName, value] = contactCases[0];
     const match = (body: URLSearchParams, overrides: {
@@ -121,12 +156,14 @@ describe('saved Labtest Booker contact amendment guards', () => {
 
   it.skipIf(!chromiumBinary)(routeTestName, async () => {
     const arrivals: string[] = [];
+    let protectedHeaderArrivals = 0;
     let delayedSendArrivals = 0;
     let approvedReachedServer = false;
     let approvedResponseReleased = false;
     let releaseApprovedResponse: (() => void) | undefined;
     const server: Server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+      if (request.method === 'GET' && pathname === SAVE_PATH) protectedHeaderArrivals += 1;
       if (request.method === 'POST' && pathname === '/web/base/send-email') delayedSendArrivals += 1;
       if (request.method === 'POST' && pathname === SAVE_PATH) {
         arrivals.push('POST');
@@ -176,7 +213,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       let armed = true;
       let candidates = 0;
       let dispatches = 0;
-      let blockedOnPage = 0;
+      let blockedRequests = 0;
       let blockedAfterDispatch = 0;
       chain = await installLabtestContactSaveRouteChain(page, {
         frame: pageFrame,
@@ -192,7 +229,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
         onCandidate: () => { candidates += 1; },
         onDispatch: () => { dispatches += 1; armed = false; },
         onBlocked: () => {
-          blockedOnPage += 1;
+          blockedRequests += 1;
           if (dispatches > 0) blockedAfterDispatch += 1;
         },
       });
@@ -207,6 +244,14 @@ describe('saved Labtest Booker contact amendment guards', () => {
           return 'blocked';
         }
       }, intent);
+      const readProtectedHeader = (targetPage: Page) => targetPage.evaluate(async () => {
+        try {
+          const response = await fetch('/web/base/OSRESV.HDR');
+          return response.status;
+        } catch {
+          return 'blocked';
+        }
+      });
       const send = (targetPage: Page) => targetPage.evaluate(async () => {
         try {
           const response = await fetch('/web/base/send-email', {
@@ -231,7 +276,12 @@ describe('saved Labtest Booker contact amendment guards', () => {
       await otherPage.goto(origin);
       const unexpectedDuringResponse = await post(otherPage, 'unexpected-during-response');
       expect(unexpectedDuringResponse).toBe('blocked');
-      expect(blockedAfterDispatch).toBe(1);
+      const unexpectedSendDuringResponse = await send(otherPage);
+      expect(unexpectedSendDuringResponse).toBe('blocked');
+      const unexpectedProtectedRead = await readProtectedHeader(page);
+      expect(unexpectedProtectedRead).toBe('blocked');
+      expect(protectedHeaderArrivals).toBe(0);
+      expect(blockedAfterDispatch).toBe(3);
       expect(releaseApprovedResponse).toBeTypeOf('function');
       releaseApprovedResponse?.();
       const httpStatus = await approvedResponseStatus;
@@ -253,16 +303,18 @@ describe('saved Labtest Booker contact amendment guards', () => {
       expect(await post(page)).toBe('blocked');
       await chain.close();
       scope.close();
-      // close() removes only the one-request context exception. The used page
-      // retains its writer-local deny route; other pages use the shared guard.
+      // The exact exception is disarmed, but page and context deny routes stay
+      // installed until their page/context closes.
       expect(await send(page)).toBe('blocked');
       expect(delayedSendArrivals).toBe(0);
       expect(await post(otherPage)).toBe('blocked');
+      expect(await send(otherPage)).toBe('blocked');
+      expect(delayedSendArrivals).toBe(0);
       expect(arrivals).toEqual(['POST']);
       expect(passedFence).toBe(1);
       expect(candidates).toBe(1);
       expect(dispatches).toBe(1);
-      expect(blockedOnPage).toBeGreaterThanOrEqual(3);
+      expect(blockedRequests).toBeGreaterThanOrEqual(8);
     } finally {
       releaseApprovedResponse?.();
       scope?.close();

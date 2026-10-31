@@ -11,6 +11,7 @@ contain guest data.
 | Tool | Input |
 | --- | --- |
 | `read` | `confirmation`; optional `guestName`, `arrivalDate` (`YYYY-MM-DD`) and `view` (`record`, the default, or `shallow`) |
+| `prepareCancellation` | Optional `requestedScope` (`whole_stay`, `specific_room`, or `unspecified`); uses the current full read |
 | `amendNote` | `expected` with `confirmation`, `guestId`, `arrival`, `departure`, `roomType`, `ratePlan`, `note` and `newNote` |
 | `amendContact` | The same saved `expected` record without `newNote`, plus `field` (`bookerName` or `bookerContact`) and synthetic `value` |
 | `openCancel` | The same `expected` record fields, without `newNote` |
@@ -26,6 +27,13 @@ A retry after an unverified single-candidate hint worked on one page. Retry
 after a multi-candidate ambiguity has not been verified; start a fresh session.
 A native dialog interrupts an in-progress read, seals the session, and is left
 untouched; reopen in a fresh session.
+
+After a full `read`, `prepareCancellation` returns a timestamped projection
+for staff review. It keeps the requested scope separate from the room facts,
+and does not open the cancellation workflow or commit a cancellation. The
+projection uses the session's own copy of the read, so caller edits to the
+returned read do not alter it. Read again in a new session when fresh facts are
+needed. See [cancellation preflight](guest-stay-cancel-preflight.md).
 
 Writes require the currently read Reserved record and delegate to the Labtest
 actions. The caller must identify the exact authorized Proof Labtest stay and

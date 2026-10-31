@@ -96,6 +96,14 @@ export function contactAmendOutcome({
   return possiblyDispatched ? 'uncertain' : 'not_dispatched';
 }
 
+/** Accept the staged form value before Ext synchronizes the loaded record model. */
+export function matchesLabtestContactAmendDraft(before, after, field, value) {
+  if (!Object.hasOwn(CONTACT_FIELDS, field) || typeof value !== 'string') return false;
+  const fieldName = CONTACT_FIELDS[field].name;
+  return after?.values?.[fieldName] === value &&
+    unchangedLabtestRecord(before, after, { [fieldName]: value });
+}
+
 /**
  * Install the writer-local route chain after the existing context read-only guard
  * and page request fence. The page handler always falls back for the one exact
@@ -127,14 +135,25 @@ export async function installLabtestContactSaveRouteChain(page, {
   const isSameFrame = (request) => {
     try { return request.frame() === frame; } catch { return false; }
   };
-  const reportReadOnlyGuardBlock = (request) => {
+  const denyUnapprovedContextRequest = async (route, request) => {
+    const method = String(request.method() || '').toUpperCase();
+    let sendEmailPath = false;
     try {
-      if (shouldAbortReadOnlyRequest({
+      sendEmailPath = /send|email|mail/i.test(new URL(request.url()).pathname);
+    } catch { /* Invalid write targets are still rejected by method below. */ }
+    let sharedGuardWouldBlock = false;
+    try {
+      sharedGuardWouldBlock = shouldAbortReadOnlyRequest({
         method: request.method(),
         url: request.url(),
         postData: request.postData?.(),
-      })) observeBlocked(request);
+      });
     } catch { /* Diagnostics cannot weaken the route decision. */ }
+    if (!SAFE_READ_METHODS.has(method) || sendEmailPath || sharedGuardWouldBlock) {
+      observeBlocked(request);
+      return route.abort();
+    }
+    return route.fallback();
   };
   const contextRoute = async (route) => {
     const request = route.request();
@@ -146,11 +165,9 @@ export async function installLabtestContactSaveRouteChain(page, {
       onDispatch?.(request);
       return route.continue();
     }
-    // This later writer route falls back to the shared read-only guard. Mirror
-    // its pure predicate here so blocked writes from context pages without this
-    // page-local route also invalidate a clean awaiting-readback result.
-    reportReadOnlyGuardBlock(request);
-    return route.fallback();
+    // Deny unexpected mutations and send/email paths throughout this context,
+    // including popup/other-page requests the page-local route cannot see.
+    return denyUnapprovedContextRequest(route, request);
   };
   const pageRoute = async (route) => {
     const request = route.request();
@@ -162,6 +179,13 @@ export async function installLabtestContactSaveRouteChain(page, {
     }
     const method = String(request.method() || '').toUpperCase();
     const pageAction = url.searchParams.get('pageaction') || '';
+    if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === SAVE_PATH.toLowerCase()) {
+      // The lifetime fence rejects every non-approved request to this path,
+      // including GET/HEAD reads. Count before falling through so a blocked
+      // record refresh after dispatch cannot look like a clean save response.
+      observeBlocked(request);
+      return route.fallback();
+    }
     const safeRead = SAFE_READ_METHODS.has(method) && url.pathname &&
       !DANGEROUS_PATH.test(url.pathname) &&
       !(url.pathname === SAVE_PATH && /^(SAVE|DELETE)$/i.test(pageAction));
@@ -188,8 +212,8 @@ export async function installLabtestContactSaveRouteChain(page, {
   let contextInstalled = false;
   let pageInstalled = false;
   try {
-    // Registered after installReadOnlyGuard(context): this admits only the exact
-    // candidate object; every other request falls through to the normal guard.
+    // Registered after installReadOnlyGuard(context): only the exact candidate
+    // may continue; unapproved mutations/send paths are denied context-wide.
     await context.route('**/*', contextRoute);
     contextInstalled = true;
     await page.route('**/*', pageRoute);
@@ -207,10 +231,8 @@ export async function installLabtestContactSaveRouteChain(page, {
     disarm: () => { active = false; },
     async close() {
       active = false;
-      // Keep the page-local denial route for the page lifetime. The context
-      // exception is temporary; removing the page guard would reopen delayed
-      // send/email POSTs that the shared context guard does not classify.
-      await context.unroute('**/*', contextRoute).catch(() => {});
+      // Keep both deny routes for the context lifetime. Only the one exact
+      // candidate was ever eligible for the temporary context exception.
     },
   };
 }
@@ -374,10 +396,11 @@ export async function amendLabtestContact(page, expected = {}, {
 
     const after = await bounded(currentLabtestRecord(page, expected));
     const changedForm = await bounded(snapshotLabtestRecord(frame));
-    const changes = { [spec.name]: nextValue };
+    // Ext's form values may update before its loaded record.data; the save
+    // request matcher below is the authoritative full-record check.
     if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
-        !blankLabtestParties(changedForm) || !unchangedLabtestRecord(baseline, changedForm, changes) ||
-        changedForm?.values?.[spec.name] !== nextValue || changedForm?.data?.[spec.name] !== nextValue ||
+        !blankLabtestParties(changedForm) ||
+        !matchesLabtestContactAmendDraft(baseline, changedForm, fieldKey, nextValue) ||
         blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('AMEND_DRAFT_CHANGED');
     }
