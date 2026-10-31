@@ -42,6 +42,26 @@ function maskCellValue(value: CellValue, displayText: string): unknown {
   return maskIncomingCardNumbers(displayText);
 }
 
+function maskCellRepresentations(value: CellValue, displayText: string) {
+  const hasComparableRawText = typeof value === 'string' || typeof value === 'number';
+  const rawText = hasComparableRawText ? String(value) : displayText;
+  const maskedRaw = maskIncomingCardNumbers(rawText);
+  const maskedDisplay = maskIncomingCardNumbers(displayText);
+  const rawChanged = hasComparableRawText && maskedRaw !== rawText;
+  const displayChanged = maskedDisplay !== displayText;
+  const safeValue = maskCellValue(value, displayText);
+
+  // XLSX numeric display can round a PAN candidate into a non-Luhn string. If
+  // only one representation is recognized, carry its redaction to both outputs.
+  if (rawChanged && !displayChanged && typeof safeValue === 'string') {
+    return { value: safeValue, displayText: safeValue };
+  }
+  if (displayChanged && !rawChanged) {
+    return { value: maskedDisplay, displayText: maskedDisplay };
+  }
+  return { value: safeValue, displayText: maskedDisplay };
+}
+
 function safeRowCells(
   workbook: Workbook,
   cells: Cell[],
@@ -61,10 +81,11 @@ function safeRowCells(
       return { columnNumber: cell.col, value: redacted, displayText: redacted };
     }
     const requiresReview = spansCells && /\d/.test(displayText);
+    const representations = maskCellRepresentations(cell.value, displayText);
     return {
       columnNumber: cell.col,
-      value: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : maskCellValue(cell.value, displayText),
-      displayText: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : maskIncomingCardNumbers(displayText),
+      value: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : representations.value,
+      displayText: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : representations.displayText,
     };
   });
 }
