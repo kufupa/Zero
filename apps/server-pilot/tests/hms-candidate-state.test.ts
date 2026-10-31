@@ -508,7 +508,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
         threadId,
         triggerMessageId: parentMessageId,
         requestedByUserId: null as unknown as string,
-      })).rejects.toThrow();
+      })).rejects.toThrow(/ai_draft_generation/i);
       const runs = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
         eq(aiWorkflowRun.transportId, TRANSPORT_ID),
         eq(aiWorkflowRun.threadId, threadId),
