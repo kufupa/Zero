@@ -28,6 +28,8 @@ import {
   searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker,
 } from './guest-stay-room-rate.mjs';
 import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
+import { searchLabtestPreimage } from './labtest-preimage.mjs';
+import { saveNewLabtestStay } from './guest-stay-save.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -255,7 +257,7 @@ async function viewQuoteSnapshot(page, request) {
 }
 
 /** Execute one call; the caller retains the page and memory between calls. */
-export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, request = {}) {
+export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage } = {}, request = {}) {
   const id = request?.id ?? null;
   const tool = request?.tool ?? null;
   try {
@@ -287,13 +289,17 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker, selectGuestStayRatePlan,
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
       selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
-      closeHotelAvailability, readQuote, viewQuoteSnapshot,
+      closeHotelAvailability, readQuote, viewQuoteSnapshot, saveNewLabtestStay,
     };
     if (!Object.hasOwn(tools, tool)) return { id, tool, outcome: 'input_gap', issue: 'unknown_tool' };
     const action = tools[tool];
     if (!page) return { id, tool, outcome: 'input_gap', issue: 'page_required' };
     if (unexpectedNativeDialogs.has(page) && tool !== 'viewQuoteSnapshot') {
       return { id, tool, outcome: 'execution_failure', issue: 'UNEXPECTED_DIALOG' };
+    }
+    if (tool === 'saveNewLabtestStay' && (!labtestPreimage || labtestPreimage.outcome !== 'clear' ||
+        request.preimageId !== labtestPreimage.preimageId)) {
+      return { id, tool, outcome: 'input_gap', issue: 'CURRENT_LABTEST_PREIMAGE_REQUIRED' };
     }
     let result;
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
@@ -332,7 +338,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
       'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
       'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
-      'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
+      'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness', 'saveNewLabtestStay',
     ].includes(tool)) {
       result = await action(page, request, request.options);
     } else {
@@ -356,7 +362,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue } = {}, r
 export const runPartyTool = runBookingLookupTool;
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export async function withBookingLookupSession(operation, { memory, memorySources, headless = true } = {}) {
+export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates } = {}) {
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
@@ -365,12 +371,22 @@ export async function withBookingLookupSession(operation, { memory, memorySource
   }
   return withCenturionStay360Page(async (page) => {
     await installReadOnlyGuard(page.context());
+    let labtestPreimage;
+    if (labtestDates !== undefined) {
+      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {});
+      if (labtestPreimage.outcome !== 'clear') {
+        const error = new Error('LABTEST_PREIMAGE_NOT_CLEAR');
+        error.phase = 'labtest_preimage';
+        error.labtestPreimage = labtestPreimage;
+        throw error;
+      }
+    }
     try { await openNewGuestStay(page); }
     catch (error) {
       if (error && typeof error === 'object') error.phase = 'new_guest_stay';
       throw error;
     }
-    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue };
+    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
     try {
@@ -382,10 +398,10 @@ export async function withBookingLookupSession(operation, { memory, memorySource
   }, { headless });
 }
 
-const usage = 'Usage: node booking-lookup-session.mjs --jsonl\n' +
+const usage = 'Usage: node booking-lookup-session.mjs --jsonl [--labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD]\n' +
   'Tools: queryBookingMemory, searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchOrganization, ' +
   'selectOrganization, searchArAccount, selectArAccount, readGuestStay, guest/profile/form tools, ' +
-  'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, quit. Legacy names remain available.\n' +
+  'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, saveNewLabtestStay, quit. Legacy names remain available.\n' +
   'JSONL results contain private data; redirect them to a private location.\n';
 
 const writeJsonLine = (value) => new Promise((done, fail) => {
@@ -397,10 +413,15 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     process.stdout.write(usage);
     return;
   }
-  if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');
+  if (args[0] !== '--jsonl' || (args.length !== 1 &&
+      (args.length !== 5 || args[1] !== '--labtest-arrival' || args[3] !== '--labtest-departure'))) {
+    throw new Error('EXPECTED_JSONL');
+  }
+  const labtestDates = args.length === 5 ? { arrival: args[2], departure: args[4] } : undefined;
   process.umask(0o077);
-  await withBookingLookupSession(async ({ runTool, memoryStatus, memoryIssue }) => {
-    await writeJsonLine({ event: 'ready', property: PROPERTY, memory: { status: memoryStatus, ...(memoryIssue ? { issue: memoryIssue } : {}) } });
+  await withBookingLookupSession(async ({ runTool, memoryStatus, memoryIssue, labtestPreimage }) => {
+    await writeJsonLine({ event: 'ready', property: PROPERTY, memory: { status: memoryStatus, ...(memoryIssue ? { issue: memoryIssue } : {}) },
+      ...(labtestPreimage ? { labtestPreimage } : {}) });
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
     try {
       for await (const line of lines) {
@@ -420,14 +441,15 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     } finally {
       lines.close();
     }
-  });
+  }, { labtestDates });
 }
 
 export function main() {
   return runBookingLookupSessionCli().catch((error) => {
     const message = String(error?.message || error).split('\n')[0];
     const issue = /^[A-Z][A-Z0-9_]{2,100}$/.test(message) ? message : 'SESSION_FAILED';
-    process.stderr.write(`${JSON.stringify({ outcome: 'execution_failure', phase: error?.phase ?? 'startup', issue })}\n`);
+    process.stderr.write(`${JSON.stringify({ outcome: 'execution_failure', phase: error?.phase ?? 'startup', issue,
+      ...(error?.labtestPreimage ? { labtestPreimage: error.labtestPreimage } : {}) })}\n`);
     process.exitCode = 1;
   });
 }
