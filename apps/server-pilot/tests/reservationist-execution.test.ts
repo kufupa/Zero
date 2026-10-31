@@ -172,6 +172,20 @@ it('cross-binds source admissions to runtime scope and never omits unreadable bu
  const scoped={...input,authorizedArtifacts:[{attachmentId:'doc',sourceHash:'a'.repeat(64)}]};const result=await runReservationistRuntime(scoped,make().dependencies);expect(result.tasks).toHaveLength(1);expect((result as any).sourceRecoveries).toEqual([{kind:'attachment_manual',reason:'unreadable',sourceRef:'doc',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'message',mimeType:'application/pdf',signatureNoise:false,disclosure:'staff_only'}]);expect(result.readiness).toBe('needs_clarification');expect(result.textBody).not.toContain('source_review');
  await expect(runReservationistRuntime({...scoped,authorizationScope:{ownerRef:'foreign',threadId:'thread'}},make().dependencies)).rejects.toThrow(/scope/);
 });
+it.each(['combined','task_first','batched'] as const)('keeps an unread current attachment visible when %s finds no text task',async(mode)=>{
+ const metadata={attachmentId:'sheet',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',sizeBytes:100,sourceHash:'a'.repeat(64),disclosure:'guest' as const,inline:false};
+ const admission={status:'manual_required' as const,reason:'unsupported_business_attachment',metadata,draftReady:false as const};
+ const model={...adapter([]),reserveCalls:vi.fn(async()=>{})};
+ const admitted=mode==='batched'?Array.from({length:9},(_,i)=>{const text=`Supporting note ${i}`,body=Buffer.from(text),sourceHash=createHash('sha256').update(body).digest('hex'),attachmentId=`note-${i}`,metadata={attachmentId,messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'text/plain',sizeBytes:body.length,sourceHash,disclosure:'guest' as const};return{status:'admitted' as const,reason:'readable',metadata,source:{attachmentId,sourceHash,disclosure:'guest' as const,pages:[text],pageCount:1},bytes:{body,sha256:sourceHash},draftReady:false as const};}):[];
+ const factory=createReservationistDependencies({adapter:model,extractionMode:mode==='batched'?'combined':mode,admissions:[...admitted,admission],header,converter:{url:'unused'},services:{}});
+ const scoped={...input,messages:[{...input.messages[0],text:'Please see attached.'}],authorizedArtifacts:[...admitted.map(item=>item.metadata),metadata],requiredTaskKinds:[],requiredAskSpans:[]};
+ const result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('needs_clarification');expect(result.tasks).toEqual([]);expect(result.textBody).toBe('');
+ expect(result.sourceRecoveries).toContainEqual(expect.objectContaining({sourceRef:'sheet',sourceHash:metadata.sourceHash,sourceKind:'attachment',messageId:'message',reason:'unsupported_business_attachment'}));
+ const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
+ const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
+ expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:'rooms.xlsx: This attachment format could not be read.'}));
+});
 it('does not render a selected offer for contradictory guest dates or restricted facts',async()=>{
  const model=adapter([{id:'q',kind:'quote',factIds:['dates']}]);
  const text='Arrival 2026-10-01 departure 2026-10-03';const {createHash}=await import('node:crypto');const body=Buffer.from(text),hash=createHash('sha256').update(body).digest('hex');
