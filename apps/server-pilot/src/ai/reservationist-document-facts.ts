@@ -405,7 +405,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const target=[value.arrival,value.departure].join('/');
  const groupPair=(view:string,range:string[])=>{
   const text=authoredText(view),stays=ranges(text);
-  if(stays.length!==1)return;
+  if(uniquePairs(stays.map(pair)).length!==1)return;
   const groups=[...text.matchAll(new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
   if(groups.length!==1)return;
   const group=groups[0]!,before=text.slice(Math.max(text.lastIndexOf('\n',group.index!-1),text.lastIndexOf('.',group.index!-1))+1,group.index);

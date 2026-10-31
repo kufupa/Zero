@@ -150,8 +150,12 @@ describe('document facts', () => {
     const validate=()=>validateDocumentPlan(plan,[dateSource]);
     if(conflict)expect(validate).toThrow('Conflicting alternate stay dates');else expect(validate().facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
   });
-  it.each(['\n','\n\n'])('keeps the same explicit group arrival valid across alternatives', (separator) => {
-    const plain=`25 guests arriving on 11 November 2026${separator}Accommodation required from 10 to 16 November 2026.`,html='Stay 11 to 16 November 2026.';
+  it.each([
+    ['\n', 'Accommodation required from 10 to 16 November 2026.'],
+    ['\n\n', 'Accommodation required from 10 to 16 November 2026.'],
+    ['\n', 'Accommodation required for 6 nights from 10 November 2026 to 16 November 2026.'],
+  ])('keeps the same explicit group arrival valid across alternatives', (separator,stay) => {
+    const plain=`25 guests arriving on 11 November 2026${separator}${stay}`,html='Stay 11 to 16 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
