@@ -32,8 +32,8 @@ const sourceSchema=z.object({version:z.literal(1),runId:id,generationId:id,trans
 }).strict();
 export type ReservationistDraftSource=z.infer<typeof sourceSchema>;
 export function draftSourceHash(value:unknown):string{return createHash('sha256').update(canonicalJson(value)).digest('hex');}
-export function draftSourceMessage(row:{id:string;direction:string;receivedAt:Date|null;sentAt:Date|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]}){
- return {id:row.id,at:(row.direction==='inbound'?row.receivedAt:row.sentAt)!.toISOString(),direction:row.direction as 'inbound'|'outbound',sourceHash:createHash('sha256').update(row.textBody??row.htmlBody??'','utf8').digest('hex'),identityHash:draftSourceHash({subject:row.subject,fromAddress:row.fromAddress,toAddresses:row.toAddresses,ccAddresses:row.ccAddresses,bccAddresses:row.bccAddresses})};
+export function draftSourceMessage(row:{id:string;direction:string;arrivedAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]}){
+ return {id:row.id,at:(row.arrivedAt??(row.direction==='inbound'?row.receivedAt:row.sentAt))!.toISOString(),direction:row.direction as 'inbound'|'outbound',sourceHash:createHash('sha256').update(row.textBody??row.htmlBody??'','utf8').digest('hex'),identityHash:draftSourceHash({subject:row.subject,fromAddress:row.fromAddress,toAddresses:row.toAddresses,ccAddresses:row.ccAddresses,bccAddresses:row.bccAddresses,textBody:row.textBody,htmlBody:row.htmlBody})};
 }
 function validate(value:unknown):ReservationistDraftSource{
  const source=sourceSchema.parse(value),ids=new Set(source.messages.map(m=>m.id));

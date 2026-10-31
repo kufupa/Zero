@@ -46,13 +46,14 @@ import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
+import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
+import { and, eq, desc, getTableColumns, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -891,8 +892,8 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  assertReservationistResultFreshForAction(result,input.now);
  const causalAt=metrics.reservationistDraftSource.causalAt,cutoff=Date.parse(causalAt);
  if(!Number.isFinite(cutoff)||(input.now??new Date()).getTime()<cutoff)throw new Error('reservationist_draft_source_time_invalid');
- const sourceMessages=await input.db.select().from(message).where(and(eq(message.transportId,input.transportId),eq(message.threadId,input.draft.threadId!)));
- const causal=sourceMessages.filter(row=>{const date=row.direction==='inbound'?row.receivedAt:row.sentAt;return date&&date.getTime()<=cutoff;}).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
+ const sourceMessages=await input.db.select({...getTableColumns(message),arrivedAt:MESSAGE_ARRIVED_AT}).from(message).where(and(eq(message.transportId,input.transportId),eq(message.threadId,input.draft.threadId!)));
+ const causal=sourceMessages.filter(row=>(row.arrivedAt??row.createdAt).getTime()<=cutoff).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
  const saved=metrics.reservationistDraftSource;
  const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));

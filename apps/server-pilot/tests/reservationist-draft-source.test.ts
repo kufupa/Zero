@@ -1,10 +1,15 @@
 import {afterEach,expect,it,vi} from 'vitest';
-import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
+import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,draftSourceMessage,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
 import {prepareReservationistChannelBookingSync} from '../src/ai/reservationist-pending-action.js';
 import {validateDocumentPlan} from '../src/ai/reservationist-document-facts.js';
 import {createHash} from 'node:crypto';
 const source={version:1 as const,runId:'run',generationId:'generation',transportId:'owner',propertyCode:'HRCEN',threadId:'thread',requestedByUserId:'user',triggerMessageId:'trigger',causalAt:'2026-10-05T01:00:00.000Z',resultDigest:'e'.repeat(64),messages:[{id:'trigger',at:'2026-10-05T01:00:00.000Z',direction:'inbound' as const,sourceHash:'a'.repeat(64),identityHash:'b'.repeat(64)}],attachments:[]};
 it('seals exact bounded source scope and accepts only its unchanged live contract',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,source)).not.toThrow();});
+it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
+ const row={id:'trigger',direction:'inbound',arrivedAt:new Date('2026-10-05T01:00:00.000Z'),receivedAt:new Date('2026-10-01T01:00:00.000Z'),sentAt:null,textBody:'Please quote.',htmlBody:'<p>Please quote.</p>',subject:null,fromAddress:'guest@example.invalid',toAddresses:['hotel@example.invalid'],ccAddresses:[],bccAddresses:[]};
+ const original=draftSourceMessage(row),changed=draftSourceMessage({...row,htmlBody:'<p>Different dates.</p>'});
+ expect(original.at).toBe(row.arrivedAt.toISOString());expect(changed.sourceHash).toBe(original.sourceHash);expect(changed.identityHash).not.toBe(original.identityHash);
+});
 it.each(['transportId','threadId','requestedByUserId','triggerMessageId'] as const)('rejects foreign %s',key=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,[key]:'foreign'})).toThrow();});
 it('rejects changed text, incomplete and malformed source snapshots',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,messages:[{...source.messages[0]!,sourceHash:'c'.repeat(64)}]})).toThrow();for(const value of [null,{version:1}, {...receipt,extra:true},{...receipt,digest:'0'.repeat(64)}])expect(()=>assertReservationistDraftSource(value,source)).toThrow();});
 it('rejects noncausal messages, missing trigger and unknown attachment ownership',()=>{expect(()=>sealReservationistDraftSource({...source,messages:[{...source.messages[0]!,at:'2026-10-06T01:00:00.000Z'}]})).toThrow();expect(()=>sealReservationistDraftSource({...source,messages:[]})).toThrow();expect(()=>sealReservationistDraftSource({...source,attachments:[{attachmentId:'a',messageId:'foreign',s3Key:'attachments/foreign/a',mimeType:'application/pdf',sizeBytes:10,sourceHash:'d'.repeat(64),inline:false}]})).toThrow();});
