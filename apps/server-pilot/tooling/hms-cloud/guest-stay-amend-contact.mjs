@@ -162,6 +162,13 @@ export async function installLabtestContactSaveRouteChain(page, {
     }
     const method = String(request.method() || '').toUpperCase();
     const pageAction = url.searchParams.get('pageaction') || '';
+    if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === SAVE_PATH.toLowerCase()) {
+      // The lifetime fence rejects every non-approved request to this path,
+      // including GET/HEAD reads. Count before falling through so a blocked
+      // record refresh after dispatch cannot look like a clean save response.
+      observeBlocked(request);
+      return route.fallback();
+    }
     const safeRead = SAFE_READ_METHODS.has(method) && url.pathname &&
       !DANGEROUS_PATH.test(url.pathname) &&
       !(url.pathname === SAVE_PATH && /^(SAVE|DELETE)$/i.test(pageAction));

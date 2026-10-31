@@ -121,12 +121,14 @@ describe('saved Labtest Booker contact amendment guards', () => {
 
   it.skipIf(!chromiumBinary)(routeTestName, async () => {
     const arrivals: string[] = [];
+    let protectedHeaderArrivals = 0;
     let delayedSendArrivals = 0;
     let approvedReachedServer = false;
     let approvedResponseReleased = false;
     let releaseApprovedResponse: (() => void) | undefined;
     const server: Server = createServer((request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+      if (request.method === 'GET' && pathname === SAVE_PATH) protectedHeaderArrivals += 1;
       if (request.method === 'POST' && pathname === '/web/base/send-email') delayedSendArrivals += 1;
       if (request.method === 'POST' && pathname === SAVE_PATH) {
         arrivals.push('POST');
@@ -176,7 +178,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       let armed = true;
       let candidates = 0;
       let dispatches = 0;
-      let blockedOnPage = 0;
+      let blockedRequests = 0;
       let blockedAfterDispatch = 0;
       chain = await installLabtestContactSaveRouteChain(page, {
         frame: pageFrame,
@@ -192,7 +194,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
         onCandidate: () => { candidates += 1; },
         onDispatch: () => { dispatches += 1; armed = false; },
         onBlocked: () => {
-          blockedOnPage += 1;
+          blockedRequests += 1;
           if (dispatches > 0) blockedAfterDispatch += 1;
         },
       });
@@ -207,6 +209,14 @@ describe('saved Labtest Booker contact amendment guards', () => {
           return 'blocked';
         }
       }, intent);
+      const readProtectedHeader = (targetPage: Page) => targetPage.evaluate(async () => {
+        try {
+          const response = await fetch('/web/base/OSRESV.HDR');
+          return response.status;
+        } catch {
+          return 'blocked';
+        }
+      });
       const send = (targetPage: Page) => targetPage.evaluate(async () => {
         try {
           const response = await fetch('/web/base/send-email', {
@@ -231,7 +241,10 @@ describe('saved Labtest Booker contact amendment guards', () => {
       await otherPage.goto(origin);
       const unexpectedDuringResponse = await post(otherPage, 'unexpected-during-response');
       expect(unexpectedDuringResponse).toBe('blocked');
-      expect(blockedAfterDispatch).toBe(1);
+      const unexpectedProtectedRead = await readProtectedHeader(page);
+      expect(unexpectedProtectedRead).toBe('blocked');
+      expect(protectedHeaderArrivals).toBe(0);
+      expect(blockedAfterDispatch).toBe(2);
       expect(releaseApprovedResponse).toBeTypeOf('function');
       releaseApprovedResponse?.();
       const httpStatus = await approvedResponseStatus;
@@ -262,7 +275,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       expect(passedFence).toBe(1);
       expect(candidates).toBe(1);
       expect(dispatches).toBe(1);
-      expect(blockedOnPage).toBeGreaterThanOrEqual(3);
+      expect(blockedRequests).toBeGreaterThanOrEqual(4);
     } finally {
       releaseApprovedResponse?.();
       scope?.close();
