@@ -120,6 +120,8 @@ describe('document facts', () => {
     ['Stay 12/11 to 14/11. Stay 28/12 to 02/01.', 'Stay 12/11 to 14/11. Stay 28/12 to 02/01.'],
     ['Stay 12/11 to 14/11. Stay 12/11 to 14/11.', 'Stay 12/11 to 14/11.'],
     ['Stay 12/11 to 14/11, booking reference 2027.', 'Stay 12/11 to 14/11.'],
+    ['Please quote rooms 12/11 to 14/11 for the conference 13/11 to 14/11.', 'Stay 12/11 to 14/11.'],
+    ['Stay 12/11 to 14/11. Stay 10 January 2027 to 12 January 2027.', 'Stay 12/11 to 14/11. Stay 10 January to 12 January.'],
   ])('accepts matching dates despite rollover, repeats or a reference', (plain,html) => {
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='Stay 12/11 to 14/11',start=text.lastIndexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
@@ -130,6 +132,15 @@ describe('document facts', () => {
   });
   it('does not use a footer group arrival to reconcile conflicting stays', () => {
     const plain='Stay 10 to 16 November 2026.\nKind regards\n25 guests arriving on 11 November 2026',html='Stay 11 to 16 November 2026.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'11 November 2026',departure:'16 November 2026'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
+  });
+  it('does not let the subgroup shortcut hide a checkout correction', () => {
+    const plain='25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.\nCorrection: check out on 18 November 2026 instead.',html='Stay 11 to 16 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.lastIndexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};

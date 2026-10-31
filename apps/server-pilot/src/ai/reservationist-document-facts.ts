@@ -368,6 +368,8 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const before=authored.slice(start,match.index);
    const directQuote=/\b(?:quote|quotation)(?:\s+(?:us|me))?(?:\s+(?:for|from|on))?\s*:?\s*$/i;
    const negatedQuote=/\b(?:do not|don['’]t|never|not)\s+(?:quote|request\s+a\s+quotation)\b/i;
+   // A second range explicitly labelled as an event is not another room stay.
+   if(/\b(?:conference|meeting|event|workshop|flight)\s*$/i.test(before)&&paired.some(other=>other.index>=start&&other.index<match.index))return false;
    if(!stay.test(row)&&/^\s*(?:for|during|at)\s+(?:(?:the|a|an)\s+)?(?:conference|meeting|event|workshop|flight)\b/i.test(suffix))return false;
    if(stay.test(row)||directQuote.test(before))return !excluded.test(before+leadingLabel)&&!negatedQuote.test(before)&&!trailingExclusion.test(suffix);
    const lineStart=authored.lastIndexOf('\n',match.index-1)+1;
@@ -391,9 +393,11 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
   const years=[...new Set([...printedYears,...labeledYears])];
   const explicit=(text:string)=>/\b(?:19|20|21|22)\d{2}\b/.test(text);
   if(years.length>1&&(!explicit(m.arrival)||!explicit(m.departure)))throw new Error('Ambiguous alternate stay year');
-  const year=years[0]??Number(value.arrival.slice(0,4)),arrival=date(m.arrival,year);
+  const causal=source.causalMessage?.at,localDay=causal&&Number.isFinite(Date.parse(causal))?new Date(Date.parse(causal)+2*3600000).toISOString().slice(0,10):undefined;
+  let year=years[0]??Number(localDay?.slice(0,4)??value.arrival.slice(0,4)),arrival=date(m.arrival,year);
+  if(!years.length&&localDay&&arrival<localDay){year++;arrival=date(m.arrival,year);}
   if(m.nights!==undefined){if(m.nights<1||m.nights>366)throw new Error('Invalid alternate stay duration');return [arrival,new Date(Date.parse(`${arrival}T00:00:00Z`)+m.nights*86400000).toISOString().slice(0,10)];}
-  let departure=date(m.departure,years.length?year:Number(value.departure.slice(0,4)));
+  let departure=date(m.departure,year);
   if(departure<=arrival&&!explicit(m.departure)&&years.length<=1)departure=date(m.departure,year+1);
   if(departure<=arrival)throw new Error('Invalid alternate stay dates');
   return [arrival,departure];
@@ -405,6 +409,8 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const target=[value.arrival,value.departure].join('/');
  const groupPair=(view:string,range:string[])=>{
   const text=authoredText(view),stays=ranges(text);
+  // A later correction must not be hidden by the subgroup-arrival shortcut.
+  if(/\b(?:correction|corrected|changed|instead|revised)\b/i.test(text))return;
   if(uniquePairs(stays.map(pair)).length!==1)return;
   const groups=[...text.matchAll(new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
   if(groups.length!==1)return;
