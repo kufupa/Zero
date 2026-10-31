@@ -6,13 +6,20 @@ import { describe, expect, it } from 'vitest';
 import {
   amendLabtestBookerContact,
   contactAmendOutcome,
-  installLabtestContactSaveRouteChain,
   matchesLabtestBookerContactAmendRequest,
   matchesLabtestBookerContactDraft,
   matchesLabtestContactAmendDraft,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
+import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence.mjs';
+import {
+  currentLabtestRecord,
+  labtestRecordDelta,
+  unchangedLabtestBusinessParties,
+  unchangedLabtestRecord,
+} from '../tooling/hms-cloud/labtest-record.mjs';
+import { blankSavedPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
 import { installReadOnlyGuard } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
 
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -106,6 +113,181 @@ describe('saved Labtest Booker contact amendment guards', () => {
       .toBe(false);
     expect(matchesLabtestBookerContactAmendRequest(requestFor(saveBodyWithChanges(changes)),
       requestFrame, expected, state, baseline, { ...changes, udfchar02: 'not allowed' })).toBe(false);
+  });
+
+  it('allows an explicitly blank Booker preimage note only when the full request keeps it blank', async () => {
+    const blankExpected = { ...expected, note: '' };
+    const wrongOriginPage = { url: () => 'https://example.invalid' } as unknown as Page;
+    await expect(currentLabtestRecord(wrongOriginPage, blankExpected)).rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+    await expect(currentLabtestRecord(wrongOriginPage, blankExpected, { allowBlankNote: true }))
+      .rejects.toThrow('PROPERTY_OR_ORIGIN_MISMATCH');
+    await expect(currentLabtestRecord(wrongOriginPage, expected, { allowUnchangedBusinessParties: true }))
+      .rejects.toThrow('PROPERTY_OR_ORIGIN_MISMATCH');
+    await expect(currentLabtestRecord(wrongOriginPage,
+      { ...blankExpected, note: null as unknown as string }, { allowBlankNote: true }))
+      .rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+    await expect(currentLabtestRecord(wrongOriginPage, expected,
+      { allowUnchangedBusinessParties: true, unknown: true })).rejects.toThrow('LABTEST_RECORD_INPUT_INVALID');
+
+    const blankData = { ...data, reservationnote: '' };
+    const blankBaseline = { values: { ...blankData }, data: { ...blankData } };
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(blankData)) {
+      if (key !== 'extId') body.set(key, String(value ?? ''));
+    }
+    for (const [key, value] of Object.entries(changes)) body.set(key, value);
+    body.set('SYSTEM_FUNCTION_NAME', 'OSRESV');
+    body.set('USER_FUNCTION_NAME', 'OSRESV');
+    body.set('CURRENT_TAB_NAME', 'HDR');
+
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      blankExpected, state, blankBaseline, changes)).toBe(true);
+    body.set('reservationnote', 'unexpected note change');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      blankExpected, state, blankBaseline, changes)).toBe(false);
+  });
+
+  it('preserves only verified primary agency/company links in the exact full-record request', () => {
+    const parties = Object.fromEntries(blankSavedPartyFields.map((name) => [name, '']));
+    Object.assign(parties, {
+      taid1: 'agency-1', ta1: 'Synthetic Agency', companyid: 'company-1', companyname: 'Synthetic Company',
+    });
+    const linkedData = { ...data, ...parties };
+    const linkedBaseline = { values: { ...linkedData }, data: { ...linkedData } };
+    const linkedPartySnapshot = {
+      values: { ...linkedData },
+      data: { ...linkedData },
+      partyControls: [
+        { name: 'ta1', value: 'Synthetic Agency' },
+        { name: 'companyname', value: 'Synthetic Company' },
+      ],
+    };
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(linkedData)) {
+      if (key !== 'extId') body.set(key, String(value ?? ''));
+    }
+    for (const [key, value] of Object.entries(changes)) body.set(key, value);
+    body.set('SYSTEM_FUNCTION_NAME', 'OSRESV');
+    body.set('USER_FUNCTION_NAME', 'OSRESV');
+    body.set('CURRENT_TAB_NAME', 'HDR');
+
+    expect(unchangedLabtestBusinessParties(parties, linkedPartySnapshot)).toBe(true);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame,
+      expected, state, linkedBaseline, changes)).toBe(true);
+
+    const changedCompany = new URLSearchParams(body);
+    changedCompany.set('companyid', 'company-2');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(changedCompany), requestFrame,
+      expected, state, linkedBaseline, changes)).toBe(false);
+    expect(unchangedLabtestBusinessParties(parties, {
+      ...linkedPartySnapshot,
+      partyControls: [{ name: 'companyname', value: 'Different Company' }],
+    })).toBe(false);
+    expect(unchangedLabtestBusinessParties({ ...parties, groupid: 'group-1' }, {
+      ...linkedPartySnapshot,
+      data: { ...linkedData, groupid: 'group-1' },
+      values: { ...linkedData, groupid: 'group-1' },
+    })).toBe(false);
+    expect(unchangedLabtestBusinessParties({ ...parties, companyid: '' }, {
+      ...linkedPartySnapshot,
+      data: { ...linkedData, companyid: '' },
+      values: { ...linkedData, companyid: '' },
+    })).toBe(false);
+  });
+
+  it('reports visible, form and model deltas separately and rejects unapproved visible effects', () => {
+    const before = {
+      values: { note: 'before', tax: '10' },
+      data: { note: 'before', tax: '10' },
+      visibleFields: [{ name: 'reservationnote', value: 'before' }, { name: 'tax', value: '10' }],
+    };
+    const after = {
+      values: { note: 'after', tax: '12' },
+      data: { note: 'after', tax: '12' },
+      visibleFields: [{ name: 'reservationnote', value: 'after' }, { name: 'tax', value: '12' }],
+      formDirty: true,
+      recordDirty: true,
+      dirtyFields: ['reservationnote', 'tax'],
+      modifiedFields: ['reservationnote', 'tax'],
+    };
+    expect(labtestRecordDelta(before, after)).toEqual({
+      visible: [
+        { field: 'reservationnote', before: 'before', after: 'after' },
+        { field: 'tax', before: '10', after: '12' },
+      ],
+      form: [
+        { field: 'note', before: 'before', after: 'after' },
+        { field: 'tax', before: '10', after: '12' },
+      ],
+      model: [
+        { field: 'note', before: 'before', after: 'after' },
+        { field: 'tax', before: '10', after: '12' },
+      ],
+    });
+    expect(unchangedLabtestRecord(before, after, { note: 'after' }, {
+      form: { tax: '12' },
+      model: { tax: '12' },
+      visible: { reservationnote: 'after', tax: '12' },
+    })).toBe(true);
+    expect(unchangedLabtestRecord(before, after, { note: 'after' }, {
+      form: { tax: '12', unused: 'not an observed change' },
+      model: { tax: '12' },
+      visible: { reservationnote: 'after', tax: '12' },
+    })).toBe(false);
+
+    const visibleOnlyChange = {
+      ...before,
+      visibleFields: [{ name: 'reservationnote', value: 'changed' }, { name: 'tax', value: '10' }],
+      formDirty: false,
+      recordDirty: false,
+      dirtyFields: [],
+      modifiedFields: [],
+    };
+    expect(unchangedLabtestRecord(before, visibleOnlyChange, {})).toBe(false);
+
+    const dateBefore = {
+      values: { arrivaldate: '10/12/2027' },
+      data: { arrivaldate: '2027-10-12' },
+      visibleFields: [{ name: 'arrivaldate', value: '12-OCT-2027' }],
+    };
+    const dateAfter = {
+      values: { arrivaldate: '10/13/2027' },
+      data: { arrivaldate: '2027-10-13' },
+      visibleFields: [{ name: 'arrivaldate', value: '13-OCT-2027' }],
+      formDirty: true,
+      recordDirty: true,
+      dirtyFields: ['arrivaldate'],
+      modifiedFields: ['arrivaldate'],
+    };
+    expect(unchangedLabtestRecord(dateBefore, dateAfter, { arrivaldate: '10/13/2027' }, {
+      model: { arrivaldate: '2027-10-13' },
+      visible: { arrivaldate: '13-OCT-2027' },
+    })).toBe(true);
+
+    const duplicateBefore = {
+      ...before,
+      visibleFields: [
+        { name: 'reservationnote', value: 'before' },
+        { name: 'reservationnote', value: 'before' },
+        { name: 'tax', value: '10' },
+      ],
+    };
+    const duplicateAfter = {
+      ...after,
+      visibleFields: [
+        { name: 'reservationnote', value: 'after' },
+        { name: 'reservationnote', value: 'before' },
+        { name: 'tax', value: '12' },
+      ],
+    };
+    expect(labtestRecordDelta(duplicateBefore, duplicateAfter).visible).toBe(null);
+    expect(unchangedLabtestRecord(duplicateBefore, duplicateAfter, { note: 'after' }, {
+      form: { tax: '12' },
+      model: { tax: '12' },
+      visible: { reservationnote: 'after', tax: '12' },
+    })).toBe(false);
   });
 
   it('rejects empty, blank, and unknown paired Booker requests before page use', async () => {
@@ -258,7 +440,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     });
     let browser: Browser | undefined;
     let context: BrowserContext | undefined;
-    let chain: Awaited<ReturnType<typeof installLabtestContactSaveRouteChain>> | undefined;
+    let chain: Awaited<ReturnType<typeof installLabtestSaveRouteChain>> | undefined;
     let scope: { close: () => void } | undefined;
     try {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -282,7 +464,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       let dispatches = 0;
       let blockedRequests = 0;
       let blockedAfterDispatch = 0;
-      chain = await installLabtestContactSaveRouteChain(page, {
+      chain = await installLabtestSaveRouteChain(page, {
         frame: pageFrame,
         fence,
         scope,

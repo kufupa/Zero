@@ -1,7 +1,8 @@
 // Amend only the reservation note on one verified saved Labtest record.
-import { currentLabtestRecord, snapshotLabtestRecord, cleanLabtestRecord, blankLabtestParties,
-  unchangedLabtestRecord, matchesLabtestBody } from './labtest-record.mjs';
+import { currentLabtestRecord, snapshotLabtestRecord, cleanLabtestRecord,
+  unchangedLabtestRecord, unchangedLabtestBusinessParties, matchesLabtestBody } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
@@ -34,10 +35,18 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
       expected.newNote === expected.note) return { outcome: 'input_gap', issue: 'NEW_NOTE_INVALID' };
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
-  let armed = false, dispatched = false, blocked = 0, sendRequests = 0, nativeDialog = null, response = null, authorizedRequest, scope, fence;
+  let armed = false, possiblyDispatched = false, dispatched = false, blockedAtDispatch = 0, blocked = 0;
+  let sendRequests = 0, nativeDialog = null, response = null, authorizedRequest, scope, fence, routeChain;
+  let stopReason = null;
   let signalStop;
   const stopped = new Promise((resolve) => { signalStop = resolve; });
-  const stop = (issue) => { armed = false; fence?.quarantine(); signalStop({ issue }); };
+  const stop = (issue) => {
+    stopReason ||= issue;
+    armed = false;
+    routeChain?.disarm();
+    fence?.quarantine();
+    signalStop({ issue });
+  };
   const bounded = async (action) => {
     const result = await Promise.race([Promise.resolve(action).then((value) => ({ value })), stopped]);
     if (result.issue) throw new Error(result.issue);
@@ -47,10 +56,13 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
   const onDialog = (dialog) => { nativeDialog = { type: dialog.type(), message: dialog.message() }; stop('UNEXPECTED_DIALOG'); };
   page.on('dialog', onDialog);
   try {
-    const state = await bounded(currentLabtestRecord(page, expected)), frame = state.frame;
+    const recordOptions = { allowUnchangedBusinessParties: true };
+    const state = await bounded(currentLabtestRecord(page, expected, recordOptions)), frame = state.frame;
     const baseline = await bounded(snapshotLabtestRecord(frame));
     if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
-    if (!blankLabtestParties(baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) {
+      throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    }
     if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
         await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
     const field = frame.locator('textarea[name="reservationnote"]:visible');
@@ -58,25 +70,40 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     if (await bounded(field.count()) !== 1 || await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();
-    await bounded(page.route('**/*', async (route) => {
-      const request = route.request();
-      let pathname = '', action = '';
-      try { const url = new URL(request.url()); pathname = url.pathname; action = url.searchParams.get('pageaction') || ''; }
-      catch { /* Block unparseable targets. */ }
-      if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&
-          !/save|delete|cancel|checkin|checkout|send|email|mail|crs/i.test(pathname) &&
-          !(pathname === SAVE_PATH && /^(SAVE|DELETE)$/i.test(action))) return route.fallback();
-      if (/send|email|mail/i.test(pathname)) sendRequests += 1;
-      if (armed && !nativeDialog && matchesAmend(request, frame, expected, state, baseline) && scope.allow(request)) {
-        armed = false;
+    const routeSetup = installLabtestSaveRouteChain(page, {
+      frame,
+      fence,
+      scope,
+      isArmed: () => armed && !nativeDialog,
+      matches: (request, requestFrame) => matchesAmend(request, requestFrame, expected, state, baseline),
+      onCandidate: (request) => {
         authorizedRequest = request;
-        dispatched = true;
-        return route.continue();
+        possiblyDispatched = true;
+      },
+      onDispatch: (request) => {
+        if (request === authorizedRequest) {
+          dispatched = true;
+          blockedAtDispatch = blocked;
+          armed = false;
+        }
+      },
+      onBlocked: (request) => {
+        blocked += 1;
+        try {
+          if (/send|email|mail/i.test(new URL(request.url()).pathname)) sendRequests += 1;
+        } catch { /* Do not expose or retry malformed request targets. */ }
+      },
+    }).then(async (chain) => {
+      if (stopReason) {
+        usedPages.add(page);
+        chain.disarm();
+        await chain.close();
+        return null;
       }
-      armed = false;
-      blocked += 1;
-      return route.abort();
-    }));
+      return chain;
+    });
+    routeChain = await bounded(routeSetup);
+    if (!routeChain) throw new Error(stopReason || 'AMEND_TIMEOUT');
     usedPages.add(page);
     const changed = await bounded(field.evaluate((el, value) => {
       const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
@@ -87,10 +114,11 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     }, expected.newNote));
     if (!changed) throw new Error('NOTE_EDIT_UNVERIFIED');
     await bounded(field.blur());
-    const after = await bounded(currentLabtestRecord(page, { ...expected, note: expected.newNote }));
+    const after = await bounded(currentLabtestRecord(page, { ...expected, note: expected.newNote }, recordOptions));
     const changedForm = await bounded(snapshotLabtestRecord(frame));
     if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
-        !blankLabtestParties(changedForm) ||
+        JSON.stringify(state.partyPreimage) !== JSON.stringify(after.partyPreimage) ||
+        !unchangedLabtestBusinessParties(state.partyPreimage, changedForm) ||
         !unchangedLabtestRecord(baseline, changedForm, { reservationnote: expected.newNote }) ||
         changedForm?.values?.reservationnote !== expected.newNote ||
         blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
@@ -103,16 +131,24 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     armed = false;
     await bounded(page.waitForTimeout(500));
     const dialogs = await bounded(frame.locator('.x-window:visible:not(.x-menu)').allTextContents().catch(() => []));
-    return { outcome: dispatched && response?.status() === 200 && !nativeDialog && !dialogs.length ? 'awaiting_readback' :
-      dispatched ? 'uncertain' : 'not_dispatched', httpStatus: response?.status() || null,
-    blockedRequests: blocked, browserSendRequests: sendRequests, nativeDialog, dialogs };
+    const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
+    const outcome = dispatched && response?.status() === 200 && !nativeDialog && !dialogs.length && !blockedAfterDispatch
+      ? 'awaiting_readback'
+      : possiblyDispatched ? 'uncertain' : 'not_dispatched';
+    return { outcome, httpStatus: response?.status() || null, blockedRequests: blocked,
+      blockedRequestsAfterDispatch: blockedAfterDispatch, browserSendRequests: sendRequests, nativeDialog, dialogs };
   } catch (error) {
     armed = false;
-    return { outcome: dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error),
+    routeChain?.disarm();
+    if (possiblyDispatched) fence?.quarantine();
+    return { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue: issue(error),
       httpStatus: response?.status() || null, blockedRequests: blocked, browserSendRequests: sendRequests, nativeDialog };
   } finally {
     clearTimeout(timer);
+    armed = false;
+    routeChain?.disarm();
     scope?.close();
+    await routeChain?.close();
     if (!nativeDialog && !usedPages.has(page)) page.off('dialog', onDialog);
   }
 }

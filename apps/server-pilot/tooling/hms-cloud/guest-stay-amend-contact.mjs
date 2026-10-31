@@ -1,10 +1,10 @@
 // Amend only Booker contact text on one verified saved Labtest record.
 import {
-  blankLabtestParties,
   cleanLabtestRecord,
   currentLabtestRecord,
   matchesLabtestBody,
   snapshotLabtestRecord,
+  unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
@@ -215,11 +215,14 @@ async function amendLabtestContactChanges(page, expected, changes, { timeoutMs, 
   page.on('dialog', onDialog);
 
   try {
-    const state = await bounded(currentLabtestRecord(page, expected));
+    const recordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true };
+    const state = await bounded(currentLabtestRecord(page, expected, recordOptions));
     const frame = state.frame;
     const baseline = await bounded(snapshotLabtestRecord(frame));
     if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
-    if (!blankLabtestParties(baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) {
+      throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    }
     if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
         await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('UNEXPECTED_DIALOG');
@@ -289,12 +292,13 @@ async function amendLabtestContactChanges(page, expected, changes, { timeoutMs, 
       await bounded(control.blur());
     }
 
-    const after = await bounded(currentLabtestRecord(page, expected));
+    const after = await bounded(currentLabtestRecord(page, expected, recordOptions));
     const changedForm = await bounded(snapshotLabtestRecord(frame));
     // Ext's form values may update before its loaded record.data; the save
     // request matcher below is the authoritative full-record check.
     if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
-        !blankLabtestParties(changedForm) ||
+        JSON.stringify(state.partyPreimage) !== JSON.stringify(after.partyPreimage) ||
+        !unchangedLabtestBusinessParties(state.partyPreimage, changedForm) ||
         !matchesLabtestBookerContactDraft(baseline, changedForm, changes) ||
         blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('AMEND_DRAFT_CHANGED');
