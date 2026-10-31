@@ -348,7 +348,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       if (expectedKind && packets.length === 1) {
         const packet = packets[0]!;
         const cancellationReviewPacket=kind==='cancel_request'&&Boolean(isReservationistCancellationReviewPacket(packet));
-        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && (packet.businessRulesValidated === true || cancellationReviewPacket) && (kind !== 'cancel_request' || !actionFreshnessReason)) {
+        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && (kind === 'cancel_request' ? cancellationReviewPacket : packet.businessRulesValidated === true) && (kind !== 'cancel_request' || !actionFreshnessReason)) {
           if (kind === 'acceptance' || kind === 'new_booking') {
             const total = money(packet.totalMinor, packet.currency);
             if (total) details.push(`${kind === 'acceptance' ? 'Agreed quote total' : 'Selected booking total'}: ${total}`);

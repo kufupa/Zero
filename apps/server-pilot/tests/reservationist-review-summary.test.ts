@@ -71,6 +71,11 @@ it('withholds the stay display when the resolved confirmation is not bound to cu
  const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[packet]}).tasks[0].details.join('\n');
  expect(detail).not.toContain('HMS confirmation read: OTHER-1');expect(detail).not.toContain('Recorded stay:');
 });
+it('withholds cancellation stay details from legacy packets without a resolved current proof',()=>{
+ const packet=cancellationPacket() as any;packet.businessRulesValidated=true;delete packet.sourceProofs[0].resolvedConfirmation;const {digest:_digest,...data}=packet;packet.digest=quoteDigest(data);
+ const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[packet]}).tasks[0].details.join('\n');
+ expect(detail).not.toContain('Requested reference:');expect(detail).not.toContain('HMS confirmation read:');expect(detail).not.toContain('Recorded stay:');
+});
 it('surfaces only the unresolved cancellation preflight facts in the staff task',()=>{
  const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[cancellationPacket()]}).tasks[0].details.join('\n');
  expect(detail).toContain('Cancellation room scope remains unresolved');
