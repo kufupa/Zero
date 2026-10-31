@@ -28,6 +28,11 @@ Requested. The child-age editor is an `.x-window.x-menu` on this property.
 | `closeCmsMessageIdPicker` | `propertyCode`; close the current CMS picker without choosing a code |
 | `setCmsSendCheckbox` | `checked`: explicit boolean |
 
+When the verified Proof Labtest profile is current, an adult-count selection
+also carries its opaque profile token. Pass that helper result directly as
+`adultSelection` when using the strict create proof; other dropdown results do
+not carry this token.
+
 All inputs are objects passed after `page`. For example:
 
 ```js
