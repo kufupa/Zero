@@ -31,6 +31,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           {id:previousId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:['centurion@legacyhotels.co.za'],textBody:'Previous context.',receivedAt:previousAt},
           {id:currentId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:['centurion@legacyhotels.co.za'],textBody:text,receivedAt:at},
         ]);
+        if(mode==='installed')await db.insert(message).values([
+          {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Unsent synthetic reply.',receivedAt:previousAt,sentAt:null},
+          {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Sent after the synthetic request.',receivedAt:previousAt,sentAt:new Date(at.getTime()+20_000)},
+        ]);
         if(mode==='source_review'||mode==='missing_file'){
           const key='attachments/'+currentId+'/rooms.xlsx',mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
           if(mode==='source_review')await s3.putObject({key,body,contentType:mimeType});
@@ -89,6 +93,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
         }else if(mode==='installed'){
           expect(drafts).toHaveLength(1);
           expect(modelPrompts[0]).toContain('Synthetic attachment: arrival note.');
+          expect(modelPrompts[0]).not.toContain('Unsent synthetic reply.');
+          expect(modelPrompts[0]).not.toContain('Sent after the synthetic request.');
           expect(drafts[0]?.textBody).toContain('We have noted your request to check in by 3:00pm.');
           expect(saved?.metrics?.reservationistResult?.tasks).toEqual(expect.arrayContaining([
             expect.objectContaining({id:'arrival',status:'complete'}),
