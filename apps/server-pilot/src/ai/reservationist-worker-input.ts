@@ -177,21 +177,20 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  // The mailbox arrival clock, rather than a sender-supplied Date header,
-  // establishes both ordering and the runtime's causal cutoff.
-  const triggerAt = time(trigger.arrivedAt) ?? time(trigger.createdAt);
+  // Use trusted mailbox arrival for inbound and confirmed send time for outbound.
+  const triggerAt = time(trigger.arrivedAt);
   if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
 
   const selected: Array<{ row: ReservationistWorkerMessage; at: number }> = [];
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
-    const arrived = time(row.arrivedAt) ?? time(row.createdAt);
-    if (arrived === null) throw new Error('worker_intake_clock_invalid');
-    // Later mailbox arrivals are never context, even if their authored date is backdated.
-    if (arrived > triggerAt) continue;
-    if (arrived === triggerAt) throw new Error('worker_intake_order_ambiguous');
-    selected.push({ row, at: arrived });
+    const at = time(row.direction === 'outbound' ? row.sentAt : row.arrivedAt);
+    // Queued outbound rows and imported outbound rows without a proven send clock are not context.
+    if (at === null) { if (row.direction === 'outbound') continue; throw new Error('worker_intake_clock_invalid'); }
+    if (at > triggerAt) continue;
+    if (at === triggerAt) throw new Error('worker_intake_order_ambiguous');
+    selected.push({ row, at });
   }
   // Bound raw inputs before HTML sanitization; the normalized limits below
   // still govern what the model receives.
@@ -201,9 +200,8 @@ export async function buildReservationistWorkerInput(options: {
       selected.some(({ row }) => (row.subject?.length ?? 0) > 4096))
     throw new Error('worker_intake_context_limit');
   check();
+  // IDs only stabilize serialization within tied earlier timestamps; they do not establish chronology.
   selected.sort((a, b) => a.at - b.at || a.row.id.localeCompare(b.row.id));
-  if (selected.some((entry, index) => index > 0 && entry.at === selected[index - 1]!.at))
-    throw new Error('worker_intake_order_ambiguous');
   const normalized = new Map(selected.map(({ row }) => [row.id, normalizeMessageText(row)]));
   const messages = selected.map(({ row, at }) => ({
     id: row.id,

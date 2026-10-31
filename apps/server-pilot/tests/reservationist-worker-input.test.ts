@@ -40,7 +40,7 @@ describe('reservationist worker input', () => {
   it('uses mailbox arrival for chronological context and excludes later messages and files', async () => {
     const result = await build([
       row('first', 1, { textBody: 'Earlier guest request' }),
-      row('staff', 2, { direction: 'outbound', disclosure: 'staff_only', textBody: 'Staff replied.' }),
+      row('staff', 2, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(2), textBody: 'Staff replied.' }),
       row('current', 4, { textBody: 'Please proceed.' }),
       row('late', 0, { arrivedAt: at(5), createdAt: at(5), receivedAt: at(0), textBody: 'Arrived after the request.' }),
     ], [
@@ -50,6 +50,31 @@ describe('reservationist worker input', () => {
     expect(result.input.messages.map((message) => message.id)).toEqual(['first', 'staff', 'current']);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['earlier-file']);
     expect(result.input.authorizedArtifacts).toHaveLength(1);
+    await expect(build([row('current', 4, { arrivedAt: null })])).rejects.toThrow('worker_intake_clock_invalid');
+  });
+
+  it('uses sent time for outbound context and excludes queued or later sends', async () => {
+    const { input } = await build([
+      row('queued', 1, { direction: 'outbound', disclosure: 'staff_only', sentAt: null, receivedAt: at(1), textBody: 'Queued, not sent.' }),
+      row('sent-before', 4, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(2), receivedAt: at(5), arrivedAt: at(5), createdAt: at(1), textBody: 'Actually sent before the guest request.' }),
+      row('sent-after', 1, { direction: 'outbound', disclosure: 'staff_only', sentAt: at(5), receivedAt: at(1), arrivedAt: at(1), createdAt: at(1), textBody: 'Actually sent after the guest request.' }),
+      row('current', 4, { textBody: 'Current guest request.' }),
+    ]);
+    expect(input.messages.map((message) => message.id)).toEqual(['sent-before', 'current']);
+    expect(input.messages[0]!.at).toBe(at(2).toISOString());
+  });
+
+  it('includes earlier timestamp ties without ordering them, but refuses trigger-time ties', async () => {
+    const earlierAt = at(1);
+    const { input } = await build([
+      row('earlier-b', 1, { arrivedAt: earlierAt }),
+      row('earlier-a', 1, { arrivedAt: earlierAt }),
+      row('current', 4),
+    ]);
+    const tied = input.messages.filter((message) => message.id.startsWith('earlier-'));
+    expect(tied.map((message) => message.id).sort()).toEqual(['earlier-a', 'earlier-b']);
+    expect(tied.map((message) => message.at)).toEqual([earlierAt.toISOString(), earlierAt.toISOString()]);
+    await expect(build([row('same-time', 4), row('current', 4)])).rejects.toThrow('worker_intake_order_ambiguous');
   });
 
   it('filters a proven signature image but keeps one referenced by the current subject', async () => {
