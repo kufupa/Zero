@@ -978,8 +978,9 @@ export type HmsReviewResult = { runId: string; status: 'done' | 'needs_you' };
  * Review of an executed write, as an event with actor = session user. Review needs an outcome: a run that succeeded, or
  * one that stopped after sealing evidence. Nothing is reviewed while a needs-check is open. Reviewing one write does not
  * finish the email: other requests or a reply may still be outstanding. Both decisions keep the item in needs_you and
- * drop the stored snapshot, which was read before the write changed HMS. The next approval waits for a fresh read (prepareHmsWriteSnapshot,
- * the hmsApproval.reread procedure), which is not run here so HMS is never read under the work-item row lock.
+ * drop the stored snapshot, which was read before the write changed HMS. An OK also reapplies the existing hotel-reply
+ * rule after the transaction, in case the reply arrived while the write was awaiting review. The next approval waits
+ * for a fresh read (prepareHmsWriteSnapshot, the hmsApproval.reread procedure), outside the work-item row lock.
  * Only one decision per run.
  */
 export async function reviewHmsWrite(input: {
@@ -999,9 +1000,9 @@ export async function reviewHmsWrite(input: {
   if (input.decision === 'flag' && (note.length === 0 || note.length > RESOLVE_NOTE_MAX)) {
     throw new HmsApprovalError('note_required');
   }
-  return db.transaction(async (tx) => {
+  const reviewed = await db.transaction(async (tx) => {
     const [item] = await tx
-      .select({ id: workItem.id, status: workItem.status, state: workItem.state })
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, threadId: workItem.threadId })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
@@ -1051,8 +1052,20 @@ export async function reviewHmsWrite(input: {
       .update(workItem)
       .set({ status, state, updatedAt: now })
       .where(eq(workItem.id, item.id));
-    return { runId: run.id, status };
+    return { runId: run.id, status, threadId: item.threadId };
   });
+  let status: HmsReviewResult['status'] = reviewed.status;
+  if (input.decision === 'ok' && reviewed.threadId) {
+    try {
+      const { refreshThreadWork } = await import('./work-items.js');
+      const changes = await refreshThreadWork(db, { transportId: input.transportId, threadId: reviewed.threadId });
+      if (changes.some((change) => change.workItemId === input.workItemId && 'to' in change && change.to === 'done')) status = 'done';
+    } catch {
+      // The review is already recorded. Keep the item open for a later thread refresh rather than report a failed review.
+      console.error('hms_review_reply_refresh_failed');
+    }
+  }
+  return { runId: reviewed.runId, status };
 }
 
 export type HmsWriteStateView = {

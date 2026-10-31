@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiWorkflowRun } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import {
   HMS_WRITE_EVIDENCE_PREFIX,
@@ -987,6 +987,28 @@ describe('HMS write review and write state', () => {
       });
       await expect(review(db, workItemId)).rejects.toMatchObject({ refusal: 'already_reviewed' });
       await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
+    });
+  });
+
+  it('a reply sent before review closes the item after the write is reviewed', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const runId = await runApprovedWrite(db);
+      await db.insert(message).values({
+        id: 'reply-1',
+        transportId: TRANSPORT_ID,
+        threadId: 'thread-1',
+        direction: 'outbound',
+        fromAddress: TRANSPORT_EMAIL,
+        toAddresses: ['guest@example.invalid'],
+        textBody: 'Your request is complete.',
+        sentAt: at(1),
+      });
+
+      await expect(review(db, workItemId, { now: at(2) })).resolves.toEqual({ runId, status: 'done' });
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
+      expect(item).toMatchObject({ status: 'done', sentMessageId: 'reply-1' });
     });
   });
 
