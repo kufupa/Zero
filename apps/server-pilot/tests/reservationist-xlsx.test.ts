@@ -95,7 +95,10 @@ describe('reservationist XLSX intake', () => {
     const result = await extract(body);
     expect(result.reason).toBe('text');
     const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
-    expect(rows[0]?.cells[0]).toMatchObject({ value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS });
+    expect(rows[0]?.cells[0]).toMatchObject({
+      value: `Rooms ${AMBIGUOUS_NUMBER_GROUPS}`,
+      displayText: `Rooms ${AMBIGUOUS_NUMBER_GROUPS}`,
+    });
     expect(rows[1]?.cells).toHaveLength(4);
     expect(rows[1]?.cells.every((cell: { value: string; displayText: string }) =>
       cell.value === AMBIGUOUS_NUMBER_GROUPS && cell.displayText === AMBIGUOUS_NUMBER_GROUPS)).toBe(true);
