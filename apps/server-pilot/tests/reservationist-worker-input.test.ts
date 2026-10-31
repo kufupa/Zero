@@ -212,6 +212,22 @@ describe('reservationist worker input', () => {
     expect(text).not.toMatch(/<[^>]+>|4111[\s-]*1111[\s-]*1111[\s-]*1111|CVV:\s*123/i);
   });
 
+  it.each([
+    { textBody: null, htmlBody: '<p>Room 2</p><p>4111<br>1111<br>1111<br>1111</p><p>2 rooms</p>' },
+    { textBody: 'Room 2\n4111\n1111\n1111\n1111\n2 rooms', htmlBody: null },
+  ])('masks a split card beside other digits without losing room counts', async (body) => {
+    const result = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, body)], attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const text = result.input.messages[0]!.text;
+    expect(text).toContain('Room 2');
+    expect(text).toContain('2 rooms');
+    expect(text).toContain('[card masked]');
+    expect(text).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
+  });
+
   it.each([null, 'Please proceed.\nKind regards\nGuest'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
     const built = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',

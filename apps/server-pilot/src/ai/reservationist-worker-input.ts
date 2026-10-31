@@ -40,24 +40,48 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
+/** Mask card-sized windows even when an adjacent room number joins the span. */
+function maskNumericSpan(span: string): string {
+  const offsets: number[] = [];
+  let digits = '';
+  for (const match of span.matchAll(/\d/g)) {
+    offsets.push(match.index!);
+    digits += match[0];
+    // A very long uninterrupted numeric span is ambiguous and must not be
+    // passed through or make the bounded intake do unbounded window checks.
+    if (offsets.length > 128) return '[number masked]';
+  }
+  let output = '';
+  let cursor = 0;
+  for (let start = 0; start + 13 <= digits.length; start++) {
+    let length = Math.min(19, digits.length - start);
+    while (length >= 13 && !isLuhnValid(digits.slice(start, start + length))) length--;
+    if (length < 13) continue;
+    const end = start + length - 1;
+    output += span.slice(cursor, offsets[start]);
+    // When other digits touch a possible card, do not reveal a suffix from
+    // an ambiguous overlapping window.
+    output += start === 0 && end === digits.length - 1
+      ? `[card ••••${digits.slice(-4)}]` : '[card masked]';
+    cursor = offsets[end]! + 1;
+    start = end;
+  }
+  return output + span.slice(cursor);
+}
+
 /** Keep supported calendar dates separate from potentially multiline card numbers. */
-function maskMessageText(text: string, acrossLines: boolean): string {
+function maskMessageText(text: string): string {
   const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
   return text.split(date).map((part, index) => {
     if (index % 2 === 1) return part;
-    const masked = acrossLines ? part.replace(/(?<!\d)(?:\d[ \t\r\n-]{0,8}){13,19}(?!\d)/g, (candidate) => {
-      const digits = candidate.replace(/[ \t\r\n-]/g, '');
-      if (!isLuhnValid(digits)) return candidate;
-      const tail = candidate.match(/[ \t\r\n-]+$/)?.[0] ?? '';
-      return `[card ••••${digits.slice(-4)}]${tail}`;
-    }) : part;
+    const masked = part.replace(/(?<!\d)\d(?:[ \t\r\n-]{0,8}\d){12,}/g, maskNumericSpan);
     return maskCardNumbers(masked);
   }).join('');
 }
 
 /** Plain text retains paragraph and quote boundaries for source spans and masking. */
 function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
-  if (row.textBody?.trim() || !normalized.includes('<')) return maskMessageText(normalized, false);
+  if (row.textBody?.trim() || !normalized.includes('<')) return maskMessageText(normalized);
   const $ = load(normalized, null, false);
   $('details.quoted-toggle, blockquote').each((_, element) => {
     $(element).prepend('\nFrom: quoted history\n');
@@ -74,7 +98,7 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   });
   const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
   // HTML can split card groups across visual lines; dates stay independent.
-  return maskMessageText(rendered, true);
+  return maskMessageText(rendered);
 }
 
 /** Put both authored alternatives before either signature or quoted history. */
