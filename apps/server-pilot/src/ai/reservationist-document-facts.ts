@@ -338,6 +338,23 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
   if (departure <= arrival) throw new Error('Invalid stay dates');
   return { ...fact.value, arrival, departure };
 }
+/** Compare unambiguous date ranges when two alternatives disagree about the same stay. */
+function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource,value:{arrival:string;departure:string}):void{
+ const page=source.pages?.[fact.source.page-1],views=source.sourceViews,start=fact.source.start,end=fact.source.end;
+ const selected=views?.find(v=>start!==undefined&&end!==undefined&&start>=v.start&&end<=v.end);
+ if(!page||!views||!selected)return;
+ const token=`(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}/\\d{1,2}(?:/\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?)`;
+ const ranges=(text:string)=>[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
+ const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
+ const pair=(m:RegExpMatchArray)=>[date(m[1]!,Number(value.arrival.slice(0,4))),date(m[2]!,Number(value.departure.slice(0,4)))];
+ const own=ranges(page.slice(selected.start,selected.end));
+ if(own.length!==1)return;
+ try{if(pair(own[0]!).join('/')!==[value.arrival,value.departure].join('/'))return;}catch{return;}
+ for(const other of views.filter(v=>v!==selected)){const found=ranges(page.slice(other.start,other.end));if(found.length!==1)continue;
+  let otherPair:string[];try{otherPair=pair(found[0]!);}catch{throw new Error('Ambiguous alternate stay dates');}
+  if(otherPair.join('/')!==[value.arrival,value.departure].join('/'))throw new Error('Conflicting alternate stay dates');
+ }
+}
 /** Channel notices become actions only when the original row explicitly requests a system update. */
 export function assertChannelBookingSyncRequest(quote: string, original: string, start: number, end: number): void {
  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || original.slice(start, end) !== quote || !/\b(?:update|sync|synchroni[sz]e)\s+(?:(?:your|the|our)\s+)?system\b/i.test(quote)) throw new Error('Channel sync requires explicit original request');
@@ -422,6 +439,7 @@ export function validateDocumentPlan(
     if(derived){const tasks=parsed.data.tasks.filter(task=>task.factIds.includes(fact.id));if(!tasks.some(task=>task.kind==='quote')||tasks.some(task=>task.kind!=='quote'&&(derived.convention.rule==='centurion_explicit_nights_v1'||!(task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??'')))))throw new Error('Yearless convention requires quote task');}
     const page=original.pages?.[fact.source.page-1];
     const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,page&&reservationistCitedView(page,original.sourceViews,fact.source.start,fact.source.end)),...(derived?{convention:derived.convention}:{}) } : fact;
+    if(fact.kind==='dates'&&normalizedFact.kind==='dates'&&verification==='text_verified')assertMessageViewDates(fact,original,normalizedFact.value);
     const amountCents =
       fact.kind === 'rate_claim' || fact.kind === 'payment_claim'
         ? normalizeDocumentDecimal(fact.value.amount)
