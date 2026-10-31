@@ -78,7 +78,7 @@ describe('reservationist worker input', () => {
   });
 
   it('filters a proven signature image but keeps one referenced by the current subject', async () => {
-    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\ncid:logo' })], [
+    const harmless = await build([row('current', 4, { textBody: 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\ncid:logo' })], [
       { id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'logo', disclosure: 'guest' },
     ]);
     expect(harmless.ignoredSignatures).toBe(1);
@@ -116,12 +116,13 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
   });
 
-  it('keeps a business image labelled Quote after the signoff', async () => {
-    const result = await build([row('current', 4, {
-      textBody: 'Please quote one room.\nKind regards\nQuote:\ncid:offer',
-    })], [{ id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' }]);
-    expect(result.ignoredSignatures).toBe(0);
-    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+  it('keeps colon-captioned business images after signoff', async () => {
+    const image = { id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' as const };
+    for (const caption of ['Quote:', 'Rooming list:']) {
+      const result = await build([row('current', 4, { textBody: `Please quote one room.\nKind regards\n${caption}\ncid:offer` })], [image]);
+      expect(result.ignoredSignatures).toBe(0);
+      expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
+    }
   });
 
   it('keeps quoted Gmail HTML images after the sender signoff', async () => {
