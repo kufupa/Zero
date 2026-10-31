@@ -13,7 +13,7 @@ contain guest data.
 | `read` | `confirmation`; optional `guestName`, `arrivalDate` (`YYYY-MM-DD`) and `view` (`record`, the default, or `shallow`) |
 | `prepareCancellation` | Optional `requestedScope` (`whole_stay`, `specific_room`, or `unspecified`); uses the current full read |
 | `amendNote` | `expected` with `confirmation`, `guestId`, `arrival`, `departure`, `roomType`, `ratePlan`, `note` and `newNote` |
-| `amendContact` | The same saved `expected` record without `newNote`, plus `field` (`bookerName` or `bookerContact`) and synthetic `value` |
+| `amendContact` | The same saved `expected` record without `newNote`, plus either legacy `field` (`bookerName` or `bookerContact`) and synthetic `value`, or synthetic `bookerName` and/or `bookerContact` (one exact Save for the supplied fields) |
 | `openCancel` | The same `expected` record fields, without `newNote` |
 | `confirmCancel` | `cancellationNote` for the current reason dialog |
 | `quit` | Close the JSONL session |
@@ -42,8 +42,8 @@ actions verify HRCEN, 2027+ dates, the fake guest, current fields, NGI, CMS Send
 unchecked, blank CMS recipient and guest email, and blank agency, organization,
 group, A/R and guarantee-card fields. Missing or unverified linked fields are
 refused. The Labtest note and Booker contact amendments and the Test
-Reservations cancellation flow are supported. Booker contact changes remain
-subject to the full-form guard and fresh readback described in
+Reservations cancellation flow are supported. Single-field and paired Booker
+changes remain subject to the full-form guard and fresh readback described in
 `guest-stay-amend-contact.md`.
 
 After `openCancel` returns `reason_ready`, only `confirmCancel` or closing the

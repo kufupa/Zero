@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({
   confirmation: 'LABTEST-1',
   amend: vi.fn(),
+  amendBooker: vi.fn(),
   readShallow: vi.fn(async () => ({ ok: true, confirmation: 'LABTEST-1' })),
   readRecord: vi.fn(async () => ({ details: { fields: [{ name: 'status', value: 'Reserved' }] } })),
 }));
@@ -13,7 +14,10 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
 }));
 vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({ installReadOnlyGuard: async () => {} }));
 vi.mock('../tooling/hms-cloud/hms-readers.mjs', () => ({ readShallow: fixture.readShallow, readRecord: fixture.readRecord }));
-vi.mock('../tooling/hms-cloud/guest-stay-amend-contact.mjs', () => ({ amendLabtestContact: fixture.amend }));
+vi.mock('../tooling/hms-cloud/guest-stay-amend-contact.mjs', () => ({
+  amendLabtestContact: fixture.amend,
+  amendLabtestBookerContact: fixture.amendBooker,
+}));
 vi.mock('../tooling/hms-cloud/guest-stay-amend.mjs', () => ({ amendLabtestNote: vi.fn() }));
 vi.mock('../tooling/hms-cloud/guest-stay-cancel.mjs', () => ({ openLabtestCancellation: vi.fn(), confirmLabtestCancellation: vi.fn() }));
 
@@ -42,6 +46,23 @@ describe('saved-stay Booker contact session', () => {
       expect(await runTool({ tool: 'amendContact', expected, field: 'bookerContact', value: '' })).toMatchObject({ outcome: 'input_gap' });
       expect(await runTool({ tool: 'amendContact', expected, field: 'bookerContact', value: 'Synthetic' })).toMatchObject({ outcome: 'uncertain' });
       expect(await runTool({ tool: 'amendContact', expected, field: 'bookerContact', value: 'Synthetic' })).toMatchObject({ outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' });
+    });
+  });
+
+  it('dispatches paired Booker fields once and seals the session', async () => {
+    fixture.amendBooker.mockReset().mockResolvedValue({ outcome: 'awaiting_readback' });
+    fixture.amend.mockReset();
+    await withSavedStayAgentSession(async ({ runTool }) => {
+      await runTool({ tool: 'read', confirmation: fixture.confirmation });
+      const expected = { confirmation: fixture.confirmation, guestId: 'fake' };
+      const changes = { bookerName: 'Synthetic Booker', bookerContact: 'Synthetic contact' };
+      expect(await runTool({ tool: 'amendContact', expected, ...changes }))
+        .toMatchObject({ outcome: 'awaiting_readback' });
+      expect(fixture.amendBooker).toHaveBeenCalledTimes(1);
+      expect(fixture.amendBooker.mock.calls[0]!.slice(1)).toEqual([expected, changes]);
+      expect(fixture.amend).not.toHaveBeenCalled();
+      expect(await runTool({ tool: 'read', confirmation: fixture.confirmation }))
+        .toMatchObject({ outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' });
     });
   });
 });

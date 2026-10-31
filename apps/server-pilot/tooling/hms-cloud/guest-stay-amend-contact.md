@@ -45,4 +45,6 @@ fields and unchanged stay fields. Reconcile every `uncertain` result before
 another mutation; never retry blindly. No live persistence result is claimed
 until an owner-serialized write slot and that fresh readback are complete.
 
-The saved-stay agent session exposes this adapter as `amendContact`.
+The saved-stay agent session exposes this adapter as `amendContact`: preserve
+the legacy `field`/`value` inputs for one field, or pass `bookerName` and/or
+`bookerContact` to stage the supplied fields in one guarded Save.

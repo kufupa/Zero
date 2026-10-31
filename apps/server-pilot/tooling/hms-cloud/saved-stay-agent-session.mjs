@@ -8,7 +8,7 @@ import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mj
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { lookupFailure } from './stay360-lookup-cli.mjs';
 import { amendLabtestNote } from './guest-stay-amend.mjs';
-import { amendLabtestContact } from './guest-stay-amend-contact.mjs';
+import { amendLabtestBookerContact, amendLabtestContact } from './guest-stay-amend-contact.mjs';
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs';
 
@@ -126,7 +126,15 @@ export async function withSavedStayAgentSession(operation) {
       }
       if (tool === 'amendContact') {
         try {
-          const result = await amendLabtestContact(page, expected, { field: request.field, value: request.value });
+          const paired = Object.hasOwn(request, 'bookerName') || Object.hasOwn(request, 'bookerContact');
+          const single = Object.hasOwn(request, 'field') || Object.hasOwn(request, 'value');
+          if (paired && single) return { outcome: 'input_gap', issue: 'CONTACT_CHANGE_MODE_CONFLICT' };
+          const result = paired
+            ? await amendLabtestBookerContact(page, expected, {
+              ...(Object.hasOwn(request, 'bookerName') ? { bookerName: request.bookerName } : {}),
+              ...(Object.hasOwn(request, 'bookerContact') ? { bookerContact: request.bookerContact } : {}),
+            })
+            : await amendLabtestContact(page, expected, { field: request.field, value: request.value });
           if (result.outcome !== 'input_gap') sealed = true;
           return result;
         } catch { sealed = true; return { outcome: 'uncertain', issue: 'AMEND_FAILED' }; }
