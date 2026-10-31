@@ -1,5 +1,11 @@
 // Open cancellation on a verified saved Labtest stay; never accept a fee dialog.
-import { currentLabtestRecord } from './labtest-record.mjs';
+import {
+  currentLabtestRecord,
+  snapshotLabtestRecord as recordSnapshot,
+  cleanLabtestRecord,
+  unchangedLabtestRecord as unchangedExcept,
+  matchesLabtestBody as bodyMatchesSnapshot,
+} from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -30,56 +36,10 @@ function actionDeadline(page, timeoutMs, hooks) {
   };
 }
 
-async function recordSnapshot(frame) {
-  return frame.evaluate(() => {
-    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
-    const inputs = [...document.querySelectorAll('input[name="guestid"]')].filter(visible);
-    if (inputs.length !== 1) return null;
-    const panel = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''))?.up?.('form');
-    const form = panel?.getForm?.(), record = panel?.getRecord?.(), fields = form?.getFields?.()?.items;
-    if (!form || !record?.data || !Array.isArray(fields) || !fields.length ||
-        typeof form.isDirty !== 'function' || typeof record.dirty !== 'boolean' ||
-        fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
-    return { values: form.getValues(), data: record.data, formDirty: form.isDirty(), recordDirty: record.dirty,
-      dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
-      modifiedFields: Object.keys(record.modified || {}) };
-  });
-}
-
 function cleanSnapshot(snapshot) {
-  return Boolean(snapshot && snapshot.formDirty === false && snapshot.recordDirty === false &&
-    snapshot.dirtyFields.length === 0 && snapshot.modifiedFields.length === 0 &&
+  return Boolean(cleanLabtestRecord(snapshot) &&
     snapshot.data.cancelreason === '' && snapshot.data.cancellationnote === '' &&
     snapshot.data.reservationstaystatus === 'CONFIRMED' && snapshot.data.cancelpolicyoverride === '');
-}
-
-function unchangedExcept(before, after, changes) {
-  if (!before || !after) return false;
-  const allowed = new Set(Object.keys(changes));
-  if ([...after.dirtyFields, ...after.modifiedFields].some((name) => !allowed.has(name)) ||
-      (after.recordDirty && !after.modifiedFields.length) || (after.formDirty && !after.dirtyFields.length)) return false;
-  return ['values', 'data'].every((part) => {
-    const a = before[part], b = after[part], keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    return [...keys].every((key) => Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
-      (JSON.stringify(a[key]) === JSON.stringify(b[key]) ||
-       (allowed.has(key) && String(b[key] ?? '') === changes[key])));
-  });
-}
-
-function bodyMatchesSnapshot(body, snapshot, changes) {
-  const data = snapshot.data, fields = Object.keys(data).filter((key) => key !== 'extId');
-  const controls = ['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME', 'CURRENT_TAB_NAME'];
-  const keys = [...body.keys()], expected = new Set([...fields, ...controls]);
-  if (keys.length !== expected.size || new Set(keys).size !== keys.length ||
-      keys.some((key) => !expected.has(key)) || fields.some((key) => !body.has(key))) return false;
-  return fields.every((key) => {
-    let value = data[key];
-    if (Object.hasOwn(changes, key)) value = changes[key];
-    else if (key === 'sessionID' && value && typeof value === 'object' &&
-      Object.keys(value).length === 1 && typeof value.sessionID === 'string') value = value.sessionID;
-    else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
-    return body.get(key) === String(value ?? '');
-  });
 }
 
 function matchesOpen(request, frame, confirmation) {
