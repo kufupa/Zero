@@ -18,7 +18,6 @@ import {
   type BillingDocumentRow,
 } from './aop/billing-document-pick.js';
 import { matchPaymentProof } from './aop/payment-proof-match.js';
-import { pickReplyLine } from './aop/reply-lines.js';
 
 export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel' | 'payment_proof' | 'send_document';
 
@@ -442,13 +441,7 @@ function buildBillingCard(input: HmsTodoCardInput, files: string | null): HmsTod
     pushFact(steps, missing, 'Arrival', text(input.arrival), false);
     pushFact(steps, missing, 'Departure', text(input.departure), false);
   }
-  const reply = pickReplyLine({
-    code: 'S',
-    attached: true,
-    ...(ask ? { documentKind: ASK_KIND_LABEL[ask] } : {}),
-  }).line;
-  pushFact(steps, missing, 'Reply', reply, true);
-  pushFact(steps, missing, 'Next step', 'HMS → Documents', true);
+  pushFact(steps, missing, 'Next step', 'Find the document in HMS, then attach it to the reply', true);
   if (!confirmation) pushFact(steps, missing, 'Stay', 'find the stay', true);
   pushFact(steps, missing, 'Attachments', files, false, 'attachment');
   return { kind: 'send_document', title: 'Send document', steps, missing, writesEnabled: false };
