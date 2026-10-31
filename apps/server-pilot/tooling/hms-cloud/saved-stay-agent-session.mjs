@@ -166,7 +166,7 @@ const writeLine = (value) => new Promise((done, fail) => {
 export async function runSavedStayAgentSessionCli(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
     process.stdout.write('Usage: node saved-stay-agent-session.mjs --jsonl\n' +
-      'Tools: read, prepareCancellation, amendNote, openCancel, confirmCancel, quit. Results contain private data.\n');
+      'Tools: read, prepareCancellation, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
     return;
   }
   if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');
