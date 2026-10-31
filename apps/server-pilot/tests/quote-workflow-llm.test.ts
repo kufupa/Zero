@@ -563,6 +563,25 @@ describe('mapLlmDecision', () => {
     expect(mapped.ratePlan.source).toBe('party_contract');
   });
 
+  it('carries stated stay totals separately from per-room occupancy', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 5, childrenTotal: 0 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      adults: 3,
+      adultsTotal: 5,
+      childrenTotal: 0,
+      fields: { adultsTotal: 'extracted', childrenTotal: 'extracted' },
+    });
+  });
+
   it('defaults a one-date quote to one night and marks departure defaulted', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

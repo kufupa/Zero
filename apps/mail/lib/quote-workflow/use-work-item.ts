@@ -233,6 +233,10 @@ function datesAt(stay: string, group: StayGroupRequirement): FieldEvent[] {
   ];
 }
 
+function stayTotalAt(stay: string, group: StayGroupRequirement, field: 'totalAdults' | 'totalChildren'): FieldEvent[] {
+  return [{ path: `${stay}.${field}`, value: (field === 'totalAdults' ? group.adultsTotal : group.childrenTotal) ?? null }];
+}
+
 function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
   return [
     { path: `${row}.count`, value: group.quantity ?? null },
@@ -259,10 +263,15 @@ const CONTACT_PATHS = ['name', 'company', 'endClient', 'email', 'phone'].map((fi
  */
 export function shownFieldPaths(refs: Refs, groups: StayGroupRequirement[]): string[] {
   const paths: string[] = [];
+  const shownStayTotals = new Set<string>();
   for (const group of groups) {
     const ref = refOf(refs, group);
     if (!ref) continue;
     const stay = `stays[${ref.stayId}]`;
+    if (!shownStayTotals.has(ref.stayId)) {
+      paths.push(`${stay}.totalAdults`, `${stay}.totalChildren`);
+      shownStayTotals.add(ref.stayId);
+    }
     paths.push(...datesAt(stay, group).map((event) => event.path));
     const rowId = ref.rowId ?? stayRowId(ref.stayId);
     if (STABLE_ID.test(rowId)) paths.push(...rowFieldsAt(`${stay}.rows[${rowId}]`, group).map((event) => event.path));
@@ -298,6 +307,7 @@ export function fieldEventsBetween(
   const events: FieldEvent[] = [];
   const prior = new Map(before.map((group) => [group.id, group]));
   const priorStay = new Map<string, StayGroupRequirement>();
+  const handledStayTotals = new Set<string>();
   for (const group of before) {
     const ref = refOf(refs, group);
     if (ref && !priorStay.has(ref.stayId)) priorStay.set(ref.stayId, group);
@@ -317,6 +327,12 @@ export function fieldEventsBetween(
     const old = prior.get(group.id);
     const oldStay = old ?? priorStay.get(ref.stayId);
     if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
+    if (!handledStayTotals.has(ref.stayId)) {
+      for (const field of ['totalAdults', 'totalChildren'] as const) {
+        changed(stayTotalAt(stay, group, field), oldStay ? stayTotalAt(stay, oldStay, field) : null);
+      }
+      handledStayTotals.add(ref.stayId);
+    }
     changed(datesAt(stay, group), oldStay ? datesAt(stay, oldStay) : null);
     // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row, which is
     // removed and put back like any other row.
@@ -757,7 +773,7 @@ export function useStoredWork(args: {
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves();
@@ -810,7 +826,7 @@ export function useStoredWork(args: {
       dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves(section);
@@ -876,7 +892,7 @@ export function useStoredWork(args: {
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
   if (stored.status !== 'ready' || !events.length) return stored;
-  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  const fieldProvenance: WorkItemProvenanceMap = { ...provenanceOf(stored) };
   for (const event of events) {
     fieldProvenance[event.path] = { source: 'staff', value: event.value };
   }

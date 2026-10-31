@@ -50,6 +50,7 @@ export const K2_MAPPING = [
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2.',
+  'Preserve adultsTotal and childrenTotal only when explicitly stated as stay-wide totals; never infer them from per-room counts.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
@@ -162,6 +163,8 @@ export type MappedQuoteDecision = {
     departureDate?: string;
     quantity?: number;
     adults?: number;
+    adultsTotal?: number | null;
+    childrenTotal?: number | null;
     childrenAges: number[];
     board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
@@ -540,6 +543,8 @@ export function mapLlmDecision(
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
+      ...(group.adultsTotal !== undefined ? { adultsTotal: group.adultsTotal } : {}),
+      ...(group.childrenTotal !== undefined ? { childrenTotal: group.childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),
@@ -554,6 +559,8 @@ export function mapLlmDecision(
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        ...(group.adultsTotal !== undefined ? { adultsTotal: fieldState(group.adultsTotal) } : {}),
+        ...(group.childrenTotal !== undefined ? { childrenTotal: fieldState(group.childrenTotal) } : {}),
         ...(quoteDefaults
           ? {
               roomPreference: roomPreferenceDefaulted

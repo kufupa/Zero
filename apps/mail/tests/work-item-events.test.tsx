@@ -113,6 +113,21 @@ describe('fieldEventsBetween', () => {
     ]);
   });
 
+  it('persists both stay totals once and preserves an explicit zero when clearing to unknown', () => {
+    const withTotals = [
+      row('g1', 'st-1', { adultsTotal: 5, childrenTotal: 0 }),
+      row('g2', 'st-1', { adultsTotal: 5, childrenTotal: 0 }),
+    ];
+    expect(fieldEventsBetween(READY.refs, [G1, G2], withTotals)).toEqual([
+      { path: 'stays[st-1].totalAdults', value: 5 },
+      { path: 'stays[st-1].totalChildren', value: 0 },
+    ]);
+    expect(fieldEventsBetween(READY.refs, withTotals, [G1, G2])).toEqual([
+      { path: 'stays[st-1].totalAdults', value: null },
+      { path: 'stays[st-1].totalChildren', value: null },
+    ]);
+  });
+
   it('logs a stay with no row by its dates and its own row, and an unknown board or empty date as null', () => {
     expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, departureDate: '', quantity: 3 }])).toEqual([
       { path: 'stays[st-2].requested.departure', value: null },

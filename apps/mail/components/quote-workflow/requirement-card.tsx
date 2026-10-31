@@ -180,6 +180,14 @@ export function StayCard({
   const totals = stayTotals(rows);
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
+  const adultsTotal = first?.adultsTotal ?? null;
+  const childrenTotal = first?.childrenTotal ?? null;
+  const onStayTotal = (field: 'adultsTotal' | 'childrenTotal', value: number | null) =>
+    rows.forEach((row) => onPatch?.(row.id, field === 'adultsTotal' ? { adultsTotal: value } : { childrenTotal: value }));
+  const stayTotalFields = [
+    ['adultsTotal', 'Adults total', adultsTotal, first?.fields.adultsTotal],
+    ['childrenTotal', 'Children total', childrenTotal, first?.fields.childrenTotal],
+  ] as const;
   // The dates are one fact for the whole stay, so a change goes to every room in it.
   const onDates = (patch: StayDatePatch) => rows.forEach((row) => onPatch?.(row.id, patch));
 
@@ -282,8 +290,35 @@ export function StayCard({
         </Field>
 
         <section aria-label="Room types and occupancy" className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-1">
+          <div className="flex flex-wrap items-end justify-between gap-2">
             <h5 className="text-[13px] font-bold text-[#1e293b]">Room types &amp; occupancy</h5>
+            <div className="grid w-full max-w-md grid-cols-2 gap-2">
+              {stayTotalFields.map(([field, label, value, provenance]) => (
+                <Field
+                  key={field}
+                  label={label}
+                  htmlFor={`${id}-${field}`}
+                  aside={<ProvenanceFlag value={provenance} />}
+                  hint="Stay-wide total; not divided across rooms."
+                >
+                  <input
+                    id={`${id}-${field}`}
+                    className={paneFieldClass}
+                    type="number"
+                    min={0}
+                    max={999}
+                    step={1}
+                    value={value ?? ''}
+                    onChange={(event) => {
+                      const raw = event.currentTarget.value;
+                      const next = raw === '' ? null : Number(raw);
+                      if (next !== null && (!Number.isInteger(next) || next < 0 || next > 999)) return;
+                      onStayTotal(field, next);
+                    }}
+                  />
+                </Field>
+              ))}
+            </div>
           </div>
           <div role="table" aria-label="Room types & occupancy" className="overflow-hidden rounded-[3px] border border-[#dbe2ea]">
             <div role="rowgroup" className="flex flex-col divide-y divide-[#e2e8f0]">

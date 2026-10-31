@@ -74,6 +74,25 @@ describe('StayCard rooms', () => {
     expect(onPatch).toHaveBeenLastCalledWith('g1', { adults: 3 });
   });
 
+  it('lets staff edit both stay totals once across room rows and keeps zero distinct from unknown', () => {
+    const { onPatch } = renderStay([
+      stay({ adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'g2', adultsTotal: 5, childrenTotal: 0 }),
+    ]);
+
+    const adults = screen.getByLabelText('Adults total');
+    expect((adults as HTMLInputElement).value).toBe('5');
+    fireEvent.change(adults, { target: { value: '6' } });
+    expect(onPatch).toHaveBeenNthCalledWith(1, 'g1', { adultsTotal: 6 });
+    expect(onPatch).toHaveBeenNthCalledWith(2, 'g2', { adultsTotal: 6 });
+
+    const children = screen.getByLabelText('Children total');
+    expect((children as HTMLInputElement).value).toBe('0');
+    fireEvent.change(children, { target: { value: '' } });
+    expect(onPatch).toHaveBeenNthCalledWith(3, 'g1', { childrenTotal: null });
+    expect(onPatch).toHaveBeenNthCalledWith(4, 'g2', { childrenTotal: null });
+  });
+
   it('keeps adults per room between 1 and 9, the values a work item can save', () => {
     renderStay([stay({ id: 'g1', adults: 9 }), stay({ id: 'g2', adults: 1 })]);
     fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
