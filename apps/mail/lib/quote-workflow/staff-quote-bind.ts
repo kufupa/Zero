@@ -809,6 +809,7 @@ export async function bindStaffActions(args: {
   list?: (input: { threadId: string; limit?: number }) => Promise<unknown>;
   get?: (input: { id: string }) => Promise<unknown>;
   threadId?: string;
+  messageId?: string;
 }): Promise<BoundStaffActions> {
   if (!args.threadId?.trim()) {
     return { kind: 'unavailable', reason: 'Actions for this email are not ready yet. Select it again.' };
@@ -821,11 +822,14 @@ export async function bindStaffActions(args: {
       const listed = await args.list({ threadId: args.threadId, limit: 20 });
       const rows = Array.isArray(listed)
         ? listed
-        : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
+        : listed && typeof listed === 'object' && Array.isArray((listed as { threads?: unknown }).threads)
+          ? (listed as { threads: unknown[] }).threads
+          : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
           ? (listed as { drafts: unknown[] }).drafts
           : [];
       const collected: ReservationistStaffAction[] = [];
       for (const row of rows) {
+        if (args.messageId && (!row || typeof row !== 'object' || (row as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
         const fromList = readStaffActions(row);
         if (fromList.length) {
           collected.push(...fromList);

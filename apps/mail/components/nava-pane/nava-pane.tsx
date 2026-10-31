@@ -18,7 +18,6 @@ import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
-  quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -890,6 +889,7 @@ export function NavaPane({
         list: staff.drafts.list?.query,
         get: staff.drafts.get?.query,
         threadId: source.source.threadId,
+        messageId: source.source.messageId,
       }).then((actions) => {
         if (cancelled || actions.kind !== 'ready') return;
         dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });

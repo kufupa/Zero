@@ -1745,7 +1745,9 @@ export function reduceQuoteSession(
         };
       }
       if (action.analysis.intent !== 'quote') {
-        const unreadItems = (action.analysis.reviewItems ?? []).filter(
+        const unreadItems = projectQuoteReviewItems(action.analysis, [], [], [
+          ...session.staffActions, ...(action.analysis.staffActions ?? []),
+        ]).filter(
           (item) => item.kind === 'document_failure',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
@@ -1909,7 +1911,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

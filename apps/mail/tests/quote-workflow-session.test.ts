@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -432,6 +431,18 @@ describe('quote session', () => {
     expect(s.phase).toBe('non_quote');
     expect(s.reviewItems).toHaveLength(1);
     expect(s.reviewItems[0]?.kind).toBe('document_failure');
+  });
+
+  it('keeps an unread file visible whichever request finishes first', () => {
+    const start = withStaffSource(reduceQuoteSession(initialQuoteSession(), {type:'selection',binding:bind()}));
+    const actions = {type:'staff_actions_ready' as const, actions:[{id:'unread',kind:'business_document_failure' as const,
+      text:'Could not read the rooming list',sourceRef:'file-1',sourceIdentity:'metadata_only' as const,
+      sourceKind:'attachment' as const,messageId:'mail-1',filename:'rooming.xlsx',blockingQuote:false,status:'open' as const}]};
+    const analysis = {type:'analysis_ready' as const, analysis:{intent:'other' as const,groups:[],secondaryAsks:[],alternatives:[]}};
+    const actionsFirst = reduceQuoteSession(reduceQuoteSession(start, actions), analysis);
+    const analysisFirst = reduceQuoteSession(reduceQuoteSession(start, analysis), actions);
+    for (const session of [actionsFirst, analysisFirst])
+      expect(session.reviewItems).toEqual(expect.arrayContaining([expect.objectContaining({id:'unread',kind:'document_failure'})]));
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {
