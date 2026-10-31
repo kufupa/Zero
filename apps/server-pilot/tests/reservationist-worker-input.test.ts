@@ -191,6 +191,7 @@ describe('reservationist worker input', () => {
       messages: [row('current', 4, { textBody: null, htmlBody:
         '<p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p>' +
         '<p>Card date 2027-05-12</p><div><p>4111</p><p>1111</p><p>1111</p><p>1111</p></div><p>CVV: <span>123</span></p>' +
+        '<table><tr><th>Guest</th><th>Room</th></tr><tr><td>Jane</td><td>Smith</td><td>101</td></tr></table>' +
         '<blockquote><p>Earlier request.</p></blockquote>' })], attachments: [],
       sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
@@ -201,6 +202,7 @@ describe('reservationist worker input', () => {
     expect(text).toContain('[card ••••1111]');
     expect(text).toContain('2027-05-12');
     expect(text).toContain('CVV: [code masked]');
+    expect(text).toMatch(/Jane\s+Smith\s+101/);
     expect(text).toContain('From: quoted history');
     expect(text.indexOf('From: quoted history')).toBeLessThan(text.indexOf('Earlier request.'));
     expect(text).not.toMatch(/<[^>]+>|4111[\s-]*1111[\s-]*1111[\s-]*1111|CVV:\s*123/i);

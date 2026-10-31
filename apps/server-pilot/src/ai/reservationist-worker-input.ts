@@ -49,6 +49,7 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     $(element).children('summary').remove();
   });
   $('br, hr').replaceWith('\n');
+  $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
     $(element).prepend('\n').append('\n');
   });
@@ -87,6 +88,7 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
     $(element).replaceWith($('<span>').text(cid ? ` ${alt} ${src} ` : ` ${alt} `));
   });
   $('br').replaceWith('\n');
+  $('td, th').append('\t');
   $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
   const htmlText = $.root().text();
   // A multipart message can contain a request only in its HTML alternative.
