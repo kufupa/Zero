@@ -21,7 +21,7 @@ import {
   roomTypeLabel,
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
-import { newQuoteToken, parseChildrenAges, stayIdOf, stayTotals } from '@/lib/quote-workflow/session';
+import { newQuoteToken, parseChildrenAges, stayIdOf, stayTotal, stayTotals } from '@/lib/quote-workflow/session';
 import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type {
   HmsQuotePropertyCode,
@@ -90,17 +90,6 @@ function stayHeaderDates(arrival: string | undefined, departure: string | undefi
 function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
   const boards = new Set(rows.map((row) => row.board).filter((board) => board !== 'unknown'));
   return boards.size === 1 ? [...boards][0]! : 'all';
-}
-
-function stayTotal(rows: StayGroupRequirement[], field: 'adultsTotal' | 'childrenTotal') {
-  if (rows.some((row) => (row[field] === null || row[field] === undefined) && row.fields[field] === 'staff_corrected'))
-    return { value: null, provenance: 'staff_corrected' as const };
-  const values = rows.map((row) => row[field]).filter((value): value is number => typeof value === 'number');
-  if (values.some((value) => value !== values[0])) return { value: null };
-  return {
-    value: values[0] ?? null,
-    provenance: rows.find((row) => row[field] === values[0])?.fields[field] ?? rows[0]?.fields[field],
-  };
 }
 
 export const DEFAULT_ROOM_TYPES: QuotePaneRoomType[] = ROOM_TYPE_CODES.map((code) => ({

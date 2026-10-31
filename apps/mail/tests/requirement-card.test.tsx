@@ -134,7 +134,8 @@ describe('StayCard rooms', () => {
       childrenTotal: 0,
       fields: { adultsTotal: 'staff_corrected', childrenTotal: 'extracted' },
     });
-    const session = { ...initialQuoteSession(), groups: [original] };
+    const sparse = stay({ id: 'g2', stayId: 's1', adultsTotal: null, childrenTotal: null });
+    const session = { ...initialQuoteSession(), groups: [original, sparse] };
     const added = reduceQuoteSession(session, { type: 'add_row', stayId: 's1', token: 'replacement' });
     const replaced = reduceQuoteSession(added, { type: 'remove_row', groupId: 'g1' });
 

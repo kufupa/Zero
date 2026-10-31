@@ -195,6 +195,17 @@ export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; gue
   );
 }
 
+export function stayTotal(rows: StayGroupRequirement[], field: 'adultsTotal' | 'childrenTotal') {
+  if (rows.some((row) => (row[field] === null || row[field] === undefined) && row.fields[field] === 'staff_corrected'))
+    return { value: null, provenance: 'staff_corrected' as const };
+  const values = rows.map((row) => row[field]).filter((value): value is number => typeof value === 'number');
+  if (values.some((value) => value !== values[0])) return { value: null };
+  return {
+    value: values[0] ?? null,
+    provenance: rows.find((row) => row[field] === values[0])?.fields[field] ?? rows[0]?.fields[field],
+  };
+}
+
 export type StayAskGuest = { name: string; confirmationNumber: string | null };
 export type StayAskAction = 'quote' | 'booking' | 'amend' | 'cancel' | 'other';
 
@@ -2228,17 +2239,19 @@ export function reduceQuoteSession(
       const template = matching[matching.length - 1];
       if (!template) return session;
       const stayId = stayIdOf(template);
+      const adultsTotal = stayTotal(matching, 'adultsTotal');
+      const childrenTotal = stayTotal(matching, 'childrenTotal');
       const row = {
         ...blankRow(`r_${action.token}`, stayId, {
           arrivalDate: template.arrivalDate,
           departureDate: template.departureDate,
           board: template.board,
         }),
-        ...(template.adultsTotal !== undefined ? { adultsTotal: template.adultsTotal } : {}),
-        ...(template.childrenTotal !== undefined ? { childrenTotal: template.childrenTotal } : {}),
+        ...(adultsTotal.value !== null || adultsTotal.provenance === 'staff_corrected' ? { adultsTotal: adultsTotal.value } : {}),
+        ...(childrenTotal.value !== null || childrenTotal.provenance === 'staff_corrected' ? { childrenTotal: childrenTotal.value } : {}),
         fields: {
-          ...(template.fields.adultsTotal !== undefined ? { adultsTotal: template.fields.adultsTotal } : {}),
-          ...(template.fields.childrenTotal !== undefined ? { childrenTotal: template.fields.childrenTotal } : {}),
+          ...(adultsTotal.provenance ? { adultsTotal: adultsTotal.provenance } : {}),
+          ...(childrenTotal.provenance ? { childrenTotal: childrenTotal.provenance } : {}),
         },
       };
       const groups = syncTotalRoomsForStay(
