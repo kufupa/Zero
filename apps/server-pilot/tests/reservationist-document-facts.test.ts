@@ -256,6 +256,28 @@ describe('document facts', () => {
     const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12 November 2027',departure:'14 November 2027'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
     expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2027-11-12',departure:'2027-11-14'});
   });
+  it('retains a shared year heading for a later stay in the same sentence', () => {
+    const plain='For 2027: stay 12/11 to 14/11, stay 20/11 to 22/11.';
+    const html='Stay 12 November 2027 to 14 November 2027.\nStay 20 November 2027 to 22 November 2027.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='20 November 2027 to 22 November 2027',start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'20 November 2027',departure:'22 November 2027'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2027-11-20',departure:'2027-11-22'});
+  });
+  it.each(['plain','html'] as const)('does not accept an uncomparable occupied-night alternative when citing %s', (selected) => {
+    const plain='Please quote accommodation from 12 November 2026 to 14 November 2026.';
+    const html='Please quote accommodation for 12 and 13 November next year; we require 2 nights per date set.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`;
+    const quote=selected==='plain'?'12 November 2026 to 14 November 2026':html.slice(0,-1),start=text.indexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const value=selected==='plain'?{arrival:'12 November 2026',departure:'14 November 2026'}:{arrival:'12 November',departure:'2 nights'};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value,disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Ambiguous alternate stay dates');
+  });
   it.each([
     ['\n', 'Accommodation required from 10 to 16 November 2026.'],
     ['\n\n', 'Accommodation required from 10 to 16 November 2026.'],
