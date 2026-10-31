@@ -184,7 +184,7 @@ export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
   return rowRoomTypeCode(group);
 }
 
-/** Rooms and guests over the rows given; unknown child occupancy leaves the guest total incomplete. */
+/** Rooms and guests over the rows given; children in a row are counted once per room. */
 export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number | null } {
   return groups.reduce(
     (sum, group) => {
@@ -1236,7 +1236,7 @@ function applyGroupPatch(
   const fields = { ...group.fields };
   for (const key of Object.keys(patch) as (keyof StayGroupRequirement)[]) {
     if (key === 'id' || key === 'fields') continue;
-    fields[String(key)] = 'staff_corrected';
+    fields[String(key === 'childrenAges' ? 'childAges' : key)] = 'staff_corrected';
   }
   const next: StayGroupRequirement = { ...group, ...patch, id: group.id, fields };
   // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.

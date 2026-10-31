@@ -568,6 +568,23 @@ describe('mapLlmDecision', () => {
     expect(mapped.ratePlan.source).toBe('party_contract');
   });
 
+  it('marks a one-room adult total as the extracted per-room count', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 1, adultsPerRoom: null, adultsTotal: 2 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      adults: 2,
+      adultsTotal: 2,
+      fields: { adults: 'extracted' },
+    });
+  });
+
   it('treats an omitted child count as unknown and explicit no children as zero', () => {
     const missing = mapLlmDecision(
       lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [{ ...group, childCount: undefined }] })),

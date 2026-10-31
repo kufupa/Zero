@@ -47,7 +47,11 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
-import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import {
+  approvedExecuteHeader,
+  staffHeaderForStay,
+  staffQuoteGroupsFromStay,
+} from '../lib/quote-workflow/staff-quote-bind';
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
@@ -946,6 +950,25 @@ describe('quote session', () => {
     expect(parseChildrenAges('  , ')).toEqual([]);
     expect(parseChildrenAges('5,')).toEqual([5]);
     expect(parseChildrenAges('0')).toEqual([0]);
+  });
+
+  it('lets staff age edits clear the missing-age quote blocker', () => {
+    const group = quoteAnalysis.groups[0]!;
+    const session = reduceQuoteSession(initialQuoteSession(), {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...group, childCount: 2, childrenAges: [], fields: { ...group.fields, childAges: 'missing' } }],
+      },
+    });
+    const corrected = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { childrenAges: [6, 8] },
+    });
+
+    expect(corrected.groups[0]?.fields.childAges).toBe('staff_corrected');
+    expect(staffQuoteGroupsFromStay(corrected.groups)).toMatchObject({ ok: [{ childrenAges: [6, 8] }] });
   });
 
   it('keeps only the child ages a work item can save: whole years 0 to 17, at most 9', () => {

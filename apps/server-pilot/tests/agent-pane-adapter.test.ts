@@ -125,6 +125,11 @@ describe('agentDecisionToLunaAnalysis', () => {
       },
     ]);
     expect(parsed.workflow).toBe('quote');
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      adults: 2,
+      adultsTotal: 2,
+      fields: { adults: 'extracted' },
+    });
   });
 
   it('does not split stay totals or invent ages when per-room occupancy is unknown', () => {
@@ -152,7 +157,9 @@ describe('agentDecisionToLunaAnalysis', () => {
     });
     const mapped = mapLlmDecision(parsed);
     expect(mapped.groups[0]?.adults).toBeUndefined();
-    expect(mapped.groups[0]?.childAges).toBeUndefined();
+    expect(mapped.groups[0]?.adultsTotal).toBe(5);
+    expect(mapped.groups[0]?.childrenAges).toEqual([]);
+    expect(mapped.groups[0]?.childCount).toBeNull();
     expect(mapped.groups[0]?.fields).toMatchObject({ adults: 'missing', childAges: 'missing' });
     expect(mapped.missing.map((item) => item.field)).toEqual(['adultsPerRoom', 'childAges']);
   });

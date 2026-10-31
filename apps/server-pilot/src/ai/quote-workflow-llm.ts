@@ -165,6 +165,7 @@ export type MappedQuoteDecision = {
     departureDate?: string;
     quantity?: number;
     adults?: number;
+    adultsTotal?: number | null;
     childCount?: number | null;
     childrenTotal?: number | null;
     childrenAges: number[];
@@ -554,7 +555,7 @@ export function mapLlmDecision(
       typeof group.adultsTotal === 'number';
     const adultsUnallocated =
       group.adultsPerRoom === null && typeof group.adultsTotal === 'number' && !adultsFromSingleRoomTotal;
-    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && !adultsUnallocated;
+    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && typeof group.adultsTotal !== 'number';
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
     const adults =
       group.adultsPerRoom ??
@@ -594,7 +595,7 @@ export function mapLlmDecision(
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
-      childCount,
+      ...(group.adultsTotal === undefined ? { childCount } : { adultsTotal: group.adultsTotal, childCount }),
       ...(group.childrenTotal !== undefined ? { childrenTotal: group.childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
@@ -609,7 +610,7 @@ export function mapLlmDecision(
             ? ('extracted' as const)
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
-        adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        adults: adultsDefaulted ? ('defaulted' as const) : fieldState(adults),
         childCount: fieldState(childCount),
         childrenTotal: fieldState(group.childrenTotal),
         childAges: childAgesMissing ? ('missing' as const) : ('extracted' as const),
