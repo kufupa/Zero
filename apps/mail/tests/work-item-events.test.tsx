@@ -4,7 +4,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
-import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
+import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession, stayTotal } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
 import type { QuoteAnalysis, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
@@ -115,13 +115,30 @@ describe('fieldEventsBetween', () => {
 
   it('persists both stay totals once and preserves an explicit zero when clearing to unknown', () => {
     const withTotals = [
-      row('g1', 'st-1', { adultsTotal: 5, childrenTotal: 0 }),
+      row('g1', 'st-1', {
+        adultsTotal: null,
+        childrenTotal: null,
+        fields: { adultsTotal: 'missing', childrenTotal: 'missing' },
+      }),
       row('g2', 'st-1', { adultsTotal: 5, childrenTotal: 0 }),
     ];
     expect(fieldEventsBetween(READY.refs, [G1, G2], withTotals)).toEqual([
       { path: 'stays[st-1].totalAdults', value: 5 },
       { path: 'stays[st-1].totalChildren', value: 0 },
     ]);
+    const copiedRow = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: withTotals },
+      { type: 'duplicate_row', groupId: 'g1', token: 'copy' },
+    );
+    expect(stayTotal(copiedRow.groups, 'adultsTotal').value).toBe(5);
+    expect(stayTotal(copiedRow.groups, 'childrenTotal').value).toBe(0);
+    const copiedStay = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: withTotals },
+      { type: 'duplicate_stay', stayId: 'st-1', token: 'copy' },
+    );
+    const copiedStayEvents = fieldEventsBetween(READY.refs, withTotals, copiedStay.groups);
+    expect(copiedStayEvents).toContain({ path: 'stays[s_copy].totalAdults', value: 5 });
+    expect(copiedStayEvents).toContain({ path: 'stays[s_copy].totalChildren', value: 0 });
     expect(fieldEventsBetween(READY.refs, withTotals, [G1, G2])).toEqual([
       { path: 'stays[st-1].totalAdults', value: null },
       { path: 'stays[st-1].totalChildren', value: null },

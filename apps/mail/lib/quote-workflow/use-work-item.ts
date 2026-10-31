@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
+import { stayTotal } from './session';
 import {
   bindStoredWork,
   quoteAnalysisOf,
@@ -233,8 +234,9 @@ function datesAt(stay: string, group: StayGroupRequirement): FieldEvent[] {
   ];
 }
 
-function stayTotalAt(stay: string, group: StayGroupRequirement, field: 'totalAdults' | 'totalChildren'): FieldEvent[] {
-  return [{ path: `${stay}.${field}`, value: (field === 'totalAdults' ? group.adultsTotal : group.childrenTotal) ?? null }];
+function stayTotalAt(stay: string, groups: StayGroupRequirement[], field: 'totalAdults' | 'totalChildren'): FieldEvent[] {
+  const totalField = field === 'totalAdults' ? 'adultsTotal' : 'childrenTotal';
+  return [{ path: `${stay}.${field}`, value: stayTotal(groups, totalField).value }];
 }
 
 function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
@@ -306,11 +308,11 @@ export function fieldEventsBetween(
 ): FieldEvent[] {
   const events: FieldEvent[] = [];
   const prior = new Map(before.map((group) => [group.id, group]));
-  const priorStay = new Map<string, StayGroupRequirement>();
+  const priorStay = new Map<string, StayGroupRequirement[]>();
   const handledStayTotals = new Set<string>();
   for (const group of before) {
     const ref = refOf(refs, group);
-    if (ref && !priorStay.has(ref.stayId)) priorStay.set(ref.stayId, group);
+    if (ref) priorStay.set(ref.stayId, [...(priorStay.get(ref.stayId) ?? []), group]);
   }
   // `always` paths are logged even when the value is unchanged: a default she confirms as her own count.
   const changed = (now: FieldEvent[], then: FieldEvent[] | null, always?: ReadonlySet<string>) => {
@@ -325,11 +327,13 @@ export function fieldEventsBetween(
     if (!ref) continue;
     const stay = `stays[${ref.stayId}]`;
     const old = prior.get(group.id);
-    const oldStay = old ?? priorStay.get(ref.stayId);
+    const oldStayRows = priorStay.get(ref.stayId) ?? [];
+    const oldStay = old ?? oldStayRows[0];
     if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
     if (!handledStayTotals.has(ref.stayId)) {
+      const stayRows = after.filter((candidate) => refOf(refs, candidate)?.stayId === ref.stayId);
       for (const field of ['totalAdults', 'totalChildren'] as const) {
-        changed(stayTotalAt(stay, group, field), oldStay ? stayTotalAt(stay, oldStay, field) : null);
+        changed(stayTotalAt(stay, stayRows, field), oldStayRows.length ? stayTotalAt(stay, oldStayRows, field) : null);
       }
       handledStayTotals.add(ref.stayId);
     }

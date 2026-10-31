@@ -1318,8 +1318,8 @@ function blankRow(
 }
 
 /**
- * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Staff own every value in the
- * copy, and an approved override belongs to the row it was approved for.
+ * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Stay totals remain stay-wide;
+ * other copied values become staff-owned, and an approved override belongs to the row it was approved for.
  */
 function copyRow(source: StayGroupRequirement, id: string, stayId: string): StayGroupRequirement {
   const copy: StayGroupRequirement = {
@@ -1329,7 +1329,11 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     roomCodes: source.roomCodes?.slice(),
     childrenAges: [...source.childrenAges],
     specialRequests: [...source.specialRequests],
-    fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
+    fields: Object.fromEntries(
+      Object.entries(source.fields).map(([key, provenance]) => [
+        key, key === 'adultsTotal' || key === 'childrenTotal' ? provenance : 'staff_corrected',
+      ]),
+    ),
   };
   delete copy.rateCode;
   delete copy.rowPrice;
