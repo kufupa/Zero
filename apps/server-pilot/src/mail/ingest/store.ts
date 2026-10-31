@@ -899,7 +899,7 @@ export async function persistInboundMessage(
       htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
       rawMimeS3Key,
       receivedAt: parsed.receivedAt,
-      sentAt: null, // RFC 5322 Date is sender-controlled, not evidence of an actual send time.
+      sentAt: parsed.receivedAt ?? null,
       isRead: isHotelSent || ambiguousSource,
     });
 
