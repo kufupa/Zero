@@ -26,7 +26,9 @@ const saved = await saveNewLabtestStay(page, {
 
 The save requires the current verified fake profile, a blank new stay, dates in
 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee, no selected A/R
-or card, CMS Send unchecked, and blank CMS
+or card, and no agency, organization, group or related agency/contract selection.
+The visible fields, draft model and save request must show the observed party IDs
+and display fields blank. It also requires CMS Send unchecked and blank CMS
 recipient and guest email. It checks the observed request's action and key
 identity fields. One exact request is dispatched from its page route; the
 context read guard remains installed. The page then blocks other non-read
