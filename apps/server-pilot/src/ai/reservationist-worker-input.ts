@@ -74,7 +74,7 @@ export function renderReservationistMessage(row: Pick<ReservationistWorkerMessag
 }
 
 export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null }) {
-  return row.arrivedAt ?? (row.direction === 'inbound' ? row.receivedAt : row.sentAt) ?? row.createdAt ?? null;
+  return row.arrivedAt ?? row.createdAt ?? (row.direction === 'inbound' ? row.receivedAt : row.sentAt) ?? null;
 }
 
 /** A past reply is guest-visible only when addressed to the current guest. */

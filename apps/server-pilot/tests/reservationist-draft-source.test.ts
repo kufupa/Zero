@@ -13,6 +13,7 @@ it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  expect(original.at).toBe(row.arrivedAt.toISOString());expect(original.sourceHash).toBe(createHash('sha256').update(renderReservationistMessage(row).text).digest('hex'));expect(changed.sourceHash).not.toBe(original.sourceHash);expect(changed.identityHash).not.toBe(original.identityHash);
  const live=operationalDraftMessages([{...row,transportId:'owner',threadId:'thread'}],{requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN',triggerMessageId:'trigger',causalAt:row.arrivedAt.toISOString()});
  expect(live[0]?.text).toBe(renderReservationistMessage(row).text);expect(live[0]?.at).toBe(original.at);
+ const fallback={...row,arrivedAt:null,createdAt:new Date('2026-10-05T02:00:00.000Z')};expect(draftSourceMessage(fallback).at).toBe(fallback.createdAt.toISOString());
 });
 it.each(['transportId','threadId','requestedByUserId','triggerMessageId'] as const)('rejects foreign %s',key=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,[key]:'foreign'})).toThrow();});
 it('rejects changed text, incomplete and malformed source snapshots',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,messages:[{...source.messages[0]!,sourceHash:'c'.repeat(64)}]})).toThrow();for(const value of [null,{version:1}, {...receipt,extra:true},{...receipt,digest:'0'.repeat(64)}])expect(()=>assertReservationistDraftSource(value,source)).toThrow();});
