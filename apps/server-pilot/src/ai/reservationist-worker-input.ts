@@ -126,18 +126,19 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   if (hasText && (!inspectAlternateHtml || html.length > 2_000_000))
     return { texts: [normalized], describedCids, preserveAll: true };
   const $ = load(html, null, false);
-  $('details.quoted-toggle, blockquote').before('\nFrom: quoted history\n');
+  $('details.quoted-toggle, blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').before('\nFrom: quoted history\n');
   $('img').each((_, element) => {
     const src = $(element).attr('src')?.trim() ?? '';
     const alt = $(element).attr('alt')?.trim() ?? '';
     const cid = /^cid:/i.test(src) ? normalizeContentId(src) : null;
+    const usefulAlt = /^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt;
     // Unknown descriptions can describe business content; only generic signature labels are disposable.
-    if (cid && alt && !/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt)) describedCids.add(cid);
-    $(element).replaceWith($('<span>').text(cid ? ` ${alt} ${src} ` : ` ${alt} `));
+    if (cid && usefulAlt) describedCids.add(cid);
+    $(element).replaceWith($('<span>').text(cid ? ` ${usefulAlt} ${src} ` : ` ${usefulAlt} `));
   });
   $('br').replaceWith('\n');
   $('td, th').append('\t');
-  $('p, div, li, tr').each((_, element) => { $(element).prepend('\n').append('\n'); });
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => { $(element).prepend('\n').append('\n'); });
   const htmlText = $.root().text();
   // A multipart message can contain a request only in its HTML alternative.
   // Omit an image only when every available view agrees it is signature noise.
@@ -196,21 +197,20 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  // The mailbox arrival clock, rather than a sender-supplied Date header,
-  // establishes both ordering and the runtime's causal cutoff.
-  const triggerAt = time(trigger.arrivedAt) ?? time(trigger.createdAt);
+  // Use trusted mailbox arrival for inbound and confirmed send time for outbound.
+  const triggerAt = time(trigger.arrivedAt);
   if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
 
   const selected: Array<{ row: ReservationistWorkerMessage; at: number }> = [];
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
-    const arrived = time(row.arrivedAt) ?? time(row.createdAt);
-    if (arrived === null) throw new Error('worker_intake_clock_invalid');
-    // Later mailbox arrivals are never context, even if their authored date is backdated.
-    if (arrived > triggerAt) continue;
-    if (arrived === triggerAt) throw new Error('worker_intake_order_ambiguous');
-    selected.push({ row, at: arrived });
+    const at = time(row.direction === 'outbound' ? row.sentAt : row.arrivedAt);
+    // Queued outbound rows and imported outbound rows without a proven send clock are not context.
+    if (at === null) { if (row.direction === 'outbound') continue; throw new Error('worker_intake_clock_invalid'); }
+    if (at > triggerAt) continue;
+    if (at === triggerAt) throw new Error('worker_intake_order_ambiguous');
+    selected.push({ row, at });
   }
   // Bound raw inputs before HTML sanitization; the normalized limits below
   // still govern what the model receives.
@@ -220,9 +220,8 @@ export async function buildReservationistWorkerInput(options: {
       selected.some(({ row }) => (row.subject?.length ?? 0) > 4096))
     throw new Error('worker_intake_context_limit');
   check();
+  // IDs only stabilize serialization within tied earlier timestamps; they do not establish chronology.
   selected.sort((a, b) => a.at - b.at || a.row.id.localeCompare(b.row.id));
-  if (selected.some((entry, index) => index > 0 && entry.at === selected[index - 1]!.at))
-    throw new Error('worker_intake_order_ambiguous');
   const normalized = new Map(selected.map(({ row }) => [row.id, normalizeMessageText(row)]));
   const messages = selected.map(({ row, at }) => ({
     id: row.id,
