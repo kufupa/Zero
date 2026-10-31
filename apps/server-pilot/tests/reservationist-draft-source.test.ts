@@ -15,6 +15,9 @@ it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  const live=operationalDraftMessages([{...row,transportId:'owner',threadId:'thread'}],{requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN',triggerMessageId:'trigger',causalAt:row.arrivedAt.toISOString()});
  expect(live[0]?.text).toBe(renderReservationistMessage(row).text);expect(live[0]?.at).toBe(original.at);
  const fallback={...row,arrivedAt:null,createdAt:new Date('2026-10-05T02:00:00.000Z')};expect(draftSourceMessage(fallback).at).toBe(fallback.createdAt.toISOString());
+ const outbound={...row,transportId:'owner',threadId:'thread',direction:'outbound',arrivedAt:new Date('2026-10-05T00:00:00.000Z')};
+ const rows=[{...row,transportId:'owner',threadId:'thread'},{...outbound,id:'unsent',sentAt:null},{...outbound,id:'late',sentAt:new Date('2026-10-05T02:00:00.000Z')},{...outbound,id:'sent',sentAt:new Date('2026-10-05T00:30:00.000Z')}];
+ expect(operationalDraftMessages(rows,{requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN',triggerMessageId:'trigger',causalAt:row.arrivedAt.toISOString()}).map(m=>m.id)).toEqual(['trigger','sent']);
 });
 it('proves the same parking answer in both MIME alternatives but rejects a conflict',()=>{
  const at=new Date('2026-10-05T01:00:00.000Z'),sent=new Date('2026-10-04T01:00:00.000Z');
