@@ -9,7 +9,7 @@ import { fromBuffer } from '@office-kit/xlsx/node';
 import { loadWorkbook } from '@office-kit/xlsx/io';
 import { getCellDisplayText } from '@office-kit/xlsx/styles';
 import type { Workbook } from '@office-kit/xlsx/workbook';
-import { AMBIGUOUS_NUMBER_GROUPS, maskIncomingCardNumbers } from './card-mask.js';
+import { AMBIGUOUS_NUMBER_GROUPS, maskIncomingCardNumbers, PAN_CANDIDATE_PATTERN } from './card-mask.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 export const RESERVATIONIST_XLSX_MAX_INPUT_BYTES = 5 * 1024 * 1024;
@@ -90,9 +90,13 @@ function crossRowNumberCells(
     const cells = [...row.values()].sort((left, right) => left.col - right.col);
     const previousText = textFor(previousCells);
     const rowText = textFor(cells);
-    const together = maskIncomingCardNumbers(`${previousText} ${rowText}`);
+    const joined = `${previousText} ${rowText}`;
+    const together = maskIncomingCardNumbers(joined);
     const separate = `${maskIncomingCardNumbers(previousText)} ${maskIncomingCardNumbers(rowText)}`;
-    if (together === separate) continue;
+    const boundary = previousText.length + 1;
+    const panCandidateCrossesRows = [...joined.matchAll(new RegExp(PAN_CANDIDATE_PATTERN.source, 'g'))]
+      .some((match) => match.index < boundary && match.index + match[0].length > boundary);
+    if (together === separate && !panCandidateCrossesRows) continue;
     for (const [number, values] of [[previousNumber, previousCells], [rowNumber, cells]] as const) {
       for (const cell of values) {
         if (/\d/.test(getCellDisplayText(workbook, cell))) marked.add(`${number}:${cell.col}`);

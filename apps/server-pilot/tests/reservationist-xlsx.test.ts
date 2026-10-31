@@ -137,6 +137,25 @@ describe('reservationist XLSX intake', () => {
     expect(result.text).not.toContain('4111');
   });
 
+  it('sends non-Luhn digit candidates crossing rows to manual review too', async () => {
+    const body = await makeWorkbook([{
+      name: 'OCR split',
+      cells: [
+        { row: 1, column: 1, value: '4111 1111' },
+        { row: 2, column: 1, value: '1111 1112' },
+      ],
+    }]);
+
+    const result = await extract(body);
+    expect(result.reason).toBe('text');
+    const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
+    expect(rows.every((row) => row.cells.every((cell: { displayText: string }) =>
+      !/\d/.test(cell.displayText)))).toBe(true);
+    expect(result.text).toContain(AMBIGUOUS_NUMBER_GROUPS);
+    expect(result.text).not.toContain('4111');
+    expect(result.text).not.toContain('1112');
+  });
+
   it('returns a visible manual reason rather than partial text at row or cell limits', async () => {
     const lateRow = await makeWorkbook([{
       name: 'Too many rows',
