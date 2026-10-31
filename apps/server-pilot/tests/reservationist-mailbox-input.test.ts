@@ -11,7 +11,8 @@ function setup() {
   const message = (id: string, minutes: number, direction: 'inbound' | 'outbound', fromAddress: string) => ({
     id, transportId: 'mailbox', threadId: 'thread', direction, fromAddress, textBody: `${id} text`,
     htmlBody: null as string | null, subject: null, toAddresses: direction === 'outbound' ? ['Guest <guest@example.invalid>'] : [],
-    ccAddresses: [], bccAddresses: [], receivedAt: new Date(now + minutes * 60_000), sentAt: null,
+    ccAddresses: [], bccAddresses: [], receivedAt: new Date(now + minutes * 60_000),
+    sentAt: direction === 'outbound' ? new Date(now + minutes * 60_000) : null,
     arrivedAt: new Date(now + minutes * 60_000), createdAt: new Date(now + minutes * 60_000),
   });
   const state = {
@@ -31,7 +32,10 @@ function setup() {
       if (table === 'attachment') return state.files;
       if (table === 'message') {
         if ('fromAddress' in selection && !('transportId' in selection)) return state.rows.filter((row) => row.id === state.binding.triggerId);
-        if ('transportId' in selection) return state.rows.filter((row) => row.arrivedAt <= state.rows.find((r) => r.id === state.binding.triggerId)!.arrivedAt);
+        if ('transportId' in selection) {
+          const cutoff = state.rows.find((r) => r.id === state.binding.triggerId)!.arrivedAt;
+          return state.rows.filter((row) => row.direction === 'outbound' ? row.sentAt && row.sentAt <= cutoff : row.arrivedAt <= cutoff);
+        }
         return state.rows;
       }
       throw new Error(`unexpected table ${table}`);

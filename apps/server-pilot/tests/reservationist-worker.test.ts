@@ -20,7 +20,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
       try {
-        const threadId=randomUUID(),previousId=randomUUID(),currentId=randomUUID(),generationId=randomUUID(),runId=randomUUID();
+        const threadId=randomUUID(),previousId=randomUUID(),previousReplyId=randomUUID(),currentId=randomUUID(),generationId=randomUUID(),runId=randomUUID();
         const at=new Date(Date.now()-60_000),previousAt=new Date(at.getTime()-60_000),deadlineAt=new Date(Date.now()+180_000);
         const arrival='I will like to check in by 3:00pm.',shuttle='Is an airport shuttle available?';
         const text=mode==='installed'?`${arrival} ${shuttle}`:mode==='question'?shuttle:mode==='source_review'||mode==='missing_file'?'Please see attached.':'Thank you.';
@@ -34,6 +34,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
         if(mode==='installed')await db.insert(message).values([
           {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Unsent synthetic reply.',receivedAt:previousAt,sentAt:null},
           {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Sent after the synthetic request.',receivedAt:previousAt,sentAt:new Date(at.getTime()+20_000)},
+          {id:previousReplyId,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Earlier synthetic reply, synced late.',receivedAt:new Date(at.getTime()+20_000),sentAt:new Date(previousAt.getTime()+30_000)},
         ]);
         if(mode==='source_review'||mode==='missing_file'){
           const key='attachments/'+currentId+'/rooms.xlsx',mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -80,7 +81,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
         const [generation]=await db.select().from(aiDraftGeneration).where(eq(aiDraftGeneration.id,generationId));
         const drafts=await db.select().from(mailDraft).where(eq(mailDraft.generationId,generationId));
         expect(saved?.state).toBe('succeeded');
-        expect(generation?.contextMessageIds).toEqual([previousId,currentId]);
+        expect(generation?.contextMessageIds).toEqual(mode==='installed'?[previousId,previousReplyId,currentId]:[previousId,currentId]);
         if(mode==='no_action'){
           expect(generation?.outcome).toBe('no_action');
           expect(drafts).toHaveLength(0);
@@ -95,6 +96,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           expect(modelPrompts[0]).toContain('Synthetic attachment: arrival note.');
           expect(modelPrompts[0]).not.toContain('Unsent synthetic reply.');
           expect(modelPrompts[0]).not.toContain('Sent after the synthetic request.');
+          expect(modelPrompts[0]).toContain('Earlier synthetic reply, synced late.');
           expect(drafts[0]?.textBody).toContain('We have noted your request to check in by 3:00pm.');
           expect(saved?.metrics?.reservationistResult?.tasks).toEqual(expect.arrayContaining([
             expect.objectContaining({id:'arrival',status:'complete'}),
