@@ -38,7 +38,7 @@ import {
   type HmsEvidenceRef,
   type MailEvidenceRef,
 } from '../../ai/draft-evidence.js';
-import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
+import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -894,17 +894,25 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const sourceMessages=await input.db.select().from(message).where(and(eq(message.transportId,input.transportId),eq(message.threadId,input.draft.threadId!)));
  const causal=sourceMessages.filter(row=>{const date=row.direction==='inbound'?row.receivedAt:row.sentAt;return date&&date.getTime()<=cutoff;}).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
- if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+item.sizeBytes,0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
  const saved=metrics.reservationistDraftSource;
- assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>({attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline,sourceHash:saved.attachments?.find(a=>a.attachmentId===item.id)?.sourceHash??''})).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
+ const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));
+ if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity==='metadata_only'?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
+ const descriptor=(item:typeof attachment.$inferSelect,sourceHash?:string):ReservationistDraftSource['attachments'][number]=>{
+  const base={attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline};
+  const original=originals.get(item.id);
+  return original?.sourceIdentity==='metadata_only'?{...base,sourceIdentity:'metadata_only',contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
+ };
+ assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>descriptor(item)).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
+ assertMetadataSourceRecoveries(saved,result);
  assertSourcePreparedDraftFacts(quoted?{...result,preparedFacts:result.preparedFacts?.filter(fact=>!typedQuoteFactKeys.has(fact.key))}:result,saved,sourceMessages.filter(row=>causal.some(item=>item.id===row.id)),new AbortController().signal);
 
  const sources:ReservationistDraftSource['attachments']=[];
  for(const item of attached){
+  if(originals.get(item.id)?.sourceIdentity==='metadata_only'){sources.push(descriptor(item));continue;}
   if(!inboundAttachmentIdentityReader)throw new Error('reservationist_attachment_reader_unavailable');
   const bytes=await inboundAttachmentIdentityReader({attachmentId:item.id,transportId:input.transportId,threadId:input.draft.threadId!,expectedS3Key:item.s3Key,expectedSize:item.sizeBytes});
   if(!bytes)throw new Error('reservationist_attachment_source_unavailable');
-  sources.push({attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,sourceHash:bytes.sha256,inline:item.isInline});
+  sources.push(descriptor(item,bytes.sha256));
  }
  assertReservationistDraftSource(metrics.reservationistDraftSource,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:sources.sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
  for(const packet of result.packets??[])assertChannelPacketDraftSource(packet,saved,input.now??new Date());
