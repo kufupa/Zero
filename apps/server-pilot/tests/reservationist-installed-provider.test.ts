@@ -5,7 +5,11 @@ import { admitReservationistAttachment } from '../src/ai/reservationist-attachme
 import { runReservationistRuntime, type ReservationistRuntimeInput } from '../src/ai/reservationist-runtime.js';
 import type { ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 
-const state = vi.hoisted(() => ({ locked: false, quoteReads: 0 }));
+const state = vi.hoisted(() => ({ locked: false, quoteReads: 0, originProperty: 'HRCEN' }));
+vi.mock('../src/hms/hms-read-target.js', async (original) => ({
+  ...await original<typeof import('../src/hms/hms-read-target.js')>(),
+  assertHmsReadOriginAllowed: async () => ({ propertyCode: state.originProperty }),
+}));
 vi.mock('../src/hms/property-read-lock.js', async (original) => ({
   ...await original<typeof import('../src/hms/property-read-lock.js')>(),
   createPostgresPropertyReadLock: () => ({ withLock: async (run: () => Promise<unknown>) => {
@@ -24,7 +28,7 @@ vi.mock('../src/ai/staff-quote-installation.js', async (original) => ({
     },
   }),
 }));
-afterEach(() => { vi.unstubAllEnvs(); state.locked = false; state.quoteReads = 0; });
+afterEach(() => { vi.unstubAllEnvs(); state.locked = false; state.quoteReads = 0; state.originProperty = 'HRCEN'; });
 
 function input(text: string, artifacts: unknown[] = []): ReservationistRuntimeInput {
   const at = new Date(Date.now() - 1000).toISOString();
@@ -56,6 +60,20 @@ it('cancels an in-flight model request when its caller aborts', async () => {
   await invoked;
   controller.abort();
   await stopped;
+});
+
+it('refuses unmasked message, subject or attachment text before invoking the model', async () => {
+  const body = input('Card 4111 1111 1111 1111, CVV: 123');
+  const subject = input('Please help.');
+  subject.messages[0]!.subject = 'CVV: 123';
+  const attachment = input('Please read the attachment.');
+  const unsafeAdmission = { status: 'admitted', metadata: { mimeType: 'text/plain' }, source: { pages: ['CVV: 123'] } };
+  for (const [value, admissions] of [[body, []], [subject, []], [attachment, [unsafeAdmission]]] as const) {
+    const invoke = vi.fn(async (_request: ModelInvokeInput) => response());
+    const provider = await createInstalledReservationistProvider({ invoke })(context(value, [...admissions]));
+    await expect(runReservationistRuntime(value, provider.dependencies)).rejects.toThrow('reservationist_text_not_masked');
+    expect(invoke).not.toHaveBeenCalled();
+  }
 });
 
 it('masks PDF text through real admission before model input and leaves visuals for staff', async () => {
@@ -100,4 +118,15 @@ it('runs the installed quote service only while the property lock and source gra
   expect(state.quoteReads).toBe(1);
   expect(state.locked).toBe(false);
   expect(result.tasks[0]?.status).toBe('needs_clarification');
+});
+
+it('does not start live quote reads for a different mailbox property', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  state.originProperty = 'HRDAV';
+  const text = 'Please quote a room.', value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => response([{ id: 'quote', kind: 'quote', factIds: [],
+    source: { attachmentId: 'message:message', sourceHash: hash, page: 1, quote: text, start: 0, end: text.length } }])) };
+  const provider = await createInstalledReservationistProvider(model)(context(value));
+  await expect(runReservationistRuntime(value, provider.dependencies)).rejects.toThrow('reservationist_property_origin_invalid');
+  expect(state.quoteReads).toBe(0);
 });

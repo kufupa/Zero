@@ -1,7 +1,9 @@
 import { createPostgresPropertyReadLock, propertyReadLockKey } from '../hms/property-read-lock.js';
+import { assertHmsReadOriginAllowed } from '../hms/hms-read-target.js';
 import { isDocxMimeType } from '../mail/artifacts/read-artifact.js';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
+import { maskIncomingCardNumbers } from './card-mask.js';
 import type { ReservationistProvider } from './draft-route-factory.js';
 import { createReservationistDependencies, deriveRequestedArrivalAcknowledgement, type ReservationistExecutionServices } from './reservationist-execution.js';
 import type { ReservationistRuntimeInput, RuntimeSourceRecovery } from './reservationist-runtime.js';
@@ -53,9 +55,18 @@ export function createInstalledReservationistProvider(adapter: ModelAdapter): Re
       }
       return admission;
     });
+    const assertMasked = (input: ReservationistRuntimeInput) => {
+      const text = [
+        ...input.messages.flatMap((message) => [message.text, message.subject ?? '']),
+        ...(input.requiredAskSpans ?? []).map((ask) => ask.text),
+        ...admissions.flatMap((admission) => admission.source?.pages ?? []),
+      ];
+      if (text.some((value) => maskIncomingCardNumbers(value) !== value))
+        throw new Error('reservationist_text_not_masked');
+    };
     const textOnlyAdapter: ModelAdapter = {
       ...(adapter.reserveCalls ? { reserveCalls: (count, signal) => adapter.reserveCalls!(count, signal) } : {}),
-      invoke: (request) => adapter.invoke({ ...request, files: [], images: [] }),
+      invoke: (request) => { assertMasked(context.input); return adapter.invoke({ ...request, files: [], images: [] }); },
     };
     const basicServices: ReservationistExecutionServices = {
       resolveRequestedArrivalAcknowledgement: async (ctx) => deriveRequestedArrivalAcknowledgement(ctx),
@@ -78,6 +89,7 @@ export function createInstalledReservationistProvider(adapter: ModelAdapter): Re
         currentReadEvaluation: true,
         plan: async (input, signal) => {
           await fresh(input);
+          assertMasked(input);
           const plan = await factory.dependencies.plan(input, signal);
           await fresh(input);
           if (visualRecoveries.length && plan.noAction) {
@@ -104,10 +116,16 @@ export function createInstalledReservationistProvider(adapter: ModelAdapter): Re
           const lock = createPostgresPropertyReadLock({ tenantId: config.tenantId, propertyCode: input.propertyCode, databaseUrl });
           return lock.withLock(async () => {
             await fresh(input);
+            const assertOrigin = async () => {
+              const target = await assertHmsReadOriginAllowed({ transportId: context.transportId, threadId: context.threadId, messageId: input.trigger.id });
+              if (target.propertyCode !== input.propertyCode) throw new Error('reservationist_property_origin_invalid');
+              await fresh(input);
+            };
+            await assertOrigin();
             const traces: Promise<void>[] = [];
             activeServices = { ...basicServices, ...getInstalledStaffQuoteServices({
               authorizationId: context.generationId,
-              authorizeContext: async (ctx) => { await fresh(ctx.input); return true; },
+              authorizeContext: async (ctx) => { await fresh(ctx.input); await assertOrigin(); return true; },
               signer: { signerName: '', signerEmail: '' }, propertyCode: input.propertyCode,
               childEnv: { ...process.env, HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(config.tenantId, input.propertyCode), PANE_STAY_TENANT_ID: config.tenantId },
               onTraceFinish: (finished) => { traces.push(finished); },
