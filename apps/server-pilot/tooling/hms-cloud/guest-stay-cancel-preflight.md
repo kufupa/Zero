@@ -41,9 +41,17 @@ ambiguous. The shallow combined adult/child summary supplies a child count only
 when no direct child field is rendered and that summary matches the strict
 format.
 
-The result projects status, arrival/departure, nights, guarantee type, rate
-plan, adult/child counts, displayed party associations, room/scheduled-room,
-room type and displayed money. Money fields retain `observed`, `observed_zero`,
+One exact cancellation display is handled narrowly: a 1A Stay-card status of
+`Cancelled` followed by a newline and seven digits is split only when the 1B
+Record View separately reports status `Cancelled` and `cancelnumber` equals
+those digits. The result then exposes `stay.status` as `Cancelled` and the
+verified number as `stay.cancellationNumber`. A disagreement remains a
+conflict; a missing or duplicate comparison field remains ambiguous. Other
+status decorations are not normalized.
+
+The result projects status and cancellation number, arrival/departure, nights,
+guarantee type, rate plan, adult/child counts, displayed party associations,
+room/scheduled-room, room type and displayed money. Money fields retain `observed`, `observed_zero`,
 `blank`, `unavailable`, `ambiguous`, or `conflict` states; currency is a
 separate field. A displayed amount is not a ledger, refund, or penalty proof.
 The `R` amount prefix is compared with a bare numeric amount only when the

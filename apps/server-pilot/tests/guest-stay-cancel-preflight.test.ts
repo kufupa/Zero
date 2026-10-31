@@ -26,6 +26,8 @@ type RecordOptions = {
   confirmation?: string;
   activeTab?: string;
   status?: string;
+  cancellationNumber?: string;
+  omitCancellationNumber?: boolean;
   room?: string;
   balance?: string;
   balanceCurrency?: string;
@@ -107,6 +109,8 @@ function read1B({
   confirmation = CONFIRMATION,
   activeTab = 'Record View',
   status = 'Reserved',
+  cancellationNumber = '',
+  omitCancellationNumber = false,
   room = 'ROOM-TEST',
   arrivalDate = '03-FEB-2027',
   departureDate = '05-FEB-2027',
@@ -127,6 +131,7 @@ function read1B({
   const fields: Field[] = [
     { name: 'confirmationnumber', value: confirmation },
     { name: 'status', value: status },
+    ...(omitCancellationNumber ? [] : [{ name: 'cancelnumber', value: cancellationNumber }]),
     { name: 'arrivaldate', value: arrivalDate },
     { name: 'departuredate', value: departureDate },
     { name: 'nights', value: nights },
@@ -187,6 +192,7 @@ describe('projectCancellationPreflight', () => {
     expect(result.stay.status).toMatchObject({
       state: 'observed', value: 'Reserved', sources: ['1a_stay_card', '1b_record_view'],
     });
+    expect(result.stay.cancellationNumber).toMatchObject({ state: 'blank', value: '', sources: ['1b_record_view'] });
     expect(result.stay.arrivalDate.value).toBe('03-FEB-2027');
     expect(result.stay.departureDate.value).toBe('05-FEB-2027');
     expect(result.stay.nights.value).toBe('2');
@@ -260,6 +266,72 @@ describe('projectCancellationPreflight', () => {
     expect(project({
       record: read1B({ extraFields: [{ name: 'company', value: 'ORG-DUPLICATE' }] }),
     }).party.organization.state).toBe('ambiguous');
+  });
+
+  it('splits the exact cancelled status decoration only when 1B status and cancellation number both match', () => {
+    const result = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Cancelled', cancellationNumber: '1234567' }),
+    });
+    expect(result.stay.status).toMatchObject({
+      state: 'observed', value: 'Cancelled',
+      sources: ['1a_stay_card', '1b_record_view'],
+      normalization: 'verified_1b_status_and_cancelnumber',
+    });
+    expect(result.stay.cancellationNumber).toMatchObject({
+      state: 'observed', value: '1234567', sources: ['1a_stay_card', '1b_record_view'],
+    });
+  });
+
+  it('preserves cancellation conflicts when the status label or number disagrees', () => {
+    const wrongNumber = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Cancelled', cancellationNumber: '7654321' }),
+    });
+    expect(wrongNumber.stay.status.state).toBe('conflict');
+    expect(wrongNumber.stay.cancellationNumber).toMatchObject({
+      state: 'conflict', values: ['1234567', '7654321'],
+    });
+
+    const wrongStatus = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Reserved', cancellationNumber: '1234567' }),
+    });
+    expect(wrongStatus.stay.status.state).toBe('conflict');
+    expect(wrongStatus.stay.cancellationNumber).toMatchObject({ state: 'observed', value: '1234567' });
+  });
+
+  it('leaves a recognized decoration ambiguous when 1B cancellation number is not rendered', () => {
+    const result = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Cancelled', omitCancellationNumber: true }),
+    });
+    expect(result.stay.status).toMatchObject({
+      state: 'ambiguous', reason: 'cancellation_status_decoration_not_reconciled',
+    });
+    expect(result.stay.cancellationNumber).toMatchObject({
+      state: 'ambiguous', reason: 'cancellation_number_not_reconciled',
+    });
+  });
+
+  it('does not normalize unsupported decorations or duplicate cancellation-number fields', () => {
+    const unsupported = project({
+      shallow: read1A({ status: 'Cancelled\n123456' }),
+      record: read1B({ status: 'Cancelled', cancellationNumber: '123456' }),
+    });
+    expect(unsupported.stay.status.state).toBe('conflict');
+    expect(unsupported.stay.cancellationNumber).toMatchObject({
+      state: 'observed', value: '123456', sources: ['1b_record_view'],
+    });
+
+    const duplicate = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Cancelled', cancellationNumber: '1234567', extraFields: [
+        { name: 'cancelnumber', value: '1234567' },
+      ] }),
+    });
+    expect(duplicate.stay.status).toMatchObject({ state: 'ambiguous', reason: 'duplicate_field' });
+    expect(duplicate.stay.cancellationNumber).toMatchObject({ state: 'ambiguous', reason: 'duplicate_field' });
   });
 
   it('normalizes supported date, night, and occupancy displays but preserves real conflicts and unknown formats', () => {
@@ -401,7 +473,7 @@ describe('projectCancellationPreflight', () => {
     });
     const cancelled = project({
       shallow: read1A({ status: 'Cancelled' }),
-      record: read1B({ status: 'Cancelled', extraFields: [
+      record: read1B({ status: 'Cancelled', cancellationNumber: '1234567', extraFields: [
         { name: 'canceldate', value: '2027-02-01' },
         { name: 'cancelreasondesc', value: 'Synthetic history' },
         { name: 'cancelpolicytext', value: 'Synthetic policy text' },
@@ -409,6 +481,7 @@ describe('projectCancellationPreflight', () => {
       ] }),
     });
     expect(cancelled.stay.status.value).toBe('Cancelled');
+    expect(cancelled.stay.cancellationNumber).toMatchObject({ state: 'observed', value: '1234567' });
     expect(cancelled.policy.state).toBe('unknown');
     expect(cancelled.fee.state).toBe('unknown_precommit');
     expect(cancelled.action.commitAvailable).toBe(false);

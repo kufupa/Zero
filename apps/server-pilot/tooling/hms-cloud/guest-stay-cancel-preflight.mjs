@@ -312,6 +312,82 @@ function readRecordField(record, name, money = false) {
   return classified(matches[0].value, '1b_record_view', money);
 }
 
+function cancellationStatusDecoration(shallow) {
+  const status = readShallowField(shallow, 'status');
+  if (status.state !== 'observed' || !status.sources.includes('1a_stay_card')) return null;
+  const match = /^Cancelled\r?\n(\d{7})$/.exec(status.value);
+  return match ? { status, cancellationNumber: match[1] } : null;
+}
+
+function combinedSources(...observations) {
+  return [...new Set(observations.flatMap((observation) => observation?.sources ?? []))];
+}
+
+function cancellationStatusAndNumber(shallow, record) {
+  const decoration = cancellationStatusDecoration(shallow);
+  const recordCancellationNumber = readRecordField(record, 'cancelnumber');
+  if (!decoration) {
+    return {
+      status: reconcileField(shallow, record, 'status'),
+      cancellationNumber: recordCancellationNumber,
+    };
+  }
+
+  const recordStatus = readRecordField(record, 'status');
+  const sources = combinedSources(decoration.status, recordStatus, recordCancellationNumber);
+  const cancellationNumber = recordCancellationNumber.state === 'ambiguous'
+    ? { ...recordCancellationNumber, sources }
+    : recordCancellationNumber.state === 'unavailable'
+      ? {
+        state: 'ambiguous',
+        reason: 'cancellation_number_not_reconciled',
+        sources: decoration.status.sources,
+      }
+      : recordCancellationNumber.value === decoration.cancellationNumber
+        ? { ...recordCancellationNumber, sources }
+        : {
+          state: 'conflict',
+          reason: 'reader_values_disagree',
+          values: [decoration.cancellationNumber, recordCancellationNumber.value],
+          sources,
+        };
+
+  let status;
+  if (recordStatus.state === 'ambiguous' || recordCancellationNumber.state === 'ambiguous') {
+    status = { state: 'ambiguous', reason: 'duplicate_field', sources };
+  } else {
+    const statusMatches = recordStatus.state === 'observed' && recordStatus.value === 'Cancelled';
+    const numberMatches = recordCancellationNumber.state === 'observed' &&
+      recordCancellationNumber.value === decoration.cancellationNumber;
+    if (statusMatches && numberMatches) {
+      status = {
+        state: 'observed',
+        value: 'Cancelled',
+        sources,
+        normalization: 'verified_1b_status_and_cancelnumber',
+      };
+    } else {
+      const statusKnown = recordStatus.state !== 'unavailable';
+      const numberKnown = recordCancellationNumber.state !== 'unavailable';
+      const disagreement = (statusKnown && !statusMatches) || (numberKnown && !numberMatches);
+      status = disagreement
+        ? {
+          state: 'conflict',
+          reason: 'reader_values_disagree',
+          values: [decoration.status.value, recordStatus.value ?? null],
+          sources,
+        }
+        : {
+          state: 'ambiguous',
+          reason: 'cancellation_status_decoration_not_reconciled',
+          sources,
+        };
+    }
+  }
+
+  return { status, cancellationNumber };
+}
+
 function reconcileField(shallow, record, name, { money = false, cardTitle = 'Stay', currencyCode } = {}) {
   const first = readShallowField(shallow, name, money, cardTitle, currencyCode);
   const second = readRecordField(record, name, money);
@@ -398,14 +474,17 @@ export function projectCancellationPreflight({
     return unverified('RECORD_VIEW_UNVERIFIED');
   }
 
+  const cancellation = cancellationStatusAndNumber(shallow, record);
+
   return {
     outcome: 'prepared_for_human_review',
     target: { confirmation: wanted, verified: true },
     stay: {
-      status: reconcileField(shallow, record, 'status'),
+      status: cancellation.status,
       arrivalDate: reconcileField(shallow, record, 'arrivaldate'),
       departureDate: reconcileField(shallow, record, 'departuredate'),
       nights: reconcileField(shallow, record, 'nights'),
+      cancellationNumber: cancellation.cancellationNumber,
       guaranteeType: reconcileField(shallow, record, 'guaranteetype'),
       ratePlan: reconcileField(shallow, record, 'rateplan'),
       adults: reconcileField(shallow, record, 'adults'),
