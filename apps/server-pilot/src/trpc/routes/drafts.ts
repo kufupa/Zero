@@ -47,6 +47,7 @@ import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
+import { reservationistMessageAt } from '../../ai/reservationist-worker-input.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
@@ -893,7 +894,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const causalAt=metrics.reservationistDraftSource.causalAt,cutoff=Date.parse(causalAt);
  if(!Number.isFinite(cutoff)||(input.now??new Date()).getTime()<cutoff)throw new Error('reservationist_draft_source_time_invalid');
  const sourceMessages=await input.db.select({...getTableColumns(message),arrivedAt:MESSAGE_ARRIVED_AT}).from(message).where(and(eq(message.transportId,input.transportId),eq(message.threadId,input.draft.threadId!)));
- const causal=sourceMessages.filter(row=>(row.arrivedAt??row.createdAt).getTime()<=cutoff).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
+ const causal=sourceMessages.filter(row=>{const at=reservationistMessageAt(row);return at&&at.getTime()<=cutoff;}).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
  const saved=metrics.reservationistDraftSource;
  const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));

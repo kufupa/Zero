@@ -9,6 +9,7 @@ import {
 } from './reservationist-attachment-input.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
 import { HTML_ALTERNATIVE_MARKER, type ReservationistMessageView } from './reservationist-message-view.js';
+import { deriveReplyToAddress } from './workflows/candidate-draft.js';
 
 /** Rows must be loaded by the server for one mailbox and thread. */
 export type ReservationistWorkerMessage = {
@@ -42,7 +43,7 @@ const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
 /** Plain text retains paragraph and quote boundaries for source spans and masking. */
-function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
+function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
   $('details.quoted-toggle, blockquote').each((_, element) => {
@@ -64,6 +65,24 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
   // HTML can split card groups across visual lines; dates stay independent.
   return maskIncomingCardNumbers(rendered);
+}
+
+/** Reuse the citable, masked text for intake and later draft checks. */
+export function renderReservationistMessage(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized = normalizeMessageText(row)) {
+  return combineMessageViews(modelMessageText(row, normalized), row.textBody?.trim() && row.htmlBody
+    ? modelMessageText({ textBody: null, htmlBody: row.htmlBody }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : '');
+}
+
+export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null }) {
+  return row.arrivedAt ?? (row.direction === 'inbound' ? row.receivedAt : row.sentAt) ?? row.createdAt ?? null;
+}
+
+/** A past reply is guest-visible only when addressed to the current guest. */
+export function reservationistDisclosure(row: { direction: string; fromAddress: string; toAddresses: string[]; ccAddresses: string[]; bccAddresses: string[] }, guestAddress: string): 'guest' | 'staff_only' {
+  const address = (value: string) => deriveReplyToAddress(value)?.toLowerCase();
+  return row.direction === 'inbound'
+    ? address(row.fromAddress) === guestAddress ? 'guest' : 'staff_only'
+    : [...row.toAddresses, ...row.ccAddresses, ...row.bccAddresses].some(value => address(value) === guestAddress) ? 'guest' : 'staff_only';
 }
 
 /** Keep each complete authored alternative, including postscripts, before quoted history. */
@@ -209,8 +228,7 @@ export async function buildReservationistWorkerInput(options: {
     id: row.id,
     at: new Date(at).toISOString(),
     direction: row.direction,
-    ...combineMessageViews(modelMessageText(row, normalized.get(row.id)!), row.textBody?.trim() && row.htmlBody
-      ? modelMessageText({ ...row, textBody: null }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : ''),
+    ...renderReservationistMessage(row, normalized.get(row.id)!),
     ...(row.subject ? { subject: maskIncomingCardNumbers(row.subject) } : {}),
     disclosure: row.disclosure,
   }));
