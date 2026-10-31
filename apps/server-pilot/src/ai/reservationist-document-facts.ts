@@ -412,15 +412,23 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const at=marker.index!,start=Math.max(authored.lastIndexOf('\n',at-1),authored.lastIndexOf('.',at-1),authored.lastIndexOf(';',at-1))+1;
    const tail=authored.slice(at).search(/[\n.;!?]/),end=tail<0?authored.length:at+tail,clause=authored.slice(start,end);
    if(!/\b(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|ing|e)|depart(?:ure|ing)?|check[ -]?(?:in|out))\b/i.test(clause)||!new RegExp(token,'iu').test(clause))continue;
+   // A sender saying a stay has not changed is confirming, not replacing it.
+   if(/\b(?:not|never|hasn['’]t|haven['’]t|hadn['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t)\s+(?:been\s+)?$/i.test(authored.slice(start,at)))continue;
    // "New dates instead" places the replacement before the marker; the
    // superseded range is the one before this correction clause.
    const instead=marker[0]!.toLowerCase()==='instead';
    const replacementBefore=instead&&found.some(range=>range.index>=start&&range.index<at);
    const insteadOf=instead&&/^\s+of\b/i.test(authored.slice(at+marker[0]!.length));
-   const prior=(insteadOf
-    ? found.filter(range=>range.index>at&&range.index<end).sort((a,b)=>a.index-b.index)[0]
-    : undefined) ?? found.find(range=>range.index<(replacementBefore?start:at));
-   try{if(prior&&targets.includes(pair(prior).join('/')))return true;}catch{throw new Error('Ambiguous alternate stay dates');}
+   const explicitPrior=insteadOf?found.filter(range=>range.index>at&&range.index<end).sort((a,b)=>a.index-b.index)[0]:undefined;
+   const earlier=found.filter(range=>range.index<(replacementBefore?start:at));
+   // When the correction names a stay's month, don't attach it to an
+   // unrelated nearer stay in another month.
+   const label=clause.match(new RegExp(`\\b(${monthPattern})\\s+(?:stay|accommodation|rooms?|reservation|booking)\\b`,'i'))?.[1]?.toLowerCase();
+   const month=label?months.findIndex(value=>value.startsWith(label.slice(0,3)))+1:0;
+   try{
+    const prior=explicitPrior??(month?earlier.find(range=>pair(range).some(date=>Number(date.slice(5,7))===month)):earlier[0]);
+    if(prior&&targets.includes(pair(prior).join('/')))return true;
+   }catch{throw new Error('Ambiguous alternate stay dates');}
   }
   return false;
  };
