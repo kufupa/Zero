@@ -394,11 +394,14 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
               details.push('No system update has been saved. The native reservation remains unverified. Staff must review the reported channel booking.');
             }
           } else {
-            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding);
-            details.push(`Reservation ${text(packet.reservationRef)}`);
+            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding),
+              currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
+            if(kind==='cancel_request'){
+              details.push(`Requested reference: ${text(packet.reservationRef)}`);
+              details.push(`HMS confirmation read: ${text(currentProof?.resolvedConfirmation)}`);
+            }else details.push(`Reservation ${text(packet.reservationRef)}`);
             if (current.arrivalDate && current.departureDate) details.push(`Recorded stay: ${text(current.arrivalDate)} to ${text(current.departureDate)}`);
             if (kind === 'change' && requested.arrivalDate && requested.departureDate) details.push(`Requested stay: ${text(requested.arrivalDate)} to ${text(requested.departureDate)}`);
-            const currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
             if (currentProof?.observedAt) details.push(`Observed ${text(currentProof.observedAt)}`);
             if (binding.observedAt) details.push(`Requested ${text(binding.observedAt)}`);
             if (kind === 'cancel_request') {

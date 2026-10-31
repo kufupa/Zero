@@ -256,7 +256,7 @@ export function createInstalledReservationistProvider(
                     throw new Error('reservation_read_unavailable');
                 }
                 if (!resolvedConfirmation) throw new Error('reservation_read_unavailable');
-                // The source-bound packet retains the reference text the guest actually supplied.
+                // Retain the guest-supplied reference; the selected HMS confirmation is bound separately.
                 return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
               }, { signal: ctx.signal });
               activeCancellationSessions.add(session);
@@ -285,6 +285,7 @@ export function createInstalledReservationistProvider(
                 authorizationId: context.generationId,
                 propertyCode: ctx.input.propertyCode,
                 reservationRef: ref.value,
+                resolvedConfirmation,
                 sourceRef: `hms-record:${quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: resolvedConfirmation }).slice(0, 24)}`,
                 sourceHash: quoteDigest({ propertyCode: ctx.input.propertyCode, reservationRef: resolvedConfirmation, observedAt, current, cancellationReview }),
                 observedAt,

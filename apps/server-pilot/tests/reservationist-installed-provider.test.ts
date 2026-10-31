@@ -171,6 +171,7 @@ it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a re
   expect(result.readiness).toBe(status === 'Reserved' ? 'pending_pms_action' : 'needs_clarification');
   if (status === 'Reserved') expect(result.packets[0]).toMatchObject({
     kind: 'cancel_request', saved: false, businessRulesValidated: false, reservationRef: '12345678',
+    sourceProofs: expect.arrayContaining([expect.objectContaining({ kind: 'current', resolvedConfirmation: '12345678-1' })]),
     current: { arrivalDate: '2026-10-12', departureDate: '2026-10-14' },
     cancellationReview: { fee: { state: 'unknown_precommit', amount: null, currency: null },
       action: { cancellationStarted: false, commitAvailable: false } },

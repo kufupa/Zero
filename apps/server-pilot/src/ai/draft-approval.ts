@@ -165,7 +165,7 @@ export function assertReservationistResultFreshForAction(result: unknown, now = 
   }
   const acceptedRevisionDigests = new Set<string>();
   for (const raw of value.packets ?? []) {
-    type PacketProof = {kind?: string; sourceRef?: string; sourceHash?: string; authorizationId?: string; propertyCode?: string; scopeDigest?: string; reservationRef?: string; observedAt?: string; expiresAt?: string; maxSourceAgeMs?: number};
+    type PacketProof = {kind?: string; sourceRef?: string; sourceHash?: string; authorizationId?: string; propertyCode?: string; scopeDigest?: string; reservationRef?: string; resolvedConfirmation?: string; observedAt?: string; expiresAt?: string; maxSourceAgeMs?: number};
     const packet = raw as {kind?: string; taskId?: string; status?: string; saved?: boolean; businessRulesValidated?: boolean; authorizationId?: string; propertyCode?: string; revisionId?: string; scopeDigest?: string; reservationRef?: string; sourceRefs?: string[]; sourceProofs?: PacketProof[]; acceptanceProof?: BookingAcceptanceProof; requestBinding?: {requestId?: string;ownerRef?: string;threadId?: string;taskId?: string;sourceRef?: string;sourceHash?: string;observedAt?: string;changes?: unknown}; requested?: unknown; cancellationReview?: unknown; digest?: string};
     // Failed packets remain review evidence. They do not assert action readiness.
     if (packet.status !== 'pending_pms_action') continue;
@@ -179,6 +179,7 @@ export function assertReservationistResultFreshForAction(result: unknown, now = 
     for (const proof of proofs) {
       const observed = Date.parse(proof.observedAt ?? '');
       if (!['current','causal'].includes(proof.kind ?? '') || !proof.sourceRef || !packet.sourceRefs!.includes(proof.sourceRef) || !/^[a-f0-9]{64}$/.test(proof.sourceHash ?? '') || proof.authorizationId !== packet.authorizationId || proof.propertyCode !== packet.propertyCode || !Number.isFinite(observed) || observed > now.getTime()) fail();
+      if (proof.resolvedConfirmation !== undefined && (packet.kind !== 'cancel_request' || proof.kind !== 'current')) fail();
       if (proof.scopeDigest !== undefined && proof.scopeDigest !== packet.scopeDigest || proof.reservationRef !== undefined && proof.reservationRef !== packet.reservationRef) fail();
       if (proof.kind === 'current' && (!Number.isSafeInteger(proof.maxSourceAgeMs) || proof.maxSourceAgeMs! < 0 || now.getTime() - observed > proof.maxSourceAgeMs! || !Number.isFinite(Date.parse(proof.expiresAt ?? '')) || Date.parse(proof.expiresAt!) <= now.getTime() || Date.parse(proof.expiresAt!) <= observed)) fail();
     }
