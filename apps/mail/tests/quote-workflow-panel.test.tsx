@@ -240,6 +240,7 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Is a shuttle available?')).toBeDefined();
     expect(screen.getByText('Done: Is parking available?')).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Edit reply/ })).toBeNull();
   });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();

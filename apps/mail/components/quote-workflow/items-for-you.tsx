@@ -60,7 +60,7 @@ export function ItemsForYou({
                 Retry read
               </button>
             ) : null}
-            {item.kind === 'question' || item.kind === 'analysis_failure' ? (
+            {onEditReply && (item.kind === 'question' || item.kind === 'analysis_failure') ? (
               <button
                 type="button"
                 className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"

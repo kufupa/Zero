@@ -685,7 +685,6 @@ export function QuoteWorkflowPanel({
           openItems={openReviewItems(session).filter((item) => item.kind === 'question')}
           handledItems={handledQuestions}
           onViewSource={onViewSource}
-          onEditReply={onEditReply}
           onHandle={onHandleReviewItem}
           onUndo={onUndoReviewItem}
         />
