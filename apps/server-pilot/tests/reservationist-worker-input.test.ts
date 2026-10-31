@@ -192,7 +192,8 @@ describe('reservationist worker input', () => {
         '<p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p>' +
         '<p>Card date 2027-05-12</p><div><p>4111</p><p>1111</p><p>1111</p><p>1111</p></div><p>CVV: <span>123</span></p>' +
         '<p>19-1-2027</p><p>20-1-2027</p><p>21/1/2027 22/1/2027</p>' +
-        '<table><tr><th>Guest</th><th>Room</th></tr><tr><td>Jane</td><td>Smith</td><td>101</td></tr></table>' +
+        '<table><tr><th>Guest</th><th>Room</th></tr><tr><td>Jane</td><td>Smith</td><td>101</td></tr>' +
+        '<tr><td><p>R 1000</p></td><td><p>per night</p></td></tr></table>' +
         '<blockquote><p>Earlier request.</p></blockquote>' })], attachments: [],
       sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
@@ -207,14 +208,15 @@ describe('reservationist worker input', () => {
     expect(text).toContain('21/1/2027 22/1/2027');
     expect(text).toContain('CVV: [code masked]');
     expect(text).toMatch(/Jane\s+Smith\s+101/);
+    expect(text).toMatch(/R 1000[^\n]*per night/);
     expect(text).toContain('From: quoted history');
     expect(text.indexOf('From: quoted history')).toBeLessThan(text.indexOf('Earlier request.'));
     expect(text).not.toMatch(/<[^>]+>|4111[\s-]*1111[\s-]*1111[\s-]*1111|CVV:\s*123/i);
   });
 
   it.each([
-    { textBody: null, htmlBody: '<p>Room 2</p><p>4111<br>1111<br>1111<br>1111</p><p>2 rooms</p>' },
-    { textBody: 'Room 2\n4111\n1111\n1111\n1111\n2 rooms', htmlBody: null },
+    { textBody: null, htmlBody: '<p>Room 1</p><p>4111<br>1111<br>1111<br>1111<br>12/29</p><p>1 rooms</p><p>101<br>102<br>103<br>104<br>105<br>106<br>107<br>108<br>109<br>110</p>' },
+    { textBody: 'Room 1\n4111\n1111\n1111\n1111\n12/29\n1 rooms\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110', htmlBody: null },
   ])('masks a split card beside other digits without losing room counts', async (body) => {
     const result = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
@@ -222,22 +224,26 @@ describe('reservationist worker input', () => {
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     });
     const text = result.input.messages[0]!.text;
-    expect(text).toContain('Room 2');
-    expect(text).toContain('2 rooms');
-    expect(text).toContain('[card masked]');
+    expect(text).toContain('Room 1');
+    expect(text).toContain('1 rooms');
+    expect(text).toContain('12/29');
+    expect(text).toMatch(/101\s+102\s+103\s+104\s+105\s+106\s+107\s+108\s+109\s+110/);
+    expect(text).toContain('[card ••••1111]');
     expect(text).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
   });
 
-  it.each([null, 'Please proceed.\nKind regards\nGuest'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
+  it.each([null, 'Please proceed.\nKind regards\nGuest', 'Reservation ABC123. Please send the invoice.\n> On Monday wrote:\n> Earlier request.'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
     const built = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
-      messages: [row('current', 4, { textBody, htmlBody: '<p>Reservation ABC123.</p><p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p><p>4111<br>1111<br>1111<br>1111</p>' })],
+      messages: [row('current', 4, { textBody, htmlBody: '<p>Reservation ABC123.</p><p>Please send the invoice.</p><p>Stay 12/11 to 14/11.</p><p>Notify us if this reached you by mistake.</p><p>4111<br>1111<br>1111<br>1111</p>' })],
       attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     });
     const text = built.input.messages[0]!.text;
-    if (textBody) expect(text.indexOf('Please send the invoice.')).toBeLessThan(text.indexOf('Kind regards'));
-    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote, start: text.indexOf(quote), end: text.indexOf(quote) + quote.length });
+    if (textBody?.includes('Kind regards')) expect(text.indexOf('Please send the invoice.')).toBeLessThan(text.indexOf('Kind regards'));
+    if (textBody?.includes('> On Monday')) expect(text.indexOf('Stay 12/11')).toBeLessThan(text.indexOf('> On Monday'));
+    expect(text.split('Please send the invoice.')).toHaveLength(2);
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote });
     const adapter: ModelAdapter = { invoke: vi.fn(async (request) => {
       expect(request.userPrompt).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);
       return { modelId: 'gpt-6-luna', output: {

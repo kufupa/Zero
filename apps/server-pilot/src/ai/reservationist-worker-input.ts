@@ -40,41 +40,20 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
-/** Mask card-sized windows even when an adjacent room number joins the span. */
-function maskNumericSpan(span: string): string {
-  const offsets: number[] = [];
-  let digits = '';
-  for (const match of span.matchAll(/\d/g)) {
-    offsets.push(match.index!);
-    digits += match[0];
-    // A very long uninterrupted numeric span is ambiguous and must not be
-    // passed through or make the bounded intake do unbounded window checks.
-    if (offsets.length > 128) return '[number masked]';
-  }
-  let output = '';
-  let cursor = 0;
-  for (let start = 0; start + 13 <= digits.length; start++) {
-    let length = Math.min(19, digits.length - start);
-    while (length >= 13 && !isLuhnValid(digits.slice(start, start + length))) length--;
-    if (length < 13) continue;
-    const end = start + length - 1;
-    output += span.slice(cursor, offsets[start]);
-    // When other digits touch a possible card, do not reveal a suffix from
-    // an ambiguous overlapping window.
-    output += start === 0 && end === digits.length - 1
-      ? `[card ••••${digits.slice(-4)}]` : '[card masked]';
-    cursor = offsets[end]! + 1;
-    start = end;
-  }
-  return output + span.slice(cursor);
-}
-
-/** Keep supported calendar dates separate from potentially multiline card numbers. */
+/** Keep separate room numbers separate while masking common split-card formats. */
 function maskMessageText(text: string): string {
   const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
   return text.split(date).map((part, index) => {
     if (index % 2 === 1) return part;
-    const masked = part.replace(/(?<!\d)\d(?:[ \t\r\n-]{0,8}\d){12,}/g, maskNumericSpan);
+    const separator = '[ \\t\\r\\n-]{1,8}';
+    const formats = [[4, 4, 4, 4], [4, 6, 5], [4, 4, 4, 4, 3], [4, 4, 4, 1]];
+    const masked = formats.reduce((value, groups) => value.replace(
+      new RegExp(`(?<!\\d)${groups.map((size) => `\\d{${size}}`).join(separator)}(?!\\d)`, 'g'),
+      (match) => {
+        const digits = match.replace(/\D/g, '');
+        return isLuhnValid(digits) ? `[card ••••${digits.slice(-4)}]` : match;
+      },
+    ), part);
     return maskCardNumbers(masked);
   }).join('');
 }
@@ -87,10 +66,13 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     $(element).prepend('\nFrom: quoted history\n');
     $(element).children('summary').remove();
   });
-  $('br, hr').replaceWith('\n');
+  $('br, hr').each((_, element) => {
+    $(element).replaceWith($(element).closest('td, th').length ? ' ' : '\n');
+  });
   $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
-    $(element).prepend('\n').append('\n');
+    const separator = $(element).closest('td, th').length ? ' ' : '\n';
+    $(element).prepend(separator).append(separator);
   });
   $('img').each((_, element) => {
     const alt = $(element).attr('alt')?.trim() ?? '';
@@ -105,7 +87,7 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
 function combineMessageViews(primary: string, alternative: string): string {
   const comparable = (text: string) => text.replace(/\s+/g, ' ').trim();
   if (!alternative || comparable(primary) === comparable(alternative)) return primary;
-  const boundary = /^(?:[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$|[\t ]*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)))/imu;
+  const boundary = /^(?:[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$|[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)))/imu;
   const split = (text: string) => {
     const at = text.search(boundary);
     return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at)];
@@ -113,8 +95,17 @@ function combineMessageViews(primary: string, alternative: string): string {
   const [primaryBody, primaryTail] = split(primary);
   const [alternativeBody, alternativeTail] = split(alternative);
   const sections = [primaryBody?.trim() ?? ''];
-  if (comparable(alternativeBody ?? '') && comparable(primaryBody ?? '') !== comparable(alternativeBody ?? ''))
-    sections.push(`[HTML alternative of the same message]\n${alternativeBody!.trim()}`);
+  const primaryComparable = comparable(primaryBody ?? '');
+  const alreadyPresent = (part: string) => {
+    const needle = comparable(part);
+    const at = primaryComparable.indexOf(needle);
+    const word = /[\p{L}\p{N}]/u;
+    return at >= 0 && !(word.test(needle[0]!) && at > 0 && word.test(primaryComparable[at - 1]!)) &&
+      !(word.test(needle.at(-1)!) && at + needle.length < primaryComparable.length && word.test(primaryComparable[at + needle.length]!));
+  };
+  const additions = (alternativeBody ?? '').split(/\n+|(?<=[.!?])(?=\s)/u)
+    .map((part) => part.trim()).filter((part) => part && !alreadyPresent(part));
+  if (additions.length) sections.push(`[HTML alternative of the same message]\n${additions.join('\n')}`);
   if (primaryTail?.trim()) sections.push(primaryTail.trim());
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     sections.push(`[HTML alternative context]\n${alternativeTail.trim()}`);
