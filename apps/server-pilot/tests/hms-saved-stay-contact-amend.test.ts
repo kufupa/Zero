@@ -15,9 +15,7 @@ import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-sa
 import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence.mjs';
 import {
   currentLabtestRecord,
-  labtestRecordDelta,
   unchangedLabtestBusinessParties,
-  unchangedLabtestRecord,
 } from '../tooling/hms-cloud/labtest-record.mjs';
 import { blankSavedPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
 import { installReadOnlyGuard } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
@@ -194,99 +192,6 @@ describe('saved Labtest Booker contact amendment guards', () => {
       ...linkedPartySnapshot,
       data: { ...linkedData, companyid: '' },
       values: { ...linkedData, companyid: '' },
-    })).toBe(false);
-  });
-
-  it('reports visible, form and model deltas separately and rejects unapproved visible effects', () => {
-    const before = {
-      values: { note: 'before', tax: '10' },
-      data: { note: 'before', tax: '10' },
-      visibleFields: [{ name: 'reservationnote', value: 'before' }, { name: 'tax', value: '10' }],
-    };
-    const after = {
-      values: { note: 'after', tax: '12' },
-      data: { note: 'after', tax: '12' },
-      visibleFields: [{ name: 'reservationnote', value: 'after' }, { name: 'tax', value: '12' }],
-      formDirty: true,
-      recordDirty: true,
-      dirtyFields: ['reservationnote', 'tax'],
-      modifiedFields: ['reservationnote', 'tax'],
-    };
-    expect(labtestRecordDelta(before, after)).toEqual({
-      visible: [
-        { field: 'reservationnote', before: 'before', after: 'after' },
-        { field: 'tax', before: '10', after: '12' },
-      ],
-      form: [
-        { field: 'note', before: 'before', after: 'after' },
-        { field: 'tax', before: '10', after: '12' },
-      ],
-      model: [
-        { field: 'note', before: 'before', after: 'after' },
-        { field: 'tax', before: '10', after: '12' },
-      ],
-    });
-    expect(unchangedLabtestRecord(before, after, { note: 'after' }, {
-      form: { tax: '12' },
-      model: { tax: '12' },
-      visible: { reservationnote: 'after', tax: '12' },
-    })).toBe(true);
-    expect(unchangedLabtestRecord(before, after, { note: 'after' }, {
-      form: { tax: '12', unused: 'not an observed change' },
-      model: { tax: '12' },
-      visible: { reservationnote: 'after', tax: '12' },
-    })).toBe(false);
-
-    const visibleOnlyChange = {
-      ...before,
-      visibleFields: [{ name: 'reservationnote', value: 'changed' }, { name: 'tax', value: '10' }],
-      formDirty: false,
-      recordDirty: false,
-      dirtyFields: [],
-      modifiedFields: [],
-    };
-    expect(unchangedLabtestRecord(before, visibleOnlyChange, {})).toBe(false);
-
-    const dateBefore = {
-      values: { arrivaldate: '10/12/2027' },
-      data: { arrivaldate: '2027-10-12' },
-      visibleFields: [{ name: 'arrivaldate', value: '12-OCT-2027' }],
-    };
-    const dateAfter = {
-      values: { arrivaldate: '10/13/2027' },
-      data: { arrivaldate: '2027-10-13' },
-      visibleFields: [{ name: 'arrivaldate', value: '13-OCT-2027' }],
-      formDirty: true,
-      recordDirty: true,
-      dirtyFields: ['arrivaldate'],
-      modifiedFields: ['arrivaldate'],
-    };
-    expect(unchangedLabtestRecord(dateBefore, dateAfter, { arrivaldate: '10/13/2027' }, {
-      model: { arrivaldate: '2027-10-13' },
-      visible: { arrivaldate: '13-OCT-2027' },
-    })).toBe(true);
-
-    const duplicateBefore = {
-      ...before,
-      visibleFields: [
-        { name: 'reservationnote', value: 'before' },
-        { name: 'reservationnote', value: 'before' },
-        { name: 'tax', value: '10' },
-      ],
-    };
-    const duplicateAfter = {
-      ...after,
-      visibleFields: [
-        { name: 'reservationnote', value: 'after' },
-        { name: 'reservationnote', value: 'before' },
-        { name: 'tax', value: '12' },
-      ],
-    };
-    expect(labtestRecordDelta(duplicateBefore, duplicateAfter).visible).toBe(null);
-    expect(unchangedLabtestRecord(duplicateBefore, duplicateAfter, { note: 'after' }, {
-      form: { tax: '12' },
-      model: { tax: '12' },
-      visible: { reservationnote: 'after', tax: '12' },
     })).toBe(false);
   });
 

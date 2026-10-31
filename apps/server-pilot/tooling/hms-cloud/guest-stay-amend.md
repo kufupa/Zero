@@ -33,9 +33,7 @@ context exception. Popup writes and send/email requests remain blocked across
 the context, including after the writer is disarmed.
 
 This adapter remains note-only. Date, occupancy, room/rate and party setters
-need their own saved-frame observations. `labtestRecordDelta` reports rendered,
-form and record-model effects separately; callers must surface and approve every
-native side effect before including it in a save request.
+need separate implementations and saved-frame observations.
 
 `awaiting_readback` means the request returned HTTP 200, not that HMS saved
 the change. Reopen the exact record in a fresh guarded session and verify the

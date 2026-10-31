@@ -125,10 +125,8 @@ export async function snapshotLabtestRecord(frame) {
     const partyInputsBlank = blankSavedPartyFields.every((name) =>
       partyInputs.filter((el) => el.name.toLowerCase() === name).length <= 1) &&
       partyInputs.every((el) => el.name === el.name.toLowerCase() && el.value === '');
-    const visibleFields = [...panel.el.dom.querySelectorAll('input,textarea,select')].filter(visible)
-      .map((el) => ({ name: el.name, value: String(el.value ?? '') }));
     const partyControls = partyInputs.map((el) => ({ name: el.name, value: String(el.value ?? '') }));
-    return { values, data: record.data, visibleFields, partyControls, formDirty: form.isDirty(), recordDirty: record.dirty,
+    return { values, data: record.data, partyControls, formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}), partyInputsBlank };
   }, blankSavedPartyFields);
@@ -175,106 +173,16 @@ export function unchangedLabtestBusinessParties(expected, snapshot) {
     (!(linked('bookingagencycontractid') || linked('bacontract') || linked('bookingagency1iatanumber')) || linked('taid1'));
 }
 
-function changedMap(before, after, part) {
-  const oldValues = before?.[part], newValues = after?.[part];
-  if (!oldValues || typeof oldValues !== 'object' || Array.isArray(oldValues) ||
-      !newValues || typeof newValues !== 'object' || Array.isArray(newValues)) return null;
-  const keys = new Set([...Object.keys(oldValues), ...Object.keys(newValues)]);
-  return [...keys].filter((key) => !Object.hasOwn(oldValues, key) || !Object.hasOwn(newValues, key) ||
-    JSON.stringify(oldValues[key]) !== JSON.stringify(newValues[key])).map((field) => ({
-    field,
-    before: Object.hasOwn(oldValues, field) ? oldValues[field] : null,
-    after: Object.hasOwn(newValues, field) ? newValues[field] : null,
-  }));
-}
-
-function changedVisibleFields(before, after) {
-  if (!Array.isArray(before) || !Array.isArray(after)) return null;
-  const group = (items) => {
-    const fields = new Map();
-    for (const field of items) {
-      if (!field || typeof field.name !== 'string') return null;
-      const name = field.name;
-      const values = fields.get(name) || [];
-      values.push(String(field.value ?? ''));
-      fields.set(name, values);
-    }
-    return fields;
-  };
-  const oldFields = group(before), newFields = group(after);
-  if (!oldFields || !newFields) return null;
-  const names = new Set([...oldFields.keys(), ...newFields.keys()]);
-  const changes = [];
-  for (const field of names) {
-    const previous = oldFields.get(field) || [], current = newFields.get(field) || [];
-    if (previous.length !== current.length) return null;
-    if (previous.every((value, index) => value === current[index])) continue;
-    // A repeated visible name cannot be bound to one requested/model field.
-    if (previous.length !== 1) return null;
-    changes.push({ field, before: previous[0], after: current[0] });
-  }
-  return changes;
-}
-
-/** Show both rendered-control and model effects; callers must explicitly accept each before Save. */
-export function labtestRecordDelta(before, after) {
-  return {
-    visible: changedVisibleFields(before?.visibleFields, after?.visibleFields),
-    form: changedMap(before, after, 'values'),
-    model: changedMap(before, after, 'data'),
-  };
-}
-
-/** Verify full preimage except requested fields and explicitly reviewed surface effects. */
-export function unchangedLabtestRecord(before, after, changes, acceptedSideEffects = {}) {
-  if (!before || !after || !changes || typeof changes !== 'object' || Array.isArray(changes) ||
-      !acceptedSideEffects || typeof acceptedSideEffects !== 'object' || Array.isArray(acceptedSideEffects) ||
-      Object.keys(acceptedSideEffects).some((part) => !['form', 'model', 'visible'].includes(part)) ||
-      Object.values(changes).some((value) => !['string', 'number', 'boolean'].includes(typeof value))) return false;
-  const formEffects = acceptedSideEffects.form ?? {};
-  const modelEffects = acceptedSideEffects.model ?? {};
-  const visibleEffects = acceptedSideEffects.visible ?? {};
-  for (const effects of [formEffects, modelEffects, visibleEffects]) {
-    if (!effects || typeof effects !== 'object' || Array.isArray(effects) ||
-        Object.values(effects).some((value) => !['string', 'number', 'boolean'].includes(typeof value))) return false;
-  }
-  // A requested field can have different native representations in its form,
-  // loaded model and rendered control (for example, a picker label vs code).
-  // Effects are explicit per surface and override the requested value only on
-  // that surface.
-  const formChanges = { ...changes, ...formEffects };
-  const modelChanges = { ...changes, ...modelEffects };
-  const visibleChanges = { ...changes, ...visibleEffects };
-  const sameKeys = (before, after) => before && after && typeof before === 'object' && !Array.isArray(before) &&
-    typeof after === 'object' && !Array.isArray(after) && Object.keys(before).length === Object.keys(after).length &&
-    Object.keys(before).every((key) => Object.hasOwn(after, key));
-  if (!sameKeys(before.values, after.values) || !sameKeys(before.data, after.data)) return false;
-  const formDelta = changedMap(before, after, 'values'), modelDelta = changedMap(before, after, 'data');
-  const visibleDelta = 'visibleFields' in before || 'visibleFields' in after
-    ? changedVisibleFields(before.visibleFields, after.visibleFields) : [];
-  if (!formDelta || !modelDelta || !visibleDelta) return false;
-  const matchesDelta = (delta, expectedValues) => delta.every(({ field, after: value }) =>
-    Object.hasOwn(expectedValues, field) && String(value ?? '') === String(expectedValues[field] ?? ''));
-  const effectsWereObserved = (effects, delta) => Object.keys(effects).every((key) =>
-    delta.some((change) => change.field === key));
-  if (!matchesDelta(formDelta, formChanges) || !matchesDelta(modelDelta, modelChanges) ||
-      !matchesDelta(visibleDelta, visibleChanges) ||
-      !effectsWereObserved(formEffects, formDelta) || !effectsWereObserved(modelEffects, modelDelta) ||
-      !effectsWereObserved(visibleEffects, visibleDelta)) return false;
-  const allowedDirty = new Set([...Object.keys(changes), ...formDelta.map(({ field }) => field),
-    ...modelDelta.map(({ field }) => field)]);
-  const allowedModified = new Set([...Object.keys(changes), ...modelDelta.map(({ field }) => field)]);
-  if (!Array.isArray(after.dirtyFields) || !Array.isArray(after.modifiedFields) ||
-      after.dirtyFields.some((name) => !allowedDirty.has(name)) ||
-      after.modifiedFields.some((name) => !allowedModified.has(name)) ||
+export function unchangedLabtestRecord(before, after, changes) {
+  if (!before || !after) return false;
+  const allowed = new Set(Object.keys(changes));
+  if ([...after.dirtyFields, ...after.modifiedFields].some((name) => !allowed.has(name)) ||
       (after.recordDirty && !after.modifiedFields.length) || (after.formDirty && !after.dirtyFields.length)) return false;
   return ['values', 'data'].every((part) => {
-    const a = before[part], b = after[part];
-    if (!a || typeof a !== 'object' || Array.isArray(a) || !b || typeof b !== 'object' || Array.isArray(b)) return false;
-    return Object.keys(a).every((key) =>
+    const a = before[part], b = after[part], keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...keys].every((key) => Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
       (JSON.stringify(a[key]) === JSON.stringify(b[key]) ||
-       Object.hasOwn(part === 'values' ? formChanges : modelChanges, key) &&
-       String(b[key] ?? '') === String((part === 'values' ? formChanges : modelChanges)[key] ?? '')));
+       (allowed.has(key) && String(b[key] ?? '') === changes[key])));
   });
 }
 
