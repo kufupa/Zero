@@ -110,7 +110,7 @@ function originalRequestCandidates(messages:readonly {id:string;text:string;dire
  return candidates;
 }
 /** Lexical completeness only: original submitted-voucher request, never a fabricated task or authority. */
-function currentVoucherReviewSources(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only'}[],triggerMessageId:string|undefined):ValidatedDocumentPlan['tasks'][number]['source'][] {
+function currentVoucherReviewSources(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[],triggerMessageId:string|undefined):ValidatedDocumentPlan['tasks'][number]['source'][] {
  const m=messages.find(m=>m.id===triggerMessageId);if(!m||m.direction!=='inbound'||m.disclosure==='staff_only')return[];
  const cutoff=m.text.search(/^(?:\s*>?\s*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message)\s*-{2,})/im),current=cutoff<0?m.text:m.text.slice(0,cutoff),out:ValidatedDocumentPlan['tasks'][number]['source'][]=[];
  for(const hit of current.matchAll(/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/gi)){
@@ -121,8 +121,16 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  return out;
 }
 function assertCurrentVoucherReviewCompleteness(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
- for(const required of currentVoucherReviewSources(messages,triggerMessageId)){
-  const matches=plan.tasks.filter(t=>t.kind==='question'&&t.source.attachmentId===required.attachmentId&&t.source.sourceHash===required.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&t.source.start<=required.start!&&t.source.end>=required.end!&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??''));
+ const requirements=currentVoucherReviewSources(messages,triggerMessageId),message=messages.find(m=>m.id===triggerMessageId);
+ const clause=(source:ValidatedDocumentPlan['tasks'][number]['source'])=>{
+  const view=message?.sourceViews?.find(v=>source.start!>=v.start&&source.end!<=v.end);if(!view)return;
+  const text=message!.text.slice(view.start,view.end),start=source.start!-view.start,end=source.end!-view.start;
+  const left=Math.max(...['.','!','?',';','\n'].map(c=>text.lastIndexOf(c,start-1)))+1,right=text.slice(end).search(/[.!?;\n]/);
+  return {view:view.name,text:text.slice(left,right<0?text.length:end+right).replace(/\s+/g,' ').trim().toLowerCase()};
+ };
+ for(const required of requirements){
+  const original=clause(required),equivalents=requirements.filter(other=>other===required||(()=>{const candidate=clause(other);return !!original&&!!candidate&&original.view!==candidate.view&&original.text===candidate.text&&other.quote?.toLowerCase()===required.quote?.toLowerCase();})());
+  const matches=plan.tasks.filter(t=>t.kind==='question'&&t.source.attachmentId===required.attachmentId&&t.source.sourceHash===required.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&equivalents.some(e=>t.source.start!<=e.start!&&t.source.end!>=e.end!)&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??''));
   if(matches.length!==1)throw new Error('current_voucher_review_task_omitted_or_ambiguous');
  }
 }
@@ -542,7 +550,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
         task.source=structuredClone(proof.priorRequestSource);delete task.sourceContinuationId;boundContinuations.push({...structuredClone(proof),taskId:task.id});continue;
       }
       const source=task?.source;if(!source)continue;
-      if(typeof source!=='object'||Array.isArray(source)||Object.keys(source).some(key=>!['attachmentId','sourceHash','page','quote','region'].includes(key))||Object.hasOwn(source,'quote')===Object.hasOwn(source,'region'))throw new Error('Invalid task selection source projection');
+      if(typeof source!=='object'||Array.isArray(source)||Object.keys(source).some(key=>!['attachmentId','sourceHash','page','quote','region','view'].includes(key))||Object.hasOwn(source,'quote')===Object.hasOwn(source,'region'))throw new Error('Invalid task selection source projection');
     }
     const selected=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(selectedOutput,requestSpans),sources),sources);
     if(selected.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');

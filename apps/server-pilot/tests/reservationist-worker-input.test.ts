@@ -329,6 +329,25 @@ describe('reservationist worker input', () => {
     }
   });
 
+  it.each(['Can you provide parking information?', 'Attached voucher.'])('binds a repeated MIME alternative in task-first selection: %s', async (ask) => {
+    const built = await buildReservationistWorkerInput({
+      transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
+      messages: [row('current', 4, { textBody: `${ask}\nThank you.`, htmlBody: `<p>${ask}</p><p>Also, we arrive late.</p>` })],
+      attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
+      signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
+    });
+    const message = built.input.messages[0]!;
+    const invoke = vi.fn(async () => ({ modelId: 'gpt-6-luna', output: invoke.mock.calls.length === 1
+      ? { facts: [], tasks: [{ id: 'parking', kind: 'question', factIds: [], source: { attachmentId: 'message:current', sourceHash: hash(Buffer.from(message.text)), page: 1, quote: ask, view: 'html' } }], unresolvedAsks: [] }
+      : { facts: [], assignments: [{ taskId: 'parking', factIds: [] }], unresolvedAsks: [] },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } }));
+    const factory = createReservationistDependencies({ adapter: { invoke, reserveCalls: async () => {} }, extractionMode: 'task_first', admissions: [],
+      header: { attention: 'Synthetic', company: 'Test', clientEmail: 'test@example.invalid', clientTelephone: '', agency: 'Test', signerName: 'Test', signerEmail: 'test@example.invalid' },
+      converter: { url: 'unused' }, services: {} });
+    const plan = await factory.dependencies.plan(built.input, new AbortController().signal);
+    expect(plan.tasks[0]!.source!.start).toBeGreaterThanOrEqual(message.sourceViews![1]!.start);
+  });
+
   it('bounds admission by the deadline and passes the abort signal to the reader', async () => {
     let receivedSignal: AbortSignal | undefined;
     const admission = buildReservationistWorkerInput({
