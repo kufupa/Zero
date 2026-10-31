@@ -6,7 +6,7 @@ import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import { resolveNativeRoomCodes } from '../lib/quote-workflow/staff-quote-bind';
-import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
 import {
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
@@ -143,6 +143,20 @@ describe('StayCard rooms', () => {
     expect((screen.getByLabelText('Adults total') as HTMLInputElement).value).toBe('5');
     expect((screen.getByLabelText('Children total') as HTMLInputElement).value).toBe('0');
     expect(screen.getByText('Your note')).toBeTruthy();
+  });
+
+  it('does not copy another same-date stay total into a newly added row', () => {
+    const firstStay = stay({ id: 'a1', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 });
+    const lastStay = stay({ id: 'b1', stayId: 'booking-b', adultsTotal: null, childrenTotal: null });
+    const added = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: [firstStay, lastStay] },
+      { type: 'add_row', stayId: stayKeyForGroup(lastStay), token: 'new-room' },
+    );
+    const row = added.groups.find((group) => group.id === 'r_new-room');
+
+    expect(row?.stayId).toBe('booking-b');
+    expect(row).not.toHaveProperty('adultsTotal');
+    expect(row).not.toHaveProperty('childrenTotal');
   });
 
   it('keeps adults per room between 1 and 9, the values a work item can save', () => {

@@ -2239,8 +2239,9 @@ export function reduceQuoteSession(
       const template = matching[matching.length - 1];
       if (!template) return session;
       const stayId = stayIdOf(template);
-      const adultsTotal = stayTotal(matching, 'adultsTotal');
-      const childrenTotal = stayTotal(matching, 'childrenTotal');
+      const stayRows = matching.filter((group) => stayIdOf(group) === stayId);
+      const adultsTotal = stayTotal(stayRows, 'adultsTotal');
+      const childrenTotal = stayTotal(stayRows, 'childrenTotal');
       const row = {
         ...blankRow(`r_${action.token}`, stayId, {
           arrivalDate: template.arrivalDate,
