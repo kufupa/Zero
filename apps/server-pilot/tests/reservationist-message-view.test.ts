@@ -22,5 +22,6 @@ describe('reservationist message views', () => {
     const plain = { name: 'plain', start: 0, end: 5 };
     expect(validReservationistMessageViews(text, [plain, { name: 'html', start: htmlStart, end: htmlStart + 4 }])).toBe(true);
     expect(validReservationistMessageViews(text, [plain, { name: 'html', start: htmlStart, end: htmlStart + 1 }])).toBe(false);
+    expect(validReservationistMessageViews(text, [plain, { name: 'html', start: htmlStart, end: text.length }])).toBe(false);
   });
 });
