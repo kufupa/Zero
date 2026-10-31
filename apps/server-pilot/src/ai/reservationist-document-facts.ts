@@ -417,9 +417,9 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const instead=marker[0]!.toLowerCase()==='instead';
    const replacementBefore=instead&&found.some(range=>range.index>=start&&range.index<at);
    const insteadOf=instead&&/^\s+of\b/i.test(authored.slice(at+marker[0]!.length));
-   const prior=insteadOf
+   const prior=(insteadOf
     ? found.filter(range=>range.index>at&&range.index<end).sort((a,b)=>a.index-b.index)[0]
-    : found.find(range=>range.index<(replacementBefore?start:at));
+    : undefined) ?? found.find(range=>range.index<(replacementBefore?start:at));
    try{if(prior&&targets.includes(pair(prior).join('/')))return true;}catch{throw new Error('Ambiguous alternate stay dates');}
   }
   return false;
