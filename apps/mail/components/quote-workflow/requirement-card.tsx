@@ -92,6 +92,17 @@ function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
   return boards.size === 1 ? [...boards][0]! : 'all';
 }
 
+function stayTotal(rows: StayGroupRequirement[], field: 'adultsTotal' | 'childrenTotal') {
+  if (rows.some((row) => (row[field] === null || row[field] === undefined) && row.fields[field] === 'staff_corrected'))
+    return { value: null, provenance: 'staff_corrected' as const };
+  const values = rows.map((row) => row[field]).filter((value): value is number => typeof value === 'number');
+  if (values.some((value) => value !== values[0])) return { value: null };
+  return {
+    value: values[0] ?? null,
+    provenance: rows.find((row) => row[field] === values[0])?.fields[field] ?? rows[0]?.fields[field],
+  };
+}
+
 export const DEFAULT_ROOM_TYPES: QuotePaneRoomType[] = ROOM_TYPE_CODES.map((code) => ({
   code,
   label: ROOM_TYPE_NAMES[code],
@@ -178,12 +189,14 @@ export function StayCard({
   const strictRoomTypes = configuredStrictRoomTypes ?? (configuredRoomTypes !== undefined);
   const boards = configuredBoards ?? DEFAULT_PANE_BOARDS;
   const totals = stayTotals(rows);
-  const firstRowByStay = new Map<string, StayGroupRequirement>();
+  const rowsByStay = new Map<string, StayGroupRequirement[]>();
   for (const row of rows) {
-    const rowStayId = stayIdOf(row);
-    if (!firstRowByStay.has(rowStayId)) firstRowByStay.set(rowStayId, row);
+    const stayId = stayIdOf(row);
+    const stayRows = rowsByStay.get(stayId);
+    if (stayRows) stayRows.push(row);
+    else rowsByStay.set(stayId, [row]);
   }
-  const stayTotalRows = [...firstRowByStay];
+  const stayTotalRows = [...rowsByStay];
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
   // The dates are one fact for the whole stay, so a change goes to every room in it.
@@ -291,10 +304,12 @@ export function StayCard({
           <div className="flex flex-wrap items-end justify-between gap-2">
             <h5 className="text-[13px] font-bold text-[#1e293b]">Room types &amp; occupancy</h5>
             <div className="grid w-full max-w-md grid-cols-2 gap-2">
-              {stayTotalRows.flatMap(([totalStayId, totalFirstRow], totalStayIndex) =>
-                ([
-                  ['adultsTotal', 'Adults total', totalFirstRow.adultsTotal ?? null, totalFirstRow.fields.adultsTotal],
-                  ['childrenTotal', 'Children total', totalFirstRow.childrenTotal ?? null, totalFirstRow.fields.childrenTotal],
+              {stayTotalRows.flatMap(([totalStayId, totalRows], totalStayIndex) => {
+                const adultsTotal = stayTotal(totalRows, 'adultsTotal');
+                const childrenTotal = stayTotal(totalRows, 'childrenTotal');
+                return ([
+                  ['adultsTotal', 'Adults total', adultsTotal.value, adultsTotal.provenance],
+                  ['childrenTotal', 'Children total', childrenTotal.value, childrenTotal.provenance],
                 ] as const).map(([field, label, value, provenance]) => {
                   const fieldLabel = stayTotalRows.length > 1 ? `${label} · booking ${totalStayIndex + 1}` : label;
                   const fieldId = `${id}-${field}-${totalStayIndex}`;
@@ -323,8 +338,8 @@ export function StayCard({
                       />
                     </Field>
                   );
-                }),
-              )}
+                });
+              })}
             </div>
           </div>
           <div role="table" aria-label="Room types & occupancy" className="overflow-hidden rounded-[3px] border border-[#dbe2ea]">

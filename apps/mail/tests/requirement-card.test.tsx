@@ -100,7 +100,7 @@ describe('StayCard rooms', () => {
 
   it('keeps same-date saved stays in separate total controls and patches only the selected stay', () => {
     const rows = [
-      stay({ id: 'a1', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'a1', stayId: 'booking-a', adultsTotal: null, childrenTotal: 0 }),
       stay({ id: 'a2', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 }),
       stay({ id: 'b1', stayId: 'booking-b', adultsTotal: 2, childrenTotal: 1 }),
     ];
@@ -122,7 +122,7 @@ describe('StayCard rooms', () => {
       onStayAction.mock.calls[0]![0],
     );
     expect(updated.groups.map((row) => [row.id, row.adultsTotal])).toEqual([
-      ['a1', 5], ['a2', 5], ['b1', 3],
+      ['a1', null], ['a2', 5], ['b1', 3],
     ]);
   });
 
