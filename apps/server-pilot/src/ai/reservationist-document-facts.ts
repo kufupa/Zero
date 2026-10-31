@@ -371,16 +371,47 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const previous=authored.slice(previousStart,lineStart-1).trim();
    // A wrapped range can follow a stay label, but not an unrelated new label on the date line.
    return lineStart>0&&/^\s*(?:[-•]\s*)?(?:dates?\s*:\s*)?$/i.test(authored.slice(lineStart,match.index))&&/:\s*$/.test(previous)&&(stay.test(previous)||directQuote.test(previous))&&!excluded.test(previous)&&!negatedQuote.test(previous);
+  }).map(match=>{
+   const start=Math.max(authored.lastIndexOf('\n',match.index-1),authored.lastIndexOf('.',match.index-1),authored.lastIndexOf(';',match.index-1))+1;
+   const tail=authored.slice(match.index+match.text.length).search(/[\n.;]/),end=tail<0?authored.length:match.index+match.text.length+tail;
+   const lineStart=authored.lastIndexOf('\n',match.index-1)+1,previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
+   const previous=authored.slice(previousStart,lineStart-1).trim();
+   return {...match,context:(/^\s*(?:for\s+)?(?:19|20|21|22)\d{2}\s*:\s*$/i.test(previous)?`${previous} `:'')+authored.slice(start,end)};
   });
  };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
- const pair=(m:{arrival:string;departure:string})=>[date(m.arrival,Number(value.arrival.slice(0,4))),date(m.departure,Number(value.departure.slice(0,4)))];
- const own=ranges(page.slice(selected.start,selected.end));
- if(own.length!==1)return;
- try{if(pair(own[0]!).join('/')!==[value.arrival,value.departure].join('/'))return;}catch{return;}
- for(const other of views.filter(v=>v!==selected)){const found=ranges(page.slice(other.start,other.end));if(found.length!==1)continue;
-  let otherPair:string[];try{otherPair=pair(found[0]!);}catch{throw new Error('Ambiguous alternate stay dates');}
-  if(otherPair.join('/')!==[value.arrival,value.departure].join('/'))throw new Error('Conflicting alternate stay dates');
+ const pair=(m:{arrival:string;departure:string;context:string})=>{
+  const years=[...new Set([...m.context.matchAll(/\b(?:19|20|21|22)\d{2}\b/g)].map(year=>Number(year[0])))];
+  const explicit=(text:string)=>/\b(?:19|20|21|22)\d{2}\b/.test(text);
+  if(years.length>1&&(!explicit(m.arrival)||!explicit(m.departure)))throw new Error('Ambiguous alternate stay year');
+  const year=years[0]??Number(value.arrival.slice(0,4)),arrival=date(m.arrival,year);
+  let departure=date(m.departure,years.length?year:Number(value.departure.slice(0,4)));
+  if(departure<=arrival&&!explicit(m.departure)&&years.length===1)departure=date(m.departure,year+1);
+  if(departure<=arrival)throw new Error('Invalid alternate stay dates');
+  return [arrival,departure];
+ };
+ const ownText=page.slice(selected.start,selected.end),own=ranges(ownText);
+ if(!own.length)return;
+ let ownPairs:string[][];try{ownPairs=own.map(pair);}catch{throw new Error('Ambiguous alternate stay dates');}
+ const target=[value.arrival,value.departure].join('/');
+ const groupPair=(text:string,range:string[])=>{
+  const groups=[...text.matchAll(new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
+  if(groups.length!==1)return;
+  const group=groups[0]!,before=text.slice(Math.max(text.lastIndexOf('\n',group.index!-1),text.lastIndexOf('.',group.index!-1))+1,group.index);
+  if(/\b(?:not|never|no|previous|old|cancelled|canceled|without)\b/i.test(before))return;
+  const arrival=date(group[1]!,Number(range[0]!.slice(0,4)));
+  if(arrival>=range[0]!&&arrival<range[1]!)return [arrival,range[1]!];
+ };
+ if(!ownPairs.some(pair=>pair.join('/')===target)&&!(ownPairs.length===1&&groupPair(ownText,ownPairs[0]!)?.join('/')===target))return;
+ for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length)continue;
+  let otherPairs:string[][];try{otherPairs=found.map(pair);}catch{throw new Error('Ambiguous alternate stay dates');}
+  const keys=(pairs:string[][])=>pairs.map(pair=>pair.join('/')).sort().join('|');
+  if(keys(ownPairs)===keys(otherPairs))continue;
+  if(ownPairs.length===1&&otherPairs.length===1){
+   const ownGroup=groupPair(ownText,ownPairs[0]!),otherGroup=groupPair(otherText,otherPairs[0]!);
+   if(ownGroup?.join('/')===otherPairs[0]!.join('/')||otherGroup?.join('/')===ownPairs[0]!.join('/'))continue;
+  }
+  throw new Error('Conflicting alternate stay dates');
  }
 }
 /** Channel notices become actions only when the original row explicitly requests a system update. */

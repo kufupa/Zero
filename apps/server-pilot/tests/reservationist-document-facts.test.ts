@@ -92,6 +92,36 @@ describe('document facts', () => {
     const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12/11',departure:'14/11'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
     expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
   });
+  it.each([
+    ['For 2027: arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
+    ['For 2027:\narrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
+    ['Please quote rooms:\nStay 13/11 to 15/11.\nStay 20/11 to 22/11.', 'Please quote rooms from 12/11 to 14/11.', '12/11 to 14/11'],
+  ])('rejects alternate years or multiple differing stays', (plain,html,quote) => {
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,start=text.indexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12/11',departure:'14/11'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(()=>validateDocumentPlan(plan,[dateSource])).toThrow('Conflicting alternate stay dates');
+  });
+  it('accepts matching multiple stays across the two alternatives', () => {
+    const plain='Stay 12/11 to 14/11. Stay 20/11 to 22/11.',html=plain;
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote='12/11 to 14/11',start=text.lastIndexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      causalMessage:{at:'2026-10-31T12:00:00.000Z',direction:'inbound' as const},sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'12/11',departure:'14/11'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
+  });
+  it('keeps the same explicit group arrival valid across alternatives', () => {
+    const plain='25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.',html='Stay 11 to 16 November 2026.';
+    const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
+    const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
+      sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
+    const span={attachmentId:dateSource.attachmentId,sourceHash:dateSource.sourceHash,page:1,quote,start,end:start+quote.length};
+    const plan={facts:[{id:'dates',kind:'dates' as const,value:{arrival:'11 November 2026',departure:'16 November 2026'},disclosure:'guest' as const,source:span}],tasks:[{id:'quote',kind:'quote' as const,factIds:['dates'],source:span}],unresolvedAsks:[]};
+    expect(validateDocumentPlan(plan,[dateSource]).facts[0]!.value).toMatchObject({arrival:'2026-11-11',departure:'2026-11-16'});
+  });
   it('rejects different fully dated and shared-month alternatives', () => {
     const plain='Stay 13 to 15 November 2026.',html='Stay 12 November 2026 to 14 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
