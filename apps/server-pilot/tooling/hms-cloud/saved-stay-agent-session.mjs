@@ -38,7 +38,14 @@ export async function withSavedStayAgentSession(operation) {
     await installReadOnlyGuard(page.context());
     let current = null, recordOpen = false, pendingCancel = null, sealed = false, nativeDialog = null;
     let accepting = true, tail = Promise.resolve();
-    page.on('dialog', (dialog) => { nativeDialog = { type: dialog.type(), message: dialog.message() }; });
+    let interruptRead;
+    const readInterrupted = new Promise((resolve) => { interruptRead = resolve; });
+    page.on('dialog', (dialog) => {
+      nativeDialog = { type: dialog.type(), message: dialog.message() };
+      sealed = true;
+      interruptRead({ outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
+        ? 'fee_dialog_pending' : 'unexpected_dialog', issue: 'NATIVE_DIALOG', nativeDialog, next: 'fresh_session' });
+    });
 
     const execute = async (request) => {
       if (!request || typeof request !== 'object' || Array.isArray(request)) {
@@ -121,7 +128,11 @@ export async function withSavedStayAgentSession(operation) {
       catch { invalid = true; }
       const id = input?.id ?? null, tool = input?.tool ?? null;
       if (!accepting) return Promise.resolve({ id, tool, outcome: 'refused', issue: 'SESSION_CLOSED' });
-      const result = tail.then(() => invalid ? { outcome: 'input_gap', issue: 'INVALID_REQUEST' } : execute(input))
+      const result = tail.then(() => {
+        if (invalid) return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
+        const operation = execute(input);
+        return input?.tool === 'read' ? Promise.race([operation, readInterrupted]) : operation;
+      })
         .then((value) => ({ ...value, id, tool }));
       tail = result.then(() => undefined, () => undefined);
       return result;

@@ -23,6 +23,8 @@ shallow-only read does not authorize a write. Multiple shallow lookups are
 possible; after opening Record View, start a new session to read another stay.
 A retry after an unverified single-candidate hint worked on one page. Retry
 after a multi-candidate ambiguity has not been verified; start a fresh session.
+A native dialog interrupts an in-progress read, seals the session, and is left
+untouched; reopen in a fresh session.
 
 Writes require the currently read Reserved record and delegate to the Labtest
 actions. The caller must identify the exact authorized Proof Labtest stay and
