@@ -98,6 +98,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
   let context;
   let page;
   let phase = 'credentials';
+  let abortClose;
 
   const closeResources = async () => {
     const ownedContext = context;
@@ -108,7 +109,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     browser = undefined;
     if (ownedBrowser) await ownedBrowser.close().catch(() => {});
   };
-  const onAbort = () => { void closeResources(); };
+  const onAbort = () => { abortClose ??= closeResources(); };
   signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
@@ -149,6 +150,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     throw failure;
   } finally {
     signal?.removeEventListener('abort', onAbort);
+    await abortClose;
     await closeResources();
   }
 }
