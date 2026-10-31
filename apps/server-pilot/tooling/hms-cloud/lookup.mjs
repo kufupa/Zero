@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -300,12 +301,31 @@ async function waitForResponseRows(page, windowId, columns, rows, timeoutMs) {
   return { keys, expected: signature(rows, keys) };
 }
 
+export function correlateAgencyReferenceField(responseRow, gridRow, field) {
+  if (!['iatanumber', 'referencenumbertype'].includes(field)) return { outcome: 'unsupported_field' };
+  if (!responseRow || !Object.hasOwn(responseRow, field)) return { outcome: 'response_field_missing' };
+  if (!gridRow) return { outcome: 'grid_row_missing' };
+  if (!Object.hasOwn(gridRow, field)) return { outcome: 'grid_field_missing' };
+  const scalar = (value) => value === null || typeof value === 'string' ||
+    typeof value === 'number' && Number.isFinite(value);
+  if (!scalar(responseRow[field])) return { outcome: 'response_value_unverified' };
+  if (!scalar(gridRow[field])) return { outcome: 'grid_value_unverified' };
+  const responseValue = clean(responseRow[field]);
+  if (responseValue !== clean(gridRow[field])) return { outcome: 'response_grid_mismatch' };
+  return { outcome: 'response_grid_correlated', value: responseValue };
+}
+
 function candidate(row, records, kind, spec, keys) {
   const matches = records.filter((record) => rowKey(record, keys) === rowKey(row, keys));
+  const gridData = matches.length === 1 ? matches[0] : null;
+  const iata = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'iatanumber') : null;
+  const referenceType = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'referencenumbertype') : null;
   return {
     nativeId: clean(row[spec.id]), name: clean(row[spec.name]),
     ...(kind === 'agency' ? {
-      referenceNumber: clean(row.iatanumber), referenceNumberType: clean(row.referencenumbertype),
+      ...(iata.outcome === 'response_grid_correlated' ? { referenceNumber: iata.value } : {}),
+      ...(referenceType.outcome === 'response_grid_correlated' ? { referenceNumberType: referenceType.value } : {}),
+      referenceNumberEvidence: iata.outcome, referenceNumberTypeEvidence: referenceType.outcome,
       internalReferenceNumber: clean(row.internalreferencenumber),
     } : kind === 'organization' ? { corporateAccountNumber: clean(row.corporateaccountnumber) } : {
       accountNumber: clean(row.araccountnumber), status: clean(row.arstatuscodedesc),
@@ -315,7 +335,7 @@ function candidate(row, records, kind, spec, keys) {
     contactFirstName: clean(kind === 'arAccount' ? row.firstname : row.contactfirstname),
     contactLastName: clean(kind === 'arAccount' ? row.lastname : row.contactlastname),
     contactPhone: clean(kind === 'arAccount' ? row.phonenumber : row.contactphone),
-    responseData: row, gridData: matches.length === 1 ? matches[0] : null,
+    responseData: row, gridData,
     ...(matches.length > 1 ? { possibleGridData: matches } : {}),
   };
 }
@@ -402,7 +422,13 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     const candidates = rows.map((row) => candidate(row, grid.records, kind, spec, keys));
     const searchId = randomUUID();
     lastSearch.set(page, { kind, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),
-      candidates: candidates.map(({ nativeId, name }) => ({ nativeId, name })) });
+      candidates: candidates.map((item) => ({ nativeId: item.nativeId, name: item.name,
+        ...(kind === 'agency' ? {
+          ...(Object.hasOwn(item, 'referenceNumber') ? { referenceNumber: item.referenceNumber } : {}),
+          ...(Object.hasOwn(item, 'referenceNumberType') ? { referenceNumberType: item.referenceNumberType } : {}),
+          referenceNumberEvidence: item.referenceNumberEvidence,
+          referenceNumberTypeEvidence: item.referenceNumberTypeEvidence,
+        } : {}) })) });
     const unverified = (records) => [...new Set(records.flatMap((row) => Object.keys(row)))].filter((key) => !keys.includes(key));
     return {
       outcome: candidates.length ? 'matches' : 'no_match', kind, field: spec.label, query, searchId,
@@ -607,9 +633,16 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
           }
           if (nativeDialog || requestFailed || inFlight.size) throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
           lastSearch.delete(page);
+          const profileProofToken = ['agency', 'organization'].includes(kind)
+            ? await currentVerifiedLabtestProfileToken(page) : null;
           return {
             outcome: 'selected_unsaved', nativeId, searchId: previous.searchId,
             nativeIdEvidence: 'form_change_response',
+            ...(kind === 'agency' ? { agencyIataNumber: candidates[0].referenceNumber,
+              agencyReferenceNumberType: candidates[0].referenceNumberType,
+              agencyReferenceEvidence: { iataNumber: candidates[0].referenceNumberEvidence,
+                referenceNumberType: candidates[0].referenceNumberTypeEvidence } } : {}),
+            ...(profileProofToken ? { profileProofToken } : {}),
             ...observed,
             ...(kind === 'agency' ? { displayedAgency: value } : kind === 'organization'
               ? { displayedOrganization: value } : { displayedArAccount: value, nativeReadback }),
