@@ -141,6 +141,44 @@ list; nested string truncations report the full length by path. `recordView`
 and `stay360` field sources correspond to `recordView.details.fields` and
 `stay360.details.cards[].fields` respectively.
 
+## Historical reservation notes and billing instructions
+
+The query also returns `historicalNotes` for the exact `Reservation Note / Billing Instructions`
+label. Notes are retained separately for `recordView.details.fields` and
+`stay360.details.cards[].fields`; the original value is kept untrimmed and unnormalized in
+private memory. An observed blank, missing label, unavailable value, incomplete field source,
+and conflicting values remain distinct. Legacy memories without `historicalNoteFields` still
+query: their note coverage is reported as unknown and no note patterns are invented.
+
+By default, `historicalNotes.patterns` is a bounded frequency summary. `noteLimit` defaults to
+10 and is capped at 50. Each pattern has a SHA-256 `patternId`, a preview of at most 256
+characters (`textTruncated` and `textLength` disclose clipping), distinct `confirmationCount`,
+`pmsObservationCount`, source-of-business counts, field sources, and address-link uncertainty
+when applicable. `patternsTruncated` says whether additional exact values were omitted from the
+summary. Frequency keys use the exact stored text: case, whitespace, punctuation, amounts and
+negations are not normalized. They are historical evidence only—not hotel policy, an automatic
+choice, or an instruction to fill a booking.
+
+To retrieve full text with its source and provenance, explicitly request a bounded page:
+
+```js
+const summary = queryHmsBookingMemory(memory, query, {
+  sourceOfBusiness: 'E-Mail',
+});
+queryHmsBookingMemory(memory, query, {
+  sourceOfBusiness: 'E-Mail',
+  notePage: { patternId: summary.historicalNotes.patterns[0].patternId, offset: 0, limit: 10 },
+});
+```
+
+Omit `patternId` to page through all nonblank, identity-anchored note observations in the matched cohort. Page
+`limit` defaults to 10 and is capped at 50; `offset`, `hasMore`, and `nextOffset` support
+continuation. Each page entry returns the complete original `noteText` without character
+truncation, plus its field path, source-of-business, snapshot date, source type, PMS provenance,
+native identity evidence, confirmation number, and matching address-link provenance. Blank notes
+are represented in coverage counts rather than emitted as instruction examples. The page and all
+note text are private; never log them or copy them into Git, issues, or PRs.
+
 ## Evidence and compatibility
 
 A party value of `""` is an observed blank; `null` is unknown or ambiguous.
