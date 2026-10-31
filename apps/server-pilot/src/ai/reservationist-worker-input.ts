@@ -317,7 +317,7 @@ export async function buildReservationistWorkerInput(options: {
       throw new Error('worker_intake_admission_mismatch');
     // An unread attachment's stored hash may exist even though its bytes cannot
     // be rechecked; retain it only as a metadata-bound staff task in that case.
-    if (admission.status === 'manual_required' && options.resolveSourceHash && await resolveHash() !== sourceHash) {
+    if (admission.status === 'manual_required' && attachment.sha256 && options.resolveSourceHash && await resolveHash() !== sourceHash) {
       admissions.push(manual('attachment_identity_unavailable'));
       continue;
     }

@@ -62,7 +62,8 @@ type AttachmentAdmissionDetails = {
   draftReady: false;
 };
 export type AttachmentAdmission = AttachmentAdmissionDetails & (
-  | { status: 'admitted' | 'ignored_signature'; metadata: ReservationistAttachmentMetadata }
+  | { status: 'admitted'; metadata: ReservationistAttachmentMetadata }
+  | { status: 'ignored_signature'; metadata: ReservationistAttachmentMetadata }
   | { status: 'manual_required'; metadata: ReservationistAttachmentMetadata | ReservationistMetadataOnlyAttachment }
 );
 export type ReservationistOfficeConverter = (originalDocx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;

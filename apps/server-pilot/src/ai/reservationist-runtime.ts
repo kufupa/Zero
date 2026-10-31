@@ -54,6 +54,7 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
   const invalidRecovery=(r:RuntimeSourceRecovery)=>{
    if(r.kind!=='attachment_manual'||r.disclosure!=='staff_only'||!r.reason||r.reason.length>4096||!r.sourceRef)return true;
    if(r.sourceIdentity==='metadata_only'){
+    if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId)return true;
     const matches=inventory.filter(a=>a.attachmentId===r.sourceRef&&a.sourceIdentity==='metadata_only'&&a.sourceHash===undefined&&a.messageId===r.messageId&&a.mimeType===r.mimeType&&a.ownerRef===input.authorizationScope?.ownerRef&&a.threadId===input.authorizationScope?.threadId&&input.messages.some(m=>m.id===a.messageId&&m.at===a.messageAt));
     return proof.kind!=='source_review'||r.sourceHash!==undefined||r.sourceKind!=='attachment'||r.signatureNoise===true||r.provenance!==undefined||matches.length!==1;
    }
