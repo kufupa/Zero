@@ -83,6 +83,14 @@ describe('reservationist worker input', () => {
     expect(referencedByPlain.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
   });
 
+  it('keeps a business image labelled Rates after the signoff', async () => {
+    const result = await build([row('current', 4, {
+      textBody: 'Please quote one double room.\nKind regards,\nRates:\ncid:rates',
+    })], [{ id: 'rates', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rates', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
+  });
+
   it('keeps an inline image requested only by the HTML alternative', async () => {
     const result = await build([
       row('prior', 1, { textBody: 'Hello\nKind regards\ncid:logo' }),
