@@ -295,6 +295,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       recovery.sourceKind === 'attachment' && typeof recovery.sourceRef === 'string' &&
       typeof recovery.messageId === 'string' && attachmentSources.some(source =>
         source.sourceRef === recovery.sourceRef && source.messageId === recovery.messageId);
+    if (recovery.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
     const identity = metadataOnly
       ? {sourceRef: recovery.sourceRef as string, sourceKind: 'attachment' as const, messageId: recovery.messageId as string, sourceIdentity: 'metadata_only' as const}
       : originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});

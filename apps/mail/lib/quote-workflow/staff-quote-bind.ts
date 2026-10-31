@@ -564,6 +564,7 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
     const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
       action.kind === 'business_document_failure' && action.sourceKind === 'attachment' &&
       typeof action.messageId === 'string' && !!action.messageId.trim();
+    if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
     if (!metadataOnly && (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.blockingQuote !== 'boolean') continue;
     actions.push({

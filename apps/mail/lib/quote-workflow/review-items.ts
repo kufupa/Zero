@@ -102,6 +102,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
     if (action.status !== 'open') continue;
     const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
       action.kind === 'business_document_failure' && action.sourceKind === 'attachment' && !!action.messageId;
+    if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
     if (!metadataOnly && (!action.sourceHash || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;

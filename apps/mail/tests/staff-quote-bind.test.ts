@@ -39,7 +39,8 @@ it('keeps a metadata-only unread attachment visible to staff without a file hash
   const action = { id:'source:large:metadata',kind:'business_document_failure',text:'Open the original',
     sourceRef:'large',sourceIdentity:'metadata_only',sourceKind:'attachment',messageId:'mail-1',
     filename:'rooming.xlsx',blockingQuote:false,status:'open' };
-  const parsed = readStaffActions({ staffActions:[action,{...action,id:'bad',sourceKind:'message'}] });
+  const parsed = readStaffActions({ staffActions:[action,{...action,id:'bad',sourceKind:'message'},
+    {...action,id:'bad-hash',sourceHash:'a'.repeat(64)}] });
   expect(parsed).toHaveLength(1);
   expect(mapStaffActions(parsed)).toMatchObject([{sourceRef:'large',messageId:'mail-1',filename:'rooming.xlsx'}]);
   expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
