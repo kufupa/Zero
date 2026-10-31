@@ -344,8 +344,9 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const selected=views?.find(v=>start!==undefined&&end!==undefined&&start>=v.start&&end<=v.end);
  if(!page||!views||!selected)return;
  const token=`(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}-\\d{1,2}-\\d{4}|\\d{1,2}/\\d{1,2}(?:/\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?)`;
+ const authoredText=(text:string)=>text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
  const ranges=(text:string)=>{
-  const authored=text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+  const authored=authoredText(text);
   const paired=[...authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(${token})\\s*(?:to|[-–])\\s*(${token})(?![\\p{L}\\p{N}/-])`,'giu'))]
    .map(m=>({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!}));
   for(const m of authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`,'giu')))
@@ -382,30 +383,38 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  };
  const date=(text:string,year:number)=>/\b\d{4}\b/.test(text)?normalizedDate(text):text.includes('/')?normalizedDate(text,year):normalizedDate(`${text} ${year}`);
  const pair=(m:{arrival:string;departure:string;context:string})=>{
-  const years=[...new Set([...m.context.matchAll(/\b(?:19|20|21|22)\d{2}\b/g)].map(year=>Number(year[0])))];
+  // A booking reference or amount in the same sentence is not a stay year.
+  const printedYears=[...`${m.arrival} ${m.departure}`.matchAll(/\b(?:19|20|21|22)\d{2}\b/g)].map(year=>Number(year[0]));
+  const labeledYears=[...m.context.matchAll(/\b(?:for|during|in|year|stay|reservation|booking)\s*:?\s*((?:19|20|21|22)\d{2})\b/gi)].map(year=>Number(year[1]));
+  const years=[...new Set([...printedYears,...labeledYears])];
   const explicit=(text:string)=>/\b(?:19|20|21|22)\d{2}\b/.test(text);
   if(years.length>1&&(!explicit(m.arrival)||!explicit(m.departure)))throw new Error('Ambiguous alternate stay year');
   const year=years[0]??Number(value.arrival.slice(0,4)),arrival=date(m.arrival,year);
   let departure=date(m.departure,years.length?year:Number(value.departure.slice(0,4)));
-  if(departure<=arrival&&!explicit(m.departure)&&years.length===1)departure=date(m.departure,year+1);
+  if(departure<=arrival&&!explicit(m.departure)&&years.length<=1)departure=date(m.departure,year+1);
   if(departure<=arrival)throw new Error('Invalid alternate stay dates');
   return [arrival,departure];
  };
  const ownText=page.slice(selected.start,selected.end),own=ranges(ownText);
  if(!own.length)return;
- let ownPairs:string[][];try{ownPairs=own.map(pair);}catch{throw new Error('Ambiguous alternate stay dates');}
+ const uniquePairs=(pairs:string[][])=>[...new Map(pairs.map(pair=>[pair.join('/'),pair])).values()];
+ let ownPairs:string[][];try{ownPairs=uniquePairs(own.map(pair));}catch{throw new Error('Ambiguous alternate stay dates');}
  const target=[value.arrival,value.departure].join('/');
- const groupPair=(text:string,range:string[])=>{
+ const groupPair=(view:string,range:string[])=>{
+  const text=authoredText(view),stays=ranges(text);
+  if(stays.length!==1)return;
   const groups=[...text.matchAll(new RegExp(`\\b\\d+\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu'))];
   if(groups.length!==1)return;
   const group=groups[0]!,before=text.slice(Math.max(text.lastIndexOf('\n',group.index!-1),text.lastIndexOf('.',group.index!-1))+1,group.index);
   if(/\b(?:not|never|no|previous|old|cancelled|canceled|without)\b/i.test(before))return;
+  const stay=stays[0]!,between=text.slice(Math.min(group.index!,stay.index),Math.max(group.index!+group[0].length,stay.index+stay.text.length));
+  if(between.split('\n').length>2||/\b(?:conference|meeting|event|flight)\b/i.test(between))return;
   const arrival=date(group[1]!,Number(range[0]!.slice(0,4)));
   if(arrival>=range[0]!&&arrival<range[1]!)return [arrival,range[1]!];
  };
  if(!ownPairs.some(pair=>pair.join('/')===target)&&!(ownPairs.length===1&&groupPair(ownText,ownPairs[0]!)?.join('/')===target))return;
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length)continue;
-  let otherPairs:string[][];try{otherPairs=found.map(pair);}catch{throw new Error('Ambiguous alternate stay dates');}
+  let otherPairs:string[][];try{otherPairs=uniquePairs(found.map(pair));}catch{throw new Error('Ambiguous alternate stay dates');}
   const keys=(pairs:string[][])=>pairs.map(pair=>pair.join('/')).sort().join('|');
   if(keys(ownPairs)===keys(otherPairs))continue;
   if(ownPairs.length===1&&otherPairs.length===1){
