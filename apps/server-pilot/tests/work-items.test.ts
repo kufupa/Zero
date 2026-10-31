@@ -248,6 +248,60 @@ describe('stored read for the pane', () => {
       expect(work.workItemStatus).toBe('needs_you');
     }));
 
+  it('projects stay totals without turning an unknown per-room child count into zero', () => {
+    const extracted = payload();
+    extracted.stays = [
+      {
+        ...extracted.stays[0]!,
+        totalRooms: 2,
+        totalAdults: 5,
+        totalChildren: 2,
+        rows: [
+          {
+            ...extracted.stays[0]!.rows[0]!,
+            rooms: 2,
+            adultsPerRoom: null,
+            childCount: null,
+            childAges: [],
+          },
+        ],
+      },
+      {
+        ...extracted.stays[1]!,
+        totalRooms: 1,
+        totalAdults: 2,
+        totalChildren: 0,
+        rows: [
+          {
+            ...extracted.stays[1]!.rows[0]!,
+            rooms: 1,
+            adultsPerRoom: 2,
+            childCount: 0,
+            childAges: [],
+          },
+        ],
+      },
+    ];
+
+    const { analysis } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
+    expect(analysis.groups[0]?.adults).toBeUndefined();
+    expect(analysis.groups[0]).toMatchObject({
+      adultsTotal: 5,
+      childrenTotal: 2,
+      childCount: null,
+      childrenAges: [],
+      fields: { adults: 'missing', childAges: 'missing' },
+    });
+    expect(analysis.groups[1]).toMatchObject({
+      adultsTotal: 2,
+      adults: 2,
+      childrenTotal: 0,
+      childCount: 0,
+      childrenAges: [],
+      fields: { adults: 'extracted', childAges: 'extracted' },
+    });
+  });
+
   it('marks a do-not-reply sender on the stored read, as the live read does, so the pane hides its reply controls', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'nr1');

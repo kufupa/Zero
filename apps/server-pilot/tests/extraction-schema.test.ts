@@ -7,6 +7,8 @@ import {
   mailExtractionSchema,
   sanitizeExtraction,
   stableId,
+  childAgesForRoom,
+  childCountForRoom,
 } from '../src/ai/extraction/schema.js';
 import { AE1_OUTPUT, AE1_TEXT, AE2_TEXT } from './fixtures/inbound-extraction.js';
 
@@ -19,6 +21,43 @@ const ACTION_OUTPUT = {
 };
 
 describe('mail extraction contract', () => {
+  it('keeps stay-wide child totals unknown per room unless one room covers the stay', () => {
+    const shared = {
+      id: 'row-multi',
+      roomType: 'Twin',
+      rooms: 1,
+      adultsPerRoom: null,
+      childCount: null,
+      childAges: [] as number[],
+      board: null,
+    };
+    const multiRoomStay = {
+      totalRooms: 2,
+      totalChildren: 2,
+      rows: [shared, shared],
+    };
+    expect(childCountForRoom(multiRoomStay, multiRoomStay.rows[0])).toBeNull();
+    expect(childAgesForRoom(multiRoomStay, multiRoomStay.rows[0])).toBeNull();
+
+    const oneRoomStay = {
+      totalRooms: 1,
+      totalChildren: 1,
+      rows: [
+        {
+          id: 'row-single',
+          roomType: 'Single',
+          rooms: null,
+          adultsPerRoom: null,
+          childCount: null,
+          childAges: [],
+          board: null,
+        },
+      ],
+    };
+    expect(childCountForRoom(oneRoomStay, oneRoomStay.rows[0])).toBe(1);
+    expect(childAgesForRoom(oneRoomStay, oneRoomStay.rows[0])).toBeNull();
+  });
+
   it.each([
     ['person', 'person'],
     ['system_notice', 'system_notice'],

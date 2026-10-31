@@ -236,6 +236,52 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.reason).toBeNull();
   });
 
+  it('blocks only a stay whose known child count has no matching ages', () => {
+    const base = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        {
+          ...base,
+          id: 'stay-children-unknown-ages',
+          totalRooms: 1,
+          totalChildren: 1,
+          rows: [{ ...base.rows[0]!, id: 'row-children-unknown-ages', rooms: 1, childCount: 1, childAges: [] }],
+        },
+        {
+          ...base,
+          id: 'stay-no-children',
+          totalRooms: 1,
+          requested: { arrival: '2026-10-24', departure: '2026-10-25' },
+          rows: [{ ...base.rows[0]!, id: 'row-no-children', rooms: 1, childCount: 0, childAges: [] }],
+        },
+      ],
+    });
+
+    expect(plan.stays.map(({ stayId, reason }) => [stayId, reason])).toEqual([
+      ['stay-children-unknown-ages', 'missing_occupancy'],
+      ['stay-no-children', undefined],
+    ]);
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ id: 'row-no-children', childrenAges: [] });
+  });
+
+  it('does not divide a stay-wide adult total across multiple rooms', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        {
+          ...stay,
+          totalRooms: 2,
+          totalAdults: 5,
+          rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: null }],
+        },
+      ],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('missing_occupancy');
+  });
+
   it('defaults a missing room count to one when dates and a guest row exist', () => {
     const stay = payload().stays[0]!;
     const plan = build({

@@ -77,6 +77,16 @@ const mailExtractionObjectSchema = z.object({
         .int()
         .nullable()
         .describe('Total rooms asked for in this stay, as stated. Null if not stated.'),
+      totalAdults: z
+        .number()
+        .int()
+        .nullable()
+        .describe('Total adults for this stay, only when stated as a stay-wide total. Null if not stated.'),
+      totalChildren: z
+        .number()
+        .int()
+        .nullable()
+        .describe('Total children for this stay, only when stated as a stay-wide total. Null if not stated.'),
       guests: z
         .array(
           z.object({
@@ -108,6 +118,13 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .describe('Adults in EACH room, not in total.'),
+          childCount: z
+            .number()
+            .int()
+            .min(0)
+            .max(9)
+            .nullable()
+            .describe('Children in EACH room. Zero only when explicitly none; null when room allocation is unknown.'),
           childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
@@ -138,6 +155,8 @@ export type ExtractionRow = {
   roomType: string | null;
   rooms: number | null;
   adultsPerRoom: number | null;
+  /** Missing only on legacy stored rows; null means the per-room count is unknown. */
+  childCount?: number | null;
   childAges: number[];
   board: ExtractionBoard | null;
 };
@@ -152,16 +171,24 @@ export type ExtractionStay = {
   booked: DateRange | null;
   /** Stay total as stated. Set when the mail gives a total without a per-type split (rows then carry rooms null). */
   totalRooms: number | null;
+  /** Explicit stay totals are separate from per-room occupancy; optional only for legacy payloads. */
+  totalAdults?: number | null;
+  totalChildren?: number | null;
   rows: ExtractionRow[];
   guests?: ExtractionGuest[];
   action?: MailAction;
 };
 
-const storedExtractionRowSchema = mailExtractionObjectSchema.shape.stays.element.shape.rows.element.extend({
+const sourceStaySchema = mailExtractionObjectSchema.shape.stays.element;
+const sourceRowSchema = sourceStaySchema.shape.rows.element;
+const storedExtractionRowSchema = sourceRowSchema.extend({
   id: z.string(),
+  childCount: sourceRowSchema.shape.childCount.optional(),
 });
 const storedExtractionStaySchema = mailExtractionObjectSchema.shape.stays.element.extend({
   id: z.string(),
+  totalAdults: sourceStaySchema.shape.totalAdults.optional(),
+  totalChildren: sourceStaySchema.shape.totalChildren.optional(),
   rows: z.array(storedExtractionRowSchema),
 });
 
@@ -281,6 +308,46 @@ export function rowContentKey(
   return among.filter((item) => (item.roomType ?? '') === roomType).length === 1 ? roomType : null;
 }
 
+/** Resolve only a per-room count; never divide a stay-wide total across rooms. */
+export function childCountForRoom(
+  stay: Pick<ExtractionStay, 'totalChildren' | 'totalRooms'> & { rows?: readonly ExtractionRow[] },
+  row: Pick<ExtractionRow, 'rooms' | 'childCount' | 'childAges'> | Record<string, unknown> | null | undefined,
+): number | null {
+  if (!row || typeof row !== 'object') return null;
+  const ages = Array.isArray(row.childAges) ? row.childAges : [];
+  const childCount = row.childCount;
+  const totalChildren = stay.totalChildren;
+  const oneRoomStay =
+    stay.rows?.length === 1 &&
+    ((stay.totalRooms === 1 && (row.rooms == null || row.rooms === 1)) ||
+      (stay.totalRooms == null && row.rooms === 1));
+
+  if (
+    totalChildren === 0 &&
+    (ages.length > 0 || (typeof childCount === 'number' && childCount !== 0))
+  ) return null;
+
+  if (typeof childCount === 'number') {
+    return childCount;
+  }
+  if (ages.length > 0) return ages.length;
+  if (totalChildren === 0) return 0;
+  if (typeof totalChildren === 'number' && oneRoomStay) return totalChildren;
+  if (childCount === null || totalChildren !== undefined) return null;
+  // Legacy rows had no count field: retain the previous age-array contract.
+  return ages.length;
+}
+
+/** Child ages are per-room occupancy. Return null unless the ages fully represent the resolved count. */
+export function childAgesForRoom(
+  stay: Pick<ExtractionStay, 'totalChildren' | 'totalRooms'> & { rows?: readonly ExtractionRow[] },
+  row: Pick<ExtractionRow, 'rooms' | 'childCount' | 'childAges'> | Record<string, unknown> | null | undefined,
+): number[] | null {
+  if (!row || typeof row !== 'object' || !Array.isArray(row.childAges)) return null;
+  const expected = childCountForRoom(stay, row);
+  return expected !== null && expected === row.childAges.length ? row.childAges : null;
+}
+
 function stayStableId(
   messageId: string,
   stay: { requested: DateRange; guests?: ExtractionGuest[] },
@@ -353,10 +420,13 @@ export function sanitizeExtraction(
       requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
+      totalAdults: countOf(stay.totalAdults, 0, 999),
+      totalChildren: countOf(stay.totalChildren, 0, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row) => ({
         roomType: cleanText(row.roomType),
         rooms: countOf(row.rooms, 1, 999),
         adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
+        childCount: countOf(row.childCount, 0, 9),
         childAges: row.childAges
           .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
           .slice(0, 9),

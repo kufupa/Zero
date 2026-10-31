@@ -513,6 +513,18 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    if (group.fields.childAges === 'missing') {
+      return { error: 'Confirm the number of children in each room and enter every child’s age before running the quote.' };
+    }
+    const childCount =
+      group.childrenAges.length > 0
+        ? group.childrenAges.length
+        : group.childCount === undefined
+          ? 0
+          : group.childCount;
+    if (childCount === null || childCount !== group.childrenAges.length) {
+      return { error: 'Confirm the number of children in each room and enter every child’s age before running the quote.' };
+    }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
     // An explicit code list or a known preference still binds; garbage codes still refuse below.
     const rooms = resolveNativeRoomCodes({

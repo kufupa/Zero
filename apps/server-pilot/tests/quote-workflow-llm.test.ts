@@ -545,6 +545,7 @@ describe('mapLlmDecision', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childCount: 0,
         childrenAges: [],
         board: 'dinner_bb',
         roomPreference: 'twin',
@@ -555,12 +556,36 @@ describe('mapLlmDecision', () => {
           departureDate: 'extracted',
           quantity: 'extracted',
           adults: 'extracted',
+          childAges: 'extracted',
           board: 'extracted',
         },
       },
     ]);
     expect(JSON.stringify(mapped.groups)).not.toMatch(/price|rate"|amount/i);
     expect(mapped.ratePlan.source).toBe('party_contract');
+  });
+
+  it('does not reuse a stay-wide child total for each one-room occupancy group', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [
+            { ...group, rooms: 1, childrenTotal: 2, childCount: null, childAges: [] },
+            { ...group, rooms: 1, childrenTotal: 2, childCount: null, childAges: [] },
+          ],
+        }),
+      ),
+    );
+
+    expect(mapped.groups.map(({ childCount, fields }) => [childCount, fields.childAges])).toEqual([
+      [null, 'missing'],
+      [null, 'missing'],
+    ]);
+    expect(mapped.missing.filter(({ field }) => field === 'childAges').map(({ question }) => question)).toEqual([
+      "Confirm the number of children in each room and provide every child's age (2 children in total).",
+      "Confirm the number of children in each room and provide every child's age (2 children in total).",
+    ]);
   });
 
   it('defaults a one-date quote to one night and marks departure defaulted', () => {
@@ -830,6 +855,7 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups).toEqual([
       {
         id: 'g1',
+        childCount: null,
         childrenAges: [],
         board: 'bb',
         specialRequests: [],

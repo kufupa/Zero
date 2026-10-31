@@ -64,7 +64,8 @@ const HOTEL_OPERATING_RULES = `Johannesburg timezone.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel.
 ${MOVE_CATALOG_RULES}
 - Venue hire, boardroom, conference or delegate packages (DDR), and events: forward_to_partner (events team), no tools. A rooms-only group is quote at any size, 10+ rooms included.
-- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room.
+- Keep stay-wide adults / children separate from per-room occupancy. Never divide totals across rooms, even when division is exact. Use adultsPerRoom only when each identical room's occupancy is stated; for one room the total is per-room. childCount is children in EACH room; childAges are their exact ages. Use zero only when the request has no children; use null when a stated child count or room allocation is unknown. Never invent age 0. If per-room occupancy or child ages are needed but unknown, ask before calling quote_stay.
+- Fill only safe defaults: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A total headcount for multiple rooms is not an allocation.
 - Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
@@ -86,9 +87,27 @@ export const reservationistDecisionSchema = z.object({
     .object({
       arrivalDate: z.string(),
       departureDate: z.string(),
-      adults: z.number().int(),
-      children: z.number().int(),
-      rooms: z.number().int(),
+      adults: z.number().int().nullable().describe('Stay-wide adult total; null if not stated.'),
+      children: z.number().int().nullable().describe('Stay-wide child total; null if not stated.'),
+      rooms: z.number().int().nullable().describe('Stay-wide room total; null if not stated.'),
+      adultsPerRoom: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Adults in each identical room only when the source states the per-room allocation.'),
+      childCount: z
+        .number()
+        .int()
+        .min(0)
+        .nullable()
+        .optional()
+        .describe('Children in each identical room; zero for none, null when per-room count is unknown.'),
+      childAges: z
+        .array(z.number().int().min(0).max(99))
+        .optional()
+        .describe('Exact child ages in each identical room; never fill missing ages with zero.'),
     })
     .nullable(),
   missing: z.array(z.string()),
@@ -116,15 +135,35 @@ const lunaGroupSchema = z.object({
     .default(null)
     .describe('Exact source phrase for THIS group’s arrival/departure dates, or null if not stated. Never reuse another group’s phrase.'),
   rooms: z.number().int().nullable().describe('Number of identical rooms in this group.'),
+  adultsTotal: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe('Stay-wide total adults when given without a per-room allocation; never divide it across rooms.'),
   adultsPerRoom: z
     .number()
     .int()
     .nullable()
-    .describe("Adults in EACH room; '6 adults in 3 rooms' = 2"),
+    .describe('Adults in EACH room, or null when a stay-wide total has no stated room allocation.'),
+  childrenTotal: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe('Stay-wide total children when given without a per-room allocation.'),
+  childCount: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional()
+    .describe('Children in EACH room; zero for none, null when the count or room allocation is unknown.'),
   childAges: z.array(z.number().int()),
   board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),
+  stayId: z.string().optional(),
 });
 
 export const lunaAnalysisSchema = z.object({

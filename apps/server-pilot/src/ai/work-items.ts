@@ -29,6 +29,7 @@ import {
 } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import {
+  childCountForRoom,
   rowContentKey,
   stayContentKey,
   type ExtractionStay,
@@ -431,7 +432,7 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
 }
 
-type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms'>;
+type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms' | 'totalAdults' | 'totalChildren'>;
 
 /**
  * The stays and rows the form shows: the extraction's, then any the person added (ids only in `state`), less any she
@@ -650,7 +651,10 @@ export function storedAnalysis(
         ...dates,
         dateEvidence: null,
         rooms: null,
+        adultsTotal: stay.totalAdults,
         adultsPerRoom: null,
+        childrenTotal: stay.totalChildren,
+        childCount: stay.totalChildren === 0 ? 0 : null,
         childAges: [],
         board: null,
         roomPreference: null,
@@ -663,6 +667,19 @@ export function storedAnalysis(
     for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
       const rooms = pick(at('count'), row.rooms);
+      const childAges = pick<number[] | null>(at('childAges'), row.childAges) ?? [];
+      const childAgesCorrected = Object.hasOwn(state, at('childAges'));
+      const childCount = childAgesCorrected
+        ? childAges.length
+        : typeof row.childCount === 'number'
+          ? row.childCount
+          : childCountForRoom(stay, { ...row, rooms, childAges });
+      const rowAdults = pick(at('adults'), row.adultsPerRoom);
+      const oneRoomStay =
+        stay.rows.length === 1 &&
+        rooms === 1 &&
+        (stay.totalRooms === 1 || (stay.totalRooms === null && stay.rows.length === 1));
+      const adultsPerRoom = rowAdults ?? (oneRoomStay ? stay.totalAdults ?? null : null);
       const take = typeof rooms === 'number' && rooms > 0 ? rooms : 1;
       const rowNames = guestNames.slice(guestAt, guestAt + take);
       guestAt += take;
@@ -671,8 +688,11 @@ export function storedAnalysis(
         ...dates,
         dateEvidence: null,
         rooms,
-        adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
+        adultsTotal: stay.totalAdults,
+        adultsPerRoom,
+        childrenTotal: childAgesCorrected ? undefined : stay.totalChildren,
+        childCount,
+        childAges,
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,

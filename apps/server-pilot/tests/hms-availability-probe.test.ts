@@ -380,6 +380,16 @@ describe('U10 availability probe (pure)', () => {
     ]);
   });
 
+  it('keeps explicit zero children distinct from unknown or unaged positive counts', () => {
+    const requestFor = (row: Record<string, unknown>) =>
+      availabilityRequestsFor({ stays: [{ ...STAY_B, rows: [{ ...STAY_B.rows[0], ...row }] }] });
+
+    expect(requestFor({ childCount: 0, childAges: [] })).toHaveLength(1);
+    expect(requestFor({ childCount: 2, childAges: [] })).toHaveLength(0);
+    expect(requestFor({ childCount: null, childAges: [] })).toHaveLength(0);
+    expect(requestFor({ childCount: 2, childAges: undefined })).toHaveLength(0);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,

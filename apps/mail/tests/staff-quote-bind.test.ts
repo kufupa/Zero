@@ -33,6 +33,20 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   ...overrides,
 });
 
+describe('quote occupancy input', () => {
+  it('accepts explicit no-children occupancy and refuses missing ages for a known child count', () => {
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 0 })])).toMatchObject({
+      ok: [{ adults: 1, childrenAges: [] }],
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 1, childrenAges: [] })])).toEqual({
+      error: expect.stringMatching(/every child’s age/i),
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: null, childrenAges: [] })])).toEqual({
+      error: expect.stringMatching(/number of children/i),
+    });
+  });
+});
+
 describe('HRDAV native room and board maps', () => {
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({

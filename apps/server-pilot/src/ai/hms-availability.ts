@@ -17,7 +17,7 @@ import {
   isPropertyReadLockDeadline,
   type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
-import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
+import { childAgesForRoom, type ExtractionRow, type ExtractionStay } from './extraction/schema.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
@@ -67,6 +67,7 @@ function isRealIsoDay(value: string): boolean {
 }
 
 function availabilityRequestForStay(stay: ExtractionStay | null | undefined): AvailabilityRequest | null {
+  if (!stay) return null;
   const arrival = stay?.requested?.arrival;
   const departure = stay?.requested?.departure;
   if (!arrival || !departure || !isRealIsoDay(arrival) || !isRealIsoDay(departure)) return null;
@@ -77,11 +78,13 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
   const rooms: unknown[] = [];
   for (const row of stay.rows as ExtractionRow[]) {
     if (!row || !row.roomType || row.rooms === null || row.adultsPerRoom === null) return null;
+    const childAges = childAgesForRoom(stay, row);
+    if (!childAges) return null;
     rooms.push({
       roomType: row.roomType,
       quantity: row.rooms,
       adults: row.adultsPerRoom,
-      childAges: row.childAges ?? [],
+      childAges,
     });
   }
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival, departure, rooms });

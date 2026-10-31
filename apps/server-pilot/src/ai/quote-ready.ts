@@ -1,5 +1,5 @@
 import type { QuoteSalesStrategy } from '../hms/rate-catalogue.js';
-import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { childAgesForRoom, mailExtractionPayloadSchema } from './extraction/schema.js';
 import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
 import { matchRoomType } from './room-types.js';
@@ -129,6 +129,12 @@ function groupForStay(
   if (stay.rows.length > 8) return { groups: [], reason: 'too_many_room_types' };
 
   const groups: StaffQuoteInput['groups'] = [];
+  const knownRoomCounts = stay.rows.map((row) => row.rooms);
+  const stayRoomCount =
+    stay.totalRooms ??
+    (knownRoomCounts.every((count): count is number => typeof count === 'number')
+      ? knownRoomCounts.reduce((sum, count) => sum + count, 0)
+      : null);
   for (const row of stay.rows) {
     const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
@@ -137,13 +143,22 @@ function groupForStay(
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }
-    const adults = row.adultsPerRoom ?? 2;
+    const oneRoomStay =
+      stay.rows.length === 1 &&
+      (stayRoomCount === 1 || (stay.totalRooms == null && quantity === 1)) &&
+      (row.rooms == null || row.rooms === 1);
+    const adults =
+      row.adultsPerRoom ??
+      (typeof stay.totalAdults === 'number' ? (oneRoomStay ? stay.totalAdults : null) : 2);
+    const childAges = childAgesForRoom(stay, row);
+    if (childAges === null) return { groups: [], reason: 'missing_occupancy' };
     if (
       !Number.isInteger(adults) ||
+      adults === null ||
       adults < 1 ||
       adults > 6 ||
-      row.childAges.length > 6 ||
-      row.childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17)
+      childAges.length > 6 ||
+      childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17)
     ) {
       return { groups: [], reason: 'missing_occupancy' };
     }
@@ -158,7 +173,7 @@ function groupForStay(
       departureDate: departure,
       quantity,
       adults,
-      childrenAges: row.childAges,
+      childrenAges: childAges,
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
     });

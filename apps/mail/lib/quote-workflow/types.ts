@@ -89,6 +89,8 @@ export type StayGroupRequirement = {
   /** Explicit native room-type codes. A name is accepted only when it resolves to exactly one code. */
   roomCodes?: string[];
   adults?: number;
+  /** Number of children in each identical room; null is unknown, zero is explicit. */
+  childCount?: number | null;
   childrenAges: number[];
   board: QuoteBoard;
   organisation?: string;
@@ -185,7 +187,10 @@ export type LunaAnalysisWire = {
     arrival: string | null;
     departure: string | null;
     rooms: number | null;
+    adultsTotal?: number | null;
     adultsPerRoom: number | null;
+    childrenTotal?: number | null;
+    childCount?: number | null;
     childAges: number[];
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
