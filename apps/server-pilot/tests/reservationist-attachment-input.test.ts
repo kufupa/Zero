@@ -182,7 +182,7 @@ it.each(['pdf', 'docx'] as const)('masks card details in extracted %s pages', as
       getObjectBounded:async()=>({body,contentType:mimeType})} as any},
     ...(kind==='docx'?{officeConverter:async()=>Buffer.from('%PDF-derived')}:{}),
     runner:async tool=>({stdout:Buffer.from(tool==='pdfinfo'?'Pages: 1\nEncrypted: no':
-      kind==='pdf'?'Card 4111\u00a01111\u00a01111\u00a01111 CVV: 123\f':'Card 4111\n1111 1111 1111 CVV: 123\f'),stderr:Buffer.alloc(0),exitCode:0}),
+      kind==='pdf'?'Ref 1234\n4111\u00a01111\u00a01111\u00a01111 CVV: 123\f':'Card 4111\n1111 1111 1111 CVV: 123\f'),stderr:Buffer.alloc(0),exitCode:0}),
   });
   expect(result.status).toBe('admitted');
   expect(result.source?.pages?.[0]).toContain(kind==='pdf'?'[card ••••1111]':'[number groups hidden; may be room numbers or card details; staff review]');

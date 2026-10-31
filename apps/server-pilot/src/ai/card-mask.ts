@@ -70,10 +70,21 @@ export function maskIncomingCardNumbers(text: string): string {
       return AMBIGUOUS_NUMBER_GROUPS;
     return `[card ••••${digits.slice(-4)}]`;
   };
+  const replaceOverlapping = (value: string, pattern: RegExp) => {
+    let result = '', cursor = 0;
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(value); match; match = pattern.exec(value)) {
+      const replacement = mask(match[0], match.index, value);
+      if (replacement === match[0]) { pattern.lastIndex = match.index + 1; continue; }
+      result += value.slice(cursor, match.index) + replacement;
+      cursor = match.index + match[0].length;
+    }
+    return result + value.slice(cursor);
+  };
   return text.split(date).map((part, index) => {
     if (index % 2 === 1) return part;
     const contiguous = part.replace(/(?<!\d)\d{13,19}(?!\d)/g, mask);
-    return maskCardNumbers(patterns.reduce((value, pattern) => value.replace(pattern, mask), contiguous));
+    return maskCardNumbers(patterns.reduce(replaceOverlapping, contiguous));
   }).join('');
 }
 
