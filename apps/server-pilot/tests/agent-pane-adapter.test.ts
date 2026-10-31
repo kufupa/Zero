@@ -139,7 +139,34 @@ describe('agentDecisionToLunaAnalysis', () => {
       ),
     );
     expect(parsed.groups[0]?.adultsPerRoom).toBe(3);
+    expect(parsed.groups[0]).not.toHaveProperty('adultsTotal');
     expect(parsed.groups[0]?.childAges).toHaveLength(2);
+    expect(parsed.groups[0]).not.toHaveProperty('childrenTotal');
+  });
+
+  it('carries only separately supplied stay-wide totals alongside inferred occupancy', () => {
+    const decisionWithTotals = reservationistDecisionSchema.parse(
+      decision('quote', {
+        stayAsk: {
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          adults: 5,
+          children: 0,
+          rooms: 2,
+          adultsTotal: 5,
+          childrenTotal: 0,
+        },
+      }),
+    );
+    const parsed = lunaAnalysisSchema.parse(agentDecisionToLunaAnalysis(decisionWithTotals, selection));
+
+    expect(parsed.groups[0]).toMatchObject({
+      rooms: 2,
+      adultsPerRoom: 3,
+      adultsTotal: 5,
+      childAges: [],
+      childrenTotal: 0,
+    });
   });
 
   it('keeps confirmation numbers that appear in the selection and drops invented ones', () => {
