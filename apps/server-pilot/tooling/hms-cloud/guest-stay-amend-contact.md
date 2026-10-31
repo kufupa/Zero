@@ -1,7 +1,7 @@
 # Amend a fake saved stay's Booker contact
 
 `guest-stay-amend-contact.mjs` is an internal Labtest-only adapter for changing
-one text field on an already-open saved Record View:
+one or both Booker text fields on an already-open saved Record View:
 
 - `bookerName` maps to the saved form's `caller` field.
 - `bookerContact` maps to `udfchar06`.
@@ -9,20 +9,27 @@ one text field on an already-open saved Record View:
 Example:
 
 ```js
-import { amendLabtestContact } from './guest-stay-amend-contact.mjs';
+import { amendLabtestBookerContact, amendLabtestContact } from './guest-stay-amend-contact.mjs';
 
-const result = await amendLabtestContact(page, {
+const expected = {
   confirmation, guestId, arrival, departure, roomType, ratePlan, note,
-}, { field: 'bookerContact', value: 'synthetic contact for an approved Labtest' });
+};
+const result = await amendLabtestContact(page, expected,
+  { field: 'bookerContact', value: 'synthetic contact for an approved Labtest' });
+
+const pairedResult = await amendLabtestBookerContact(page, expected, {
+  bookerName: 'Synthetic Booker',
+  bookerContact: 'synthetic contact for an approved Labtest',
+});
 ```
 
 The input must be nonempty and at most 200 characters; clearing a field is not
 supported. The action first verifies the current HRCEN Reserved Proof Labtest
 record, 2027+ dates, NGI guarantee, disabled CMS sending, blank guest email and
-blank linked-party fields. It requires a clean full-form snapshot, one writable
-Ext field in that same form, and a preimage matching the saved model. The
-complete submitted record must match that snapshot except for the selected
-contact field. The save request is approved once for its exact request object;
+blank linked-party fields. It requires a clean full-form snapshot, writable Ext
+controls in that same form, and preimages matching the saved model. The complete
+submitted record must match that snapshot except for exactly the requested
+Booker fields. The save request is approved once for its exact request object;
 the writer falls through the page-lifetime request fence, and only its later
 context route can continue that request. Once disarmed, the page and context
 deny routes remain installed until their page/context closes. They block
@@ -33,8 +40,8 @@ safe reads fall through to the shared read-only guard.
 a dialog or any unexpected blocked request after dispatch. It is not proof HMS
 persisted the value. Any blocked request after dispatch makes the result
 `uncertain`, even when the approved response is HTTP 200. Reopen the exact
-record in a fresh guarded session and independently verify the selected Booker
-field and unchanged stay fields. Reconcile every `uncertain` result before
+record in a fresh guarded session and independently verify the requested Booker
+fields and unchanged stay fields. Reconcile every `uncertain` result before
 another mutation; never retry blindly. No live persistence result is claimed
 until an owner-serialized write slot and that fresh readback are complete.
 

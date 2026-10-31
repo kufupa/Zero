@@ -4,8 +4,11 @@ import { existsSync } from 'node:fs';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import {
+  amendLabtestBookerContact,
   contactAmendOutcome,
   installLabtestContactSaveRouteChain,
+  matchesLabtestBookerContactAmendRequest,
+  matchesLabtestBookerContactDraft,
   matchesLabtestContactAmendDraft,
   matchesLabtestContactAmendRequest,
 } from '../tooling/hms-cloud/guest-stay-amend-contact.mjs';
@@ -57,6 +60,16 @@ function saveBody(fieldName: string, value: string) {
   return body;
 }
 
+function saveBodyWithChanges(changes: Record<string, string>) {
+  const entries = Object.entries(changes);
+  const first = entries[0];
+  if (!first) throw new Error('changes_required');
+  const [firstName, firstValue] = first;
+  const body = saveBody(firstName, firstValue);
+  for (const [name, value] of entries.slice(1)) body.set(name, value);
+  return body;
+}
+
 function requestFor(body: URLSearchParams, overrides: {
   url?: string; method?: string; frame?: object; contentType?: string;
 } = {}) {
@@ -76,6 +89,60 @@ describe('saved Labtest Booker contact amendment guards', () => {
       expect(matchesLabtestContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, field, value))
         .toBe(true);
     }
+  });
+
+  it('matches both Booker fields in one exact full-record Save request', () => {
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const body = saveBodyWithChanges(changes);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
+      .toBe(true);
+
+    const partial = saveBody('caller', changes.caller);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(partial), requestFrame, expected, state, baseline, changes))
+      .toBe(false);
+
+    body.set('udfchar02', 'unexpected collateral change');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
+      .toBe(false);
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(saveBodyWithChanges(changes)),
+      requestFrame, expected, state, baseline, { ...changes, udfchar02: 'not allowed' })).toBe(false);
+  });
+
+  it('rejects empty, blank, and unknown paired Booker requests before page use', async () => {
+    await expect(amendLabtestBookerContact(null as never, expected)).resolves.toMatchObject({
+      outcome: 'input_gap', issue: 'CONTACT_CHANGE_REQUIRED',
+    });
+    await expect(amendLabtestBookerContact(null as never, expected, { bookerName: '   ' })).resolves.toMatchObject({
+      outcome: 'input_gap', issue: 'CONTACT_VALUE_INVALID',
+    });
+    await expect(amendLabtestBookerContact(null as never, expected, {
+      bookerName: 'Synthetic Booker', unexpected: 'not supported',
+    })).resolves.toMatchObject({ outcome: 'input_gap', issue: 'CONTACT_CHANGES_INVALID' });
+  });
+
+  it('accepts both staged Booker values before model sync and rejects unrelated changes', () => {
+    const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
+    const staged = {
+      values: { ...baseline.values, ...changes },
+      data: { ...baseline.data },
+      formDirty: true,
+      recordDirty: false,
+      dirtyFields: ['caller', 'udfchar06'],
+      modifiedFields: [],
+    };
+    expect(staged.data.caller).toBe(baseline.data.caller);
+    expect(staged.data.udfchar06).toBe(baseline.data.udfchar06);
+    expect(matchesLabtestBookerContactDraft(baseline, staged, changes)).toBe(true);
+
+    expect(matchesLabtestBookerContactDraft(baseline, {
+      ...staged,
+      values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+    }, changes)).toBe(false);
+    expect(matchesLabtestBookerContactDraft(baseline, {
+      ...staged,
+      dirtyFields: ['caller', 'udfchar06', 'udfchar02'],
+    }, changes)).toBe(false);
+    expect(matchesLabtestBookerContactDraft(baseline, staged, { ...changes, toString: 'blocked' })).toBe(false);
   });
 
   it('accepts an isolated Ext form-level Booker edit before the loaded record model synchronizes', () => {
