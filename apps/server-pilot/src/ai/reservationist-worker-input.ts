@@ -6,6 +6,7 @@ import {
   isReservationistSignatureNoise,
   type AttachmentAdmission,
   type ReservationistAttachmentMetadata,
+  type ReservationistMetadataOnlyAttachment,
 } from './reservationist-attachment-input.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
 import { HTML_ALTERNATIVE_MARKER, type ReservationistMessageView } from './reservationist-message-view.js';
@@ -273,13 +274,7 @@ export async function buildReservationistWorkerInput(options: {
     if (admissions.length >= 64) throw new Error('worker_intake_attachment_limit');
     if (!attachment.id || !Number.isSafeInteger(attachment.sizeBytes) || attachment.sizeBytes < 0)
       throw new Error('worker_intake_attachment_identity_invalid');
-    const sourceHash = attachment.sha256 ?? (options.resolveSourceHash
-      ? await bounded((edge) => options.resolveSourceHash!({ ...attachment }, edge))
-      : undefined);
-    check();
-    if (!sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash))
-      throw new Error('worker_intake_attachment_identity_invalid');
-    const metadata: ReservationistAttachmentMetadata = {
+    const identity: ReservationistMetadataOnlyAttachment = {
       attachmentId: attachment.id,
       messageId: attachment.messageId,
       threadId,
@@ -287,23 +282,45 @@ export async function buildReservationistWorkerInput(options: {
       messageAt: new Date(entry.at).toISOString(),
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
-      sourceHash,
+      sourceIdentity: 'metadata_only',
       disclosure: attachment.disclosure,
       inline: attachment.isInline,
       ...(attachment.contentId ? { contentId: attachment.contentId } : {}),
     };
-    if (!['guest', 'staff_only'].includes(metadata.disclosure) ||
-        (entry.row.disclosure === 'staff_only' && metadata.disclosure !== 'staff_only'))
+    if (!['guest', 'staff_only'].includes(identity.disclosure) ||
+        (entry.row.disclosure === 'staff_only' && identity.disclosure !== 'staff_only'))
       throw new Error('worker_intake_attachment_disclosure_invalid');
+    // An unread file remains a staff task; metadata is never used as a content hash.
+    const manual = (reason: string): AttachmentAdmission => ({ status: 'manual_required', reason, metadata: identity, draftReady: false });
+    if (retainedBytes + identity.sizeBytes > 20 * 1024 * 1024) {
+      admissions.push(manual('attachment_total_resource_unavailable'));
+      continue;
+    }
+    const resolveHash = async () => {
+      if (!options.resolveSourceHash) return null;
+      try { return await bounded((edge) => options.resolveSourceHash!({ ...attachment }, edge)); }
+      catch { check(); return null; }
+    };
+    const sourceHash = attachment.sha256 ?? await resolveHash();
+    check();
+    if (!sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash)) {
+      admissions.push(manual('attachment_identity_unavailable'));
+      continue;
+    }
+    const { sourceIdentity: _identity, ...metadataBase } = identity;
+    const metadata: ReservationistAttachmentMetadata = { ...metadataBase, sourceHash };
     const metadataIdentity = JSON.stringify(metadata);
-    // Keep over-budget files visible to staff without reading or retaining their bytes.
-    const admission: AttachmentAdmission = retainedBytes + metadata.sizeBytes > 20 * 1024 * 1024
-      ? { status: 'manual_required', reason: 'attachment_total_resource_unavailable', metadata, draftReady: false }
-      : await bounded((edge) => options.admit(metadata, edge));
+    const admission = await bounded((edge) => options.admit(metadata, edge));
     if (!admission || JSON.stringify(metadata) !== metadataIdentity ||
         JSON.stringify(admission.metadata) !== metadataIdentity || admission.draftReady !== false ||
         !['admitted', 'manual_required'].includes(admission.status))
       throw new Error('worker_intake_admission_mismatch');
+    // An unread attachment's stored hash may exist even though its bytes cannot
+    // be rechecked; retain it only as a metadata-bound staff task in that case.
+    if (admission.status === 'manual_required' && options.resolveSourceHash && await resolveHash() !== sourceHash) {
+      admissions.push(manual('attachment_identity_unavailable'));
+      continue;
+    }
     if (admission.bytes) {
       if (admission.bytes.body.length !== metadata.sizeBytes || retainedBytes + admission.bytes.body.length > 20 * 1024 * 1024)
         throw new Error('worker_intake_attachment_limit');

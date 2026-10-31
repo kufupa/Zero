@@ -95,16 +95,18 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
   });
 
-  it('refuses missing or non-hash attachment identity before admission', async () => {
+  it('routes missing identity and oversized attachments to staff without inventing a content hash', async () => {
     let admissions = 0;
     const admit: Build['admit'] = async (metadata) => {
       admissions++;
       return { status: 'manual_required', reason: 'test_manual_review', metadata, draftReady: false };
     };
     const file = { id: 'file', messageId: 'current', mimeType: 'text/plain', sizeBytes: 1, sha256: null, isInline: false, contentId: null, disclosure: 'guest' as const };
-    await expect(build([row('current', 4)], [file], { admit })).rejects.toThrow('worker_intake_attachment_identity_invalid');
-    await expect(build([row('current', 4)], [file], { admit, resolveSourceHash: async () => 'metadata-only' }))
-      .rejects.toThrow('worker_intake_attachment_identity_invalid');
+    for (const candidate of [file, { ...file, sha256: 'a'.repeat(64), sizeBytes: 21 * 1024 * 1024 }]) {
+      const result = await build([row('current', 4)], [candidate], { admit, resolveSourceHash: async () => 'metadata-only' });
+      expect(result.admissions[0]).toMatchObject({ status: 'manual_required', metadata: { sourceIdentity: 'metadata_only', attachmentId: 'file' } });
+      expect(result.admissions[0]!.metadata.sourceHash).toBeUndefined();
+    }
     expect(admissions).toBe(0);
   });
 });

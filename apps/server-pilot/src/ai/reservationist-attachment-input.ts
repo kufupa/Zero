@@ -20,10 +20,16 @@ export type ReservationistAttachmentMetadata = {
   mimeType: string;
   sizeBytes: number;
   sourceHash: string;
+  sourceIdentity?: never;
   disclosure: DocumentDisclosure;
   inline?: boolean;
   contentId?: string;
   signatureNoise?: boolean;
+};
+/** Identifies an unread file for staff; it does not identify or authorize its contents. */
+export type ReservationistMetadataOnlyAttachment = Omit<ReservationistAttachmentMetadata, 'sourceHash' | 'sourceIdentity'> & {
+  sourceIdentity: 'metadata_only';
+  sourceHash?: never;
 };
 /** Only a unique exact CID wholly below an original signoff is disposable. */
 export function isReservationistSignatureNoise(input:{messageText:string;currentRequestText:string;currentSubject?:string;attachment:{id:string;messageId:string;isInline:boolean;contentId:string|null;mimeType:string};attachments:readonly {id:string;messageId:string;contentId:string|null}[]}):boolean{
@@ -47,16 +53,18 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  const refs=[...messageText.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)].filter(ref=>normalizeContentId(ref[1]!)===cid);
  return refs.length>0&&refs.every(ref=>ref.index!>signoffAt&&(historyAt<0||ref.index!<historyAt));
 }
-export type AttachmentAdmission = {
-  status: 'admitted' | 'manual_required' | 'ignored_signature';
+type AttachmentAdmissionDetails = {
   reason: string;
   relation?: 'prior' | 'current';
-  metadata: ReservationistAttachmentMetadata;
   source?: DocumentSource;
   /** Private bytes for approved model file part only. Never serialize the admission into a prompt. */
   bytes?: AuthorizedArtifactBytes;
   draftReady: false;
 };
+export type AttachmentAdmission = AttachmentAdmissionDetails & (
+  | { status: 'admitted' | 'ignored_signature'; metadata: ReservationistAttachmentMetadata }
+  | { status: 'manual_required'; metadata: ReservationistAttachmentMetadata | ReservationistMetadataOnlyAttachment }
+);
 export type ReservationistOfficeConverter = (originalDocx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;
 export async function extractReservationistOfficeText(input:{body:Uint8Array;attachmentId:string;signal:AbortSignal;officeConverter:ReservationistOfficeConverter;runner?:SandboxRunner;revalidate:()=>Promise<boolean>}):Promise<{reason:string;pdfBody:Buffer|null;pages:readonly string[]|null;pageCount:number|null}>{
  const fail=(reason:string)=>({reason,pdfBody:null,pages:null,pageCount:null});

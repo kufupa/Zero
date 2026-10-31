@@ -50,8 +50,16 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
  if(!plan.tasks.length){
   const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!,proof=plan.noAction;
   if(!proof||!['no_current_request','source_review'].includes(proof.kind)||proof.modelSelectionCompleted!==true||proof.inputDigest!==clockInputDigest||proof.triggerMessageId!==input.trigger.id||proof.sourceHash!==createHash('sha256').update(triggerMessage.text).digest('hex')||!Array.isArray(input.requiredTaskKinds)||input.requiredTaskKinds.length||!Array.isArray(input.requiredAskSpans)||input.requiredAskSpans.length||input.requiredTaskIds?.length||input.requiredArtifactRefs?.length||plan.facts.length||plan.factRecoveryProvenance?.length)throw new Error('no_action_unproven');
-  const sourceRecoveries=structuredClone(plan.sourceRecoveries??[]),inventory=input.authorizedArtifacts as {attachmentId?:string;sourceHash?:string}[];
-  if(sourceRecoveries.length>64||sourceRecoveries.some(r=>r.kind!=='attachment_manual'||r.disclosure!=='staff_only'||!r.reason||r.reason.length>4096||!r.sourceRef||r.provenance?.reason!==r.reason||r.provenance.taskIds.length!==0||r.provenance.sources.length!==1||r.provenance.sources[0]!.attachmentId!==r.sourceRef||!inventory.some(a=>a.attachmentId===r.sourceRef&&a.sourceHash===r.provenance!.sources[0]!.sourceHash)))throw new Error('no_action_unproven');
+  const sourceRecoveries=structuredClone(plan.sourceRecoveries??[]),inventory=input.authorizedArtifacts as {attachmentId?:string;sourceHash?:string;sourceIdentity?:string;messageId?:string;messageAt?:string;mimeType?:string;ownerRef?:string;threadId?:string}[];
+  const invalidRecovery=(r:RuntimeSourceRecovery)=>{
+   if(r.kind!=='attachment_manual'||r.disclosure!=='staff_only'||!r.reason||r.reason.length>4096||!r.sourceRef)return true;
+   if(r.sourceIdentity==='metadata_only'){
+    const matches=inventory.filter(a=>a.attachmentId===r.sourceRef&&a.sourceIdentity==='metadata_only'&&a.sourceHash===undefined&&a.messageId===r.messageId&&a.mimeType===r.mimeType&&a.ownerRef===input.authorizationScope?.ownerRef&&a.threadId===input.authorizationScope?.threadId&&input.messages.some(m=>m.id===a.messageId&&m.at===a.messageAt));
+    return proof.kind!=='source_review'||r.sourceHash!==undefined||r.sourceKind!=='attachment'||r.signatureNoise===true||r.provenance!==undefined||matches.length!==1;
+   }
+   return r.provenance?.reason!==r.reason||r.provenance.taskIds.length!==0||r.provenance.sources.length!==1||r.provenance.sources[0]!.attachmentId!==r.sourceRef||!inventory.some(a=>a.attachmentId===r.sourceRef&&a.sourceHash===r.provenance!.sources[0]!.sourceHash);
+  };
+  if(sourceRecoveries.length>64||sourceRecoveries.some(invalidRecovery))throw new Error('no_action_unproven');
   if(proof.kind==='source_review'&&!sourceRecoveries.length)throw new Error('no_action_unproven');
   const work:RuntimeWorkResult={tasks:[],artifacts:[],quoteRefs:[],packets:[],errors:[],preparedFacts:[],sourceRecoveries,approvedGuestClauses:{}},assessment=assessReply({replyText:'',asks:[],facts:[],authorizedAttachmentRefs:[],audience:'guest'}),result={...work,version:RESERVATIONIST_RUNTIME_VERSION,copyVersion:RESERVATIONIST_COPY_VERSION,family:'quote' as const,...(proof.kind==='source_review'?{readiness:'needs_clarification' as const}:{readiness:'no_action' as const,noAction:proof}),tasks:[] as (RuntimeTaskResult&{kind:string;required:boolean})[],assessment,textBody:'',htmlBody:''};return{...result,digest:quoteDigest(result)};
  }

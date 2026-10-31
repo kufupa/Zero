@@ -139,7 +139,7 @@ describe('reservationist mailbox input', () => {
       state.grant = false;
       return value;
     });
-    await expect(loadReservationistMailboxInput(args)).rejects.toThrow('worker_intake_attachment_identity_invalid');
+    await expect(loadReservationistMailboxInput(args)).rejects.toThrow('mailbox_input_changed');
   });
 
   it('invalidates changed context, added thread mail, and caller-mutated input', async () => {

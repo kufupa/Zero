@@ -16,14 +16,14 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 
 const reachable = await probeTestDb();
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candidate', () => {
-  it.each(['question', 'no_action', 'source_review', 'installed'] as const)('persists the causal mailbox outcome for %s', async (mode) => {
+  it.each(['question', 'no_action', 'source_review', 'missing_file', 'installed'] as const)('persists the causal mailbox outcome for %s', async (mode) => {
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
       try {
         const threadId=randomUUID(),previousId=randomUUID(),currentId=randomUUID(),generationId=randomUUID(),runId=randomUUID();
         const at=new Date(Date.now()-60_000),previousAt=new Date(at.getTime()-60_000),deadlineAt=new Date(Date.now()+180_000);
         const arrival='I will like to check in by 3:00pm.',shuttle='Is an airport shuttle available?';
-        const text=mode==='installed'?`${arrival} ${shuttle}`:mode==='question'?shuttle:mode==='source_review'?'Please see attached.':'Thank you.';
+        const text=mode==='installed'?`${arrival} ${shuttle}`:mode==='question'?shuttle:mode==='source_review'||mode==='missing_file'?'Please see attached.':'Thank you.';
         const s3=new FakeS3Storage(),fileId=randomUUID(),body=Buffer.from('synthetic rooming workbook');
         const modelPrompts:string[]=[];
         await db.insert(mailThread).values({id:threadId,transportId:TRANSPORT_ID,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:at});
@@ -31,10 +31,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           {id:previousId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:['centurion@legacyhotels.co.za'],textBody:'Previous context.',receivedAt:previousAt},
           {id:currentId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:['centurion@legacyhotels.co.za'],textBody:text,receivedAt:at},
         ]);
-        if(mode==='source_review'){
+        if(mode==='source_review'||mode==='missing_file'){
           const key='attachments/'+currentId+'/rooms.xlsx',mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-          await s3.putObject({key,body,contentType:mimeType});
-          await db.insert(attachment).values({id:fileId,messageId:currentId,filename:'rooms.xlsx',mimeType,sizeBytes:body.length,s3Key:key,sha256:createHash('sha256').update(body).digest('hex')});
+          if(mode==='source_review')await s3.putObject({key,body,contentType:mimeType});
+          await db.insert(attachment).values({id:fileId,messageId:currentId,filename:'rooms.xlsx',mimeType,sizeBytes:body.length,s3Key:key,sha256:mode==='source_review'?createHash('sha256').update(body).digest('hex'):null});
         }
         if(mode==='installed'){
           const key='attachments/'+currentId+'/note.txt',body=Buffer.from('Synthetic attachment: arrival note.');
@@ -52,7 +52,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
             const sourceHash=createHash('sha256').update(text).digest('hex');
             const source=(quote:string)=>({attachmentId:`message:${currentId}`,sourceHash,page:1,quote,start:text.indexOf(quote),end:text.indexOf(quote)+quote.length});
             return {modelId:'gpt-6-luna',output:{facts:[],tasks:[{id:'arrival',kind:'question',factIds:[],source:source(arrival)},{id:'shuttle',kind:'question',factIds:[],source:source(shuttle)}],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'synthetic'}};
-          }}):async(context)=>mode==='source_review'?createReservationistDependencies({
+          }}):async(context)=>mode==='source_review'||mode==='missing_file'?createReservationistDependencies({
             adapter:{invoke:async()=>({modelId:'gpt-6-luna',output:{facts:[],tasks:[],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'synthetic'}})},
             admissions:context.admissions,header:{attention:'',company:'',clientEmail:'',clientTelephone:'',agency:'',signerName:'',signerEmail:''},converter:{url:'unused'},services:{},
           }):({
@@ -80,11 +80,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
         if(mode==='no_action'){
           expect(generation?.outcome).toBe('no_action');
           expect(drafts).toHaveLength(0);
-        }else if(mode==='source_review'){
+        }else if(mode==='source_review'||mode==='missing_file'){
           expect(generation?.outcome).toBe('needs_clarification');
           expect(drafts).toHaveLength(1);expect(drafts[0]?.textBody).toBe('');
           const review=buildReservationistReviewSummary(saved?.metrics?.reservationistResult,new Date(),[{sourceRef:fileId,messageId:currentId,filename:'rooms.xlsx'}]);
-          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:'rooms.xlsx: This attachment format could not be read.'}));
+          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:mode==='source_review'?'rooms.xlsx: This attachment format could not be read.':'rooms.xlsx: This attachment could not be checked; open the original source.'}));
+          if(mode==='missing_file')expect(saved?.metrics?.reservationistDraftSource?.attachments).toEqual([expect.objectContaining({attachmentId:fileId,sourceIdentity:'metadata_only'})]);
         }else if(mode==='installed'){
           expect(drafts).toHaveLength(1);
           expect(modelPrompts[0]).toContain('Synthetic attachment: arrival note.');

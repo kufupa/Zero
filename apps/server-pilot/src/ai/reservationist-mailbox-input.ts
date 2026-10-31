@@ -135,9 +135,9 @@ export async function loadReservationistMailboxInput(options: {
   }));
   const fingerprint = () => createHash('sha256').update(JSON.stringify({ input: result.input, admissions: admissionFingerprint() })).digest('hex');
   const originalFingerprint = fingerprint();
-  const admittedSources = built.admissions.filter((admission) => admission.bytes || resolvedHashes.has(admission.metadata.attachmentId)).map((admission) => ({
-    id: admission.metadata.attachmentId, sha256: admission.metadata.sourceHash,
-  }));
+  const admittedSources = built.admissions.flatMap((admission) => admission.metadata.sourceIdentity !== 'metadata_only' &&
+    (admission.bytes || resolvedHashes.has(admission.metadata.attachmentId))
+    ? [{ id: admission.metadata.attachmentId, sha256: admission.metadata.sourceHash }] : []);
   let draftSources: typeof admittedSources = [];
 
   /** Must be called again before persisting or promoting a result. */
