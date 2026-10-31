@@ -355,7 +355,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    .map(m=>({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!}));
   for(const m of authored.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:`${m[1]} ${m[3]} ${m[4]??''}`.trim(),departure:`${m[2]} ${m[3]} ${m[4]??''}`.trim()});
-  for(const m of authored.matchAll(new RegExp(`\\b(?:arriv(?:al|ing|e)|check[ -]?in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure|ing)?|check[ -]?out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
+  for(const m of authored.matchAll(new RegExp(`\\b(?:arriv(?:al|ing|e)|check[ -]?in|in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})\\s*(?:[,;]|and|to)?\\s*(?:depart(?:ure|ing)?|check[ -]?out|out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[1]!,departure:m[2]!});
   for(const m of authored.matchAll(new RegExp(`\\b(\\d{1,3}|one)\\s+nights?\\s+(?:from|starting)\\s+(${token})(?![\\p{L}\\p{N}/-])`,'giu')))
    paired.push({index:m.index!,text:m[0],arrival:m[2]!,departure:m[2]!,nights:/^one$/i.test(m[1]!)?1:Number(m[1])});
@@ -367,7 +367,7 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const excluded=/\b(?:(?:do not|don['’]t|never|not|without)(?!\s+(?:change|changing|alter|altering|modify|modifying|move|moving|reschedule|rescheduling|cancel|canceling|cancelling)\b)|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const row=authored.slice(start,end);
    const suffix=authored.slice(match.index+match.text.length,end);
-   const trailingExclusion=/^\s*(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)\b/i;
+   const trailingExclusion=/^\s*(?:(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)|(?:(?:was|were|is|are|has been|have been)\s+)?cancel(?:led|ed))\b/i;
    const leadingLabel=/^(?:arrival|check[ -]?in)\b/i.exec(match.text)?.[0]??'';
    const before=authored.slice(start,match.index);
    const directQuote=/\b(?:quote|quotation)(?:\s+(?:us|me))?(?:\s+(?:for|from|on))?\s*:?\s*$/i;
@@ -409,17 +409,28 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
  const ownText=page.slice(selected.start,selected.end),own=ranges(ownText);
  if(!own.length)return;
  const uniquePairs=(pairs:string[][])=>[...new Map(pairs.map(pair=>[pair.join('/'),pair])).values()];
+ const keys=(pairs:string[][])=>pairs.map(pair=>pair.join('/')).sort().join('|');
  let ownPairs:string[][];try{ownPairs=uniquePairs(own.map(m=>pair(m,m.index>=start!-selected.start&&m.index+m.text.length<=end!-selected.start?fact.value.yearContext:undefined)));}catch{throw new Error('Ambiguous alternate stay dates');}
  const target=[value.arrival,value.departure].join('/');
  if(!ownPairs.some(pair=>pair.join('/')===target)){
   // A subgroup arriving later does not establish that the overall block starts later.
+  const group=(text:string)=>{
+   const matches=[...authoredText(text).matchAll(new RegExp(`\\b(\\d+)\\s+(?:guests?|people|persons?|adults?|officials?)\\s+arriving\\s+on\\s+(${token})`,'giu'))];
+   if(matches.length!==1||!/\b(?:19|20|21|22)\d{2}\b/.test(matches[0]![2]!))return;
+   try{return{count:matches[0]![1]!,arrival:date(matches[0]![2]!,Number(value.arrival.slice(0,4)))};}catch{return;}
+  };
+  const stated=group(ownText);
+  if(stated&&stated.arrival===value.arrival&&ownPairs.some(pair=>pair[0]!<=stated.arrival&&pair[1]===value.departure)&&views.filter(v=>v!==selected).every(other=>{
+   const otherText=page.slice(other.start,other.end),otherGroup=group(otherText);
+   if(!otherGroup||otherGroup.count!==stated.count||otherGroup.arrival!==stated.arrival)return false;
+   try{return keys(uniquePairs(ranges(otherText).map(m=>pair(m))))===keys(ownPairs);}catch{return false;}
+  }))return;
   if(/\b\d+\s+(?:guests?|people|persons?|adults?|officials?)\s+arriving\s+on\b/i.test(authoredText(ownText)))throw new Error('Ambiguous alternate stay dates');
   return;
  }
  for(const other of views.filter(v=>v!==selected)){const otherText=page.slice(other.start,other.end),found=ranges(otherText);if(!found.length)continue;
   let otherPairs:string[][];try{otherPairs=uniquePairs(found.map(m=>pair(m)));}catch{throw new Error('Ambiguous alternate stay dates');}
-  const keys=(pairs:string[][])=>pairs.map(pair=>pair.join('/')).sort().join('|');
-  if(keys(ownPairs)===keys(otherPairs))continue;
+  if(otherPairs.some(pair=>pair.join('/')===target))continue;
   throw new Error('Conflicting alternate stay dates');
  }
 }
