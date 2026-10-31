@@ -80,16 +80,21 @@ stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
 no A/R or guarantee card, CMS Send unchecked, and blank CMS recipient and guest
 email. The save action and core identity/party fields are exact-matched on the
 legacy path; create-field proof mode also exact-matches occupancy, source and
-the full serialized model. One request may pass its page route; the context
-read guard remains installed. The page then blocks other non-read requests and
-cannot be used for another write. An existing page quarantine blocks saving.
-The whole action has a deadline; unexpected native dialogs remain untouched
-and disarm the action. `saved_same_form` is only a same-form observation:
-independently look up the confirmation and record. An `uncertain` outcome may
-have written; reconcile before any further action and do not blindly retry.
+the full serialized model. One exact request from the current main frame may
+pass through the page fence and writer-local context guard. Every other
+non-read request, plus send/email/mail paths, is blocked on every page in that
+browser context. The deny routes remain until the context closes; the page
+cannot be reused for another write. An existing page quarantine blocks
+saving. The whole action has a deadline; unexpected native dialogs remain
+untouched and disarm the action. A blocked request observed after dispatch
+makes the outcome `uncertain`, even if the save response is 200 and the form
+shows a confirmation. `saved_same_form` is only a same-form observation when
+no post-dispatch request was blocked: independently look up the confirmation
+and record. An `uncertain` outcome may have written; reconcile before any
+further action and do not blindly retry.
 
 The new create-field proof is explicitly opt-in under `createFieldProof`; the
-former core-only input shape is preserved and continues to use its existing
+original core-only input contract remains valid under the writer-local context
 guard. `agencySelection` without `createFieldProof` fails closed. The session
 wrapper may adopt the stricter proof only when it can pass the current helper
 results from that same page.
