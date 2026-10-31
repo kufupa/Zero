@@ -3,6 +3,7 @@ import {
   DAVINCI_HOTEL_RULES,
   lunaAnalysisSchema,
   RESERVATIONIST_WORKFLOWS,
+  reservationistDecisionSchema,
   type LunaAnalysis,
   type ReservationistDecision,
 } from '../src/ai/reservationist-decision.js';
