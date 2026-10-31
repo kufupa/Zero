@@ -1,7 +1,11 @@
-import { maskCardNumbers, maskContactDetails, maskMailText } from '../src/ai/card-mask.js';
+import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers, maskContactDetails, maskIncomingCardNumbers, maskMailText } from '../src/ai/card-mask.js';
 import { describe, expect, it } from 'vitest';
 
 describe('maskCardNumbers', () => {
+  it('masks overlapping wrapped cards and flags a longer ambiguous number', () => {
+    expect(maskIncomingCardNumbers('Expiry year: 2026\n4111\n1111 1111 1111 CVV: 123')).toContain(AMBIGUOUS_NUMBER_GROUPS);
+    expect(maskIncomingCardNumbers('Payment reference: 4111 1111 1111 1111 123')).toBe(`Payment reference: ${AMBIGUOUS_NUMBER_GROUPS} 123`);
+  });
   it('masks a Luhn-valid PAN and keeps the last four digits', () => {
     expect(maskCardNumbers('pay with 4111 1111 1111 1111 please')).toBe(
       'pay with [card ••••1111] please',

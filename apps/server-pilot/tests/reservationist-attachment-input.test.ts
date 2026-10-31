@@ -172,6 +172,23 @@ it('handles bounded scanned, encrypted, malformed PDFs with existing sandbox ada
   ).toBe('malformed');
 });
 
+it.each(['pdf', 'docx'] as const)('masks card details in extracted %s pages', async (kind) => {
+  const mimeType=kind==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const body=Buffer.from(kind==='pdf'?'%PDF-synthetic':'PK\u0003\u0004synthetic');
+  const meta={...metadata,mimeType,sizeBytes:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+  const locator={messageId:'m',mimeType,sizeBytes:body.length,s3Key:'attachments/m/a'};
+  const result=await admitReservationistAttachment({metadata:meta,scope,read:{...read,expectedLocator:locator,
+    resolveLocator:async()=>locator,s3:{headObject:async()=>({sizeBytes:body.length,contentType:mimeType}),
+      getObjectBounded:async()=>({body,contentType:mimeType})} as any},
+    ...(kind==='docx'?{officeConverter:async()=>Buffer.from('%PDF-derived')}:{}),
+    runner:async tool=>({stdout:Buffer.from(tool==='pdfinfo'?'Pages: 1\nEncrypted: no':
+      kind==='pdf'?'Ref 1234\n4111\u00a01111\u00a01111\u00a01111 CVV: 123\f':'Card 4111\n1111 1111 1111 CVV: 123\f'),stderr:Buffer.alloc(0),exitCode:0}),
+  });
+  expect(result.status).toBe('admitted');
+  expect(result.source?.pages?.[0]).toContain(kind==='pdf'?'[card ••••1111]':'[number groups hidden; may be room numbers or card details; staff review]');
+  expect(result.source?.pages?.[0]).toContain('CVV: [code masked]');
+});
+
 const rasterFixtures={
  'image/png':'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVR4nGP4z8DwnwGMERQARNAF+7BYSawAAAAASUVORK5CYII=',
  'image/jpeg':'/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAADAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABgj/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABykX//Z',
