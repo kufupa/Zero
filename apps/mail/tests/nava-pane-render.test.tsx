@@ -86,8 +86,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
     candidateStateQuery: null as null | ((input: unknown) => Promise<unknown>),
-    draftsListQuery: null as null | ((input: unknown) => Promise<unknown>),
-    draftsGetQuery: null as null | ((input: unknown) => Promise<unknown>),
+    reviewForMessageQuery: null as null | ((input: unknown) => Promise<unknown>),
     quotePaneConfig: null as null | Record<string, unknown>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
@@ -326,8 +325,7 @@ vi.mock('../providers/query-provider', () => ({
     },
     get drafts() {
       return { saveReply: { mutate: saveReplyMutate },
-        ...(bridgeMockState.draftsListQuery ? { list: { query: bridgeMockState.draftsListQuery } } : {}),
-        ...(bridgeMockState.draftsGetQuery ? { get: { query: bridgeMockState.draftsGetQuery } } : {}) };
+        ...(bridgeMockState.reviewForMessageQuery ? { reviewForMessage: { query: bridgeMockState.reviewForMessageQuery } } : {}) };
     },
   },
 }));
@@ -448,8 +446,7 @@ describe('NavaPane', () => {
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
     bridgeMockState.candidateStateQuery = null;
-    bridgeMockState.draftsListQuery = null;
-    bridgeMockState.draftsGetQuery = null;
+    bridgeMockState.reviewForMessageQuery = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
       outcome: 'no_match',
@@ -505,12 +502,8 @@ describe('NavaPane', () => {
     vi.useFakeTimers();
     const candidate = vi.fn().mockResolvedValueOnce({ activeRun: { state: 'running' } })
       .mockResolvedValue({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } });
-    const list = vi.fn().mockResolvedValueOnce({ threads: [] }).mockResolvedValue({ threads: [
-      { id: 'candidate-1', replyToMessageId: 'mail-1' },
-    ] });
     bridgeMockState.candidateStateQuery = candidate;
-    bridgeMockState.draftsListQuery = list;
-    bridgeMockState.draftsGetQuery = vi.fn().mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+    bridgeMockState.reviewForMessageQuery = vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
       tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
     } });
     render(<NavaPane bridge={fakeBridge} />);

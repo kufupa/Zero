@@ -47,28 +47,25 @@ it('keeps a metadata-only unread attachment visible to staff without a file hash
   expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
 });
 
-it('loads review items from the server draft list for the selected message', async () => {
+it('loads the current review for the selected message', async () => {
   const action = { id:'request:shuttle',kind:'unanswered_question',text:'Can we arrange a shuttle?',
     sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
     blockingQuote:false,status:'open' };
-  const list = vi.fn().mockResolvedValue({threads:[{id:'old',replyToMessageId:'mail-0'},{id:'current',replyToMessageId:'mail-1'}],nextPageToken:null});
-  const get = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
-  expect(await bindStaffActions({list,get,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
-  expect(get).toHaveBeenCalledOnce();
-  expect(get).toHaveBeenCalledWith({id:'current'});
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
+  expect(await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread-1',messageId:'mail-1'});
 });
 
-it('binds prepared tasks only to the selected email and newest available snapshot', async () => {
+it('does not use a review for another message', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-0',reviewSummary:{staffActions:[]}});
+  expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
+});
+
+it('binds prepared tasks to the selected email review', async () => {
   const newest = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action',details:['Fee is unknown.','No cancellation has been saved.']};
-  const list = vi.fn().mockResolvedValue({threads:[
-    {id:'other',replyToMessageId:'mail-2'}, {id:'new',replyToMessageId:'mail-1'}, {id:'old',replyToMessageId:'mail-1'},
-  ]});
-  const get = vi.fn(async ({id}: {id:string}) => ({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:id==='new'?[newest]:[{...newest,id:'old'}]}}));
-  expect(await bindStaffActions({list,get,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[],tasks:[newest]});
-  expect(get).not.toHaveBeenCalledWith({id:'other'});
-  expect(get).toHaveBeenCalledOnce();
-  const moved = vi.fn().mockResolvedValue({replyToMessageId:'mail-2',reviewSummary:{staffActions:[],tasks:[newest]}});
-  expect(await bindStaffActions({list:vi.fn().mockResolvedValue({threads:[{id:'new',replyToMessageId:'mail-1'}]}),get:moved,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[]});
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:[newest]}});
+  expect(await bindStaffActions({query,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[],tasks:[newest]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
 });
 
 describe('HRDAV native room and board maps', () => {

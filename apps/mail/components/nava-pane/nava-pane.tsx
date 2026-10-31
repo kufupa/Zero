@@ -888,8 +888,7 @@ export function NavaPane({
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
       const refreshActions = async () => {
         const actions = await bindStaffActions({
-          list: staff.drafts.list?.query,
-          get: staff.drafts.get?.query,
+          query: staff.drafts.reviewForMessage?.query,
           threadId: source.source.threadId,
           messageId: source.source.messageId,
         });
