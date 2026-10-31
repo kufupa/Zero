@@ -305,6 +305,12 @@ function fieldState(value: unknown): 'extracted' | 'missing' {
   return value === null || value === undefined ? 'missing' : 'extracted';
 }
 
+function normalizeStayTotal(value: number | null | undefined): number | null | undefined {
+  return value === undefined || value === null || (Number.isInteger(value) && value >= 0 && value <= 999)
+    ? value
+    : null;
+}
+
 function hotelDefaultedQuestion(field: string): boolean {
   return /^(roomType|roomPreference|room_type|board)$/i.test(field);
 }
@@ -533,6 +539,8 @@ export function mapLlmDecision(
     const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
     const boardDefaulted = group.board === null;
+    const adultsTotal = normalizeStayTotal(group.adultsTotal);
+    const childrenTotal = normalizeStayTotal(group.childrenTotal);
     const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
       group.board,
       analysis.party.kind,
@@ -543,8 +551,8 @@ export function mapLlmDecision(
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
-      ...(group.adultsTotal !== undefined ? { adultsTotal: group.adultsTotal } : {}),
-      ...(group.childrenTotal !== undefined ? { childrenTotal: group.childrenTotal } : {}),
+      ...(adultsTotal !== undefined ? { adultsTotal } : {}),
+      ...(childrenTotal !== undefined ? { childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),
@@ -559,8 +567,8 @@ export function mapLlmDecision(
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
-        ...(group.adultsTotal !== undefined ? { adultsTotal: fieldState(group.adultsTotal) } : {}),
-        ...(group.childrenTotal !== undefined ? { childrenTotal: fieldState(group.childrenTotal) } : {}),
+        ...(adultsTotal !== undefined ? { adultsTotal: fieldState(adultsTotal) } : {}),
+        ...(childrenTotal !== undefined ? { childrenTotal: fieldState(childrenTotal) } : {}),
         ...(quoteDefaults
           ? {
               roomPreference: roomPreferenceDefaulted

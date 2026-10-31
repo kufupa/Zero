@@ -10,6 +10,7 @@ import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/s
 import {
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
+  type StayEditAction,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { matchRoomType, ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
@@ -41,7 +42,7 @@ function renderStay(
   }: { index?: number; stayCount?: number; requestedRoomsTotal?: number } = {},
 ) {
   const onPatch = vi.fn();
-  const onStayAction = vi.fn();
+  const onStayAction = vi.fn<(action: StayEditAction) => void>();
   const onMealPlanChange = vi.fn();
   const rendered = render(
     <StayCard
@@ -118,7 +119,7 @@ describe('StayCard rooms', () => {
 
     const updated = reduceQuoteSession(
       { ...initialQuoteSession(), groups: rows },
-      onStayAction.mock.calls[0]![0] as never,
+      onStayAction.mock.calls[0]![0],
     );
     expect(updated.groups.map((row) => [row.id, row.adultsTotal])).toEqual([
       ['a1', 5], ['a2', 5], ['b1', 3],

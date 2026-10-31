@@ -869,7 +869,8 @@ export type StayEditAction =
   | { type: 'duplicate_row'; groupId: string; token: string }
   | { type: 'remove_row'; groupId: string }
   | { type: 'duplicate_stay'; stayId: string; token: string }
-  | { type: 'remove_stay'; stayId: string };
+  | { type: 'remove_stay'; stayId: string }
+  | { type: 'patch_stay_total'; stayId: string; field: 'adultsTotal' | 'childrenTotal'; value: number | null };
 
 export type QuoteSessionAction =
   | StayEditAction

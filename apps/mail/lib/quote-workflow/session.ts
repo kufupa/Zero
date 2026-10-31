@@ -2171,6 +2171,15 @@ export function reduceQuoteSession(
         })),
       );
     }
+    case 'patch_stay_total': {
+      const targetIds = new Set(groupsForStayAction(session.groups, action.stayId).map((group) => group.id));
+      if (!targetIds.size) return session;
+      const groups = session.groups.map((group) =>
+        targetIds.has(group.id) ? applyGroupPatch(group, { [action.field]: action.value }) : group,
+      );
+      const touched = new Set(groups.filter((group) => targetIds.has(group.id)).map(stayKeyForGroup));
+      return editStays(session, groups, touched);
+    }
     case 'patch_group': {
       // The first edit to the blank stay makes it a real group. Her edit then wins over a read that lands later.
       const base =
