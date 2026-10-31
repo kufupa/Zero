@@ -30,6 +30,7 @@ function input(text: string, artifacts: unknown[] = []): ReservationistRuntimeIn
   return { version: 1, requestId: 'message', propertyCode: 'HRCEN',
     authorizationScope: { ownerRef: 'transport', threadId: 'thread' }, trigger: { id: 'message', at },
     messages: [{ id: 'message', at, direction: 'inbound', text }], authorizedArtifacts: artifacts,
+    requiredTaskKinds: [], requiredAskSpans: [],
     clock: { causalAt: at, sourceAt: new Date().toISOString(), sourceMode: 'current_read', deadlineAt: Date.now() + 60000 },
     capabilities: { pmsWrite: false, emailSend: false } };
 }
