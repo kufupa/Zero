@@ -49,7 +49,8 @@ export const K2_MAPPING = [
   'Never paraphrase, tidy, complete, or invent a quoted amount.',
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
-  'adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2.',
+  'Never divide adultsTotal or childrenTotal across rooms, even when they divide evenly. adultsPerRoom is per room; adultsTotal may resolve it only for one known room.',
+  'childCount is children in EACH room: for HRCEN, an ordinary adult-only request with no children mentioned has childCount=0 and childAges=[]; do not ask staff to confirm no children. For other properties, use that property’s established no-child convention or null when none is established. When children are mentioned but the count/allocation is unknown, use null. childAges are exact per-room ages and must match a positive childCount; never infer a count from a partial age list, invent age 0, or call quote tools with missing ages.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
@@ -158,10 +159,14 @@ export type MappedQuoteDecision = {
   intent: 'quote' | 'other';
   groups: Array<{
     id: string;
+    stayId?: string;
     arrivalDate?: string;
     departureDate?: string;
     quantity?: number;
     adults?: number;
+    adultsTotal?: number | null;
+    childCount?: number | null;
+    childrenTotal?: number | null;
     childrenAges: number[];
     board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
@@ -318,6 +323,16 @@ function mapStatedOrDefaultBoard(
 ): MappedQuoteDecision['groups'][number]['board'] {
   if (board === null) return defaultBoard(partyKind);
   return board === 'dbb' || board === 'half_board' ? 'dinner_bb' : board;
+}
+
+function childCountForGroup(
+  group: LunaAnalysis['groups'][number],
+  onlyGroupInStay: boolean,
+): number | null {
+  if (typeof group.childCount === 'number') return group.childCount;
+  if (group.childrenTotal === 0) return 0;
+  if (onlyGroupInStay && typeof group.childrenTotal === 'number' && group.rooms === 1) return group.childrenTotal;
+  return null;
 }
 
 function missingQuoteReplyFields(
@@ -523,9 +538,42 @@ export function mapLlmDecision(
       group.adultsPerRoom !== null || group.childAges.length > 0 || group.guestNames.length > 0;
     const quantityDefaulted =
       quoteDefaults && group.rooms === null && hasValidStayDates && hasGuestEvidence;
-    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null;
+    const sameStayGroupCount = analysis.groups.filter((other) => {
+      if (group.stayId && other.stayId) return group.stayId === other.stayId;
+      return group.arrival === other.arrival && group.departure === other.departure;
+    }).length;
+    const adultsFromSingleRoomTotal =
+      group.adultsPerRoom === null &&
+      group.rooms === 1 &&
+      sameStayGroupCount === 1 &&
+      typeof group.adultsTotal === 'number';
+    const adultsUnallocated =
+      group.adultsPerRoom === null && typeof group.adultsTotal === 'number' && !adultsFromSingleRoomTotal;
+    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && typeof group.adultsTotal !== 'number';
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
-    const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);
+    const adults =
+      group.adultsPerRoom ??
+      (adultsFromSingleRoomTotal ? group.adultsTotal! : adultsDefaulted ? 2 : undefined);
+    const childCount = childCountForGroup(group, sameStayGroupCount === 1);
+    const childAgesMissing = childCount === null || childCount !== group.childAges.length;
+    if (adultsUnallocated) {
+      missing.push({
+        field: 'adultsPerRoom',
+        question: `The request gives ${group.adultsTotal} adults across ${group.rooms ?? 'an unspecified number of'} rooms; how many adults are in each room?`,
+      });
+    }
+    if (childAgesMissing) {
+      const detail =
+        childCount === null
+          ? group.childrenTotal != null
+            ? ` (${group.childrenTotal} children in total)`
+            : ''
+          : ` (${childCount} children per room)`;
+      missing.push({
+        field: 'childAges',
+        question: `Confirm the number of children in each room and provide every child's age${detail}.`,
+      });
+    }
     const roomPreference = group.roomPreference?.trim() || undefined;
     const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
@@ -536,10 +584,13 @@ export function mapLlmDecision(
     );
     return {
       id: `g${index + 1}`,
+      ...(group.stayId ? { stayId: group.stayId } : {}),
       ...(arrivalDate ? { arrivalDate } : {}),
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
+      ...(group.adultsTotal === undefined ? { childCount } : { adultsTotal: group.adultsTotal, childCount }),
+      ...(group.childrenTotal !== undefined ? { childrenTotal: group.childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),
@@ -553,7 +604,10 @@ export function mapLlmDecision(
             ? ('extracted' as const)
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
-        adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        adults: adultsDefaulted ? ('defaulted' as const) : fieldState(adults),
+        childCount: fieldState(childCount),
+        childrenTotal: fieldState(group.childrenTotal),
+        childAges: childAgesMissing ? ('missing' as const) : ('extracted' as const),
         ...(quoteDefaults
           ? {
               roomPreference: roomPreferenceDefaulted
@@ -568,6 +622,7 @@ export function mapLlmDecision(
   if (groups.length === 0) {
     groups.push({
       id: 'g1',
+      childCount: null,
       childrenAges: [],
       board: defaultBoard(analysis.party.kind),
       specialRequests: [],
@@ -576,6 +631,9 @@ export function mapLlmDecision(
         departureDate: 'missing',
         quantity: 'missing',
         adults: 'missing',
+        childCount: 'missing',
+        childrenTotal: 'missing',
+        childAges: 'missing',
         board: 'defaulted',
       },
     });

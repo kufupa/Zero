@@ -28,6 +28,7 @@ import {
   paneAnalysisTools,
   selectionToAgentPrompt,
 } from '../src/ai/agent-pane-adapter.js';
+import { mapLlmDecision } from '../src/ai/quote-workflow-llm.js';
 import { createReservationistAgent } from '../src/ai/reservationist-agent.js';
 
 const LUNA_WORKFLOW: Record<ReservationistDecision['workflow'], LunaAnalysis['workflow']> = {
@@ -93,15 +94,15 @@ describe('agentDecisionToLunaAnalysis', () => {
     expect(agentDecisionToLunaAnalysis(decision('spam'), selection).workflow).toBe('skip');
   });
 
-  it('folds stayAsk into one luna group with per-room adults', () => {
+  it('keeps the one-room, no-child quote occupancy explicit', () => {
     const analysis = agentDecisionToLunaAnalysis(
       decision('quote', {
         stayAsk: {
           arrivalDate: '2026-11-12',
           departureDate: '2026-11-14',
-          adults: 4,
+          adults: 2,
           children: 0,
-          rooms: 2,
+          rooms: 1,
         },
       }),
       selection,
@@ -112,8 +113,11 @@ describe('agentDecisionToLunaAnalysis', () => {
         arrival: '2026-11-12',
         departure: '2026-11-14',
         dateEvidence: null,
-        rooms: 2,
+        rooms: 1,
+        adultsTotal: 2,
         adultsPerRoom: 2,
+        childrenTotal: 0,
+        childCount: 0,
         childAges: [],
         board: null,
         roomPreference: null,
@@ -121,9 +125,14 @@ describe('agentDecisionToLunaAnalysis', () => {
       },
     ]);
     expect(parsed.workflow).toBe('quote');
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      adults: 2,
+      adultsTotal: 2,
+      fields: { adults: 'extracted' },
+    });
   });
 
-  it('ceils adults across rooms and keeps children', () => {
+  it('does not split stay totals or invent ages when per-room occupancy is unknown', () => {
     const parsed = lunaAnalysisSchema.parse(
       agentDecisionToLunaAnalysis(
         decision('quote', {
@@ -138,8 +147,93 @@ describe('agentDecisionToLunaAnalysis', () => {
         selection,
       ),
     );
-    expect(parsed.groups[0]?.adultsPerRoom).toBe(3);
-    expect(parsed.groups[0]?.childAges).toHaveLength(2);
+    expect(parsed.groups[0]).toMatchObject({
+      rooms: 2,
+      adultsTotal: 5,
+      adultsPerRoom: null,
+      childrenTotal: 2,
+      childCount: null,
+      childAges: [],
+    });
+    const mapped = mapLlmDecision(parsed);
+    expect(mapped.groups[0]?.adults).toBeUndefined();
+    expect(mapped.groups[0]?.adultsTotal).toBe(5);
+    expect(mapped.groups[0]?.childrenAges).toEqual([]);
+    expect(mapped.groups[0]?.childCount).toBeNull();
+    expect(mapped.groups[0]?.fields).toMatchObject({ adults: 'missing', childAges: 'missing' });
+    expect(mapped.missing.map((item) => item.field)).toEqual(['adultsPerRoom', 'childAges']);
+  });
+
+  it('keeps an explicit unknown child allocation when only some ages are known', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 4,
+            children: 2,
+            rooms: 2,
+            childCount: null,
+            childAges: [6],
+          },
+        }),
+        selection,
+      ),
+    );
+    expect(parsed.groups[0]).toMatchObject({ childCount: null, childAges: [6], childrenTotal: 2 });
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      childCount: null,
+      childrenAges: [6],
+      fields: { childCount: 'missing', childAges: 'missing' },
+    });
+  });
+
+  it('does not infer a per-room count from a partial age list when the stay total spans rooms', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 4,
+            children: 2,
+            rooms: 2,
+            childAges: [6],
+          },
+        }),
+        selection,
+      ),
+    );
+    expect(parsed.groups[0]).toMatchObject({ childCount: null, childrenTotal: 2, childAges: [6] });
+    expect(mapLlmDecision(parsed).groups[0]).toMatchObject({
+      childCount: null,
+      childrenAges: [6],
+      fields: { childCount: 'missing', childAges: 'missing' },
+    });
+  });
+
+  it('preserves a supplied per-room adult allocation and child ages', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 4,
+            children: 2,
+            rooms: 2,
+            adultsPerRoom: 2,
+            childCount: 1,
+            childAges: [6],
+          },
+        }),
+        selection,
+      ),
+    );
+    const group = mapLlmDecision(parsed).groups[0];
+    expect(group).toMatchObject({ adults: 2, childCount: 1, childrenAges: [6] });
+    expect(group?.fields.childAges).toBe('extracted');
   });
 
   it('keeps confirmation numbers that appear in the selection and drops invented ones', () => {

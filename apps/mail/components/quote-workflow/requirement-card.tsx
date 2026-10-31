@@ -22,7 +22,7 @@ import {
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
 import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
-import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, stayOccupancyAllocation } from '@/lib/quote-workflow/types';
 import type {
   HmsQuotePropertyCode,
   QuoteBoard,
@@ -40,6 +40,7 @@ const FIELD_EVIDENCE_ALIASES: Record<string, string[]> = {
   adults: ['adults', 'adultsPerRoom'],
   quantity: ['quantity', 'rooms'],
   roomPreference: ['roomPreference'],
+  childCount: ['childCount'],
   childrenAges: ['childrenAges', 'childAges'],
   board: ['board'],
 };
@@ -180,8 +181,19 @@ export function StayCard({
   const totals = stayTotals(rows);
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
+  const occupancy = stayOccupancyAllocation(rows);
+  const childrenTotal = occupancy.children.conflict ? null : occupancy.children.total;
+  const adultsTotal = occupancy.adults.conflict ? null : occupancy.adults.total;
+  const occupancyConflict = occupancy.adults.conflict || occupancy.children.conflict ||
+    (typeof adultsTotal === 'number' && occupancy.adults.allocated !== null && occupancy.adults.allocated !== adultsTotal) ||
+    (typeof childrenTotal === 'number' && occupancy.children.allocated !== null && occupancy.children.allocated !== childrenTotal);
+  const occupancyIssue = occupancyConflict
+    ? 'Review the stated occupancy totals and per-room counts before quoting.'
+    : null;
   // The dates are one fact for the whole stay, so a change goes to every room in it.
   const onDates = (patch: StayDatePatch) => rows.forEach((row) => onPatch?.(row.id, patch));
+  const onChildrenTotal = (value: number | null) =>
+    rows.forEach((row) => onPatch?.(row.id, { childrenTotal: value }));
 
   return (
     <article aria-label={`Stay ${stayNumber} details`} className="overflow-hidden rounded-[4px] border border-[#cbd5e1] bg-white">
@@ -235,7 +247,8 @@ export function StayCard({
         <p className="text-[13px] font-semibold text-[#1e293b]">
           {splitNotSet
             ? `${requestedRoomsTotal} rooms requested · split not set`
-            : `${totals.rooms} ${totals.rooms === 1 ? 'room' : 'rooms'} · ${totals.guests} ${totals.guests === 1 ? 'guest' : 'guests'} total`}
+            : `${totals.rooms} ${totals.rooms === 1 ? 'room' : 'rooms'} · ${totals.guests === null ? 'guest count incomplete' : `${totals.guests} ${totals.guests === 1 ? 'guest' : 'guests'} total`}`}
+          {adultsTotal !== null ? <span className="ml-1 font-normal text-[#64748b]">{`· Stated adults total: ${adultsTotal}`}</span> : null}
           {!splitNotSet && requestedRoomsTotal !== undefined && requestedRoomsTotal !== totals.rooms ? (
             <span className="ml-1 font-normal text-[#64748b]">{`· Email requested ${requestedRoomsTotal} rooms in total`}</span>
           ) : null}
@@ -282,9 +295,39 @@ export function StayCard({
         </Field>
 
         <section aria-label="Room types and occupancy" className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-1">
+          <div className="flex flex-wrap items-end justify-between gap-2">
             <h5 className="text-[13px] font-bold text-[#1e293b]">Room types &amp; occupancy</h5>
+            <div className="w-full max-w-[12rem]">
+              <Field
+                label="Children total"
+                htmlFor={`${id}-children-total`}
+                aside={<ProvenanceFlag value={first?.fields.childrenTotal} />}
+                hint="Stay-wide total; not divided across rooms."
+              >
+                <input
+                  id={`${id}-children-total`}
+                  aria-label="Children total"
+                  className={paneFieldClass}
+                  type="number"
+                  min={0}
+                  max={999}
+                  step={1}
+                  value={childrenTotal ?? ''}
+                  onChange={(event) => {
+                    const raw = event.currentTarget.value;
+                    const next = raw === '' ? null : Number(raw);
+                    if (next !== null && (!Number.isInteger(next) || next < 0 || next > 999)) return;
+                    onChildrenTotal(next);
+                  }}
+                />
+              </Field>
+            </div>
           </div>
+          {occupancyIssue ? (
+            <p role="alert" className="rounded-[3px] border border-[#f3c7c7] bg-[#fff7f7] px-2 py-1.5 text-[12px] text-[#9b1c1c]">
+              {occupancyIssue}
+            </p>
+          ) : null}
           <div role="table" aria-label="Room types & occupancy" className="overflow-hidden rounded-[3px] border border-[#dbe2ea]">
             <div role="rowgroup" className="flex flex-col divide-y divide-[#e2e8f0]">
               {rows.map((row, roomIndex) => (
@@ -348,7 +391,10 @@ export function RequirementCard({
     .slice(0, 3);
   const roomSelect = useRef<HTMLSelectElement>(null);
   const [editingAdults, setEditingAdults] = useState(false);
-  const hasOptionalDetails = group.childrenAges.length > 0 || group.specialRequests.length > 0;
+  const hasOptionalDetails =
+    group.childrenAges.length > 0 ||
+    group.specialRequests.length > 0 ||
+    group.fields.childAges === 'missing';
   const [showOptionalDetails, setShowOptionalDetails] = useState(hasOptionalDetails);
   const hadOptionalDetails = useRef(hasOptionalDetails);
   useEffect(() => {
@@ -529,7 +575,30 @@ export function RequirementCard({
           {showOptionalDetails ? '− Children / requests' : '+ Children / requests'}
         </button>
         {showOptionalDetails ? (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <Field label="Children per room" htmlFor={`${id}-child-count`} hint="Count for each identical room.">
+              <input
+                id={`${id}-child-count`}
+                aria-label="Children per room"
+                className={paneFieldClass}
+                type="number"
+                min={0}
+                max={9}
+                step={1}
+                value={group.childCount ?? ''}
+                onChange={(event) => {
+                  const raw = event.currentTarget.value;
+                  const next = raw === '' ? null : Number(raw);
+                  if (next !== null && (!Number.isInteger(next) || next < 0 || next > 9)) return;
+                  onPatch?.(group.id, {
+                    childCount: next,
+                    ...(next === 0 ? { childrenAges: [] } : {}),
+                  });
+                }}
+              />
+              <ProvenanceFlag value={group.fields.childCount} />
+              <FieldEvidence quotes={quotesFor('childCount', evidence)} />
+            </Field>
             <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
               <input
                 id={`${id}-children`}

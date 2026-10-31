@@ -64,13 +64,24 @@ function groupFromStayAsk(
   stay: NonNullable<ReservationistDecision['stayAsk']>,
 ): LunaAnalysis['groups'][number] {
   const rooms = stay.rooms;
+  const childAges = stay.childAges ?? [];
+  let childCount: number | null;
+  if (typeof stay.childCount === 'number') {
+    childCount = stay.childCount;
+  } else {
+    childCount =
+      stay.children === 0 ? 0 : rooms === 1 && typeof stay.children === 'number' ? stay.children : null;
+  }
   return {
     arrival: stay.arrivalDate,
     departure: stay.departureDate,
     dateEvidence: null,
     rooms,
-    adultsPerRoom: rooms > 0 ? Math.ceil(stay.adults / rooms) : stay.adults,
-    childAges: Array.from({ length: Math.max(0, stay.children) }, () => 0),
+    adultsTotal: stay.adults,
+    adultsPerRoom: stay.adultsPerRoom ?? (rooms === 1 ? stay.adults : null),
+    childrenTotal: stay.children,
+    childCount,
+    childAges,
     board: null,
     roomPreference: null,
     guestNames: [],

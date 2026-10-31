@@ -248,6 +248,146 @@ describe('stored read for the pane', () => {
       expect(work.workItemStatus).toBe('needs_you');
     }));
 
+  it('projects stay totals without turning an unknown per-room child count into zero', () => {
+    const extracted = payload();
+    extracted.stays = [
+      {
+        ...extracted.stays[0]!,
+        totalRooms: 2,
+        totalAdults: 5,
+        totalChildren: 2,
+        rows: [
+          {
+            ...extracted.stays[0]!.rows[0]!,
+            rooms: 2,
+            adultsPerRoom: null,
+            childCount: null,
+            childAges: [],
+          },
+        ],
+      },
+      {
+        ...extracted.stays[1]!,
+        totalRooms: 1,
+        totalAdults: 2,
+        totalChildren: 0,
+        rows: [
+          {
+            ...extracted.stays[1]!.rows[0]!,
+            rooms: 1,
+            adultsPerRoom: 2,
+            childCount: 0,
+            childAges: [],
+          },
+        ],
+      },
+    ];
+
+    const { analysis } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
+    expect(analysis.groups[0]?.adults).toBeUndefined();
+    expect(analysis.groups[0]).toMatchObject({
+      adultsTotal: 5,
+      childrenTotal: 2,
+      childCount: null,
+      childrenAges: [],
+      fields: { adults: 'missing', childAges: 'missing' },
+    });
+    expect(analysis.groups[1]).toMatchObject({
+      adultsTotal: 2,
+      adults: 2,
+      childrenTotal: 0,
+      childCount: 0,
+      childrenAges: [],
+      fields: { adults: 'extracted', childAges: 'extracted' },
+    });
+  });
+
+  it('keeps a known child count while staff ages are partial, and reads an explicit count correction', () => {
+    const extracted = payload();
+    const rowId = extracted.stays[0]!.rows[0]!.id;
+    extracted.stays[0] = {
+      ...extracted.stays[0]!,
+      totalRooms: 2,
+      totalChildren: 4,
+      rows: [
+        {
+          ...extracted.stays[0]!.rows[0]!,
+          rooms: 2,
+          childCount: 2,
+          childAges: [6, 8],
+        },
+      ],
+    };
+    const agesPath = `stays[${STAY_ONE}].rows[${rowId}].childAges`;
+    const countPath = `stays[${STAY_ONE}].rows[${rowId}].childCount`;
+
+    const partialAges = storedAnalysis(
+      { kind: 'quote', payload: extracted, attachments: [] },
+      { [agesPath]: [6] },
+    ).analysis.groups[0]!;
+    expect(partialAges).toMatchObject({
+      childrenTotal: 4,
+      childCount: 2,
+      childrenAges: [6],
+    });
+    expect(partialAges.fields.childAges).toBe('staff_corrected');
+
+    const corrected = storedAnalysis(
+      { kind: 'quote', payload: extracted, attachments: [] },
+      { [countPath]: 1, [agesPath]: [6] },
+    ).analysis.groups[0]!;
+    expect(corrected).toMatchObject({
+      childrenTotal: 4,
+      childCount: 1,
+      childrenAges: [6],
+      fields: { childCount: 'staff_corrected', childAges: 'staff_corrected' },
+    });
+  });
+
+  it('corrects the stay total without rewriting known per-room occupancy, and keeps cleared unknown distinct from zero', () => {
+    const extracted = payload();
+    extracted.stays[0] = {
+      ...extracted.stays[0]!,
+      totalRooms: 2,
+      totalChildren: 0,
+      rows: [
+        {
+          ...extracted.stays[0]!.rows[0]!,
+          rooms: 2,
+          childCount: 1,
+          childAges: [6],
+        },
+      ],
+    };
+    const totalPath = `stays[${STAY_ONE}].totalChildren`;
+    expect(aiValueAt(extracted, totalPath)).toBe(0);
+
+    const source = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.groups[0]!;
+    expect(source).toMatchObject({ childrenTotal: 0, childCount: 1, childrenAges: [6] });
+
+    const corrected = storedAnalysis(
+      { kind: 'quote', payload: extracted, attachments: [] },
+      { [totalPath]: 2 },
+    ).analysis.groups[0]!;
+    expect(corrected).toMatchObject({
+      childrenTotal: 2,
+      childCount: 1,
+      childrenAges: [6],
+      fields: { childrenTotal: 'staff_corrected' },
+    });
+
+    const unknown = storedAnalysis(
+      { kind: 'quote', payload: extracted, attachments: [] },
+      { [totalPath]: null },
+    ).analysis.groups[0]!;
+    expect(unknown).toMatchObject({
+      childrenTotal: null,
+      childCount: 1,
+      childrenAges: [6],
+      fields: { childrenTotal: 'staff_corrected' },
+    });
+  });
+
   it('marks a do-not-reply sender on the stored read, as the live read does, so the pane hides its reply controls', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'nr1');
@@ -1580,10 +1720,20 @@ describe('field paths and values', () => {
       rowId: null,
       field: 'arrival',
     });
+    expect(parseFieldPath(`stays[${STAY_ONE}].totalChildren`)).toEqual({
+      stayId: STAY_ONE,
+      rowId: null,
+      field: 'totalChildren',
+    });
     expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].board`)).toEqual({
       stayId: STAY_ONE,
       rowId: ROW_TWIN,
       field: 'board',
+    });
+    expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].childCount`)).toEqual({
+      stayId: STAY_ONE,
+      rowId: ROW_TWIN,
+      field: 'childCount',
     });
     expect(parseFieldPath(`stays[${STAY_ONE}].removed`)).toEqual({ stayId: STAY_ONE, rowId: null, field: 'removed' });
     expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].removed`)).toEqual({
@@ -1607,6 +1757,10 @@ describe('field paths and values', () => {
     expect(validFieldValue('count', 3)).toBe(true);
     expect(validFieldValue('count', 0)).toBe(false);
     expect(validFieldValue('adults', 10)).toBe(false);
+    expect(validFieldValue('childCount', 0)).toBe(true);
+    expect(validFieldValue('childCount', 10)).toBe(false);
+    expect(validFieldValue('totalChildren', 0)).toBe(true);
+    expect(validFieldValue('totalChildren', 1000)).toBe(false);
     expect(validFieldValue('childAges', [3, 17])).toBe(true);
     expect(validFieldValue('childAges', [18])).toBe(false);
     expect(validFieldValue('board', 'dbb')).toBe(true);

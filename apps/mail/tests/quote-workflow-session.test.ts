@@ -47,7 +47,11 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
-import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import {
+  approvedExecuteHeader,
+  staffHeaderForStay,
+  staffQuoteGroupsFromStay,
+} from '../lib/quote-workflow/staff-quote-bind';
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
@@ -61,7 +65,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -947,6 +950,25 @@ describe('quote session', () => {
     expect(parseChildrenAges('  , ')).toEqual([]);
     expect(parseChildrenAges('5,')).toEqual([5]);
     expect(parseChildrenAges('0')).toEqual([0]);
+  });
+
+  it('lets staff age edits clear the missing-age quote blocker', () => {
+    const group = quoteAnalysis.groups[0]!;
+    const session = reduceQuoteSession(initialQuoteSession(), {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...group, childCount: 2, childrenAges: [], fields: { ...group.fields, childAges: 'missing' } }],
+      },
+    });
+    const corrected = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { childrenAges: [6, 8] },
+    });
+
+    expect(corrected.groups[0]?.fields.childAges).toBe('staff_corrected');
+    expect(staffQuoteGroupsFromStay(corrected.groups)).toMatchObject({ ok: [{ childrenAges: [6, 8] }] });
   });
 
   it('keeps only the child ages a work item can save: whole years 0 to 17, at most 9', () => {
@@ -3967,6 +3989,17 @@ describe('stay edits: rows, stays and their rates', () => {
   it('counts rooms and guests over every row', () => {
     const groups = [row('t', dateA, { quantity: 20, adults: 2 }), row('s', dateA, { quantity: 10, adults: 1, roomPreference: 'STQN' })];
     expect(stayTotals(groups)).toEqual({ rooms: 30, guests: 50 });
+  });
+
+  it('uses the declared child count for totals and does not show an exact total when it is unknown', () => {
+    expect(stayTotals([row('c', dateA, { quantity: 2, adults: 1, childCount: 2, childrenAges: [6] })])).toEqual({
+      rooms: 2,
+      guests: 6,
+    });
+    expect(stayTotals([row('u', dateA, { quantity: 1, adults: 2, childCount: null, childrenAges: [6] })])).toEqual({
+      rooms: 1,
+      guests: null,
+    });
   });
 });
 

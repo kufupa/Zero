@@ -35,8 +35,10 @@ import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
+  childCountForQuoteGroup,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
+  stayOccupancyAllocation,
 } from './types';
 import { knownRoomCode, matchConfiguredRoomType, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
@@ -513,6 +515,14 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    const childCount = childCountForQuoteGroup(group);
+    if (
+      childCount === null ||
+      childCount !== group.childrenAges.length ||
+      (childCount > 0 && group.fields.childAges === 'missing')
+    ) {
+      return { error: 'Confirm the number of children in each room and enter every child’s age before running the quote.' };
+    }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
     // An explicit code list or a known preference still binds; garbage codes still refuse below.
     const rooms = resolveNativeRoomCodes({
@@ -541,6 +551,16 @@ export function staffQuoteGroupsFromStay(
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {
     return { error: 'Each date range needs its own quote. Run them one at a time.' };
+  }
+  const occupancy = stayOccupancyAllocation(groups);
+  if (occupancy.children.conflict) {
+    return { error: 'Room rows have conflicting stay-wide child totals. Correct the stay total before running the quote.' };
+  }
+  if (typeof occupancy.children.total === 'number' && occupancy.children.allocated !== occupancy.children.total) {
+    return { error: `The stay says ${occupancy.children.total} children, but the room allocations add up to ${occupancy.children.allocated}. Correct the stay total or per-room counts before running the quote.` };
+  }
+  if (occupancy.adults.conflict || (typeof occupancy.adults.total === 'number' && occupancy.adults.allocated !== occupancy.adults.total)) {
+    return { error: 'Resolve the stay-wide adult total against per-room allocations before running the quote.' };
   }
   return { ok: out };
 }

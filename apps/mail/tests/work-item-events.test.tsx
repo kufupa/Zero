@@ -113,6 +113,36 @@ describe('fieldEventsBetween', () => {
     ]);
   });
 
+  it('persists an explicit per-room child-count correction separately from child ages', () => {
+    expect(
+      fieldEventsBetween(
+        READY.refs,
+        [row('g1', 'st-1', { childCount: 2, childrenAges: [6, 8] })],
+        [row('g1', 'st-1', { childCount: 1, childrenAges: [6] })],
+      ),
+    ).toEqual([
+      { path: 'stays[st-1].rows[rw-1].childCount', value: 1 },
+      { path: 'stays[st-1].rows[rw-1].childAges', value: [6] },
+    ]);
+  });
+
+  it('persists a stay-wide child total once and keeps zero distinct from unknown', () => {
+    expect(
+      fieldEventsBetween(
+        READY.refs,
+        [G1, G2],
+        [row('g1', 'st-1', { childrenTotal: 0 }), row('g2', 'st-1', { childrenTotal: 0 })],
+      ),
+    ).toEqual([{ path: 'stays[st-1].totalChildren', value: 0 }]);
+    expect(
+      fieldEventsBetween(
+        READY.refs,
+        [row('g1', 'st-1', { childrenTotal: 2 }), row('g2', 'st-1', { childrenTotal: 2 })],
+        [G1, G2],
+      ),
+    ).toEqual([{ path: 'stays[st-1].totalChildren', value: null }]);
+  });
+
   it('logs a stay with no row by its dates and its own row, and an unknown board or empty date as null', () => {
     expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, departureDate: '', quantity: 3 }])).toEqual([
       { path: 'stays[st-2].requested.departure', value: null },

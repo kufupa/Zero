@@ -29,6 +29,7 @@ const group = {
   dateEvidence: null,
   rooms: 2,
   adultsPerRoom: 1,
+  childCount: 0,
   childAges: [] as number[],
   board: 'dbb' as const,
   roomPreference: 'twin',
@@ -545,6 +546,7 @@ describe('mapLlmDecision', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childCount: 0,
         childrenAges: [],
         board: 'dinner_bb',
         roomPreference: 'twin',
@@ -555,12 +557,69 @@ describe('mapLlmDecision', () => {
           departureDate: 'extracted',
           quantity: 'extracted',
           adults: 'extracted',
+          childCount: 'extracted',
+          childrenTotal: 'missing',
+          childAges: 'extracted',
           board: 'extracted',
         },
       },
     ]);
     expect(JSON.stringify(mapped.groups)).not.toMatch(/price|rate"|amount/i);
     expect(mapped.ratePlan.source).toBe('party_contract');
+  });
+
+  it('marks a one-room adult total as the extracted per-room count', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 1, adultsPerRoom: null, adultsTotal: 2 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      adults: 2,
+      adultsTotal: 2,
+      fields: { adults: 'extracted' },
+    });
+  });
+
+  it('treats an omitted child count as unknown and explicit no children as zero', () => {
+    const missing = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [{ ...group, childCount: undefined }] })),
+    );
+    expect(missing.groups[0]).toMatchObject({
+      childCount: null,
+      fields: { childCount: 'missing', childAges: 'missing' },
+    });
+    const explicitNoChildren = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [group] })),
+    );
+    expect(explicitNoChildren.groups[0]).toMatchObject({ childCount: 0, fields: { childCount: 'extracted' } });
+  });
+
+  it('does not reuse a stay-wide child total for each one-room occupancy group', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [
+            { ...group, rooms: 1, childrenTotal: 2, childCount: null, childAges: [6] },
+            { ...group, rooms: 1, childrenTotal: 2, childCount: null, childAges: [] },
+          ],
+        }),
+      ),
+    );
+
+    expect(mapped.groups.map(({ childCount, fields }) => [childCount, fields.childAges])).toEqual([
+      [null, 'missing'],
+      [null, 'missing'],
+    ]);
+    expect(mapped.missing.filter(({ field }) => field === 'childAges').map(({ question }) => question)).toEqual([
+      "Confirm the number of children in each room and provide every child's age (2 children in total).",
+      "Confirm the number of children in each room and provide every child's age (2 children in total).",
+    ]);
   });
 
   it('defaults a one-date quote to one night and marks departure defaulted', () => {
@@ -830,6 +889,7 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups).toEqual([
       {
         id: 'g1',
+        childCount: null,
         childrenAges: [],
         board: 'bb',
         specialRequests: [],
@@ -838,6 +898,9 @@ describe('mapLlmDecision', () => {
           departureDate: 'missing',
           quantity: 'missing',
           adults: 'missing',
+          childCount: 'missing',
+          childrenTotal: 'missing',
+          childAges: 'missing',
           board: 'defaulted',
         },
       },

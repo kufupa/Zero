@@ -25,6 +25,7 @@ import {
   emptyStaffQuoteHeader,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
+  stayOccupancyAllocation,
   type StaffExtraField,
 } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
@@ -185,14 +186,13 @@ export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
 }
 
 /** Rooms and guests over the rows given; children in a row are counted once per room. */
-export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number } {
-  return groups.reduce(
-    (sum, group) => ({
-      rooms: sum.rooms + (group.quantity ?? 0),
-      guests: sum.guests + (group.quantity ?? 0) * ((group.adults ?? 0) + group.childrenAges.length),
-    }),
-    { rooms: 0, guests: 0 },
-  );
+export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number | null } {
+  const occupancy = stayOccupancyAllocation(groups);
+  const rooms = groups.reduce((sum, group) => sum + (group.quantity ?? 0), 0);
+  const guests = occupancy.adults.allocated === null || occupancy.children.allocated === null
+    ? null
+    : occupancy.adults.allocated + occupancy.children.allocated;
+  return { rooms, guests };
 }
 
 export type StayAskGuest = { name: string; confirmationNumber: string | null };
@@ -1225,7 +1225,7 @@ function applyGroupPatch(
   const fields = { ...group.fields };
   for (const key of Object.keys(patch) as (keyof StayGroupRequirement)[]) {
     if (key === 'id' || key === 'fields') continue;
-    fields[String(key)] = 'staff_corrected';
+    fields[String(key === 'childrenAges' ? 'childAges' : key)] = 'staff_corrected';
   }
   const next: StayGroupRequirement = { ...group, ...patch, id: group.id, fields };
   // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.
@@ -1909,7 +1909,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

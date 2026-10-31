@@ -57,6 +57,7 @@ function modelDinnerBoard(board: 'dbb' | 'half_board'): Board {
         departure: '2026-10-15',
         rooms: 2,
         adultsPerRoom: 1,
+        childCount: 0,
         childAges: [],
         board,
         roomPreference: null,

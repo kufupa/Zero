@@ -33,6 +33,51 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   ...overrides,
 });
 
+describe('quote occupancy input', () => {
+  it('accepts explicit no-children occupancy and refuses missing ages for a known child count', () => {
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 0 })])).toMatchObject({
+      ok: [{ adults: 1, childrenAges: [] }],
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 1, childrenAges: [] })])).toEqual({
+      error: expect.stringMatching(/every child’s age/i),
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: null, childrenAges: [] })])).toEqual({
+      error: expect.stringMatching(/number of children/i),
+    });
+  });
+
+  it('keeps a declared child count authoritative until staff explicitly corrects it', () => {
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 2, childrenAges: [6] })])).toEqual({
+      error: expect.stringMatching(/every child’s age/i),
+    });
+    expect(staffQuoteGroupsFromStay([stay({ childCount: 1, childrenAges: [6] })])).toMatchObject({
+      ok: [{ childrenAges: [6] }],
+    });
+  });
+
+  it('blocks a quote when the stay total contradicts known per-room allocations', () => {
+    expect(
+      staffQuoteGroupsFromStay([
+        stay({ quantity: 2, childCount: 1, childrenAges: [6], childrenTotal: 3 }),
+      ]),
+    ).toEqual({
+      error: expect.stringMatching(/stay says 3 children.*allocations add up to 2/i),
+    });
+  });
+
+  it('blocks adult allocations that contradict the stay total but accepts a correct split', () => {
+    expect(staffQuoteGroupsFromStay([stay({ quantity: 2, adults: 3, adultsTotal: 5 })])).toEqual({
+      error: expect.stringMatching(/stay-wide adult total against per-room allocations/i),
+    });
+    expect(
+      staffQuoteGroupsFromStay([
+        stay({ id: 'g1', stayId: 's1', quantity: 1, adults: 2, adultsTotal: 5 }),
+        stay({ id: 'g2', stayId: 's1', quantity: 1, adults: 3, adultsTotal: 5 }),
+      ]),
+    ).toMatchObject({ ok: [{ adults: 2 }, { adults: 3 }] });
+  });
+});
+
 describe('HRDAV native room and board maps', () => {
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({

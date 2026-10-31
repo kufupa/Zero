@@ -101,8 +101,8 @@ const EMPTY_OUTPUT = {
 
 /** A stay total with no split: the rows keep their room types and leave rooms null. */
 const ROWS_UNSPLIT = [
-  { roomType: 'Single', rooms: null, adultsPerRoom: 1, childAges: [], board: null },
-  { roomType: 'Double/Twin', rooms: null, adultsPerRoom: 2, childAges: [], board: null },
+  { roomType: 'Single', rooms: null, adultsPerRoom: 1, childCount: 0, childAges: [], board: null },
+  { roomType: 'Double/Twin', rooms: null, adultsPerRoom: 2, childCount: 0, childAges: [], board: null },
 ];
 
 /** The correct read: the sender's organisation is the agency, the client in the subject is the end client. */
@@ -123,6 +123,8 @@ export const AE1_OUTPUT = {
       requested: { arrival: '2027-10-26', departure: '2027-10-28' },
       booked: null,
       totalRooms: 30,
+      totalAdults: null,
+      totalChildren: 0,
       rows: ROWS_UNSPLIT,
     },
     {
@@ -130,6 +132,8 @@ export const AE1_OUTPUT = {
       requested: { arrival: '2027-11-17', departure: '2027-11-19' },
       booked: null,
       totalRooms: 30,
+      totalAdults: null,
+      totalChildren: 0,
       rows: ROWS_UNSPLIT,
     },
   ],
@@ -148,6 +152,8 @@ export const AE2_OUTPUT = {
       requested: { arrival: '2026-10-31', departure: '2026-11-07' },
       booked: { arrival: '2026-11-01', departure: '2026-11-06' },
       totalRooms: null,
+      totalAdults: null,
+      totalChildren: null,
       rows: [],
     },
   ],
@@ -197,7 +203,9 @@ export const CHANNEL_BOOKING_OUTPUT = {
       requested: { arrival: '2026-11-20', departure: '2026-11-22' },
       booked: null,
       totalRooms: 1,
-      rows: [{ roomType: 'Double', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+      totalAdults: null,
+      totalChildren: 0,
+      rows: [{ roomType: 'Double', rooms: 1, adultsPerRoom: 2, childCount: 0, childAges: [], board: null }],
     },
   ],
 };

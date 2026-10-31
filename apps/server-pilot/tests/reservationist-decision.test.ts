@@ -78,6 +78,7 @@ describe('CENTURION_HOTEL_RULES move catalog', () => {
     expect(CENTURION_HOTEL_RULES).toMatch(/workflow=clarify/);
     expect(CENTURION_HOTEL_RULES).toMatch(/workflow=acknowledge/);
     expect(CENTURION_HOTEL_RULES).toMatch(/workflow=hms_todo/);
+    expect(CENTURION_HOTEL_RULES).toMatch(/adult-only request with no children mentioned.*childCount=0/i);
     expect(CENTURION_HOTEL_RULES).toMatch(/todoTarget/);
     expect(CENTURION_HOTEL_RULES).toMatch(/todoReason/);
     expect(CENTURION_HOTEL_RULES).toMatch(/todoNextStep/);
