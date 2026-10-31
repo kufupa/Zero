@@ -191,6 +191,7 @@ describe('reservationist worker input', () => {
       messages: [row('current', 4, { textBody: null, htmlBody:
         '<p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p>' +
         '<p>Card date 2027-05-12</p><div><p>4111</p><p>1111</p><p>1111</p><p>1111</p></div><p>CVV: <span>123</span></p>' +
+        '<p>19-1-2027</p><p>20-1-2027</p><p>21/1/2027 22/1/2027</p>' +
         '<table><tr><th>Guest</th><th>Room</th></tr><tr><td>Jane</td><td>Smith</td><td>101</td></tr></table>' +
         '<blockquote><p>Earlier request.</p></blockquote>' })], attachments: [],
       sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
@@ -201,6 +202,9 @@ describe('reservationist worker input', () => {
     expect(text).toContain('Notify us if this reached you by mistake.');
     expect(text).toContain('[card ••••1111]');
     expect(text).toContain('2027-05-12');
+    expect(text).toContain('19-1-2027');
+    expect(text).toContain('20-1-2027');
+    expect(text).toContain('21/1/2027 22/1/2027');
     expect(text).toContain('CVV: [code masked]');
     expect(text).toMatch(/Jane\s+Smith\s+101/);
     expect(text).toContain('From: quoted history');
@@ -208,14 +212,15 @@ describe('reservationist worker input', () => {
     expect(text).not.toMatch(/<[^>]+>|4111[\s-]*1111[\s-]*1111[\s-]*1111|CVV:\s*123/i);
   });
 
-  it('runs an HTML-only invoice request through the actual task boundary with masked model input', async () => {
+  it.each([null, 'Please proceed.\nKind regards\nGuest'])('runs an HTML invoice request through the actual task boundary with masked model input (plain: %s)', async (textBody) => {
     const built = await buildReservationistWorkerInput({
       transportId: 'mailbox', threadId: 'thread', triggerMessageId: 'current', requestId: 'request', propertyCode: 'HRCEN',
-      messages: [row('current', 4, { textBody: null, htmlBody: '<p>Reservation ABC123.</p><p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p><p>4111<br>1111<br>1111<br>1111</p>' })],
+      messages: [row('current', 4, { textBody, htmlBody: '<p>Reservation ABC123.</p><p>Please send the invoice.</p><p>Notify us if this reached you by mistake.</p><p>4111<br>1111<br>1111<br>1111</p>' })],
       attachments: [], sourceAt: new Date().toISOString(), deadlineAt: Date.now() + 60_000,
       signal: new AbortController().signal, admit: async (metadata) => ({ status: 'manual_required', reason: 'unused', metadata, draftReady: false }),
     });
     const text = built.input.messages[0]!.text;
+    if (textBody) expect(text.indexOf('Please send the invoice.')).toBeLessThan(text.indexOf('Kind regards'));
     const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash(Buffer.from(text)), page: 1, quote, start: text.indexOf(quote), end: text.indexOf(quote) + quote.length });
     const adapter: ModelAdapter = { invoke: vi.fn(async (request) => {
       expect(request.userPrompt).not.toMatch(/4111[\s-]*1111[\s-]*1111[\s-]*1111/);

@@ -40,9 +40,24 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
+/** Keep supported calendar dates separate from potentially multiline card numbers. */
+function maskMessageText(text: string, acrossLines: boolean): string {
+  const date = /((?<!\d)(?:(?:19\d{2}|20\d{2}|21\d{2}|2200)[-./]\d{2}[-./]\d{2}|\d{1,2}[-./]\d{1,2}[-./](?:19\d{2}|20\d{2}|21\d{2}|2200))(?!\d))/;
+  return text.split(date).map((part, index) => {
+    if (index % 2 === 1) return part;
+    const masked = acrossLines ? part.replace(/(?<!\d)(?:\d[ \t\r\n-]{0,8}){13,19}(?!\d)/g, (candidate) => {
+      const digits = candidate.replace(/[ \t\r\n-]/g, '');
+      if (!isLuhnValid(digits)) return candidate;
+      const tail = candidate.match(/[ \t\r\n-]+$/)?.[0] ?? '';
+      return `[card ••••${digits.slice(-4)}]${tail}`;
+    }) : part;
+    return maskCardNumbers(masked);
+  }).join('');
+}
+
 /** Plain text retains paragraph and quote boundaries for source spans and masking. */
 function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
-  if (row.textBody?.trim() || !normalized.includes('<')) return maskCardNumbers(normalized);
+  if (row.textBody?.trim() || !normalized.includes('<')) return maskMessageText(normalized, false);
   const $ = load(normalized, null, false);
   $('details.quoted-toggle, blockquote').each((_, element) => {
     $(element).prepend('\nFrom: quoted history\n');
@@ -53,19 +68,33 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
     $(element).prepend('\n').append('\n');
   });
-  $('img').each((_, element) => { $(element).replaceWith($('<span>').text($(element).attr('alt') ?? '')); });
+  $('img').each((_, element) => {
+    const alt = $(element).attr('alt')?.trim() ?? '';
+    $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
+  });
   const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
-  // HTML may put each group of a card number on a separate visual line. Mask
-  // such Luhn-valid spans before the normal line-bounded text masker runs;
-  // split dates first so an adjacent date cannot hide a card or be joined to it.
-  const parts = rendered.split(/((?<!\d)(?:\d{4}[-./]\d{2}[-./]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})(?!\d))/);
-  const cardsMasked = parts.map((part, index) => index % 2 === 1 ? part : part.replace(/(?<!\d)(?:\d[ \t\r\n-]{0,8}){13,19}(?!\d)/g, (candidate) => {
-    const digits = candidate.replace(/[ \t\r\n-]/g, '');
-    if (!isLuhnValid(digits)) return candidate;
-    const tail = candidate.match(/[ \t\r\n-]+$/)?.[0] ?? '';
-    return `[card ••••${digits.slice(-4)}]${tail}`;
-  })).join('');
-  return maskCardNumbers(cardsMasked);
+  // HTML can split card groups across visual lines; dates stay independent.
+  return maskMessageText(rendered, true);
+}
+
+/** Put both authored alternatives before either signature or quoted history. */
+function combineMessageViews(primary: string, alternative: string): string {
+  const comparable = (text: string) => text.replace(/\s+/g, ' ').trim();
+  if (!alternative || comparable(primary) === comparable(alternative)) return primary;
+  const boundary = /^(?:[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$|[\t ]*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)))/imu;
+  const split = (text: string) => {
+    const at = text.search(boundary);
+    return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at)];
+  };
+  const [primaryBody, primaryTail] = split(primary);
+  const [alternativeBody, alternativeTail] = split(alternative);
+  const sections = [primaryBody?.trim() ?? ''];
+  if (comparable(alternativeBody ?? '') && comparable(primaryBody ?? '') !== comparable(alternativeBody ?? ''))
+    sections.push(`[HTML alternative of the same message]\n${alternativeBody!.trim()}`);
+  if (primaryTail?.trim()) sections.push(primaryTail.trim());
+  if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
+    sections.push(`[HTML alternative context]\n${alternativeTail.trim()}`);
+  return sections.filter(Boolean).join('\n\n');
 }
 
 /** Separate inspection view: preserve CID positions and meaningful image descriptions. */
@@ -166,7 +195,7 @@ export async function buildReservationistWorkerInput(options: {
   }
   // Bound raw inputs before HTML sanitization; the normalized limits below
   // still govern what the model receives.
-  const rawBodies = selected.map(({ row }) => row.textBody?.trim() ? row.textBody! : row.htmlBody ?? '');
+  const rawBodies = selected.flatMap(({ row }) => [row.textBody ?? '', row.htmlBody ?? '']);
   if (selected.length > 64 || rawBodies.some((body) => body.length > 2_000_000) ||
       rawBodies.reduce((sum, body) => sum + body.length, 0) > 8_000_000 ||
       selected.some(({ row }) => (row.subject?.length ?? 0) > 4096))
@@ -178,7 +207,8 @@ export async function buildReservationistWorkerInput(options: {
     id: row.id,
     at: new Date(at).toISOString(),
     direction: row.direction,
-    text: modelMessageText(row, normalized.get(row.id)!),
+    text: combineMessageViews(modelMessageText(row, normalized.get(row.id)!), row.textBody?.trim() && row.htmlBody
+      ? modelMessageText({ ...row, textBody: null }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : ''),
     ...(row.subject ? { subject: maskCardNumbers(row.subject) } : {}),
     disclosure: row.disclosure,
   }));
