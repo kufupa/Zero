@@ -38,6 +38,7 @@ import {
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import { childOccupancyIsCurrent, singleStayOccupancyIsCurrent, isCenturionQuoteTransport } from './child-occupancy.js';
 import {
   CENTURION_HMS_READ_TARGET,
   hmsReadAuditMetrics,
@@ -4215,14 +4216,61 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
   return Number(row?.n ?? 0) + 1;
 }
 
+type QuoteViewScope = { transportId: string; messageId?: string; workItemId?: string; input?: StaffQuoteInput };
+
+/** A cached price may only be returned for the selected email while its saved stay still matches. */
+async function quoteViewIsCurrent(db: DB, run: AiWorkflowRun, request: HmsJobRequest, view: QuoteViewScope | undefined) {
+  if (!view || request.kind !== 'staff_quote' || request.input.messageId !== run.triggerMessageId) return false;
+  let selectedMessageId = view.messageId;
+  if (view.workItemId) {
+    const [item] = await db.select({ sourceMessageId: workItem.sourceMessageId }).from(workItem)
+      .where(and(eq(workItem.id, view.workItemId), eq(workItem.transportId, view.transportId))).limit(1);
+    if (!item?.sourceMessageId || (selectedMessageId && selectedMessageId !== item.sourceMessageId)) return false;
+    selectedMessageId = item.sourceMessageId;
+  }
+  if (!selectedMessageId) return false;
+  const [selected] = await db.select().from(message)
+    .where(and(eq(message.id, selectedMessageId), eq(message.transportId, view.transportId))).limit(1);
+  if (!selected || selected.direction !== 'inbound' || !selected.threadId) return false;
+  const sameSource = selected.id === run.triggerMessageId && view.transportId === run.transportId;
+  const [source] = sameSource ? [selected] : await db.select().from(message)
+    .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId))).limit(1);
+  if (!source || source.direction !== 'inbound' || source.threadId !== run.threadId ||
+    staffQuoteSourceHash(source) !== request.input.sourceHash) return false;
+  if (!sameSource) {
+    const copies = await hmsMailCopiesForMessage(db, view.transportId, selected.id);
+    if (!copies.messageIds.includes(source.id) || selected.subject !== source.subject ||
+      selected.textBody !== source.textBody || selected.htmlBody !== source.htmlBody) return false;
+  }
+  if (view.input && (view.input.messageId !== selected.id ||
+    view.input.sourceHash !== staffQuoteSourceHash(selected))) return false;
+  const sourceScope = { transportId: run.transportId, threadId: run.threadId, messageId: source.id };
+  if (!(await childOccupancyIsCurrent(db, request.input.groups, sourceScope))) return false;
+  const selectedScope = { transportId: view.transportId, threadId: selected.threadId, messageId: selected.id };
+  if (view.input) return childOccupancyIsCurrent(db, view.input.groups, selectedScope);
+  if (sameSource) return true;
+  return singleStayOccupancyIsCurrent(db, { groups: request.input.groups.map((group) => ({
+    arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
+    adults: group.adults, children: group.childrenPerRoom ?? group.childrenAges.length, childAges: group.childrenAges,
+  })) }, selectedScope);
+}
+
 async function toView(
   db: DB,
   run: AiWorkflowRun,
-  options: { includePosition?: boolean } = {},
+  options: { includePosition?: boolean; quoteScope?: QuoteViewScope } = {},
 ): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
-  const status = STATUS_BY_STATE[run.state];
-  const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  let status = STATUS_BY_STATE[run.state];
+  let result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const quoteResult = isCenturionQuoteTransport(options.quoteScope?.transportId ?? run.transportId) &&
+    (objectRecord(run.readRequest).kind === 'staff_quote' || result?.kind === 'staff_quote');
+  if (quoteResult && result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result) &&
+    (!request.success || !(await quoteViewIsCurrent(db, run, request.data, options.quoteScope)))) {
+    status = 'failed';
+    result = { ok: false, code: 'child_occupancy_incomplete',
+      message: 'Refresh the selected email and confirm rooms, adults and children per room before using this price.' };
+  }
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
@@ -4408,7 +4456,7 @@ function staffQuoteRunFreshness(now: Date) {
  */
 export async function readHmsJobView(
   input:
-    | { transportId: string; runId: string; userId?: string; staffQuoteOwnerId?: string }
+    | { transportId: string; runId: string; userId?: string; staffQuoteOwnerId?: string; messageId?: string }
     | {
         transportId: string;
         userId: string;
@@ -4566,7 +4614,12 @@ export async function readHmsJobView(
           )
           .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
           .limit(1);
-  return run ? toView(db, run) : null;
+  const quoteScope: QuoteViewScope = 'runId' in input
+    ? { transportId: input.transportId, messageId: input.messageId }
+    : quoteInput
+      ? { transportId: input.transportId, messageId: quoteInput.messageId, input: quoteInput.input }
+      : { transportId: input.transportId };
+  return run ? toView(db, run, { quoteScope }) : null;
 }
 
 function batchEffectiveStatus(item: HmsBatchItemView): HmsJobStatus | 'cancelled' {
@@ -4646,7 +4699,8 @@ export async function readHmsBatchView(
           job: null,
         });
       } else {
-        const job = await toView(db, run, { includePosition: false });
+        const job = await toView(db, run, { includePosition: false,
+          quoteScope: { transportId: input.transportId, workItemId: run.workItemId ?? undefined } });
         items.push({
           itemIndex: metrics.itemIndex,
           workItemId: run.workItemId ?? '',
@@ -4670,7 +4724,8 @@ export async function readHmsBatchView(
       ) {
         continue;
       }
-      const job = await toView(db, run, { includePosition: false });
+      const job = await toView(db, run, { includePosition: false,
+        quoteScope: { transportId: input.transportId, workItemId: link.workItemId } });
       items.push({
         itemIndex: link.itemIndex,
         workItemId: link.workItemId,
