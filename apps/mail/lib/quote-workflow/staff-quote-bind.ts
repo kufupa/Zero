@@ -12,6 +12,7 @@ import type {
   QuoteOffer,
   QuoteRunScreenshotResult,
   RateOption,
+  ReservationistPreparedTask,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -591,6 +592,31 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
   return actions;
 }
 
+/** The draft summary is display-only; the stored packet remains the action authority. */
+export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTask[] {
+  if (!value || typeof value !== 'object') return [];
+  const summary = (value as { reviewSummary?: { tasks?: unknown } }).reviewSummary;
+  if (!Array.isArray(summary?.tasks)) return [];
+  const kinds = new Set(['new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question']);
+  const tasks: ReservationistPreparedTask[] = [];
+  const ids = new Set<string>();
+  for (const item of summary.tasks.slice(0, 32)) {
+    if (!item || typeof item !== 'object') continue;
+    const task = item as Record<string, unknown>;
+    if (typeof task.id !== 'string' || !task.id.trim() || ids.has(task.id)) continue;
+    if (typeof task.kind !== 'string' || !kinds.has(task.kind)) continue;
+    if (typeof task.label !== 'string' || !task.label.trim()) continue;
+    if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
+    const allDetails = Array.isArray(task.details) ? task.details.filter((detail): detail is string => typeof detail === 'string' && !!detail.trim()) : [];
+    if (task.kind === 'question' ? allDetails.length === 0 : task.state === 'Ready') continue;
+    const details = allDetails.slice(0, 400);
+    if (allDetails.length > details.length) details.push('Some prepared details are not shown. Check the request and HMS.');
+    ids.add(task.id);
+    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details });
+  }
+  return tasks;
+}
+
 const RATE_OPTION_BOARDS = new Set<string>(['room_only', 'bb', 'dinner_bb']);
 
 /**
@@ -803,7 +829,7 @@ export async function bindStaffQuoteSource(args: {
 
 export type BoundStaffActions =
   | { kind: 'unavailable'; reason: string }
-  | { kind: 'ready'; actions: ReservationistStaffAction[] };
+  | { kind: 'ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] };
 
 export async function bindStaffActions(args: {
   list?: (input: { threadId: string; limit?: number }) => Promise<unknown>;
@@ -828,21 +854,25 @@ export async function bindStaffActions(args: {
           ? (listed as { drafts: unknown[] }).drafts
           : [];
       const collected: ReservationistStaffAction[] = [];
+      let tasks: ReservationistPreparedTask[] | undefined;
       for (const row of rows) {
         if (args.messageId && (!row || typeof row !== 'object' || (row as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
-        const fromList = readStaffActions(row);
-        if (fromList.length) {
-          collected.push(...fromList);
-          continue;
-        }
+        let source = row;
         const id = row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
           ? (row as { id: string }).id
           : '';
-        if (id && args.get) {
-          collected.push(...readStaffActions(await args.get({ id })));
+        if (id && args.get && !(row && typeof row === 'object' && 'reviewSummary' in row)) {
+          source = await args.get({ id });
+          if (args.messageId && (!source || typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)) continue;
+        }
+        collected.push(...readStaffActions(source));
+        if (args.messageId && tasks === undefined && source && typeof source === 'object' &&
+          Array.isArray((source as { reviewSummary?: { tasks?: unknown } }).reviewSummary?.tasks)) {
+          // List is newest first. Do not mix task snapshots from older drafts of the same email.
+          tasks = readPreparedStaffTasks(source);
         }
       }
-      return { kind: 'ready', actions: collected };
+      return { kind: 'ready', actions: collected, ...(tasks ? { tasks } : {}) };
     }
     return { kind: 'ready', actions: [] };
   } catch (error) {

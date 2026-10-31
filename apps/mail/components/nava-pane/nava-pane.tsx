@@ -823,6 +823,7 @@ export function NavaPane({
       dispatchQuote({ type: 'analysis_failed', message: decision.reason });
     }
     let cancelled = false;
+    let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     if (decision.kind === 'live') void bindAnalyseSelection({
       mutate: workflow.analyseSelection?.mutate,
       input: {
@@ -885,18 +886,39 @@ export function NavaPane({
       }
       if (source.kind !== 'ready') return;
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
-      void bindStaffActions({
-        list: staff.drafts.list?.query,
-        get: staff.drafts.get?.query,
-        threadId: source.source.threadId,
-        messageId: source.source.messageId,
-      }).then((actions) => {
-        if (cancelled || actions.kind !== 'ready') return;
-        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
-      });
+      const refreshActions = async () => {
+        const actions = await bindStaffActions({
+          list: staff.drafts.list?.query,
+          get: staff.drafts.get?.query,
+          threadId: source.source.threadId,
+          messageId: source.source.messageId,
+        });
+        if (!cancelled && actions.kind === 'ready')
+          dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
+      };
+      const candidateQuery = (trpcClient as unknown as { ai?: { hmsCandidateState?: {
+        query?: (input: { threadId: string }) => Promise<{ activeRun?: unknown; visibleCandidate?: { replyToMessageId?: string } | null }>;
+      } } }).ai?.hmsCandidateState?.query;
+      void (async () => {
+        await refreshActions();
+        if (!candidateQuery || cancelled) return;
+        let sawActive = false, idleChecks = 0;
+        const watch = async () => {
+          try {
+            const state = await candidateQuery({ threadId: source.source.threadId });
+            if (cancelled) return;
+            if (state.activeRun) sawActive = true;
+            else if (sawActive) { await refreshActions(); return; }
+            else if (state.visibleCandidate?.replyToMessageId === source.source.messageId) { await refreshActions(); return; }
+            if (state.activeRun || ++idleChecks < 12) candidateTimer = setTimeout(() => void watch(), 5000);
+          } catch { /* Candidate assistance may be unavailable for this mailbox. */ }
+        };
+        await watch();
+      })();
     });
     return () => {
       cancelled = true;
+      if (candidateTimer) clearTimeout(candidateTimer);
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).

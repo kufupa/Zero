@@ -327,7 +327,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   }
   const tasks = rows(result.tasks).slice(0, 32).map(task => {
     const details: string[] = [];
-    const taskId = text(task.id), kind = text(task.kind);
+    const taskId = text(task.id, 512), kind = text(task.kind);
     if (taskId) {
       for (const recovery of rows(result.readRecoveries).filter(item => item.taskId === taskId))
         if (Array.isArray(recovery.codes)) for (const code of recovery.codes.slice(0, 16)) if (typeof code === 'string') details.push(recoveryText(code));
@@ -404,7 +404,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
         }
       }
     }
-    return { label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)] };
+    return { id: taskId, kind, label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)] };
   });
   const pricingProof: string[] = [];
   for (const quote of rows(result.quoteRevisions).slice(0, 8)) {

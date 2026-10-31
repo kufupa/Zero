@@ -57,6 +57,7 @@ it('keeps review details in the actual draft wire response',async()=>{
  const review=summary({tasks:[{id:'book',kind:'new_booking',status:'pending_pms_action'}],packets:[booking]});
  const wire=toDraftWire({id:'draft',generationId:'generation',attachments:[],updatedAt:now,threadId:'thread',replyToMessageId:'message',toAddresses:[],ccAddresses:[],bccAddresses:[],subject:'Booking',textBody:'Please review.',status:'candidate',origin:'ai'} as any,false,review);
  expect(wire.reviewSummary?.tasks[0]?.details).toEqual(review.tasks[0].details);
+ expect(wire.reviewSummary?.tasks[0]).toMatchObject({id:'book',kind:'new_booking'});
 });
 it('shows cancellation current stay and preserves no-cancellation completion wording',()=>{
  const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[{kind:'cancel_request',taskId:'cancel',status:'pending_pms_action',saved:false,businessRulesValidated:true,reservationRef:'ABC123',current:{arrivalDate:'2026-10-12',departureDate:'2026-10-14'}}]}).tasks[0].details.join('\n');

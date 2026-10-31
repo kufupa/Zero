@@ -547,6 +547,7 @@ export function initialQuoteSession(): QuoteWorkflowSession {
     roomRateBoardSelections: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
+    preparedStaffTasks: [],
     selectedStayKey: null,
     handledSourceKey: null,
     reviewItems: [],
@@ -1873,6 +1874,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         staffActions: action.actions,
+        preparedStaffTasks: action.tasks ?? [],
         reviewItems,
         handledSourceKey: sourceKey || session.handledSourceKey,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
