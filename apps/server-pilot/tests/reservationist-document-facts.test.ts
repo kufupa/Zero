@@ -97,6 +97,7 @@ describe('document facts', () => {
   it.each([
     ['For 2027: arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
     ['For 2027:\narrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
+    ['Stay dates (2027): arrival 12/11 and departure 14/11.', 'Please quote rooms, arrival 12/11 and departure 14/11.', 'arrival 12/11 and departure 14/11'],
     ['Please quote rooms:\nStay 13/11 to 15/11.\nStay 20/11 to 22/11.', 'Please quote rooms from 12/11 to 14/11.', '12/11 to 14/11'],
   ])('rejects alternate years or multiple differing stays', (plain,html,quote) => {
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,start=text.lastIndexOf(quote);
@@ -149,8 +150,8 @@ describe('document facts', () => {
     const validate=()=>validateDocumentPlan(plan,[dateSource]);
     if(conflict)expect(validate).toThrow('Conflicting alternate stay dates');else expect(validate().facts[0]!.value).toMatchObject({arrival:'2026-11-12',departure:'2026-11-14'});
   });
-  it('keeps the same explicit group arrival valid across alternatives', () => {
-    const plain='25 guests arriving on 11 November 2026\nAccommodation required from 10 to 16 November 2026.',html='Stay 11 to 16 November 2026.';
+  it.each(['\n','\n\n'])('keeps the same explicit group arrival valid across alternatives', (separator) => {
+    const plain=`25 guests arriving on 11 November 2026${separator}Accommodation required from 10 to 16 November 2026.`,html='Stay 11 to 16 November 2026.';
     const text=`${plain}\n\n${HTML_ALTERNATIVE_MARKER}${html}`,quote=html.slice(0,-1),start=text.indexOf(quote);
     const dateSource={attachmentId:'message:m',sourceHash:'b'.repeat(64),disclosure:'guest' as const,pages:[text],pageCount:1,
       sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:text.length-html.length,end:text.length}]};
