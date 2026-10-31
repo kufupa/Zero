@@ -49,6 +49,9 @@ const QUERY_ERRORS = new Set([
   'Email query must contain exactly one address.',
   'Invalid email address.',
   'Domain query must be an exact domain name.',
+  'notePage must be an object.',
+  'notePage.patternId must be a note pattern ID from this query.',
+  'notePage.offset must be a non-negative safe integer.',
   'Name query must contain searchable characters.',
   'Invalid source of business filter.',
 ]);
