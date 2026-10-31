@@ -158,9 +158,9 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
   sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,disclosure:'staff_only' as const,
   provenance:{reason:'ambiguous_number_groups',taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
  }]:[]);
- const manualAttachments=()=>options.admissions.filter(a=>a.status==='manual_required').map(a=>{
+ const manualAttachments=(withProvenance=false)=>options.admissions.filter(a=>a.status==='manual_required').map(a=>{
   const m=a.metadata,common={kind:'attachment_manual' as const,reason:a.reason,sourceRef:m.attachmentId,sourceKind:'attachment' as const,messageId:m.messageId,mimeType:m.mimeType,signatureNoise:m.signatureNoise===true,disclosure:'staff_only' as const};
-  return m.sourceIdentity==='metadata_only'?{...common,sourceIdentity:'metadata_only' as const}:{...common,sourceHash:m.sourceHash,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:m.attachmentId,sourceHash:m.sourceHash}]}};
+  return m.sourceIdentity==='metadata_only'?{...common,sourceIdentity:'metadata_only' as const}:{...common,sourceHash:m.sourceHash,...(withProvenance?{provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:m.attachmentId,sourceHash:m.sourceHash}]}}:{})};
  });
  const plans=new WeakMap<RuntimePlan,Awaited<ReturnType<typeof extractReservationistPlan>>>(),generated=new Map<string,GeneratedDraftArtifact>(),clauses=new Map<string,string>();
  let extractionDiagnostics:Awaited<ReturnType<typeof extractReservationistPlan>>['extractionDiagnostics'];
@@ -215,7 +215,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
    }
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
    const ambiguity=ambiguousAttachments();
-   const manual=manualAttachments();
+   const manual=manualAttachments(true);
    const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:[...manual,...ambiguity],noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length||manual.some(r=>'sourceIdentity' in r&&r.sourceIdentity==='metadata_only')?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
   async execute(plan,input,signal,evaluation?:import('./reservationist-runtime.js').ReservationistSourceEvaluation){
