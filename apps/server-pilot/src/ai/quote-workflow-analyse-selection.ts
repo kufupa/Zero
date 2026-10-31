@@ -172,6 +172,35 @@ function unreadAttachments(
   );
 }
 
+/** A readable attachment can still need a staff review when ambiguous number groups were masked. */
+export function numberGroupReviewItems(
+  attachments: Array<Pick<SyncedQuoteAttachment, 'id' | 'filename' | 'mimeType' | 'byteSize'> & {
+    readFailure?: string;
+    reviewReason?: string;
+  }>,
+) {
+  return attachments
+    .filter((attachment) =>
+      attachment.readFailure === 'ambiguous number groups' || attachment.reviewReason === 'ambiguous number groups',
+    )
+    .filter((attachment) => attachmentMattersForReview({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      byteSize: attachment.byteSize,
+    }))
+    .map((attachment) => ({
+      id: `number-review:${attachment.id}`,
+      kind: 'document_failure' as const,
+      rank: 'unread_source' as const,
+      text: 'Some number groups may be room numbers or card details. Check the original source.',
+      sourceLabel: attachment.filename,
+      sourceRef: attachment.id,
+      sourceKind: 'attachment' as const,
+      filename: attachment.filename,
+      blocking: false as const,
+    }));
+}
+
 /** One item per unread source, plus a staff warning when card-like number groups were masked. */
 export function documentFailureItems(
   attachments: SyncedQuoteAttachment[],
@@ -193,25 +222,7 @@ export function documentFailureItems(
       blocking: false as const,
     };
   });
-  const maskedNumbers = attachments
-    .filter((attachment) => attachment.readFailure === 'ambiguous number groups')
-    .filter((attachment) => attachmentMattersForReview({
-      filename: attachment.filename,
-      mimeType: attachment.mimeType,
-      byteSize: attachment.byteSize,
-    }))
-    .map((attachment) => ({
-      id: `number-review:${attachment.id}`,
-      kind: 'document_failure' as const,
-      rank: 'unread_source' as const,
-      text: 'Some number groups may be room numbers or card details. Check the original source.',
-      sourceLabel: attachment.filename,
-      sourceRef: attachment.id,
-      sourceKind: 'attachment' as const,
-      filename: attachment.filename,
-      blocking: false as const,
-    }));
-  return [...unread, ...maskedNumbers];
+  return [...unread, ...numberGroupReviewItems(attachments)];
 }
 
 export function questionItems(missing: Array<{ field: string; question: string }>) {

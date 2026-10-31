@@ -111,6 +111,32 @@ describe('reservationist XLSX intake', () => {
     expect(result.text).not.toContain('4111111111111111');
   });
 
+  it('redacts card-like groups split across adjacent rows and leaves a staff-review marker', async () => {
+    const body = await makeWorkbook([{
+      name: 'Room assignments',
+      cells: [
+        { row: 1, column: 1, value: 'Room 4111' },
+        { row: 1, column: 2, value: '1111' },
+        { row: 2, column: 1, value: '1111' },
+        { row: 2, column: 2, value: '1111' },
+      ],
+    }]);
+
+    const result = await extract(body);
+    expect(result.reason).toBe('text');
+    const rows = result.text!.split('\n').slice(1).map((line) => JSON.parse(line));
+    expect(rows[0]?.cells).toEqual([
+      { columnNumber: 1, value: `Room ${AMBIGUOUS_NUMBER_GROUPS}`, displayText: `Room ${AMBIGUOUS_NUMBER_GROUPS}` },
+      { columnNumber: 2, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
+    ]);
+    expect(rows[1]?.cells).toEqual([
+      { columnNumber: 1, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
+      { columnNumber: 2, value: AMBIGUOUS_NUMBER_GROUPS, displayText: AMBIGUOUS_NUMBER_GROUPS },
+    ]);
+    expect(result.text).toContain(AMBIGUOUS_NUMBER_GROUPS);
+    expect(result.text).not.toContain('4111');
+  });
+
   it('returns a visible manual reason rather than partial text at row or cell limits', async () => {
     const lateRow = await makeWorkbook([{
       name: 'Too many rows',

@@ -42,7 +42,12 @@ function maskCellValue(value: CellValue, displayText: string): unknown {
   return maskIncomingCardNumbers(displayText);
 }
 
-function safeRowCells(workbook: Workbook, cells: Cell[]) {
+function safeRowCells(
+  workbook: Workbook,
+  cells: Cell[],
+  rowNumber?: number,
+  crossRowCells: ReadonlySet<string> = new Set(),
+) {
   const displayTexts = cells.map((cell) => getCellDisplayText(workbook, cell));
   // A PAN can be split into adjacent cells. The shared masker catches the assembled span; redact
   // digit-bearing cells in that row when masking only each cell would otherwise miss it.
@@ -51,6 +56,10 @@ function safeRowCells(workbook: Workbook, cells: Cell[]) {
   const spansCells = maskedSeparately !== maskedTogether;
   return cells.map((cell, index) => {
     const displayText = displayTexts[index] ?? '';
+    if (rowNumber !== undefined && crossRowCells.has(`${rowNumber}:${cell.col}`)) {
+      const redacted = redactCrossRowDigits(displayText);
+      return { columnNumber: cell.col, value: redacted, displayText: redacted };
+    }
     const requiresReview = spansCells && /\d/.test(displayText);
     return {
       columnNumber: cell.col,
@@ -58,6 +67,43 @@ function safeRowCells(workbook: Workbook, cells: Cell[]) {
       displayText: requiresReview ? AMBIGUOUS_NUMBER_GROUPS : maskIncomingCardNumbers(displayText),
     };
   });
+}
+
+/**
+ * A row boundary is lost when the extracted sheet is serialized as one JSON
+ * object per row. Compare adjacent rows as temporary plain text before that
+ * boundary disappears; if the existing card masker recognizes a group only
+ * when the rows are joined, replace their digit-bearing cells with a visible
+ * review marker.
+ */
+function crossRowNumberCells(
+  workbook: Workbook,
+  rows: Array<[number, { values(): Iterable<Cell> }]>,
+) {
+  const marked = new Set<string>();
+  const textFor = (cells: Cell[]) => cells.map((cell) => getCellDisplayText(workbook, cell)).join(' ');
+  for (let index = 1; index < rows.length; index += 1) {
+    const [previousNumber, previousRow] = rows[index - 1]!;
+    const [rowNumber, row] = rows[index]!;
+    if (rowNumber !== previousNumber + 1) continue;
+    const previousCells = [...previousRow.values()].sort((left, right) => left.col - right.col);
+    const cells = [...row.values()].sort((left, right) => left.col - right.col);
+    const previousText = textFor(previousCells);
+    const rowText = textFor(cells);
+    const together = maskIncomingCardNumbers(`${previousText} ${rowText}`);
+    const separate = `${maskIncomingCardNumbers(previousText)} ${maskIncomingCardNumbers(rowText)}`;
+    if (together === separate) continue;
+    for (const [number, values] of [[previousNumber, previousCells], [rowNumber, cells]] as const) {
+      for (const cell of values) {
+        if (/\d/.test(getCellDisplayText(workbook, cell))) marked.add(`${number}:${cell.col}`);
+      }
+    }
+  }
+  return marked;
+}
+
+function redactCrossRowDigits(text: string): string {
+  return text.replace(/\d+/g, AMBIGUOUS_NUMBER_GROUPS);
 }
 
 function failureReason(error: unknown): string {
@@ -133,6 +179,8 @@ export async function extractReservationistXlsxText(input: {
       }
       totalRows += rows.length;
 
+      const crossRowCells = crossRowNumberCells(workbook, rows);
+
       const rowLines: string[] = [];
       let sheetCells = 0;
       let sheetValues = 0;
@@ -160,7 +208,7 @@ export async function extractReservationistXlsxText(input: {
 
         const line = JSON.stringify({
           rowNumber,
-          cells: safeRowCells(workbook, cells),
+          cells: safeRowCells(workbook, cells, rowNumber, crossRowCells),
         });
         const additionalBytes = Buffer.byteLength(line, 'utf8') + 1;
         if (rowBytes + additionalBytes > MAX_OUTPUT_BYTES) {

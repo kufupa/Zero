@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { getDb } from '../src/db/client.js';
 import { attachment } from '../src/db/schema/mail.js';
-import { attachmentReads, buildInboundPrompt } from '../src/ai/extraction/extract.js';
+import { attachmentReads, buildInboundPrompt, type AttachmentRead } from '../src/ai/extraction/extract.js';
 import { buildQuoteWorkflowPrompt } from '../src/ai/quote-workflow-llm.js';
 import { readAuthorizedArtifactBytes } from '../src/mail/artifacts/read-artifact.js';
 import { workbookToBytes } from '@office-kit/xlsx/io';
@@ -414,6 +414,9 @@ describe('readQuoteAttachments', () => {
     expect(attachments[0]?.text).toContain('"rowNumber":2');
     expect(attachments[0]?.text).not.toContain('4111 1111 1111 1111');
     expect(attachments[0]?.readFailure).toBe('ambiguous number groups');
+    expect(attachmentReads(attachments)).toMatchObject([
+      { id: 'rooming', status: 'read', reviewReason: 'ambiguous number groups' },
+    ]);
   });
 
   it('makes oversized XLSX attachments visible without reading them', async () => {
@@ -727,7 +730,7 @@ describe('loadSyncedQuoteSelectionFromMailbox', () => {
   });
 });
 
-function amendmentRead(confirmationNumbers: string[]) {
+function amendmentRead(confirmationNumbers: string[], attachments: AttachmentRead[] = []) {
   return {
     kind: 'amendment' as const,
     payload: {
@@ -738,7 +741,7 @@ function amendmentRead(confirmationNumbers: string[]) {
       stays: [],
       missing: [],
     },
-    attachments: [] as const,
+    attachments,
   };
 }
 
@@ -904,5 +907,23 @@ describe('storedAnalysis thread confirmation overlay', () => {
     const bare = storedAnalysis(amendmentRead(['47360291']), {}, { confirmation: null, reason: null }).analysis;
     expect(bare.amendment?.confirmationNumber).toBe('47360291');
     expect(bare.amendment?.confirmationNumber).not.toBe('47360291-1');
+  });
+
+  it('keeps a saved masked-number review cue on readable attachments without marking them unread', () => {
+    const analysis = storedAnalysis(amendmentRead([], [{
+      id: 'rooming',
+      filename: 'rooming.xlsx',
+      mimeType: xlsxMime,
+      byteSize: 40_000,
+      status: 'read',
+      reviewReason: 'ambiguous number groups',
+    }]), {}).analysis;
+
+    expect(analysis.reviewItems).toContainEqual(expect.objectContaining({
+      id: 'number-review:rooming',
+      text: 'Some number groups may be room numbers or card details. Check the original source.',
+      blocking: false,
+    }));
+    expect(analysis.luna.flags).not.toContain('attachment_unread');
   });
 });

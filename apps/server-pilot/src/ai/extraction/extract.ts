@@ -314,6 +314,8 @@ export type AttachmentRead = {
   byteSize?: number;
   status: 'read' | 'not_read';
   reason?: string;
+  /** Review cue retained for readable text whose ambiguous number groups were masked. */
+  reviewReason?: 'ambiguous number groups';
   truncated?: boolean;
 };
 
@@ -331,11 +333,14 @@ export function attachmentReads(
       mimeType: attachment.mimeType,
       byteSize: attachment.byteSize,
     };
+    const reviewReason = attachment.readFailure === 'ambiguous number groups'
+      ? { reviewReason: 'ambiguous number groups' as const }
+      : {};
     const textRead = textById.get(attachment.id);
-    if (textRead) return { ...base, ...textRead };
+    if (textRead) return { ...base, ...textRead, ...reviewReason };
     const visionRead = visionById.get(attachment.id);
-    if (visionRead) return { ...base, ...visionRead };
-    if (attachment.text?.trim()) return { ...base, status: 'read' as const };
+    if (visionRead) return { ...base, ...visionRead, ...reviewReason };
+    if (attachment.text?.trim()) return { ...base, status: 'read' as const, ...reviewReason };
     if (attachment.pdf) {
       return {
         ...base,
