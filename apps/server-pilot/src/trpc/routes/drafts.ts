@@ -1214,15 +1214,15 @@ export const draftsRouter = tRouter({
       const db = getDb(), transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
       const [match] = await db.select({ draft: mailDraft, runId: aiWorkflowRun.id }).from(aiWorkflowRun)
-        .innerJoin(mailDraft, and(eq(mailDraft.generationId, aiWorkflowRun.generationId),
-          eq(mailDraft.transportId, aiWorkflowRun.transportId), eq(mailDraft.threadId, aiWorkflowRun.threadId)))
-        .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
-          eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
-          eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded'),
+        .leftJoin(mailDraft, and(eq(mailDraft.generationId, aiWorkflowRun.generationId),
+          eq(mailDraft.transportId, aiWorkflowRun.transportId), eq(mailDraft.threadId, aiWorkflowRun.threadId),
           eq(mailDraft.replyToMessageId, input.messageId), eq(mailDraft.isSent, false),
           inArray(mailDraft.status, ['active', 'candidate'])))
-        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)).limit(1);
-      if (!match) return null;
+        .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
+          eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
+          eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
+        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id), desc(mailDraft.createdAt), desc(mailDraft.id)).limit(1);
+      if (!match?.draft) return null;
       return { replyToMessageId: match.draft.replyToMessageId,
         reviewSummary: await loadDraftReviewSummary(db, match.draft, match.runId) };
     }),

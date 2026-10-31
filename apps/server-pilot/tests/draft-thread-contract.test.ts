@@ -56,6 +56,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         replyToMessageId: parentMessageId, reviewSummary: { tasks: [{ label: 'Answer question' }] },
       });
       expect(await drafts.reviewForMessage({ threadId, messageId: otherMessageId })).toBeNull();
+      // A newer no-action analysis produces no draft; do not resurrect the older review.
+      const noActionGeneration = randomUUID();
+      await db.insert(aiDraftGeneration).values({ id: noActionGeneration, transportId: TRANSPORT_ID, threadId,
+        requestedByUserId: 'user-navaai', contextMessageIds: [parentMessageId], model: 'test', promptVersion: 'test' });
+      await db.insert(aiWorkflowRun).values({ id: randomUUID(), idempotencyKey: randomUUID(), transportId: TRANSPORT_ID,
+        threadId, triggerMessageId: parentMessageId, generationId: noActionGeneration, runKind: 'candidate_draft',
+        modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:30:00Z') });
+      expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toBeNull();
     });
   });
 
