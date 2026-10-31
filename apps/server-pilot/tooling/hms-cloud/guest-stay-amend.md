@@ -21,11 +21,19 @@ action. The page is sealed against other non-read requests. The caller must
 verify that the confirmation belongs to the newly created stay and respect any
 holds; an existing matching fake name alone does not authorize a write.
 
-Agency, organization, group, A/R and guarantee-card fields must be present
-and blank in the saved model; any corresponding form values and visible
-controls must also be blank. Linked, missing or ambiguous fields return
-`LABTEST_LINKED_PARTY_UNVERIFIED` in the identity or clean baseline checks;
-later changes also block the save.
+Primary agency/company links may be nonblank only when the saved model matches
+every present form value or visible control, with at least one such form/control
+readback for each populated field. Secondary agency, group, A/R and
+guarantee-card fields must remain blank. Every link is part of the full
+preimage and exact submitted record; missing, ambiguous or changed fields return
+`LABTEST_LINKED_PARTY_UNVERIFIED` or block the save.
+
+The shared save route falls through the page-lifetime fence before its one exact
+context exception. Popup writes and send/email requests remain blocked across
+the context, including after the writer is disarmed.
+
+This adapter remains note-only. Date, occupancy, room/rate and party setters
+need separate implementations and saved-frame observations.
 
 `awaiting_readback` means the request returned HTTP 200, not that HMS saved
 the change. Reopen the exact record in a fresh guarded session and verify the
