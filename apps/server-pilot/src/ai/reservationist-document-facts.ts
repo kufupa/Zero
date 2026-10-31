@@ -356,11 +356,12 @@ function assertMessageViewDates(fact:Extract<DocumentFactCandidate,{kind:'dates'
    const start=Math.max(authored.lastIndexOf('\n',match.index-1),authored.lastIndexOf('.',match.index-1),authored.lastIndexOf(';',match.index-1))+1;
    const tail=authored.slice(match.index+match.text.length).search(/[\n.;]/),end=tail<0?authored.length:match.index+match.text.length+tail;
    const stay=/\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
-   const excluded=/\b(?:do not|don['’]t|never|not|without|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking)\b/i;
+   const excluded=/\b(?:do not|don['’]t|never|not|without|previous|old|cancelled|canceled)\b[^.!?;\n]{0,80}\b(?:stay|accommodation|rooms?|overnight|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b|\bno\s+(?:(?:more|new|other|the|a)\s+)?(?:stay|accommodation|rooms?|reservation|booking|arriv(?:al|e)|depart(?:ure)?|check[ -]?(?:in|out))\b/i;
    const row=authored.slice(start,end);
    const suffix=authored.slice(match.index+match.text.length,end);
    const trailingExclusion=/^\s*(?:[:,–-]\s*)?no\s+(?:stay|accommodation|rooms?|reservation|booking)\s+(?:(?:is|are)\s+)?(?:needed|required|wanted|booked)\b/i;
-   if(stay.test(row))return !excluded.test(authored.slice(start,match.index))&&!trailingExclusion.test(suffix);
+   const leadingLabel=/^(?:arrival|check[ -]?in)\b/i.exec(match.text)?.[0]??'';
+   if(stay.test(row))return !excluded.test(authored.slice(start,match.index)+leadingLabel)&&!trailingExclusion.test(suffix);
    const lineStart=authored.lastIndexOf('\n',match.index-1)+1;
    const previousStart=authored.lastIndexOf('\n',lineStart-2)+1;
    const previous=authored.slice(previousStart,lineStart-1).trim();
