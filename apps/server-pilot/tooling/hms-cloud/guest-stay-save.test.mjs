@@ -64,12 +64,12 @@ function createSaveBody(formData) {
   return body;
 }
 
-function pageStub() {
+function pageStub(evaluateResult = null) {
   return {
     on() {},
     off() {},
     locator() { return { count: async () => 0 }; },
-    evaluate: async () => null,
+    evaluate: async () => evaluateResult,
   };
 }
 
@@ -196,6 +196,19 @@ test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');
   assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
+});
+
+test('reports only a fixed, value-free draft-check code', async () => {
+  const strictInputs = { ...saveInputs, createFieldProof: { adultSelection: adultSelection(2) } };
+  const result = await saveNewLabtestStay(pageStub('DRAFT_REVENUE_ZERO_NATIVE_VALUE'), strictInputs);
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  assert.equal(result.draftCheck, 'DRAFT_REVENUE_ZERO_NATIVE_VALUE');
+  assert.equal(result.requestSeen, false);
+
+  const unlisted = await saveNewLabtestStay(pageStub('DRAFT_1234567'), strictInputs);
+  assert.equal(unlisted.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  assert.equal(unlisted.draftCheck, undefined);
 });
 
 test('requires every optional selection to share the current Labtest draft token', async () => {

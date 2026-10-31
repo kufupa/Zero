@@ -11,6 +11,16 @@ const SAVE_PATH = '/web/base/OSRESV.HDR';
 const usedPages = new WeakSet();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SAVE_UNVERIFIED';
+const draftChecks = new Set([
+  'DRAFT_PROPERTY_CONTEXT', 'DRAFT_VISIBLE_FIELDS', 'DRAFT_FORM_RECORD', 'DRAFT_PARTY_FIELDS',
+  'DRAFT_RESERVATION_MODEL', 'DRAFT_VISIBLE_PROFILE_FIELDS', 'DRAFT_STAY_FIELDS', 'DRAFT_GUARANTEE',
+  'DRAFT_PROFILE_PRIVACY_FIELDS', 'DRAFT_FORM_MODEL_SHAPE', 'DRAFT_FORM_MODEL_KEYS',
+  'DRAFT_ADULT_MODEL', 'DRAFT_CHILD_MODEL', 'DRAFT_CHILD_AGES_MODEL', 'DRAFT_CHILD_CATEGORY_MODEL',
+  'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
+  'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
+  'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_REQUIRED_FIELDS',
+]);
+const safeDraftCheck = (value) => draftChecks.has(value) ? value : null;
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
 // Exact body/model equality does not classify newly added fields or their write effects.
 const CREATE_MODEL_FIELD_COUNT = 985;
@@ -137,7 +147,7 @@ function dates(arrival, departure) {
 
 async function draft(page, expected) {
   return page.evaluate(({ origin, expected, blankPartyFields, childBands }) => {
-    if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return null;
+    if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return 'DRAFT_PROPERTY_CONTEXT';
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote',
@@ -147,11 +157,11 @@ async function draft(page, expected) {
       ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
-    if (names.some((name) => fields[name].length !== 1)) return null;
+    if (names.some((name) => fields[name].length !== 1)) return 'DRAFT_VISIBLE_FIELDS';
     const cmp = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
     const form = cmp('guestid')?.up?.('form');
     const record = form?.getRecord?.(), data = record?.data, keys = data && Object.keys(data);
-    if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
+    if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return 'DRAFT_FORM_RECORD';
     const exact = (key, value) => Object.hasOwn(data, key) && keys.filter((k) => k.toLowerCase() === key.toLowerCase()).length === 1 &&
       String(data[key] ?? '').trim() === value;
     const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
@@ -168,28 +178,31 @@ async function draft(page, expected) {
         partyInputs.filter((el) => el.name.toLowerCase() === name).length > 1;
     }) ||
         partyInputs.some((el) => el.name !== el.name.toLowerCase() ||
-          !partyValueAllowed(el.name.toLowerCase(), String(el.value ?? '').trim()))) return null;
+          !partyValueAllowed(el.name.toLowerCase(), String(el.value ?? '').trim()))) return 'DRAFT_PARTY_FIELDS';
     if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
         !exact('guestid', expected.guestId) || !exact('firstname', 'Proof') || !exact('lastname', 'Labtest') ||
         ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid', 'arprofileid', 'araccountid',
           'guaranteecreditcardid', 'leaseguaranteecreditcardid'].some((name) => !exact(name, '')) ||
         !keys.includes('bookingsessionid') || keys.filter((k) => k.toLowerCase() === 'bookingsessionid').length !== 1 ||
-        !String(data.bookingsessionid ?? '').trim() || value('confirmationnumber') || value('guestid') !== expected.guestId ||
-        value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' || value('arrivaldate') !== expected.arrivalDisplay ||
-        value('departuredate') !== expected.departureDisplay || value('roomtype') !== expected.roomType ||
-        value('rateplan') !== expected.ratePlan || !value('track') || value('reservationnote') !== expected.note ||
-        value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== expected.guaranteeType ||
-        value('udfchar13') || value('emailaddress') || typeof cmp('udfchkbox04')?.getValue !== 'function' ||
-        cmp('udfchkbox04').getValue() !== false) return null;
+        !String(data.bookingsessionid ?? '').trim()) return 'DRAFT_RESERVATION_MODEL';
+    if (value('confirmationnumber') || value('guestid') !== expected.guestId ||
+        value('firstname') !== 'Proof' || value('lastname') !== 'Labtest') return 'DRAFT_VISIBLE_PROFILE_FIELDS';
+    if (value('arrivaldate') !== expected.arrivalDisplay || value('departuredate') !== expected.departureDisplay ||
+        value('roomtype') !== expected.roomType || value('rateplan') !== expected.ratePlan || !value('track') ||
+        value('reservationnote') !== expected.note) return 'DRAFT_STAY_FIELDS';
+    if (value('guaranteetype') !== 'Non-Guaranteed Individual' ||
+        cmp('guaranteetype')?.getValue?.() !== expected.guaranteeType) return 'DRAFT_GUARANTEE';
+    if (value('udfchar13') || value('emailaddress') || typeof cmp('udfchkbox04')?.getValue !== 'function' ||
+        cmp('udfchkbox04').getValue() !== false) return 'DRAFT_PROFILE_PRIVACY_FIELDS';
     let activeChildCategories, modelData, formData;
     if (expected.strictCreateProof) {
       modelData = record.getData?.();
       const formValues = form.getForm?.()?.getValues?.();
       if (!modelData || typeof modelData !== 'object' || Array.isArray(modelData) ||
-          !formValues || typeof formValues !== 'object' || Array.isArray(formValues)) return null;
+          !formValues || typeof formValues !== 'object' || Array.isArray(formValues)) return 'DRAFT_FORM_MODEL_SHAPE';
       const modelKeys = Object.keys(modelData), formValueKeys = Object.keys(formValues);
       if (formValueKeys.some((key) => !modelKeys.includes(key)) ||
-          formValueKeys.some((key) => formValueKeys.filter((candidate) => candidate.toLowerCase() === key.toLowerCase()).length !== 1)) return null;
+          formValueKeys.some((key) => formValueKeys.filter((candidate) => candidate.toLowerCase() === key.toLowerCase()).length !== 1)) return 'DRAFT_FORM_MODEL_KEYS';
       const currentFormValue = (name) => {
         const matches = formValueKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
         return matches.length === 1 ? { found: true, value: formValues[matches[0]] } : { found: false };
@@ -216,26 +229,25 @@ async function draft(page, expected) {
           ? current : null;
       };
       const proof = expected.createFieldProof;
-      if (proof && proof.adults !== null && !override('adults', proof.adults)) return null;
+      if (proof && proof.adults !== null && !override('adults', proof.adults)) return 'DRAFT_ADULT_MODEL';
       if (proof && proof.childAges !== null) {
         const childCount = String(proof.childAges.length);
         const ages = proof.childAges.join(',');
         if (!override('children', childCount) ||
-            childBands.some((name) => !override(name, String(proof.childAgeBands[name])))) return null;
-        if (!exact('childages', ages) || Array.isArray(data.childages)) return null;
+            childBands.some((name) => !override(name, String(proof.childAgeBands[name])))) return 'DRAFT_CHILD_MODEL';
+        if (!exact('childages', ages) || Array.isArray(data.childages)) return 'DRAFT_CHILD_AGES_MODEL';
         activeChildCategories = String(modelData.activechildcategories ?? '').trim();
-        if (!exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true')) return null;
+        if (!exact('activechildcategories', activeChildCategories) || !exact('updatechildcategories', 'true')) return 'DRAFT_CHILD_CATEGORY_MODEL';
       }
       if (proof?.sourceBusiness &&
           (!exact('sourceofbus', proof.sourceBusiness.nativeCode) ||
             !exact('sourceofbusinessdesc', proof.sourceBusiness.description) ||
-            value('sourceofbusinessdesc') !== proof.sourceBusiness.description)) return null;
+            value('sourceofbusinessdesc') !== proof.sourceBusiness.description)) return 'DRAFT_SOURCE_BUSINESS_MODEL';
       if (proof && proof.adults !== null && (value('adults') !== proof.adults ||
-          String(cmp('adults')?.getValue?.() ?? '').trim() !== proof.adults)) return null;
+          String(cmp('adults')?.getValue?.() ?? '').trim() !== proof.adults)) return 'DRAFT_ADULT_VISIBLE_VALUE';
       if (proof && proof.childAges !== null && (value('children') !== String(proof.childAges.length) ||
-          childBands.some((name) => value(name) !== String(proof.childAgeBands[name])))) return null;
-      if (proof?.sourceBusiness && value('sourceofbusinessdesc') !== proof.sourceBusiness.description) return null;
-      if (!override('reservationnote', expected.note) || !nativeFormValue('reservationnote')) return null;
+          childBands.some((name) => value(name) !== String(proof.childAgeBands[name])))) return 'DRAFT_CHILD_VISIBLE_VALUE';
+      if (!override('reservationnote', expected.note) || !nativeFormValue('reservationnote')) return 'DRAFT_NOTE_SUBMIT_VALUE';
       const modelNumber = (name) => {
         const matches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
         if (matches.length !== 1) return null;
@@ -250,7 +262,7 @@ async function draft(page, expected) {
       const revenueValue = nativeFormValue('revenuevalue');
       const revenueModel = modelNumber('revenuevalue'), revenueForm = formNumber(revenueValue);
       if (!revenueValue || !fields.revenuevalue[0].readOnly || revenueModel !== 0 || revenueForm !== revenueModel ||
-          !copyCurrentFormValue('revenuevalue', revenueValue)) return null;
+          !copyCurrentFormValue('revenuevalue', revenueValue)) return 'DRAFT_REVENUE_ZERO_NATIVE_VALUE';
       // This is the selected guest's read-only Lifetime Nights field, not this stay's duration.
       // The exact arrival/departure inputs and POST fields below establish the stay dates.
       const lifetimeNights = nativeFormValue('nightsvalue');
@@ -260,18 +272,18 @@ async function draft(page, expected) {
       if (!lifetimeNights || !fields.nightsvalue[0].readOnly ||
           String(lifetimeLabel).replace(/\s*:\s*$/, '').trim().toLowerCase() !== 'lifetime nights' ||
           !Number.isSafeInteger(lifetimeModel) || lifetimeModel < 0 || lifetimeForm !== lifetimeModel ||
-          !copyCurrentFormValue('nightsvalue', lifetimeNights)) return null;
+          !copyCurrentFormValue('nightsvalue', lifetimeNights)) return 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE';
       for (const [name, selected] of Object.entries(partyValues)) {
         if (organizationName && name === 'companyname') continue;
-        if (!exact(name, selected)) return null;
+        if (!exact(name, selected)) return 'DRAFT_PARTY_MODEL';
       }
-      if (organizationName && !['', organizationName].includes(String(data.companyname ?? '').trim())) return null;
+      if (organizationName && !['', organizationName].includes(String(data.companyname ?? '').trim())) return 'DRAFT_ORGANIZATION_MODEL';
     }
     const blankRequired = [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).some((el) => {
       const component = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       return component?.allowBlank === false && !String(el.value ?? '').trim();
     });
-    if (blankRequired) return null;
+    if (blankRequired) return 'DRAFT_REQUIRED_FIELDS';
     const verifiedPartyValues = { ...partyValues };
     if (expected.organizationSelection) verifiedPartyValues.companyname = String(data.companyname ?? '').trim();
     return { session: String(data.bookingsessionid).trim(), track: value('track'),
@@ -402,6 +414,7 @@ export async function saveNewLabtestStay(page, {
       ...(agency ? { agencySelection: agency } : {}), ...(organization ? { organizationSelection: organization } : {}),
       strictCreateProof, partyValues };
     const state = await bounded(draft(page, expected));
+    if (typeof state === 'string') throw Object.assign(new Error('LABTEST_DRAFT_UNVERIFIED'), { draftCheck: state });
     if (!state) throw new Error('LABTEST_DRAFT_UNVERIFIED');
     if (strictCreateProof && !matchesCreateModelFieldSchema(state.modelData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
@@ -481,7 +494,9 @@ export async function saveNewLabtestStay(page, {
   } catch (error) {
     armed = false;
     if (possiblyDispatched) fence?.quarantine();
+    const draftCheck = safeDraftCheck(error?.draftCheck);
     return { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue: safeIssue(error),
+      ...(draftCheck ? { draftCheck } : {}),
       requestSeen, httpStatus: response?.status() || null, blockedRequests: blocked,
       blockedRequestsAfterDispatch: Math.max(0, blocked - blockedAtDispatch),
       browserSendRequests: sendRequests, nativeDialog };
