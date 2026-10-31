@@ -99,13 +99,14 @@ directly: `adultSelection` from `selectGuestStayDropdown`, including its current
 profile token; `childAgeSelection` from `setGuestStayChildAges` (empty, one, or
 multiple ages); `sourceSelection` from Source of Business selection; and/or the
 top-level `agencySelection` and `organizationSelection` from their current
-search-bound selectors. Agency must carry the picker's reference value or
-explicit `null`, with both reference properties present and correlated between
-the current response and grid row. Its `agencyReferenceEvidence` reports
-`response_grid_correlated` for each field; a missing or mismatched property
-blocks selection. A blank is accepted only when the draft and outgoing request
-also prove blank. None of the other selections implies an agency, source or
-child selection.
+search-bound selectors. The agency selector reports each reference field in
+`agencyReferenceEvidence`. If the response and grid both expose the same value,
+including an explicit blank, that field is `response_grid_correlated`; a missing
+or mismatched field stays unverified and its value is omitted. This does not
+block selecting the agency for an unsaved lookup. The Labtest create proof is
+stricter: it accepts an agency only when both reference fields are correlated,
+including a proven blank, and the outgoing request also proves that blank. None
+of the other selections implies an agency, source or child selection.
 
 The programmatic equivalent passes `{labtestDates: {arrival, departure}}` to
 `withBookingLookupSession`. The callback receives `labtestPreimage` and the

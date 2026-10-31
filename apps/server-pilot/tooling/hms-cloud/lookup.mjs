@@ -574,10 +574,6 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
     if (previous?.kind !== kind || (searchId && searchId !== previous.searchId)) throw new Error('LOOKUP_STALE');
     const candidates = previous.candidates.filter((item) => item.nativeId === nativeId);
     if (candidates.length !== 1 || !candidates[0].name) throw new Error('LOOKUP_ID_NOT_UNIQUE');
-    if (kind === 'agency' && (candidates[0].referenceNumberEvidence !== 'response_grid_correlated' ||
-        candidates[0].referenceNumberTypeEvidence !== 'response_grid_correlated')) {
-      throw new Error('AGENCY_REFERENCE_FIELDS_UNVERIFIED');
-    }
     await assertExpectedDialogs(page);
     await assertNewGuestStay(page);
     pageProperty = await assertSelectionProperty(page);
