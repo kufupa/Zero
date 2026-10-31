@@ -3,7 +3,8 @@
 `booking-lookup-session.mjs` keeps one authenticated HRCEN page and one blank, unsaved
 Guest Stay for multiple independent calls. Node 22 is required. It installs the
 shared read-only guard. A selection changes the unsaved form and can send a
-field-change request; it does not save a booking. Callers choose candidates.
+field-change request. The normal session does not save a booking. Callers choose
+candidates. An explicit Labtest-only mode is described below.
 
 Start the JSONL entry point with `node booking-lookup-session.mjs --jsonl`. The old
 `../playwright-quote/hms-party-session.mjs --jsonl` path also works. Send one
@@ -63,6 +64,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
+| `saveNewLabtestStay` | Labtest-only: current `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note` |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
 closing use the current picker. The availability party kinds are `organization`,
@@ -72,6 +74,31 @@ guest, party, dropdown value or CMS code. See [guest-profile.md](./guest-profile
 [guest-stay-form.md](./guest-stay-form.md) and
 [hotel-availability.md](./hotel-availability.md) for supported inputs and
 uncertain outcomes.
+
+### Opt-in Labtest save session
+
+For a new fake HRCEN Proof Labtest stay in 2027 or later, start the session with
+`--jsonl --labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD`. Before
+opening the blank form, it searches the same page for matching fake stays. The
+private `ready` event contains `labtestPreimage`, including the current
+single-use `preimageId`, expiry and candidate context. A non-clear search ends
+startup with its result in the private error output; no blank form is opened.
+Both stdout and stderr must therefore stay private.
+
+Prepare the verified fake guest, dates, room, rate, source, occupancy, NGI
+guarantee and synthetic note using the normal session tools. Then pass the
+preimage ID and the matching explicit values to `saveNewLabtestStay`. The normal
+session rejects that action; it never enables general booking writes. The proof
+is bound to its page and dates and can expire or be invalidated. Independently
+reopen and verify the confirmation, and reconcile any uncertain outcome before
+trying another write. See [guest-stay-save.md](./guest-stay-save.md) for all
+guards and the limits of browser-side email observations.
+
+The programmatic equivalent passes `{labtestDates: {arrival, departure}}` to
+`withBookingLookupSession`. The callback receives `labtestPreimage` and the
+same sequential `runTool` function. If the search is not clear, the rejected
+error has `phase: 'labtest_preimage'` and its private result in
+`error.labtestPreimage`.
 
 Room and Source of Business actions use the current picker and require an
 explicit selection. Source selection verifies the description; independent
