@@ -3,7 +3,7 @@
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
+import { QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
@@ -124,6 +124,56 @@ describe('QuotePeopleStep', () => {
 
     fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
     expect(guest.value).toBe('Staff-entered value');
+  });
+
+  it('prefills a stored guest only while the original single room remains selected', () => {
+    const row = {
+      id: 'r_1', stayId: 's_1', quantity: 1,
+      guestNames: ['Ada Example'],
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }],
+    };
+    const session = {
+      staffSource: null,
+      groups: [row],
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [{ guestNames: [] }] } },
+    } as unknown as QuoteSession;
+    const props = {
+      session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
+      contact, contactEditorKey: 'single-stored-room', scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+    const view = render(<QuotePeopleStep {...props} />);
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Ada Example');
+    expect(stayingGuestName(session, contact, 'single-stored-room')).toBe('Ada Example');
+
+    const expanded = { ...session, groups: [row, { ...row, id: 'r_2' }] } as unknown as QuoteSession;
+    view.rerender(<QuotePeopleStep {...props} session={expanded} />);
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('');
+    expect(stayingGuestName(expanded, contact, 'single-stored-room')).toBe('');
+
+    const replacement = { ...session, groups: [{ ...row, id: 'r_new' }] } as unknown as QuoteSession;
+    expect(stayingGuestName(replacement, contact, 'single-stored-room')).toBe('');
+    const moreRooms = { ...session, groups: [{ ...row, quantity: 2 }] } as unknown as QuoteSession;
+    expect(stayingGuestName(moreRooms, contact, 'single-stored-room')).toBe('');
+  });
+
+  it('does not infer the contact or a single guest for an ambiguous stored roster', () => {
+    const guests = [
+      { name: 'Ada Example', confirmationNumber: null },
+      { name: 'Bea Example', confirmationNumber: null },
+    ];
+    const row = { id: 'r_1', stayId: 's_1', quantity: 1, stayGuests: guests };
+    const session = {
+      staffSource: null, groups: [row],
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [{ guestNames: [] }] } },
+    } as unknown as QuoteSession;
+    expect(stayingGuestName(session, contact, 'ambiguous-stored-room')).toBe('');
+
+    const oneNameTwoRooms = { ...row, quantity: 2, stayGuests: guests.slice(0, 1) };
+    const multi = {
+      ...session, groups: [oneNameTwoRooms],
+      analysis: { ...session.analysis, groups: [oneNameTwoRooms] },
+    } as unknown as QuoteSession;
+    expect(stayingGuestName(multi, contact, 'ambiguous-stored-room')).toBe('');
   });
 
   it('keeps guest edits for the same message without leaking them to another message', () => {

@@ -47,7 +47,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
-import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import { approvedExecuteHeader, staffHeaderForStay, staffQuoteGroupsFromStay } from '../lib/quote-workflow/staff-quote-bind';
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -2620,6 +2619,27 @@ describe('quote session staff review items', () => {
     expect(s.bookingDrafts).toEqual({});
   });
 
+  it('clears a stale booking draft and refuses rates when staff clear occupancy with complete dates', () => {
+    const ready = analysisReady();
+    const session: QuoteSession = {
+      ...ready,
+      bookingDrafts: {
+        [STAY_A]: {
+          draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+          options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+          messageId: 'mail-1', selectionEpoch: 1, inputRevision: 1, revisionRef: 'rev-1',
+        },
+      },
+    };
+    for (const patch of [{ adults: undefined }, { quantity: undefined }]) {
+      const cleared = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch });
+      expect(cleared.bookingDrafts).toEqual({});
+      expect(staffQuoteGroupsFromStay(cleared.groups, 'HRCEN')).toEqual({
+        error: 'Enter the number of rooms and adults before running the quote.',
+      });
+    }
+  });
+
   it('accepts a matching booking_draft_ready and ignores a stale selectionEpoch', () => {
     const payload = {
       draft: {
@@ -3469,6 +3489,117 @@ describe('staff dinner B&B fallback', () => {
 });
 
 describe('type chosen by staff after stay edits', () => {
+  it('lets staff-created booking stays get rates without treating them as approved cases', () => {
+    const row = { ...quoteAnalysis.groups[0]!, stayId: 'stay-a', stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [row],
+      luna: lunaQuote({ workflow: 'create_booking', tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }] }),
+    };
+    let session = withStaffSource(analysisReady(analysis));
+    session = reduceQuoteSession(session, { type: 'duplicate_stay', stayId: 'stay-a', token: 'copy' });
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
+    session = reduceQuoteSession(session, { type: 'add_stay', token: 'added' });
+    session = reduceQuoteSession(session, {
+      type: 'patch_group', groupId: 'r_added',
+      patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03', quantity: 1, adults: 1 },
+    });
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_B))).toBeNull();
+    const withRate = {
+      ...session,
+      staffQuotes: { [STAY_B]: { revisionRef: 'review-rev' } as unknown as QuoteSession['staffQuotes'][string] },
+    };
+    const payload = {
+      messageId: 'mail-1', selectionEpoch: 1, inputRevision: session.inputRevision, revisionRef: 'review-rev',
+      draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+      options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    expect(reduceQuoteSession(withRate, { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+
+    const staffRow = { ...session.groups.find((group) => group.id === 'r_added')!, staffCreated: true };
+    const reopened = analysisReady({
+      ...analysis,
+      groups: [row, staffRow],
+    });
+    expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_B))).toBeNull();
+  });
+
+  it('still searches staff-added quote dates after a re-read while holding booking drafts', () => {
+    const sourceRow = { ...quoteAnalysis.groups[0]!, stayId: 'stay-a', stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const source: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [sourceRow],
+      luna: lunaQuote({ tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] }),
+    };
+    let session = withStaffSource(analysisReady(source));
+    session = reduceQuoteSession(session, { type: 'add_stay', token: 'added' });
+    session = reduceQuoteSession(session, {
+      type: 'patch_group', groupId: 'r_added',
+      patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03', quantity: 1, adults: 1 },
+    });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...source, groups: session.groups, luna: lunaQuote({ tasks: [
+        { kind: 'quote', groupIndexes: [0], note: '' }, { kind: 'quote', groupIndexes: [1], note: '' },
+      ] }) },
+    });
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_B))).toBeNull();
+    const withRate = {
+      ...session,
+      staffQuotes: { [STAY_B]: { revisionRef: 'review-rev' } as unknown as QuoteSession['staffQuotes'][string] },
+    };
+    const payload = {
+      messageId: 'mail-1', selectionEpoch: 1, inputRevision: session.inputRevision, revisionRef: 'review-rev',
+      draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+      options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    expect(reduceQuoteSession(withRate, { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+  });
+
+  it.each([
+    { chosen: 'quote' as const, editDuringRead: false },
+    { chosen: 'create_booking' as const, editDuringRead: false },
+    { chosen: 'quote' as const, editDuringRead: true },
+    { chosen: 'create_booking' as const, editDuringRead: true },
+  ])('reclassifies one stored case as $chosen without taking a live guest or losing edits (edit during read: $editDuringRead)', ({ chosen, editDuringRead }) => {
+    const sourceGroup = {
+      ...quoteAnalysis.groups[0]!, id: 'r_source', stayId: 'stay-a', caseScoped: true,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1',
+    };
+    const lunaGroup = {
+      arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 1, childAges: [],
+      board: 'bb' as const, roomPreference: 'standard king', guestNames: [] as string[], stayId: 'stay-a',
+    };
+    const source: QuoteAnalysis = {
+      ...quoteAnalysis, intent: 'other', groups: [sourceGroup],
+      luna: lunaQuote({ workflow: 'amend', groups: [lunaGroup], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }] }),
+      amendment: { kind: 'amend', confirmationNumber: '11111111-1', guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    };
+    let session = analysisReady(source);
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: sourceGroup.id, patch: { adults: 3 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: chosen });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    if (editDuringRead) session = reduceQuoteSession(session, { type: 'patch_group', groupId: sourceGroup.id, patch: { adults: 4 } });
+    const incoming: QuoteAnalysis = {
+      ...quoteAnalysis, amendment: null,
+      groups: [{ ...quoteAnalysis.groups[0]!, id: 'live-row' }],
+      luna: lunaQuote({
+        workflow: chosen,
+        groups: [{ ...lunaGroup, guestNames: ['Bea Example'] }],
+        tasks: [{ kind: chosen, groupIndexes: [0], note: '' }],
+      }),
+    };
+    const read = { type: 'analysis_ready' as const, analysis: incoming };
+    session = reduceQuoteSession(session, read);
+    expect(read.analysis).toBe(incoming);
+    expect(incoming.groups[0]?.id).toBe('live-row');
+    expect(session.analysis?.luna?.workflow).toBe(chosen);
+    expect(session.groups[0]?.adults).toBe(editDuringRead ? 4 : 3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(sourceGroup.stayGuests);
+    expect(session.analysis?.luna?.groups[0]?.guestNames).toEqual([]);
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(sourceGroup)))).toBeNull();
+  });
+
   it('applies Booking from the re-read and keeps the edited stay', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
@@ -4207,6 +4338,193 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
   }
 
+  it('shows the source guest roster while leaving a multi-room booking number unchosen', () => {
+    const guests = [
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ];
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: guests },
+      { ...quoteAnalysis.groups[0]!, id: 'r_2', stayId: 'stay-a' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other',
+      groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0, 1], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(stayAskGuests(session, 'stay-a')).toEqual(guests);
+    expect(amendmentOf(session)?.confirmationNumber).toBeNull();
+
+    const withoutFirstRow = reduceQuoteSession(session, { type: 'remove_row', groupId: 'r_1' });
+    expect(stayAskGuests(withoutFirstRow, 'stay-a')).toEqual(guests);
+    expect(amendmentOf(withoutFirstRow)?.confirmationNumber).toBeNull();
+  });
+
+  it('does not move a source booking number to a duplicated room or stay', () => {
+    const guest = { name: 'Ada Example', confirmationNumber: '11111111-1' };
+    const groups = [{ ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: [guest], confirmationNumber: guest.confirmationNumber }];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other',
+      groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: guest.confirmationNumber, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBe(guest.confirmationNumber);
+    const withCopy = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'r_1', token: 'copy' });
+    expect(amendmentOf(withCopy)?.confirmationNumber).toBeNull();
+    const onlyCopy = reduceQuoteSession(withCopy, { type: 'remove_row', groupId: 'r_1' });
+    expect(stayAskGuests(onlyCopy, 'stay-a')).toEqual([guest]);
+    expect(amendmentOf(onlyCopy)?.confirmationNumber).toBeNull();
+
+    const newStay = reduceQuoteSession(session, { type: 'duplicate_stay', stayId: 'stay-a', token: 'new' });
+    expect(stayAskGuests(newStay, 's_new')).toEqual([]);
+    expect(amendmentOf(newStay)?.confirmationNumber).toBeNull();
+
+    const moved = reduceQuoteSession(newStay, {
+      type: 'patch_group', groupId: 'r_new_0', patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    });
+    const selectedCopy = reduceQuoteSession(moved, { type: 'select_stay_key', stayKey: 's_new' });
+    expect(amendmentOf(selectedCopy)).toMatchObject({ confirmationNumber: null, arrival: null, departure: null });
+  });
+
+  it('keeps a case-level confirmation unassigned when the source did not identify a room', () => {
+    const guest = { name: 'Ada Example', confirmationNumber: '11111111-1' };
+    const group = { ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: [guest] };
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other', groups: [group],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: guest.confirmationNumber, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBeNull();
+  });
+
+  it('can look up the single selected-email case without attaching its number to a room', () => {
+    const number = '11111111-1';
+    const group = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', caseScoped: true,
+      quantity: undefined, stayGuests: [], caseLookupConfirmation: number,
+    };
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups: [group],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: number, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBe(number);
+    expect('confirmationNumber' in session.groups[0]!).toBe(false);
+    const withCopy = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'r_1', token: 'copy' });
+    expect(amendmentOf(withCopy)?.confirmationNumber).toBeNull();
+    const onlyCopy = reduceQuoteSession(withCopy, { type: 'remove_row', groupId: 'r_1' });
+    expect(amendmentOf(onlyCopy)?.confirmationNumber).toBeNull();
+  });
+
+  it('does not use the email-wide amendment for a selected cancellation stay', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_amend', stayId: 'stay-amend', stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...quoteAnalysis.groups[0]!, id: 'r_cancel', stayId: 'stay-cancel', arrivalDate: '2026-12-01', departureDate: '2026-12-03', stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other', groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'amend', groupIndexes: [0], note: '' },
+          { kind: 'cancel', groupIndexes: [1], note: '' },
+        ],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: 'Extend stay',
+      },
+    });
+    const selected = reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-cancel' });
+    expect(stayAskAction(selected, 'stay-cancel')).toBe('cancel');
+    expect(amendmentOf(selected)).toMatchObject({
+      kind: 'cancel', confirmationNumber: null, guestLastName: null,
+      arrival: null, departure: null, requestedChange: null,
+    });
+  });
+
+  it('lets staff select either same-date existing case without borrowing its neighbour number', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...quoteAnalysis.groups[0]!, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups,
+      luna: {
+        workflow: 'cancel', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [{ kind: 'cancel', groupIndexes: [0], note: '' }, { kind: 'cancel', groupIndexes: [1], note: '' }],
+      },
+      amendment: { kind: 'cancel', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    expect(groupStays(session.groups).map((stay) => stay.id)).toEqual(['stay-a', 'stay-b']);
+    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-a' }))).toMatchObject({
+      confirmationNumber: '11111111-1', requestedArrival: '2026-11-12', requestedDeparture: '2026-11-14',
+    });
+    const moved = reduceQuoteSession(session, {
+      type: 'patch_group', groupId: 'r_b', patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    });
+    expect(amendmentOf(reduceQuoteSession(moved, { type: 'select_stay_key', stayKey: 'stay-b' }))).toMatchObject({
+      confirmationNumber: '22222222-1', requestedArrival: '2026-12-01', requestedDeparture: '2026-12-03',
+    });
+    const asQuote = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
+    expect(groupStays(asQuote.groups)).toHaveLength(1);
+  });
+
+  it('does not choose a requested date when rows on an existing case disagree', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [] },
+      { ...quoteAnalysis.groups[0]!, id: 'r_b', stayId: 'stay-a', caseScoped: true, arrivalDate: '2026-11-13' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0, 1], note: '' }],
+      },
+      amendment: { kind: 'amend', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    expect(amendmentOf(session)).toMatchObject({ requestedArrival: null, requestedDeparture: '2026-11-14' });
+  });
+
   it('lists each named guest on the stay with that guest confirmation', () => {
     const session = twoGuestStay(2, [
       { name: 'Ada Example', confirmationNumber: '11111111-1' },
@@ -4402,5 +4720,237 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(stayAskAction(session, 'stay-b')).toBe('amend');
     const removed = reduceQuoteSession(session, { type: 'remove_stay', stayId: 'stay-a' });
     expect(stayAskAction(removed, 'stay-b')).toBe('amend');
+  });
+
+  it('does not label a conflicting or non-booking stay as a new booking from the mail-wide workflow', () => {
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: [
+        { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' },
+        { ...quoteAnalysis.groups[0]!, id: 'g2', stayId: 'stay-b', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+      ],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'other', groupIndexes: [0], note: '' },
+          { kind: 'create_booking', groupIndexes: [1], note: '' },
+        ],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('other');
+    expect(stayAskAction(session, 'stay-b')).toBe('booking');
+  });
+
+  it('does not label same-date cases with conflicting actions as one booking', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' },
+      { ...quoteAnalysis.groups[0]!, id: 'g2', stayId: 'stay-b' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups,
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'create_booking', groupIndexes: [0], note: '' },
+          { kind: 'amend', groupIndexes: [1], note: '' },
+        ],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('booking');
+    expect(stayAskAction(session, 'stay-b')).toBe('amend');
+    expect(stayAskAction(session, stayKeyForGroup(groups[0]!))).toBe('other');
+  });
+
+  it.each([false, true])('keeps task indexes bound to their source after remembered rows are removed (stored: %s)', (stored) => {
+    const remaining = { ...quoteAnalysis.groups[0]!, id: stored ? 'r_b' : 'g2', stayId: 'stay-b' };
+    const sourceRow = {
+      arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 1, childAges: [],
+      board: 'bb' as const, roomPreference: null, guestNames: [],
+    };
+    const session = analysisReady({
+      ...quoteAnalysis, groups: [remaining],
+      luna: lunaQuote({
+        workflow: 'create_booking',
+        groups: [
+          { ...sourceRow, ...(stored ? { stayId: 'stay-a' } : {}) },
+          { ...sourceRow, ...(stored ? { stayId: 'stay-b' } : {}) },
+        ],
+        tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }, { kind: 'create_booking', groupIndexes: [1], note: '' }],
+      }),
+    });
+    expect(stayAskAction(session, 'stay-b')).toBe('booking');
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(remaining)))).toBeNull();
+  });
+
+  it('compares original task cases when staff remove a row while a read is running', () => {
+    const sourceRow = {
+      arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 1, childAges: [],
+      board: 'bb' as const, roomPreference: null, guestNames: ['Ada Example'],
+    };
+    const first = { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' };
+    const second = { ...quoteAnalysis.groups[0]!, id: 'g2', stayId: 'stay-b', arrivalDate: '2026-12-01', departureDate: '2026-12-03' };
+    const source: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [first, second],
+      luna: lunaQuote({
+        workflow: 'create_booking', groups: [sourceRow, { ...sourceRow, arrival: '2026-12-01', departure: '2026-12-03', guestNames: ['Bea Example'] }],
+        tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }, { kind: 'create_booking', groupIndexes: [1], note: '' }],
+      }),
+    };
+    let session = analysisReady(source);
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'remove_stay', stayId: 'stay-a' });
+    const remembered = { ...source, groups: session.groups };
+    const accepted = reduceQuoteSession(session, { type: 'analysis_ready', analysis: remembered });
+    expect(quoteRunBlockReason(accepted, stepFor(accepted, STAY_B))).toBeNull();
+
+    const changed = {
+      ...remembered,
+      luna: { ...source.luna!, groups: [sourceRow, { ...source.luna!.groups[1]!, guestNames: ['Cara Example'] }] },
+    };
+    const held = reduceQuoteSession(session, { type: 'analysis_ready', analysis: changed });
+    expect(quoteRunBlockReason(held, stepFor(held, STAY_B))).toMatch(/existing or unclear booking/i);
+  });
+
+  it('blocks booking drafts for an existing or mixed date while allowing an explicit new case', () => {
+    const newGroup = { ...quoteAnalysis.groups[0]!, id: 'new-room', stayId: 'new-stay' };
+    const existingGroup = { ...quoteAnalysis.groups[0]!, id: 'old-room', stayId: 'old-stay' };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [newGroup, existingGroup],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: 'amend', groupIndexes: [1], note: '' }],
+      },
+    };
+    const mixed = withStaffSource(analysisReady(analysis));
+    const dateKey = stayKeyForGroup(newGroup);
+    expect(quoteRunBlockReason(mixed, stepFor(mixed, dateKey))).toMatch(/existing or unclear booking/i);
+    const withCopy = reduceQuoteSession(mixed, { type: 'duplicate_stay', stayId: 'new-stay', token: 'copy' });
+    expect(quoteRunBlockReason(withCopy, stepFor(withCopy, dateKey))).toMatch(/existing or unclear booking/i);
+    const draft = {
+      draft: {
+        rooms: [{ groupId: 'new-room', roomIndex: 1, request: { arrival: newGroup.arrivalDate, departure: newGroup.departureDate }, schemaErrors: [] }],
+        rateCheck: [], missing: [], flags: [],
+      },
+      options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+      messageId: 'mail-1', selectionEpoch: 1, inputRevision: mixed.inputRevision, revisionRef: 'unquoted',
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    expect(reduceQuoteSession(mixed, { type: 'booking_draft_ready', payload: draft, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+
+    const distinct = analysisReady({
+      ...analysis,
+      groups: [newGroup, { ...existingGroup, arrivalDate: '2026-12-01', departureDate: '2026-12-03' }],
+    });
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, dateKey))).toBeNull();
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, '2026-12-01:2026-12-03'))).toMatch(/existing or unclear booking/i);
+
+    const quoteOnly = withStaffSource(analysisReady({
+      ...analysis, groups: [newGroup],
+      luna: { ...analysis.luna!, tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] },
+    }));
+    expect(quoteRunBlockReason(quoteOnly, stepFor(quoteOnly, dateKey))).toBeNull();
+    expect(reduceQuoteSession(quoteOnly, {
+      type: 'booking_draft_ready', payload: { ...draft, inputRevision: quoteOnly.inputRevision }, sourceHash: STAFF_HASH,
+    }).bookingDrafts).toEqual({});
+
+    const onlyNew = withStaffSource(analysisReady({
+      ...analysis, groups: [newGroup],
+      luna: { ...analysis.luna!, tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }] },
+    }));
+    const accepted = reduceQuoteSession(onlyNew, {
+      type: 'booking_draft_ready', payload: { ...draft, inputRevision: onlyNew.inputRevision }, sourceHash: STAFF_HASH,
+    });
+    expect(accepted.bookingDrafts[dateKey]).toBeDefined();
+    const reclassified = reduceQuoteSession(accepted, {
+      type: 'analysis_ready', analysis: { ...onlyNew.analysis!, luna: { ...onlyNew.analysis!.luna!, tasks: [{ kind: 'other', groupIndexes: [0], note: '' }] } },
+    });
+    expect(reclassified.bookingDrafts).toEqual({});
+    expect(quoteRunBlockReason(reclassified, stepFor(reclassified, dateKey))).toMatch(/existing or unclear booking/i);
+    expect(reduceQuoteSession(reclassified, { type: 'booking_draft_ready', payload: draft, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+    const consistent = reduceQuoteSession(reclassified, { type: 'analysis_ready', analysis: onlyNew.analysis! });
+    expect(quoteRunBlockReason(consistent, stepFor(consistent, dateKey))).toBeNull();
+  });
+
+  it('holds a late read that reuses an edited case id for a different guest', () => {
+    const row = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a',
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }],
+    };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [row],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+      },
+    };
+    let session = withStaffSource(analysisReady(analysis));
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    const laterRow = { ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] };
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...analysis, groups: [laterRow] },
+    });
+    expect(session.groups[0]?.adults).toBe(3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(row.stayGuests);
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(row)))).toMatch(/existing or unclear booking/i);
+  });
+
+  it('does not use either booking number when a late amendment read changes the edited case identity', () => {
+    const row = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', caseScoped: true,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1',
+    };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, intent: 'other', groups: [row],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: null,
+      },
+    };
+    let session = analysisReady(analysis);
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    const laterRow = { ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' };
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...analysis,
+        groups: [laterRow],
+        amendment: { ...analysis.amendment!, confirmationNumber: '22222222-1' },
+      },
+    });
+    expect(session.groups[0]?.adults).toBe(3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(row.stayGuests);
+    expect(amendmentOf(session)).toMatchObject({ confirmationNumber: null, guestLastName: null, arrival: null });
+  });
+
+  it('does not treat an unlinked edited stay as a new booking just because the email has another new case', () => {
+    const rows = [
+      { ...quoteAnalysis.groups[0]!, id: 'one', stayId: 'one' },
+      { ...quoteAnalysis.groups[0]!, id: 'two', stayId: 'two', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, groups: rows,
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+      },
+    });
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(rows[0]!)))).toBeNull();
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(rows[1]!)))).toMatch(/existing or unclear booking/i);
   });
 });

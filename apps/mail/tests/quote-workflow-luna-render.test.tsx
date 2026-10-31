@@ -7,8 +7,10 @@ import type {
   StayGroupRequirement,
   LunaAnalysisWire,
 } from '../lib/quote-workflow/types';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -193,6 +195,96 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByLabelText('Stay action').textContent).toBe('Cancellation');
     expect(screen.getByRole('button', { name: 'Find this booking' })).toBeDefined();
     expect(screen.queryByText('Agency & company')).toBeNull();
+  });
+
+  it('offers separate existing cases for selection when their dates match', () => {
+    const onSelectStayKey = vi.fn();
+    const groups = [
+      { ...g1, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...g1, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'other', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: 'cancel',
+        tasks: [{ kind: 'cancel', groupIndexes: [0], note: '' }, { kind: 'cancel', groupIndexes: [1], note: '' }],
+      }),
+      amendment: { kind: 'cancel', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    render(<QuoteWorkflowPanel session={session} onSelectStayKey={onSelectStayKey} />);
+    expect(screen.getAllByLabelText('Stay guests').map((node) => node.textContent)).toEqual([
+      'Ada Example · 11111111-1', 'Bea Example · 22222222-1',
+    ]);
+    const buttons = screen.getAllByRole('button', { name: 'Find this booking' });
+    fireEvent.click(buttons[0]!);
+    fireEvent.click(buttons[1]!);
+    expect(onSelectStayKey.mock.calls).toEqual([['stay-a'], ['stay-b']]);
+  });
+
+  it.each([
+    { summary: 'amend', other: 'cancel', before: 'Change to an existing booking', after: 'Cancellation request' },
+    { summary: 'cancel', other: 'amend', before: 'Cancellation request', after: 'Change to an existing booking' },
+  ] as const)('opens the $other case when the email summary is $summary', ({ summary, other, before, after }) => {
+    const groups = [
+      { ...g1, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...g1, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const initial = sessionWithAnalysis({
+      intent: 'other', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: summary,
+        tasks: [{ kind: summary, groupIndexes: [0], note: '' }, { kind: other, groupIndexes: [1], note: '' }],
+      }),
+      amendment: {
+        kind: summary, confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: 'Extend stay',
+      },
+    });
+    function Pane() {
+      const [session, setSession] = useState(initial);
+      return <>
+        <QuoteWorkflowPanel
+          session={session}
+          onSelectStayKey={(stayKey) => setSession((current) => reduceQuoteSession(current, { type: 'select_stay_key', stayKey }))}
+        />
+        <AmendLookupPanel session={session} trpc={null} />
+      </>;
+    }
+    render(<Pane />);
+    expect(within(screen.getByTestId('amend-lookup-panel')).getByText(before)).toBeDefined();
+    const buttons = screen.getAllByRole('button', { name: 'Find this booking' });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]!);
+    const panel = screen.getByTestId('amend-lookup-panel');
+    expect(within(panel).getByText(after)).toBeDefined();
+    expect(panel.textContent).not.toContain('11111111-1');
+    expect(panel.textContent).not.toContain('Extend stay');
+  });
+
+  it.each([
+    { action: 'amend', label: 'Amendment' },
+    { action: 'cancel', label: 'Cancellation' },
+  ] as const)('selects an $action case in a new-booking email without an email-wide amendment', ({ action, label }) => {
+    const onSelectStayKey = vi.fn();
+    const groups = [
+      { ...g1, id: 'r_new', stayId: 'new-stay' },
+      { ...g1, id: 'r_old', stayId: 'old-stay', caseScoped: true, arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'quote', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: 'create_booking',
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: action, groupIndexes: [1], note: '' }],
+      }),
+      amendment: null,
+    });
+    const uncertainSession = { ...session, analysis: { ...session.analysis!, caseActionsUncertain: true } };
+    const view = render(<QuoteWorkflowPanel session={uncertainSession} onSelectStayKey={onSelectStayKey} />);
+    expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
+    view.rerender(<QuoteWorkflowPanel session={session} onSelectStayKey={onSelectStayKey} />);
+    expect(screen.getAllByLabelText('Stay action').map((node) => node.textContent)).toEqual(['New booking', label]);
+    fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
+    expect(onSelectStayKey).toHaveBeenCalledWith('old-stay');
   });
 
   it('drops the "not a quote or booking" notice when the change card carries the amendment (AE2)', () => {
