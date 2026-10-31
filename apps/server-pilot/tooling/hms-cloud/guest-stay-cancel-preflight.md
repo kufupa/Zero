@@ -46,7 +46,8 @@ One exact cancellation display is handled narrowly: a 1A Stay-card status of
 Record View separately reports status `Cancelled` and `cancelnumber` equals
 those digits. The result exposes the 1B `cancelnumber` field directly as
 `stay.cancellationNumber`; a matching pair lets `stay.status` be shown as
-`Cancelled`. Either disagreement keeps status in conflict; a missing or
+`Cancelled`. Either disagreement keeps status in conflict, and a mismatched
+or blank 1B number is separately reported as a number conflict; a missing or
 duplicate comparison field keeps status ambiguous. Other status decorations
 are not normalized.
 

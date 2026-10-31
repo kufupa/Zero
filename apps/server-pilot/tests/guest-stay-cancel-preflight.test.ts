@@ -289,7 +289,16 @@ describe('projectCancellationPreflight', () => {
       record: read1B({ status: 'Cancelled', cancellationNumber: '7654321' }),
     });
     expect(wrongNumber.stay.status.state).toBe('conflict');
-    expect(wrongNumber.stay.cancellationNumber).toMatchObject({ state: 'observed', value: '7654321' });
+    expect(wrongNumber.stay.cancellationNumber).toMatchObject({
+      state: 'conflict', values: ['1234567', '7654321'], sources: ['1a_stay_card', '1b_record_view'],
+    });
+
+    const blankNumber = project({
+      shallow: read1A({ status: 'Cancelled\n1234567' }),
+      record: read1B({ status: 'Cancelled', cancellationNumber: '' }),
+    });
+    expect(blankNumber.stay.status.state).toBe('conflict');
+    expect(blankNumber.stay.cancellationNumber).toMatchObject({ state: 'conflict', values: ['1234567', ''] });
 
     const wrongStatus = project({
       shallow: read1A({ status: 'Cancelled\n1234567' }),

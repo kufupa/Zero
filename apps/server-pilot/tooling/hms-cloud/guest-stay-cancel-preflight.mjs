@@ -342,6 +342,19 @@ function reconcileCancellationStatus(shallow, record) {
     : { state: 'ambiguous', reason: 'cancellation_status_decoration_not_reconciled', sources };
 }
 
+function reconcileCancellationNumber(shallow, record) {
+  const status = readShallowField(shallow, 'status');
+  const number = readRecordField(record, 'cancelnumber');
+  const match = status.state === 'observed' && status.sources.includes('1a_stay_card')
+    ? /^Cancelled\r?\n(\d{7})$/.exec(status.value)
+    : null;
+  if (!match || number.state === 'unavailable' || number.state === 'ambiguous') return number;
+  const sources = [...new Set([...status.sources, ...number.sources])];
+  return number.value === match[1] ? { ...number, sources } : {
+    state: 'conflict', reason: 'reader_values_disagree', values: [match[1], number.value], sources,
+  };
+}
+
 function reconcileField(shallow, record, name, { money = false, cardTitle = 'Stay', currencyCode } = {}) {
   const first = readShallowField(shallow, name, money, cardTitle, currencyCode);
   const second = readRecordField(record, name, money);
@@ -436,7 +449,7 @@ export function projectCancellationPreflight({
       arrivalDate: reconcileField(shallow, record, 'arrivaldate'),
       departureDate: reconcileField(shallow, record, 'departuredate'),
       nights: reconcileField(shallow, record, 'nights'),
-      cancellationNumber: readRecordField(record, 'cancelnumber'),
+      cancellationNumber: reconcileCancellationNumber(shallow, record),
       guaranteeType: reconcileField(shallow, record, 'guaranteetype'),
       ratePlan: reconcileField(shallow, record, 'rateplan'),
       adults: reconcileField(shallow, record, 'adults'),
