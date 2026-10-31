@@ -20,11 +20,22 @@ export function originalAnswerRow(source:LocalEvaluationAnswerSource,text:string
  for(const boundary of text.slice(start,limit).matchAll(/\r?\n[ \t]*\r?\n/g)){const end=(view?.start??0)+boundary.index!;if(!/[.!?]$/.test(text.slice(start,end).trim()))continue;if(start<=source.start&&end>=source.end)return text.slice(start,end).trim();start=end+boundary[0].length;}
  return start<=source.start&&source.end<=limit?text.slice(start,limit).trim():null;
 }
+function soleAnswerInView(source:LocalEvaluationAnswerSource,text:string,view:ReservationistMessageView):boolean{
+ const label=({parking:/\bparking\b/i,check_in:/\bcheck[ -]?in\b/i,check_out:/\bcheck[ -]?out\b/i,breakfast_time:/\bbreakfast\b/i} as Partial<Record<LocalEvaluationAnswerSource['kind'],RegExp>>)[source.kind];
+ if(!label||source.start<view.start||source.end>view.end)return false;
+ const rest=text.slice(view.start,source.start)+' '+text.slice(source.end,view.end);
+ // Repeated statements about the same topic, including an opposite parking
+ // answer in another paragraph, require staff review rather than a proof.
+ if(label.test(rest))return false;
+ if(source.kind==='parking'&&source.value===true&&/\b(?:it|this|that)\s+(?:is\s+)?(?:unavailable|not\s+available)\b/i.test(rest))return false;
+ if(source.kind==='parking'&&source.value===false&&/\b(?:it|this|that)\s+(?:is\s+)?available\b/i.test(rest))return false;
+ return true;
+}
 export function validateReservationistMailAnswers(sources:readonly LocalEvaluationAnswerSource[],input:ReservationistRuntimeInput){
  for(const source of sources){const message=input.messages.find(m=>m.id===source.messageId),views=message?.sourceViews,view=views?.find(v=>source.start>=v.start&&source.end<=v.end);
-  const alternativesAgree=!views||!!message&&validReservationistMessageViews(message.text,views)&&!!view&&views.every(other=>other===view||[...message.text.slice(other.start,other.end).matchAll(/^[ \t]*([^\r\n]+?)[ \t]*$/gm)].some(match=>{
+  const alternativesAgree=!views||!!message&&validReservationistMessageViews(message.text,views)&&!!view&&views.every(other=>other===view?soleAnswerInView(source,message.text,other):[...message.text.slice(other.start,other.end).matchAll(/^[ \t]*([^\r\n]+?)[ \t]*$/gm)].some(match=>{
    const quote=match[1]!,start=other.start+match.index!+match[0].indexOf(quote),candidate={...source,quote,start,end:start+quote.length};
-   return answerEntailed(candidate)&&originalAnswerRow(candidate,message.text,other)===quote.trim();
+   return answerEntailed(candidate)&&originalAnswerRow(candidate,message.text,other)===quote.trim()&&soleAnswerInView(candidate,message.text,other);
   }));
   if(!answerEntailed(source)||!message||!alternativesAgree||originalAnswerRow(source,message.text,view)!==source.quote.trim()||message.direction!=='outbound'||message.disclosure!=='guest'||source.disclosure!=='guest'||Date.parse(message.at)>Date.parse(input.clock.causalAt)||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start<0||source.end<=source.start||message.text.slice(source.start,source.end)!==source.quote||!({parking:/\bparking\b/i,check_in:/check[ -]?in|arrival time/i,check_out:/check[ -]?out|departure time/i,breakfast_time:/breakfast/i,policy:/policy|terms|conditions|rules/i,account_payment:/account|credit terms/i,transfer:/transfer|shuttle/i,cancel_request:/cancel/i})[source.kind]?.test(source.quote)||typeof source.value==='string'&&!source.quote.includes(source.value)||typeof source.value==='boolean'&&(source.kind!=='parking'||!(source.value?/\bparking\s+(?:is\s+)?available\b/i:/\bparking\s+(?:is\s+)?(?:unavailable|not available)\b/i).test(source.quote)))throw new Error('local_answer_source_invalid');}
 }

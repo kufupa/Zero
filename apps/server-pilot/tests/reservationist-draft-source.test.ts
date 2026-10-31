@@ -36,6 +36,13 @@ it('proves the same parking answer in both MIME alternatives but rejects a confl
  const conflict=operationalDraftMessages([{...prior,htmlBody:'<p>Parking is not available.</p>'},trigger],binding);
  const changed=conflict.find(m=>m.id==='reply')!;
  expect(()=>validateReservationistMailAnswers([{...answer,sourceHash:createHash('sha256').update(changed.text).digest('hex')}],{...input,messages:conflict})).toThrow('local_answer_source_invalid');
+ for(const htmlBody of ['<p>Parking is available.</p><p>Parking is unavailable.</p>','<p>Parking is available.</p><p>It is unavailable.</p>']){
+  const conflictingRows=[{...prior,htmlBody},trigger],conflicting=operationalDraftMessages(conflictingRows,binding),message=conflicting.find(m=>m.id==='reply')!;
+  const hash=createHash('sha256').update(message.text).digest('hex');
+  expect(()=>validateReservationistMailAnswers([{...answer,sourceHash:hash}],{...input,messages:conflicting})).toThrow('local_answer_source_invalid');
+  const changedResult={...result,preparedFacts:[{...result.preparedFacts[0],sourceHash:hash}]};
+  expect(deriveOperationalDraftSources({tasks:[{id:'parking',kind:'question',required:true,source:requestSource}],facts:[]},changedResult,binding,conflictingRows,new AbortController().signal)).toHaveLength(0);
+ }
 });
 it.each(['transportId','threadId','requestedByUserId','triggerMessageId'] as const)('rejects foreign %s',key=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,[key]:'foreign'})).toThrow();});
 it('rejects changed text, incomplete and malformed source snapshots',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,{...source,messages:[{...source.messages[0]!,sourceHash:'c'.repeat(64)}]})).toThrow();for(const value of [null,{version:1}, {...receipt,extra:true},{...receipt,digest:'0'.repeat(64)}])expect(()=>assertReservationistDraftSource(value,source)).toThrow();});
