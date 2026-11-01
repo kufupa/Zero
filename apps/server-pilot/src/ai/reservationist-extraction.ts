@@ -180,7 +180,7 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
     /\b(?:room[\s-]*only|breakfast|dinner|meals?|board)\b/i.test(part)&&
     /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
-  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)):
+  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)||modifying&&referent):
    modifying&&(shared||correction.test(part)||referent));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(relevant).join(' ')));
