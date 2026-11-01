@@ -7,9 +7,10 @@ import {
   unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
-import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain as installLabtestContactSaveRouteChain } from './saved-stay-save-route-chain.mjs';
+import { labtestAmendOutcome as contactAmendOutcome, runLabtestAmendSave } from './labtest-amend-save.mjs';
 export { installLabtestContactSaveRouteChain };
+export { contactAmendOutcome };
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
@@ -18,11 +19,6 @@ const CONTACT_FIELDS = Object.freeze({
   bookerContact: Object.freeze({ name: 'udfchar06', label: 'Booker Contact' }),
 });
 const CONTACT_FIELD_NAMES = new Set(Object.values(CONTACT_FIELDS).map(({ name }) => name));
-const usedPages = new WeakSet();
-
-const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '')
-  ? error.message
-  : 'AMEND_UNVERIFIED';
 
 function uniqueSnapshotField(snapshot, name) {
   const read = (source) => {
@@ -101,16 +97,6 @@ export function matchesLabtestBookerContactAmendRequest(request, frame, expected
   return validContactChanges(changes) && matchesAmend(request, frame, expected, state, baseline, changes);
 }
 
-/** A 200 is only awaiting fresh readback when no unexpected request was blocked after dispatch. */
-export function contactAmendOutcome({
-  dispatched, possiblyDispatched, httpStatus, nativeDialog, dialogs, blockedAfterDispatch,
-}) {
-  if (dispatched && httpStatus === 200 && !nativeDialog && dialogs === 0 && blockedAfterDispatch === 0) {
-    return 'awaiting_readback';
-  }
-  return possiblyDispatched ? 'uncertain' : 'not_dispatched';
-}
-
 /** Accept the staged form value before Ext synchronizes the loaded record model. */
 export function matchesLabtestContactAmendDraft(before, after, field, value) {
   if (!Object.hasOwn(CONTACT_FIELDS, field) || typeof value !== 'string') return false;
@@ -176,176 +162,66 @@ function contactResultFields(changes, singleField) {
 async function amendLabtestContactChanges(page, expected, changes, { timeoutMs, singleField = null }) {
   if (!validContactChanges(changes)) return { outcome: 'input_gap', issue: 'CONTACT_CHANGES_INVALID' };
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
-  if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
-  let armed = false;
-  let possiblyDispatched = false;
-  let dispatched = false;
-  let blockedAtDispatch = 0;
-  let blocked = 0;
-  let sendRequests = 0;
-  let nativeDialog = null;
-  let response = null;
-  let authorizedRequest = null;
-  let stopReason = null;
-  let scope;
-  let fence;
-  let routeChain;
-  let signalStop;
-  const stopped = new Promise((resolve) => { signalStop = resolve; });
-  const stop = (reason) => {
-    stopReason ||= reason;
-    armed = false;
-    routeChain?.disarm();
-    fence?.quarantine();
-    signalStop({ reason });
-  };
-  const bounded = async (action) => {
-    const result = await Promise.race([
-      Promise.resolve(action).then((resultValue) => ({ resultValue })),
-      stopped,
-    ]);
-    if (result.reason) throw new Error(result.reason);
-    return result.resultValue;
-  };
-  const timer = setTimeout(() => stop('AMEND_TIMEOUT'), timeoutMs);
-  const onDialog = (dialog) => {
-    nativeDialog = { type: dialog.type() };
-    stop('UNEXPECTED_DIALOG');
-  };
-  page.on('dialog', onDialog);
-
-  try {
-    const recordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true };
-    const state = await bounded(currentLabtestRecord(page, expected, recordOptions));
-    const frame = state.frame;
-    const baseline = await bounded(snapshotLabtestRecord(frame));
-    if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
-    if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) {
-      throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
-    }
-    if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
-        await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
-      throw new Error('UNEXPECTED_DIALOG');
-    }
-
-    const controls = [];
-    for (const [key, spec] of Object.entries(CONTACT_FIELDS)) {
-      if (!Object.hasOwn(changes, spec.name)) continue;
-      const { field, original } = await bounded(editableContactField(frame, baseline, spec, changes[spec.name]));
-      if (original !== changes[spec.name]) controls.push({ key, spec, field, value: changes[spec.name] });
-    }
-    if (!controls.length) return { outcome: 'unchanged', ...contactResultFields(changes, singleField) };
-    const save = frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
-    if (await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
-
-    fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
-    scope = fence.open();
-    const routeSetup = installLabtestContactSaveRouteChain(page, {
-      frame,
-      fence,
-      scope,
-      isArmed: () => armed && !nativeDialog,
-      matches: (request, requestFrame) => matchesLabtestBookerContactAmendRequest(
-        request, requestFrame, expected, state, baseline, changes,
-      ),
-      onCandidate: (request) => {
-        authorizedRequest = request;
-        possiblyDispatched = true;
-      },
-      onDispatch: (request) => {
-        if (request === authorizedRequest) {
-          dispatched = true;
-          blockedAtDispatch = blocked;
-          armed = false;
-        }
-      },
-      onBlocked: (request) => {
-        blocked += 1;
-        try {
-          if (/send|email|mail/i.test(new URL(request.url()).pathname)) sendRequests += 1;
-        } catch { /* Do not expose or retry malformed request targets. */ }
-      },
-    }).then(async (chain) => {
-      if (stopReason) {
-        // A registration that completes after the deadline may not grant its
-        // exception. Retain only the page-local deny route and prevent reuse.
-        usedPages.add(page);
-        chain.disarm();
-        await chain.close();
-        return null;
+  const resultFields = contactResultFields(changes, singleField);
+  return runLabtestAmendSave(page, {
+    timeoutMs,
+    resultFields,
+    prepare: async (bounded) => {
+      const recordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true };
+      const state = await bounded(currentLabtestRecord(page, expected, recordOptions));
+      const frame = state.frame;
+      const baseline = await bounded(snapshotLabtestRecord(frame));
+      if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+      if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) {
+        throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       }
-      return chain;
-    });
-    routeChain = await bounded(routeSetup);
-    if (!routeChain) throw new Error(stopReason || 'AMEND_TIMEOUT');
-    usedPages.add(page);
+      if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
+          await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
+        throw new Error('UNEXPECTED_DIALOG');
+      }
 
-    for (const { field: control, value: nextValue } of controls) {
-      const changed = await bounded(control.evaluate((element, newValue) => {
-        const component = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
-        if (!component?.setValue || element.readOnly || element.disabled) return false;
-        component.setValue(newValue);
-        component.fireEvent?.('blur', component);
-        return element.value === newValue && String(component.getValue() ?? '') === newValue;
-      }, nextValue));
-      if (!changed) throw new Error('CONTACT_EDIT_UNVERIFIED');
-      await bounded(control.blur());
-    }
-
-    const after = await bounded(currentLabtestRecord(page, expected, recordOptions));
-    const changedForm = await bounded(snapshotLabtestRecord(frame));
-    // Ext's form values may update before its loaded record.data; the save
-    // request matcher below is the authoritative full-record check.
-    if (JSON.stringify(state.native) !== JSON.stringify(after.native) || state.track !== after.track ||
-        JSON.stringify(state.partyPreimage) !== JSON.stringify(after.partyPreimage) ||
-        !unchangedLabtestBusinessParties(state.partyPreimage, changedForm) ||
-        !matchesLabtestBookerContactDraft(baseline, changedForm, changes) ||
-        blocked || nativeDialog || await bounded(frame.locator('.x-window:visible:not(.x-menu)').count())) {
-      throw new Error('AMEND_DRAFT_CHANGED');
-    }
-
-    const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs })
-      .catch(() => null);
-    armed = true;
-    await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
-    response = await bounded(pending);
-    armed = false;
-    await bounded(page.waitForTimeout(500));
-    const dialogs = await bounded(frame.locator('.x-window:visible:not(.x-menu)').count());
-    const httpStatus = response?.status() || null;
-    const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
-    return {
-      outcome: contactAmendOutcome({
-        dispatched, possiblyDispatched, httpStatus, nativeDialog, dialogs, blockedAfterDispatch,
-      }),
-      ...contactResultFields(changes, singleField),
-      httpStatus,
-      blockedRequests: blocked,
-      blockedRequestsAfterDispatch: blockedAfterDispatch,
-      browserSendRequests: sendRequests,
-      nativeDialog,
-    };
-  } catch (error) {
-    armed = false;
-    routeChain?.disarm();
-    if (possiblyDispatched) fence?.quarantine();
-    return {
-      outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched',
-      issue: issue(error),
-      ...contactResultFields(changes, singleField),
-      httpStatus: response?.status() || null,
-      blockedRequests: blocked,
-      browserSendRequests: sendRequests,
-      nativeDialog,
-    };
-  } finally {
-    clearTimeout(timer);
-    armed = false;
-    routeChain?.disarm();
-    scope?.close();
-    await routeChain?.close();
-    if (!nativeDialog && !usedPages.has(page)) page.off('dialog', onDialog);
-  }
+      const controls = [];
+      for (const [key, spec] of Object.entries(CONTACT_FIELDS)) {
+        if (!Object.hasOwn(changes, spec.name)) continue;
+        const { field, original } = await bounded(editableContactField(frame, baseline, spec, changes[spec.name]));
+        if (original !== changes[spec.name]) controls.push({ key, spec, field, value: changes[spec.name] });
+      }
+      if (!controls.length) return { unchanged: true };
+      const save = frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
+      if (await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
+      return { state, frame, baseline, controls, save };
+    },
+    matches: (request, requestFrame, prepared) => matchesLabtestBookerContactAmendRequest(
+      request, requestFrame, expected, prepared.state, prepared.baseline, changes,
+    ),
+    stage: async (bounded, prepared) => {
+      for (const { field: control, value: nextValue } of prepared.controls) {
+        const changed = await bounded(control.evaluate((element, newValue) => {
+          const component = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+          if (!component?.setValue || element.readOnly || element.disabled) return false;
+          component.setValue(newValue);
+          component.fireEvent?.('blur', component);
+          return element.value === newValue && String(component.getValue() ?? '') === newValue;
+        }, nextValue));
+        if (!changed) throw new Error('CONTACT_EDIT_UNVERIFIED');
+        await bounded(control.blur());
+      }
+      const after = await bounded(currentLabtestRecord(page, expected, {
+        allowBlankNote: true, allowUnchangedBusinessParties: true,
+      }));
+      const changedForm = await bounded(snapshotLabtestRecord(prepared.frame));
+      return { after, changedForm };
+    },
+    validate: async (bounded, prepared, staged) => ({
+      ok: JSON.stringify(prepared.state.native) === JSON.stringify(staged.after.native) &&
+        prepared.state.track === staged.after.track &&
+        JSON.stringify(prepared.state.partyPreimage) === JSON.stringify(staged.after.partyPreimage) &&
+        unchangedLabtestBusinessParties(prepared.state.partyPreimage, staged.changedForm) &&
+        matchesLabtestBookerContactDraft(prepared.baseline, staged.changedForm, changes) &&
+        await bounded(prepared.frame.locator('.x-window:visible:not(.x-menu)').count()) === 0,
+      issue: 'AMEND_DRAFT_CHANGED',
+    }),
+  });
 }
 
 /** Requires a fresh Record View. A successful response still requires a fresh-session readback. */
