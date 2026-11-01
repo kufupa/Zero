@@ -24,6 +24,7 @@ const labels: Record<Role, readonly string[]> = {
   party: ['company', 'agency', 'organization', 'organisation'],
   reference: ['confirmation', 'confirmation number', 'reservation reference', 'reservation number'],
 };
+const columnHeadingTerms = /\b(?:accommodation|adult|adults|age|agency|arrival|board|booking|category|check[ -]?(?:in|out)|child|children|company|confirmation|date|departure|family|first|given|guest|group|last|meal|name|occupant|quantity|reference|reservation|room|surname|type)\b/i;
 
 function parseRow(line: string): Row | undefined {
   try {
@@ -46,6 +47,20 @@ function header(row: Row): Map<Role, number> | undefined {
   }
   // Single recognized labels also occur as data, such as a surname "Guest".
   return result.size >= 2 ? result : undefined;
+}
+
+function looksLikeUnrecognizedHeader(row: Row, columns: Map<Role, number> | undefined): boolean {
+  const labelCells = row.cells.filter(cell => {
+    const value = cell.displayText.trim();
+    return value.length > 0 && value.length <= 64 && !/\d/.test(value) && columnHeadingTerms.test(value);
+  }).length;
+  if (labelCells >= 2) return true;
+  const numericRoles: Role[] = ['quantity', 'adults', 'children', 'totalGuests'];
+  return numericRoles.filter(role => {
+    const column = columns?.get(role);
+    const value = column === undefined ? undefined : row.cells.find(cell => cell.columnNumber === column)?.displayText.trim();
+    return value !== undefined && value !== '' && !/^\d+$/.test(value);
+  }).length >= 2;
 }
 
 type CitedRow = { row: Row; columns: Map<Role, number>; line: string; lineStart: number; start: number; end: number };
@@ -76,7 +91,9 @@ function citedRow(fact: ValidatedDocumentFact, source: DocumentSource | undefine
     if (!prior) return;
     const candidate = header(prior);
     if (candidate) active = candidate.size >= 2 ? candidate : undefined;
-    else if (previous !== undefined && prior.rowNumber !== previous + 1 || prior.cells.filter(cell => cell.displayText.trim()).length < 2) active = undefined;
+    else if (looksLikeUnrecognizedHeader(prior, active) ||
+      (previous !== undefined && prior.rowNumber !== previous + 1) ||
+      prior.cells.filter(cell => cell.displayText.trim()).length < 2) active = undefined;
     previous = prior.rowNumber;
   }
   if (!active || previous === undefined || row.rowNumber !== previous + 1) return;

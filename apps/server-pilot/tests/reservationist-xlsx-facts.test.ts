@@ -82,6 +82,22 @@ describe('reservationist XLSX row facts', () => {
     expect(xlsxRowEntails(fact, source)).toBe(true);
   });
 
+  it('does not carry prior columns through an unrecognized multi-column heading', () => {
+    const { page, source, dataRows } = sheet(
+      ['Room', 'Adults', 'Children', 'First name', 'Last name'],
+      [
+        ['101', '2', '0', 'Alex', 'Guest'],
+        ['Section title', 'Primary units', 'Secondary units', 'Coordinator', 'Remark'],
+        ['GROUP A', '2', '0', 'Jamie', 'Other'],
+      ],
+    );
+    const fact = factAt(source, page, dataRows[2]!, 'room', {
+      roomRef: 'GROUP A', adults: 2, childAges: [],
+    });
+
+    expect(xlsxRowEntails(fact, source)).toBe(false);
+  });
+
   it('returns raw same-row arrival, departure, and board cells, including masked text', () => {
     const { page, source, dataRows } = sheet(
       ['Room', 'Arrival', 'Departure', 'Board'],
