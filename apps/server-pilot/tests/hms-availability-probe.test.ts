@@ -389,10 +389,18 @@ describe('U10 availability probe (pure)', () => {
 
     expect(availabilityRequestsFor({ ...PAYLOAD, stays: [stayWithUnknownChildren] })).toEqual([]);
     expect(
-      availabilityRequestsFor({ ...PAYLOAD, stays: [STAY_A], missing: [{ field: 'childAges', question: 'Confirm child ages.' }] }),
+      availabilityRequestsFor({
+        ...PAYLOAD,
+        stays: [STAY_A],
+        missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+      }),
     ).toEqual([]);
     expect(
-      availabilityRequestsFor({ ...PAYLOAD, stays: [STAY_A], missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }] }),
+      availabilityRequestsFor({
+        ...PAYLOAD,
+        stays: [STAY_A],
+        missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }],
+      }),
     ).toEqual([]);
   });
 
