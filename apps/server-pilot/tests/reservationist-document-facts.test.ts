@@ -267,16 +267,43 @@ describe('explicit document calendars', () => {
     ] };
     const candidate = {
       facts: [{ id: 'stay', kind: 'dates' as const, value: { arrival: '21 December 2026', departure: '23 December 2026' }, disclosure: 'guest' as const, source: citation }],
-      tasks: [{ id: 'quote', kind: 'quote' as const, factIds: ['stay'], source: citation }],
+      tasks: [{ id: 'quote', kind: 'quote' as const, factIds: ['stay'], source: { ...citation, quote: plain, start: 0, end: plain.length } }],
       unresolvedAsks: [],
     };
     expect(validateDocumentPlan(candidate, [original]).facts[0].value).toEqual({ arrival: '2026-12-21', departure: '2026-12-23' });
 
     const crossing = { ...citation, start: plainHistoryStart, end: htmlHistoryEnd, quote: text.slice(plainHistoryStart, htmlHistoryEnd) };
-    expect(() => validateDocumentPlan({ ...candidate, facts: [{ ...candidate.facts[0], source: crossing }], tasks: [{ ...candidate.tasks[0], source: crossing }] }, [original])).toThrow('Cited text crosses message alternatives');
+    expect(() => validateDocumentPlan({ ...candidate, facts: [{ ...candidate.facts[0], source: crossing }] }, [original])).toThrow('Cited text crosses message alternatives');
 
     const yearless = { ...candidate.facts[0], value: { arrival: '21 December', departure: '23 December' } };
-    expect(() => validateDocumentPlan({ ...candidate, facts: [yearless] }, [original])).toThrow('Ambiguous yearless stay context');
+    expect(() => validateDocumentPlan({ ...candidate, facts: [yearless] }, [original])).toThrow('Yearless date source is quoted history');
+  });
+  it.each([
+    ['Forwarded message:', true],
+    ['Begin forwarded message:', true],
+    ['Forwarded message:', false],
+    ['Begin forwarded message:', false],
+  ])('rejects yearless stay dates from %s history (view manifest: %s)', (header: string, withViews: boolean) => {
+    const plain = 'Please quote the same stay again.', html = plain;
+    const separator = `\n\n${HTML_ALTERNATIVE_MARKER}`, htmlStart = plain.length + separator.length, htmlEnd = htmlStart + html.length;
+    const history = `${header}\nAccommodation required from 28 September to 30 September.`, historyStart = htmlEnd + 2;
+    const text = `${plain}${separator}${html}\n\n${history}`, quote = '28 September to 30 September';
+    const start = text.indexOf(quote, historyStart), end = start + quote.length, attachmentId = 'message:current';
+    const original = {
+      ...source, attachmentId, pages: [text],
+      causalMessage: { at: '2026-08-01T08:00:00.000Z', direction: 'inbound' as const },
+      ...(withViews ? { sourceViews: [
+        { name: 'plain' as const, start: 0, end: plain.length, quoted: { start: historyStart, end: text.length } },
+        { name: 'html' as const, start: htmlStart, end: htmlEnd },
+      ] } : {}),
+    };
+    const sourceSpan = { attachmentId, sourceHash: source.sourceHash, page: 1, quote, start, end };
+    const candidate = {
+      facts: [{ id: 'stay', kind: 'dates' as const, value: { arrival: '28 September', departure: '30 September' }, disclosure: 'guest' as const, source: sourceSpan }],
+      tasks: [{ id: 'quote', kind: 'quote' as const, factIds: ['stay'], source: { ...sourceSpan, quote: plain, start: 0, end: plain.length } }],
+      unresolvedAsks: [],
+    };
+    expect(() => validateDocumentPlan(candidate, [original])).toThrow(withViews ? 'Yearless date source is quoted history' : 'Ambiguous yearless stay context');
   });
 });
 
