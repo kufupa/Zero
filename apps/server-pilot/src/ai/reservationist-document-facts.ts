@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { validReservationistMessageViews, type ReservationistMessageView } from './reservationist-message-view.js';
 
 export type DocumentDisclosure = 'guest' | 'staff_only';
 /** Private extracted pages; derived Office pages are explicitly bound to their PDF rendering. */
@@ -11,6 +12,7 @@ export type DocumentSource = {
   pageCount: number;
   /** Server-bound original email time for the established staff date convention. */
   causalMessage?: {at:string;direction:'inbound'|'outbound'};
+  sourceViews?: readonly ReservationistMessageView[];
   rendering?: {method:'gotenberg_libreoffice';originalSourceHash:string;derivedPdfSHA256:string;pageProvenance:'derived_pdf';textSHA256:string};
 };
 const identifier = z.string().min(1).max(128);
@@ -182,15 +184,31 @@ export function normalizedDate(input: string, yearContext?: number): string {
     throw new Error('Invalid document date');
   return iso;
 }
+/** Translate a combined-message citation into its authored or explicitly quoted view. */
+function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource){
+ const page=source.pages?.[fact.source.page-1],start=fact.source.start!,end=fact.source.end!;
+ if(!page)throw new Error('Cited text source page missing');
+ if(!source.sourceViews)return{page,start,end};
+ const view=source.sourceViews.find(candidate=>start>=candidate.start&&end<=candidate.end);
+ const other=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!).join('\n');
+ const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
+ if(other.split(/[;.!?\n]+/).some(sentence=>/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence)&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase())))throw new Error('Explicit same-stay correction requires source clarification');
+ if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
+ const quoted=source.sourceViews.find(candidate=>candidate.quoted&&start>=candidate.quoted.start&&end<=candidate.quoted.end)?.quoted;
+ if(!quoted)throw new Error('Cited text crosses message alternatives');
+ return{page:page.slice(quoted.start,quoted.end),start:start-quoted.start,end:end-quoted.start};
+}
 /** The existing next-occurrence convention derives a year, never a printed yearContext. */
 function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource,verification:ValidatedDocumentFact['verification']):{value:{arrival:string;departure:string};convention:NonNullable<ValidatedDocumentFact['convention']>}|undefined{
  const raw=fact.value;
  if(raw.yearContext!==undefined||[raw.arrival,raw.departure].some(value=>/\b\d{4}\b/.test(value)))return;
- const causal=source.causalMessage,page=source.pages?.[fact.source.page-1],quote=fact.source.quote;
- if(verification!=='text_verified'||!source.attachmentId.startsWith('message:')||causal?.direction!=='inbound'||!Number.isFinite(Date.parse(causal.at))||!page||!quote)throw new Error('Yearless stay requires original causal email');
- const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
+ const causal=source.causalMessage,quote=fact.source.quote;
+ if(verification!=='text_verified'||!source.attachmentId.startsWith('message:')||causal?.direction!=='inbound'||!Number.isFinite(Date.parse(causal.at))||!source.pages?.[fact.source.page-1]||!quote)throw new Error('Yearless stay requires original causal email');
+ if(source.sourceViews?.some(view=>view.quoted&&fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.quoted.start&&fact.source.end<=view.quoted.end))throw new Error('Yearless date source is quoted history');
+ const {page,start,end}=citedViewSpan(fact,source);
+ const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  const authored=page.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
- const start=fact.source.start!,end=fact.source.end!,before=authored.slice(0,start),after=authored.slice(end),context=before.slice(Math.max(before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'))+1)+quote+( /[;.!?]\s*$/.test(quote)?'':after.split(/[;.!?]/,1)[0]);
+ const before=authored.slice(0,start),after=authored.slice(end),context=before.slice(Math.max(before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'))+1)+quote+( /[;.!?]\s*$/.test(quote)?'':after.split(/[;.!?]/,1)[0]);
  if(end>authored.length)throw new Error('Yearless stay outside authored request');
  if(history>=0&&end>history||/^\s*>/m.test(quote))throw new Error('Ambiguous yearless stay context');
  // A printed night duration is preserved as departure on the wire; only
@@ -255,7 +273,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(arrival>=departure)throw new Error('Invalid stay dates');
  return{value:{arrival,departure},convention:{rule:'centurion_next_occurrence_v1',sourceAt:causal.at,timeZone:'Africa/Johannesburg',originalValue:{arrival:raw.arrival,departure:raw.departure}}};
 }
-function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, verification: ValidatedDocumentFact['verification'],originalPage?:string) {
+function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, verification: ValidatedDocumentFact['verification'],source:DocumentSource) {
   const { yearContext } = fact.value;
   const quote = fact.source.quote;
   if (yearContext !== undefined && (verification !== 'text_verified' || !new RegExp(`(?<![\\p{L}\\p{N}_-])${yearContext}(?![\\p{L}\\p{N}_-])`, 'u').test(quote!)))
@@ -267,7 +285,7 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
   const arrival = normalizedDate(fact.value.arrival, yearContext);
   const departure = normalizedDate(fact.value.departure, yearContext);
   if (verification === 'text_verified') {
-    const start=fact.source.start!,end=fact.source.end!,page=originalPage??quote!;
+    const {page,start,end}=citedViewSpan(fact,source);
     const before=page.slice(0,start),after=page.slice(end);
     const boundary=Math.max(before.lastIndexOf('\n'),before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'));
     let context=before.slice(boundary+1)+quote!+after.split(/[\n;.!?]/,1)[0];
@@ -362,6 +380,7 @@ export function validateDocumentPlan(
       !['guest', 'staff_only'].includes(source.disclosure)
     )
       throw new Error('Invalid document source');
+    if(source.sourceViews!==undefined&&(!source.attachmentId.startsWith('message:')||source.pageCount!==1||!source.pages||source.pages.length!==1||!validReservationistMessageViews(source.pages[0]!,source.sourceViews)))throw new Error('Invalid causal message views');
     if (
       source.pages &&
       (source.pages.length !== source.pageCount ||
@@ -415,7 +434,7 @@ export function validateDocumentPlan(
     }
     const derived = fact.kind==='dates'?nextOccurrenceStay(fact,original,verification):undefined;
     if(derived){const tasks=parsed.data.tasks.filter(task=>task.factIds.includes(fact.id));if(!tasks.some(task=>task.kind==='quote')||tasks.some(task=>task.kind!=='quote'&&(derived.convention.rule==='centurion_explicit_nights_v1'||!(task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??'')))))throw new Error('Yearless convention requires quote task');}
-    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,original.pages?.[fact.source.page-1]),...(derived?{convention:derived.convention}:{}) } : fact;
+    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,original),...(derived?{convention:derived.convention}:{}) } : fact;
     const amountCents =
       fact.kind === 'rate_claim' || fact.kind === 'payment_claim'
         ? normalizeDocumentDecimal(fact.value.amount)
