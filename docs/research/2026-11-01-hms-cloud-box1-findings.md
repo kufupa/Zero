@@ -1,5 +1,20 @@
 # HMS Cloud box 1 findings
 
+## Labtest create and guard
+
+One Proof Labtest stay (`3123652389-1`) was saved on create-tool commit
+`11b4f75` and reopened in a fresh session. Identity, dates, occupancy, age
+bands, room, rate, source, guarantee, organization and the exact note matched;
+no browser send request was observed. The two screenshots are private under
+`/tmp/hms-cloud-create-460a33a2-776a-4759-9b78-ddee18fab5e4/`.
+
+An interrupted prepare run reported an already-handled browser route; no save
+call was made, and the disposition of that request was not established. A
+separate Playwright 1.63 loopback test reproduced a context-guard bypass when
+the last page route was removed. Keeping the existing page fence active blocked
+the test request; PR #856 applies that mitigation to new-stay sessions. It does
+not claim to cover other session entry points.
+
 ## Real requests
 
 A read-only sample of 20 recent inbound Centurion booking extractions from
