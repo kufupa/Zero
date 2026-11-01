@@ -3,12 +3,14 @@ import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { ensureWorkItemForMessage, refreshThreadWork } from '../src/ai/work-items.js';
+import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { TEST_DB_AVAILABLE, openTestDbSession, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { fakeModel, selectionFor, SPAM_OUTPUT, SPAM_TEXT } from './fixtures/inbound-extraction.js';
 
 const task = (id: string, start: number) => ({ id, kind: 'question', requestSource: {
   attachmentId: 'message:one', sourceHash: 'a'.repeat(64), page: 1, start, end: start + 4, quote: 'test',
@@ -164,6 +166,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
         value:{from:'needs_you',to:'done',reason:'hotel_replied'}});
       await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
       expect(await status(laterItem!.id)).toBe('done'); // Earlier acknowledgement still applies.
+      expect(await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:currentItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:false})).toBe('stale');
+      expect(await status(currentItem!.id)).toBe('done');
+      expect(await status(laterItem!.id)).toBe('done');
       await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:laterItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:false});
       await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
       expect(await status(laterItem!.id)).toBe('needs_you');
@@ -267,6 +272,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(acknowledgement?[acknowledgement]:[])]);
       await Promise.all([setup.close(),approver.close(),acknowledger.close()]);
+    }
+  }, 15_000);
+
+  it('lets a concurrent reply finish before deciding whether the read is spam', async () => {
+    const setup = openTestDbSession(), importer = openTestDbSession(), reader = openTestDbSession();
+    const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID();
+    let release: () => void = () => {};
+    let importing: Promise<void> | undefined, reading: ReturnType<typeof runInboundExtraction> | undefined;
+    try {
+      __resetInboundExtractionCapForTests();
+      const now=new Date(), mailbox=`${transportId}@example.invalid`;
+      await setup.db.insert(mailboxTransport).values({id:transportId,email:mailbox,ownerHeaderValue:transportId});
+      await setup.db.insert(mailThread).values({id:threadId,transportId,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:now});
+      await setup.db.insert(message).values({id:messageId,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[mailbox],textBody:SPAM_TEXT,receivedAt:now});
+      const [item]=await setup.db.insert(workItem).values({transportId,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      let acquired!: (pid:number) => void;
+      const locked=new Promise<number>(resolve => { acquired=resolve; });
+      const proceed=new Promise<void>(resolve => { release=resolve; });
+      importing=importer.db.transaction(async tx => {
+        const [connection]=await tx.execute(sql<{pid:number}>`select pg_backend_pid() as pid`);
+        await tx.select({id:mailThread.id}).from(mailThread).where(eq(mailThread.id,threadId)).for('update');
+        acquired(connection!.pid);
+        await proceed;
+        await tx.select({id:workItem.id}).from(workItem).where(eq(workItem.id,item!.id)).for('update');
+        await tx.insert(message).values({id:randomUUID(),transportId,threadId,direction:'outbound',fromAddress:mailbox,
+          toAddresses:['guest@example.invalid'],textBody:'Reply',sentAt:new Date(),receivedAt:new Date()});
+      });
+      const holderPid=await locked;
+      reading=runInboundExtraction({transportId,triggerMessageId:messageId,promptVersion:EXTRACTION_VERSION},{
+        db:reader.db,env:{INBOUND_EXTRACTION:'on',INBOUND_TRIAGE_CLASSIFIER:'off',AI_WRITE_GATE_ENABLED:'true'},
+        adapter:fakeModel(() => SPAM_OUTPUT).adapter,loadSelection:async () => selectionFor(SPAM_TEXT),
+      });
+      let blocked=false;
+      for(let attempt=0;attempt<100;attempt++){
+        const [state]=await setup.db.execute(sql<{blocked:boolean}>`select exists (
+          select 1 from pg_stat_activity a where a.datname=current_database()
+            and a.wait_event_type='Lock' and ${holderPid}=any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if(state!.blocked){blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      await importing;
+      expect(await reading).toBe('stored');
+      expect((await setup.db.select({spamAt:mailThread.spamAt}).from(mailThread).where(eq(mailThread.id,threadId)))[0]?.spamAt).toBeNull();
+    } finally {
+      release();
+      await Promise.allSettled([...(importing?[importing]:[]),...(reading?[reading]:[])]);
+      await Promise.all([setup.close(),importer.close(),reader.close()]);
     }
   }, 15_000);
 
