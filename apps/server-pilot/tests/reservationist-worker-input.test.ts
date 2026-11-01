@@ -233,4 +233,17 @@ describe('reservationist worker input', () => {
     }
     expect(admissions).toBe(0);
   });
+
+  it('counts hash-bound unread workbooks toward the aggregate attachment budget', async () => {
+    const sizeBytes = 11 * 1024 * 1024;
+    const workbook = (id: string, sha256: string) => ({
+      id, messageId: 'current', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      sizeBytes, sha256, isInline: false, contentId: null, disclosure: 'guest' as const,
+    });
+    const result = await build([row('current', 4)], [workbook('first', 'a'.repeat(64)), workbook('second', 'b'.repeat(64))]);
+
+    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', metadata: { attachmentId: 'first', sourceHash: 'a'.repeat(64) } });
+    expect(result.admissions[1]).toMatchObject({ status: 'manual_required', reason: 'attachment_total_resource_unavailable', metadata: { attachmentId: 'second', sourceIdentity: 'metadata_only' } });
+    expect(result.admissions[1]!.metadata.sourceHash).toBeUndefined();
+  });
 });

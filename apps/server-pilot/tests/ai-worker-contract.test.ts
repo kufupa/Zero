@@ -38,7 +38,7 @@ import { workItem } from '../src/db/schema/work.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { appRouter } from '../src/trpc/router.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
+import { DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -940,6 +940,86 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           routeId: route.routeId,
           provenance: expect.objectContaining({ routeId: route.routeId, purpose: 'draft' }),
         });
+      });
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('keeps the mail-only refresh path for an unsupported Da Vinci reservationist mailbox', async () => {
+    const prior = {
+      AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED,
+      AI_MODEL_ROUTE: process.env.AI_MODEL_ROUTE,
+      AI_WORKER_LANE: process.env.AI_WORKER_LANE,
+      HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE,
+    };
+    process.env.AI_DRAFTS_ENABLED = 'true';
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_WORKER_LANE = 'default';
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'off';
+
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: DAVINCI_TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject: 'Booking',
+          snippet: 'Please confirm the reservation.',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: DAVINCI_TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['nava@example.com'],
+          subject: 'Booking',
+          textBody: 'Please confirm the reservation.',
+          receivedAt: new Date(),
+        });
+
+        const mailbox = await resolveMailboxContext('user-navaai', DAVINCI_TRANSPORT_ID, db);
+        const caller = appRouter.createCaller({
+          auth: null as never,
+          reqHeaders: new Headers(),
+          sessionUser: { id: 'user-navaai', email: '', name: null },
+          ...mailbox,
+        });
+        const route: LocalModelRouteEvidence = {
+          routeId: 'u6-davinci-mail-only-route', purpose: 'draft', protocol: 'in_process',
+          access: 'current_app', egress: 'none', retention: 'bounded', usage: 'reported',
+          modelId: 'u6-davinci-mail-only-model',
+        };
+        let transportCalls = 0;
+        const candidateDraftRouteFactory = () => ({
+          route,
+          reservationist: async () => { throw new Error('unsupported property entered reservationist'); },
+          transport: async () => {
+            transportCalls += 1;
+            return {
+              output: { replyText: 'We will confirm this shortly. [MISSING: reservation status | how: approved reservation read]' },
+              usage: { inputTokens: 5, outputTokens: 7, latencyMs: 1 },
+            };
+          },
+        });
+
+        const refresh = await caller.ai.refreshHmsCandidate({ threadId });
+        const worked = await runAiWorkerOnce({ candidateDraftRouteFactory } as unknown as Parameters<typeof runAiWorkerOnce>[0]);
+        expect(refresh.runState).toBe('queued');
+        expect(worked).toBe(true);
+        expect(transportCalls).toBe(1);
+        const [draft] = await db.select().from(mailDraft).where(eq(mailDraft.threadId, threadId));
+        expect(draft).toMatchObject({ status: 'candidate', origin: 'ai' });
+        const [completed] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, refresh.runId));
+        expect(completed?.state).toBe('succeeded');
+        expect(completed?.metrics).toMatchObject({ hmsMode: 'off', preparedReplyOutcome: expect.any(String) });
       });
     } finally {
       for (const [key, value] of Object.entries(prior)) {

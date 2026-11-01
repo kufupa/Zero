@@ -325,11 +325,9 @@ export async function buildReservationistWorkerInput(options: {
       admissions.push(manual('attachment_identity_unavailable'));
       continue;
     }
-    if (admission.bytes) {
-      if (admission.bytes.body.length !== metadata.sizeBytes || retainedBytes + admission.bytes.body.length > 20 * 1024 * 1024)
-        throw new Error('worker_intake_attachment_limit');
-      retainedBytes += admission.bytes.body.length;
-    }
+    if (admission.bytes && admission.bytes.body.length !== metadata.sizeBytes)
+      throw new Error('worker_intake_attachment_limit');
+    retainedBytes += metadata.sizeBytes;
     admissions.push(admission);
   }
   check();

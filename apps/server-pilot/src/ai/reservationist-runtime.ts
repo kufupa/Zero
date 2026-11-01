@@ -85,7 +85,7 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
   currentExecutionInputs.set(executionInput,{originalDigest,evaluation});
   evaluation.evaluateSourceAt();
  }
- const work=await deps.execute(plan,executionInput,signal,evaluation);signal.throwIfAborted();
+ const work=await deps.execute(plan,executionInput,signal,evaluation);signal.throwIfAborted();if((work.sourceRecoveries?.length??0)>64)throw new Error('source_recovery_limit');
  evaluation?.evaluateSourceAt();
  const evaluatedAt=new Date(sourceEvaluatedAt);
  if(work.tasks.length!==plan.tasks.length||new Set(work.tasks.map(t=>t.id)).size!==work.tasks.length||plan.tasks.some(t=>!work.tasks.some(w=>w.id===t.id)))throw new Error('task_coverage_missing');

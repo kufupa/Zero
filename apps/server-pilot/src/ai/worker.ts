@@ -68,7 +68,7 @@ import {
   type AiExecutorLane,
   type EnvInput,
 } from '../env.js';
-import { readToolExpectedPropertyCode } from '../hms/hms-read-target.js';
+import { ownerRefBelongsToProperty, readToolExpectedPropertyCode } from '../hms/hms-read-target.js';
 import {
   companyAccountContextDataSchema,
   eventContextDataSchema,
@@ -4907,7 +4907,7 @@ export async function executeAiRun(
       // Off mode still uses the normal prepared-input/assessment boundary.
       // It must not enter the registered Mastra workflow with raw body text.
       if (hmsMode === 'off') {
-        if (candidateDraftRoute?.reservationist) {
+        if (candidateDraftRoute?.reservationist && ownerRefBelongsToProperty(run.transportId, 'HRCEN')) {
           const { runReservationistWorkerCandidate } = await import('./reservationist-worker.js');
           return await runReservationistWorkerCandidate({ db, run, fence, route: candidateDraftRoute, replyTo, subject, signal });
         }

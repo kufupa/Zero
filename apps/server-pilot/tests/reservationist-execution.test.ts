@@ -7,6 +7,13 @@ import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 const input={version:1 as const,requestId:'test',authorizationScope:{ownerRef:'transport',threadId:'thread'},propertyCode:'HRCEN',trigger:{id:'message',at:'2026-10-04T10:00:00Z'},messages:[{id:'message',at:'2026-10-04T10:00:00Z',direction:'inbound' as const,text:'Please quote and answer the parking question.'}],authorizedArtifacts:[],clock:{causalAt:'2026-10-04T10:00:00Z',sourceAt:'2026-10-04T09:00:00Z',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+it('rejects task results with more recoveries than staff review can display',async()=>{
+ const recoveries=Array.from({length:65},(_,index)=>({kind:'unresolved_fact' as const,reason:`unresolved ${index}`,disclosure:'staff_only' as const}));
+ await expect(runReservationistRuntime(input,{
+  plan:async()=>({tasks:[{id:'question',kind:'question',required:true}],facts:[]}),
+  execute:async()=>({tasks:[{id:'question',status:'needs_clarification',guestText:'Please clarify.',evidenceRefs:[],disclosure:'staff_only'}],artifacts:[],quoteRefs:[],packets:[],errors:[],sourceRecoveries:recoveries}),
+ })).rejects.toThrow('source_recovery_limit');
+});
 it('checks a cited HTML request only against its own authored alternative',()=>{
  const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
