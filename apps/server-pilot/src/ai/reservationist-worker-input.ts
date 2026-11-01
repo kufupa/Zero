@@ -69,8 +69,9 @@ function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'h
 }
 
 /** Reuse the citable, masked text for intake and later draft checks. */
-export function renderReservationistMessage(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized = normalizeMessageText(row)) {
-  return combineMessageViews(modelMessageText(row, normalized), row.textBody?.trim() && row.htmlBody
+export function renderReservationistMessage(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized?: string) {
+  if ((row.textBody?.length ?? 0) > 2_000_000 || (row.htmlBody?.length ?? 0) > 2_000_000) throw new Error('worker_intake_context_limit');
+  return combineMessageViews(modelMessageText(row, normalized ?? normalizeMessageText(row)), row.textBody?.trim() && row.htmlBody
     ? modelMessageText({ textBody: null, htmlBody: row.htmlBody }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : '');
 }
 
