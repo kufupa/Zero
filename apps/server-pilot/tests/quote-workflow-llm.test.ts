@@ -153,6 +153,68 @@ describe('lunaAnalysisSchema', () => {
   });
 });
 
+describe('per-stay quote allocation', () => {
+  it('keeps the source-bound sole-adult no-child convention quote-only', () => {
+    expect(K2_MAPPING).toContain('for a current authored Centurion quote, one source-verified named adult or one room for one adult');
+    expect(K2_MAPPING).toContain('Do not apply that convention to create/booking');
+  });
+
+  it('defaults a single room independently for each distinct stay', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          { ...group, arrival: '2026-11-12', departure: '2026-11-14', rooms: null, adultsPerRoom: 2, childAges: [] },
+          { ...group, arrival: '2026-12-12', departure: '2026-12-14', rooms: null, adultsPerRoom: 2, childAges: [] },
+        ],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups.map(({ quantity, fields }) => [quantity, fields.quantity])).toEqual([
+      [1, 'defaulted'],
+      [1, 'defaulted'],
+    ]);
+  });
+
+  it('keeps a scoped occupancy warning on the stay even when its extracted count is present', () => {
+    const parsed = lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote',
+      groups: [
+        { ...group, arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 2, childAges: [] },
+        { ...group, arrival: '2026-12-12', departure: '2026-12-14', rooms: 1, adultsPerRoom: 1, childAges: [] },
+      ],
+      missing: [],
+    }));
+    const analysisWithStayIds = {
+      ...parsed,
+      groups: parsed.groups.map((row, index) => ({ ...row, stayId: index === 0 ? 'stay-a' : 'stay-b' })),
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm the second stay’s occupancy.', stayId: 'stay-b' }],
+    } as Parameters<typeof mapLlmDecision>[0];
+    const mapped = mapLlmDecision(analysisWithStayIds);
+
+    expect(mapped.groups.map(({ fields }) => fields.adults)).toEqual(['extracted', 'missing']);
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 2');
+  });
+
+  it('does not let the double/twin quote default erase a scoped occupancy warning', () => {
+    const parsed = lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote',
+      groups: [{ ...group, rooms: 1, adultsPerRoom: null, roomPreference: 'twin' }],
+      missing: [],
+    }));
+    const mapped = mapLlmDecision({
+      ...parsed,
+      groups: parsed.groups.map((row) => ({ ...row, stayId: 'stay-a' })),
+      missing: [{ field: 'adultsPerRoom', question: 'Verify this stay’s source occupancy.', stayId: 'stay-a' }],
+    } as Parameters<typeof mapLlmDecision>[0]);
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { adults: 'missing' } });
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+});
+
 describe('buildQuoteWorkflowPrompt', () => {
   it('uses the hotel rules verbatim and wraps thread, body and attachment text as data', () => {
     const prompt = buildQuoteWorkflowPrompt({

@@ -292,10 +292,11 @@ export function buildPreparedStaffQuotePlan(input: {
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
   const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
   const missingForStay = (stay: (typeof payload.stays)[number]) => {
-    if (payload.stays.length === 1) return payload.missing;
     const legacyEmptyAges =
       stay.totalChildren == null && stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0);
     return payload.missing.filter((item) => {
+      if (item.stayId) return item.stayId === stay.id;
+      if (payload.stays.length === 1) return true;
       const fieldAndQuestion = `${item.field} ${item.question}`;
       if (/child/i.test(fieldAndQuestion)) return hasChildAgeWarning && legacyEmptyAges;
       if (/adult|occupancy/i.test(fieldAndQuestion) && !/total/i.test(item.field)) return false;

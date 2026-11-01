@@ -40,6 +40,7 @@ import {
   staffStayExtrasFor,
 } from './types';
 import { knownRoomCode, matchConfiguredRoomType, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
+import { stayTotalMismatch } from './stay-allocation-validation';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -542,39 +543,10 @@ export function staffQuoteGroupsFromStay(
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
   }
-  const childCountsByStay = new Map<string, { rooms: Set<number>; describedRooms: number; reported: Set<number>; described: number }>();
-  groups.forEach((group, index) => {
-    const prepared = out[index]!;
-    const key = group.stayId ?? `${prepared.arrivalDate}/${prepared.departureDate}`;
-    const counts = childCountsByStay.get(key) ?? { rooms: new Set<number>(), describedRooms: 0, reported: new Set<number>(), described: 0 };
-    if (typeof group.roomsTotal === 'number') counts.rooms.add(group.roomsTotal);
-    counts.describedRooms += prepared.quantity;
-    if (typeof group.childrenTotal === 'number') counts.reported.add(group.childrenTotal);
-    counts.described += prepared.quantity * prepared.childrenAges.length;
-    childCountsByStay.set(key, counts);
-  });
-  if ([...childCountsByStay.values()].some(({ rooms, describedRooms }) =>
-    rooms.size > 1 || (rooms.size === 1 && describedRooms !== [...rooms][0])
-  )) return { error: 'Confirm the room totals and allocation for each stay before running the quote.' };
-  if ([...childCountsByStay.values()].some(({ reported, described }) =>
-    reported.size > 0 && (reported.size !== 1 || described !== [...reported][0])
-  )) {
-    return { error: 'Confirm the child count and ages for each room before running the quote.' };
-  }
-  const adultCountsByStay = new Map<string, { reported: Set<number>; described: number }>();
-  groups.forEach((group, index) => {
-    const prepared = out[index]!;
-    const key = group.stayId ?? `${prepared.arrivalDate}/${prepared.departureDate}`;
-    const counts = adultCountsByStay.get(key) ?? { reported: new Set<number>(), described: 0 };
-    if (typeof group.adultsTotal === 'number') counts.reported.add(group.adultsTotal);
-    counts.described += prepared.quantity * prepared.adults;
-    adultCountsByStay.set(key, counts);
-  });
-  if ([...adultCountsByStay.values()].some(({ reported, described }) =>
-    reported.size > 0 && (reported.size !== 1 || described !== [...reported][0])
-  )) {
-    return { error: 'Confirm the adult count and room allocation before running the quote.' };
-  }
+  const mismatch = stayTotalMismatch(groups);
+  if (mismatch === 'rooms') return { error: 'Confirm the room totals and allocation for each stay before running the quote.' };
+  if (mismatch === 'children') return { error: 'Confirm the child count and ages for each room before running the quote.' };
+  if (mismatch === 'adults') return { error: 'Confirm the adult count and room allocation before running the quote.' };
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {
     return { error: 'Each date range needs its own quote. Run them one at a time.' };

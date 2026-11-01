@@ -2,6 +2,7 @@
 // availability reads only return an already-stored admission result and never start an HMS read.
 
 import type { StayGroupRequirement } from './types';
+import { stayTotalMismatch } from './stay-allocation-validation';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -165,25 +166,7 @@ export function paneStayAvailabilityRequestFor(
     ) return null;
     rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });
   }
-  const totals = new Map<string, { rooms: Set<number>; children: Set<number>; adults: Set<number>; describedRooms: number; describedChildren: number; describedAdults: number }>();
-  rows.forEach((row, index) => {
-    const key = row.stayId ?? `${arrival}/${departure}`;
-    const counts = totals.get(key) ?? { rooms: new Set<number>(), children: new Set<number>(), adults: new Set<number>(), describedRooms: 0, describedChildren: 0, describedAdults: 0 };
-    const room = rooms[index]!;
-    if (typeof row.roomsTotal === 'number') counts.rooms.add(row.roomsTotal);
-    if (typeof row.childrenTotal === 'number') counts.children.add(row.childrenTotal);
-    if (typeof row.adultsTotal === 'number') counts.adults.add(row.adultsTotal);
-    counts.describedRooms += room.quantity;
-    counts.describedChildren += room.quantity * room.childAges.length;
-    counts.describedAdults += room.quantity * room.adults;
-    totals.set(key, counts);
-  });
-  if ([...totals.values()].some((counts) =>
-    counts.rooms.size > 1 || counts.children.size > 1 || counts.adults.size > 1 ||
-    (counts.rooms.size === 1 && counts.describedRooms !== [...counts.rooms][0]) ||
-    (counts.children.size === 1 && counts.describedChildren !== [...counts.children][0]) ||
-    (counts.adults.size === 1 && counts.describedAdults !== [...counts.adults][0]),
-  )) return null;
+  if (stayTotalMismatch(rows)) return null;
 
   return { threadId, kind: 'availability', arrival, departure, rooms };
 }

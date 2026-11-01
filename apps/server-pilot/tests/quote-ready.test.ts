@@ -316,6 +316,24 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
   });
 
+  it('keeps a scoped occupancy warning on its stay even when the row contains a value', () => {
+    const first = { ...payload().stays[0]!, totalRooms: 1, rows: [{ ...payload().stays[0]!.rows[0]!, rooms: 1 }] };
+    const second = {
+      ...first,
+      id: 'stay-2',
+      requested: { arrival: '2026-11-20', departure: '2026-11-23' },
+      rows: [{ ...first.rows[0]!, id: 'row-2' }],
+    };
+    const plan = build({
+      stays: [first, second],
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm this stay’s occupancy.', stayId: 'stay-2' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.stays[0]).toMatchObject({ stayId: 'stay-1', input: {} });
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
+  });
+
   it('keeps an unscoped child warning on the stay with an empty age list and no total', () => {
     const first = { ...payload().stays[0]!, totalChildren: 0 };
     const legacy = {

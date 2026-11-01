@@ -655,10 +655,22 @@ export function storedAnalysis(
       return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
     }),
   );
-  const roomTotalNeedsReview = new Set(stays.flatMap((stay) => {
-    if (stay.totalRooms === null && stay.rows.length <= 1) return [];
+  const roomTotalByStay = new Map(stays.map((stay) => {
     const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
-    return counts.some((count) => typeof count !== 'number') || (stay.totalRooms !== null && counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms) ? [stay.id] : [];
+    const staffReconciled = counts.every((count) => isInt(count, 1, 999)) && stay.rows.some((row) =>
+      Object.hasOwn(state, `stays[${stay.id}].rows[${row.id}].count`),
+    );
+    return [stay.id, staffReconciled ? counts.reduce<number>((sum, count) => sum + Number(count), 0) : stay.totalRooms] as const;
+  }));
+  const roomTotalNeedsReview = new Set(stays.flatMap((stay) => {
+    const clearedCount = stay.rows.some((row) => {
+      const path = `stays[${stay.id}].rows[${row.id}].count`;
+      return Object.hasOwn(state, path) && state[path] === null;
+    });
+    if (stay.totalRooms === null && stay.rows.length <= 1 && !clearedCount) return [];
+    const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
+    const totalWasReconciledByStaff = roomTotalByStay.get(stay.id) !== stay.totalRooms;
+    return counts.some((count) => !isInt(count, 1, 999)) || (!totalWasReconciledByStaff && stay.totalRooms !== null && counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms) ? [stay.id] : [];
   }));
   const dateKeys = new Set(
     stays.map((stay) => {
@@ -768,12 +780,15 @@ export function storedAnalysis(
   const adultsResolved = everyRowKnown('adults');
   const childAgesResolved = everyRowKnown('childAges');
   if (stays.length > 1) {
-    luna.missing = luna.missing.filter((item) => !/child/i.test(`${item.field} ${item.question}`));
+    luna.missing = luna.missing.filter((item) =>
+      !/child/i.test(`${item.field} ${item.question}`) ||
+      Boolean((item as typeof item & { stayId?: string }).stayId),
+    );
   }
   if (adultsResolved || childAgesResolved) {
     luna.missing = luna.missing.filter((item) => {
       const field = `${item.field} ${item.question}`;
-      return !(
+      return Boolean((item as typeof item & { stayId?: string }).stayId) || !(
         (childAgesResolved && /child/i.test(field)) ||
         (adultsResolved && /adult|occupancy/i.test(field) && !/total/i.test(item.field))
       );
@@ -839,7 +854,7 @@ export function storedAnalysis(
         const confirmationNumber = confirmationForStay(sourceStay, payload);
         return {
           ...group,
-          ...(sourceStay?.totalRooms != null ? { roomsTotal: sourceStay.totalRooms } : {}),
+          ...(roomTotalByStay.get(slot.stayId) != null ? { roomsTotal: roomTotalByStay.get(slot.stayId)! } : {}),
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
