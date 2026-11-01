@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
 import { currentAuthoredGuestRequest } from '../src/ai/reservationist-execution.js';
+import { extractReservationistPlan } from '../src/ai/reservationist-extraction.js';
 import { buildReservationistWorkerInput, type ReservationistWorkerMessage } from '../src/ai/reservationist-worker-input.js';
 import { validReservationistMessageViews, HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 
@@ -82,11 +83,28 @@ describe('reservationist worker input', () => {
     })]);
     const message = input.messages[0]!, views = message.sourceViews ?? [];
     expect(views).toHaveLength(2);
-    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, authored]);
+    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, '']);
+    expect(message.text.match(/Please rebook the same stay as previously quoted\./g)).toHaveLength(1);
     expect(views.map(view => message.text.slice(view.quoted!.start, view.quoted!.end))).toEqual(expect.arrayContaining([
       expect.stringContaining('Arrival 21 December 2026'), expect.stringContaining('Arrival 22 December 2026'),
     ]));
     expect(validReservationistMessageViews(message.text, views)).toBe(true);
+  });
+
+  it('extracts one authored request when alternative quoted histories differ', async () => {
+    const authored = 'Please send the tax certificate.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${authored}\nFrom: plain@example.invalid\nSubject: Earlier\n\nPlain history.`,
+      htmlBody: `<p>${authored}</p><blockquote><p>From: html@example.invalid</p><p>Subject: Earlier</p><p>HTML history.</p></blockquote>`,
+    })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const plan = await extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [], tasks: [{ id: 'certificate', kind: 'existing_document', factIds: [],
+        source: { attachmentId: 'message:current', sourceHash, page: 1, quote: authored } }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal });
+    expect(plan.tasks).toMatchObject([{ id: 'certificate', source: { quote: authored, start: 0 } }]);
+    expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {

@@ -109,7 +109,7 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   const sourceViews: ReservationistMessageView[] = [];
   const quoted: Partial<Record<ReservationistMessageView['name'], { start: number; end: number }>> = {};
   const add = (value: string, name?: ReservationistMessageView['name'], prefix = '', history?: ReservationistMessageView['name']) => {
-    if (!value) return;
+    if (!value && name !== 'html') return;
     if (text) text += '\n\n';
     text += prefix;
     const start = text.length;
@@ -119,7 +119,8 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   };
   add(primaryBody?.trim() ?? '', 'plain');
   if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
-    add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
+    // One authored copy is enough when only the quoted histories differ.
+    add(primaryBody?.trim() === alternativeBody.trim() ? '' : alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');

@@ -9,11 +9,12 @@ import {assertReservationistResultFreshForAction} from './draft-approval.js';
 import type {ModelAdapter} from './bedrock/adapter.js';
 import type {AttachmentAdmission} from './reservationist-attachment-input.js';
 import {assertDocumentRequestContinuation} from './reservationist-document-continuation.js';
-import {extractReservationistPlan} from './reservationist-extraction.js';
+import {extractReservationistPlan,unmatchedCurrentVoucherReviewSources} from './reservationist-extraction.js';
+import {VOUCHER_REVIEW_RECOVERY_REASON} from './reservationist-source-recovery.js';
 import type {ValidatedDocumentPlan,ValidatedDocumentFact} from './reservationist-document-facts.js';
 import type {PreparedFact} from './prepared-draft-input.js';
 import type {GeneratedDraftArtifact} from './drafts.js';
-import type {RuntimePlan,RuntimeWorkResult,ReservationistRuntimeInput,runReservationistRuntime} from './reservationist-runtime.js';
+import type {RuntimePlan,RuntimeSourceRecovery,RuntimeWorkResult,ReservationistRuntimeInput,runReservationistRuntime} from './reservationist-runtime.js';
 import {quoteDigest,resolveQuoteRevision,type QuoteRevision,type QuoteSourceRecord,type ImportedOffer,resolveApprovedOverride} from '../quote-proposal/quote-revision.js';
 import {buildRevisionProposalPdf,renderImportedProposalHtml,renderApprovedOverrideHtml,convertProposalHtml,type RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {deriveAuthorizedExtraLines,type AuthorizedProposalFacts} from '../quote-proposal/quote-lines.js';
@@ -226,7 +227,9 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
    const ambiguity=numberReviewAttachments();
    const manual=manualAttachments(true);
-   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:[...manual,...ambiguity],noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length||manual.some(r=>'sourceIdentity' in r&&r.sourceIdentity==='metadata_only')?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
+   const voucherReviews:RuntimeSourceRecovery[]=unmatchedCurrentVoucherReviewSources(input.messages,input.trigger.id,extracted.tasks).map(source=>({kind:'voucher_review',reason:VOUCHER_REVIEW_RECOVERY_REASON,sourceRef:source.attachmentId,sourceHash:source.sourceHash,sourceKind:'message',messageId:source.attachmentId.slice('message:'.length),page:source.page,start:source.start,end:source.end,quote:source.quote,disclosure:'staff_only'}));
+   const noActionSelection=!!(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted),sourceRecoveries=[...(noActionSelection?manual:[]),...(noActionSelection?ambiguity:[]),...voucherReviews];
+   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(noActionSelection||voucherReviews.length?{sourceRecoveries,noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length||voucherReviews.length||manual.some(r=>'sourceIdentity' in r&&r.sourceIdentity==='metadata_only')?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
   async execute(plan,input,signal,evaluation?:import('./reservationist-runtime.js').ReservationistSourceEvaluation){
    const extracted=plans.get(plan);if(!extracted)throw new Error('validated_plan_required');
