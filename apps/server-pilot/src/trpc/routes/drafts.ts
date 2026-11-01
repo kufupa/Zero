@@ -929,11 +929,11 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
  const saved=metrics.reservationistDraftSource;
  const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));
- if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity==='metadata_only'?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
+ if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
  const descriptor=(item:typeof attachment.$inferSelect,sourceHash?:string):ReservationistDraftSource['attachments'][number]=>{
   const base={attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline};
   const original=originals.get(item.id);
-  return original?.sourceIdentity==='metadata_only'?{...base,sourceIdentity:'metadata_only',contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
+  return original?.sourceIdentity?{...base,sourceIdentity:original.sourceIdentity,contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
  };
  assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>descriptor(item)).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
  assertMetadataSourceRecoveries(saved,result);
@@ -941,7 +941,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
 
  const sources:ReservationistDraftSource['attachments']=[];
  for(const item of attached){
-  if(originals.get(item.id)?.sourceIdentity==='metadata_only'){sources.push(descriptor(item));continue;}
+  if(originals.get(item.id)?.sourceIdentity){sources.push(descriptor(item));continue;}
   if(!inboundAttachmentIdentityReader)throw new Error('reservationist_attachment_reader_unavailable');
   const bytes=await inboundAttachmentIdentityReader({attachmentId:item.id,transportId:input.transportId,threadId:input.draft.threadId!,expectedS3Key:item.s3Key,expectedSize:item.sizeBytes});
   if(!bytes)throw new Error('reservationist_attachment_source_unavailable');

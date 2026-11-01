@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { loadReservationistMailboxInput } from '../src/ai/reservationist-mailbox-input.js';
-import { draftSourceMessage } from '../src/ai/reservationist-draft-source.js';
+import { assertMetadataSourceRecoveries, assertReservationistDraftSource, draftSourceMessage, sealReservationistDraftSource } from '../src/ai/reservationist-draft-source.js';
 import { reservationistMessageAt } from '../src/ai/reservationist-worker-input.js';
 
 function setup() {
@@ -55,6 +55,27 @@ function setup() {
 }
 
 describe('reservationist mailbox input', () => {
+  it('seals an ignored signature by metadata without reading its bytes, and detects changed identity', async () => {
+    const { state, args, s3 } = setup();
+    state.rows.find((row) => row.id === 'current')!.textBody = 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\nhttps://hotel.example.invalid\ncid:logo';
+    state.files.push({ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 21 * 1024 * 1024,
+      sha256: null, s3Key: 'attachments/current/logo.png', isInline: true, contentId: 'logo' });
+    const read = vi.spyOn(s3, 'getObjectBounded');
+    const result = await loadReservationistMailboxInput(args);
+    expect(result.ignoredSignatureIds).toEqual(['logo']);
+    expect(result.admissions).toEqual([]);
+    const persisted = { version: 1 as const, readiness: 'no_action' as const, tasks: [], quoteRevisionIds: [], artifactRefs: [], actionDigest: 'a'.repeat(64) };
+    const source = await result.createDraftSource({ tasks: [], facts: [] }, persisted);
+    expect(source.attachments).toMatchObject([{ attachmentId: 'logo', sourceIdentity: 'ignored_signature', contentId: 'logo' }]);
+    const sealed = sealReservationistDraftSource({ ...source, resultDigest: 'b'.repeat(64) });
+    expect(() => assertMetadataSourceRecoveries(sealed, persisted)).not.toThrow();
+    const changed = { ...source, resultDigest: 'b'.repeat(64), attachments: source.attachments.map(item => ({ ...item, contentId: 'different' })) };
+    expect(() => assertReservationistDraftSource(sealed, changed)).toThrow();
+    expect(read).not.toHaveBeenCalled();
+    state.files[0]!.contentId = 'different';
+    expect(await result.revalidateSources()).toBe(false);
+  });
+
   it('loads causal context and a file without a stored hash, then detects changed source bytes', async () => {
     const { state, args, s3, message } = setup(), body = Buffer.from('Please allocate two rooms.');
     const key = 'attachments/current/rooming.txt';

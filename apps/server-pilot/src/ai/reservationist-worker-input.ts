@@ -176,7 +176,7 @@ export async function buildReservationistWorkerInput(options: {
   /** Optional authorized bounded read for older rows without a stored content hash. */
   resolveSourceHash?: (attachment: ReservationistWorkerAttachment, signal: AbortSignal) => Promise<string | null>;
   admit: (metadata: ReservationistAttachmentMetadata, signal: AbortSignal) => Promise<AttachmentAdmission>;
-}): Promise<{ input: ReservationistRuntimeInput; admissions: AttachmentAdmission[]; ignoredSignatures: number }> {
+}): Promise<{ input: ReservationistRuntimeInput; admissions: AttachmentAdmission[]; ignoredSignatures: number; ignoredSignatureIds: string[] }> {
   const { transportId, threadId, triggerMessageId } = options;
   options.signal.throwIfAborted();
   if (!transportId || !threadId || !triggerMessageId || !options.requestId || !options.propertyCode ||
@@ -259,7 +259,7 @@ export async function buildReservationistWorkerInput(options: {
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
   const admissions: AttachmentAdmission[] = [];
-  let ignoredSignatures = 0;
+  const ignoredSignatureIds: string[] = [];
   let retainedBytes = 0;
   for (const attachment of relevant) {
     check();
@@ -280,7 +280,7 @@ export async function buildReservationistWorkerInput(options: {
       attachment,
       attachments: relevant,
     }))));
-    if (signatureNoise) { ignoredSignatures++; continue; }
+    if (signatureNoise) { ignoredSignatureIds.push(attachment.id); continue; }
     if (admissions.length >= 64) throw new Error('worker_intake_attachment_limit');
     if (!attachment.id || !Number.isSafeInteger(attachment.sizeBytes) || attachment.sizeBytes < 0)
       throw new Error('worker_intake_attachment_identity_invalid');
@@ -355,6 +355,7 @@ export async function buildReservationistWorkerInput(options: {
       capabilities: { pmsWrite: false, emailSend: false },
     },
     admissions,
-    ignoredSignatures,
+    ignoredSignatures: ignoredSignatureIds.length,
+    ignoredSignatureIds,
   };
 }
