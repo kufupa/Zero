@@ -11,11 +11,12 @@ import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetti
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 import { PartyPicker } from './party-picker';
 
-function PreparedBookingForm({ suggestion, draft, paneSave, workItemId, savedStays, screenshot, propertyCode,
+function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId, savedStays, screenshot, propertyCode,
   onSaveDefault, findParty, partyIndex, partyJobTransport, threadId }: {
   suggestion: ReservationistBookingSuggestion;
   draft: BookingDraftReady;
   paneSave?: PaneStayClient | null;
+  contact?: StoredContact | null;
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
   screenshot?: PaneStayClient['screenshot'] | null;
@@ -31,7 +32,9 @@ function PreparedBookingForm({ suggestion, draft, paneSave, workItemId, savedSta
   const selected = kind === 'agency' || kind === 'company' ? parties[kind] : undefined;
   const multipleParties = suggestion.partyNames.length > 1;
   const ready = !multipleParties && (kind === 'none' || Boolean(selected?.nativeId));
+  const stay = draft.draft.rooms[0]?.request;
   return <>
+    {stay?.arrival && stay.departure ? <p className="text-xs">Stay: {String(stay.arrival)} – {String(stay.departure)}</p> : null}
     {multipleParties ? <p className="text-xs">Multiple parties were mentioned. Check which applies in HMS before booking.</p> :
     suggestion.partyNames.length ? <>
       <label className="flex flex-col gap-1 text-xs">Company or agency mentioned: {suggestion.partyNames[0]}
@@ -52,7 +55,8 @@ function PreparedBookingForm({ suggestion, draft, paneSave, workItemId, savedSta
         onClear={cleared => setParties(current => ({ ...current, [cleared]: undefined }))} />
         : <p className="text-xs">HMS party lookup is unavailable; check the party in HMS.</p> : null}
     </> : null}
-    {ready ? <BookingCards key={`${kind}:${selected?.nativeId ?? ''}`} draft={draft} groups={[]} paneSave={paneSave}
+    {kind === 'company' && selected ? <p className="text-xs">Check the company in HMS; this booking card is copy-only.</p> : null}
+    {ready ? <BookingCards key={`${kind}:${selected?.nativeId ?? ''}`} draft={draft} groups={[]} paneSave={kind === 'company' ? null : paneSave} contact={contact}
       workItemId={workItemId} savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot}
       propertyCode={propertyCode} parties={parties} onSaveDefault={onSaveDefault ?? saveConfirmationDefault} /> :
       appliedSavedStayIds(draft, [], savedStays).map(id => <SavedStayReceipt key={id} saved={savedStays![id]!}
@@ -157,14 +161,14 @@ export function QuoteBookingHost({
           {task.details.find(detail => detail.startsWith('Request: ')) ?
             <p className="text-xs">{task.details.find(detail => detail.startsWith('Request: '))}</p> : null}
           {shownDrafts.length ? <p className="text-xs text-muted-foreground">Another booking card is open. Check it before making another booking.</p> : null}
-          {open ? <>
+          <div hidden={!open}>
             <p className="text-xs text-muted-foreground">Check the request and current HMS availability before booking.</p>
             {suggestion.missing.map((missing, index) => <p key={`${index}:${missing}`} className="text-xs">{missing}</p>)}
-            <PreparedBookingForm suggestion={suggestion} draft={draft} paneSave={paneSave} workItemId={workItemId}
+            <PreparedBookingForm suggestion={suggestion} draft={draft} paneSave={paneSave} contact={contact} workItemId={workItemId}
               savedStays={savedStays} screenshot={screenshot} propertyCode={propertyCode} onSaveDefault={onSaveDefault}
               findParty={findParty} partyIndex={partyIndex} partyJobTransport={partyJobTransport}
               threadId={session.staffSource?.threadId} />
-          </> : null}
+          </div>
         </div>
       ))}
       {uncoveredStays.map(([stayId, saved]) => (
