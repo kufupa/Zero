@@ -76,7 +76,7 @@ function readOnlyDb(row: Record<string, unknown> | null) {
 function inboundMessage(fromAddress = 'guest@example.test', subject = 'Synthetic booking request') {
   return {
     id: 'message-1',
-    transportId: 'transport-1',
+    transportId: 'transport-centurion',
     direction: 'inbound',
     fromAddress,
     subject,
@@ -191,11 +191,14 @@ describe('golden fresh extract script', () => {
       },
     });
     expect(loadSelection).toHaveBeenCalledWith({
-      transportId: 'transport-1',
+      transportId: 'transport-centurion',
       messageId: 'message-1',
       signal: expect.any(AbortSignal),
     });
     expect(adapter.invoke).toHaveBeenCalledTimes(1);
+    expect(adapter.invoke).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: expect.stringContaining('Property: Centurion Hotel'),
+    }));
     expect(tx.execute).toHaveBeenCalledTimes(2); // READ ONLY + statement_timeout
     for (const writer of Object.values(forbiddenWrites)) expect(writer).not.toHaveBeenCalled();
   });
