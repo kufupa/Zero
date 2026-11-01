@@ -658,7 +658,7 @@ export function storedAnalysis(
   const roomTotalNeedsReview = new Set(stays.flatMap((stay) => {
     if (stay.totalRooms === null) return [];
     const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
-    return counts.some((count) => typeof count !== 'number') || counts.reduce((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms ? [stay.id] : [];
+    return counts.some((count) => typeof count !== 'number') || counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms ? [stay.id] : [];
   }));
   const dateKeys = new Set(
     stays.map((stay) => {
