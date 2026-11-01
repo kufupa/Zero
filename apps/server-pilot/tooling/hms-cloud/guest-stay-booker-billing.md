@@ -5,9 +5,12 @@ adapter. It never calls Save, sends a message, cancels a stay, or integrates
 with `create-reservation.mjs`. Use a caller-owned page with the shared
 read-only context guard already installed and serialize all page actions. Create
 the browser context with `serviceWorkers: 'block'` and set
-`serviceWorkersBlocked: true` to attest that prerequisite. The adapter cannot
-independently prove the caller created the context that way. Otherwise service
-worker requests can bypass Playwright routing. The existing
+`serviceWorkersBlocked: true` to attest that prerequisite. The adapter also
+requires the pinned Playwright client's private `context._options.serviceWorkers`
+to be `block` and its public `context.serviceWorkers()` to return an empty array.
+It checks again before and after page actions. This private property is not a
+stable Playwright API; if unavailable, changed, or inconsistent, the adapter
+fails closed. Service-worker requests can bypass Playwright routing. The existing
 `withBookingLookupSession` bootstrap does not explicitly block service workers,
 so it does not by itself satisfy this prerequisite. Do not use it on a real guest.
 
@@ -19,7 +22,8 @@ but also prevents later lookups, rate changes and Save on that page. Stage on
 a separate fake-draft page; this is not a drop-in step in the create flow.
 Other page routes must use `route.fallback()`, never `route.continue()`, or
 they can bypass this fence. A blocked request or uncertain result means discard
-the page and inspect/reconcile independently before another attempt.
+the page and inspect/reconcile independently before another attempt. A request
+already dispatched to HMS can still complete.
 
 ## Input
 
@@ -76,7 +80,9 @@ wrapper's three-field live unsaved staging observation is described below.
   values and the unrequested Booker/billing controls. A changed scalar target
   model must equal the requested value; an unchanged model is explicitly
   reported as `unchanged_preimage`. Unexpected effects, native disagreement,
-  blocked requests, stale proof or a dialog stop further changes.
+  blocked requests, stale proof or a dialog stop further changes. The default
+  whole-action deadline is 30 seconds; the optional third argument `timeoutMs`
+  can shorten it, but cannot extend it beyond 30 seconds.
 - `updated_unsaved` and `unchanged_unsaved` return each requested value and its
   visible, native and submit readbacks, scalar model status, observed changed
   field names, and `persistence: 'not_attempted'`. They do **not** prove HMS
@@ -84,8 +90,19 @@ wrapper's three-field live unsaved staging observation is described below.
 - `input_gap` and `unsupported` describe preflight failures. `execution_failure`
   indicates no setter was attempted. `action_uncertain` means a setter may
   have changed the draft. It includes fields verified before the failure and,
-  when available, changed field names and the blocked request count. It does
-  not roll back or claim success. Never retry on that page.
+  when available, changed field names and separate `blockedRequestCount`
+  (outer lifetime fence) and `innerBlockedRequestCount` (delegated Booker
+  guard). Counts describe aborts observed before return and contain no request
+  details. It does not roll back or claim success. Never retry on that page.
+- A native dialog, blocked request, unsafe context or deadline immediately
+  quarantines the page and requests `page.close({ runBeforeUnload: false })` without accepting the
+  dialog. Page closure is intended to interrupt in-flight operations, and delegated
+  setter calls are gated against issuing follow-up actions while retaining the
+  original page identity and its delegated busy lock. Closure is not
+  awaited, so `pageCloseRequested` does not prove the page closed. A failed or
+  stalled close cannot cancel an already-dispatched browser operation or HMS
+  request; isolate the page and independently dispose the context before reuse.
+  No post-interruption readback is attempted.
 - `changes.modelCoverage` lists native record keys whose non-scalar values were
   not compared. Hidden server-side effects and changes within those values are
   not observed. The field named `model` is not an independent saved readback.

@@ -26,7 +26,8 @@ function pageStub({ blocked = false, sideEffect = false } = {}) {
   const state = snapshot(), routes = [];
   const page = {
     state, routes,
-    on() {}, off() {},
+    context() { return { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }; },
+    on() {}, off() {}, async close() {}, async unroute() {},
     async evaluate() { return structuredClone(state); },
     async route(_pattern, route) { routes.push(route); },
     async waitForTimeout() {},
@@ -152,7 +153,7 @@ test('fake-draft date and native preimage mismatch fail before changing fields',
 });
 
 // Exercise the actual browser-side draft inspection with a synthetic Ext form.
-function nativeFormPage() {
+function nativeFormPage(options = {}) {
   const blankIds = ['reservationshareid', 'reservationstayid', 'guaranteecardprofileid',
     'guestnameinfoid', 'externalprofileid', 'guestfoliocomptempresstayid', 'gueststaycouponids',
     'additionalprofileids', 'reservationid', 'addlplayerprofileid', 'sourceprofileid', 'recordid'];
@@ -163,24 +164,44 @@ function nativeFormPage() {
     arrivaldate: '01-JAN-2027', departuredate: '03-JAN-2027', caller: '', udfchar06: '', billingreference: '' };
   const elements = Object.entries(initial).map(([name, value]) => ({ id: `${name}-inputEl`, name, value,
     type: 'text', tagName: 'INPUT', offsetWidth: 1, offsetHeight: 1, maxLength: 50,
-    readOnly: false, disabled: false, closest: () => null, getAttribute: () => null }));
+    readOnly: false, disabled: false, closest: () => null, contains: () => false, getAttribute: () => null }));
   const root = { contains: (element) => elements.includes(element), querySelectorAll: () => elements };
+  for (const element of elements) element.parentElement = root;
   const form = { el: { dom: root }, getRecord: () => ({ data }) };
   const components = Object.fromEntries(elements.map((element) => [element.id.replace(/-inputEl$/, ''), {
     up: () => form, getValue: () => element.value, getRawValue: () => element.value,
     getSubmitData: () => ({ [element.name]: element.value }), isDisabled: () => false, getActiveErrors: () => [],
   }]));
-  const document = { querySelectorAll(selector) {
+  const document = { documentElement: { dataset: { propertyCode: 'HRCEN' } }, querySelectorAll(selector) {
     if (selector === '.x-window:not(.x-menu)') return [];
     const match = /\[name="([^"]+)"\]/.exec(selector);
     return match ? elements.filter((element) => element.name === match[1]) : [];
   } };
   const env = { document, location: { origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' },
     getComputedStyle: () => ({ visibility: 'visible' }), Ext: { getCmp: (id) => components[id] } };
-  const routes = [];
-  const page = { data, elements, components, routes, on() {}, off() {},
+  const routes = [], listeners = new Map(), actions = [];
+  const browserContext = { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] };
+  const page = { data, elements, components, routes, actions, browserContext, closed: false, evaluateCount: 0,
+    context() { return browserContext; },
+    on(event, handler) { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(handler); },
+    off(event, handler) { listeners.get(event)?.delete(handler); },
+    emit(event) { for (const handler of listeners.get(event) || []) handler({}); },
+    async close(optionsArg) { actions.push(['close', optionsArg]); page.closed = true; },
     async route(_pattern, route) { routes.push(route); },
+    async unroute(_pattern, route) { const index = routes.indexOf(route); if (index !== -1) routes.splice(index, 1); },
+    async request(method = 'POST') {
+      const request = { method: () => method, url: () => 'https://example.invalid/fieldvalidate' };
+      const dispatch = (index) => routes[index]?.({ request: () => request,
+        abort: async () => { actions.push(['abort']); }, fallback: () => dispatch(index - 1) });
+      await dispatch(routes.length - 1);
+    },
     async evaluate(fn, arg) {
+      page.evaluateCount += 1;
+      if (page.evaluateCount === options.pauseEvaluateAt) {
+        options.started.resolve();
+        await options.release.promise;
+        if (page.closed) throw new Error('PAGE_CLOSED');
+      }
       const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
       try {
         for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
@@ -192,9 +213,26 @@ function nativeFormPage() {
         }
       }
     },
-    locator() { return { async count() { return 1; }, async isEditable() { return true; },
-      async fill(value) { elements.find((element) => element.name === 'billingreference').value = value; },
-      async press() {} }; },
+    locator(selector) {
+      const name = /\[name="([^"]+)"\]/.exec(selector)?.[1];
+      const element = elements.find((item) => item.name === name);
+      return { async count() { return element ? 1 : 0; }, async isEditable() { return Boolean(element); },
+        async fill(value) {
+          actions.push(['fill', name]);
+          if (name === options.pauseFill) {
+            options.started.resolve();
+            await options.release.promise;
+            if (page.closed) throw new Error('PAGE_CLOSED');
+          }
+          if (name === options.failFill) throw new Error('SYNTHETIC_FAILURE');
+          element.value = value;
+          if (name === options.unsafeAfterFill) browserContext.serviceWorkers = () => [{}];
+          if (name === options.blockOnFill) await page.request();
+        },
+        async press() { actions.push(['press', name]); },
+        async inputValue() { return element.value; },
+      };
+    },
     async waitForTimeout() {},
   };
   return page;
@@ -246,4 +284,170 @@ test('synthetic Ext draft guard binds origin, property, Labtest, blank IDs and f
   assert.equal(duplicateResult.outcome, 'unsupported');
   assert.equal(duplicateResult.issue, 'FIELD_NOT_UNIQUE');
   assert.equal(duplicate.routes.length, 0);
+});
+
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const allFields = { propertyCode: 'HRCEN', serviceWorkersBlocked: true,
+  bookerName: 'Synthetic Name', bookerContact: 'synthetic@example.invalid', billingReference: 'Synthetic Ref' };
+
+test('all three fields use their actual callbacks and retain the lifetime fence', async () => {
+  const page = nativeFormPage();
+  const result = await stageGuestStayBookerBilling(page, allFields);
+  assert.equal(result.outcome, 'updated_unsaved');
+  assert.deepEqual(page.actions.filter(([action]) => action === 'fill').map(([, name]) => name),
+    ['caller', 'udfchar06', 'billingreference']);
+  for (const key of Object.keys(names)) assert.equal(result.fields[key].submit, allFields[key]);
+  assert.equal(result.innerBlockedRequestCount, 0);
+  assert.equal(result.blockedRequestCount, 0);
+  assert.equal(page.routes.length, 1);
+  await page.request();
+  assert.equal(page.actions.at(-1)[0], 'abort');
+});
+
+test('inner fence reports its own abort and partial failure leaves later field untouched', async () => {
+  const page = nativeFormPage({ blockOnFill: 'udfchar06' });
+  const result = await stageGuestStayBookerBilling(page, allFields);
+  assert.equal(result.outcome, 'action_uncertain');
+  assert.equal(result.issue, 'UNEXPECTED_REQUEST_BLOCKED');
+  assert.deepEqual(result.verifiedFields, ['bookerName']);
+  assert.equal(result.attemptedField, 'bookerContact');
+  assert.equal(result.innerBlockedRequestCount, 1);
+  assert.equal(result.blockedRequestCount, 0);
+  assert.equal(JSON.stringify(result).includes('synthetic@example.invalid'), false);
+  assert.deepEqual(page.actions.filter(([action]) => action === 'fill').map(([, name]) => name), ['caller', 'udfchar06']);
+  assert.equal(page.elements.find((element) => element.name === 'billingreference').value, '');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.routes.length, 1);
+  await page.request();
+  assert.equal(page.actions.at(-1)[0], 'abort');
+  assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
+});
+
+test('dialog interrupts a deferred Booker setter without further actions', { timeout: 3000 }, async () => {
+  const started = deferred(), release = deferred();
+  const page = nativeFormPage({ pauseFill: 'caller', started, release });
+  const operation = stageGuestStayBookerBilling(page, allFields);
+  await started.promise;
+  page.emit('dialog');
+  const result = await operation;
+  assert.equal(result.outcome, 'action_uncertain');
+  assert.equal(result.issue, 'UNEXPECTED_DIALOG');
+  assert.equal(result.pageCloseRequested, true);
+  assert.deepEqual(page.actions.find(([action]) => action === 'close')[1], { runBeforeUnload: false });
+  const callsAtStop = page.evaluateCount;
+  release.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.evaluateCount, callsAtStop);
+  assert.deepEqual(page.actions.filter(([action]) => action === 'fill').map(([, name]) => name), ['caller']);
+  assert.equal(page.actions.some(([action]) => action === 'press'), false);
+  assert.equal(page.elements.find((element) => element.name === 'caller').value, '');
+  assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
+});
+
+test('deadline interrupts deferred setter and modal-blocked draft readback', { timeout: 3000 }, async () => {
+  for (const phase of ['setter', 'readback']) {
+    const started = deferred(), release = deferred();
+    const page = nativeFormPage(phase === 'setter'
+      ? { pauseFill: 'caller', started, release } : { pauseEvaluateAt: 3, started, release });
+    const input = phase === 'setter' ? allFields : { propertyCode: 'HRCEN', serviceWorkersBlocked: true, billingReference: 'ref' };
+    const operation = stageGuestStayBookerBilling(page, input, { timeoutMs: 100 });
+    await started.promise;
+    const result = await operation;
+    assert.equal(result.outcome, 'action_uncertain');
+    assert.equal(result.issue, 'STAGING_TIMEOUT');
+    assert.equal(result.pageCloseRequested, true);
+    const callsAtStop = page.evaluateCount, actionsAtStop = page.actions.length;
+    release.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(page.evaluateCount, callsAtStop);
+    assert.equal(page.actions.length, actionsAtStop);
+    assert.equal((await stageGuestStayBookerBilling(page, input)).issue, 'PAGE_ACTION_UNCERTAIN');
+  }
+});
+
+test('unsafe or unprovable service-worker context fails before any page action', async () => {
+  for (const kind of ['allowed', 'unknown', 'active', 'throws']) {
+    const page = nativeFormPage();
+    if (kind === 'allowed') page.browserContext._options.serviceWorkers = 'allow';
+    if (kind === 'unknown') delete page.browserContext._options;
+    if (kind === 'active') page.browserContext.serviceWorkers = () => [{}];
+    if (kind === 'throws') page.browserContext.serviceWorkers = () => { throw new Error('unavailable'); };
+    const result = await stageGuestStayBookerBilling(page, allFields);
+    assert.equal(result.outcome, 'execution_failure');
+    assert.equal(result.issue, 'BROWSER_CONTEXT_UNSAFE');
+    assert.equal(page.evaluateCount, 0);
+    assert.equal(page.routes.length, 0);
+    assert.equal(page.actions.filter(([action]) => action === 'fill').length, 0);
+    assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
+  }
+});
+
+
+test('native dialog interrupts deferred readback without starting another action', { timeout: 3000 }, async () => {
+  const started = deferred(), release = deferred();
+  const page = nativeFormPage({ pauseEvaluateAt: 3, started, release });
+  const input = { propertyCode: 'HRCEN', serviceWorkersBlocked: true, billingReference: 'ref' };
+  const operation = stageGuestStayBookerBilling(page, input);
+  await started.promise;
+  page.emit('dialog');
+  const result = await operation;
+  assert.equal(result.outcome, 'action_uncertain');
+  assert.equal(result.issue, 'UNEXPECTED_DIALOG');
+  const callsAtStop = page.evaluateCount, actionsAtStop = page.actions.length;
+  release.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.evaluateCount, callsAtStop);
+  assert.equal(page.actions.length, actionsAtStop);
+  assert.equal((await stageGuestStayBookerBilling(page, input)).issue, 'PAGE_ACTION_UNCERTAIN');
+});
+
+test('preflight deadline quarantines before a setter is attempted', { timeout: 3000 }, async () => {
+  const started = deferred(), release = deferred();
+  const page = nativeFormPage({ pauseEvaluateAt: 1, started, release });
+  const operation = stageGuestStayBookerBilling(page, allFields, { timeoutMs: 100 });
+  await started.promise;
+  const result = await operation;
+  assert.equal(result.outcome, 'execution_failure');
+  assert.equal(result.issue, 'STAGING_TIMEOUT');
+  assert.equal(result.pageCloseRequested, true);
+  release.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.evaluateCount, 1);
+  assert.equal(page.actions.filter(([action]) => action === 'fill').length, 0);
+  assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
+});
+
+
+test('service worker appearing during a setter prevents subsequent calls', async () => {
+  const page = nativeFormPage({ unsafeAfterFill: 'caller' });
+  const result = await stageGuestStayBookerBilling(page, allFields);
+  assert.equal(result.outcome, 'action_uncertain');
+  assert.equal(result.issue, 'BROWSER_CONTEXT_UNSAFE');
+  assert.deepEqual(page.actions.filter(([action]) => action === 'fill').map(([, name]) => name), ['caller']);
+  assert.equal(page.actions.some(([action]) => action === 'press'), false);
+  assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
+});
+
+test('failed close cannot cancel an already-dispatched fill but gates all follow-up calls', { timeout: 3000 }, async () => {
+  const started = deferred(), release = deferred();
+  const page = nativeFormPage({ pauseFill: 'caller', started, release });
+  page.close = async () => { throw new Error('CLOSE_FAILED'); };
+  const operation = stageGuestStayBookerBilling(page, allFields);
+  await started.promise;
+  page.emit('dialog');
+  const result = await operation;
+  assert.equal(result.outcome, 'action_uncertain');
+  assert.equal(result.pageCloseRequested, true);
+  release.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.elements.find((element) => element.name === 'caller').value, allFields.bookerName);
+  assert.equal(page.actions.some(([action]) => action === 'press'), false);
+  assert.deepEqual(page.actions.filter(([action]) => action === 'fill').map(([, name]) => name), ['caller']);
+  assert.equal((await stageGuestStayBookerBilling(page, allFields)).issue, 'PAGE_ACTION_UNCERTAIN');
 });

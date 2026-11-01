@@ -10,6 +10,7 @@ const BLANK_IDS = ['reservationshareid', 'reservationstayid', 'guaranteecardprof
   'guestnameinfoid', 'externalprofileid', 'guestfoliocomptempresstayid', 'gueststaycouponids',
   'additionalprofileids', 'reservationid', 'addlplayerprofileid', 'sourceprofileid', 'recordid'];
 const busy = new WeakSet();
+const quarantined = new WeakSet();
 const pageFences = new WeakMap();
 const clean = (value) => String(value ?? '').trim();
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'STAGING_FAILED';
@@ -55,7 +56,8 @@ async function installFence(page) {
     const request = route.request();
     if (!allowsBookerBillingRequest({ method: request.method(), url: request.url() })) {
       state.blocked += 1;
-      return route.abort();
+      state.uncertain = true;
+      try { return route.abort(); } finally { state.onBlocked?.(); }
     }
     return route.fallback();
   });
@@ -158,19 +160,22 @@ async function inspectDraft(page) {
   }, { origin: ORIGIN, fields: FIELDS, blankIds: BLANK_IDS });
 }
 
-async function verifyIdentity(page, snapshot) {
+async function verifyIdentity(page, snapshot, ensureActive) {
+  ensureActive();
   const identity = snapshot.identity;
   const arrival = labDate(identity?.arrival), departure = labDate(identity?.departure);
   if (!arrival || !departure || arrival >= departure) throw new Error('LABTEST_DATES_UNVERIFIED');
   let guest = null, ar = null;
   if (identity.guestId) {
     const token = await verifiedLabtestProfileToken(page, { nativeId: identity.guestId, session: identity.session });
+    ensureActive();
     if (!token) throw new Error('GUEST_PROFILE_UNVERIFIED');
     guest = { nativeId: identity.guestId, session: identity.session, token };
   }
   if (identity.accountId || identity.profileId) {
     const request = { session: identity.session, accountId: identity.accountId, profileId: identity.profileId };
     const token = await verifiedArSelectionToken(page, request);
+    ensureActive();
     if (!token) throw new Error('AR_SELECTION_UNVERIFIED');
     ar = { ...request, token };
   }
@@ -228,23 +233,115 @@ export function assessBookerBillingReadback(before, after, plan) {
   return { ok: true, changes };
 }
 
+// Gate calls on the original page so the delegated setter retains its existing
+// page-identity busy lock. On interruption, keep the gates until page disposal.
+function guardSetterPage(page, ensureActive, countInnerAbort) {
+  const handlers = new Map(), originals = new Map();
+  const methods = Object.fromEntries(['locator', 'route', 'unroute', 'evaluate', 'waitForTimeout']
+    .map((name) => [name, page[name].bind(page)]));
+  const restore = () => {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(page, name, descriptor);
+      else delete page[name];
+    }
+  };
+  const guardedCall = async (method, args) => {
+    ensureActive();
+    const result = await method(...args);
+    ensureActive();
+    return result;
+  };
+  const locator = (target) => new Proxy(target, { get(object, key) {
+    const member = object[key];
+    if (typeof member !== 'function') return member;
+    if (key === 'first' || key === 'locator') return (...args) => {
+      ensureActive();
+      return locator(member.apply(object, args));
+    };
+    return (...args) => guardedCall(member.bind(object), args);
+  } });
+  const overrides = {
+    locator: (...args) => { ensureActive(); return locator(methods.locator(...args)); },
+    route: async (pattern, handler) => {
+      ensureActive();
+      const wrapped = (route) => handler(new Proxy(route, { get(object, property) {
+        const member = object[property];
+        if (property === 'abort') return (...args) => {
+          try { return member.apply(object, args); } finally { countInnerAbort(); }
+        };
+        return typeof member === 'function' ? member.bind(object) : member;
+      } }));
+      handlers.set(handler, wrapped);
+      await methods.route(pattern, wrapped);
+      ensureActive();
+    },
+    // Cleanup must remain possible after interruption and remove only the inner route.
+    unroute: (pattern, handler) => methods.unroute(pattern, handlers.get(handler) || handler),
+    evaluate: (...args) => guardedCall(methods.evaluate, args),
+    waitForTimeout: (...args) => guardedCall(methods.waitForTimeout, args),
+  };
+  try {
+    for (const [name, method] of Object.entries(overrides)) {
+      originals.set(name, Object.getOwnPropertyDescriptor(page, name));
+      Object.defineProperty(page, name, { configurable: true, writable: true, value: method });
+    }
+  } catch (error) { restore(); throw error; }
+  return restore;
+}
+
 /** No save/send. This intentionally terminally POST-fences the caller's page. */
-export async function stageGuestStayBookerBilling(page, input) {
+export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 30000 } = {}) {
   const plan = planBookerBilling(input);
   if (plan.outcome !== 'planned') return plan;
-  if (!page || ['evaluate', 'route', 'locator', 'waitForTimeout', 'on', 'off'].some((key) => typeof page[key] !== 'function')) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
+  if (!page || ['evaluate', 'route', 'unroute', 'locator', 'waitForTimeout', 'on', 'off', 'close', 'context'].some((key) => typeof page[key] !== 'function')) {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
   }
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'ACTION_IN_PROGRESS' };
-  if (pageFences.get(page)?.uncertain) return { outcome: 'execution_failure', issue: 'PAGE_ACTION_UNCERTAIN' };
+  if (quarantined.has(page) || pageFences.get(page)?.uncertain) return { outcome: 'execution_failure', issue: 'PAGE_ACTION_UNCERTAIN' };
   busy.add(page);
-  let attempted = false, fence, before, blockedAtStart = 0, nativeDialog = false;
+  let attempted = false, attemptedField, fence, before, blockedAtStart = 0, nativeDialog = false;
+  let innerBlockedRequestCount = 0, stopReason = null, signalStop;
   const verifiedFields = [];
-  const onDialog = () => { nativeDialog = true; };
+  const stopped = new Promise((resolve) => { signalStop = resolve; });
+  const stop = (issue) => {
+    if (stopReason) return;
+    stopReason = issue;
+    quarantined.add(page);
+    if (fence) fence.uncertain = true;
+    // Never accept the dialog. Request closure to interrupt browser work; do not
+    // await it because a stalled browser must not stall the caller as well.
+    try { Promise.resolve(page.close({ runBeforeUnload: false })).catch(() => {}); } catch { /* Caller must discard the page. */ }
+    signalStop(issue);
+  };
+  const ensureActive = () => {
+    if (stopReason) throw new Error(stopReason);
+    try {
+      const context = page.context();
+      if (context?._options?.serviceWorkers !== 'block' || typeof context.serviceWorkers !== 'function') {
+        throw new Error('BROWSER_CONTEXT_UNSAFE');
+      }
+      const workers = context.serviceWorkers();
+      if (!Array.isArray(workers) || workers.length !== 0) throw new Error('BROWSER_CONTEXT_UNSAFE');
+    } catch {
+      stop('BROWSER_CONTEXT_UNSAFE');
+      throw new Error('BROWSER_CONTEXT_UNSAFE');
+    }
+  };
+  const bounded = async (action) => {
+    ensureActive();
+    const result = await Promise.race([Promise.resolve().then(() => { ensureActive(); return action(); }).then((value) => ({ value })),
+      stopped.then((issue) => ({ issue }))]);
+    ensureActive();
+    if (result.issue) throw new Error(result.issue);
+    return result.value;
+  };
+  const timer = setTimeout(() => stop('STAGING_TIMEOUT'), timeoutMs);
+  const onDialog = () => { nativeDialog = true; stop('UNEXPECTED_DIALOG'); };
   page.on('dialog', onDialog);
   try {
-    before = await inspectDraft(page);
-    const proof = await verifyIdentity(page, before);
+    before = await bounded(() => inspectDraft(page));
+    const proof = await bounded(() => verifyIdentity(page, before, ensureActive));
     for (const [key, { value }] of Object.entries(plan.changes)) {
       const control = before.controls[key];
       if (!control || control.issue) return { outcome: 'unsupported', issue: control?.issue || 'FIELD_UNAVAILABLE', field: key };
@@ -255,10 +352,11 @@ export async function stageGuestStayBookerBilling(page, input) {
         return { outcome: 'input_gap', issue: 'FIELD_VALUE_TOO_LONG', field: key };
       }
     }
-    fence = await installFence(page); blockedAtStart = fence.blocked;
+    fence = await bounded(() => installFence(page)); blockedAtStart = fence.blocked;
+    fence.onBlocked = () => stop('UNEXPECTED_REQUEST_BLOCKED');
     if (blockedAtStart) { fence.uncertain = true; throw new Error('PAGE_ACTION_UNCERTAIN'); }
     for (const [key, { nativeName, value }] of Object.entries(plan.changes)) {
-      const current = await inspectDraft(page);
+      const current = await bounded(() => inspectDraft(page));
       const verified = { outcome: 'planned', changes: Object.fromEntries(verifiedFields.map((field) => [field, plan.changes[field]])) };
       const existing = assessBookerBillingReadback(before, current, verified);
       if (JSON.stringify(current.identity) !== JSON.stringify(before.identity) || !identityCurrent(page, proof) || nativeDialog ||
@@ -269,56 +367,67 @@ export async function stageGuestStayBookerBilling(page, input) {
       }
       if (!(current.controls[key]?.dom === value && current.controls[key]?.native === value && current.controls[key]?.submit === value)) {
         attempted = true;
+        attemptedField = key;
         if (key !== 'billingReference') {
-          const result = await setGuestStayText(page, { propertyCode: input.propertyCode, field: key, value });
+          const restore = guardSetterPage(page, ensureActive, () => {
+            innerBlockedRequestCount += 1;
+            stop('UNEXPECTED_REQUEST_BLOCKED');
+          });
+          let result;
+          try { result = await bounded(() => setGuestStayText(page, { propertyCode: input.propertyCode, field: key, value })); }
+          finally { if (!stopReason) restore(); }
           if (!['updated_unsaved', 'unchanged_unsaved'].includes(result.outcome)) throw new Error(result.issue || 'TEXT_ACTION_UNCERTAIN');
         } else {
           const control = page.locator(`input[name="${nativeName}"]:visible, textarea[name="${nativeName}"]:visible`);
-          if (await control.count() !== 1 || !await control.isEditable()) throw new Error('FIELD_NOT_EDITABLE');
-          await control.fill(value, { timeout: 5000 });
-          await control.press('Tab', { timeout: 5000 });
-          await page.waitForTimeout(1000);
+          if (await bounded(() => control.count()) !== 1 || !await bounded(() => control.isEditable())) throw new Error('FIELD_NOT_EDITABLE');
+          await bounded(() => control.fill(value, { timeout: 5000 }));
+          await bounded(() => control.press('Tab', { timeout: 5000 }));
+          await bounded(() => page.waitForTimeout(1000));
         }
       }
       const partial = { outcome: 'planned', changes: Object.fromEntries([...verifiedFields, key].map((field) => [field, plan.changes[field]])) };
-      const assessment = assessBookerBillingReadback(before, await inspectDraft(page), partial);
+      const assessment = assessBookerBillingReadback(before, await bounded(() => inspectDraft(page)), partial);
       if (nativeDialog || fence.blocked !== blockedAtStart || !identityCurrent(page, proof) || !assessment.ok) {
         fence.uncertain = true;
         return { outcome: 'action_uncertain', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : fence.blocked !== blockedAtStart
           ? 'UNEXPECTED_REQUEST_BLOCKED' : !identityCurrent(page, proof) ? 'DRAFT_PROOF_EXPIRED' : assessment.issue,
           verifiedFields, attemptedField: key, ...(assessment.field ? { field: assessment.field } : {}),
           ...(assessment.changes ? { changes: assessment.changes } : {}),
-          blockedRequestCount: fence.blocked - blockedAtStart, pagePostFence: 'until_page_close' };
+          blockedRequestCount: fence.blocked - blockedAtStart, innerBlockedRequestCount, pagePostFence: 'until_page_close' };
       }
       verifiedFields.push(key);
     }
-    const after = await inspectDraft(page);
+    const after = await bounded(() => inspectDraft(page));
     const assessment = assessBookerBillingReadback(before, after, plan);
     if (nativeDialog || fence.blocked !== blockedAtStart || !identityCurrent(page, proof) || !assessment.ok) {
       fence.uncertain = true;
       return { outcome: 'action_uncertain', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : fence.blocked !== blockedAtStart
         ? 'UNEXPECTED_REQUEST_BLOCKED' : !identityCurrent(page, proof) ? 'DRAFT_PROOF_EXPIRED' : assessment.issue,
         verifiedFields, ...(assessment.field ? { field: assessment.field } : {}), ...(assessment.changes ? { changes: assessment.changes } : {}),
-        blockedRequestCount: fence.blocked - blockedAtStart, pagePostFence: 'until_page_close' };
+        blockedRequestCount: fence.blocked - blockedAtStart, innerBlockedRequestCount, pagePostFence: 'until_page_close' };
     }
     return { outcome: attempted ? 'updated_unsaved' : 'unchanged_unsaved',
       fields: Object.fromEntries(Object.entries(plan.changes).map(([key, { nativeName, value }]) => [key, {
         nativeName, requested: value, visible: after.controls[key].dom, native: after.controls[key].native, submit: after.controls[key].submit,
         model: !Object.hasOwn(after.scalar, nativeName) ? 'not_exposed_as_scalar' : after.scalar[nativeName] === value
           ? 'matches' : 'unchanged_preimage',
-      }])), changes: assessment.changes, pagePostFence: 'until_page_close', persistence: 'not_attempted',
+      }])), changes: assessment.changes, blockedRequestCount: fence.blocked - blockedAtStart, innerBlockedRequestCount,
+      pagePostFence: 'until_page_close', persistence: 'not_attempted',
       limitations: ['NON_SCALAR_MODEL_VALUES_NOT_COMPARED', 'PERSISTENCE_NOT_VERIFIED'] };
   } catch (error) {
     if (attempted && fence) fence.uncertain = true;
     let changes;
-    if (attempted && before && !nativeDialog) {
-      try { changes = diffs(before, await inspectDraft(page), new Set(Object.values(plan.changes).map(({ nativeName }) => nativeName))); }
+    if (attempted && before && !stopReason) {
+      try { changes = diffs(before, await bounded(() => inspectDraft(page)), new Set(Object.values(plan.changes).map(({ nativeName }) => nativeName))); }
       catch { /* Readback is unavailable; the caller must discard the page. */ }
     }
-    return { outcome: attempted ? 'action_uncertain' : 'execution_failure', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error),
-      verifiedFields, ...(changes ? { changes } : {}),
-      ...(fence ? { pagePostFence: 'until_page_close', blockedRequestCount: fence.blocked - blockedAtStart } : {}) };
+    return { outcome: attempted ? 'action_uncertain' : 'execution_failure', issue: stopReason || (nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error)),
+      verifiedFields, ...(attemptedField ? { attemptedField } : {}), ...(changes ? { changes } : {}),
+      ...(stopReason ? { pageCloseRequested: true } : {}),
+      ...(fence ? { pagePostFence: 'until_page_close', blockedRequestCount: fence.blocked - blockedAtStart, innerBlockedRequestCount } : {}) };
   } finally {
+    clearTimeout(timer);
+    if (fence) fence.onBlocked = null;
     page.off('dialog', onDialog);
     busy.delete(page);
   }
