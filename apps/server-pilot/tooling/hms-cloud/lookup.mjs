@@ -354,8 +354,9 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal, pageSize, serverMoreRecords, truncated, possiblyTruncated: truncated !== false };
 }
 
-async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
-  const spec = LOOKUPS[kind];
+async function search(page, kind, input, { timeoutMs = 20000, field = 'name' } = {}) {
+  if (field !== 'name' && !(kind === 'organization' && field === 'nativeId')) return { outcome: 'input_gap', issue: 'lookup_field_unsupported' };
+  const spec = field === 'nativeId' ? { ...LOOKUPS[kind], filter: 'Organization ID', alias: 'companyid' } : LOOKUPS[kind];
   const query = typeof input === 'string' ? input.trim() : '';
   if (busyPages.has(page)) return { outcome: 'execution_failure', kind, query, candidates: [], issue: 'lookup_in_progress' };
   if (kind === 'arAccount') forgetVerifiedAr(page);
@@ -377,7 +378,7 @@ async function search(page, kind, input, { timeoutMs = 20000 } = {}) {
     stage = 'applying_filter';
     const selector = win.locator('input[name="filterfields"]:visible').first();
     if ((await selector.inputValue()).trim() !== spec.filter) {
-      await selector.click();
+      await selector.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger:visible').click();
       await page.locator('.x-boundlist-item:visible').filter({ hasText: new RegExp(`^\\s*${spec.filter}\\s*$`) }).first().click();
     }
     if ((await selector.inputValue()).trim() !== spec.filter) throw new Error('LOOKUP_FILTER_NOT_SELECTED');

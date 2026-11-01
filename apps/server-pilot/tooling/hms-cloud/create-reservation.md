@@ -36,11 +36,12 @@ profile IDs are checked against the current picker. A caller may provide
 when zero children is known; `null` or omitted ages produce `needs_input`.
 Missing prepare inputs do not prevent other supported fields from being staged.
 
-Room and rate are exact native codes. Source of Business may be a native code or
-exact current description. `parties.organizationId` is supported alongside
-`parties.organizationName`: the existing picker searches by name and verifies
-the selected ID. A unique, complete exact-name search also accepts the name
-alone. Returned source and organization candidates help resolve a failed match.
+Room and rate are exact native codes. Prepare accepts the pickers' native code
+range; the current commit guard supports uppercase letters and digits up to 12
+characters. Source of Business may be a native code or exact current description.
+`parties.organizationId` searches by native ID; a unique, complete exact-name
+search also accepts `parties.organizationName`. If both are supplied, they must
+match. Returned candidates help resolve a failed match.
 No draft selection establishes inventory, a quote, rate eligibility or a hold.
 
 Box 1 sets guest, dates, adults, child ages, room, rate, source, reservation
@@ -50,8 +51,8 @@ Box 1 sets guest, dates, adults, child ages, room, rate, source, reservation
 `confirmationRecipient`, but reports them as `not_settable_yet` warnings.
 Unrecognized fields also produce warnings. Warnings do not prevent a Labtest
 save. The tool suggests CMS message ID `03`; a caller may supply another value
-or null, but box 1 does not set it. Prepare mode warns about a requested
-guarantee; commit sets `NGI` and refuses other guarantees. Commit with
+or null, but box 1 does not set it. Prepare mode warns about a requested CMS
+send choice and guarantee; commit sets `NGI` and refuses other guarantees. Commit with
 `cms.send: true` is `unsupported`.
 
 The pane's first/last name map to `guest.search`, its date, occupancy, room and
@@ -69,12 +70,16 @@ readback. Screenshots are mode `0600` in a new private mode `0700` directory
 under `/tmp/hms-cloud-create-*`.
 
 Outcomes are `prepared`, `saved`, `refused`, `needs_input`, `unsupported`, or
-`uncertain`. `applied` records values observed on the form; `missing` and
-`warnings` identify work left for the caller. A saved result includes the
-confirmation, fresh Record View fields, and `readback.mismatches`. Exact saved
+`uncertain`. `applied` records values observed on the form. `appliedVerification`
+distinguishes the final visible-field read from exact child ages and organization
+ID, which are verified at selection; the save guard checks them again for a
+commit. `missing` and `warnings` identify work left for the caller. A saved result includes the confirmation, fresh Record
+View fields, and an empty `readback.mismatches`; a mismatch is `uncertain`. Exact saved
 child ages and the source's native code are not exposed by Record View; the
 readback compares child counts/bands and the source description instead.
 `save.blockedRequest` can report safe full-body mismatch field names. A refused
-or uncertain save must not be retried blindly: independently reconcile a
-possible dispatch first. Browser-side send observations cannot prove what HMS
-may have queued server-side.
+or uncertain save must not be retried blindly. If a possibly dispatched save
+has no confirmation, a fresh read-only census and candidate comparisons are
+returned as reconciliation evidence, while the outcome stays uncertain. A
+blocked initial census includes its candidates and coverage. Browser-side send
+observations cannot prove what HMS may have queued server-side.
