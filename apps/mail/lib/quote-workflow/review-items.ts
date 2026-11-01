@@ -126,9 +126,11 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       kind,
       rank,
       text:
-        action.kind === 'business_document_failure' && action.filename
-          ? `Could not read: ${action.filename}`
-          : action.text.trim(),
+        action.readable === true
+          ? `${sourceLabel}: some details need review`
+          : action.kind === 'business_document_failure' && action.filename
+            ? `Could not read: ${action.filename}`
+            : action.text.trim(),
       sourceLabel,
       sourceRef: action.sourceRef,
       sourceHash: action.sourceHash,
@@ -136,6 +138,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       messageId: action.messageId,
       filename: action.filename,
       reason: action.reason,
+      ...(action.readable === true ? {readable: true} : {}),
       blocking: action.blockingQuote,
     });
   }

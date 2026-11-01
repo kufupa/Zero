@@ -1,12 +1,16 @@
 import {createHash} from 'node:crypto';
 import type {ModelInvokeResult} from '../src/ai/bedrock/adapter.js';
 import {describe,it,expect,vi} from 'vitest';
-import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
+import {createReservationistDependencies,currentAuthoredGuestRequest,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
 import {runReservationistRuntime} from '../src/ai/reservationist-runtime.js';
 import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 const input={version:1 as const,requestId:'test',authorizationScope:{ownerRef:'transport',threadId:'thread'},propertyCode:'HRCEN',trigger:{id:'message',at:'2026-10-04T10:00:00Z'},messages:[{id:'message',at:'2026-10-04T10:00:00Z',direction:'inbound' as const,text:'Please quote and answer the parking question.'}],authorizedArtifacts:[],clock:{causalAt:'2026-10-04T10:00:00Z',sourceAt:'2026-10-04T09:00:00Z',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+it('checks a cited HTML request only against its own authored alternative',()=>{
+ const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+});
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
@@ -189,19 +193,40 @@ it.each([false,true])('surfaces masked attachment number groups for staff even w
  const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'doc',messageId:'message',filename:'rooms.txt'}]);
  expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.txt',reason:'Some number groups may be room numbers or card details. Check the original source.'}));
 });
+it('surfaces card-masked XLSX values as readable manual review',async()=>{
+ const body=Buffer.from('synthetic workbook bytes'),sourceHash=createHash('sha256').update(body).digest('hex');
+ const metadata={attachmentId:'sheet',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',sizeBytes:body.length,sourceHash,disclosure:'guest' as const};
+ const admission:any={status:'admitted',reason:'text',metadata,source:{attachmentId:'sheet',sourceHash,disclosure:'guest',pages:['[{"sheetName":"Rooms","displayText":"[card ••••1111]"}]'],pageCount:1},bytes:{body,sha256:sourceHash},draftReady:false};
+ const factory=createReservationistDependencies({adapter:adapter([]),admissions:[admission],header,converter:{url:'unused'},services:{}});
+ const result=await runReservationistRuntime({...input,messages:[{...input.messages[0],text:'Thanks.'}],authorizedArtifacts:[metadata],requiredTaskKinds:[],requiredAskSpans:[]},factory.dependencies);
+ expect(result.sourceRecoveries).toContainEqual(expect.objectContaining({sourceRef:'sheet',sourceHash,reason:'masked_card_numbers',disclosure:'staff_only'}));
+ const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
+ const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
+ expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',readable:true,text:'rooms.xlsx: Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',reason:'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.'}));
+});
+it.each(['spreadsheet_row_unverified','source_batch_2_unavailable'])('keeps masking and source review visible together: %s',async reason=>{
+ const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
+ const base={kind:'attachment_manual',sourceRef:'sheet',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'message',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',disclosure:'staff_only'};
+ const result={version:1,tasks:[{id:'quote',kind:'quote',status:'needs_clarification'}],readRecoveries:[{taskId:'quote',codes:['attachment_batch_unavailable']}],sourceRecoveries:[{...base,reason:'masked_card_numbers'},{...base,reason}]};
+ const review=buildReservationistReviewSummary(result,new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
+ const actions=review?.staffActions?.filter(action=>action.sourceRef==='sheet')??[];
+ expect(actions).toHaveLength(1);expect(actions[0]?.reason).toContain('masked');
+ expect(actions[0]?.reason).toContain(reason==='spreadsheet_row_unverified'?'rows could not be verified':'details could not be extracted');
+ expect(actions[0]?.readable===true).toBe(reason==='spreadsheet_row_unverified');expect(actions[0]?.blockingQuote).toBe(true);
+});
 it.each(['combined','task_first','batched'] as const)('keeps an unread current attachment visible when %s finds no text task',async(mode)=>{
  const metadata={attachmentId:'sheet',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',sizeBytes:100,sourceHash:'a'.repeat(64),disclosure:'guest' as const,inline:false};
- const admission={status:'manual_required' as const,reason:'unsupported_business_attachment',metadata,draftReady:false as const};
+ const admission={status:'manual_required' as const,reason:'spreadsheet_row_limit',metadata,draftReady:false as const};
  const model={...adapter([]),reserveCalls:vi.fn(async()=>{})};
  const admitted=mode==='batched'?Array.from({length:9},(_,i)=>{const text=`Supporting note ${i}`,body=Buffer.from(text),sourceHash=createHash('sha256').update(body).digest('hex'),attachmentId=`note-${i}`,metadata={attachmentId,messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'text/plain',sizeBytes:body.length,sourceHash,disclosure:'guest' as const};return{status:'admitted' as const,reason:'readable',metadata,source:{attachmentId,sourceHash,disclosure:'guest' as const,pages:[text],pageCount:1},bytes:{body,sha256:sourceHash},draftReady:false as const};}):[];
  const factory=createReservationistDependencies({adapter:model,extractionMode:mode==='batched'?'combined':mode,admissions:[...admitted,admission],header,converter:{url:'unused'},services:{}});
  const scoped={...input,messages:[{...input.messages[0],text:'Please see attached.'}],authorizedArtifacts:[...admitted.map(item=>item.metadata),metadata],requiredTaskKinds:[],requiredAskSpans:[]};
  const result=await runReservationistRuntime(scoped,factory.dependencies);
  expect(result.readiness).toBe('needs_clarification');expect(result.tasks).toEqual([]);expect(result.textBody).toBe('');
- expect(result.sourceRecoveries).toContainEqual(expect.objectContaining({sourceRef:'sheet',sourceHash:metadata.sourceHash,sourceKind:'attachment',messageId:'message',reason:'unsupported_business_attachment'}));
+ expect(result.sourceRecoveries).toContainEqual(expect.objectContaining({sourceRef:'sheet',sourceHash:metadata.sourceHash,sourceKind:'attachment',messageId:'message',reason:'spreadsheet_row_limit'}));
  const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
  const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
- expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:'rooms.xlsx: This attachment format could not be read.'}));
+ expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:'rooms.xlsx: This spreadsheet could not be read fully or safely; check the original file and handle it manually.'}));
 });
 it('does not render a selected offer for contradictory guest dates or restricted facts',async()=>{
  const model=adapter([{id:'q',kind:'quote',factIds:['dates']}]);

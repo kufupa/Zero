@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, message } from '../db/schema/mail.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 
 const STATE_KEY = 'reservationistHandledRequests';
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -167,14 +167,21 @@ export async function setRequestHandled(db: DB, input: {
     const [identity] = await tx.select({ threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
     if (!identity?.threadId || !identity.sourceMessageId) return 'not_found';
-    // Serialize acknowledgement and undo across different classifications of one email.
+    // Serialize decisions across classifications without holding a message row
+    // while a reply import or an HMS approval holds the work item.
+    const lockKey = JSON.stringify(['request-handled', input.transportId, identity.sourceMessageId]);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
     const [source] = await tx.select({ id: message.id }).from(message)
       .where(and(eq(message.id, identity.sourceMessageId), eq(message.transportId, input.transportId), eq(message.threadId, identity.threadId)))
-      .limit(1).for('update');
+      .limit(1);
     if (!source) return 'not_found';
-    const [item] = await tx.select({ id: workItem.id, threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state, status: workItem.status })
+    const [item] = await tx.select({ id: workItem.id, threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, kind: workItem.kind, state: workItem.state, status: workItem.status })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1).for('update');
     if (!item?.threadId || !item.sourceMessageId || item.threadId !== identity.threadId || item.sourceMessageId !== identity.sourceMessageId) return 'not_found';
+    const [latestRead] = await tx.select({ kind: mailExtraction.kind }).from(mailExtraction)
+      .where(and(eq(mailExtraction.messageId, item.sourceMessageId), eq(mailExtraction.status, 'succeeded')))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+    if (latestRead?.kind && latestRead.kind !== item.kind) return 'stale';
     const [run] = await tx.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
       .where(and(eq(aiWorkflowRun.id, input.runId), eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, item.threadId),
         eq(aiWorkflowRun.triggerMessageId, item.sourceMessageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),

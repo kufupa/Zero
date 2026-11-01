@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import { getTableName, type Table } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
+import { workbookToBytes } from '@office-kit/xlsx/io';
+import { addWorksheet, createWorkbook } from '@office-kit/xlsx/workbook';
+import { setCell } from '@office-kit/xlsx/worksheet';
 import type { DB } from '../src/db/client.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { loadReservationistMailboxInput } from '../src/ai/reservationist-mailbox-input.js';
-import { draftSourceMessage } from '../src/ai/reservationist-draft-source.js';
+import { assertMetadataSourceRecoveries, assertReservationistDraftSource, draftSourceMessage, sealReservationistDraftSource } from '../src/ai/reservationist-draft-source.js';
 import { reservationistMessageAt } from '../src/ai/reservationist-worker-input.js';
 
 function setup() {
@@ -55,6 +58,27 @@ function setup() {
 }
 
 describe('reservationist mailbox input', () => {
+  it('seals an ignored signature by metadata without reading its bytes, and detects changed identity', async () => {
+    const { state, args, s3 } = setup();
+    state.rows.find((row) => row.id === 'current')!.textBody = 'Please quote two rooms.\nKind regards\nGuest\nTel: 12345\nEmail: info@example.invalid\nWebsite: example.invalid\nhttps://hotel.example.invalid\ncid:logo';
+    state.files.push({ id: 'logo', messageId: 'current', mimeType: 'image/png', sizeBytes: 21 * 1024 * 1024,
+      sha256: null, s3Key: 'attachments/current/logo.png', isInline: true, contentId: 'logo' });
+    const read = vi.spyOn(s3, 'getObjectBounded');
+    const result = await loadReservationistMailboxInput(args);
+    expect(result.ignoredSignatureIds).toEqual(['logo']);
+    expect(result.admissions).toEqual([]);
+    const persisted = { version: 1 as const, readiness: 'no_action' as const, tasks: [], quoteRevisionIds: [], artifactRefs: [], actionDigest: 'a'.repeat(64) };
+    const source = await result.createDraftSource({ tasks: [], facts: [] }, persisted);
+    expect(source.attachments).toMatchObject([{ attachmentId: 'logo', sourceIdentity: 'ignored_signature', contentId: 'logo' }]);
+    const sealed = sealReservationistDraftSource({ ...source, resultDigest: 'b'.repeat(64) });
+    expect(() => assertMetadataSourceRecoveries(sealed, persisted)).not.toThrow();
+    const changed = { ...source, resultDigest: 'b'.repeat(64), attachments: source.attachments.map(item => ({ ...item, contentId: 'different' })) };
+    expect(() => assertReservationistDraftSource(sealed, changed)).toThrow();
+    expect(read).not.toHaveBeenCalled();
+    state.files[0]!.contentId = 'different';
+    expect(await result.revalidateSources()).toBe(false);
+  });
+
   it('loads causal context and a file without a stored hash, then detects changed source bytes', async () => {
     const { state, args, s3, message } = setup(), body = Buffer.from('Please allocate two rooms.');
     const key = 'attachments/current/rooming.txt';
@@ -113,12 +137,26 @@ describe('reservationist mailbox input', () => {
     state.files.push({ id: 'workbook', messageId: 'current', mimeType, sizeBytes: body.length, sha256: null, s3Key: key, isInline: false, contentId: null });
     await s3.putObject({ key, body, contentType: mimeType });
     const result = await loadReservationistMailboxInput(args);
-    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', reason: 'unsupported_business_attachment',
+    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', reason: 'spreadsheet_parse_failed',
       metadata: { sourceHash: createHash('sha256').update(body).digest('hex') } });
     expect(result.admissions[0]?.bytes).toBeUndefined();
     expect(await result.revalidateSources()).toBe(true);
     await s3.putObject({ key, body: Buffer.from('changed fixture!'), contentType: mimeType });
     expect(await result.revalidateSources()).toBe(false);
+  });
+
+  it('reads an unhashed valid workbook through mailbox admission', async () => {
+    const { state, args, s3 } = setup(), workbook = createWorkbook(), sheet = addWorksheet(workbook, 'Rooms');
+    setCell(sheet, 1, 1, 'Room'); setCell(sheet, 1, 2, 'Guest');
+    setCell(sheet, 2, 1, '1'); setCell(sheet, 2, 2, 'Alex Example');
+    const body = await workbookToBytes(workbook), key = 'attachments/current/valid-rooming.xlsx';
+    const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    state.files.push({ id: 'sheet', messageId: 'current', mimeType, sizeBytes: body.length, sha256: null, s3Key: key, isInline: false, contentId: null });
+    await s3.putObject({ key, body, contentType: mimeType });
+    const result = await loadReservationistMailboxInput(args);
+    expect(result.admissions[0]).toMatchObject({ status: 'admitted', reason: 'text', metadata: { sourceHash: createHash('sha256').update(body).digest('hex') } });
+    expect(result.admissions[0]?.source?.pages?.[0]).toContain('Alex Example');
+    expect(await result.revalidateSources()).toBe(true);
   });
 
   it('refuses a missing grant before reading file bytes and invalidates a revoked grant', async () => {

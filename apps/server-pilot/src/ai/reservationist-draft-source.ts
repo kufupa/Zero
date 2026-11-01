@@ -20,10 +20,11 @@ export function reservationistDraftPropertyCode(transportId:string,env:NodeJS.Di
 }
 const arrivalSourceSchema=z.object({attachmentId:id,sourceHash:hash,page:z.literal(1),quote:z.string().min(1).max(4096),start:z.number().int().min(0),end:z.number().int().min(1)}).strict();
 const arrivalSchema=z.object({task:z.object({id,kind:z.literal('question'),required:z.literal(true),source:arrivalSourceSchema}).strict(),receipt:z.object({kind:z.literal('requested_arrival_acknowledgement'),authority:z.literal('customer_claim'),hotelPermission:z.literal('unverified'),taskId:id,requestId:id,ownerRef:id,threadId:id,propertyCode:id,triggerMessageId:id,requestedTime:z.string().min(1).max(32),source:z.object({sourceRef:id,sourceHash:hash,quote:z.string().min(1).max(4096),start:z.number().int().min(0),end:z.number().int().min(1),observedAt:z.string().datetime(),disclosure:z.literal('guest')}).strict()}).strict()}).strict();
-const attachmentSourceSchema=z.object({attachmentId:id,messageId:id,s3Key:z.string().min(1).max(4096),mimeType:z.string().min(1).max(256),sizeBytes:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),sourceHash:hash.optional(),sourceIdentity:z.literal('metadata_only').optional(),contentId:z.string().max(1024).nullable().optional(),inline:z.boolean()}).strict().superRefine((value,ctx)=>{
+const attachmentSourceSchema=z.object({attachmentId:id,messageId:id,s3Key:z.string().min(1).max(4096),mimeType:z.string().min(1).max(256),sizeBytes:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),sourceHash:hash.optional(),sourceIdentity:z.enum(['metadata_only','ignored_signature']).optional(),contentId:z.string().max(1024).nullable().optional(),inline:z.boolean()}).strict().superRefine((value,ctx)=>{
  const hashed=!!value.sourceHash&&!value.sourceIdentity&&value.contentId===undefined&&value.sizeBytes<=20*1024*1024;
  const metadataOnly=!value.sourceHash&&value.sourceIdentity==='metadata_only'&&value.contentId!==undefined;
- if(!hashed&&!metadataOnly)ctx.addIssue({code:'custom',message:'invalid attachment source identity'});
+ const signature=!value.sourceHash&&value.sourceIdentity==='ignored_signature'&&value.inline&&!!value.contentId&&/^image\/(?:png|jpeg|gif|webp)$/.test(value.mimeType);
+ if(!hashed&&!metadataOnly&&!signature)ctx.addIssue({code:'custom',message:'invalid attachment source identity'});
 });
 const sourceSchema=z.object({version:z.literal(1),runId:id,generationId:id,transportId:id,propertyCode:id,threadId:id,requestedByUserId:id,triggerMessageId:id,causalAt:z.string().datetime(),resultDigest:hash,
  messages:z.array(z.object({id,at:z.string().datetime(),direction:z.enum(['inbound','outbound']),sourceHash:hash,identityHash:hash}).strict()).min(1).max(64),
