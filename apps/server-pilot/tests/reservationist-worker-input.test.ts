@@ -258,6 +258,7 @@ describe('reservationist worker input', () => {
     await expect(extract(23, 'Correction: do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, 'Do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, undefined, 'Please cancel the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
+    await expect(extract(23, undefined, 'Do not book the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
