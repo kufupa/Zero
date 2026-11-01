@@ -65,6 +65,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
 | `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` with any `adultSelection`, `childAgeSelection`, `sourceSelection` results, and independent top-level `agencySelection` / `organizationSelection` results |
+| `readSavedLabtestRecord` | `confirmation` returned by a successful organization-only create in this same session; opens a fresh guarded Record View |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
 closing use the current picker. The availability party kinds are `organization`,
@@ -91,7 +92,13 @@ preimage ID and the matching explicit values to `saveNewLabtestStay`. The normal
 session rejects that action; it never enables general booking writes. The proof
 is bound to its page and dates and can expire or be invalidated. Independently
 reopen and verify the confirmation, and reconcile any uncertain outcome before
-trying another write. See [guest-stay-save.md](./guest-stay-save.md) for all
+trying another write. After a successful organization-only create, call
+`readSavedLabtestRecord` with that response's confirmation; it opens a fresh
+guarded session and verifies the saved native company ID/name against the
+same-session `selectOrganization` result. An organization search or new guest
+profile selection invalidates that selection proof. This reader does not
+support agency-plus-organization creates or cross-session caller-supplied IDs.
+See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
 
 Each strict create option is independent. Pass the corresponding helper result
