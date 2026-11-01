@@ -368,7 +368,7 @@ describe('reservationist worker input', () => {
 
   it('keeps colon-captioned business images after signoff', async () => {
     const image = { id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' as const };
-    for (const caption of ['Quote:', 'Rooming list:']) {
+    for (const caption of ['Quote:', 'Rooming list:', 'Rooming list', 'Rates']) {
       const result = await build([row('current', 4, { textBody: `Please quote one room.\nKind regards\n${caption}\ncid:offer` })], [image]);
       expect(result.ignoredSignatures).toBe(0);
       expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
