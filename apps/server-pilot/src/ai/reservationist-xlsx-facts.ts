@@ -1,4 +1,5 @@
 import { normalizedDate, type DocumentSource, type ValidatedDocumentFact } from './reservationist-document-facts.js';
+import { AMBIGUOUS_NUMBER_GROUPS } from './card-mask.js';
 
 type Cell = { columnNumber: number; displayText: string };
 type Row = { rowNumber: number; cells: Cell[] };
@@ -80,7 +81,7 @@ export function xlsxRowEntails(fact: ValidatedDocumentFact, source: DocumentSour
 
   const cell = (role: Role): string | undefined => {
     const value = row.cells.find(item => item.columnNumber === active!.get(role));
-    if (!value || !value.displayText.trim()) return;
+    if (!value || !value.displayText.trim() || value.displayText.includes(AMBIGUOUS_NUMBER_GROUPS) || /\[(?:card ••••\d{4}|code masked)\]/u.test(value.displayText)) return;
     const encoded = JSON.stringify(value.displayText);
     const prefix = `"columnNumber":${value.columnNumber},"displayText":`;
     const position = line.indexOf(prefix + encoded);

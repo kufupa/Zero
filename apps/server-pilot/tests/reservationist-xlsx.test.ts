@@ -31,9 +31,9 @@ async function extract(body: Uint8Array) {
 }
 
 describe('spreadsheet rows in reservationist extraction', () => {
-  it.each(['valid', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total'])('binds row facts and retains independent mail asks: %s', async (mode) => {
+  it.each(['valid', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total', 'masked name'])('binds row facts and retains independent mail asks: %s', async (mode) => {
     const columns = ['Room', 'Adults', 'Children', 'First name', 'Last name', 'Arrival', 'Departure', 'Quantity', 'Total guests'];
-    const values = ['1', '2', mode === 'missing child count' ? '' : '0', 'Alex', 'Example', '2027-02-10', '2027-02-11', mode === 'conflicting quantity' ? '30' : '1', mode === 'conflicting total' ? '3' : '2'];
+    const values = ['1', '2', mode === 'missing child count' ? '' : '0', mode === 'masked name' ? '4111 1111 1111 1111' : 'Alex', 'Example', '2027-02-10', '2027-02-11', mode === 'conflicting quantity' ? '30' : '1', mode === 'conflicting total' ? '3' : '2'];
     const other = ['2', '1', '0', 'Jamie', 'Other', '2027-02-10', '2027-02-11', '1', '1'];
     const body = await makeWorkbook([{ name: 'Rooming list', cells: [columns, values, other].flatMap((row, i) =>
       row.map((value, j) => ({ row: i + 1, column: j + 1, value }))) }]);
@@ -46,7 +46,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
     const sheetSource = { attachmentId: 'sheet', sourceHash: hash, page: 1, quote: row };
     const facts = [
       { id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, disclosure: 'guest', source: sheetSource },
-      { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : 'Alex', lastName: 'Example', roomRef: '1' }, disclosure: 'guest', source: sheetSource },
+      { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : mode === 'masked name' ? '[card ••••1111]' : 'Alex', lastName: 'Example', roomRef: '1' }, disclosure: 'guest', source: sheetSource },
       { id: 'dates', kind: 'dates', value: { arrival: '2027-02-10', departure: '2027-02-11' }, disclosure: 'guest', source: sheetSource },
     ];
     const metadata = { attachmentId: 'sheet', messageId: 'm', threadId: 't', ownerRef: 'o', messageAt: at,
@@ -68,7 +68,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
     expect(result.tasks.map(task => task.id)).toEqual(['book', 'parking']);
     expect(result.facts.some(fact => fact.kind === 'reservation_reference' && fact.value === 'A123')).toBe(true);
     expect(result.facts.some(fact => fact.kind === 'dates')).toBe(true);
-    expect(result.facts.some(fact => fact.kind === 'guest')).toBe(mode !== 'cross-row name');
+    expect(result.facts.some(fact => fact.kind === 'guest')).toBe(!['cross-row name', 'masked name'].includes(mode));
     expect(result.facts.some(fact => fact.kind === 'room')).toBe(!['missing child count', 'conflicting quantity', 'conflicting total'].includes(mode));
     expect(result.sourceIncomplete?.some(item => item.attachmentId === 'sheet')).toBe(mode !== 'valid');
   });
