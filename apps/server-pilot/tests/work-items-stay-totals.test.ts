@@ -86,8 +86,8 @@ describe('staff stay-total correction projection', () => {
     const source = payload();
     source.missing = [{ field: 'adultsPerRoom', question: 'Confirm adults per room.' }];
     source.stays[0]!.rows = [
-      { id: 'row_1', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: 2, childAges: [], board: null },
-      { id: 'row_2', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: null, childAges: [], board: null },
+      { id: 'row_1', roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], board: null },
+      { id: 'row_2', roomType: 'Standard King', rooms: 1, adultsPerRoom: null, childAges: [], board: null },
     ];
 
     const corrected = storedAnalysis(
