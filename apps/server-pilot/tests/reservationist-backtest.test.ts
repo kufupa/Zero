@@ -343,6 +343,10 @@ const luna = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const extraction = (over: Record<string, unknown> = {}) => ({
+  needsAction: true,
+  action: 'quote_availability',
+  actionEvidence: 'Synthetic request',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'quote',
   agency: null,
