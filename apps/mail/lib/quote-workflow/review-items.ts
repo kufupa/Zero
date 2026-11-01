@@ -58,6 +58,8 @@ export function documentFailureIdentity(document: Pick<QuoteDocumentFailure, 'so
 }
 
 export function reviewItemSourceIdentity(item: QuoteReviewItem): string {
+  // Separate asks can cite the same email or attachment; their task IDs identify the actual requests.
+  if (item.kind === 'question' || item.kind === 'pricing_fact') return item.id;
   if (item.sourceHash && item.sourceRef) return `${item.kind}:${item.sourceHash}:${item.sourceRef}`;
   if (item.sourceRef) return `${item.kind}:${item.sourceRef}:${item.filename ?? item.text}`;
   if (item.kind === 'document_failure' && item.filename) {
@@ -100,7 +102,10 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
   const items: QuoteReviewItem[] = [];
   for (const action of actions) {
     if (action.status !== 'open') continue;
-    if (!SOURCE_HASH.test(action.sourceHash)) continue;
+    const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
+      action.kind === 'business_document_failure' && action.sourceKind === 'attachment' && !!action.messageId;
+    if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
+    if (!metadataOnly && (!action.sourceHash || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;
     const sourceLabel =
@@ -121,9 +126,11 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       kind,
       rank,
       text:
-        action.kind === 'business_document_failure' && action.filename
-          ? `Could not read: ${action.filename}`
-          : action.text.trim(),
+        action.readable === true
+          ? `${sourceLabel}: some details need review`
+          : action.kind === 'business_document_failure' && action.filename
+            ? `Could not read: ${action.filename}`
+            : action.text.trim(),
       sourceLabel,
       sourceRef: action.sourceRef,
       sourceHash: action.sourceHash,
@@ -131,6 +138,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       messageId: action.messageId,
       filename: action.filename,
       reason: action.reason,
+      ...(action.readable === true ? {readable: true} : {}),
       blocking: action.blockingQuote,
     });
   }
@@ -172,7 +180,11 @@ export function projectQuoteReviewItems(
   const explicit = (analysis?.reviewItems ?? [])
     .filter(notNoise)
     .filter((item) => item.kind !== 'pricing_fact');
-  const questions = fromStaff.length || explicit.length ? [] : questionReviewItems(analysis);
+  const representedQuestions = new Set([...fromStaff, ...explicit]
+    .filter((item) => item.kind === 'question')
+    .map((item) => item.text.trim().toLowerCase()));
+  const questions = questionReviewItems(analysis)
+    .filter((item) => !representedQuestions.has(item.text.trim().toLowerCase()));
   return mergeReviewItems([pricing, fromStaff, explicit, kept, questions]);
 }
 

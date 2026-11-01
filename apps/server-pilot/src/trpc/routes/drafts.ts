@@ -31,6 +31,8 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
+import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
@@ -38,7 +40,8 @@ import {
   type HmsEvidenceRef,
   type MailEvidenceRef,
 } from '../../ai/draft-evidence.js';
-import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
+import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
+import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -168,10 +171,10 @@ async function verifyGeneratedAttachments(
   }
 }
 
-async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect) {
+async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect, runId?: string, workState?: unknown) {
   if (!draft.generationId) return undefined;
   const [run] = await db
-    .select({ metrics: aiWorkflowRun.metrics })
+    .select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics })
     .from(aiWorkflowRun)
     .where(
       and(
@@ -179,21 +182,29 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
         eq(aiWorkflowRun.transportId, draft.transportId),
         eq(aiWorkflowRun.threadId, draft.threadId!),
         eq(aiWorkflowRun.runKind, 'candidate_draft'),
+        runId ? eq(aiWorkflowRun.id, runId) : undefined,
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt))
     .limit(1);
   const result = run?.metrics?.reservationistResult;
+  return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
+}
+
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
   const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
     .filter(item => item?.sourceKind === 'attachment' && typeof item.sourceRef === 'string')
     .map(item => item.sourceRef!))].slice(0, 64) : [];
-  const sources = attachmentIds.length && draft.threadId ? await db
+  const sources = attachmentIds.length && threadId ? await db
     .select({ sourceRef: attachment.id, filename: attachment.filename, messageId: attachment.messageId })
     .from(attachment).innerJoin(message, eq(attachment.messageId, message.id))
-    .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, draft.transportId), eq(message.threadId, draft.threadId))) : [];
-  return buildReservationistReviewSummary(result, new Date(), sources);
+    .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, transportId), eq(message.threadId, threadId))) : [];
+  const summary = buildReservationistReviewSummary(result, new Date(), sources);
+  if (!summary || !runId || workState === undefined) return summary;
+  const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
+  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
 }
 
 export type ReservationistStaffAction = {
@@ -201,11 +212,14 @@ export type ReservationistStaffAction = {
   kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
   text: string;
   sourceRef: string;
-  sourceHash: string;
+  /** Missing only when an unread attachment has metadata identity but no verified byte hash. */
+  sourceHash?: string;
+  sourceIdentity?: 'metadata_only';
   sourceKind?: 'message' | 'attachment';
   messageId?: string;
   filename?: string;
   reason?: string;
+  readable?: boolean;
   blockingQuote: boolean;
   status: 'open';
 };
@@ -289,33 +303,61 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   }
   for (const recovery of rows(result.sourceRecoveries).slice(0, 64)) {
     if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true) continue;
-    const identity = originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
+    const metadataOnly = recovery.sourceIdentity === 'metadata_only' && recovery.sourceHash === undefined &&
+      recovery.sourceKind === 'attachment' && typeof recovery.sourceRef === 'string' &&
+      typeof recovery.messageId === 'string' && attachmentSources.some(source =>
+        source.sourceRef === recovery.sourceRef && source.messageId === recovery.messageId);
+    if (recovery.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
+    const identity = metadataOnly
+      ? {sourceRef: recovery.sourceRef as string, sourceKind: 'attachment' as const, messageId: recovery.messageId as string, sourceIdentity: 'metadata_only' as const}
+      : originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
     if (!identity || recovery.sourceKind !== identity.sourceKind || typeof recovery.reason !== 'string' || typeof recovery.messageId !== 'string' || !recovery.messageId || (identity.messageId && recovery.messageId !== identity.messageId)) continue;
     const filenameSource = attachmentSources.find(s => s.sourceRef === identity.sourceRef && s.messageId === recovery.messageId);
     const filename = filenameSource && filenameSource.filename.length <= 255 ? filenameSource.filename : undefined;
     const reasons: Record<string, string> = {
       office_converter_unavailable: 'Document conversion is unavailable.', office_conversion_failed: 'Document conversion failed.',
       office_conversion_invalid: 'Document conversion returned an unreadable result.', unsupported_business_attachment: 'This attachment format could not be read.',
+      visual_content_requires_staff_review: 'Visual content in this attachment needs staff review.',
       malformed_or_unsupported_raster: 'This image could not be read.', malformed: 'This document could not be read.',
       no_embedded_text: 'Document text could not be extracted.', page_boundaries_unavailable: 'Document pages could not be identified.',
+      ambiguous_number_groups: 'Some number groups may be room numbers or card details. Check the original source.',
+      masked_card_numbers: 'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',
+      spreadsheet_row_unverified: 'Some spreadsheet rows could not be verified; check the original file.',
       too_large: 'This document exceeds the reading limit.', attachment_total_resource_unavailable: 'This attachment exceeds the available reading budget.', identity_or_authorization_changed: 'The source changed or access is unavailable.',
+      attachment_identity_unavailable: 'This attachment could not be checked; open the original source.',
       encrypted: 'This document is password protected.', timeout: 'Document reading timed out.',
       parser_failure: 'Document reading failed.', too_many_pages: 'This document exceeds the page limit.',
     };
-    const reason = reasons[recovery.reason] ?? (/^(?:source_batch_\d+_(?:unavailable|not_attempted)|attachment_batch_unavailable|fact_enrichment_unavailable)$/.test(recovery.reason)
-      ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
+    const xlsxMime = typeof recovery.mimeType === 'string' && recovery.mimeType.split(';', 1)[0]?.trim().toLowerCase() === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const spreadsheetFailure = xlsxMime && /^spreadsheet_[a-z_]+$/.test(recovery.reason);
+    const reason = reasons[recovery.reason] ?? (spreadsheetFailure
+      ? 'This spreadsheet could not be read fully or safely; check the original file and handle it manually.'
+      : /^(?:source_batch_\d+_(?:unavailable|not_attempted)|attachment_batch_unavailable|fact_enrichment_unavailable)$/.test(recovery.reason)
+        ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
     if (!reason) continue;
     const sourceLabel = identity.sourceKind === 'message' ? 'Email' : filename ?? 'Attachment';
-    staffActions.push({id: `source:${identity.sourceRef}:${identity.sourceHash}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
+    const readable = recovery.reason === 'ambiguous_number_groups' || recovery.reason === 'masked_card_numbers' || recovery.reason === 'spreadsheet_row_unverified';
+    const action: ReservationistStaffAction = {id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
       ...(typeof recovery.messageId === 'string' ? {messageId: recovery.messageId} : {}), ...(filename ? {filename} : {}), reason,
+      ...(readable ? {readable: true} : {}),
       blockingQuote: rows(result.tasks).some(t => t.kind === 'quote' && ['needs_clarification', 'blocked'].includes(String(t.status)) && (
         record(t.requestSource).attachmentId === identity.sourceRef || Array.isArray(t.evidenceRefs) && t.evidenceRefs.includes(identity.sourceRef) ||
-        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_/.test(String(recovery.reason)))
-      )), status: 'open'});
+        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_|^spreadsheet_row_unverified$/.test(String(recovery.reason)))
+      )), status: 'open'};
+    const prior = staffActions.find(item => item.kind === action.kind && item.id === action.id);
+    if (!prior) staffActions.push(action);
+    else {
+      if (!prior.reason?.includes(reason)) prior.reason = [prior.reason, reason].filter(Boolean).join(' ');
+      prior.text = `${sourceLabel}: ${prior.reason}`;
+      prior.blockingQuote ||= action.blockingQuote;
+      if (!action.readable) delete prior.readable;
+    }
   }
   const tasks = rows(result.tasks).slice(0, 32).map(task => {
     const details: string[] = [];
-    const taskId = text(task.id), kind = text(task.kind);
+    const taskId = text(task.id, 512), kind = text(task.kind);
+    const request = record(task.requestSource);
+    if (typeof request.quote === 'string' && request.quote.trim()) details.push(`Request: ${text(request.quote.trim(), 256)}`);
     if (taskId) {
       for (const recovery of rows(result.readRecoveries).filter(item => item.taskId === taskId))
         if (Array.isArray(recovery.codes)) for (const code of recovery.codes.slice(0, 16)) if (typeof code === 'string') details.push(recoveryText(code));
@@ -334,7 +376,8 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       const packets = rows(result.packets).filter(packet => packet.taskId === taskId);
       if (expectedKind && packets.length === 1) {
         const packet = packets[0]!;
-        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && packet.businessRulesValidated === true) {
+        const cancellationReviewPacket=kind==='cancel_request'&&Boolean(isReservationistCancellationReviewPacket(packet));
+        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && (kind === 'cancel_request' ? cancellationReviewPacket : packet.businessRulesValidated === true) && (kind !== 'cancel_request' || !actionFreshnessReason)) {
           if (kind === 'acceptance' || kind === 'new_booking') {
             const total = money(packet.totalMinor, packet.currency);
             if (total) details.push(`${kind === 'acceptance' ? 'Agreed quote total' : 'Selected booking total'}: ${total}`);
@@ -380,19 +423,36 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
               details.push('No system update has been saved. The native reservation remains unverified. Staff must review the reported channel booking.');
             }
           } else {
-            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding);
-            details.push(`Reservation ${text(packet.reservationRef)}`);
+            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding),
+              currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
+            if(kind==='cancel_request'){
+              details.push(`Requested reference: ${text(packet.reservationRef)}`);
+              details.push(`HMS confirmation read: ${text(currentProof?.resolvedConfirmation)}`);
+            }else details.push(`Reservation ${text(packet.reservationRef)}`);
             if (current.arrivalDate && current.departureDate) details.push(`Recorded stay: ${text(current.arrivalDate)} to ${text(current.departureDate)}`);
             if (kind === 'change' && requested.arrivalDate && requested.departureDate) details.push(`Requested stay: ${text(requested.arrivalDate)} to ${text(requested.departureDate)}`);
-            const currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
             if (currentProof?.observedAt) details.push(`Observed ${text(currentProof.observedAt)}`);
             if (binding.observedAt) details.push(`Requested ${text(binding.observedAt)}`);
+            if (kind === 'cancel_request') {
+              const review = record(packet.cancellationReview);
+              const roomScope = record(review.roomScope), policy = record(review.policy);
+              const fee = record(review.fee), action = record(review.action);
+              if (review.outcome === 'prepared_for_human_review') {
+                if (roomScope.state === 'unresolved' && roomScope.complete === false)
+                  details.push('Cancellation room scope remains unresolved; staff must verify the affected room(s).');
+                if (policy.state === 'unknown') details.push('Applicable cancellation policy has not been verified.');
+                if (fee.state === 'unknown_precommit' && fee.amount === null && fee.currency === null)
+                  details.push('Cancellation fee is unknown before commitment; no amount has been established.');
+                if (action.cancellationStarted === false && action.commitAvailable === false)
+                  details.push('Cancellation has not been started; no commit is available.');
+              }
+            }
             details.push(kind === 'change' ? 'No changes have been saved. Staff must complete the amendment.' : 'No cancellation has been saved. Staff must complete the cancellation.');
           }
         }
       }
     }
-    return { label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)] };
+    return { id: taskId, kind, label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)] };
   });
   const pricingProof: string[] = [];
   for (const quote of rows(result.quoteRevisions).slice(0, 8)) {
@@ -859,7 +919,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const quoted=selectedQuotes.length>0;
  const typedQuoteFactKeys=new Set<string>();
  const selectedQuoteTotals=new Map<string,number>();
- if((result.rateComparisons?.length??0)||(result.paymentComparisons?.length??0)||(result.importedOffers?.length??0)||(result.approvedOverrides?.length??0)||(result.readReceipts?.length??0)||(result.existingDocumentReceipts?.length??0)||(result.recipientPreparations?.length??0)||(result.packets??[]).some(packet=>(packet as {kind?:string}).kind!=='channel_booking_sync')||!quoted&&((result.proposalFacts?.length??0)||(result.quoteRevisionIds?.length??0)||(result.currentNativeObservations?.length??0)))throw new Error('reservationist_hotel_evidence_unavailable');
+ if((result.rateComparisons?.length??0)||(result.paymentComparisons?.length??0)||(result.importedOffers?.length??0)||(result.approvedOverrides?.length??0)||(result.readReceipts?.length??0)||(result.existingDocumentReceipts?.length??0)||(result.recipientPreparations?.length??0)||(result.packets??[]).some(packet=>{const kind=(packet as {kind?:string}).kind;return kind!=='channel_booking_sync'&&!(kind==='cancel_request'&&isReservationistCancellationReviewPacket(packet));})||!quoted&&((result.proposalFacts?.length??0)||(result.quoteRevisionIds?.length??0)||(result.currentNativeObservations?.length??0)))throw new Error('reservationist_hotel_evidence_unavailable');
  if(quoted){
   const tasks=result.tasks.map(raw=>{const task=raw as {kind?:string;status?:string;evidenceRefs?:string[]};if(!task||!Array.isArray(task.evidenceRefs)||task.evidenceRefs.some(ref=>typeof ref!=='string'))throw new Error('reservationist_quote_task_invalid');return {...task,evidenceRefs:task.evidenceRefs};});
   if(new Set(result.quoteRevisionIds).size!==selectedQuotes.length||result.quoteRevisionIds.length!==selectedQuotes.length||selectedQuotes.some(revision=>revision.propertyCode!==RESERVATIONIST_DRAFT_PROPERTY_CODE||!result.quoteRevisionIds.includes(revision.id)))throw new Error('reservationist_quote_binding_invalid');
@@ -882,20 +942,28 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const sourceMessages=await input.db.select().from(message).where(and(eq(message.transportId,input.transportId),eq(message.threadId,input.draft.threadId!)));
  const causal=sourceMessages.filter(row=>{const date=row.direction==='inbound'?row.receivedAt:row.sentAt;return date&&date.getTime()<=cutoff;}).map(draftSourceMessage).sort((a,b)=>a.id.localeCompare(b.id));
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
- if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+item.sizeBytes,0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
  const saved=metrics.reservationistDraftSource;
- assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>({attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline,sourceHash:saved.attachments?.find(a=>a.attachmentId===item.id)?.sourceHash??''})).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
+ const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));
+ if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity==='metadata_only'?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
+ const descriptor=(item:typeof attachment.$inferSelect,sourceHash?:string):ReservationistDraftSource['attachments'][number]=>{
+  const base={attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline};
+  const original=originals.get(item.id);
+  return original?.sourceIdentity==='metadata_only'?{...base,sourceIdentity:'metadata_only',contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
+ };
+ assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>descriptor(item)).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
+ assertMetadataSourceRecoveries(saved,result);
  assertSourcePreparedDraftFacts(quoted?{...result,preparedFacts:result.preparedFacts?.filter(fact=>!typedQuoteFactKeys.has(fact.key))}:result,saved,sourceMessages.filter(row=>causal.some(item=>item.id===row.id)),new AbortController().signal);
 
  const sources:ReservationistDraftSource['attachments']=[];
  for(const item of attached){
+  if(originals.get(item.id)?.sourceIdentity==='metadata_only'){sources.push(descriptor(item));continue;}
   if(!inboundAttachmentIdentityReader)throw new Error('reservationist_attachment_reader_unavailable');
   const bytes=await inboundAttachmentIdentityReader({attachmentId:item.id,transportId:input.transportId,threadId:input.draft.threadId!,expectedS3Key:item.s3Key,expectedSize:item.sizeBytes});
   if(!bytes)throw new Error('reservationist_attachment_source_unavailable');
-  sources.push({attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,sourceHash:bytes.sha256,inline:item.isInline});
+  sources.push(descriptor(item,bytes.sha256));
  }
  assertReservationistDraftSource(metrics.reservationistDraftSource,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:sources.sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
- for(const packet of result.packets??[])assertChannelPacketDraftSource(packet,saved,input.now??new Date());
+ for(const packet of result.packets??[]){if((packet as {kind?:string}).kind==='channel_booking_sync')assertChannelPacketDraftSource(packet,saved,input.now??new Date());else assertCancellationPacketDraftSource(packet,saved);}
  await verifyGeneratedAttachments(input.draft.attachments);
 }
 
@@ -1184,6 +1252,62 @@ export const draftsRouter = tRouter({
     }
     const r = rows[0]!;
     return toDraftWire(r, false, await loadDraftReviewSummary(db, r));
+  }),
+
+  /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
+  reviewForMessage: mailboxProcedure
+    .input(z.object({ threadId: z.string(), messageId: z.string(), workItemId: z.string().uuid().optional() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb(), transportId = ctx.activeTransportId;
+      await requireThreadForTransport(db, input.threadId, transportId);
+      const runs = await db.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
+        .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
+          eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
+          eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
+        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
+      const latest = runs[0];
+      if (!latest) return null;
+      const [item] = input.workItemId ? await db.select({ state: workItem.state }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, transportId),
+          eq(workItem.threadId, input.threadId), eq(workItem.sourceMessageId, input.messageId))).limit(1) : [];
+      if (input.workItemId && !item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      const states = item ? await handledRequestStates(db, { transportId, threadId: input.threadId, sourceIds: [input.messageId] }) : undefined;
+      const requestState = item ? states?.get(input.messageId) ?? {} : undefined;
+      const history = runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource }));
+      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState);
+      const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
+      const earlier = item ? requestHistory(history, requestState)
+        .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
+          kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
+          details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
+      const oldFiles = item ? outstandingSourceRecoveries(history).filter(file => file.runId !== latest.id) : [];
+      const earlierSources: ReservationistStaffAction[] = [];
+      for (const run of runs.filter(run => oldFiles.some(file => file.runId === run.id))) {
+        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
+        earlierSources.push(...(prior?.staffActions ?? []).filter(action => action.kind === 'business_document_failure' &&
+          oldFiles.some(file => file.runId === run.id && file.sourceRef === action.sourceRef)));
+      }
+      if (!summary && !earlier.length && !earlierSources.length) return null;
+      const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
+      return { replyToMessageId: input.messageId, runId: latest.id,
+        ...(item ? { workItemId: input.workItemId } : {}),
+        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier], staffActions: [...(reviewSummary.staffActions ?? []), ...earlierSources] } };
+    }),
+
+  /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */
+  setRequestHandled: mailboxProcedure.input(z.object({
+    workItemId: z.string().uuid(), runId: z.string().min(1).max(200), taskId: z.string().min(1).max(512), handled: z.boolean(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const result = await setRequestHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+    if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    if (input.handled) {
+      const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+      if (item?.threadId) await refreshThreadWork(db, { transportId: ctx.activeTransportId, threadId: item.threadId });
+    }
+    return { handled: input.handled };
   }),
 
   /**

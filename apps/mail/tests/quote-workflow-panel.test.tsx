@@ -232,6 +232,69 @@ function FailedRatesNoticeTrigger({
 }
 
 describe('QuoteWorkflowPanel', () => {
+  it.each(['non_quote', 'requirements'] as const)('shows prepared cancellation details in %s without claiming it was saved', (phase) => {
+    const session = {...initialQuoteSession(),phase,preparedStaffTasks:[{
+      id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action' as const,
+      details:['Reservation ABC123','Cancellation fee is unknown before commitment.','No cancellation has been saved.'],
+    }]};
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Reservation ABC123')).toBeDefined();
+    expect(screen.getByText('Cancellation fee is unknown before commitment.')).toBeDefined();
+    expect(screen.getByText('No cancellation has been saved.')).toBeDefined();
+    expect(screen.queryByRole('button', {name:/cancel reservation/i})).toBeNull();
+  });
+  it('records a staff acknowledgement for the selected request without completing the other', async () => {
+    const handled = vi.fn().mockResolvedValue(undefined);
+    const task = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action' as const,
+      details:['No cancellation has been saved.'],runId:'run',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,preparedStaffTasks:[task,
+      {...task,id:'invoice',kind:'existing_document',label:'Provide invoice',details:['Request: invoice']} ]};
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={handled} />);
+    fireEvent.click(screen.getAllByRole('button', {name:'Mark handled'})[0]!);
+    await waitFor(() => expect(handled).toHaveBeenCalledWith(task, true));
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('No cancellation has been saved.', { selector: 'li' })).toBeDefined();
+  });
+  it('shows one persistent control for a prepared question and keeps its source link', () => {
+    const question = `Parking? ${'Please confirm. '.repeat(20)}`.trim();
+    const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
+      text:question,sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};
+    const task = {id:'one',kind:'question',label:'Answer question',state:'Needs review' as const,
+      details:[`Request: ${question.slice(0, 256)}`],runId:'run',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,preparedStaffTasks:[task],reviewItems:[source,
+      {...source,id:'other',text:'Another question?'}]};
+    const view = vi.fn();
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={vi.fn().mockResolvedValue(undefined)} onViewSource={view} />);
+    expect(screen.queryByRole('button', {name:`Mark as done: ${question}`})).toBeNull();
+    expect(screen.getByText(`Request: ${question}`)).toBeDefined();
+    expect(screen.getByRole('button', {name:'Mark as done: Another question?'})).toBeDefined();
+    fireEvent.click(screen.getByRole('button', {name:'Show in email'}));
+    expect(view).toHaveBeenCalledWith(source);
+  });
+  it('does not replace an earlier request with a current request sharing its task id', () => {
+    const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
+      text:'Current question?',sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};
+    const task = {id:'one',kind:'question',label:'Answer question',state:'Needs review' as const,
+      details:['Request: Current question?'],runId:'current',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source],preparedStaffTasks:[task,
+      {...task,runId:'earlier',earlier:true,details:['Request: Earlier question?']}]};
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={vi.fn().mockResolvedValue(undefined)} />);
+    expect(screen.getByText('Request: Current question?')).toBeDefined();
+    expect(screen.getByText('Request: Earlier question?')).toBeDefined();
+    expect(screen.getAllByRole('button', {name:'Mark handled'})).toHaveLength(2);
+  });
+  it('shows each unanswered question on a non-quote email', () => {
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
+      {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},
+      {id:'two',kind:'question' as const,rank:'secondary' as const,text:'Is a shuttle available?',sourceLabel:'This email',blocking:false},
+      {id:'sheet',kind:'document_failure' as const,rank:'unread_source' as const,text:'Spreadsheet has omitted rows.',sourceLabel:'Attachment',blocking:false,readable:true},
+    ],handledReviewItemIds:['one']};
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Is a shuttle available?')).toBeDefined();
+    expect(screen.getByText('Done: Is parking available?')).toBeDefined();
+    expect(screen.getByText('Spreadsheet has omitted rows.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Edit reply/ })).toBeNull();
+  });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);
@@ -2778,6 +2841,57 @@ describe('an unread document is a needs-review row, never a stop', () => {
     expect(screen.getByText("Nava can't read rooming.docx yet — open it if it has booking details.")).toBeDefined();
     expect(screen.getByText('Needs review. Nava did not read this file.')).toBeDefined();
     expect(screen.queryByText(/Blocks the quote/)).toBeNull();
+  });
+
+  it('does not call a readable source warning an unread file', () => {
+    const base = sessionFromFixture('agency-contract');
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      phase: 'requirements',
+      reviewItems: [{
+        id: 'spreadsheet-review:rooming',
+        kind: 'document_failure',
+        rank: 'unread_source',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+        sourceLabel: 'rooming.xlsx',
+        sourceRef: 'rooming',
+        sourceKind: 'attachment',
+        filename: 'rooming.xlsx',
+        readable: true,
+        blocking: false,
+      }],
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Needs review. Nava read this file; check its masked or omitted content.')).toBeDefined();
+    expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
+  });
+
+  it('still surfaces readable attachment warnings on a non-quote email', () => {
+    const base = sessionFromFixture('agency-contract');
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      phase: 'non_quote',
+      reviewItems: [{
+        id: 'spreadsheet-review:rooming',
+        kind: 'document_failure',
+        rank: 'unread_source',
+        text: 'Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.',
+        sourceLabel: 'rooming.xlsx',
+        sourceRef: 'rooming',
+        sourceKind: 'attachment',
+        filename: 'rooming.xlsx',
+        reason: 'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',
+        readable: true,
+        blocking: false,
+      }],
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.'))
+      .toBeDefined();
+    expect(screen.getByText('Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.')).toBeDefined();
+    expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
   });
 });
 

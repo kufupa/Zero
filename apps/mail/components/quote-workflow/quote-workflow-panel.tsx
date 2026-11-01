@@ -41,13 +41,13 @@ import type {
   QuoteStayAction,
   StayGroupRequirement,
   QuotePaneConfig,
+  ReservationistPreparedTask,
 } from '@/lib/quote-workflow/types';
 import {
   Field,
   LinkButton,
   Notice,
   PrimaryButton,
-  Section,
   SecondaryButton,
   paneFieldClass,
   paneTextareaClass,
@@ -89,6 +89,53 @@ import {
 } from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
+
+function linkedRequestItem(task: ReservationistPreparedTask, items: QuoteReviewItem[] = []) {
+  if (task.earlier || !task.workItemId || !task.runId || typeof task.handled !== 'boolean') return undefined;
+  return items.find(item => item.kind === 'question' && item.sourceRef &&
+    item.id.startsWith(`request:${task.id}:${item.sourceRef}:`));
+}
+
+function PreparedStaffTasks({ tasks, onSetHandled, reviewItems, onViewSource }: {
+  tasks?: ReservationistPreparedTask[];
+  onSetHandled?: (task: ReservationistPreparedTask, handled: boolean) => Promise<void>;
+  reviewItems?: QuoteReviewItem[];
+  onViewSource?: (item: QuoteReviewItem) => void;
+}) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  if (!tasks?.length) return null;
+  return (
+    <section aria-label="Prepared requests" className="flex flex-col gap-2">
+      <p className="text-sm font-semibold">Prepared requests</p>
+      <p className="text-xs text-muted-foreground">These details were prepared earlier. Check the current HMS record before acting.</p>
+      {tasks.map((task) => {
+        const source = linkedRequestItem(task, reviewItems);
+        return (
+        <div key={`${task.runId ?? ''}:${task.id}`} className="rounded-md border p-3 text-sm">
+          <p className="font-medium">{task.label} · {task.handled ? 'Marked handled' : task.state === 'Ready' ? 'Review information' : task.state}</p>
+          {task.details.length ? (
+            <ul className="mt-2 flex list-disc flex-col gap-1 pl-4">
+              {task.details.map((detail, index) => <li key={`${index}:${detail}`}>
+                {source && detail.startsWith('Request: ') ? `Request: ${source.text}` : detail}
+              </li>)}
+            </ul>
+          ) : <p className="mt-2">Details need staff review. Check the request and HMS.</p>}
+          {source && onViewSource ? <button type="button" className="mt-2 mr-3 underline"
+            onClick={() => onViewSource(source)}>Show in email</button> : null}
+          {onSetHandled && task.workItemId && task.runId && typeof task.handled === 'boolean' ? (
+            <button type="button" className="mt-2 underline" disabled={pending !== null} onClick={() => {
+              setError(''); setPending(task.id);
+              void onSetHandled(task, !task.handled).catch(() => setError('Could not save this request. Refresh and try again.'))
+                .finally(() => setPending(null));
+            }}>{task.handled ? 'Reopen request' : 'Mark handled'}</button>
+          ) : null}
+        </div>
+      ); })}
+      {error ? <p role="alert">{error}</p> : null}
+    </section>
+  );
+}
 
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
@@ -397,6 +444,7 @@ export function QuoteWorkflowPanel({
   pdfPending,
   onHandleReviewItem,
   onUndoReviewItem,
+  onSetPreparedTaskHandled,
   onRetryRead,
   onViewSource,
   onEditReply,
@@ -476,6 +524,7 @@ export function QuoteWorkflowPanel({
   pdfPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
+  onSetPreparedTaskHandled?: (task: ReservationistPreparedTask, handled: boolean) => Promise<void>;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
   onRetryRead?: () => void;
   onViewSource?: (item: QuoteReviewItem) => void;
@@ -632,6 +681,12 @@ export function QuoteWorkflowPanel({
   latest.current = { session, pinRun };
   // Saved rates are per mailbox. The pane stays mounted across a mailbox switch, so the list follows the binding.
   const saved = useSavedRates(rates ?? null, session.binding?.transportId ?? null);
+  const trackedReviewIds = new Set(onSetPreparedTaskHandled
+    ? (session.preparedStaffTasks ?? []).flatMap(task => {
+        const item = linkedRequestItem(task, session.reviewItems);
+        return item ? [item.id] : [];
+      }) : []);
+  const notTracked = (item: QuoteReviewItem) => !trackedReviewIds.has(item.id);
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
@@ -648,6 +703,7 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+        <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
         {shuttleDraft}
       </div>
     );
@@ -659,8 +715,10 @@ export function QuoteWorkflowPanel({
       ? undefined
       : session.analysis?.hmsTodoCard;
   if (session.phase === 'non_quote') {
-    // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
-    const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
+    const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && !item.readable);
+    const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
+    const questions = (session.reviewItems ?? []).filter((item) => item.kind === 'question' && notTracked(item));
+    const handledQuestions = questions.filter((item) => (session.handledReviewItemIds ?? []).includes(item.id));
     const amendStays = groupStays(session.groups).filter((stay) => {
       const action = stayAskAction(session, stay.id);
       return action === 'amend' || action === 'cancel';
@@ -671,6 +729,7 @@ export function QuoteWorkflowPanel({
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
         {shuttleDraft}
+        <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
         {amendStays.map((stay) => (
           <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
@@ -679,18 +738,33 @@ export function QuoteWorkflowPanel({
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
             {item.text}
+            {item.reason ? <span className="mt-0.5 block text-[11px]">{item.reason}</span> : null}
           </Notice>
         ))}
+        {readableWarnings.map((item) => (
+          <Notice key={item.id} tone="warn">
+            {item.text}
+            {item.reason ? <span className="mt-0.5 block text-[11px]">{item.reason}</span> : null}
+          </Notice>
+        ))}
+        <ItemsForYou
+          openItems={openReviewItems(session).filter((item) => item.kind === 'question' && notTracked(item))}
+          handledItems={handledQuestions}
+          onViewSource={onViewSource}
+          onHandle={onHandleReviewItem}
+          onUndo={onUndoReviewItem}
+        />
       </div>
     );
   }
 
-  const openItems = openReviewItems(session);
+  const openItems = openReviewItems(session).filter(notTracked);
   // Each unread file has its own notice in the items below, so the generic unread-attachment flag line is left out.
-  const hasUnreadFiles = (session.reviewItems ?? []).some((item) => item.kind === 'document_failure');
+  const hasUnreadFiles = (session.reviewItems ?? []).some((item) => item.kind === 'document_failure' && !item.readable);
   const handledItems = (session.reviewItems ?? []).filter(
     (item) =>
       notNoise(item) &&
+      notTracked(item) &&
       item.kind !== 'pricing_fact' &&
       !item.blocking &&
       (session.handledReviewItemIds ?? []).includes(item.id),
@@ -1001,6 +1075,7 @@ export function QuoteWorkflowPanel({
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
       {shuttleDraft}
+      <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}

@@ -1,4 +1,7 @@
 import { admitReservationistAttachment,validateReservationistRaster,isReservationistSignatureNoise } from '../src/ai/reservationist-attachment-input.js';
+import { workbookToBytes } from '@office-kit/xlsx/io';
+import { addWorksheet, createWorkbook } from '@office-kit/xlsx/workbook';
+import { setCell } from '@office-kit/xlsx/worksheet';
 import { createHash } from 'node:crypto';
 import {validateDocumentPlan,guestDocumentFacts} from '../src/ai/reservationist-document-facts.js';
 import { expect, it } from 'vitest';
@@ -31,6 +34,13 @@ const read = {
   } as any,
   revalidate: async () => true,
 };
+const xlsxMime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+function xlsxInput(body:Buffer){
+ const xlsxMetadata={...metadata,attachmentId:'xlsx',mimeType:xlsxMime,sizeBytes:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+ const locator={messageId:'m',mimeType:xlsxMime,sizeBytes:body.length,s3Key:'attachments/m/xlsx'};
+ return{metadata:xlsxMetadata,scope,read:{...read,attachmentId:'xlsx',authorizedAttachmentIds:new Set(['xlsx']),expectedLocator:locator,
+  resolveLocator:async()=>locator,s3:{headObject:async()=>({sizeBytes:body.length,contentType:xlsxMime}),getObjectBounded:async()=>({body,contentType:xlsxMime})} as any}};
+}
 it('admits actual prior bytes with hash and owner proof without draft readiness', async () => {
   const result = await admitReservationistAttachment({ metadata, scope, read });
   expect(result.status).toBe('admitted');
@@ -53,6 +63,19 @@ it('masks card numbers and security codes in plain-text attachment pages', async
   });
   expect(result.status).toBe('admitted');
   expect(result.source?.pages).toEqual(['Card [card ••••1111] CVV: [code masked], order 1234567890123456']);
+});
+it('admits verified XLSX rows as sanitized text and keeps parser failures for staff',async()=>{
+ const workbook=createWorkbook(),sheet=addWorksheet(workbook,'Rooms');
+ setCell(sheet,1,1,'Room');setCell(sheet,1,2,'Guest');setCell(sheet,2,1,'4111 1111 1111 1111');
+ const body=Buffer.from(await workbookToBytes(workbook)),candidate=xlsxInput(body),result=await admitReservationistAttachment(candidate);
+ expect(result).toMatchObject({status:'admitted',reason:'text',draftReady:false});
+ expect(result.source?.pages?.[0]).toContain('"sheetName":"Rooms"');
+ expect(result.source?.pages?.[0]).toContain('[card ••••1111]');
+ expect(result.source?.pages?.[0]).not.toContain('4111 1111 1111 1111');
+ expect(result.bytes?.sha256).toBe(candidate.metadata.sourceHash);
+ const failed=await admitReservationistAttachment(xlsxInput(Buffer.from('not an xlsx')));
+ expect(failed).toMatchObject({status:'manual_required',reason:'spreadsheet_parse_failed',draftReady:false});
+ expect(failed.source).toBeUndefined();expect(failed.bytes).toBeUndefined();
 });
 it('denies future, cross-owner, altered-byte and mime identities', async () => {
   for (const altered of [
@@ -170,6 +193,23 @@ it('handles bounded scanned, encrypted, malformed PDFs with existing sandbox ada
       })
     ).reason,
   ).toBe('malformed');
+});
+
+it.each(['pdf', 'docx'] as const)('masks card details in extracted %s pages', async (kind) => {
+  const mimeType=kind==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const body=Buffer.from(kind==='pdf'?'%PDF-synthetic':'PK\u0003\u0004synthetic');
+  const meta={...metadata,mimeType,sizeBytes:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+  const locator={messageId:'m',mimeType,sizeBytes:body.length,s3Key:'attachments/m/a'};
+  const result=await admitReservationistAttachment({metadata:meta,scope,read:{...read,expectedLocator:locator,
+    resolveLocator:async()=>locator,s3:{headObject:async()=>({sizeBytes:body.length,contentType:mimeType}),
+      getObjectBounded:async()=>({body,contentType:mimeType})} as any},
+    ...(kind==='docx'?{officeConverter:async()=>Buffer.from('%PDF-derived')}:{}),
+    runner:async tool=>({stdout:Buffer.from(tool==='pdfinfo'?'Pages: 1\nEncrypted: no':
+      kind==='pdf'?'Ref 1234\n4111\u00a01111\u00a01111\u00a01111 CVV: 123\f':'Card 4111\n1111 1111 1111 CVV: 123\f'),stderr:Buffer.alloc(0),exitCode:0}),
+  });
+  expect(result.status).toBe('admitted');
+  expect(result.source?.pages?.[0]).toContain(kind==='pdf'?'[card ••••1111]':'[number groups hidden; may be room numbers or card details; staff review]');
+  expect(result.source?.pages?.[0]).toContain('CVV: [code masked]');
 });
 
 const rasterFixtures={

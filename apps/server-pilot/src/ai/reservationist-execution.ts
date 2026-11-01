@@ -2,6 +2,8 @@ import {isReservationistConferenceOnlyQuote} from './reservationist-business-ser
 import {assertReservationistSubjectReference} from './reservationist-subject-source.js';
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {createHash} from 'node:crypto';
+import {AMBIGUOUS_NUMBER_GROUPS} from './card-mask.js';
+import {isReservationistXlsxMimeType} from './reservationist-xlsx.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistResultFreshForAction} from './draft-approval.js';
 import type {ModelAdapter} from './bedrock/adapter.js';
@@ -41,7 +43,7 @@ export function deriveStaffAnswerTopics(text:string):StaffAnswerTopic[]{return (
 /** `detail` is safe diagnostics for staff logs only (codes, statuses, run ids; no guest data, no prices). It never reaches a reply. */
 export class ReservationistTaskEvidenceUnavailable extends Error { constructor(readonly code:string, readonly missingTopics:readonly string[],readonly staffTopics?:readonly StaffAnswerTopic[],readonly detail?:Readonly<Record<string,unknown>>) { super(code); } }
 class SourceRequestClarification extends Error{constructor(readonly reply:string,readonly evidenceRefs:string[],code:string){super(code);}}
-function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
+export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
@@ -152,6 +154,17 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
  const modeIdentity=()=>quoteDigest({extractionMode:options.extractionMode??'combined',factEnrichmentMode:options.factEnrichmentMode??null,messageBatching:options.messageBatching??null}),originalModeIdentity=modeIdentity();
  const guardModes=()=>{if(modeIdentity()!==originalModeIdentity)throw new Error('extraction_options_mutated');};
  const planScopes=new WeakMap<RuntimePlan,string>(),scopeIdentity=(input:ReservationistRuntimeInput)=>quoteDigest({requestId:input.requestId,scope:input.authorizationScope,propertyCode:input.propertyCode,trigger:input.trigger,messages:input.messages,causalAt:input.clock.causalAt});
+ const numberReviewAttachments=()=>options.admissions.flatMap(a=>{
+  if(a.status!=='admitted'||!a.source?.pages)return[];
+  const text=a.source.pages.join('\n'),ambiguous=text.includes(AMBIGUOUS_NUMBER_GROUPS);
+  const maskedXlsx=isReservationistXlsxMimeType(a.metadata.mimeType)&&/\[(?:card ••••\d{4}|code masked)\]/u.test(text);
+  const reason=maskedXlsx?'masked_card_numbers':ambiguous?'ambiguous_number_groups':null;
+  return reason?[{
+   kind:'attachment_manual' as const,reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,
+   sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,disclosure:'staff_only' as const,
+   provenance:{reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
+  }]:[];
+ });
  const plans=new WeakMap<RuntimePlan,Awaited<ReturnType<typeof extractReservationistPlan>>>(),generated=new Map<string,GeneratedDraftArtifact>(),clauses=new Map<string,string>();
  let extractionDiagnostics:Awaited<ReturnType<typeof extractReservationistPlan>>['extractionDiagnostics'];
  let modelCalls=0,toolCalls=0,usageKnown=true,inputTokens=0,outputTokens=0,totalTokens=0,estimatedCostUsd=0;
@@ -203,7 +216,8 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     if(fact.source.attachmentId.startsWith('message-subject:'))assertReservationistSubjectReference(fact,task,input);
    }
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
-   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,signatureNoise:a.metadata.signatureNoise===true,disclosure:'staff_only' as const,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]}})),noAction:{kind:extracted.sourceReviewSelectionCompleted?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
+   const ambiguity=numberReviewAttachments();
+   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:[...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,signatureNoise:a.metadata.signatureNoise===true,disclosure:'staff_only' as const,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]}})),...ambiguity],noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
   async execute(plan,input,signal,evaluation?:import('./reservationist-runtime.js').ReservationistSourceEvaluation){
    const extracted=plans.get(plan);if(!extracted)throw new Error('validated_plan_required');
@@ -214,7 +228,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     const message=input.messages.find(m=>sourceRef===`message:${m.id}`||sourceRef===`message-subject:${m.id}`);
     return{sourceHash,...(message?{sourceKind:'message' as const,messageId:message.id}:{})};
    };
-   work.sourceRecoveries=[...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,...recoverySource(a.metadata.attachmentId,a.metadata.sourceHash),disclosure:'staff_only' as const})),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
+   work.sourceRecoveries=[...numberReviewAttachments(),...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,...recoverySource(a.metadata.attachmentId,a.metadata.sourceHash),disclosure:'staff_only' as const})),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
    const artifact=(pdf:Uint8Array,fileName:string)=>{const sha256=createHash('sha256').update(pdf).digest('hex'),ref=`generated:${sha256}`;generated.set(ref,{artifactRef:ref,filename:fileName,mimeType:'application/pdf',body:Buffer.from(pdf),sha256});work.artifacts.push({ref,sha256,sizeBytes:pdf.length,fileName,mimeType:'application/pdf'});return ref;};
    const checkRateClaims=async(ctx:Context,revision:QuoteRevision):Promise<string[]>=>{
     const {task,input}=ctx;let evidenceRefs:string[]=[];
@@ -366,7 +380,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
        const dates=ctx.facts.filter(f=>f.kind==='dates');
        if(dates.length!==1||!request.changes||dates[0]!.value.arrival!==request.changes.arrivalDate||dates[0]!.value.departure!==request.changes.departureDate)throw new Error('pending_action_dates_mismatch');
       }
-      const packet=await prepareReservationistPendingAction({...request,clock:{causalAt:input.clock.causalAt,sourceAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}},{resolveEvidence:async()=>action.evidence,authorizeSource:(evidence,edge)=>tool(edge,()=>action.authorizeSource(evidence,edge)),signal});
+      const packet=await prepareReservationistPendingAction({...request,clock:{causalAt:input.clock.causalAt,sourceAt:task.kind==='cancel_request'?action.evidence.observedAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}},{resolveEvidence:async()=>action.evidence,authorizeSource:(evidence,edge)=>tool(edge,()=>action.authorizeSource(evidence,edge)),signal});
       work.packets.push(packet);status=packet.status;evidenceRefs=packet.sourceRefs;
       guestText=packet.status==='pending_pms_action'?(task.kind==='change'?'Your amendment request is prepared for staff review; no changes have been made.':'Your cancellation request is prepared for staff review; no cancellation has been completed.'):'Please confirm the reservation and requested action so staff can review it.';
      }else if(task.kind==='channel_booking_sync'){

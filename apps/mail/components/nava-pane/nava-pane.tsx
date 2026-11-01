@@ -18,7 +18,6 @@ import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
-  quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -114,6 +113,7 @@ import {
   quoteStrategyStayRevision,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
@@ -298,6 +298,7 @@ export function NavaPane({
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
+  const preparedTaskGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const runQuoteStepRef = useRef<(stepId: string, autoStart?: boolean, readBack?: boolean) => void>(() => undefined);
   const {
@@ -874,6 +875,18 @@ export function NavaPane({
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', message });
       });
+    return () => { cancelled = true; };
+    // Admission key is the selection identity. Body/subject are no longer read on the client.
+    // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
+
+  // Work-item lookup can finish after an overridden analysis; refresh task controls without re-running the model.
+  useEffect(() => {
+    if (isNonActionableMessage) return;
+    const binding = quoteSession.binding;
+    if (!binding || !quoteAdmissionKey || (binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
+    let cancelled = false;
+    let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindStaffQuoteSource({
       query: staff.workstation.staffQuoteSource?.query,
@@ -886,21 +899,47 @@ export function NavaPane({
       }
       if (source.kind !== 'ready') return;
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
-      void bindStaffActions({
-        list: staff.drafts.list?.query,
-        get: staff.drafts.get?.query,
-        threadId: source.source.threadId,
-      }).then((actions) => {
-        if (cancelled || actions.kind !== 'ready') return;
-        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
-      });
+      const refreshActions = async () => {
+        const generation = preparedTaskGeneration.current;
+        const actions = await bindStaffActions({
+          query: staff.drafts.reviewForMessage?.query,
+          threadId: source.source.threadId,
+          messageId: source.source.messageId,
+          ...(paneWorkItemId ? { workItemId: paneWorkItemId } : {}),
+        });
+        if (cancelled || generation !== preparedTaskGeneration.current || actions.kind !== 'ready') return false;
+        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
+        return true;
+      };
+      const candidateQuery = (trpcClient as unknown as { ai?: { hmsCandidateState?: {
+        query?: (input: { threadId: string }, options?: ReturnType<typeof inMailbox>) => Promise<{ activeRun?: unknown }>;
+      } } }).ai?.hmsCandidateState?.query;
+      void (async () => {
+        await refreshActions();
+        if (cancelled) return;
+        let sawActive = false, idleChecks = 0;
+        const watch = async () => {
+          let running = false, statusRead = false;
+          try {
+            if (candidateQuery) {
+              const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
+              if (cancelled) return;
+              statusRead = true;
+              running = Boolean(state.activeRun);
+              if (running) { sawActive = true; idleChecks = 0; }
+            }
+          } catch { /* Review can still be available when candidate status is not. */ }
+          if (!running && await refreshActions() && sawActive && statusRead) return;
+          if (!cancelled && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
+        };
+        await watch();
+      })();
     });
     return () => {
       cancelled = true;
+      if (candidateTimer) clearTimeout(candidateTimer);
     };
-    // Admission key is the selection identity. Body/subject are no longer read on the client.
-    // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage, paneWorkItemId]);
 
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);
@@ -2356,6 +2395,17 @@ export function NavaPane({
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html, staffEdited: true })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onSetPreparedTaskHandled={async (task, handled) => {
+                const mutate = staffQuoteFromTrpc(trpcClient).drafts.setRequestHandled?.mutate;
+                if (!mutate || !task.workItemId || !task.runId) throw new Error('Request review unavailable');
+                preparedTaskGeneration.current++;
+                try {
+                  await mutate({ workItemId: task.workItemId, runId: task.runId, taskId: task.id, handled });
+                } finally {
+                  preparedTaskGeneration.current++;
+                }
+                dispatchQuote({ type: 'prepared_task_handled', taskId: task.id, runId: task.runId, handled });
+              }}
               onPatchStaffHeader={(header, options) => {
                 if (options?.staffEdit) suppressAutoStaffQuoteForCurrentEmail();
                 dispatchQuote({ type: 'patch_staff_header', header });

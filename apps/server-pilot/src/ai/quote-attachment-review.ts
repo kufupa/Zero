@@ -24,6 +24,8 @@ const IMAGE_FILE = /\.(png|jpe?g|gif|bmp|webp|svg)$/i;
 const CALENDAR_OR_CONTACT_FILE = /\.(ics|vcf)$/i;
 const DOCUMENT_FILE = /\.(doc|docx|xls|xlsx|odt)$/i;
 const PDF_FILE = /\.pdf$/i;
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const XLSX_FILE = /\.xlsx$/i;
 
 const CALENDAR_OR_CONTACT_MIME = new Set(['text/calendar', 'text/x-vcalendar', 'text/vcard', 'text/x-vcard']);
 const DOCUMENT_MIME = new Set([
@@ -62,6 +64,23 @@ const UNREAD_REASON_WORDS: Record<string, string> = {
   'not a PDF': 'not a PDF',
   'office conversion failed': 'Word file could not be read',
   'page boundaries unavailable': 'page breaks could not be read',
+  'spreadsheet too large': 'above the spreadsheet size limit',
+  'spreadsheet encrypted': 'password-protected',
+  'spreadsheet sheet limit': 'has too many sheets to read safely',
+  'spreadsheet row limit': 'above the row reading limit',
+  'spreadsheet cell limit': 'above the cell reading limit',
+  'spreadsheet content limit': 'above a row or cell reading limit',
+  'spreadsheet output limit': 'above the text reading limit',
+  'spreadsheet formula cells': 'contains formulas that Nava does not recalculate',
+  'spreadsheet error cells': 'contains spreadsheet error cells',
+  'spreadsheet hidden sheet': 'contains hidden sheets',
+  'spreadsheet hidden rows or columns': 'contains hidden rows or columns',
+  'spreadsheet chart sheet': 'contains a chart sheet Nava cannot read',
+  'spreadsheet unsupported format': 'uses an unsupported spreadsheet format',
+  'spreadsheet unsupported content': 'contains unsupported spreadsheet content',
+  'spreadsheet safety limit': 'exceeded safe spreadsheet reading limits',
+  'spreadsheet parse failed': 'could not be read completely',
+  'spreadsheet empty': 'contains no readable cell data',
 };
 
 /** Why Nava could not read a file, in words staff can act on. Null for a reason with no wording. */
@@ -76,6 +95,8 @@ export function attachmentMattersForReview(facts: AttachmentReviewFacts): boolea
   const mime = mimeOf(facts);
   if (mime.startsWith('image/') || IMAGE_FILE.test(facts.filename)) return false;
   if (CALENDAR_OR_CONTACT_MIME.has(mime) || CALENDAR_OR_CONTACT_FILE.test(facts.filename)) return false;
+  // A small rooming workbook is still a booking source; don't treat it like a tiny signature.
+  if (mime === XLSX_MIME || XLSX_FILE.test(facts.filename)) return true;
   if (facts.byteSize !== undefined && facts.byteSize < TINY_FILE_BYTES) return false;
   if (DOCUMENT_MIME.has(mime) || DOCUMENT_FILE.test(facts.filename)) return true;
   return facts.byteSize !== undefined && facts.byteSize > LARGE_UNKNOWN_FILE_BYTES;

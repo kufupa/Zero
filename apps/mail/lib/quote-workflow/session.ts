@@ -195,6 +195,17 @@ export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; gue
   );
 }
 
+export function stayTotal(rows: StayGroupRequirement[], field: 'adultsTotal' | 'childrenTotal') {
+  if (rows.some((row) => (row[field] === null || row[field] === undefined) && row.fields[field] === 'staff_corrected'))
+    return { value: null, provenance: 'staff_corrected' as const };
+  const values = rows.map((row) => row[field]).filter((value): value is number => typeof value === 'number');
+  if (values.some((value) => value !== values[0])) return { value: null };
+  return {
+    value: values[0] ?? null,
+    provenance: rows.find((row) => row[field] === values[0])?.fields[field] ?? rows[0]?.fields[field],
+  };
+}
+
 export type StayAskGuest = { name: string; confirmationNumber: string | null };
 export type StayAskAction = 'quote' | 'booking' | 'amend' | 'cancel' | 'other';
 
@@ -547,6 +558,7 @@ export function initialQuoteSession(): QuoteWorkflowSession {
     roomRateBoardSelections: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
+    preparedStaffTasks: [],
     selectedStayKey: null,
     handledSourceKey: null,
     reviewItems: [],
@@ -1307,8 +1319,8 @@ function blankRow(
 }
 
 /**
- * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Staff own every value in the
- * copy, and an approved override belongs to the row it was approved for.
+ * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Stay totals remain stay-wide;
+ * other copied values become staff-owned, and an approved override belongs to the row it was approved for.
  */
 function copyRow(source: StayGroupRequirement, id: string, stayId: string): StayGroupRequirement {
   const copy: StayGroupRequirement = {
@@ -1318,7 +1330,11 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     roomCodes: source.roomCodes?.slice(),
     childrenAges: [...source.childrenAges],
     specialRequests: [...source.specialRequests],
-    fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
+    fields: Object.fromEntries(
+      Object.entries(source.fields).map(([key, provenance]) => [
+        key, key === 'adultsTotal' || key === 'childrenTotal' ? provenance : 'staff_corrected',
+      ]),
+    ),
   };
   delete copy.rateCode;
   delete copy.rowPrice;
@@ -1745,8 +1761,10 @@ export function reduceQuoteSession(
         };
       }
       if (action.analysis.intent !== 'quote') {
-        const unreadItems = (action.analysis.reviewItems ?? []).filter(
-          (item) => item.kind === 'document_failure',
+        const reviewItems = projectQuoteReviewItems(action.analysis, [], [], [
+          ...session.staffActions, ...(action.analysis.staffActions ?? []),
+        ]).filter(
+          (item) => item.kind === 'document_failure' || item.kind === 'question',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);
@@ -1767,7 +1785,7 @@ export function reduceQuoteSession(
                   )
                 ? session.selectedStayKey
                 : null,
-          reviewItems: unreadItems,
+          reviewItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
             session.staffHeader,
@@ -1856,6 +1874,9 @@ export function reduceQuoteSession(
         handledReviewItemIds: keepHandled ? session.handledReviewItemIds : [],
       };
     }
+    case 'prepared_task_handled':
+      return { ...session, preparedStaffTasks: (session.preparedStaffTasks ?? []).map(task =>
+        task.id === action.taskId && task.runId === action.runId ? { ...task, handled: action.handled } : task) };
     case 'staff_actions_ready': {
       const extras = session.reviewItems.filter(
         (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
@@ -1866,11 +1887,17 @@ export function reduceQuoteSession(
         extras,
         action.actions,
       );
+      // A background refresh replaces staff actions, not warnings for the current quote.
+      const existingTexts = new Set(reviewItems.map((item) => item.text));
+      reviewItems.push(...session.reviewItems.filter((item) =>
+        item.sourceLabel === 'Quote extras' && !existingTexts.has(item.text),
+      ));
       const sourceKey = reviewSourceKey({ ...session, staffActions: action.actions });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
       return {
         ...session,
         staffActions: action.actions,
+        preparedStaffTasks: action.tasks ?? [],
         reviewItems,
         handledSourceKey: sourceKey || session.handledSourceKey,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
@@ -1909,7 +1936,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,
@@ -2171,6 +2198,27 @@ export function reduceQuoteSession(
         })),
       );
     }
+    case 'patch_stay_total': {
+      const stayRows = groupsForStayAction(session.groups, action.stayId);
+      if (
+        !stayRows.length &&
+        !session.groups.length &&
+        action.stayId === stayIdOf(draftStayGroup())
+      ) {
+        return reduceQuoteSession(session, {
+          type: 'patch_group',
+          groupId: DRAFT_GROUP_ID,
+          patch: { [action.field]: action.value },
+        });
+      }
+      const targetIds = new Set(stayRows.map((group) => group.id));
+      if (!targetIds.size) return session;
+      const groups = session.groups.map((group) =>
+        targetIds.has(group.id) ? applyGroupPatch(group, { [action.field]: action.value }) : group,
+      );
+      const touched = new Set(groups.filter((group) => targetIds.has(group.id)).map(stayKeyForGroup));
+      return editStays(session, groups, touched);
+    }
     case 'patch_group': {
       // The first edit to the blank stay makes it a real group. Her edit then wins over a read that lands later.
       const base =
@@ -2207,11 +2255,22 @@ export function reduceQuoteSession(
       const template = matching[matching.length - 1];
       if (!template) return session;
       const stayId = stayIdOf(template);
-      const row = blankRow(`r_${action.token}`, stayId, {
-        arrivalDate: template.arrivalDate,
-        departureDate: template.departureDate,
-        board: template.board,
-      });
+      const stayRows = matching.filter((group) => stayIdOf(group) === stayId);
+      const adultsTotal = stayTotal(stayRows, 'adultsTotal');
+      const childrenTotal = stayTotal(stayRows, 'childrenTotal');
+      const row = {
+        ...blankRow(`r_${action.token}`, stayId, {
+          arrivalDate: template.arrivalDate,
+          departureDate: template.departureDate,
+          board: template.board,
+        }),
+        ...(adultsTotal.value !== null || adultsTotal.provenance === 'staff_corrected' ? { adultsTotal: adultsTotal.value } : {}),
+        ...(childrenTotal.value !== null || childrenTotal.provenance === 'staff_corrected' ? { childrenTotal: childrenTotal.value } : {}),
+        fields: {
+          ...(adultsTotal.provenance ? { adultsTotal: adultsTotal.provenance } : {}),
+          ...(childrenTotal.provenance ? { childrenTotal: childrenTotal.provenance } : {}),
+        },
+      };
       const groups = syncTotalRoomsForStay(
         session,
         insertAfterStay(pinStay(session.groups, stayId), stayId, [row]),

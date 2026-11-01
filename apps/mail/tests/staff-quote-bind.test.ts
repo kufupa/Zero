@@ -2,13 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   bindExecuteStaffQuote,
   bindReadBackStaffQuote,
+  bindStaffActions,
   bindStaffQuoteStrategy,
   bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
+  readStaffActions,
   staffQuoteGroupsFromStay,
   type ExecuteStaffQuoteInput,
   type StaffQuoteJobQuery,
 } from '../lib/quote-workflow/staff-quote-bind';
+import { mapStaffActions } from '../lib/quote-workflow/review-items';
 import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
@@ -31,6 +34,79 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   specialRequests: [],
   fields: {},
   ...overrides,
+});
+
+it('keeps a metadata-only unread attachment visible to staff without a file hash', () => {
+  const action = { id:'source:large:metadata',kind:'business_document_failure',text:'Open the original',
+    sourceRef:'large',sourceIdentity:'metadata_only',sourceKind:'attachment',messageId:'mail-1',
+    filename:'rooming.xlsx',blockingQuote:false,status:'open' };
+  const parsed = readStaffActions({ staffActions:[action,{...action,id:'bad',sourceKind:'message'},
+    {...action,id:'bad-hash',sourceHash:'a'.repeat(64)}] });
+  expect(parsed).toHaveLength(1);
+  expect(mapStaffActions(parsed)).toMatchObject([{sourceRef:'large',messageId:'mail-1',filename:'rooming.xlsx'}]);
+  expect(mapStaffActions(parsed)[0]?.sourceHash).toBeUndefined();
+});
+
+it('keeps a number-masked workbook warning visibly readable', () => {
+  const reason='Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.';
+  const action={id:'source:sheet:hash',kind:'business_document_failure',text:`rooms.xlsx: ${reason}`,
+    sourceRef:'sheet',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'mail-1',filename:'rooms.xlsx',
+    reason,readable:true,blockingQuote:false,status:'open'} as const;
+  expect(mapStaffActions(readStaffActions({staffActions:[action]}))).toMatchObject([{
+    kind:'document_failure',text:'rooms.xlsx: some details need review',reason,readable:true,
+  }]);
+});
+
+it('loads the current review for the selected message', async () => {
+  const action = { id:'request:shuttle',kind:'unanswered_question',text:'Can we arrange a shuttle?',
+    sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',
+    blockingQuote:false,status:'open' };
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[action]}});
+  expect(await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).toEqual({kind:'ready',actions:[action]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread-1',messageId:'mail-1'});
+});
+
+it('does not use a review for another message', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-0',reviewSummary:{staffActions:[]}});
+  expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
+});
+
+it('binds prepared tasks to the selected email review', async () => {
+  const newest = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action',details:['Fee is unknown.','No cancellation has been saved.']};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:[newest]}});
+  expect(await bindStaffActions({query,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[],tasks:[newest]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
+});
+
+it('keeps independent handled states attached to the selected work item and run', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',runId:'run-1',workItemId:'item-1',reviewSummary:{tasks:[
+    {id:'one',kind:'question',label:'Answer question',state:'Needs review',details:['Request: Parking?'],handled:true},
+    {id:'two',kind:'existing_document',label:'Provide document',state:'Needs review',details:['Request: Invoice?'],handled:false},
+  ]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+  expect(result).toMatchObject({kind:'ready',tasks:[{id:'one',handled:true,runId:'run-1',workItemId:'item-1'},
+    {id:'two',handled:false,runId:'run-1',workItemId:'item-1'}]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+});
+
+it('keeps an earlier unresolved task even if a rerun reused its task id', async () => {
+  const task = {id:'same',kind:'question',label:'Review',state:'Needs review',details:['Check request'],handled:false};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',runId:'new',workItemId:'item',reviewSummary:{tasks:[
+    task, {...task,runId:'old',label:'Earlier request'},
+  ]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item'});
+  expect(result).toMatchObject({kind:'ready',tasks:[{id:'same',runId:'new'},{id:'same',runId:'old'}]});
+});
+
+it('keeps the final no-save notice when a long prepared booking is shortened', async () => {
+  const details = [...Array.from({length: 410}, (_, index) => `Night ${index}`), 'No booking has been saved.'];
+  const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Pending staff action',details};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{tasks:[task]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1'});
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.tasks?.[0]?.details).toContain('No booking has been saved.');
+  expect(result.tasks?.[0]?.details).toContain('Some prepared details are not shown. Check the request and HMS.');
 });
 
 describe('HRDAV native room and board maps', () => {

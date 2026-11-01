@@ -38,7 +38,9 @@ export function ItemsForYou({
             {item.blocking
               ? 'Blocks the quote — fix the stay details first'
               : item.kind === 'document_failure'
-                ? 'Needs review. Nava did not read this file.'
+                ? item.readable
+                  ? 'Needs review. Nava read this file; check its masked or omitted content.'
+                  : 'Needs review. Nava did not read this file.'
                 : 'Needs a reply. Not a price decision.'}
           </p>
           <div className="flex flex-wrap gap-1.5">
@@ -60,7 +62,7 @@ export function ItemsForYou({
                 Retry read
               </button>
             ) : null}
-            {item.kind === 'question' || item.kind === 'analysis_failure' ? (
+            {onEditReply && (item.kind === 'question' || item.kind === 'analysis_failure') ? (
               <button
                 type="button"
                 className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"

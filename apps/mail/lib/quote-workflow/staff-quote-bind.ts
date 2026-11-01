@@ -12,6 +12,7 @@ import type {
   QuoteOffer,
   QuoteRunScreenshotResult,
   RateOption,
+  ReservationistPreparedTask,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -561,14 +562,19 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
     if (typeof action.id !== 'string' || !action.id.trim()) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;
-    if (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash)) continue;
+    const metadataOnly = action.sourceIdentity === 'metadata_only' && action.sourceHash === undefined &&
+      action.kind === 'business_document_failure' && action.sourceKind === 'attachment' &&
+      typeof action.messageId === 'string' && !!action.messageId.trim();
+    if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
+    if (!metadataOnly && (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash))) continue;
     if (typeof action.blockingQuote !== 'boolean') continue;
     actions.push({
       id: action.id,
       kind: action.kind,
       text: action.text,
       sourceRef: action.sourceRef,
-      sourceHash: action.sourceHash,
+      ...(typeof action.sourceHash === 'string' ? { sourceHash: action.sourceHash } : {}),
+      ...(metadataOnly ? { sourceIdentity: 'metadata_only' as const } : {}),
       blockingQuote: action.blockingQuote,
       status: 'open',
       ...(action.sourceKind === 'message' || action.sourceKind === 'attachment'
@@ -581,9 +587,42 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
         ? { filename: action.filename }
         : {}),
       ...(typeof action.reason === 'string' && action.reason.trim() ? { reason: action.reason } : {}),
+      ...(action.kind === 'business_document_failure' && action.readable === true ? { readable: true } : {}),
     });
   }
   return actions;
+}
+
+/** The draft summary is display-only; the stored packet remains the action authority. */
+export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTask[] {
+  if (!value || typeof value !== 'object') return [];
+  const envelope = value as { runId?: unknown; workItemId?: unknown; reviewSummary?: { tasks?: unknown } };
+  const summary = envelope.reviewSummary;
+  if (!Array.isArray(summary?.tasks)) return [];
+  const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
+  const tasks: ReservationistPreparedTask[] = [];
+  const ids = new Set<string>();
+  for (const item of summary.tasks) {
+    if (!item || typeof item !== 'object') continue;
+    const task = item as Record<string, unknown>;
+    if (typeof task.id !== 'string' || !task.id.trim()) continue;
+    const runId = typeof task.runId === 'string' ? task.runId : envelope.runId;
+    const identity = JSON.stringify([runId ?? '', task.id]);
+    if (ids.has(identity)) continue;
+    if (typeof task.kind !== 'string' || !kinds.has(task.kind)) continue;
+    if (typeof task.label !== 'string' || !task.label.trim()) continue;
+    if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
+    const allDetails = Array.isArray(task.details) ? task.details.filter((detail): detail is string => typeof detail === 'string' && !!detail.trim()) : [];
+    const details = allDetails.length > 400
+      ? [...allDetails.slice(0, 395), 'Some prepared details are not shown. Check the request and HMS.', ...allDetails.slice(-5)]
+      : allDetails;
+    ids.add(identity);
+    const completion = typeof runId === 'string' && typeof envelope.workItemId === 'string' && typeof task.handled === 'boolean'
+      ? { runId, workItemId: envelope.workItemId, handled: task.handled } : {};
+    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details,
+      ...(task.earlier === true ? { earlier: true } : {}), ...completion });
+  }
+  return tasks;
 }
 
 const RATE_OPTION_BOARDS = new Set<string>(['room_only', 'bb', 'dinner_bb']);
@@ -798,44 +837,28 @@ export async function bindStaffQuoteSource(args: {
 
 export type BoundStaffActions =
   | { kind: 'unavailable'; reason: string }
-  | { kind: 'ready'; actions: ReservationistStaffAction[] };
+  | { kind: 'ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] };
 
 export async function bindStaffActions(args: {
-  list?: (input: { threadId: string; limit?: number }) => Promise<unknown>;
-  get?: (input: { id: string }) => Promise<unknown>;
+  query?: (input: { threadId: string; messageId: string; workItemId?: string }) => Promise<unknown>;
   threadId?: string;
+  messageId?: string;
+  workItemId?: string;
 }): Promise<BoundStaffActions> {
-  if (!args.threadId?.trim()) {
+  if (!args.threadId?.trim() || !args.messageId?.trim()) {
     return { kind: 'unavailable', reason: 'Actions for this email are not ready yet. Select it again.' };
   }
-  if (!args.list && !args.get) {
+  if (!args.query) {
     return { kind: 'unavailable', reason: 'Email actions cannot be loaded from this pane yet. Refresh the pane and try again.' };
   }
   try {
-    if (args.list) {
-      const listed = await args.list({ threadId: args.threadId, limit: 20 });
-      const rows = Array.isArray(listed)
-        ? listed
-        : listed && typeof listed === 'object' && Array.isArray((listed as { drafts?: unknown }).drafts)
-          ? (listed as { drafts: unknown[] }).drafts
-          : [];
-      const collected: ReservationistStaffAction[] = [];
-      for (const row of rows) {
-        const fromList = readStaffActions(row);
-        if (fromList.length) {
-          collected.push(...fromList);
-          continue;
-        }
-        const id = row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string'
-          ? (row as { id: string }).id
-          : '';
-        if (id && args.get) {
-          collected.push(...readStaffActions(await args.get({ id })));
-        }
-      }
-      return { kind: 'ready', actions: collected };
-    }
-    return { kind: 'ready', actions: [] };
+    const source = await args.query({ threadId: args.threadId, messageId: args.messageId,
+      ...(args.workItemId ? { workItemId: args.workItemId } : {}) });
+    if (source == null) return { kind: 'ready', actions: [] };
+    if (typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)
+      return { kind: 'unavailable', reason: 'The email review changed. Select it again.' };
+    const tasks = readPreparedStaffTasks(source);
+    return { kind: 'ready', actions: readStaffActions(source), ...(tasks.length ? { tasks } : {}) };
   } catch (error) {
     return { kind: 'unavailable', reason: rejectionReason(error) };
   }
@@ -1855,6 +1878,8 @@ type StaffQuoteClient = {
 type DraftsClient = {
   list?: { query: (input: { threadId: string; limit?: number }) => Promise<unknown> };
   get?: { query: (input: { id: string }) => Promise<unknown> };
+  reviewForMessage?: { query: (input: { threadId: string; messageId: string; workItemId?: string }, options?: StaffQuoteCallOptions) => Promise<unknown> };
+  setRequestHandled?: { mutate: (input: { workItemId: string; runId: string; taskId: string; handled: boolean }, options?: StaffQuoteCallOptions) => Promise<unknown> };
 };
 
 function staffQuoteCallOptions(
@@ -1919,6 +1944,13 @@ export function staffQuoteFromTrpc(trpc: unknown): {
         return route;
       },
     }),
-    drafts: row.drafts ?? {},
+    drafts: new Proxy(row.drafts ?? {}, {
+      get(target, property) {
+        const route = Reflect.get(target, property, target);
+        if (property === 'reviewForMessage') return mailboxStaffQuoteQuery(route as DraftsClient['reviewForMessage'], mailbox);
+        if (property === 'setRequestHandled') return mailboxStaffQuoteMutation(route as DraftsClient['setRequestHandled'], mailbox);
+        return route;
+      },
+    }),
   };
 }

@@ -6,9 +6,11 @@ import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import { resolveNativeRoomCodes } from '../lib/quote-workflow/staff-quote-bind';
+import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
 import {
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
+  type StayEditAction,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { matchRoomType, ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
@@ -40,7 +42,7 @@ function renderStay(
   }: { index?: number; stayCount?: number; requestedRoomsTotal?: number } = {},
 ) {
   const onPatch = vi.fn();
-  const onStayAction = vi.fn();
+  const onStayAction = vi.fn<(action: StayEditAction) => void>();
   const onMealPlanChange = vi.fn();
   const rendered = render(
     <StayCard
@@ -72,6 +74,89 @@ describe('StayCard rooms', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
     fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
     expect(onPatch).toHaveBeenLastCalledWith('g1', { adults: 3 });
+  });
+
+  it('edits both stay totals with one stay-scoped action and keeps zero distinct from unknown', () => {
+    const { onPatch, onStayAction } = renderStay([
+      stay({ stayId: 'stay-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'g2', stayId: 'stay-a', adultsTotal: 5, childrenTotal: 0 }),
+    ]);
+
+    const adults = screen.getByLabelText('Adults total');
+    expect((adults as HTMLInputElement).value).toBe('5');
+    fireEvent.change(adults, { target: { value: '6' } });
+    expect(onStayAction).toHaveBeenNthCalledWith(1, {
+      type: 'patch_stay_total', stayId: 'stay-a', field: 'adultsTotal', value: 6,
+    });
+
+    const children = screen.getByLabelText('Children total');
+    expect((children as HTMLInputElement).value).toBe('0');
+    fireEvent.change(children, { target: { value: '' } });
+    expect(onStayAction).toHaveBeenNthCalledWith(2, {
+      type: 'patch_stay_total', stayId: 'stay-a', field: 'childrenTotal', value: null,
+    });
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps same-date saved stays in separate total controls and patches only the selected stay', () => {
+    const rows = [
+      stay({ id: 'a1', stayId: 'booking-a', adultsTotal: null, childrenTotal: 0 }),
+      stay({ id: 'a2', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 }),
+      stay({ id: 'b1', stayId: 'booking-b', adultsTotal: 2, childrenTotal: 1 }),
+    ];
+    const { onPatch, onStayAction } = renderStay(rows);
+
+    const adultsA = screen.getByLabelText('Adults total · booking 1');
+    const adultsB = screen.getByLabelText('Adults total · booking 2');
+    expect((adultsA as HTMLInputElement).value).toBe('5');
+    expect((adultsB as HTMLInputElement).value).toBe('2');
+    fireEvent.change(adultsB, { target: { value: '3' } });
+    expect(onStayAction).toHaveBeenCalledWith({
+      type: 'patch_stay_total', stayId: 'booking-b', field: 'adultsTotal', value: 3,
+    });
+    expect(onStayAction).toHaveBeenCalledTimes(1);
+    expect(onPatch).not.toHaveBeenCalled();
+
+    const updated = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: rows },
+      onStayAction.mock.calls[0]![0],
+    );
+    expect(updated.groups.map((row) => [row.id, row.adultsTotal])).toEqual([
+      ['a1', null], ['a2', 5], ['b1', 3],
+    ]);
+  });
+
+  it('keeps stay totals visible after adding a replacement room row and removing the original', () => {
+    const original = stay({
+      id: 'g1',
+      stayId: 's1',
+      adultsTotal: 5,
+      childrenTotal: 0,
+      fields: { adultsTotal: 'staff_corrected', childrenTotal: 'extracted' },
+    });
+    const sparse = stay({ id: 'g2', stayId: 's1', adultsTotal: null, childrenTotal: null });
+    const session = { ...initialQuoteSession(), groups: [original, sparse] };
+    const added = reduceQuoteSession(session, { type: 'add_row', stayId: 's1', token: 'replacement' });
+    const replaced = reduceQuoteSession(added, { type: 'remove_row', groupId: 'g1' });
+
+    renderStay(replaced.groups);
+    expect((screen.getByLabelText('Adults total') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('Children total') as HTMLInputElement).value).toBe('0');
+    expect(screen.getByText('Your note')).toBeTruthy();
+  });
+
+  it('does not copy another same-date stay total into a newly added row', () => {
+    const firstStay = stay({ id: 'a1', stayId: 'booking-a', adultsTotal: 5, childrenTotal: 0 });
+    const lastStay = stay({ id: 'b1', stayId: 'booking-b', adultsTotal: null, childrenTotal: null });
+    const added = reduceQuoteSession(
+      { ...initialQuoteSession(), groups: [firstStay, lastStay] },
+      { type: 'add_row', stayId: stayKeyForGroup(lastStay), token: 'new-room' },
+    );
+    const row = added.groups.find((group) => group.id === 'r_new-room');
+
+    expect(row?.stayId).toBe('booking-b');
+    expect(row).not.toHaveProperty('adultsTotal');
+    expect(row).not.toHaveProperty('childrenTotal');
   });
 
   it('keeps adults per room between 1 and 9, the values a work item can save', () => {

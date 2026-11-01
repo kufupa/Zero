@@ -85,6 +85,8 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     staffQuoteJobQuery: vi.fn().mockResolvedValue(null),
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
+    candidateStateQuery: null as null | ((input: unknown) => Promise<unknown>),
+    reviewForMessageQuery: null as null | ((input: unknown) => Promise<unknown>),
     quotePaneConfig: null as null | Record<string, unknown>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
@@ -318,7 +320,13 @@ vi.mock('../providers/query-provider', () => ({
         mutate: async () => AUTHORISED_QUOTE_PDF,
       },
     },
-    drafts: { saveReply: { mutate: saveReplyMutate } },
+    get ai() {
+      return bridgeMockState.candidateStateQuery ? { hmsCandidateState: { query: bridgeMockState.candidateStateQuery } } : undefined;
+    },
+    get drafts() {
+      return { saveReply: { mutate: saveReplyMutate },
+        ...(bridgeMockState.reviewForMessageQuery ? { reviewForMessage: { query: bridgeMockState.reviewForMessageQuery } } : {}) };
+    },
   },
 }));
 
@@ -437,6 +445,8 @@ describe('NavaPane', () => {
     bridgeMockState.staffQuoteJobCalls.length = 0;
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
+    bridgeMockState.candidateStateQuery = null;
+    bridgeMockState.reviewForMessageQuery = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
       outcome: 'no_match',
@@ -486,6 +496,45 @@ describe('NavaPane', () => {
     expect(container.querySelector('main')).not.toBeNull();
     expect(container.querySelector('footer')?.textContent).not.toContain('Pilot feedback');
     expect(screen.getByRole('button', { name: 'More' })).toBeDefined();
+  });
+
+  it('shows prepared tasks when the background candidate completes', async () => {
+    vi.useFakeTimers();
+    const candidate = vi.fn().mockResolvedValueOnce({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } })
+      .mockRejectedValueOnce(new Error('temporary status failure'))
+      .mockResolvedValueOnce({ activeRun: { state: 'running' } })
+      .mockResolvedValue({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } });
+    bridgeMockState.candidateStateQuery = candidate;
+    bridgeMockState.reviewForMessageQuery = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('temporary review failure')).mockRejectedValueOnce(new Error('temporary final review failure'))
+      .mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+      tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
+    } });
+    render(<NavaPane bridge={fakeBridge} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(candidate).toHaveBeenCalledTimes(1);
+    expect(candidate).toHaveBeenCalledWith({ threadId: 'thread-1' }, { context: { activeTransportId: 'transport-1' } });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('Reservation ABC-1')).toBeDefined();
+  });
+
+  it('refreshes prepared tasks when candidate status is unavailable', async () => {
+    vi.useFakeTimers();
+    bridgeMockState.candidateStateQuery = vi.fn().mockRejectedValue(new Error('candidate status unavailable'));
+    bridgeMockState.reviewForMessageQuery = vi.fn().mockRejectedValueOnce(new Error('temporary review failure'))
+      .mockRejectedValueOnce(new Error('temporary review failure')).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+        tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
+      } });
+    render(<NavaPane bridge={fakeBridge} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('Reservation ABC-1')).toBeDefined();
   });
 
   it('keeps the feedback and tour actions in the ⋯ menu, not the footer', () => {
@@ -1805,6 +1854,29 @@ describe('NavaPane', () => {
     bridgeMockState.analyseFails = false;
     fireEvent.click(retry);
     await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(calls + 1));
+  });
+
+  it('loads request controls when a work item arrives after a saved treat-as choice', async () => {
+    sessionStorage.setItem('nava.treat-as:transport-1::<quote-request@example.invalid>', 'quote');
+    bridgeMockState.storedWork = STORED_READY;
+    let release = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>(resolve => { release = resolve; });
+    const review = vi.fn(async (input: unknown) => {
+      const workItemId = (input as {workItemId?: string}).workItemId;
+      return {replyToMessageId:'mail-1',runId:'run',...(workItemId ? {workItemId} : {}),reviewSummary:{tasks:[{
+        id:'question',kind:'question',label:'Answer question',state:'Needs review',details:['Request: Parking?'],handled:false,
+      }]}};
+    });
+    bridgeMockState.reviewForMessageQuery = review;
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    await waitFor(() => expect(review).toHaveBeenCalled());
+    const analysisCalls = bridgeMockState.analyseCalls;
+    await act(async () => release());
+    await waitFor(() => expect(review.mock.calls.some(([input]) =>
+      (input as {workItemId?: string}).workItemId === 'wi-1')).toBe(true));
+    expect(bridgeMockState.analyseCalls).toBe(analysisCalls);
+    expect(await screen.findByRole('button', {name:'Mark handled'})).toBeDefined();
   });
 
   it('stored: what she types while the stored read loads is laid over it and logged, so it is there on reopen', async () => {

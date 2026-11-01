@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
   aiDraftGeneration,
+  aiWorkflowRun,
+  attachment,
   mailDraft,
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import {
   TEST_DB_AVAILABLE,
@@ -17,6 +21,96 @@ import { callerFor } from './helpers/trpc-caller';
 const reachable = await probeTestDb();
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () => {
+  it('chooses the latest analysis for the selected email even when an older draft was edited later', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
+      const oldGeneration = randomUUID(), newGeneration = randomUUID();
+      const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID(), newDraft = randomUUID();
+      await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
+      await db.insert(message).values([parentMessageId, otherMessageId].map(id => ({
+        id, transportId: TRANSPORT_ID, threadId, direction: 'inbound' as const,
+        fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'], textBody: 'Need help',
+        receivedAt: new Date('2026-07-06T10:00:00Z'),
+      })));
+      await db.insert(attachment).values({id:fileId,messageId:parentMessageId,filename:'document.pdf',mimeType:'application/pdf',sizeBytes:10,s3Key:'synthetic',sha256:'a'.repeat(64)});
+      await db.insert(aiDraftGeneration).values([oldGeneration, newGeneration].map(id => ({
+        id, transportId: TRANSPORT_ID, threadId, requestedByUserId: 'user-navaai',
+        contextMessageIds: [parentMessageId], model: 'test', promptVersion: 'test',
+      })));
+      await db.insert(mailDraft).values([
+        { id: randomUUID(), transportId: TRANSPORT_ID, threadId, createdByUserId: 'user-navaai',
+          status: 'active', origin: 'ai', replyToMessageId: parentMessageId, generationId: oldGeneration,
+          toAddresses: ['guest@example.com'], updatedAt: new Date('2026-07-06T11:00:00Z') },
+        { id: newDraft, transportId: TRANSPORT_ID, threadId, createdByUserId: 'user-navaai',
+          status: 'candidate', origin: 'ai', replyToMessageId: parentMessageId, generationId: newGeneration,
+          toAddresses: ['guest@example.com'], updatedAt: new Date('2026-07-06T10:20:00Z') },
+      ]);
+      await db.insert(aiWorkflowRun).values([
+        { id: oldRun, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
+          triggerMessageId: parentMessageId, generationId: oldGeneration, runKind: 'candidate_draft',
+          modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:00:00Z'),
+          metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'old', kind: 'change' }] } } },
+        { id: newRun, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
+          triggerMessageId: parentMessageId, generationId: newGeneration, runKind: 'candidate_draft',
+          modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:10:00Z'),
+          metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'new', kind: 'question' }],
+            sourceRecoveries:[{kind:'attachment_manual',disclosure:'staff_only',sourceKind:'attachment',sourceRef:fileId,sourceHash:'a'.repeat(64),messageId:parentMessageId,reason:'no_embedded_text'}] } } },
+      ]);
+      const { drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
+      expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
+        replyToMessageId: parentMessageId, reviewSummary: { tasks: [{ label: 'Answer question' }] },
+      });
+      await db.update(mailDraft).set({isSent:true}).where(eq(mailDraft.id,newDraft));
+      expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
+        reviewSummary: { tasks: [{id:'new',label:'Answer question'}] },
+      });
+      expect(await drafts.reviewForMessage({ threadId, messageId: otherMessageId })).toBeNull();
+      // A newer no-action analysis produces no draft; do not resurrect the older review.
+      const noActionGeneration = randomUUID();
+      await db.insert(aiDraftGeneration).values({ id: noActionGeneration, transportId: TRANSPORT_ID, threadId,
+        requestedByUserId: 'user-navaai', contextMessageIds: [parentMessageId], model: 'test', promptVersion: 'test' });
+      await db.insert(aiWorkflowRun).values({ id: randomUUID(), idempotencyKey: randomUUID(), transportId: TRANSPORT_ID,
+        threadId, triggerMessageId: parentMessageId, generationId: noActionGeneration, runKind: 'candidate_draft',
+        modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:30:00Z') });
+      expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toBeNull();
+      // A later no-action run must not hide earlier requests on an actual staff work item.
+      const [item] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
+        sourceMessageId: parentMessageId, kind: 'other' }).returning();
+      const input = { threadId, messageId: parentMessageId, workItemId: item!.id };
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.staffActions).toMatchObject([{kind:'business_document_failure',filename:'document.pdf'}]);
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, label: 'Earlier request', handled: false },
+        { id: 'old', runId: oldRun, label: 'Earlier request', handled: false },
+      ]);
+      await drafts.setRequestHandled({ workItemId: item!.id, runId: newRun, taskId: 'new', handled: true });
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, handled: true }, { id: 'old', runId: oldRun, handled: false },
+      ]);
+      // A new classification creates another work item for the same email.
+      const [reclassified] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
+        sourceMessageId: parentMessageId, kind: 'quote' }).returning();
+      const current = { ...input, workItemId: reclassified!.id };
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, handled: true }, { id: 'old', runId: oldRun, handled: false },
+      ]);
+      await drafts.setRequestHandled({ workItemId: reclassified!.id, runId: newRun, taskId: 'new', handled: false });
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, handled: false }, { id: 'old', runId: oldRun, handled: false },
+      ]);
+      const laterRun = (minutes: number, attachments: unknown[]) => ({ id: randomUUID(), idempotencyKey: randomUUID(),
+        transportId: TRANSPORT_ID, threadId, triggerMessageId: parentMessageId, runKind: 'candidate_draft' as const,
+        modelId: 'test', promptVersion: 'test', state: 'succeeded' as const, createdAt: new Date(`2026-07-06T10:${minutes}:00Z`),
+        metrics: { reservationistResult: {version:1,readiness:'no_action',tasks:[]}, reservationistDraftSource: {attachments} } });
+      await db.insert(aiWorkflowRun).values(laterRun(40, []));
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
+        {kind:'business_document_failure',filename:'document.pdf'},
+      ]);
+      await db.insert(aiWorkflowRun).values(laterRun(50, [{attachmentId:fileId,sourceHash:'a'.repeat(64)}]));
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toEqual([]);
+    });
+  });
+
   it('returns plural visible drafts from mail.get without adding drafts to messages', async () => {
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID();

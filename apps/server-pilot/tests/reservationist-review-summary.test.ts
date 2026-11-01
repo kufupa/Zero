@@ -1,9 +1,12 @@
 import {expect,it} from 'vitest';
 import * as drafts from '../src/trpc/routes/drafts.js';
+import {quoteDigest} from '../src/quote-proposal/quote-revision.js';
 const now=new Date('2026-10-04T10:00:00Z');
 const summary=(result:any)=>(drafts as any).buildReservationistReviewSummary({version:1,readiness:'needs_clarification',...result},now);
 const requestSource=(quote:string,attachmentId='message:inbound')=>({attachmentId,sourceHash:'a'.repeat(64),page:1,start:0,end:quote.length,quote});
 const price={currency:'ZAR',totalMinor:26200,nightly:[{date:'2026-10-12',amountMinor:10000},{date:'2026-10-13',amountMinor:16200}],source:{observedAt:'2026-10-04T09:00:00Z'}};
+const cancellationReview={outcome:'prepared_for_human_review',roomScope:{state:'unresolved',complete:false},policy:{state:'unknown'},fee:{state:'unknown_precommit',amount:null,currency:null},action:{actor:'human',cancellationStarted:false,commitAvailable:false}};
+const cancellationPacket=()=>{const packet={kind:'cancel_request',taskId:'cancel',status:'pending_pms_action',saved:false,businessRulesValidated:false,reservationRef:'12345678',propertyCode:'HRCEN',authorizationId:'synthetic-auth',errors:[],sourceRefs:['hms-record:synthetic','message:inbound'],sourceProofs:[{kind:'current',sourceRef:'hms-record:synthetic',sourceHash:'b'.repeat(64),authorizationId:'synthetic-auth',propertyCode:'HRCEN',reservationRef:'12345678',resolvedConfirmation:'12345678-1',observedAt:'2026-10-04T09:00:00Z',expiresAt:'2026-10-04T11:00:00Z',maxSourceAgeMs:7200000},{kind:'causal',sourceRef:'message:inbound',sourceHash:'a'.repeat(64),authorizationId:'synthetic-auth',propertyCode:'HRCEN',reservationRef:'12345678',observedAt:'2026-10-04T08:00:00Z'}],requestBinding:{requestId:'inbound',ownerRef:'synthetic-owner',threadId:'synthetic-thread',taskId:'cancel',sourceRef:'message:inbound',sourceHash:'a'.repeat(64),observedAt:'2026-10-04T08:00:00Z'},current:{arrivalDate:'2026-10-12',departureDate:'2026-10-14'},cancellationReview};return {...packet,digest:quoteDigest(packet)};};
 const booking={kind:'new_booking',taskId:'book',status:'pending_pms_action',saved:false,businessRulesValidated:true,currency:'ZAR',totalMinor:52400,rooms:[{groupId:'g1',roomIndex:1,guests:[{firstName:'Alex',lastName:'Example'}],request:{arrival:'2026-10-12',departure:'2026-10-14',adults:1,childAges:[],roomType:'STQN',ratePlan:'BAR'},pricing:price},{groupId:'g1',roomIndex:2,guests:[{firstName:'Morgan',lastName:'Sample'}],request:{arrival:'2026-10-12',departure:'2026-10-14',adults:1,childAges:[],roomType:'STQN',ratePlan:'BAR'},pricing:price}]};
 it('shows a new booking with source-observed per-room guests, dates and exact agreed nightly prices',()=>{
  const result=summary({tasks:[{id:'book',kind:'new_booking',status:'pending_pms_action'}],packets:[booking]});
@@ -57,10 +60,30 @@ it('keeps review details in the actual draft wire response',async()=>{
  const review=summary({tasks:[{id:'book',kind:'new_booking',status:'pending_pms_action'}],packets:[booking]});
  const wire=toDraftWire({id:'draft',generationId:'generation',attachments:[],updatedAt:now,threadId:'thread',replyToMessageId:'message',toAddresses:[],ccAddresses:[],bccAddresses:[],subject:'Booking',textBody:'Please review.',status:'candidate',origin:'ai'} as any,false,review);
  expect(wire.reviewSummary?.tasks[0]?.details).toEqual(review.tasks[0].details);
+ expect(wire.reviewSummary?.tasks[0]).toMatchObject({id:'book',kind:'new_booking'});
 });
 it('shows cancellation current stay and preserves no-cancellation completion wording',()=>{
- const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[{kind:'cancel_request',taskId:'cancel',status:'pending_pms_action',saved:false,businessRulesValidated:true,reservationRef:'ABC123',current:{arrivalDate:'2026-10-12',departureDate:'2026-10-14'}}]}).tasks[0].details.join('\n');
+ const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[cancellationPacket()]}).tasks[0].details.join('\n');
+ expect(detail).toContain('Requested reference: 12345678');expect(detail).toContain('HMS confirmation read: 12345678-1');
  expect(detail).toContain('Recorded stay: 2026-10-12 to 2026-10-14');expect(detail).toContain('No cancellation has been saved');expect(detail).not.toContain('Requested stay');
+});
+it('withholds the stay display when the resolved confirmation is not bound to current evidence',()=>{
+ const packet=cancellationPacket() as any;packet.sourceProofs[0].resolvedConfirmation='OTHER-1';const {digest:_digest,...data}=packet;packet.digest=quoteDigest(data);
+ const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[packet]}).tasks[0].details.join('\n');
+ expect(detail).not.toContain('HMS confirmation read: OTHER-1');expect(detail).not.toContain('Recorded stay:');
+});
+it('withholds cancellation stay details from legacy packets without a resolved current proof',()=>{
+ const packet=cancellationPacket() as any;packet.businessRulesValidated=true;delete packet.sourceProofs[0].resolvedConfirmation;const {digest:_digest,...data}=packet;packet.digest=quoteDigest(data);
+ const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[packet]}).tasks[0].details.join('\n');
+ expect(detail).not.toContain('Requested reference:');expect(detail).not.toContain('HMS confirmation read:');expect(detail).not.toContain('Recorded stay:');
+});
+it('surfaces only the unresolved cancellation preflight facts in the staff task',()=>{
+ const detail=summary({tasks:[{id:'cancel',kind:'cancel_request',status:'pending_pms_action'}],packets:[cancellationPacket()]}).tasks[0].details.join('\n');
+ expect(detail).toContain('Cancellation room scope remains unresolved');
+ expect(detail).toContain('Applicable cancellation policy has not been verified');
+ expect(detail).toContain('Cancellation fee is unknown before commitment');
+ expect(detail).toContain('Cancellation has not been started; no commit is available');
+ expect(detail).not.toMatch(/ZAR|\$|[£€]|deposit|cleared/i);
 });
 it('shows current action evidence time and explicit property booking fields for staff review',()=>{
  const packet=structuredClone(booking) as any;packet.sourceProofs=[{kind:'current',observedAt:'2026-10-04T09:30:00Z',expiresAt:'2026-10-04T11:00:00Z'}];packet.rooms[0].request.sourceOfBusiness='E-Mail';packet.rooms[0].request.track='BAR';packet.rooms[0].request.guaranteeType='Non-Guaranteed Individual';
@@ -163,6 +186,16 @@ it('does not silently ignore an unread unknown image or borrow a filename from a
  const review=drafts.buildReservationistReviewSummary(raw,now,[{sourceRef:'unknown',filename:'other-private.pdf',messageId:'other'}])!;
  expect(review.staffActions).toHaveLength(1);expect(review.staffActions![0].filename).toBeUndefined();
  expect(review.staffActions![0].text).toBe('Attachment: This image could not be read.');
+});
+
+it('shows an unread metadata-only attachment without inventing a content hash',()=>{
+ const recovery={kind:'attachment_manual',sourceRef:'large',sourceIdentity:'metadata_only',sourceKind:'attachment',messageId:'inbound',disclosure:'staff_only',reason:'attachment_identity_unavailable'};
+ const raw={version:1,tasks:[],sourceRecoveries:[recovery]};
+ const review=drafts.buildReservationistReviewSummary(raw,now,[{sourceRef:'large',filename:'rooming.xlsx',messageId:'inbound'}])!;
+ expect(review.staffActions).toHaveLength(1);
+ expect(review.staffActions![0]).toMatchObject({sourceRef:'large',sourceIdentity:'metadata_only',filename:'rooming.xlsx'});
+ expect(review.staffActions![0].sourceHash).toBeUndefined();
+ expect(drafts.buildReservationistReviewSummary(raw,now,[{sourceRef:'large',filename:'other.xlsx',messageId:'other'}])!.staffActions).toEqual([]);
 });
 
 it('does not manufacture actions from generated prose, unbound diagnostics or malformed source identities',()=>{

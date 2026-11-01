@@ -1,5 +1,6 @@
 import { fingerprint } from './reservationist-replay.js';
 import {occupiedDates,quoteDigest} from '../quote-proposal/quote-revision.js';
+import {isReservationistCancellationReviewPacket} from './reservationist-pending-action.js';
 import { existsSync, readFileSync } from 'node:fs';
 import type { CenturionCorpusMessageRow } from '../ops/centurion-thread-corpus-postgres-reader.js';
 import { type ReservationistDecision } from './reservationist-agent.js';
@@ -74,7 +75,8 @@ export function scoreRuntimeReplay(runtime:Record<string,any>|undefined,approved
   const projection=(p:any)=>p?({kind:p.kind,taskId:p.taskId,reservationRef:p.reservationRef,current:p.current,...(p.requested!==undefined?{requested:p.requested}:{}),sourceRefs:p.sourceRefs}):null;
   const valid=(p:any)=>{try{
    const task=runtime.tasks?.find((t:any)=>t.id===p.taskId),{digest,...data}=p;
-   if(p.saved!==false||p.status!=='pending_pms_action'||p.businessRulesValidated!==true||!Array.isArray(p.errors)||p.errors.length||!p.taskId||!p.reservationRef||!Array.isArray(p.sourceRefs)||p.sourceRefs.length<2||p.sourceRefs.some((ref:any)=>typeof ref!=='string'||!ref)||!task||task.kind!==p.kind||task.status!=='pending_pms_action'||!same(task.evidenceRefs,p.sourceRefs)||!digest||digest!==quoteDigest(data))return false;
+   const businessEvidenceValid=p.kind==='cancel_request'?isReservationistCancellationReviewPacket(p):p.businessRulesValidated===true;
+   if(p.saved!==false||p.status!=='pending_pms_action'||!businessEvidenceValid||!Array.isArray(p.errors)||p.errors.length||!p.taskId||!p.reservationRef||!Array.isArray(p.sourceRefs)||p.sourceRefs.length<2||p.sourceRefs.some((ref:any)=>typeof ref!=='string'||!ref)||!task||task.kind!==p.kind||task.status!=='pending_pms_action'||!same(task.evidenceRefs,p.sourceRefs)||!digest||digest!==quoteDigest(data))return false;
    occupiedDates(p.current.arrivalDate,p.current.departureDate);
    if(p.kind==='change'){if(!p.requested)return false;occupiedDates(p.requested.arrivalDate,p.requested.departureDate);}else if(p.requested!==undefined)return false;
    return true;
