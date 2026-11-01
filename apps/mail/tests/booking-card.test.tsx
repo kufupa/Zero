@@ -1069,17 +1069,17 @@ describe('prepared booking party controls', () => {
     const pending = deferred<PaneStayResult>();
     const { client } = paneClient({ commit: vi.fn(() => pending.promise) });
     render(<QuoteBookingHost session={preparedBookingSession(previewableDraft())} paneSave={client} workItemId="item" />);
-    const party = screen.getByLabelText('Party for this booking') as HTMLSelectElement;
+    const party = screen.getByLabelText('Party for this booking');
     fireEvent.change(party, { target: { value: 'none' } });
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     fireEvent.click(bookButton(0));
-    await waitFor(() => expect(party.disabled).toBe(true));
+    await waitFor(() => expect(party).toHaveProperty('disabled', true));
     fireEvent.change(party, { target: { value: 'company' } });
-    expect(party.value).toBe('none');
+    expect(party).toHaveProperty('value', 'none');
     await act(async () => pending.resolve(outcome === 'booked' ? COMMIT_OK : { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON }));
     expect(await screen.findByText(outcome === 'booked' ? /Booked in HMS – confirmation 98765-1/ : 'Check HMS')).toBeDefined();
-    expect(party.disabled).toBe(true);
+    expect(party).toHaveProperty('disabled', true);
   });
 
   it('clears company lookup results when staff switch to agency', async () => {
