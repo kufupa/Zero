@@ -232,6 +232,18 @@ function FailedRatesNoticeTrigger({
 }
 
 describe('QuoteWorkflowPanel', () => {
+  it('shows each unanswered question on a non-quote email', () => {
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
+      {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},
+      {id:'two',kind:'question' as const,rank:'secondary' as const,text:'Is a shuttle available?',sourceLabel:'This email',blocking:false},
+      {id:'sheet',kind:'document_failure' as const,rank:'unread_source' as const,text:'Spreadsheet has omitted rows.',sourceLabel:'Attachment',blocking:false,readable:true},
+    ],handledReviewItemIds:['one']};
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Is a shuttle available?')).toBeDefined();
+    expect(screen.getByText('Done: Is parking available?')).toBeDefined();
+    expect(screen.getByText('Spreadsheet has omitted rows.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Edit reply/ })).toBeNull();
+  });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);

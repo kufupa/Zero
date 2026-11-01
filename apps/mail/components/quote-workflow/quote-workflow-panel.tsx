@@ -658,9 +658,10 @@ export function QuoteWorkflowPanel({
       ? undefined
       : session.analysis?.hmsTodoCard;
   if (session.phase === 'non_quote') {
-    // One notice, plus unread files and readable-source warnings staff need to see.
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && !item.readable);
     const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
+    const questions = (session.reviewItems ?? []).filter((item) => item.kind === 'question');
+    const handledQuestions = questions.filter((item) => (session.handledReviewItemIds ?? []).includes(item.id));
     const amendStays = groupStays(session.groups).filter((stay) => {
       const action = stayAskAction(session, stay.id);
       return action === 'amend' || action === 'cancel';
@@ -686,6 +687,13 @@ export function QuoteWorkflowPanel({
             {item.text}
           </Notice>
         ))}
+        <ItemsForYou
+          openItems={openReviewItems(session).filter((item) => item.kind === 'question')}
+          handledItems={handledQuestions}
+          onViewSource={onViewSource}
+          onHandle={onHandleReviewItem}
+          onUndo={onUndoReviewItem}
+        />
       </div>
     );
   }

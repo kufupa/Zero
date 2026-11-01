@@ -77,6 +77,18 @@ const mailExtractionObjectSchema = z.object({
         .int()
         .nullable()
         .describe('Total rooms asked for in this stay, as stated. Null if not stated.'),
+      totalAdults: z
+        .number()
+        .int()
+        .nullable()
+        .default(null)
+        .describe('Total adults for this stay, only when stated as a stay-wide total. Null if not stated.'),
+      totalChildren: z
+        .number()
+        .int()
+        .nullable()
+        .default(null)
+        .describe('Total children for this stay, only when stated as a stay-wide total. Null if not stated.'),
       guests: z
         .array(
           z.object({
@@ -152,16 +164,22 @@ export type ExtractionStay = {
   booked: DateRange | null;
   /** Stay total as stated. Set when the mail gives a total without a per-type split (rows then carry rooms null). */
   totalRooms: number | null;
+  /** Stay-wide occupancy totals as stated; absent only on legacy stored rows. */
+  totalAdults?: number | null;
+  totalChildren?: number | null;
   rows: ExtractionRow[];
   guests?: ExtractionGuest[];
   action?: MailAction;
 };
 
-const storedExtractionRowSchema = mailExtractionObjectSchema.shape.stays.element.shape.rows.element.extend({
+const sourceStaySchema = mailExtractionObjectSchema.shape.stays.element;
+const storedExtractionRowSchema = sourceStaySchema.shape.rows.element.extend({
   id: z.string(),
 });
-const storedExtractionStaySchema = mailExtractionObjectSchema.shape.stays.element.extend({
+const storedExtractionStaySchema = sourceStaySchema.extend({
   id: z.string(),
+  totalAdults: sourceStaySchema.shape.totalAdults.optional(),
+  totalChildren: sourceStaySchema.shape.totalChildren.optional(),
   rows: z.array(storedExtractionRowSchema),
 });
 
@@ -353,6 +371,8 @@ export function sanitizeExtraction(
       requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
+      totalAdults: countOf(stay.totalAdults, 0, 999),
+      totalChildren: countOf(stay.totalChildren, 0, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row) => ({
         roomType: cleanText(row.roomType),
         rooms: countOf(row.rooms, 1, 999),
@@ -375,6 +395,8 @@ export function sanitizeExtraction(
       requested: stay.requested,
       booked: stay.booked,
       totalRooms: stay.totalRooms,
+      totalAdults: stay.totalAdults,
+      totalChildren: stay.totalChildren,
       rows: stay.rows.map((row, rowIndex) => ({
         id: rowStableId(id, row, stay.rows, rowIndex),
         ...row,
