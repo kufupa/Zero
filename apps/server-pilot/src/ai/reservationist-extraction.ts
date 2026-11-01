@@ -471,6 +471,10 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
       if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
+      // A room count can contradict the selected view even when per-room occupancy is unclear.
+      const rows=viewComparisons.includes(task)?quoted.split(/[.!?;\n]+/).filter(row=>/\b(?:quote|quotation|rates?|prices?)\b/i.test(row)&&/\brooms?\b/i.test(row)):[];
+      const counts=rows.length===1?[...rows[0]!.matchAll(/\b(\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b/gi)]:[];
+      if(counts.length===1){const raw=counts[0]![1]!,quantity=/^(?:one|a|an)$/i.test(raw)?1:/^two$/i.test(raw)?2:Number(raw);if(quantity!==occupancy.quantity)return true;}
       const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||/\bMr\.?\s*(?:and|&)\s*Mrs\.?\s+[\p{L}]/iu.test(quoted)||/\b(?:\d+|one|a|an|two)\s+single\s+rooms?\b|\bsingle\s+occupancy\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });

@@ -259,7 +259,7 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Please quote one room for one adult and one child.')).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Please quote one room for one adult and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Please quote one room for two adults.')).rejects.toThrow('Conflicting occupancy across message views');
-  await expect(run('Please quote two single rooms for two adults.')).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Please quote two rooms for one adult.')).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Please quote one room for one adult.\nKind regards\nGuest')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Please quote one room for one adult. Is your pool open to children?')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Please quote one room for one adult. We have two children and hope to use the pool.')).rejects.toThrow('Conflicting occupancy across message views');
