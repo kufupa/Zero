@@ -69,7 +69,7 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
-import { hasOutstandingRequests } from './reservationist-task-completion.js';
+import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -987,7 +987,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
         id ? eq(mailExtraction.id, id) : undefined,
       ),
     )
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
   return {
@@ -1354,6 +1354,7 @@ export async function planThreadWork(
     );
   const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
   const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
+  const requestStates = await handledRequestStates(db, { transportId: input.transportId, threadId: input.threadId, sourceIds });
   const runs = sourceIds.length ? await db.select({
     id: aiWorkflowRun.id, sourceMessageId: aiWorkflowRun.triggerMessageId, metrics: aiWorkflowRun.metrics,
   }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.threadId),
@@ -1367,6 +1368,13 @@ export async function planThreadWork(
     sourceRuns.push(run);
     runsBySource.set(run.sourceMessageId, sourceRuns);
   }
+  // The pane edits the item for the latest successful classification. Older
+  // kinds for the same email must not reopen with a second copy of its tasks.
+  const reads = sourceIds.length ? await db.selectDistinctOn([mailExtraction.messageId], {
+    messageId: mailExtraction.messageId, kind: mailExtraction.kind,
+  }).from(mailExtraction).where(and(inArray(mailExtraction.messageId, sourceIds), eq(mailExtraction.status, 'succeeded')))
+    .orderBy(mailExtraction.messageId, desc(mailExtraction.createdAt), desc(mailExtraction.id)) : [];
+  const latestKindBySource = new Map(reads.map(read => [read.messageId, read.kind]));
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -1418,8 +1426,9 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const outstanding = (runsBySource.get(source.id) ?? [])
-      .some(run => hasOutstandingRequests(run.metrics?.reservationistResult, run.id, item.state));
+    const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
+    const outstanding = currentKind && hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
     if (item.status === 'dismissed') {

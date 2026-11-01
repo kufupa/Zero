@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { handledRequestKeys, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
+import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
-import { workEvent, workItem } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 
@@ -36,6 +36,19 @@ it('keeps an unread business attachment open even when no request could be extra
   const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', reason:'too_large'};
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[recovery]}, 'run', {})).toBe(true);
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,signatureNoise:true}]}, 'run', {})).toBe(false);
+});
+
+it('clears an old unread-file warning only after reviewing that file, without losing earlier requests', () => {
+  const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', sourceHash:'a'.repeat(64), reason:'too_large'};
+  const latest = {id:'new', result:{version:1,tasks:[]}, source:{attachments:[{attachmentId:'sheet',sourceHash:'a'.repeat(64)}]}};
+  const oldWarning = {id:'old', result:{version:1,tasks:[],sourceRecoveries:[recovery]}};
+  expect(hasOutstandingRequestHistory([latest, oldWarning], {})).toBe(false);
+  expect(hasOutstandingRequestHistory([{...latest,source:{attachments:[]}}, oldWarning], {})).toBe(true);
+  expect(hasOutstandingRequestHistory([{...latest,source:{attachments:[{attachmentId:'sheet',sourceHash:'b'.repeat(64)}]}}, oldWarning], {})).toBe(true);
+  expect(hasOutstandingRequestHistory([oldWarning], {})).toBe(true);
+  expect(hasOutstandingRequestHistory([{id:'legacy',result:undefined}, oldWarning], {})).toBe(true);
+  const oldAsk = {id:'older', result:{version:1,tasks:[task('one',0)]}};
+  expect(hasOutstandingRequestHistory([latest, oldAsk], {})).toBe(true);
 });
 
 const reachable = await probeTestDb();
@@ -104,6 +117,54 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       await setRequestHandled(db,{...input,taskId:'two',handled:false});
       await refreshThreadWork(db, {transportId:TRANSPORT_ID,threadId});
       expect((await state()).status).toBe('needs_you');
+    });
+  });
+
+  it('reopens only the current classification for a late request', async () => {
+    await withSeededTestDb(async db => {
+      const threadId=randomUUID(), messageId=randomUUID(), reply=randomUUID(), runId=randomUUID();
+      const start=Date.now()-180_000, at=(offset:number)=>new Date(start+offset);
+      await db.insert(mailThread).values({id:threadId,transportId:TRANSPORT_ID,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:at(20_000)});
+      await db.insert(message).values([
+        {id:messageId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[TRANSPORT_EMAIL],textBody:'test',receivedAt:at(0)},
+        {id:reply,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:TRANSPORT_EMAIL,toAddresses:['guest@example.invalid'],sentAt:at(20_000),receivedAt:at(20_000)},
+      ]);
+      const [older, latest] = await db.insert(mailExtraction).values([
+        {messageId,extractorVersion:'old',status:'succeeded',kind:'other',payload:{},createdAt:at(1_000)},
+        {messageId,extractorVersion:'new',status:'succeeded',kind:'quote',payload:{},createdAt:at(2_000)},
+      ]).returning();
+      const [oldItem, currentItem] = await db.insert(workItem).values([
+        {transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,kind:'other',status:'done',extractionId:older!.id,sentAt:at(20_000),sentMessageId:reply},
+        {transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,kind:'quote',status:'done',extractionId:latest!.id,sentAt:at(20_000),sentMessageId:reply},
+      ]).returning();
+      await db.insert(workEvent).values([oldItem!,currentItem!].map(item=>({workItemId:item.id,actorKind:'system' as const,type:'status.changed' as const,
+        value:{from:'needs_you',to:'done',reason:'hotel_replied'}})));
+      await db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId:TRANSPORT_ID,threadId,triggerMessageId:messageId,
+        runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'running',claimOwner:'worker',claimToken:'token',
+        metrics:{reservationistResult:{version:1,tasks:[task('one',0)]}}});
+      await markAiRunSucceeded({runId,claimOwner:'worker',claimToken:'token',expectedStates:['running']},db);
+      const status = async (id:string) => (await db.select().from(workItem).where(eq(workItem.id,id)))[0]!.status;
+      expect(await status(oldItem!.id)).toBe('done');
+      expect(await status(currentItem!.id)).toBe('needs_you');
+      await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:currentItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:true});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(oldItem!.id)).toBe('done');
+      expect(await status(currentItem!.id)).toBe('done');
+      const [latestRead] = await db.insert(mailExtraction).values({messageId,extractorVersion:'later',status:'succeeded',
+        kind:'amendment',payload:{},createdAt:at(3_000)}).returning();
+      const [laterItem] = await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,
+        kind:'amendment',status:'done',extractionId:latestRead!.id,sentAt:at(20_000),sentMessageId:reply}).returning();
+      await db.insert(workEvent).values({workItemId:laterItem!.id,actorKind:'system',type:'status.changed',
+        value:{from:'needs_you',to:'done',reason:'hotel_replied'}});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('done'); // Earlier acknowledgement still applies.
+      await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:laterItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:false});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('needs_you');
+      expect(await status(currentItem!.id)).toBe('done');
+      await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:laterItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:true});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('done');
     });
   });
 });
