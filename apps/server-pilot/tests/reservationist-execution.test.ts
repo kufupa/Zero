@@ -47,6 +47,44 @@ it.each([
  const html='Please send the invoice for reservation 87654321.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
 });
+it.each([
+ ['Do not cancel reservation 12345678.',false],
+ ['Do not cancel reservation 87654321.',true],
+ ['Do not send the invoice.',true],
+] as const)('compares a cancellation request with the opposite authored view: %s',(html,expected)=>{
+ const plain='Please cancel reservation 12345678.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+'\n\n[HTML alternative of the same message]\n'.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it('keeps a separate cancellation actionable when the other view refuses a different stay',()=>{
+ const plain='Please cancel reservation 87654321.',html='Do not cancel reservation 12345678 and please cancel reservation 87654321.',separator='\n\n[HTML alternative of the same message]\n',text=`${plain}${separator}${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+});
+it.each([
+ ['Do not send the quote.','Please send me the existing quote.',false],
+ ['Do not send the quote reference Q-123.','Please resend the quote reference Q-123.',false],
+ ['Do not send the quote reference Q-456.','Please resend the quote reference Q-123.',true],
+] as const)('matches an existing-quote refusal only to its requested document: %s',(plain,html,expected)=>{
+ const text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'quote',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Please send the invoice, but no tax certificate.',false],
+ ['No tax certificate should be sent.',false],
+ ['Please send the invoice, but no tax certificate has been sent.',true],
+] as const)('recognizes a bare opposite-view document refusal without erasing a status update: %s',(plain,expected)=>{
+ const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not send invoices for booking 12345678 or 87654321.','Please send the invoice for booking 87654321.',false],
+ ['Do not send invoices for booking 12345678.','Please send the invoice for booking 87654321.',true],
+ ['Do not send any invoices for my stay from December 2, 2027.','Please send the invoice for booking 87654321.',false],
+ ['Do not send invoices for booking ABC123.','Please send the invoice for booking abc123.',false],
+ ['Do not send invoices for booking 12345678 because I sent the dates, and ABC123 is only a tracking code.','Please send the invoice for booking ABC123.',true],
+] as const)('compares every explicit booking reference in a document refusal: %s',(plain,html,expected)=>{
+ const text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
 it('keeps an urgent document request with “without delay”',()=>{
  const text='Please send the tax certificate without delay.',hash=createHash('sha256').update(text).digest('hex'),task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:text,start:0,end:text.length}};
  expect(currentAuthoredGuestRequest(task as any,{...input,messages:[{...input.messages[0],text}]})).toBe(true);
@@ -59,6 +97,12 @@ it('does not resolve a document rejected in the other authored alternative',asyn
  const factory=createReservationistDependencies({adapter:model,admissions:[],header,converter:{url:'unused'},services:{resolveExistingDocument:resolve,authorizeExistingDocument:async()=>null}}),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]};
  const result=await runReservationistRuntime(scoped,factory.dependencies);
  expect(result.tasks[0].status).toBe('blocked');expect(result.artifacts).toEqual([]);expect(resolve).not.toHaveBeenCalled();
+});
+it('does not fetch an existing quote refused in the opposite authored alternative',async()=>{
+ const plain='Do not send the quote.',html='Please send me the existing quote.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),source={attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end},model=adapter([]),resolve=vi.fn(async()=>{throw new Error('opposite-view refusal must stop document lookup');});
+ model.invoke.mockResolvedValue({modelId:'gpt-6-luna',output:{facts:[],tasks:[{id:'quote',kind:'existing_document',factIds:[],source}],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}} as any);
+ const factory=createReservationistDependencies({adapter:model,admissions:[],header,converter:{url:'unused'},services:{resolveExistingDocument:resolve,authorizeExistingDocument:async()=>null}}),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('blocked');expect(result.tasks[0].status).toBe('blocked');expect(resolve).not.toHaveBeenCalled();
 });
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
 const voucherReviewRequest='Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.';
