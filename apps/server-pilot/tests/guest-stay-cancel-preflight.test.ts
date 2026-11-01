@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { projectCancellationPreflight } from '../tooling/hms-cloud/guest-stay-cancel-preflight.mjs';
+import { projectFinanceDisplayPreflight } from '../tooling/hms-cloud/guest-stay-finance-preflight.mjs';
 
 const CONFIRMATION = 'CONF-PREFLIGHT-TEST';
 type Field = { name: string; value: unknown; section?: string };
@@ -493,5 +494,67 @@ describe('projectCancellationPreflight', () => {
     expect(cancelled.fee.state).toBe('unknown_precommit');
     expect(cancelled.action.commitAvailable).toBe(false);
     expect(JSON.stringify(cancelled)).not.toContain('Synthetic policy text');
+  });
+});
+
+describe('projectFinanceDisplayPreflight', () => {
+  it('returns only exact-stay display facts and never implies a cleared deposit or ledger read', () => {
+    const result = projectFinanceDisplayPreflight({
+      confirmation: CONFIRMATION,
+      shallow: read1A(),
+      record: read1B({
+        balance: '0.00',
+        balanceCurrency: 'ZAR',
+        extraFields: [
+          { name: 'depositreceived', value: '125.00' },
+          { name: 'depositreceivedcurrency', value: 'ZAR' },
+          { name: 'udfchar02', value: '300.00' },
+          { name: 'udfdate02', value: '02-FEB-2027' },
+        ],
+      }),
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'prepared_for_human_review',
+      target: { confirmation: CONFIRMATION, verified: true },
+      recordView: {
+        basis: 'stay360_display_only_not_ledger',
+        balance: { amount: { state: 'observed_zero', value: '0.00' }, currency: { value: 'ZAR' } },
+        depositReceived: { amount: { state: 'observed', value: '125.00' } },
+        depositDue: { state: 'observed', value: '300.00' },
+        depositDueDate: { state: 'observed', value: '02-FEB-2027' },
+      },
+      folioCard: {
+        basis: '1a_folio_card_display_only',
+        balance: { state: 'observed', value: 'R1,234.50' },
+        depositReceived: { state: 'observed_zero', value: 'R0.00' },
+      },
+      interpretation: {
+        ledgerBalance: 'not_established',
+        depositCleared: 'not_established',
+        depositDue: 'not_verified',
+        transactionHistory: 'not_read',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('TEST-GUEST-NAME');
+
+    const blank = projectFinanceDisplayPreflight({
+      confirmation: CONFIRMATION,
+      shallow: read1A(),
+      record: read1B({
+        balance: '',
+        extraFields: [{ name: 'depositreceived', value: '' }],
+      }),
+    });
+    expect(blank.recordView.balance.amount.state).toBe('blank');
+    expect(blank.recordView.depositReceived.amount.state).toBe('blank');
+
+    const mismatch = projectFinanceDisplayPreflight({
+      confirmation: CONFIRMATION,
+      shallow: read1A(),
+      record: read1B({ confirmation: 'OTHER-TEST-RECORD' }),
+    });
+    expect(mismatch).toMatchObject({ outcome: 'target_unverified' });
+    expect(mismatch).not.toHaveProperty('recordView');
   });
 });
