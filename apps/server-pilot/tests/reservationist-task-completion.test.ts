@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
+import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
@@ -223,6 +224,49 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       if (held) await held.catch(() => undefined);
       if (completion) await completion.catch(() => undefined);
       await Promise.all([setup.close(),locker.close(),finisher.close()]);
+    }
+  }, 15_000);
+
+  it('allows concurrent request acknowledgement and HMS approval', async () => {
+    const setup = openTestDbSession(), approver = openTestDbSession(), acknowledger = openTestDbSession();
+    const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID(), runId=randomUUID();
+    let release: () => void = () => {};
+    let approval: ReturnType<typeof approveHmsWrite> | undefined, acknowledgement: ReturnType<typeof setRequestHandled> | undefined;
+    try {
+      const now=new Date();
+      await setup.db.insert(mailboxTransport).values({id:transportId,email:`${transportId}@example.invalid`,ownerHeaderValue:transportId});
+      await setup.db.insert(mailThread).values({id:threadId,transportId,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:now});
+      await setup.db.insert(message).values({id:messageId,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[],textBody:'test',receivedAt:now});
+      const [item]=await setup.db.insert(workItem).values({transportId,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      await setup.db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId,threadId,triggerMessageId:messageId,
+        runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'succeeded',
+        metrics:{reservationistResult:{version:1,tasks:[task('one',0)]}}});
+      const [connection]=await approver.db.execute(sql<{pid:number}>`select pg_backend_pid() as pid`);
+      let acquired!: () => void;
+      const locked=new Promise<void>(resolve => { acquired=resolve; });
+      const proceed=new Promise<void>(resolve => { release=resolve; });
+      approval=approveHmsWrite({db:approver.db,transportId,actorUserId:'staff',workItemId:item!.id,
+        rereadHmsState:async()=>{acquired();await proceed;return {confirmation:'synthetic'};}});
+      await locked;
+      acknowledgement=setRequestHandled(acknowledger.db,{transportId,workItemId:item!.id,userId:'staff',runId,taskId:'one',handled:true});
+      let blocked=false;
+      for(let attempt=0;attempt<100;attempt++){
+        const [state]=await setup.db.execute(sql<{blocked:boolean}>`select exists (
+          select 1 from pg_stat_activity a where a.datname=current_database()
+            and a.wait_event_type='Lock' and ${connection!.pid}=any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if(state!.blocked){blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      const [grant,handled]=await Promise.all([approval,acknowledgement]);
+      expect(grant.runId).toBeTruthy();
+      expect(handled).toBe('recorded');
+    } finally {
+      release();
+      await Promise.allSettled([...(approval?[approval]:[]),...(acknowledgement?[acknowledgement]:[])]);
+      await Promise.all([setup.close(),approver.close(),acknowledger.close()]);
     }
   }, 15_000);
 });
