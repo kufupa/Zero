@@ -262,6 +262,19 @@ describe('explicit document calendars', () => {
     expect(check('Please quote one room: Arrival 21 December; departure 23 December', { arrival: '21 December', departure: '23 December' })).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
     expect(check('Please quote one room: Arrival 21 December 2026; departure 23 December 2026', { arrival: '21 December 2026', departure: '23 December 2026' })).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
   });
+  it('does not ignore a checkout correction in the other authored alternative', () => {
+    const check = (plain: string, html: string, value: { arrival: string; departure: string }) => {
+      const prefix = `${plain}\n\n${HTML_ALTERNATIVE_MARKER}`, text = prefix + html, attachmentId = 'message:current';
+      const original = { ...source, attachmentId, pages: [text], causalMessage: { at: '2026-10-01T08:00:00.000Z', direction: 'inbound' as const }, sourceViews: [{ name: 'plain' as const, start: 0, end: plain.length }, { name: 'html' as const, start: prefix.length, end: text.length }] };
+      const span = { attachmentId, sourceHash: source.sourceHash, page: 1, quote: plain, start: 0, end: plain.length };
+      return validateDocumentPlan({ facts: [{ id: 'stay', kind: 'dates', value, disclosure: 'guest', source: span }], tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source: span }], unresolvedAsks: [] }, [original]).facts[0].value;
+    };
+    const plain = 'Please quote one room on 21 December for 2 nights.', value = { arrival: '21 December', departure: '2 nights' };
+    expect(check(plain, `${plain} Correction: parking is available.`, value)).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
+    expect(() => check(plain, `${plain} Correction: checkout is 24 December.`, value)).toThrow('Explicit same-stay correction');
+    const explicit = 'Please quote one room: arrival 21 December 2026; departure 23 December 2026.';
+    expect(() => check(explicit, `${explicit} Corrected checkout is 24 December 2026.`, { arrival: '21 December 2026', departure: '23 December 2026' })).toThrow('Explicit same-stay correction');
+  });
   it('verifies dates renewed from one quoted alternative without spanning quoted alternatives', () => {
     const plain = 'Please rebook the same stay as previously quoted.';
     const html = 'Please confirm the earlier requested dates.';
