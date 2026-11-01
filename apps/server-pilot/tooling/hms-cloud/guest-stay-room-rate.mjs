@@ -21,13 +21,18 @@ const picker = (page, title) => page.locator('.x-window:visible:not(.x-menu)').f
   has: page.locator('.x-window-header-text').filter({ hasText: new RegExp(`^${title}$`) }),
 }).last();
 
-async function assertWindows(page, allowed, nativeDialog, allowUnavailableMessage = false) {
+async function assertWindows(page, allowed, nativeDialog, unavailableMessage = null) {
   if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
+  if (unavailableMessage) {
+    const messageBoxes = page.locator('.x-message-box:visible');
+    const expected = messageBoxes.filter({ has: page.getByText(unavailableMessage, { exact: true }) });
+    if (await messageBoxes.count() !== 1 || await expected.count() !== 1) throw new Error('UNEXPECTED_DIALOG');
+  }
   const wins = page.locator('.x-window:visible:not(.x-menu)');
   const titles = [];
   for (let i = 0; i < await wins.count(); i += 1) {
     const win = wins.nth(i);
-    if (allowUnavailableMessage && await win.evaluate((el) => el.matches('.x-message-box'))) continue;
+    if (unavailableMessage && await win.evaluate((el) => el.matches('.x-message-box'))) continue;
     const headers = await win.locator('.x-window-header-text:visible').allTextContents();
     if (headers.length !== 1 || !allowed.includes(headers[0].trim())) throw new Error('UNEXPECTED_DIALOG');
     titles.push(headers[0].trim());
@@ -42,12 +47,13 @@ async function dismissUnavailableMessage(page, nativeDialog, allowedWindows, tim
   const count = await dialog.count();
   if (!count) return false;
   if (count !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
-  if (await page.locator('.x-message-box:visible').count() !== count) throw new Error('UNEXPECTED_DIALOG');
-  await assertWindows(page, allowedWindows, nativeDialog, true);
+  await assertWindows(page, allowedWindows, nativeDialog, UNAVAILABLE_MESSAGE);
   const ok = dialog.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
   if (await ok.count() !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
   await ok.click();
   await dialog.waitFor({ state: 'hidden', timeout: 10000 });
+  if (await page.locator('.x-message-box:visible').count()) throw new Error('UNEXPECTED_DIALOG');
+  await assertWindows(page, allowedWindows, nativeDialog);
   return true;
 }
 async function formFields(page) {
