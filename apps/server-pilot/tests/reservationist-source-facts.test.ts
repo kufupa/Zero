@@ -232,6 +232,13 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Kindly quote one single room for one adult.','quote',undefined,1)).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults. Do not book us yet.')).resolves.toMatchObject({facts:[{kind:'room'}]});
  });
+ it('compares only established occupancy across alternatives and retains verified guest names',async()=>{
+  const marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,run=(plain:string,html:string,names:boolean)=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:occupancy-views',src=(quote:string)=>({attachmentId,sourceHash,page:1,quote,view:'html'});
+   const guests=names?[{id:'guest1',kind:'guest',value:{firstName:'Alex',lastName:'Example'},disclosure:'guest',source:src('Alex Example')},{id:'guest2',kind:'guest',value:{firstName:'Taylor',lastName:'Sample'},disclosure:'guest',source:src('Taylor Sample')}]:[];
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:2,childAges:[]},disclosure:'guest',source:src(html)},...guests],tasks:[{id:'quote',kind:'quote',factIds:['room',...guests.map(g=>g.id)],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'occupancy-views',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'occupancy-views',causalAt:at,admissions:[],signal:new AbortController().signal});};
+  await expect(run('Please quote one room for Mr Alex Example and Ms Taylor Sample.','Kindly quote one room for Mr Alex Example and Ms Taylor Sample.',true)).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
+  await expect(run('Please quote one room.','Kindly quote one room for two adults.',false)).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
+ });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
   const alternate='Please rebook this stay using the previous quotation.';

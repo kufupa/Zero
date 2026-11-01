@@ -451,8 +451,10 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
     const scope=citedSourceScope(fact,sources,facts,tasks),proofFact=scope?.fact??fact,proofFacts=scope?.facts??facts,proofTasks=scope?.tasks??tasks,boundTasks=proofTasks.filter(task=>task.factIds.includes(fact.id)).concat(scope?.alternativeTasks??[]);
     if((scope?.alternativeTasks??[]).some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
     const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).some(task=>{
-      if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,[],[task]);
-      const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page);return observed&&(observed.quantity!==occupancy.quantity||observed.adults!==occupancy.adults);
+      if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
+      const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
+      const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
+      return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
     if(conflictingOccupancy)throw new Error('Conflicting occupancy across message views');
     if(fact.value.quotationBasis==='per_room_rate'){

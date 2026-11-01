@@ -49,13 +49,9 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     $(element).prepend('\nFrom: quoted history\n');
     $(element).children('summary').remove();
   });
-  $('br, hr').each((_, element) => {
-    $(element).replaceWith('\n');
-  });
+  $('br, hr').replaceWith('\n');
   $('td, th').append('\t');
-  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
-    $(element).prepend('\n').append('\n');
-  });
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').prepend('\n').append('\n');
   $('img').each((_, element) => {
     const alt = $(element).attr('alt')?.trim() ?? '';
     $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
@@ -94,10 +90,9 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
   else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
-  const views = sourceViews.length === 2 ? sourceViews.map(view => {
-    const history = quoted[view.name];
-    return history ? { ...view, quoted: history } : view;
-  }) : undefined;
+  const views = sourceViews.length === 2
+    ? sourceViews.map(view => ({ ...view, ...(quoted[view.name] ? { quoted: quoted[view.name] } : {}) }))
+    : undefined;
   return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
@@ -251,7 +246,6 @@ export async function buildReservationistWorkerInput(options: {
     const sourceHash = attachment.sha256 ?? (options.resolveSourceHash
       ? await bounded((edge) => options.resolveSourceHash!({ ...attachment }, edge))
       : undefined);
-    check();
     if (!sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash))
       throw new Error('worker_intake_attachment_identity_invalid');
     const metadata: ReservationistAttachmentMetadata = {
