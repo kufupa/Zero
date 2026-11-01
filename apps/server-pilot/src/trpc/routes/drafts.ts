@@ -307,7 +307,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     };
     const expectedGroupId = reservationistBookingSuggestionGroupId(citation);
     if (suggestion.groupId !== expectedGroupId || !/^[A-Za-z0-9_-]{1,32}$/.test(expectedGroupId)) return undefined;
-    return { ...suggestion, staffSourceHash };
+    return { ...suggestion, staffSourceHash } as Record<string, unknown> & { staffSourceHash: string };
   };
   for (const task of rows(result.tasks).slice(0, 32)) {
     if (!['needs_clarification', 'blocked'].includes(String(task.status))) continue;

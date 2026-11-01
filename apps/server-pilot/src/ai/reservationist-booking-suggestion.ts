@@ -8,6 +8,7 @@ import {
   type QuotedBoard,
 } from './booking-draft.js';
 import type { ValidatedDocumentFact, ValidatedDocumentPlan } from './reservationist-document-facts.js';
+import { validReservationistMessageViews } from './reservationist-message-view.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
 
 export type ReservationistBookingSuggestionCitation = {
@@ -31,35 +32,7 @@ export type ReservationistBookingSuggestion = {
   source: ReservationistBookingSuggestionCitation;
   /** Unclassified source names for a per-request PartyPicker; never mapped to agency/company here. */
   partyNames: string[];
-  facts: {
-    dates: Array<{
-      arrival: string;
-      departure: string;
-      source: ReservationistBookingSuggestionCitation;
-    }>;
-    rooms: Array<{
-      roomRef: string;
-      quantity: number | null;
-      adults: number;
-      /** null is unknown; [] is an explicitly child-free room. */
-      childAges: number[] | null;
-      source: ReservationistBookingSuggestionCitation;
-    }>;
-    guests: Array<{
-      firstName: string;
-      lastName: string;
-      roomRef?: string;
-      roomIndex?: number;
-      age?: number;
-      source: ReservationistBookingSuggestionCitation;
-    }>;
-    boards: Array<{
-      board: string;
-      roomRef?: string;
-      source: ReservationistBookingSuggestionCitation;
-    }>;
-    parties: Array<{ name: string; source: ReservationistBookingSuggestionCitation }>;
-  };
+  facts: Record<'dates' | 'rooms' | 'guests' | 'boards' | 'parties', Array<{ source: ReservationistBookingSuggestionCitation }>>;
   /** Missing facts block draft creation; draft.missing contains existing HMS-form questions. */
   missing: string[];
   draft?: BookingDraft;
@@ -108,12 +81,24 @@ export function reservationistBookingSuggestionGroupId(source: ReservationistBoo
   return `b_${createHash('sha256').update(identity).digest('hex').slice(0, 30)}`;
 }
 
-function authoredEnd(text: string): number {
+function authoredEnd(
+  text: string,
+  sourceViews?: ReservationistRuntimeInput['messages'][number]['sourceViews'],
+  span?: CitationSource,
+): number {
+  let offset = 0;
+  if (sourceViews) {
+    if (!span || typeof span.start !== 'number' || typeof span.end !== 'number' || !validReservationistMessageViews(text, sourceViews)) return -1;
+    const view = sourceViews.find((item) => span.start! >= item.start && span.end! <= item.end);
+    if (!view) return -1;
+    offset = view.start;
+    text = text.slice(view.start, view.end);
+  }
   const boundaries = [
     text.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im),
     text.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu),
   ].filter((position) => position >= 0);
-  return boundaries.length ? Math.min(...boundaries) : text.length;
+  return offset + (boundaries.length ? Math.min(...boundaries) : text.length);
 }
 
 function sourceIsCurrent(
@@ -134,7 +119,7 @@ function sourceIsCurrent(
       Date.parse(trigger.at) !== Date.parse(runtime.clock.causalAt) ||
       span.sourceHash !== hashText(trigger.text) ||
       span.page !== 1 ||
-      span.end > authoredEnd(trigger.text) ||
+      span.end > authoredEnd(trigger.text, trigger.sourceViews, fact.source) ||
       trigger.text.slice(span.start, span.end) !== fact.source.quote
     ) return null;
     return span;
@@ -202,7 +187,7 @@ export async function buildReservationistBookingSuggestion(input: {
     task.source.attachmentId !== `message:${trigger.id}` ||
     task.source.sourceHash !== hashText(trigger.text) ||
     task.source.page !== 1 ||
-    task.source.end! > authoredEnd(trigger.text) ||
+    task.source.end! > authoredEnd(trigger.text, trigger.sourceViews, task.source) ||
     trigger.text.slice(task.source.start!, task.source.end!) !== task.source.quote
   ) return null;
 
@@ -276,13 +261,11 @@ export async function buildReservationistBookingSuggestion(input: {
   else if (partyNames.length > 1) missing.push('Multiple party names are present; staff must resolve which party applies before preparing a booking.');
 
   const sourceFacts: ReservationistBookingSuggestion['facts'] = {
-    dates: dates.map(({ arrival, departure, source }) => ({ arrival, departure, source })),
-    rooms: rooms.map(({ value, source }) => value.childAges === null
-      ? { ...value, source }
-      : { ...value, childAges: [...value.childAges], source }),
-    guests,
-    boards,
-    parties,
+    dates: dates.map(({ source }) => ({ source })),
+    rooms: rooms.map(({ source }) => ({ source })),
+    guests: guests.map(({ source }) => ({ source })),
+    boards: boards.map(({ source }) => ({ source })),
+    parties: parties.map(({ source }) => ({ source })),
   };
   const groupId = reservationistBookingSuggestionGroupId(request);
   const canPrefill =
