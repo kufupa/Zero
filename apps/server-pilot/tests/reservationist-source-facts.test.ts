@@ -169,6 +169,16 @@ describe('plain and HTML citation binding',()=>{
   const plain=`${body}\nKind regards\nGuest`,html=`${plain}\nExtra line`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,attachmentId=`message:${id}`,sourceHash=createHash('sha256').update(text).digest('hex'),source={attachmentId,sourceHash,page:1,quote:body,view:'html'};
   const plan=await extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'fact',kind,value,disclosure:'guest',source}],tasks:[{id:'quote',kind:'quote',factIds:['fact'],source}],unresolvedAsks:[]}})} as any,messages:[{id,at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:id,causalAt:at,admissions:[],signal:new AbortController().signal});return{plan,htmlStart};
  };
+ it('keeps a linked per-room rate task across wording-different authored alternatives and rejects a conflicting one',async()=>{
+  const at='2026-10-01T08:00:00Z',plain='Please provide single and double occupancy rates.',separator='\n\n'+HTML_ALTERNATIVE_MARKER;
+  const run=async(taskQuote:string)=>{
+   const htmlStart=plain.length+separator.length,text=plain+separator+taskQuote,attachmentId='message:cross-view-rate',sourceHash=createHash('sha256').update(text).digest('hex');
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'rate',kind:'room',value:{roomRef:'1',quantity:1,quotationBasis:'per_room_rate',adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],tasks:[{id:'quote',kind:'quote',factIds:['rate'],source:{attachmentId,sourceHash,page:1,quote:taskQuote,view:'html'}}],unresolvedAsks:[]}})} as any,messages:[{id:'cross-view-rate',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'cross-view-rate',causalAt:at,admissions:[],signal:new AbortController().signal});
+  };
+  const plan=await run('Could you please provide single and double room rates?');
+  expect(plan).toMatchObject({facts:[{id:'rate',source:{view:'plain'},value:{quotationBasis:'per_room_rate'}}],tasks:[{id:'quote',source:{view:'html'}}]});
+  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow('Per-room rate option not entailed by current source');
+ });
  it.each([
   {id:'html-room',body:'Please quote one room for one adult.',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},expected:{convention:{rule:'centurion_staff_occupancy_v1'}}},
   {id:'html-rate',body:'Please provide single and double occupancy rates.',kind:'room',value:{roomRef:'1',quantity:1,quotationBasis:'per_room_rate',adults:1,childAges:[]},expected:{value:{quotationBasis:'per_room_rate'}}},
