@@ -162,28 +162,121 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
+function currentBookingRequestSource(
+  task: Task,
+  runtime: ReservationistRuntimeInput,
+): ReservationistBookingSuggestionCitation | null {
+  const trigger = runtime.messages.find((message) => message.id === runtime.trigger.id);
+  const source = citation(task.source);
+  return task.kind === 'new_booking' &&
+    !!source &&
+    !!trigger &&
+    trigger.direction === 'inbound' &&
+    trigger.disclosure !== 'staff_only' &&
+    task.source.attachmentId === `message:${trigger.id}` &&
+    task.source.sourceHash === hashText(trigger.text) &&
+    task.source.page === 1 &&
+    task.source.end! <= authoredEnd(trigger.text, trigger.sourceViews, task.source) &&
+    trigger.text.slice(task.source.start!, task.source.end!) === task.source.quote
+    ? source
+    : null;
+}
+
+/** Only explicit stay labels are shared between a request and a separately cited row. */
+function explicitStayLabels(text: string): string[] {
+  const labels = new Set<string>();
+  const generic = new Set([
+    'a', 'an', 'the', 'this', 'that', 'my', 'our', 'your', 'same', 'current', 'new', 'old',
+    'from', 'to', 'for', 'with', 'is', 'was', 'will', 'room', 'rooms', 'date', 'dates',
+    'details', 'request', 'please', 'one', 'two',
+  ]);
+  for (const match of text.matchAll(/\b(group|stay)\s+(?:id\s*[:#-]?\s*)?([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})\b/giu)) {
+    const value = match[2]!.toLowerCase();
+    if (!generic.has(value)) labels.add(`${match[1]!.toLowerCase()}:${value}`);
+  }
+  for (const match of text.matchAll(/\b(?:booking|reservation|confirmation)\s+(?:reference|ref(?:erence)?|number|no\.?|id)\s*[:#-]?\s*([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})/giu))
+    labels.add(`reference:${match[1]!.toLowerCase()}`);
+  for (const match of text.matchAll(/\b(?:reference|ref\.?|confirmation)\s*[:#]\s*([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})/giu))
+    labels.add(`reference:${match[1]!.toLowerCase()}`);
+  return [...labels];
+}
+
+function factSourceContext(
+  fact: ValidatedDocumentFact,
+  runtime: ReservationistRuntimeInput,
+  admissions: readonly AttachmentAdmission[],
+): string {
+  const span = citation(fact.source);
+  if (!span) return fact.source.quote ?? '';
+  const messageId = fact.source.attachmentId.match(/^message:([\s\S]+)$/)?.[1];
+  const message = messageId ? runtime.messages.find((item) => item.id === messageId) : undefined;
+  const admission = message ? undefined : admissions.find((item) => item.metadata.attachmentId === span.sourceRef);
+  const page = message?.text ?? (admission?.status === 'admitted' && admission.relation === 'current' &&
+      admission.source?.sourceHash === span.sourceHash
+    ? admission.source.pages?.[span.page - 1]
+    : undefined);
+  if (!page) return fact.source.quote ?? '';
+
+  let lower = 0, upper = page.length;
+  if (message?.sourceViews?.length) {
+    const view = message.sourceViews.find((item) => span.start >= item.start && span.end <= item.end);
+    if (!view) return fact.source.quote ?? '';
+    lower = view.start;
+    upper = view.end;
+  }
+  const before = page.slice(lower, span.start);
+  const boundary = Math.max(
+    before.lastIndexOf('\n'), before.lastIndexOf('.'), before.lastIndexOf('!'),
+    before.lastIndexOf('?'), before.lastIndexOf(';'),
+  );
+  const start = lower + boundary + 1;
+  const after = page.slice(span.end, upper);
+  const endOffset = after.search(/[\n.!?;]/);
+  const end = span.end + (endOffset < 0 ? after.length : endOffset);
+  let context = page.slice(start, end);
+
+  // Rooming-list headers commonly occupy the line directly above their data row.
+  const previousLineEnd = start > lower ? start - 1 : lower;
+  const previousLineStart = Math.max(lower, page.lastIndexOf('\n', previousLineEnd - 1) + 1);
+  const previousLine = page.slice(previousLineStart, previousLineEnd).trim();
+  if (previousLine.endsWith(':') && explicitStayLabels(previousLine).length) context = `${previousLine} ${context}`;
+  return context;
+}
+
+function factBelongsToBookingRequest(
+  fact: ValidatedDocumentFact,
+  task: Task,
+  tasks: readonly Task[],
+  taskIdsByLabel: ReadonlyMap<string, ReadonlySet<string>>,
+  runtime: ReservationistRuntimeInput,
+  admissions: readonly AttachmentAdmission[],
+): boolean {
+  const factSource = citation(fact.source)!, factContextLabels = explicitStayLabels(factSourceContext(fact, runtime, admissions));
+  const labelOwners = new Set(factContextLabels.flatMap((label) => [...(taskIdsByLabel.get(label) ?? [])]));
+  const spanOwners = tasks.filter((candidate) => {
+    const source = citation(candidate.source);
+    return source && source.sourceRef === factSource.sourceRef && source.sourceHash === factSource.sourceHash &&
+      source.page === factSource.page && factSource.start >= source.start && factSource.end <= source.end;
+  });
+
+  if (spanOwners.length === 1) {
+    const owner = spanOwners[0]!.id;
+    return owner === task.id && (!labelOwners.size || labelOwners.size === 1 && labelOwners.has(owner));
+  }
+  return labelOwners.size === 1 && labelOwners.has(task.id);
+}
+
 /** Creates only a cited form prefill; it does not check HMS, price a stay, or authorize a save. */
 export async function buildReservationistBookingSuggestion(input: {
   task: Task;
   facts: readonly ValidatedDocumentFact[];
+  bookingTasks?: readonly Task[];
   runtime: ReservationistRuntimeInput;
   attachmentAdmissions: readonly AttachmentAdmission[];
 }): Promise<ReservationistBookingSuggestion | null> {
   const { task, runtime } = input;
-  const request = citation(task.source);
-  const trigger = runtime.messages.find((message) => message.id === runtime.trigger.id);
-  if (
-    task.kind !== 'new_booking' ||
-    !request ||
-    !trigger ||
-    trigger.direction !== 'inbound' ||
-    trigger.disclosure === 'staff_only' ||
-    task.source.attachmentId !== `message:${trigger.id}` ||
-    task.source.sourceHash !== hashText(trigger.text) ||
-    task.source.page !== 1 ||
-    task.source.end! > authoredEnd(trigger.text, trigger.sourceViews, task.source) ||
-    trigger.text.slice(task.source.start!, task.source.end!) !== task.source.quote
-  ) return null;
+  const request = currentBookingRequestSource(task, runtime);
+  if (!request) return null;
 
   const missing: string[] = [];
   const validFacts = input.facts.flatMap((fact) => {
@@ -191,6 +284,22 @@ export async function buildReservationistBookingSuggestion(input: {
     return source ? [{ fact, source }] : [];
   });
   if (validFacts.length !== input.facts.length) missing.push('Some stay facts are not bound to the current email or its current readable attachments.');
+
+  const currentTasks = new Map<string, Task>();
+  for (const candidate of [...(input.bookingTasks ?? []), task])
+    if (currentBookingRequestSource(candidate, runtime)) currentTasks.set(candidate.id, candidate);
+  const bookingTasks = [...currentTasks.values()];
+  const taskIdsByLabel = new Map<string, Set<string>>();
+  for (const candidate of bookingTasks) {
+    for (const label of explicitStayLabels(candidate.source.quote ?? '')) {
+      const ids = taskIdsByLabel.get(label) ?? new Set<string>();
+      ids.add(candidate.id);
+      taskIdsByLabel.set(label, ids);
+    }
+  }
+  const ambiguousTaskFacts = bookingTasks.length > 1 && validFacts.some(({ fact }) =>
+    !factBelongsToBookingRequest(fact, task, bookingTasks, taskIdsByLabel, runtime, input.attachmentAdmissions));
+  if (ambiguousTaskFacts) missing.push('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');
 
   const dates = validFacts.flatMap(({ fact, source }) => fact.kind === 'dates'
     ? [{ arrival: fact.value.arrival, departure: fact.value.departure, source }]
@@ -273,6 +382,7 @@ export async function buildReservationistBookingSuggestion(input: {
     !allocationConflict &&
     rooms.every(({ value }) => value.quantity !== null && value.childAges !== null && !(value.adults === 0 && value.childAges.length === 0)) &&
     partyNames.length <= 1 &&
+    !ambiguousTaskFacts &&
     !missing.some((item) => item.startsWith('Some stay facts'));
 
   if (!canPrefill) return needsDetails();

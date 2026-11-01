@@ -333,7 +333,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
    };
    for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';let bookingSuggestion:ReservationistBookingSuggestion|undefined;
     if(task.kind==='new_booking'&&planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)){
-     try{bookingSuggestion=await buildReservationistBookingSuggestion({task,facts:ctx.facts,runtime:input,attachmentAdmissions:options.admissions})??undefined;}
+     try{bookingSuggestion=await buildReservationistBookingSuggestion({task,facts:ctx.facts,bookingTasks:extracted.tasks,runtime:input,attachmentAdmissions:options.admissions})??undefined;}
      catch{bookingSuggestion=undefined;}
     }
     try{
