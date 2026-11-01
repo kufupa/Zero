@@ -34,7 +34,44 @@ function validBaseReservationistMessageViews(text: string, views: unknown): view
   if (!Array.isArray(views) || views.length !== 2) return false;
   const [plain, html] = views as ReservationistMessageView[];
   return plain?.name === 'plain' && html?.name === 'html' && plain.start === 0 &&
-    [plain, html].every(v => Number.isSafeInteger(v.start) && Number.isSafeInteger(v.end) && v.start >= 0 && v.end > v.start && v.end <= text.length && !QUOTED_HISTORY.test(text.slice(v.start, v.end))) &&
+    [plain, html].every(v => Number.isSafeInteger(v.start) && Number.isSafeInteger(v.end) && v.start >= 0 && (v.end > v.start || v.name === 'html' && v.end === v.start && !!(plain.quoted || html.quoted)) && v.end <= text.length && !QUOTED_HISTORY.test(text.slice(v.start, v.end))) &&
     text.slice(plain.end, html.start) === `\n\n${HTML_ALTERNATIVE_MARKER}` &&
     (html.end === text.length || /^\n\n(?:\[HTML alternative context\]\n)?(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/i.test(text.slice(html.end)));
+}
+
+/** Keep each complete authored alternative before quoted history; deduplication can detach negations or conditions. */
+export function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
+  const comparable = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
+  if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
+  const boundary = /^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu;
+  const split = (text: string) => {
+    const at = text.search(boundary);
+    return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at)];
+  };
+  const [primaryBody, primaryTail] = split(primary);
+  const [alternativeBody, alternativeTail] = split(alternative);
+  let text = '';
+  const sourceViews: ReservationistMessageView[] = [];
+  const quoted: Partial<Record<ReservationistMessageView['name'], { start: number; end: number }>> = {};
+  const add = (value: string, name?: ReservationistMessageView['name'], prefix = '', history?: ReservationistMessageView['name']) => {
+    if (!value && name !== 'html') return;
+    if (text) text += '\n\n';
+    text += prefix;
+    const start = text.length;
+    text += value;
+    if (name) sourceViews.push({ name, start, end: text.length });
+    if (history) quoted[history] = { start, end: text.length };
+  };
+  add(primaryBody?.trim() ?? '', 'plain');
+  if ((alternativeBody?.trim() || alternativeTail?.trim()) && (comparable(primaryBody ?? '') !== comparable(alternativeBody ?? '') || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
+    // One authored copy is enough when only the quoted histories differ.
+    add(primaryBody?.trim() === alternativeBody?.trim() ? '' : alternativeBody?.trim() ?? '', 'html', HTML_ALTERNATIVE_MARKER);
+  if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
+  if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
+    add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
+  else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
+  const views = sourceViews.length === 2
+    ? sourceViews.map(view => ({ ...view, ...(quoted[view.name] ? { quoted: quoted[view.name] } : {}) }))
+    : undefined;
+  return { text, ...(views ? { sourceViews: views } : {}) };
 }
