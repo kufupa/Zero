@@ -21,7 +21,7 @@ import {
   roomTypeLabel,
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
-import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
+import { newQuoteToken, parseChildrenAges, stayIdOf, stayTotal, stayTotals } from '@/lib/quote-workflow/session';
 import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type {
   HmsQuotePropertyCode,
@@ -178,6 +178,14 @@ export function StayCard({
   const strictRoomTypes = configuredStrictRoomTypes ?? (configuredRoomTypes !== undefined);
   const boards = configuredBoards ?? DEFAULT_PANE_BOARDS;
   const totals = stayTotals(rows);
+  const rowsByStay = new Map<string, StayGroupRequirement[]>();
+  for (const row of rows) {
+    const stayId = stayIdOf(row);
+    const stayRows = rowsByStay.get(stayId);
+    if (stayRows) stayRows.push(row);
+    else rowsByStay.set(stayId, [row]);
+  }
+  const stayTotalRows = [...rowsByStay];
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
   // The dates are one fact for the whole stay, so a change goes to every room in it.
@@ -282,8 +290,46 @@ export function StayCard({
         </Field>
 
         <section aria-label="Room types and occupancy" className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-1">
+          <div className="flex flex-wrap items-end justify-between gap-2">
             <h5 className="text-[13px] font-bold text-[#1e293b]">Room types &amp; occupancy</h5>
+            <div className="grid w-full max-w-md grid-cols-2 gap-2">
+              {stayTotalRows.flatMap(([totalStayId, totalRows], totalStayIndex) => {
+                const adultsTotal = stayTotal(totalRows, 'adultsTotal');
+                const childrenTotal = stayTotal(totalRows, 'childrenTotal');
+                return ([
+                  ['adultsTotal', 'Adults total', adultsTotal.value, adultsTotal.provenance],
+                  ['childrenTotal', 'Children total', childrenTotal.value, childrenTotal.provenance],
+                ] as const).map(([field, label, value, provenance]) => {
+                  const fieldLabel = stayTotalRows.length > 1 ? `${label} · booking ${totalStayIndex + 1}` : label;
+                  const fieldId = `${id}-${field}-${totalStayIndex}`;
+                  return (
+                    <Field
+                      key={`${totalStayId}-${field}`}
+                      label={fieldLabel}
+                      htmlFor={fieldId}
+                      aside={<ProvenanceFlag value={provenance} />}
+                      hint="Stay-wide total; not divided across rooms."
+                    >
+                      <input
+                        id={fieldId}
+                        className={paneFieldClass}
+                        type="number"
+                        min={0}
+                        max={999}
+                        step={1}
+                        value={value ?? ''}
+                        onChange={(event) => {
+                          const raw = event.currentTarget.value;
+                          const next = raw === '' ? null : Number(raw);
+                          if (next !== null && (!Number.isInteger(next) || next < 0 || next > 999)) return;
+                          onStayAction?.({ type: 'patch_stay_total', stayId: totalStayId, field, value: next });
+                        }}
+                      />
+                    </Field>
+                  );
+                });
+              })}
+            </div>
           </div>
           <div role="table" aria-label="Room types & occupancy" className="overflow-hidden rounded-[3px] border border-[#dbe2ea]">
             <div role="rowgroup" className="flex flex-col divide-y divide-[#e2e8f0]">
