@@ -1,7 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { HTML_ALTERNATIVE_MARKER, validReservationistMessageViews } from '../src/ai/reservationist-message-view.js';
+import { combineMessageViews, HTML_ALTERNATIVE_MARKER, validReservationistMessageViews } from '../src/ai/reservationist-message-view.js';
 
 describe('email message views', () => {
+  it('composes distinct authored alternatives and keeps their histories attributable', () => {
+    const plain = 'Quote please.\nFrom: first guest\nFirst history.';
+    const html = 'Quote with breakfast.\nFrom: second guest\nSecond history.';
+    const combined = combineMessageViews(plain, html);
+    expect(validReservationistMessageViews(combined.text, combined.sourceViews)).toBe(true);
+    const [first, second] = combined.sourceViews!;
+    expect(combined.text.slice(first.start, first.end)).toBe('Quote please.');
+    expect(combined.text.slice(second.start, second.end)).toBe('Quote with breakfast.');
+    expect(combined.text.slice(first.quoted!.start, first.quoted!.end)).toContain('First history.');
+    expect(combined.text.slice(second.quoted!.start, second.quoted!.end)).toContain('Second history.');
+  });
+
+  it('preserves distinct histories for one shared authored body', () => {
+    const combined = combineMessageViews('Quote please.\nFrom: first guest\nFirst.', 'Quote please.\nFrom: second guest\nSecond.');
+    expect(validReservationistMessageViews(combined.text, combined.sourceViews)).toBe(true);
+    expect(combined.sourceViews?.[1]?.start).toBe(combined.sourceViews?.[1]?.end);
+    expect(combineMessageViews('Quote please.', 'Quote please.')).toEqual({ text: 'Quote please.' });
+    const historyOnly = combineMessageViews('Quote please.\nFrom: first guest\nFirst.', 'From: second guest\nSecond.');
+    expect(validReservationistMessageViews(historyOnly.text, historyOnly.sourceViews)).toBe(true);
+    expect(historyOnly.text.slice(historyOnly.sourceViews![1]!.quoted!.start, historyOnly.sourceViews![1]!.quoted!.end)).toContain('Second.');
+  });
+
   it('accepts the two exact MIME ranges in one source', () => {
     const text = `plain\n\n${HTML_ALTERNATIVE_MARKER}html`;
     const htmlStart = text.indexOf('html', text.indexOf(HTML_ALTERNATIVE_MARKER) + HTML_ALTERNATIVE_MARKER.length);
