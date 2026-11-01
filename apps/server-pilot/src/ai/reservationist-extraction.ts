@@ -112,6 +112,7 @@ function originalRequestCandidates(messages:readonly {id:string;text:string;dire
  for(const match of requestBody.matchAll(/\b(?:please|kindly)\s+(?:ensure|update|confirm|send|provide|copy|resend|check|review)\b[^.!?;]*[.!?;]?|\b(?:attached\s+(?:POP|proof of payment|(?:hotel\s+)?vouchers?)|tax(?:es)?|breakfast options|cancellation (?:terms|policy)|payment link|reply all|copy all)\b/gi))add(match.index!,match.index!+match[0].length);
  return candidates;
 }
+type CurrentVoucherReviewSource={source:Pick<ValidatedDocumentPlan['tasks'][number]['source'],'attachmentId'|'sourceHash'|'page'>&{start:number;end:number;quote:string}};
 /** Lexical completeness only: original submitted-voucher request, never a fabricated task or authority. */
 function currentVoucherReviewSources(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[],triggerMessageId:string|undefined):ValidatedDocumentPlan['tasks'][number]['source'][][] {
  const m=messages.find(m=>m.id===triggerMessageId);if(!m||m.direction!=='inbound'||m.disclosure==='staff_only')return[];
@@ -131,13 +132,21 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  for(const key of keys){const copies=names.map(name=>byView.get(name)?.get(key)??[]),count=Math.max(...copies.map(groups=>groups.length));for(let index=0;index<count;index++){const alternatives=copies.flatMap(groups=>groups[index]??[]);out.push(alternatives);}}
  return out;
 }
+/** Missing or grouped voucher asks become source-bound staff work instead of dropping extraction. */
+export function unmatchedCurrentVoucherReviewSources(messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined,tasks:ValidatedDocumentPlan['tasks']):CurrentVoucherReviewSource['source'][]{
+ const groups=currentVoucherReviewSources(messages,triggerMessageId),message=messages.find(m=>m.id===triggerMessageId);
+ const covers=(task:ValidatedDocumentPlan['tasks'][number],source:ValidatedDocumentPlan['tasks'][number]['source'])=>task.kind==='question'&&task.source.attachmentId===source.attachmentId&&task.source.sourceHash===source.sourceHash&&task.source.page===1&&task.source.start!==undefined&&task.source.end!==undefined&&source.start!==undefined&&source.end!==undefined&&task.source.start<=source.start&&task.source.end>=source.end&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(task.source.quote??'');
+ const matches=groups.map(group=>tasks.filter(task=>group.some(source=>covers(task,source))));
+ return groups.flatMap((group,index)=>{
+  const covered=matches[index]!;if(covered.length===1&&matches.filter(other=>other.includes(covered[0]!)).length===1)return[];
+  const source=group[0];if(!message||!source||source.start===undefined||source.end===undefined||!source.quote)return[];
+  const viewEnd=message.sourceViews?.find(view=>source.start!>=view.start&&source.end!<=view.end)?.end??message.text.length;
+  const qualifier=message.text.slice(source.end,viewEnd).match(/^[ \t]+for[ \t]+(?:(?:guest|booking|reservation|confirmation(?:[ \t]+number)?)[ \t]+|(?:mr|mrs|ms|miss)\.?[ \t]+)[\p{L}\p{N}][\p{L}\p{N}'’-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’-]*)?/iu)?.[0].replace(/[ \t]+(?:and|or|then|but)\b[\s\S]*$/iu,'')??'';
+  const end=source.end+qualifier.length;return[{attachmentId:source.attachmentId,sourceHash:source.sourceHash,page:source.page,start:source.start,end,quote:message.text.slice(source.start,end)}];
+ });
+}
 function noteCurrentVoucherReviewGrouping(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
- const covered=new Set<ValidatedDocumentPlan['tasks'][number]>();
- for(const required of currentVoucherReviewSources(messages,triggerMessageId)){
-  const matches=plan.tasks.filter(t=>!covered.has(t)&&t.kind==='question'&&required.some(source=>t.source.attachmentId===source.attachmentId&&t.source.sourceHash===source.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&t.source.start<=source.start!&&t.source.end>=source.end!&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??'')));
-  if(matches.length!==1){const note='One or more attached voucher requests need staff review; check the original email and attachments.';if(!plan.unresolvedAsks.includes(note)&&plan.unresolvedAsks.length<32)plan.unresolvedAsks.push(note);return;}
-  covered.add(matches[0]!);
- }
+ if(plan.tasks.length&&unmatchedCurrentVoucherReviewSources(messages,triggerMessageId,plan.tasks).length){const note='One or more attached voucher requests need staff review; check the original email and attachments.';if(!plan.unresolvedAsks.includes(note)&&plan.unresolvedAsks.length<32)plan.unresolvedAsks.push(note);}
 }
 function bindRequestCandidates(output:unknown,candidates:readonly RequestCandidate[]):unknown{
  if(!output||typeof output!=='object'||Array.isArray(output))return output;const plan=structuredClone(output) as any;

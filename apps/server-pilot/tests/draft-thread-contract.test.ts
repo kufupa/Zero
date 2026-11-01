@@ -82,7 +82,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const [item] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
         sourceMessageId: parentMessageId, kind: 'other' }).returning();
       const input = { threadId, messageId: parentMessageId, workItemId: item!.id };
-      expect((await drafts.reviewForMessage(input))?.reviewSummary?.staffActions).toMatchObject([{kind:'business_document_failure',filename:'document.pdf'}]);
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.staffActions).toMatchObject([
+        {kind:'business_document_failure',filename:'document.pdf'},
+        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
+      ]);
       expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
         { id: 'new', runId: newRun, label: 'Earlier request', handled: false },
         { id: 'old', runId: oldRun, label: 'Earlier request', handled: false },
