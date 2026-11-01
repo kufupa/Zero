@@ -102,9 +102,9 @@ describe('staff stay-total correction projection', () => {
     expect(corrected.missingQuoteReplyFields).toEqual([]);
   });
 
-  it('keeps a legacy empty-age warning until staff confirms that room', () => {
+  it('keeps an empty-age warning when the child total is unstated', () => {
     const source = payload();
-    delete source.stays[0]!.totalChildren;
+    source.stays[0]!.totalChildren = null;
     source.stays[0]!.totalAdults = 6;
     source.missing = [{ field: 'childAges', question: 'Confirm the children’s ages.' }];
 

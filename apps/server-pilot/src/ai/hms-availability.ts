@@ -140,7 +140,7 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
       stays.length > 1 &&
       hasChildAgeWarning &&
       stay !== null &&
-      stay.totalChildren === undefined &&
+      stay.totalChildren == null &&
       Array.isArray(stay.rows) &&
       stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0)
     ) {

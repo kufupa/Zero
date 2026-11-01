@@ -289,7 +289,7 @@ export function buildPreparedStaffQuotePlan(input: {
   const missingForStay = (stay: (typeof payload.stays)[number]) => {
     if (payload.stays.length === 1) return payload.missing;
     const legacyEmptyAges =
-      stay.totalChildren === undefined && stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0);
+      stay.totalChildren == null && stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0);
     return payload.missing.filter((item) => {
       const fieldAndQuestion = `${item.field} ${item.question}`;
       if (/child/i.test(fieldAndQuestion)) return hasChildAgeWarning && legacyEmptyAges;

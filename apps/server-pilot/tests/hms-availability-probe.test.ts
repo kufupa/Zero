@@ -430,7 +430,7 @@ describe('U10 availability probe (pure)', () => {
     const legacy = {
       ...STAY_INCOMPLETE,
       totalRooms: 1,
-      totalChildren: undefined,
+      totalChildren: null,
       rows: [{ ...STAY_INCOMPLETE.rows[0]!, rooms: 1, adultsPerRoom: 2, childAges: [] }],
     };
     const requests = availabilityRequestsFor({

@@ -703,7 +703,7 @@ export function storedAnalysis(
       const totalChildrenPath = `stays[${stay.id}].totalChildren`;
       const totalChildren = Object.hasOwn(state, totalChildrenPath) ? state[totalChildrenPath] : sourceStay?.totalChildren;
       const unresolvedLegacyEmptyAges = Boolean(
-        hasChildAgeWarning && sourceStay && sourceStay.totalChildren === undefined &&
+        hasChildAgeWarning && sourceStay && sourceStay.totalChildren == null &&
         typeof totalChildren !== 'number' && childAges?.length === 0 && !Object.hasOwn(state, childAgesPath),
       );
       groups.push({

@@ -315,14 +315,14 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
   });
 
-  it('keeps legacy empty child ages unresolved without blocking an explicit zero-child stay', () => {
+  it('keeps an unscoped child warning on the stay with an empty age list and no total', () => {
     const first = { ...payload().stays[0]!, totalChildren: 0 };
     const legacy = {
       ...first,
       id: 'stay-legacy',
       requested: { arrival: '2026-11-20', departure: '2026-11-21' },
       totalRooms: 1,
-      totalChildren: undefined,
+      totalChildren: null,
       rows: [{ ...first.rows[0]!, id: 'row-legacy', rooms: 1, childAges: [] }],
     };
     const plan = build({
