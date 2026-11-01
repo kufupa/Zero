@@ -221,7 +221,7 @@ function explicitStayLabels(text: string): string[] {
   return [...labels];
 }
 
-function hasMultipleStayLabels(text: string): boolean {
+function stayLabelValues(text: string): Map<string, Set<string>> {
   const valuesByKind = new Map<string, Set<string>>();
   for (const label of explicitStayLabels(text)) {
     const separator = label.indexOf(':');
@@ -231,9 +231,26 @@ function hasMultipleStayLabels(text: string): boolean {
     const values = valuesByKind.get(family) ?? new Set<string>();
     values.add(value);
     valuesByKind.set(family, values);
-    if (values.size > 1) return true;
   }
-  return false;
+  return valuesByKind;
+}
+
+function hasMultipleStayLabels(text: string): boolean {
+  return [...stayLabelValues(text).values()].some((values) => values.size > 1);
+}
+
+function factHasConflictingStayLabels(
+  fact: ValidatedDocumentFact,
+  task: Task,
+  runtime: ReservationistRuntimeInput,
+  admissions: readonly AttachmentAdmission[],
+): boolean {
+  const requested = stayLabelValues(task.source.quote ?? '');
+  const cited = stayLabelValues(factSourceContext(fact, runtime, admissions));
+  return [...cited].some(([family, values]) => {
+    const requestedValues = requested.get(family);
+    return !!requestedValues && (values.size > 1 || ![...values].some((value) => requestedValues.has(value)));
+  });
 }
 
 function factSourceContext(
@@ -342,8 +359,10 @@ export async function buildReservationistBookingSuggestion(input: {
   const multipleStayLabels = hasMultipleStayLabels(task.source.quote ?? '');
   if (multipleStayLabels)
     missing.push('This request names multiple groups or booking references; staff must separate them before preparing a booking.');
-  const ambiguousTaskFacts = requestScopes.length > 1 && validFacts.some(({ fact }) =>
-    !factBelongsToBookingRequest(fact, targetScope, requestScopes, requestScopesByLabel, runtime, input.attachmentAdmissions));
+  const ambiguousTaskFacts = validFacts.some(({ fact }) =>
+    factHasConflictingStayLabels(fact, task, runtime, input.attachmentAdmissions)) ||
+    requestScopes.length > 1 && validFacts.some(({ fact }) =>
+      !factBelongsToBookingRequest(fact, targetScope, requestScopes, requestScopesByLabel, runtime, input.attachmentAdmissions));
   if (ambiguousTaskFacts) missing.push('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');
 
   const dates = validFacts.flatMap(({ fact, source }) => fact.kind === 'dates'

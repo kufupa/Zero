@@ -218,6 +218,19 @@ describe('reservationist booking suggestion', () => {
     expect(result?.facts.dates[0]?.source).toMatchObject({ sourceRef: attachmentId, sourceHash, page: 1 });
     expect(result?.facts.rooms[0]?.source).toMatchObject({ sourceRef: attachmentId, sourceHash, page: 1 });
 
+    const spanLast = (quote: string) => {
+      const start = page.lastIndexOf(quote);
+      return { attachmentId, sourceHash, page: 1, quote, start, end: start + quote.length };
+    };
+    const dateB: ValidatedDocumentFact = { id: 'dates-b', kind: 'dates', value: { arrival: '2027-01-10', departure: '2027-01-12' },
+      source: spanLast('2027-01-10 to 2027-01-12'), disclosure: 'guest', verification: 'text_verified', authority: 'customer_claim' } as ValidatedDocumentFact;
+    const roomB: ValidatedDocumentFact = { id: 'room-b', kind: 'room', value: { roomRef: 'B', quantity: 1, adults: 2, childAges: [] },
+      source: spanLast('1 room for 2 adults only'), disclosure: 'guest', verification: 'text_verified', authority: 'customer_claim' } as ValidatedDocumentFact;
+    const missingTask = await buildReservationistBookingSuggestion({ task: taskA, facts: [dateB, roomB],
+      runtime: runtimeFor(body), attachmentAdmissions: admissions });
+    expect(missingTask?.status).toBe('needs_details');
+    expect(missingTask?.draft).toBeUndefined();
+
     const inlinePage = 'Group A: use these settings. 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
     const inlineHash = createHash('sha256').update(inlinePage).digest('hex');
     const inlineSpan = (quote: string) => {
