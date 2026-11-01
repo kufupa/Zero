@@ -19,9 +19,12 @@ export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availabilit
 // The quote contract is an ESM tool outside src. Async callers load it here; the sync joint search takes the profile flag.
 const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
 function missing(code:string,fields:string[]):never{throw new ReservationistTaskEvidenceUnavailable(code,fields);}
+function requestsAccessibleRoom(text:string):boolean{
+ return text.split(/[.!?;\r\n]+|,\s*(?=(?:is|are|does|do|can|could|will|would)\b)/i).some(row=>/\b(?:accessible|wheelchair)\b/i.test(row)&&(/\b(?:rooms?|bedrooms?|suites?|accommodation)\b/i.test(row)||/\b(?:required|needed|need|require)\b/i.test(row)&&!/\b(?:restaurant|lobby|bar|pool|gym|parking|event|conference|meeting)\b/i.test(row)));
+}
 function hrdavRequestedRoomCodes(text:string):string[]|undefined{
  if(/\bjunior\s+suite\b/i.test(text))return['JNRSUI'];
- if(/\baccessible\b/i.test(text))return['ACCES'];
+ if(requestsAccessibleRoom(text))return['ACCES'];
  if(/\bexecutive\s+king\b/i.test(text))return['EXKNGB','EXKNGR','EXKNGS'];
  if(/\bdeluxe\s+(?:patio|king|room)\b/i.test(text))return['DLXPAT','DLXKNG'];
  if(/\bstandard\s+(?:king|twin|room)\b/i.test(text))return['STKNG','STWN'];
@@ -84,7 +87,7 @@ export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest
  const roomFacts=[...new Map(facts.filter(f=>f.kind==='room').map(f=>[quoteDigest(f.value),f])).values()];if(!roomFacts.length)missing('business_room_allocation_unavailable',['explicit room quantity and occupancy']);
  const text=authored(ctx),message=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),views=message?.sourceViews&&validReservationistMessageViews(message.text,message.sourceViews)?message.sourceViews.map(v=>message.text.slice(v.start,v.end).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!):[text];
  const isGovernment=views.some(value=>/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(value)&&/\bofficial|government\s+rate\b/i.test(value)),types=views.map(value=>requestedRoomCodes(ctx.input.propertyCode,value)).filter((value):value is string[]=>Boolean(value)),roomCodes=types[0];
- if(new Set(types.map(value=>JSON.stringify(value))).size>1||ctx.input.propertyCode!=='HRDAV'&&views.some(value=>/\b(?:accessible|wheelchair)\b/i.test(value)))missing('business_room_allocation_ambiguous',['consistent supported room requirements']);
+ if(new Set(types.map(value=>JSON.stringify(value))).size>1||ctx.input.propertyCode!=='HRDAV'&&views.some(requestsAccessibleRoom))missing('business_room_allocation_ambiguous',['consistent supported room requirements']);
  const rooms=roomFacts.map(f=>{if(f.kind!=='room')throw new Error('business_room_type');if(f.value.quantity===undefined)missing('business_room_quantity_unavailable',['explicit room quantity']);const requestedBoards=facts.filter(b=>b.kind==='board'&&(typeof b.value==='string'||b.value.roomRef===f.value.roomRef)).map(b=>{if(b.kind!=='board')throw new Error('business_board_type');return mapRequestedBoard(ctx.input.propertyCode,typeof b.value==='string'?b.value:b.value.board);});if(!requestedBoards.length&&!sourceLeavesBoardUnspecified(ctx)||requestedBoards.some(b=>!b)||new Set(requestedBoards).size>1)missing('business_board_unavailable',['one supported board for each room allocation']);return{id:f.value.roomRef,quantity:f.value.quantity,adults:f.value.adults,children:f.value.childAges.length,childAges:[...f.value.childAges],required:{...(requestedBoards.length?{boardBases:[requestedBoards[0]!]}:{}),...(roomCodes?{roomCodes}:{} )}};});
  if(new Set(rooms.map(r=>r.id)).size!==rooms.length)missing('business_room_allocation_ambiguous',['unique room allocation references']);
  return{propertyCode:ctx.input.propertyCode,arrivalDate:stay.arrival,departureDate:stay.departure,requestedCurrency:'ZAR',rooms,search:{includeRestricted:false,includeAlternatives:false,salesStrategy:isGovernment?'Government':'BAR'},details:'full',maxOptionsPerGroup:50};

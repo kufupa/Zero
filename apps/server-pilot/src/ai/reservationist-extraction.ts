@@ -465,7 +465,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
       if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
-      const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
+      const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||/\bMr\.?\s*(?:and|&)\s*Mrs\.?\s+[\p{L}]/iu.test(quoted)||/\b(?:\d+|one|a|an|two)\s+single\s+rooms?\b|\bsingle\s+occupancy\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
     if(conflictingOccupancy)throw new Error('Conflicting occupancy across message views');

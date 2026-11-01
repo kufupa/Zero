@@ -235,6 +235,9 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Kindly do not quote one double room for two adults.','quote')).rejects.toThrow();
   await expect(run('Kindly quote one double room for two adults.','quote','Please do not quote one double room for two adults.')).rejects.toThrow('Conflicting quote request across message views');
   await expect(run('Kindly quote one single room for one adult.','quote',undefined,1)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Kindly quote one room for one adult.','quote','Please quote one room for Mr and Mrs Example.',1)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Kindly quote one room for two adults.','quote','Please quote one single room.',2)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Kindly quote one room for two adults.','quote','Please quote one room for Mr and Mrs Example.',2)).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults and one child.')).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults. Do not book us yet.')).resolves.toMatchObject({facts:[{kind:'room'}]});

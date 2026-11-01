@@ -22,6 +22,10 @@ it('preserves room requirements from either email view and flags conflicting or 
  expect(run(generic,'Please quote one accessible room for one adult.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
  expect(run(deluxe,standard)).toThrow('business_room_allocation_ambiguous');
  expect(run('Please quote one accessible room for one adult.',generic)).toThrow('business_room_allocation_ambiguous');
+ expect(run(generic,'Please quote one standard room for one adult. Is the restaurant wheelchair accessible?')().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
+ expect(run(generic,'Please quote one standard room for one adult. Is the restaurant wheelchair accessible?','HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run(generic,'Please quote one room for a wheelchair user.')).toThrow('business_room_allocation_ambiguous');
+ expect(run(generic,'Please quote one room for a wheelchair user.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
 });
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
