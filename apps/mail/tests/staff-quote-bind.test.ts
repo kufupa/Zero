@@ -98,7 +98,7 @@ describe('HRDAV native room and board maps', () => {
         [stay({ childrenAges: [], fields: { childAges: 'missing' } })],
         HRCEN_PROPERTY_CODE,
       ),
-    ).toEqual({ error: expect.stringMatching(/child ages.*confirm/i) });
+    ).toEqual({ error: expect.stringMatching(/confirm.*child ages/i) });
   });
 
   it('does not build a pane availability read from child ages marked unknown', () => {

@@ -61,8 +61,8 @@ export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {
   if (/\broom[- ]?only|\bRO\b/i.test(admittedText)) alternatives.push('RO');
   if (/\bB&B\b|\bbed and breakfast|\bBB\b/i.test(admittedText)) alternatives.push('BB');
   const childrenMentioned =
-    /\b(?:children?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText) &&
-    !/\b(?:no|without|zero|0)\s+(?:children?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText);
+    /\b(?:child(?:ren)?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText) &&
+    !/\b(?:no|without|zero|0)\s+(?:child(?:ren)?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText);
   const secondaryAsks = [...admittedText.matchAll(/[^.?\n]*\b(parking|shuttle|airport)\b[^.?\n]*[?]?/gi)]
     .map((match) => match[0].replace(/\s+/g, ' ').trim())
     .filter((clause) => clause.length >= 8 && (/[?]/.test(clause) || /^(is |are |can |could |please |how |what )/i.test(clause)));

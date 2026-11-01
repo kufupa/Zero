@@ -49,4 +49,13 @@ describe('analyseLocalEmail', () => {
 
     expect(analysis.groups[0]?.fields.childAges).toBeUndefined();
   });
+
+  it('does not flag an explicit no-child request as missing ages', () => {
+    const analysis = analyseLocalEmail({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room, no child, from 2026-11-12 to 2026-11-14.',
+    });
+
+    expect(analysis.groups[0]?.fields.childAges).toBeUndefined();
+  });
 });
