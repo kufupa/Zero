@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
@@ -13,6 +14,7 @@ import {
   quoteSalesStrategiesFromRegistry,
   type QuoteSalesStrategy,
 } from '../src/hms/rate-catalogue.js';
+import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
 const messageId = 'quote-message-1';
 const sourceHash = 'a'.repeat(64);
@@ -172,8 +174,9 @@ describe('prepared quote input from stored extraction', () => {
         stays: [
           {
             ...stay,
+            totalRooms: 5,
             rows: [
-              { ...stay.rows[0]!, id: 'row-twn', roomType: 'STD TWN' },
+              { ...stay.rows[0]!, id: 'row-twn', roomType: 'STD TWN', rooms: 1 },
               { ...stay.rows[0]!, id: 'row-sgl', roomType: 'STD SGL', rooms: 1, adultsPerRoom: 1 },
               { ...stay.rows[0]!, id: 'row-pat', roomType: 'Deluxe Patio', rooms: 1 },
               { ...stay.rows[0]!, id: 'row-dlxtwn', roomType: 'Deluxe Twin', rooms: 1 },
@@ -226,13 +229,223 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual(['STWN']);
   });
 
-  it('defaults missing occupancy to two adults per room', () => {
+  it('does not default unknown per-room adults to two', () => {
     const stay = payload().stays[0]!;
     const plan = build({
       stays: [{ ...stay, rows: [{ ...stay.rows[0]!, adultsPerRoom: null }] }],
     });
 
-    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 2, adults: 2 });
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('does not interpret unknown child ages as zero children', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, rows: [{ ...stay.rows[0]!, childAges: null }] }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('preserves the adult-only Centurion quote convention through stored extraction', () => {
+    const stay = AE1_OUTPUT.stays[0]!;
+    const output = mailExtractionSchema.parse({
+      ...AE1_OUTPUT,
+      origin: 'person',
+      kind: 'quote',
+      stays: [{
+        ...stay,
+        hotel: 'Centurion',
+        requested: { arrival: '2027-11-12', departure: '2027-11-14' },
+        requestedDateEvidence: '12-14 November 2027',
+        totalRooms: 1,
+        totalAdults: 2,
+        totalChildren: null,
+        rows: [{ ...stay.rows[0]!, roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+      }],
+      missing: [],
+    });
+    const stored = sanitizeExtraction(output, {
+      messageId,
+      sourceText: 'Please quote one room for two adults for 12-14 November 2027.',
+    }).payload;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: stored,
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+
+    expect(stored.stays[0]?.rows[0]?.childAges).toEqual([]);
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2, childrenAges: [] });
+
+    const booking = mailExtractionSchema.parse({
+      ...output,
+      kind: 'booking',
+      stays: [{ ...output.stays[0]!, rows: [{ ...output.stays[0]!.rows[0]!, childAges: null }] }],
+    });
+    const storedBooking = sanitizeExtraction(booking, {
+      messageId: `${messageId}-booking`,
+      sourceText: 'Please book one room for two adults for 12-14 November 2027.',
+    }).payload;
+    const bookingPlan = buildPreparedStaffQuotePlan({
+      messageId: `${messageId}-booking`,
+      sourceHash,
+      payload: storedBooking,
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+    expect(storedBooking.stays[0]?.rows[0]?.childAges).toBeNull();
+    expect(bookingPlan.stays[0]).toMatchObject({ reason: 'missing_occupancy' });
+  });
+
+  it('refuses legacy empty ages when the extraction separately says child ages are missing', () => {
+    const plan = build({
+      missing: [{ field: 'childAges', question: 'Confirm the children’s ages.' }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('does not allocate an explicit stay-wide adult total evenly across rooms', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalAdults: 5,
+        rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: null }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('refuses a per-room adult allocation that disagrees with the explicit stay total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalAdults: 5,
+        rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: 2 }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('keeps stored missing adult occupancy from becoming a defaulted quote', () => {
+    const plan = build({
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm adults per room.' }],
+    });
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('keeps a complete stay quoteable when another stay has unknown occupancy', () => {
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
+    const second = {
+      ...first,
+      id: 'stay-2',
+      requested: { arrival: '2026-11-20', departure: '2026-11-21' },
+      totalRooms: 1,
+      totalAdults: 2,
+      totalChildren: 1,
+      rows: [{ ...first.rows[0]!, id: 'row-2', rooms: 1, adultsPerRoom: null, childAges: null }],
+    };
+    const plan = build({
+      stays: [first, second],
+      missing: [
+        { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+        { field: 'childAges', question: 'Confirm child ages.' },
+      ],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
+  });
+
+  it('keeps a scoped occupancy warning on its stay even when the row contains a value', () => {
+    const first = { ...payload().stays[0]!, totalRooms: 1, rows: [{ ...payload().stays[0]!.rows[0]!, rooms: 1 }] };
+    const second = {
+      ...first,
+      id: 'stay-2',
+      requested: { arrival: '2026-11-20', departure: '2026-11-23' },
+      rows: [{ ...first.rows[0]!, id: 'row-2' }],
+    };
+    const plan = build({
+      stays: [first, second],
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm this stay’s occupancy.', stayId: 'stay-2' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.stays[0]).toMatchObject({ stayId: 'stay-1', input: {} });
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
+  });
+
+  it('keeps an unscoped child warning on the stay with an empty age list and no total', () => {
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
+    const legacy = {
+      ...first,
+      id: 'stay-legacy',
+      requested: { arrival: '2026-11-20', departure: '2026-11-21' },
+      totalRooms: 1,
+      totalChildren: null,
+      rows: [{ ...first.rows[0]!, id: 'row-legacy', rooms: 1, childAges: [] }],
+    };
+    const plan = build({
+      stays: [first, legacy],
+      missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-legacy', reason: 'missing_occupancy' });
+  });
+
+  it('keeps a rejected checkout missing when another stay is valid', () => {
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
+    const rejected = {
+      ...first,
+      id: 'stay-rejected-checkout',
+      requested: { arrival: '2026-11-20', departure: null },
+      totalRooms: 1,
+      rows: [{ ...first.rows[0]!, id: 'row-rejected-checkout', rooms: 1 }],
+    };
+    const validNoCheckout = {
+      ...first,
+      id: 'stay-valid-no-checkout',
+      requested: { arrival: '2026-10-20', departure: null },
+    };
+    const plan = build({
+      stays: [validNoCheckout, rejected],
+      missing: [{ field: 'stayDates', question: 'Confirm the requested checkout.', stayId: 'stay-rejected-checkout' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.inputs[0]?.groups[0]?.departureDate).toBe('2026-10-21');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-rejected-checkout', reason: 'invalid_dates' });
+  });
+
+  it('defaults one room before reconciling a stated zero-child total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: null,
+        totalChildren: 0,
+        rows: [{ ...stay.rows[0]!, rooms: null, adultsPerRoom: 2, childAges: [] }],
+      }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2, childrenAges: [] });
     expect(plan.reason).toBeNull();
   });
 
@@ -258,6 +471,53 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs).toEqual([]);
     expect(plan.reason).toBe('missing_rooms');
+  });
+
+  it('does not assume one room per row when a multi-type stay leaves counts unstated', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: null,
+        rows: [
+          { ...stay.rows[0]!, id: 'row-1', rooms: null },
+          { ...stay.rows[0]!, id: 'row-2', roomType: 'Standard Twin', rooms: null },
+        ],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
+  });
+
+  it('does not split a stay-wide room total across rows with unknown quantities', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 30,
+        rows: [
+          { ...stay.rows[0]!, id: 'row-1', rooms: null },
+          { ...stay.rows[0]!, id: 'row-2', roomType: 'Standard Twin', rooms: null },
+        ],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
+
+    const mismatched = build({
+      stays: [{
+        ...stay,
+        totalRooms: 30,
+        rows: [
+          { ...stay.rows[0]!, id: 'row-1', rooms: 1 },
+          { ...stay.rows[0]!, id: 'row-2', rooms: 1 },
+        ],
+      }],
+    });
+    expect(mismatched.inputs).toEqual([]);
+    expect(mismatched.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
   });
 
   it('keeps missing dates as a hard block', () => {
@@ -332,6 +592,7 @@ describe('prepared quote input from stored extraction', () => {
         {
           ...first,
           id: 'stay-2',
+          totalRooms: 1,
           requested: { arrival: '2026-11-01', departure: '2026-11-03' },
           rows: [{ ...first.rows[0]!, id: 'row-2', rooms: 1 }],
         },
@@ -505,7 +766,7 @@ describe('quote-ready eval-47 summary replay', () => {
 
     expect(rows).toHaveLength(summary.totalRows);
     expect(summary.totalRows).toBe(47);
-    expect(prefillable).toBe(40);
+    expect(prefillable).toBe(33);
     expect(prefillable).toBeGreaterThanOrEqual(30);
     expect(prefillable).toBeLessThanOrEqual(44);
     console.log(`prefillable ${prefillable}/${summary.totalRows}`);

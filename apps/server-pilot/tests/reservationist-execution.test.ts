@@ -7,6 +7,13 @@ import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 const input={version:1 as const,requestId:'test',authorizationScope:{ownerRef:'transport',threadId:'thread'},propertyCode:'HRCEN',trigger:{id:'message',at:'2026-10-04T10:00:00Z'},messages:[{id:'message',at:'2026-10-04T10:00:00Z',direction:'inbound' as const,text:'Please quote and answer the parking question.'}],authorizedArtifacts:[],clock:{causalAt:'2026-10-04T10:00:00Z',sourceAt:'2026-10-04T09:00:00Z',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+it('rejects task results with more recoveries than staff review can display',async()=>{
+ const recoveries=Array.from({length:65},(_,index)=>({kind:'unresolved_fact' as const,reason:`unresolved ${index}`,disclosure:'staff_only' as const}));
+ await expect(runReservationistRuntime(input,{
+  plan:async()=>({tasks:[{id:'question',kind:'question',required:true}],facts:[]}),
+  execute:async()=>({tasks:[{id:'question',status:'needs_clarification',guestText:'Please clarify.',evidenceRefs:[],disclosure:'staff_only'}],artifacts:[],quoteRefs:[],packets:[],errors:[],sourceRecoveries:recoveries}),
+ })).rejects.toThrow('source_recovery_limit');
+});
 it('checks a cited HTML request only against its own authored alternative',()=>{
  const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
@@ -18,6 +25,37 @@ it('does not treat a quoted refusal as part of an unpunctuated current request',
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
+const voucherReviewRequest='Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.';
+function voucherReviewAdapter(mode:'combined'|'task_first',tasks:any[]){let call=0;return{reserveCalls:vi.fn(async()=>{}),invoke:vi.fn(async():Promise<ModelInvokeResult>=>{const index=call++,selectionTasks=mode==='task_first'?tasks.map(task=>({...task,source:{attachmentId:task.source.attachmentId,sourceHash:task.source.sourceHash,page:task.source.page,quote:task.source.quote}})):tasks,output=mode==='task_first'&&index>0?{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}:{facts:[],tasks:selectionTasks,unresolvedAsks:[]};return{modelId:'gpt-6-luna',output,usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}};})};}
+it.each(['combined','task_first'] as const)('keeps a taskless voucher request as source-bound staff review in %s extraction',async mode=>{
+ const hash=createHash('sha256').update(voucherReviewRequest).digest('hex'),model=voucherReviewAdapter(mode,[]),scoped={...input,requiredTaskKinds:[],requiredAskSpans:[],messages:[{...input.messages[0]!,text:voucherReviewRequest}]},factory=createReservationistDependencies({adapter:model,extractionMode:mode,admissions:[],header,converter:{url:'unused'},services:{}}),result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('needs_clarification');expect(result.tasks).toEqual([]);expect(result.errors).toEqual([]);
+ expect(result.sourceRecoveries?.map(recovery=>recovery.quote)).toEqual(['attached hotel voucher for guest A','enclosed hotel voucher for guest B']);
+ for(const recovery of result.sourceRecoveries??[]){expect(recovery.kind).toBe('voucher_review');expect(recovery.disclosure).toBe('staff_only');expect(recovery.sourceHash).toBe(hash);expect(scoped.messages[0]!.text.slice(recovery.start,recovery.end)).toBe(recovery.quote);}
+});
+it('keeps voucher and unread attachment reviews together for a taskless message',async()=>{
+ const metadata={attachmentId:'missing',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.trigger.at,mimeType:'application/pdf',sizeBytes:100,sourceIdentity:'metadata_only' as const,disclosure:'guest' as const};
+ const scoped={...input,requiredTaskKinds:[],requiredAskSpans:[],authorizedArtifacts:[metadata],messages:[{...input.messages[0]!,text:voucherReviewRequest}]};
+ const admissions=[{status:'manual_required' as const,reason:'attachment_identity_unavailable',metadata,draftReady:false}];
+ const factory=createReservationistDependencies({adapter:voucherReviewAdapter('task_first',[]),extractionMode:'task_first',admissions,header,converter:{url:'unused'},services:{}});
+ const result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('needs_clarification');
+ expect(result.sourceRecoveries).toEqual(expect.arrayContaining([
+  expect.objectContaining({kind:'attachment_manual',sourceRef:'missing',sourceIdentity:'metadata_only'}),
+  expect.objectContaining({kind:'voucher_review',quote:'attached hotel voucher for guest A'}),
+ ]));
+});
+it.each(['combined','task_first'] as const)('does not duplicate a taskless voucher across email alternatives in %s extraction',async mode=>{
+ const plain='Please review attached hotel voucher for guest A.',separator='\n\n[HTML alternative of the same message]\n',htmlStart=plain.length+separator.length,text=plain+separator+plain;
+ const scoped={...input,requiredTaskKinds:[],requiredAskSpans:[],messages:[{...input.messages[0]!,text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:htmlStart,end:text.length}]}]};
+ const factory=createReservationistDependencies({adapter:voucherReviewAdapter(mode,[]),extractionMode:mode,admissions:[],header,converter:{url:'unused'},services:{}}),result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('needs_clarification');expect(result.sourceRecoveries?.map(recovery=>recovery.quote)).toEqual(['attached hotel voucher for guest A']);
+});
+it.each(['combined','task_first'] as const)('preserves selected work and separates grouped voucher reviews in %s extraction',async mode=>{
+ const text=`${voucherReviewRequest} Is parking available?`,hash=createHash('sha256').update(text).digest('hex'),source=(quote:string)=>({attachmentId:'message:message',sourceHash:hash,page:1,quote,start:text.indexOf(quote),end:text.indexOf(quote)+quote.length}),tasks=[{id:'voucher-check',kind:'question',factIds:[],source:source(voucherReviewRequest)},{id:'parking',kind:'question',factIds:[],source:source('Is parking available?')}],model=voucherReviewAdapter(mode,tasks),scoped={...input,requiredTaskKinds:[],requiredAskSpans:[],messages:[{...input.messages[0]!,text}]},factory=createReservationistDependencies({adapter:model,extractionMode:mode,admissions:[],header,converter:{url:'unused'},services:{resolveTaskAnswer:async()=>{throw new ReservationistTaskEvidenceUnavailable('answer_source_unavailable',['authorized answer source'],['voucher_linkage']);}}}),result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.tasks.map(task=>task.id)).toEqual(['voucher-check','parking']);expect(result.sourceRecoveries?.map(recovery=>recovery.quote)).toEqual(['attached hotel voucher for guest A','enclosed hotel voucher for guest B']);
+ expect(result.sourceRecoveries?.every(recovery=>recovery.kind==='voucher_review'&&recovery.disclosure==='staff_only'&&recovery.sourceHash===hash)).toBe(true);
+});
 it('keeps an unsupported invoice fact mapping blocked while independent booking and question tasks execute',async()=>{
  const text='Please book one room for Alex Example. Please send the invoice. Is parking available?\nGuest: Alex Example',hash=createHash('sha256').update(text).digest('hex'),span=(quote:string)=>({attachmentId:'message:message',sourceHash:hash,page:1,quote,start:text.indexOf(quote),end:text.indexOf(quote)+quote.length}),fact={id:'guest',kind:'guest',value:{firstName:'Alex',lastName:'Example'},source:span('Guest: Alex Example'),disclosure:'guest'},output={facts:[fact],tasks:[{id:'book',kind:'new_booking',factIds:['guest'],source:span('Please book one room for Alex Example.')},{id:'invoice',kind:'existing_document',factIds:['guest'],source:span('Please send the invoice.')},{id:'parking',kind:'question',factIds:[],source:span('Is parking available?')}],unresolvedAsks:[]},model=adapter([]);
  model.invoke.mockResolvedValue({modelId:'gpt-6-luna',output,usage:{inputTokens:1,outputTokens:1,totalTokens:2,estimatedCostUsd:0,rateTableVersion:'test'}} as any);

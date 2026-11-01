@@ -31,4 +31,5 @@ describe('analyseLocalEmail', () => {
     expect(analysis.groups[0]?.arrivalDate).toBeUndefined();
     expect(analysis.groups[0]?.fields.arrivalDate).toBe('missing');
   });
+
 });

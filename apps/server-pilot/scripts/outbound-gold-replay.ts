@@ -16,6 +16,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { extractInboundMail } from '../src/ai/extraction/extract.js';
+import { inboundPropertyCodeForTransport } from '../src/ai/extraction/inbound-run.js';
 import type { MailExtractionPayload, MailKind } from '../src/ai/extraction/schema.js';
 import {
   OUTBOUND_GOLD_VISION_PARITY,
@@ -92,6 +93,7 @@ export type ReplayDeps = {
     messageId: string;
     fromAddress: string;
     mailbox: string | null;
+    propertyCode: string | null;
   }) => Promise<ReplayExtractResult>;
 };
 
@@ -311,6 +313,7 @@ export async function runOutboundGoldReplay(
         messageId: trigger.messageId,
         fromAddress: trigger.fromAddress,
         mailbox: trigger.mailbox,
+        propertyCode: inboundPropertyCodeForTransport(trigger.transportId),
       });
       if (!extracted.ok) {
         extractFailed += 1;
@@ -527,6 +530,7 @@ function liveDeps(db: ReadOnlyDb, adapter: ReturnType<typeof resolveAdapter>['ad
         messageId: input.messageId,
         from: input.fromAddress,
         mailbox: input.mailbox,
+        propertyCode: input.propertyCode,
         deadlineMs: 180_000,
         env: { ...process.env, EXTRACTION_VISION: 'off' },
       });

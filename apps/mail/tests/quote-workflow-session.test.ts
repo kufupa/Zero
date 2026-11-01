@@ -112,6 +112,24 @@ const quoteAnalysis: QuoteAnalysis = {
 };
 
 describe('quote session', () => {
+  it('marks explicitly entered child ages as staff-corrected so an unknown-age guard can clear', () => {
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, fields: { ...quoteAnalysis.groups[0]!.fields, childAges: 'missing' } }],
+    };
+    const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
+    const corrected = reduceQuoteSession(ready, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { childrenAges: [5] },
+    });
+
+    expect(corrected.groups[0]).toMatchObject({
+      childrenAges: [5],
+      fields: { childAges: 'staff_corrected' },
+    });
+  });
+
   it.each([
     ['adultsTotal', 5],
     ['childrenTotal', 0],
@@ -477,12 +495,16 @@ describe('quote session', () => {
     const start = withStaffSource(reduceQuoteSession(initialQuoteSession(), {type:'selection',binding:bind()}));
     const actions = {type:'staff_actions_ready' as const, actions:[{id:'unread',kind:'business_document_failure' as const,
       text:'Could not read the rooming list',sourceRef:'file-1',sourceIdentity:'metadata_only' as const,
-      sourceKind:'attachment' as const,messageId:'mail-1',filename:'rooming.xlsx',blockingQuote:false,status:'open' as const}]};
+      sourceKind:'attachment' as const,messageId:'mail-1',filename:'rooming.xlsx',blockingQuote:false,status:'open' as const},
+      {id:'voucher-review',kind:'voucher_review' as const,text:'Please review the hotel voucher',sourceRef:'message:mail-1',
+        sourceHash:'b'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',blockingQuote:false,status:'open' as const}]};
     const analysis = {type:'analysis_ready' as const, analysis:{intent:'other' as const,groups:[],secondaryAsks:[],alternatives:[]}};
     const actionsFirst = reduceQuoteSession(reduceQuoteSession(start, actions), analysis);
     const analysisFirst = reduceQuoteSession(reduceQuoteSession(start, analysis), actions);
-    for (const session of [actionsFirst, analysisFirst])
+    for (const session of [actionsFirst, analysisFirst]) {
       expect(session.reviewItems).toEqual(expect.arrayContaining([expect.objectContaining({id:'unread',kind:'document_failure'})]));
+      expect(session.reviewItems).toEqual(expect.arrayContaining([expect.objectContaining({id:'voucher-review',kind:'staff_review'})]));
+    }
   });
 
   it('records unsynced, missing-source, failed, and unsupported states', () => {

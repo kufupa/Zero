@@ -380,6 +380,89 @@ describe('U10 availability probe (pure)', () => {
     ]);
   });
 
+  it('does not turn unavailable child ages into a zero-child availability request', () => {
+    const stayWithUnknownChildren = {
+      ...STAY_A,
+      totalChildren: 1,
+      rows: [{ ...STAY_A.rows[0]!, childAges: null }],
+    };
+
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [stayWithUnknownChildren] })).toEqual([]);
+    expect(
+      availabilityRequestsFor({
+        ...PAYLOAD,
+        stays: [STAY_A],
+        missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+      }),
+    ).toEqual([]);
+    expect(
+      availabilityRequestsFor({
+        ...PAYLOAD,
+        stays: [STAY_A],
+        missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('probes complete stays while skipping only the stay with unknown occupancy', () => {
+    const completeA = { ...STAY_A, totalChildren: 0 };
+    const completeB = { ...STAY_B, totalChildren: 1 };
+    const incomplete = {
+      ...STAY_INCOMPLETE,
+      totalRooms: 1,
+      totalAdults: 2,
+      totalChildren: 1,
+      rows: [{ ...STAY_INCOMPLETE.rows[0]!, rooms: 1, adultsPerRoom: null, childAges: null }],
+    };
+    const requests = availabilityRequestsFor({
+      ...PAYLOAD,
+      stays: [completeA, completeB, incomplete],
+      missing: [
+        { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+        { field: 'childAges', question: 'Confirm child ages.' },
+      ],
+    });
+
+    expect(requests.map(({ arrival }) => arrival)).toEqual(['2026-10-26', '2026-11-17']);
+  });
+
+  it('does not treat a legacy empty age list as known no-children under an unscoped warning', () => {
+    const legacy = {
+      ...STAY_INCOMPLETE,
+      totalRooms: 1,
+      totalChildren: null,
+      rows: [{ ...STAY_INCOMPLETE.rows[0]!, rooms: 1, adultsPerRoom: 2, childAges: [] }],
+    };
+    const requests = availabilityRequestsFor({
+      ...PAYLOAD,
+      stays: [{ ...STAY_A, totalChildren: 0 }, legacy],
+      missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+    });
+
+    expect(requests.map(({ arrival }) => arrival)).toEqual(['2026-10-26']);
+  });
+
+  it('does not probe when per-room adults disagree with the explicit stay total', () => {
+    const inconsistent = {
+      ...STAY_A,
+      totalAdults: 5,
+      rows: [{ ...STAY_A.rows[0]!, rooms: 2, adultsPerRoom: 2 }],
+    };
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [inconsistent] })).toEqual([]);
+  });
+
+  it('does not probe a stay when per-row quantities disagree with its room total', () => {
+    const inconsistent = { ...STAY_A, totalRooms: 30 };
+    const unknownSplit = {
+      ...STAY_A,
+      totalRooms: 30,
+      rows: STAY_A.rows.map((row) => ({ ...row, rooms: null })),
+    };
+
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [inconsistent] })).toEqual([]);
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [unknownSplit] })).toEqual([]);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,

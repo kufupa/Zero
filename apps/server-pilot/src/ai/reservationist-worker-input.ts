@@ -49,22 +49,22 @@ const time = (date: Date | null): number | null =>
 function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
-  $('details.quoted-toggle, blockquote').each((_, element) => {
-    $(element).prepend('\nFrom: quoted history\n');
-    $(element).children('summary').remove();
-  });
-  $('br, hr').each((_, element) => {
-    $(element).replaceWith('\n');
-  });
+  $('details.quoted-toggle > summary').remove();
+  $('br, hr').replaceWith('\n');
   $('td, th').append('\t');
-  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
-    $(element).prepend('\n').append('\n');
-  });
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').prepend('\n').append('\n');
   $('img').each((_, element) => {
     const alt = $(element).attr('alt')?.trim() ?? '';
     $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
   });
-  const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
+  const history: string[] = [];
+  $('details.quoted-toggle, blockquote').each((_, element) => {
+    if ($(element).parents('details.quoted-toggle, blockquote').length) return;
+    const quoted = $(element).text().trim();
+    if (quoted) history.push(`From: quoted history\n${quoted}`);
+    $(element).remove();
+  });
+  const rendered = [$.root().text().trim(), ...history].filter(Boolean).join('\n\n').replace(/\u00a0/g, ' ').trim();
   return maskIncomingCardNumbers(rendered);
 }
 
@@ -109,7 +109,7 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   const sourceViews: ReservationistMessageView[] = [];
   const quoted: Partial<Record<ReservationistMessageView['name'], { start: number; end: number }>> = {};
   const add = (value: string, name?: ReservationistMessageView['name'], prefix = '', history?: ReservationistMessageView['name']) => {
-    if (!value) return;
+    if (!value && name !== 'html') return;
     if (text) text += '\n\n';
     text += prefix;
     const start = text.length;
@@ -119,15 +119,15 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   };
   add(primaryBody?.trim() ?? '', 'plain');
   if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
-    add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
+    // One authored copy is enough when only the quoted histories differ.
+    add(primaryBody?.trim() === alternativeBody.trim() ? '' : alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
   else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
-  const views = sourceViews.length === 2 ? sourceViews.map(view => {
-    const history = quoted[view.name];
-    return history ? { ...view, quoted: history } : view;
-  }) : undefined;
+  const views = sourceViews.length === 2
+    ? sourceViews.map(view => ({ ...view, ...(quoted[view.name] ? { quoted: quoted[view.name] } : {}) }))
+    : undefined;
   return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
@@ -325,11 +325,9 @@ export async function buildReservationistWorkerInput(options: {
       admissions.push(manual('attachment_identity_unavailable'));
       continue;
     }
-    if (admission.bytes) {
-      if (admission.bytes.body.length !== metadata.sizeBytes || retainedBytes + admission.bytes.body.length > 20 * 1024 * 1024)
-        throw new Error('worker_intake_attachment_limit');
-      retainedBytes += admission.bytes.body.length;
-    }
+    if (admission.bytes && admission.bytes.body.length !== metadata.sizeBytes)
+      throw new Error('worker_intake_attachment_limit');
+    retainedBytes += metadata.sizeBytes;
     admissions.push(admission);
   }
   check();

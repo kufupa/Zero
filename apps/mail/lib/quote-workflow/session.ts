@@ -1237,7 +1237,8 @@ function applyGroupPatch(
   const fields = { ...group.fields };
   for (const key of Object.keys(patch) as (keyof StayGroupRequirement)[]) {
     if (key === 'id' || key === 'fields') continue;
-    fields[String(key)] = 'staff_corrected';
+    const field = key === 'childrenAges' ? 'childAges' : String(key);
+    fields[field] = 'staff_corrected';
   }
   const next: StayGroupRequirement = { ...group, ...patch, id: group.id, fields };
   // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.
@@ -1332,7 +1333,10 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     specialRequests: [...source.specialRequests],
     fields: Object.fromEntries(
       Object.entries(source.fields).map(([key, provenance]) => [
-        key, key === 'adultsTotal' || key === 'childrenTotal' ? provenance : 'staff_corrected',
+        key,
+        key === 'adultsTotal' || key === 'childrenTotal' || key === 'childAges'
+          ? provenance
+          : 'staff_corrected',
       ]),
     ),
   };
@@ -1764,7 +1768,7 @@ export function reduceQuoteSession(
         const reviewItems = projectQuoteReviewItems(action.analysis, [], [], [
           ...session.staffActions, ...(action.analysis.staffActions ?? []),
         ]).filter(
-          (item) => item.kind === 'document_failure' || item.kind === 'question',
+          (item) => item.kind === 'document_failure' || item.kind === 'question' || item.kind === 'staff_review',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);

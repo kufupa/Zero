@@ -478,10 +478,10 @@ describe('buildBookingDrafts', () => {
       messageId: 'message-1',
       validate: validateCreate,
     });
-    const ada = draft.rooms.filter((room) => room.groupId === revision.groups[0]!.id);
-    const bea = draft.rooms.filter((room) => room.groupId === 'g2');
-    expect(ada[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
-    expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
+    const ada = draft.rooms.find((room) => room.groupId === revision.groups[0]!.id)!;
+    const bea = draft.rooms.find((room) => room.groupId === 'g2')!;
+    expect(ada.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(bea.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
   it('gives each room of one stay its own guest', async () => {
@@ -952,6 +952,12 @@ describe('prepareUnquotedBookingDraft route', () => {
       draftCaller().workstation.prepareUnquotedBookingDraft({
         ...unquotedInput,
         analysis: analysis({ groups: [{ ...first, adultsPerRoom: null }] }),
+      }),
+    ).resolves.toMatchObject({ status: 'unavailable' });
+    await expect(
+      draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput,
+        analysis: analysis({ groups: [{ ...first, childAges: null }] }),
       }),
     ).resolves.toMatchObject({ status: 'unavailable' });
   });

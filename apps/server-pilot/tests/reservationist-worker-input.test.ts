@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
+import { currentAuthoredGuestRequest } from '../src/ai/reservationist-execution.js';
+import { extractReservationistPlan } from '../src/ai/reservationist-extraction.js';
 import { buildReservationistWorkerInput, type ReservationistWorkerMessage } from '../src/ai/reservationist-worker-input.js';
 import { validReservationistMessageViews, HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 
@@ -23,6 +26,16 @@ const build = (messages: Build['messages'], attachments: Build['attachments'] = 
   });
 
 describe('reservationist worker input', () => {
+  it('keeps an HTML reply written after a quoted block in the authored request', async () => {
+    const { input } = await build([row('current', 4, { textBody: null,
+      htmlBody: '<blockquote><p>Earlier message</p></blockquote><p>Please send the tax certificate.</p><blockquote><p>Older context</p></blockquote>' })]);
+    const message = input.messages[0]!, quote = 'Please send the tax certificate.', start = message.text.indexOf(quote);
+    expect(start).toBeLessThan(message.text.indexOf('From: quoted history'));
+    expect(message.text).toContain('Earlier message');
+    expect(message.text).toContain('Older context');
+    const task = {id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:current',sourceHash:createHash('sha256').update(message.text).digest('hex'),page:1,quote,start,end:start+quote.length}};
+    expect(currentAuthoredGuestRequest(task as any,input)).toBe(true);
+  });
   it('masks the subject and retains plain and HTML source views', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Please quote. Card 4111 1111 1111 1111',
@@ -70,11 +83,28 @@ describe('reservationist worker input', () => {
     })]);
     const message = input.messages[0]!, views = message.sourceViews ?? [];
     expect(views).toHaveLength(2);
-    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, authored]);
+    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, '']);
+    expect(message.text.match(/Please rebook the same stay as previously quoted\./g)).toHaveLength(1);
     expect(views.map(view => message.text.slice(view.quoted!.start, view.quoted!.end))).toEqual(expect.arrayContaining([
       expect.stringContaining('Arrival 21 December 2026'), expect.stringContaining('Arrival 22 December 2026'),
     ]));
     expect(validReservationistMessageViews(message.text, views)).toBe(true);
+  });
+
+  it('extracts one authored request when alternative quoted histories differ', async () => {
+    const authored = 'Please send the tax certificate.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${authored}\nFrom: plain@example.invalid\nSubject: Earlier\n\nPlain history.`,
+      htmlBody: `<p>${authored}</p><blockquote><p>From: html@example.invalid</p><p>Subject: Earlier</p><p>HTML history.</p></blockquote>`,
+    })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const plan = await extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [], tasks: [{ id: 'certificate', kind: 'existing_document', factIds: [],
+        source: { attachmentId: 'message:current', sourceHash, page: 1, quote: authored } }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal });
+    expect(plan.tasks).toMatchObject([{ id: 'certificate', source: { quote: authored, start: 0 } }]);
+    expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
@@ -219,6 +249,15 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
   });
 
+  it('keeps an earlier inline screenshot requested by a later message', async () => {
+    const result = await build([
+      row('prior', 1, { textBody: 'Hello\nKind regards\ncid:receipt' }),
+      row('current', 4, { textBody: 'Please check the payment screenshot and confirm the booking.' }),
+    ], [{ id: 'receipt', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'receipt', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['receipt']);
+  });
+
   it('routes missing identity and oversized attachments to staff without inventing a content hash', async () => {
     let admissions = 0;
     const admit: Build['admit'] = async (metadata) => {
@@ -232,5 +271,18 @@ describe('reservationist worker input', () => {
       expect(result.admissions[0]!.metadata.sourceHash).toBeUndefined();
     }
     expect(admissions).toBe(0);
+  });
+
+  it('counts hash-bound unread workbooks toward the aggregate attachment budget', async () => {
+    const sizeBytes = 11 * 1024 * 1024;
+    const workbook = (id: string, sha256: string) => ({
+      id, messageId: 'current', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      sizeBytes, sha256, isInline: false, contentId: null, disclosure: 'guest' as const,
+    });
+    const result = await build([row('current', 4)], [workbook('first', 'a'.repeat(64)), workbook('second', 'b'.repeat(64))]);
+
+    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', metadata: { attachmentId: 'first', sourceHash: 'a'.repeat(64) } });
+    expect(result.admissions[1]).toMatchObject({ status: 'manual_required', reason: 'attachment_total_resource_unavailable', metadata: { attachmentId: 'second', sourceIdentity: 'metadata_only' } });
+    expect(result.admissions[1]!.metadata.sourceHash).toBeUndefined();
   });
 });

@@ -595,7 +595,7 @@ function mailboxArrivalClock(row: { arrivedAt: Date | null; createdAt: Date }): 
   return row.arrivedAt ?? row.createdAt;
 }
 
-/** Freeze outbound sender stamps to mailbox arrival so orderThreadContext cannot see later replies. */
+/** An outbound message cannot precede either its mailbox arrival or its recorded send time. */
 export function freezeOutboundToMailboxArrival<
   T extends {
     direction: 'inbound' | 'outbound';
@@ -606,7 +606,8 @@ export function freezeOutboundToMailboxArrival<
   },
 >(row: T): T {
   if (row.direction !== 'outbound') return row;
-  const at = mailboxArrivalClock(row);
+  const arrival = mailboxArrivalClock(row);
+  const at = row.sentAt && row.sentAt.getTime() > arrival.getTime() ? row.sentAt : arrival;
   return { ...row, sentAt: at, receivedAt: at };
 }
 
@@ -645,14 +646,14 @@ export function orderThreadContext(
       mailbox: mailboxArrivalClock(candidate),
       timestamp:
         candidate.direction === 'outbound'
-          ? mailboxArrivalClock(candidate)
+          ? candidate.sentAt ?? mailboxArrivalClock(candidate)
           : candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt,
     }))
     // Sender-authored inbound dates can be backdated; mailbox arrival is the freeze for outbound.
     .filter(
       ({ candidate, mailbox, timestamp }) =>
         mailbox.getTime() < selectedMailbox.getTime() &&
-        (candidate.direction === 'outbound' ||
+        (candidate.direction === 'outbound' ? timestamp.getTime() < selectedMailbox.getTime() :
           (timestamp.getTime() < selectedAt.getTime() &&
             candidate.arrivedAt !== null &&
             selected.arrivedAt !== null &&
