@@ -137,13 +137,14 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
     }
     // Let the rendered view catch up with the store's load event.
     await page.waitForTimeout(1200);
-    const wire = await Promise.race([Promise.all(wireChecks), page.waitForTimeout(timeoutMs).then(() => null)]);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
     const headers = page.locator('h1.recordcode:visible');
     if (await headers.count() !== 1 || (await headers.innerText()).trim() !== confirmation.trim()) {
       throw new Error('CONFIRMATION_HEADER_MISMATCH');
     }
+    // Requests completing during the grid snapshot cannot be correlated to it.
+    const captureRequests = network.requests, capturePending = pending.size;
     const result = await frame.evaluate((key) => {
       const shown = (el) => {
         const r = el.getBoundingClientRect(), s = getComputedStyle(el);
@@ -218,11 +219,16 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
           refreshSignals: { clickedAt: state.clickedAt, changed: state.changed, refreshed: state.refreshed, storeLoading: store.isLoading() } },
         captureScope: 'Rows intersecting the current grid viewport, including horizontally clipped rendered cells, and displayed Folio summary only; no complete ledger or cleared-funds claim.' };
     }, key);
+    notes.push(...await takeHandledNotes(page));
+    // Collect responses after the Notes/header/grid waits, then reject any that
+    // arrive while the snapshot's checks are being awaited.
+    const wire = await Promise.race([Promise.all(wireChecks), page.waitForTimeout(timeoutMs).then(() => null)]);
+    const captureChanged = network.requests !== captureRequests || wire === null || wire.length !== wireChecks.length;
     result.coverage.folioRequests = { observed: network.requests, failed: network.failed, pending: pending.size };
     // This additional path is established only for an empty response. Nonempty
     // response-to-rendered-row mapping remains unverified and is never guessed.
     const signals = result.coverage.refreshSignals;
-    const emptyWireRefresh = result.status === 'not_loaded' && wire?.length === 1 && wire[0].matches === true && Number.isFinite(wire[0].startedAt) &&
+    const emptyWireRefresh = !captureChanged && !capturePending && result.status === 'not_loaded' && wire?.length === 1 && wire[0].matches === true && Number.isFinite(wire[0].startedAt) &&
       Number.isFinite(signals.clickedAt) && wire[0].startedAt >= signals.clickedAt && signals.changed === 1 && signals.refreshed === 1 && signals.storeLoading === false &&
       result.rows.length === 0 && result.paging.loaded === 0 && result.paging.total === 0;
     if (emptyWireRefresh) {
@@ -232,13 +238,13 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
       result.status = result.paging.currentPage === 1 && result.paging.pageSize !== null ? 'loaded_empty' : 'partial';
       result.reason = null;
     }
-    if (network.failed || pending.size) {
+    if (network.failed || capturePending || pending.size || captureChanged) {
       result.status = network.failed ? 'failed' : 'not_loaded';
-      result.reason = network.failed ? 'FOLIO_REQUEST_FAILED' : 'FOLIO_REQUEST_PENDING';
+      result.reason = network.failed ? 'FOLIO_REQUEST_FAILED' : capturePending || pending.size ?
+        'FOLIO_REQUEST_PENDING' : 'FOLIO_RESPONSE_UNVERIFIED';
       result.coverage.refreshVerified = false;
     }
     uncertain = !result.coverage.refreshVerified;
-    notes.push(...await takeHandledNotes(page));
     return { ...result, notes };
   } finally {
     page.off('response', onResponse);

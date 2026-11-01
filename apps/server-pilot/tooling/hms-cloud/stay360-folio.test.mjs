@@ -77,9 +77,10 @@ async function withFolio(config, work) {
   const server = createServer((req, res) => {
     const failedRun = config.runHttpFailure && req.method === 'POST' && req.url === '/web/base/OSRESV.FOL';
     if (req.method === 'POST' && req.url.startsWith('/web/base/OSRESV.FOL.xmlhttp')) {
-      const grid = { METADATA: { REQUEST_TYPE_META: 'LIST.DATA_ONLY.STORED', RECORDS: '0',
+      const grid = { METADATA: { REQUEST_TYPE_META: 'LIST.DATA_ONLY.STORED', RECORDS: req.url.includes('late=1') ? '1' : '0',
         GRIDID: config.wireWrongGrid ? 'wrong' : '780', GRIDNAME: 'OSFOLO',
-        DATASPYID: config.wireWrongDataSpy ? 'other' : '861' }, DATA: config.wireNonempty ? [{}] : [] };
+        DATASPYID: config.wireWrongDataSpy ? 'other' : '861' },
+        DATA: config.wireNonempty || req.url.includes('late=1') ? [{}] : [] };
       const pageData = { fromCome: true, grid: { GRIDRESULT: { type: 'LIST.DATA_ONLY.STORED',
         DATASPY: { id: '861', label: 'Standard Folios' }, GRID: grid } }, messages: null };
       const send = () => {
@@ -104,6 +105,19 @@ async function withFolio(config, work) {
     await browser?.close();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+}
+
+// Release an extra completed response while leaving the displayed grid untouched.
+async function releaseLateFolio(page, frame, evaluate = frame.evaluate.bind(frame)) {
+  const finished = page.waitForEvent('requestfinished', {
+    predicate: (request) => request.url().includes('OSRESV.FOL.xmlhttp?late=1'), timeout: 5000,
+  });
+  await evaluate(() => fetch('/web/base/OSRESV.FOL.xmlhttp?late=1', {
+    method: 'POST', body: new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'FOL',
+      GRID_NAME: 'OSFOLO', GRID_ID: '780', DATASPY_ID: '861', COMPONENT_INFO_TYPE: 'DATA_ONLY',
+      confirmationnumber: 'CONF-TEST' }),
+  }));
+  await finished;
 }
 
 test('returns a refreshed empty grid and displayed summary without asserting completeness', async () => {
@@ -219,6 +233,48 @@ test('does not infer emptiness from an unbound or malformed data-only response',
       assert.equal(result.coverage.refreshVerified, false);
     });
   }
+});
+
+test('rejects an extra Folio response arriving after the initial wire check', async () => {
+  await withFolio({ wireRefresh: true }, async (page) => {
+    const locator = page.locator.bind(page);
+    let headerLookups = 0;
+    page.locator = (selector, ...args) => {
+      const result = locator(selector, ...args);
+      if (selector === 'h1.recordcode:visible' && ++headerLookups === 2) {
+        const count = result.count.bind(result);
+        result.count = async () => {
+          const frame = page.frames().find((item) => item.url().includes('initpath=OSRESV'));
+          await releaseLateFolio(page, frame);
+          return count();
+        };
+      }
+      return result;
+    };
+    const result = await readFolioFromStay360(page, 'CONF-TEST');
+    assert.deepEqual(result.coverage.folioRequests, { observed: 2, failed: 0, pending: 0 });
+    assert.equal(result.status, 'not_loaded');
+    assert.equal(result.coverage.refreshVerified, false);
+    assert.equal(result.coverage.complete, null);
+  });
+});
+
+test('rejects a request completing while the grid snapshot is in flight', async () => {
+  await withFolio({ wireRefresh: true }, async (page) => {
+    const frame = page.frames().find((item) => item.url().includes('initpath=OSRESV'));
+    const evaluate = frame.evaluate.bind(frame);
+    frame.evaluate = async (fn, arg) => {
+      const result = await evaluate(fn, arg);
+      if (String(fn).includes('FOLIO_GRID_CHANGED')) await releaseLateFolio(page, frame, evaluate);
+      return result;
+    };
+    const result = await readFolioFromStay360(page, 'CONF-TEST');
+    assert.deepEqual(result.coverage.folioRequests, { observed: 2, failed: 0, pending: 0 });
+    assert.equal(result.status, 'not_loaded');
+    assert.equal(result.reason, 'FOLIO_RESPONSE_UNVERIFIED');
+    assert.equal(result.coverage.refreshVerified, false);
+    assert.equal(result.coverage.complete, null);
+  });
 });
 
 test('does not infer emptiness when the wire response and visible grid disagree', async () => {
