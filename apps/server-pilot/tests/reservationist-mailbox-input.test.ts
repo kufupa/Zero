@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { getTableName, type Table } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
+import { workbookToBytes } from '@office-kit/xlsx/io';
+import { addWorksheet, createWorkbook } from '@office-kit/xlsx/workbook';
+import { setCell } from '@office-kit/xlsx/worksheet';
 import type { DB } from '../src/db/client.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { loadReservationistMailboxInput } from '../src/ai/reservationist-mailbox-input.js';
@@ -134,12 +137,26 @@ describe('reservationist mailbox input', () => {
     state.files.push({ id: 'workbook', messageId: 'current', mimeType, sizeBytes: body.length, sha256: null, s3Key: key, isInline: false, contentId: null });
     await s3.putObject({ key, body, contentType: mimeType });
     const result = await loadReservationistMailboxInput(args);
-    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', reason: 'unsupported_business_attachment',
+    expect(result.admissions[0]).toMatchObject({ status: 'manual_required', reason: 'spreadsheet_parse_failed',
       metadata: { sourceHash: createHash('sha256').update(body).digest('hex') } });
     expect(result.admissions[0]?.bytes).toBeUndefined();
     expect(await result.revalidateSources()).toBe(true);
     await s3.putObject({ key, body: Buffer.from('changed fixture!'), contentType: mimeType });
     expect(await result.revalidateSources()).toBe(false);
+  });
+
+  it('reads an unhashed valid workbook through mailbox admission', async () => {
+    const { state, args, s3 } = setup(), workbook = createWorkbook(), sheet = addWorksheet(workbook, 'Rooms');
+    setCell(sheet, 1, 1, 'Room'); setCell(sheet, 1, 2, 'Guest');
+    setCell(sheet, 2, 1, '1'); setCell(sheet, 2, 2, 'Alex Example');
+    const body = await workbookToBytes(workbook), key = 'attachments/current/valid-rooming.xlsx';
+    const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    state.files.push({ id: 'sheet', messageId: 'current', mimeType, sizeBytes: body.length, sha256: null, s3Key: key, isInline: false, contentId: null });
+    await s3.putObject({ key, body, contentType: mimeType });
+    const result = await loadReservationistMailboxInput(args);
+    expect(result.admissions[0]).toMatchObject({ status: 'admitted', reason: 'text', metadata: { sourceHash: createHash('sha256').update(body).digest('hex') } });
+    expect(result.admissions[0]?.source?.pages?.[0]).toContain('Alex Example');
+    expect(await result.revalidateSources()).toBe(true);
   });
 
   it('refuses a missing grant before reading file bytes and invalidates a revoked grant', async () => {
