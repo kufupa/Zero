@@ -40,7 +40,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         textBody: body, receivedAt: at }).returning();
       await db.insert(attachment).values({ id: fileId, messageId, filename: 'rooms.pdf',
         mimeType: 'application/pdf', sizeBytes: 12, s3Key });
-      const savedMessage = draftSourceMessage(row!);
+      const savedMessage = draftSourceMessage({ ...row!, arrivedAt: row!.receivedAt });
       const requestSource = { attachmentId: `message:${messageId}`, sourceHash: savedMessage.sourceHash,
         page: 1, start: 0, end: body.length, quote: body };
       const source = { sourceRef: requestSource.attachmentId, sourceHash: requestSource.sourceHash,
