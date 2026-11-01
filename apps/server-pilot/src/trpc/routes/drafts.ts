@@ -192,10 +192,10 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
   return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
 }
 
-async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown) {
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown, includeAttachmentMetadata = true) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
-  const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
+  const attachmentIds = includeAttachmentMetadata && Array.isArray(recoveries) ? [...new Set(recoveries
     .filter(item => item?.sourceKind === 'attachment' && typeof item.sourceRef === 'string')
     .map(item => item.sourceRef!))].slice(0, 64) : [];
   const sources = attachmentIds.length && threadId ? await db
@@ -1304,11 +1304,12 @@ export const draftsRouter = tRouter({
       const earlierSources: ReservationistStaffAction[] = [];
       const earlierSourceIds = new Set<string>();
       const oldSourceRunIds = new Set(oldSources.map(source => source.runId));
+      const attachmentRunIds = new Set(oldSources.filter(source => source.kind === 'attachment_manual').map(source => source.runId));
       if (item) for (const run of runs) {
         if (run.id === latest.id) continue;
         const voucherIds = voucherReviewCompletionKeys(run.metrics?.reservationistResult);
         if (!oldSourceRunIds.has(run.id) && !voucherIds.size) continue;
-        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
+        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState, attachmentRunIds.has(run.id));
         for (const action of prior?.staffActions ?? []) {
           const voucher = action.kind === 'voucher_review' && voucherIds.has(action.id);
           const attachment = action.kind === 'business_document_failure' && oldSources.some(source =>

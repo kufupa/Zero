@@ -522,8 +522,8 @@ export function QuoteWorkflowPanel({
   workbookPending?: boolean;
   /** A PDF is being prepared; both PDF actions stay disabled until it settles. */
   pdfPending?: boolean;
-  onHandleReviewItem?: (itemId: string) => void;
-  onUndoReviewItem?: (itemId: string) => void;
+  onHandleReviewItem?: (itemId: string) => void | Promise<void>;
+  onUndoReviewItem?: (itemId: string) => void | Promise<void>;
   onSetPreparedTaskHandled?: (task: ReservationistPreparedTask, handled: boolean) => Promise<void>;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
   onRetryRead?: () => void;
@@ -719,8 +719,9 @@ export function QuoteWorkflowPanel({
     const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
     const reviewItems = (session.reviewItems ?? []).filter((item) =>
       (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
-    const handledReviewItems = reviewItems.filter((item) => item.handled === true ||
-      (item.kind !== 'staff_review' && (session.handledReviewItemIds ?? []).includes(item.id)));
+    const handledReviewItems = reviewItems.filter((item) => item.kind === 'staff_review'
+      ? item.handled === true
+      : (session.handledReviewItemIds ?? []).includes(item.id));
     const openReviewItemsForYou = openReviewItems(session).filter((item) =>
       (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
     const amendStays = groupStays(session.groups).filter((stay) => {
@@ -771,7 +772,7 @@ export function QuoteWorkflowPanel({
       notTracked(item) &&
       item.kind !== 'pricing_fact' &&
       !item.blocking &&
-      (item.handled === true || (item.kind !== 'staff_review' && (session.handledReviewItemIds ?? []).includes(item.id))),
+      (item.kind === 'staff_review' ? item.handled === true : (session.handledReviewItemIds ?? []).includes(item.id)),
   );
   const authorizedPartial =
     staffSourceReady(session) &&

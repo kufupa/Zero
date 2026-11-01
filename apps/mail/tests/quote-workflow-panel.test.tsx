@@ -295,6 +295,13 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('Spreadsheet has omitted rows.')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Edit reply/ })).toBeNull();
   });
+  it('does not show a stale handled flag for an ordinary question as Done', () => {
+    const question = {id:'question-1',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',
+      sourceLabel:'This email',blocking:false,handled:true};
+    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[question]}} />);
+    expect(screen.getByText(question.text)).toBeDefined();
+    expect(screen.queryByText(`Done: ${question.text}`)).toBeNull();
+  });
   it('shows a taskless voucher review on a non-quote email as staff work, not a guest reply', () => {
     const source = {id:'voucher:mail-1:0:41',kind:'staff_review' as const,rank:'secondary' as const,
       text:'Please review the attached hotel voucher.',sourceLabel:'This email',sourceRef:'message:mail-1',
@@ -323,6 +330,35 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[{...source,handled:true}]}} />);
     expect(screen.getByText(`Done: ${source.text}`)).toBeDefined();
     expect(screen.getByRole('button',{name:`Undo mark as done: ${source.text}`})).toBeDefined();
+  });
+  it('serializes per-item voucher acknowledgement and undo clicks', async () => {
+    const source = {id:'voucher:mail-1:0:41',kind:'staff_review' as const,rank:'secondary' as const,
+      text:'Please review the attached hotel voucher.',sourceLabel:'This email',sourceRef:'message:mail-1',
+      sourceHash:'a'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',runId:'run-1',workItemId:'item-1',
+      handled:false,blocking:false};
+    let finishHandle: () => void = () => {};
+    let finishUndo: () => void = () => {};
+    const handleWait = new Promise<void>((resolve) => { finishHandle = resolve; });
+    const undoWait = new Promise<void>((resolve) => { finishUndo = resolve; });
+    const onHandle = vi.fn(() => handleWait), onUndo = vi.fn(() => undoWait);
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source]};
+    const view = render(<QuoteWorkflowPanel session={session} onHandleReviewItem={onHandle} />);
+    const done = screen.getByRole('button',{name:`Mark as done: ${source.text}`}) as HTMLButtonElement;
+    fireEvent.click(done);
+    fireEvent.click(done);
+    expect(onHandle).toHaveBeenCalledTimes(1);
+    expect(done.disabled).toBe(true);
+    finishHandle();
+    await waitFor(() => expect(done.disabled).toBe(false));
+
+    view.rerender(<QuoteWorkflowPanel session={{...session,reviewItems:[{...source,handled:true}]}} onUndoReviewItem={onUndo} />);
+    const undo = screen.getByRole('button',{name:`Undo mark as done: ${source.text}`}) as HTMLButtonElement;
+    fireEvent.click(undo);
+    fireEvent.click(undo);
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    expect(undo.disabled).toBe(true);
+    finishUndo();
+    await waitFor(() => expect(undo.disabled).toBe(false));
   });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
