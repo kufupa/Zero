@@ -66,6 +66,10 @@ it('keeps a separate cancellation actionable when the other view refuses a diffe
  const plain='Please cancel reservation 87654321.',html='Do not cancel reservation 12345678 and please cancel reservation 87654321.',separator='\n\n[HTML alternative of the same message]\n',text=`${plain}${separator}${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:text.length}]}]};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
 });
+it.each([['Do not cancel reservation 12345678.',true],['Do not cancel reservation 87654321.',false],['Do not cancel.',false]] as const)('checks a narrowly cited cancellation reference against the other view: %s',(html,expected)=>{
+ const plain='Please cancel reservation 87654321.',separator='\n\n[HTML alternative of the same message]\n',text=`${plain}${separator}${html}`,quote='87654321',start=plain.indexOf(quote),hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote,start,end:start+quote.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
 it.each([
  ['Do not send the quote.','Please send me the existing quote.',false],
  ['Do not send the quote reference Q-123.','Please resend the quote reference Q-123.',false],
