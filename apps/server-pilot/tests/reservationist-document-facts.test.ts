@@ -390,6 +390,9 @@ it('matches cross-view stay dates by a unique endpoint without conflating other 
  expect(validateViews(`${groupA}\nGroup B: Please quote a room: Arrival 21 December 2026; departure 24 December 2026.`,
   'Group B: Please quote a room: Check-in 21 December 2026; check-out 25 December 2026.\nGroup A: Please quote a room: Check-in 21 December 2026; check-out 23 December 2026.',groupA).facts[0]!.value)
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ expect(()=>validateViews(`${groupA}\nGroup B: Please quote a room: Arrival 28 December 2026; departure 30 December 2026.`,
+  'Group B:\nPlease quote a room: Check-in 28 December 2026; check-out 30 December 2026.\nGroup A: Please quote a room: Check-in 21 December 2026; check-out 23 December 2026.\nCancel the stay.',groupA))
+  .toThrow('Explicit same-stay correction requires source clarification');
 
  const duplicate='Please quote an overnight stay: Arrival 21 December 2026; departure 23 December 2026.';
  expect(validateViews(`${duplicate}\nPlease quote another overnight stay: Arrival 21 December 2026; departure 23 December 2026.`,
@@ -402,4 +405,12 @@ it('matches cross-view stay dates by a unique endpoint without conflating other 
  expect(()=>validateViews(`${first}\nPlease quote a second room: Arrival 28 December 2026; departure 30 December 2026.`,
   'Kindly confirm one stay: Check-in 21 December 2026; check-out 23 December 2026.\nKindly confirm another stay: Check-in 21 December 2026; check-out 24 December 2026.\nKindly confirm the second stay: Check-in 28 December 2026; check-out 30 December 2026.',first))
   .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('recognizes forwarded-message headers when rejecting yearless history dates', () => {
+ const quote='Arrival 21 December; departure 23 December.',page=`Please rebook the same stay.\nBegin forwarded message:\n${quote}`,sourceHash=createHash('sha256').update(page).digest('hex'),start=page.indexOf(quote);
+ const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,causalMessage:{at:'2026-10-01T08:00:00Z',direction:'inbound' as const}};
+ const source={attachmentId:original.attachmentId,sourceHash,page:1,quote,start,end:start+quote.length};
+ expect(()=>validateDocumentPlan({facts:[{id:'stay',kind:'dates',value:{arrival:'21 December',departure:'23 December'},disclosure:'guest',source}],tasks:[{id:'quote',kind:'quote',factIds:['stay'],source}],unresolvedAsks:[]},[original]))
+  .toThrow('Ambiguous yearless stay context');
 });

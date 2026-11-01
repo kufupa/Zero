@@ -303,7 +303,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(verification!=='text_verified'||!source.attachmentId.startsWith('message:')||causal?.direction!=='inbound'||!Number.isFinite(Date.parse(causal.at))||!source.pages?.[fact.source.page-1]||!quote)throw new Error('Yearless stay requires original causal email');
  if(source.sourceViews?.some(view=>view.quoted&&fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.quoted.start&&fact.source.end<=view.quoted.end))throw new Error('Yearless date source is quoted history');
  const {page,start,end}=citedViewSpan(fact,source);
- const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
+ const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  const authored=page.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
  const before=authored.slice(0,start),after=authored.slice(end),context=before.slice(Math.max(before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'))+1)+quote+( /[;.!?]\s*$/.test(quote)?'':after.split(/[;.!?]/,1)[0]);
  if(end>authored.length)throw new Error('Yearless stay outside authored request');
