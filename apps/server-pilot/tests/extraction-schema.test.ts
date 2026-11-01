@@ -155,7 +155,9 @@ describe('mail extraction contract', () => {
   });
 
   it('instructs extraction to keep unknown child ages distinct from an empty child list', () => {
-    expect(EXTRACTION_RULES).toContain('Use null when child count or ages are unknown; use [] only when no children are requested.');
+    expect(EXTRACTION_RULES).toContain('for a person-authored Centurion kind:quote only');
+    expect(EXTRACTION_RULES).toContain('Never use that convention for booking');
+    expect(EXTRACTION_RULES).toContain('use null when count or ages remain unknown');
   });
 });
 

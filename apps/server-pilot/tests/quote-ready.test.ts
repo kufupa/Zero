@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
@@ -13,6 +14,7 @@ import {
   quoteSalesStrategiesFromRegistry,
   type QuoteSalesStrategy,
 } from '../src/hms/rate-catalogue.js';
+import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
 const messageId = 'quote-message-1';
 const sourceHash = 'a'.repeat(64);
@@ -245,6 +247,59 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs).toEqual([]);
     expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('preserves the adult-only Centurion quote convention through stored extraction', () => {
+    const stay = AE1_OUTPUT.stays[0]!;
+    const output = mailExtractionSchema.parse({
+      ...AE1_OUTPUT,
+      origin: 'person',
+      kind: 'quote',
+      stays: [{
+        ...stay,
+        hotel: 'Centurion',
+        requested: { arrival: '2027-11-12', departure: '2027-11-14' },
+        requestedDateEvidence: '12-14 November 2027',
+        totalRooms: 1,
+        totalAdults: 2,
+        totalChildren: null,
+        rows: [{ ...stay.rows[0]!, roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+      }],
+      missing: [],
+    });
+    const stored = sanitizeExtraction(output, {
+      messageId,
+      sourceText: 'Please quote one room for two adults for 12-14 November 2027.',
+    }).payload;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: stored,
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+
+    expect(stored.stays[0]?.rows[0]?.childAges).toEqual([]);
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2, childrenAges: [] });
+
+    const booking = mailExtractionSchema.parse({
+      ...output,
+      kind: 'booking',
+      stays: [{ ...output.stays[0]!, rows: [{ ...output.stays[0]!.rows[0]!, childAges: null }] }],
+    });
+    const storedBooking = sanitizeExtraction(booking, {
+      messageId: `${messageId}-booking`,
+      sourceText: 'Please book one room for two adults for 12-14 November 2027.',
+    }).payload;
+    const bookingPlan = buildPreparedStaffQuotePlan({
+      messageId: `${messageId}-booking`,
+      sourceHash,
+      payload: storedBooking,
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+    expect(storedBooking.stays[0]?.rows[0]?.childAges).toBeNull();
+    expect(bookingPlan.stays[0]).toMatchObject({ reason: 'missing_occupancy' });
   });
 
   it('refuses legacy empty ages when the extraction separately says child ages are missing', () => {

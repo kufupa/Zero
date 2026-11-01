@@ -51,7 +51,7 @@ export const K2_MAPPING = [
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room, never a stay total divided by rooms. If only a stay-wide total is known for multiple rooms, set adultsPerRoom=null; do not divide, round, or copy the total into each room.',
   'Preserve adultsTotal and childrenTotal only when explicitly stated as stay-wide totals; never infer them from per-room counts.',
-  'childAges contains real stated ages only. Use [] for affirmed zero children; for a current authored Centurion quote, one source-verified named adult or one room for one adult also means [] absent child evidence. Do not apply that convention to create/booking, quoted history, attachments, or any child/family request. Use null when child presence/count/ages are otherwise unknown. Never invent age 0.',
+  'childAges contains real stated ages only. Use [] when zero children are affirmed or a property-specific quote convention in the hotel rules applies; use null when child presence, count, or ages are unknown. Never invent age 0.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',

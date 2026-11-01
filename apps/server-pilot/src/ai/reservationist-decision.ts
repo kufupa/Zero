@@ -69,7 +69,7 @@ ${MOVE_CATALOG_RULES}
 - Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
-export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), ${HOTEL_OPERATING_RULES}`;
+export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), ${HOTEL_OPERATING_RULES}\n- For current person-authored Centurion quote requests only, apply the source-clear adult occupancy conventions: one verified adult/one room, two adults sharing one room, or N named adults in N rooms means no children (childAges:[]), only absent child/family/minor or conflicting evidence. Never apply this convention to booking/create, quoted history, attachments or ambiguous requests.`;
 
 export const DAVINCI_HOTEL_RULES = `Property: Da Vinci Hotel and Suites (HMS property code HRDAV), ${HOTEL_OPERATING_RULES.replace(
   'property or partner (Da Vinci, events/conference team, accounts, another hotel)',

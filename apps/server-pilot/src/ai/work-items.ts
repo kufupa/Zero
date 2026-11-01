@@ -831,7 +831,7 @@ export function storedAnalysis(
       if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
     }
     for (const [key, path] of corrected) {
-      if (!Object.hasOwn(state, path) || (key === 'childAges' && !Array.isArray(state[path])) || (key === 'adults' && typeof state[path] !== 'number')) continue;
+      if (!Object.hasOwn(state, path) || (key === 'quantity' && state[path] === null) || (key === 'childAges' && !Array.isArray(state[path])) || (key === 'adults' && typeof state[path] !== 'number')) continue;
       group.fields[key] = 'staff_corrected';
     }
   });

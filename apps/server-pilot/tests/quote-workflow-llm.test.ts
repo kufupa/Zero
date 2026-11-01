@@ -155,8 +155,10 @@ describe('lunaAnalysisSchema', () => {
 
 describe('per-stay quote allocation', () => {
   it('keeps the source-bound sole-adult no-child convention quote-only', () => {
-    expect(K2_MAPPING).toContain('for a current authored Centurion quote, one source-verified named adult or one room for one adult');
-    expect(K2_MAPPING).toContain('Do not apply that convention to create/booking');
+    expect(CENTURION_HOTEL_RULES).toContain('current person-authored Centurion quote requests only');
+    expect(CENTURION_HOTEL_RULES).toContain('two adults sharing one room');
+    expect(CENTURION_HOTEL_RULES).toContain('Never apply this convention to booking/create');
+    expect(K2_MAPPING).toContain('property-specific quote convention in the hotel rules applies');
   });
 
   it('defaults a single room independently for each distinct stay', () => {

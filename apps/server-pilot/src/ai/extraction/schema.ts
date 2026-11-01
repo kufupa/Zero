@@ -123,7 +123,7 @@ const mailExtractionObjectSchema = z.object({
           childAges: z
             .array(z.number().int())
             .nullable()
-            .describe('Actual ages in these rooms; [] only for an affirmed no-children/zero-children request, null when child presence, count or ages are unknown.'),
+            .describe('Actual ages in these rooms; [] for explicit zero children or the source-clear person-authored Centurion quote-only adult convention, never for booking, children/family or ambiguous requests; null when child count or ages remain unknown.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
       ),
