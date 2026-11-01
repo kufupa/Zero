@@ -171,6 +171,9 @@ export type ReservationistPreparedTask = {
   label: string;
   state: 'Ready' | 'Pending staff action' | 'Needs review';
   details: string[];
+  handled?: boolean;
+  runId?: string;
+  workItemId?: string;
 };
 
 /** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
@@ -902,6 +905,7 @@ export type QuoteSessionAction =
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] }
+  | { type: 'prepared_task_handled'; taskId: string; runId: string; handled: boolean }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }

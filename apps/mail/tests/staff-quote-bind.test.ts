@@ -69,6 +69,17 @@ it('binds prepared tasks to the selected email review', async () => {
   expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
 });
 
+it('keeps independent handled states attached to the selected work item and run', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',runId:'run-1',workItemId:'item-1',reviewSummary:{tasks:[
+    {id:'one',kind:'question',label:'Answer question',state:'Needs review',details:['Request: Parking?'],handled:true},
+    {id:'two',kind:'existing_document',label:'Provide document',state:'Needs review',details:['Request: Invoice?'],handled:false},
+  ]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+  expect(result).toMatchObject({kind:'ready',tasks:[{id:'one',handled:true,runId:'run-1',workItemId:'item-1'},
+    {id:'two',handled:false,runId:'run-1',workItemId:'item-1'}]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+});
+
 it('keeps the final no-save notice when a long prepared booking is shortened', async () => {
   const details = [...Array.from({length: 410}, (_, index) => `Night ${index}`), 'No booking has been saved.'];
   const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Pending staff action',details};

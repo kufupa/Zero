@@ -1878,6 +1878,9 @@ export function reduceQuoteSession(
         handledReviewItemIds: keepHandled ? session.handledReviewItemIds : [],
       };
     }
+    case 'prepared_task_handled':
+      return { ...session, preparedStaffTasks: (session.preparedStaffTasks ?? []).map(task =>
+        task.id === action.taskId && task.runId === action.runId ? { ...task, handled: action.handled } : task) };
     case 'staff_actions_ready': {
       const extras = session.reviewItems.filter(
         (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
