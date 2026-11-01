@@ -31,10 +31,10 @@ async function extract(body: Uint8Array) {
 }
 
 describe('spreadsheet rows in reservationist extraction', () => {
-  it.each(['valid', 'cross-row name', 'missing child count'])('binds row facts and retains independent mail asks: %s', async (mode) => {
-    const columns = ['Room', 'Adults', 'Children', 'First name', 'Last name', 'Arrival', 'Departure'];
-    const values = ['1', '2', mode === 'missing child count' ? '' : '0', 'Alex', 'Example', '2027-02-10', '2027-02-11'];
-    const other = ['2', '1', '0', 'Jamie', 'Other', '2027-02-10', '2027-02-11'];
+  it.each(['valid', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total'])('binds row facts and retains independent mail asks: %s', async (mode) => {
+    const columns = ['Room', 'Adults', 'Children', 'First name', 'Last name', 'Arrival', 'Departure', 'Quantity', 'Total guests'];
+    const values = ['1', '2', mode === 'missing child count' ? '' : '0', 'Alex', 'Example', '2027-02-10', '2027-02-11', mode === 'conflicting quantity' ? '30' : '1', mode === 'conflicting total' ? '3' : '2'];
+    const other = ['2', '1', '0', 'Jamie', 'Other', '2027-02-10', '2027-02-11', '1', '1'];
     const body = await makeWorkbook([{ name: 'Rooming list', cells: [columns, values, other].flatMap((row, i) =>
       row.map((value, j) => ({ row: i + 1, column: j + 1, value }))) }]);
     const sheet = (await extract(body)).text!;
@@ -69,7 +69,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
     expect(result.facts.some(fact => fact.kind === 'reservation_reference' && fact.value === 'A123')).toBe(true);
     expect(result.facts.some(fact => fact.kind === 'dates')).toBe(true);
     expect(result.facts.some(fact => fact.kind === 'guest')).toBe(mode !== 'cross-row name');
-    expect(result.facts.some(fact => fact.kind === 'room')).toBe(mode !== 'missing child count');
+    expect(result.facts.some(fact => fact.kind === 'room')).toBe(!['missing child count', 'conflicting quantity', 'conflicting total'].includes(mode));
     expect(result.sourceIncomplete?.some(item => item.attachmentId === 'sheet')).toBe(mode !== 'valid');
   });
 });

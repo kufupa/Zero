@@ -43,7 +43,7 @@ function header(row: Row): Map<Role, number> | undefined {
     if (result.has(role)) return new Map(); // Ambiguous headers break the current table.
     result.set(role, cell.columnNumber);
   }
-  return result.size >= 2 ? result : undefined;
+  return result.size ? result : undefined;
 }
 
 /** Verify candidate facts against the same workbook sheet, header and cited data row. */
@@ -72,7 +72,7 @@ export function xlsxRowEntails(fact: ValidatedDocumentFact, source: DocumentSour
     const prior = parseRow(priorLine);
     if (!prior) return false;
     const candidate = header(prior);
-    if (candidate) active = candidate.size ? candidate : undefined;
+    if (candidate) active = candidate.size >= 2 ? candidate : undefined;
     else if (previous !== undefined && prior.rowNumber !== previous + 1 || prior.cells.filter(cell => cell.displayText.trim()).length < 2) active = undefined;
     previous = prior.rowNumber;
   }
