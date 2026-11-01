@@ -130,6 +130,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
         {kind:'voucher_review',id:voucherReviewId,runId:voucherRereadId,handled:true},
       ]);
+      const laterNoActionId = randomUUID();
+      await db.insert(aiWorkflowRun).values({id:laterNoActionId,idempotencyKey:laterNoActionId,transportId:TRANSPORT_ID,threadId,
+        triggerMessageId:parentMessageId,runKind:'candidate_draft',modelId:'test',promptVersion:'test',state:'succeeded',
+        createdAt:new Date('2026-07-06T11:00:00Z'),metrics:{reservationistResult:{version:1,readiness:'no_action',tasks:[]},
+          reservationistDraftSource:{messages:[{id:parentMessageId,sourceHash:voucherHash}]}}});
+      const afterNoAction = (await drafts.reviewForMessage(current))?.reviewSummary?.staffActions ?? [];
+      expect(afterNoAction).toContainEqual(expect.objectContaining({kind:'voucher_review',id:voucherReviewId,runId:voucherRereadId,handled:true}));
+      expect(afterNoAction.filter(action => action.kind === 'voucher_review')).toHaveLength(1);
+      expect(afterNoAction.some(action => action.kind === 'business_document_failure')).toBe(false);
     });
   });
 

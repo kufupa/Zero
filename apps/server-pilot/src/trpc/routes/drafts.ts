@@ -1302,12 +1302,22 @@ export const draftsRouter = tRouter({
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
       const oldSources = item ? outstandingSourceRecoveries(history, requestState).filter(source => source.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
-      for (const run of runs.filter(run => oldSources.some(source => source.runId === run.id))) {
+      const earlierSourceIds = new Set<string>();
+      const oldSourceRunIds = new Set(oldSources.map(source => source.runId));
+      if (item) for (const run of runs) {
+        if (run.id === latest.id) continue;
+        const voucherIds = voucherReviewCompletionKeys(run.metrics?.reservationistResult);
+        if (!oldSourceRunIds.has(run.id) && !voucherIds.size) continue;
         const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
-        earlierSources.push(...(prior?.staffActions ?? []).filter(action => oldSources.some(source =>
-          source.runId === run.id && (source.kind === 'voucher_review'
-            ? action.kind === 'voucher_review' && source.id === action.id
-            : action.kind === 'business_document_failure' && source.sourceRef === action.sourceRef))));
+        for (const action of prior?.staffActions ?? []) {
+          const voucher = action.kind === 'voucher_review' && voucherIds.has(action.id);
+          const attachment = action.kind === 'business_document_failure' && oldSources.some(source =>
+            source.runId === run.id && source.kind === 'attachment_manual' && source.sourceRef === action.sourceRef);
+          if ((voucher || attachment) && !earlierSourceIds.has(action.id)) {
+            earlierSourceIds.add(action.id);
+            earlierSources.push(action);
+          }
+        }
       }
       if (!summary && !earlier.length && !earlierSources.length) return null;
       const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
