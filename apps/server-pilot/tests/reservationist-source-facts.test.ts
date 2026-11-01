@@ -178,9 +178,9 @@ describe('plain and HTML citation binding',()=>{
  });
  it('counts equivalent plain/HTML voucher asks once without merging separate asks in one view',async()=>{
   const at='2026-10-01T08:00:00Z',separator=`\n\n${HTML_ALTERNATIVE_MARKER}`;
-  const run=async(plain:string,html:string,tasks:{id:string;quote:string;view:'plain'|'html'}[])=>{
+  const run=async(plain:string,html:string,tasks:{id:string;quote:string;view:'plain'|'html';kind?:'question'|'quote'}[])=>{
    const htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,attachmentId='message:voucher-alternatives',sourceHash=createHash('sha256').update(text).digest('hex'),sourceViews=[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:htmlStart,end:text.length}];let calls=0;
-   return extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:tasks.map(task=>({id:task.id,kind:'question',factIds:[],source:{attachmentId,sourceHash,page:1,quote:task.quote,view:task.view}})),unresolvedAsks:[]}};return{output:{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}};}} as any,messages:[{id:'voucher-alternatives',at,text,direction:'inbound',sourceViews}],triggerMessageId:'voucher-alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
+   return extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:tasks.map(task=>({id:task.id,kind:task.kind??'question',factIds:[],source:{attachmentId,sourceHash,page:1,quote:task.quote,view:task.view}})),unresolvedAsks:[]}};return{output:{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}};}} as any,messages:[{id:'voucher-alternatives',at,text,direction:'inbound',sourceViews}],triggerMessageId:'voucher-alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
   };
   const ask='Please review attached voucher';
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'plain'}]});
@@ -189,5 +189,12 @@ describe('plain and HTML citation binding',()=>{
   await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'first',quote:`${ask}.`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'combined',quote:`${ask}. ${other}`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'first',quote:`${ask}.`,view:'plain'},{id:'second',quote:other,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'first'},{id:'second'}]});
+  await expect(run('Please quote one room\n\nDo not use attached voucher.','No voucher is attached.',[{id:'quote',quote:'Please quote one room',view:'plain',kind:'quote'}])).resolves.toMatchObject({tasks:[{id:'quote'}]});
  });
+});
+
+it('deduplicates equivalent plain/HTML activations before continuing a prior invoice request',async()=>{
+ const at='2026-10-01T08:00:00Z',priorText='Please send the final invoice for payment for the booking.',plain='Please see the quotation. You can book the allocated rooms.',html=`${plain}\n\nKind regards`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length,quotedStart=htmlEnd+2,text=`${plain}${separator}${html}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,sourceViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:quotedStart,end:text.length}},{name:'html' as const,start:htmlStart,end:htmlEnd}],prior={id:'prior-invoice',at:'2026-09-30T08:00:00Z',direction:'inbound' as const,text:priorText};let calls=0;
+ const plan=await extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:[{id:'invoice',kind:'existing_document',factIds:[],sourceContinuationId:'invoice-continuation-1'}],unresolvedAsks:[]}};return{output:{facts:[],assignments:[{taskId:'invoice',factIds:[]}],unresolvedAsks:[]}};}} as any,messages:[prior,{id:'current-renewal',at,direction:'inbound',text,sourceViews}],triggerMessageId:'current-renewal',causalAt:at,admissions:[],signal:new AbortController().signal});
+ expect(plan.tasks).toMatchObject([{id:'invoice',kind:'existing_document',source:{attachmentId:'message:prior-invoice',quote:'send the final invoice for payment'}}]);
 });
