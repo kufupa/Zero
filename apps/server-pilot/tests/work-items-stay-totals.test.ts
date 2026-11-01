@@ -108,7 +108,7 @@ describe('staff stay-total correction projection', () => {
     source.stays[0]!.totalAdults = 6;
     source.missing = [{ field: 'childAges', question: 'Confirm the children’s ages.' }];
 
-    const unresolved = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }).analysis;
+    const unresolved = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }, {}).analysis;
     expect(unresolved.groups[0]).toMatchObject({ childrenAges: [], fields: { childAges: 'missing' } });
     expect(unresolved.missingQuoteReplyFields).toContain('Child ages for stay 1');
 
