@@ -42,7 +42,7 @@ export function deriveStaffAnswerTopics(text:string):StaffAnswerTopic[]{return (
 /** `detail` is safe diagnostics for staff logs only (codes, statuses, run ids; no guest data, no prices). It never reaches a reply. */
 export class ReservationistTaskEvidenceUnavailable extends Error { constructor(readonly code:string, readonly missingTopics:readonly string[],readonly staffTopics?:readonly StaffAnswerTopic[],readonly detail?:Readonly<Record<string,unknown>>) { super(code); } }
 class SourceRequestClarification extends Error{constructor(readonly reply:string,readonly evidenceRefs:string[],code:string){super(code);}}
-function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
+export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
@@ -379,7 +379,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
        const dates=ctx.facts.filter(f=>f.kind==='dates');
        if(dates.length!==1||!request.changes||dates[0]!.value.arrival!==request.changes.arrivalDate||dates[0]!.value.departure!==request.changes.departureDate)throw new Error('pending_action_dates_mismatch');
       }
-      const packet=await prepareReservationistPendingAction({...request,clock:{causalAt:input.clock.causalAt,sourceAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}},{resolveEvidence:async()=>action.evidence,authorizeSource:(evidence,edge)=>tool(edge,()=>action.authorizeSource(evidence,edge)),signal});
+      const packet=await prepareReservationistPendingAction({...request,clock:{causalAt:input.clock.causalAt,sourceAt:task.kind==='cancel_request'?action.evidence.observedAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}},{resolveEvidence:async()=>action.evidence,authorizeSource:(evidence,edge)=>tool(edge,()=>action.authorizeSource(evidence,edge)),signal});
       work.packets.push(packet);status=packet.status;evidenceRefs=packet.sourceRefs;
       guestText=packet.status==='pending_pms_action'?(task.kind==='change'?'Your amendment request is prepared for staff review; no changes have been made.':'Your cancellation request is prepared for staff review; no cancellation has been completed.'):'Please confirm the reservation and requested action so staff can review it.';
      }else if(task.kind==='channel_booking_sync'){

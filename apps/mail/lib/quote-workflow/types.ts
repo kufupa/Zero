@@ -164,6 +164,15 @@ export type ReservationistStaffAction = {
   status: 'open';
 };
 
+/** A read-only preparation for staff, not a receipt for a completed HMS write. */
+export type ReservationistPreparedTask = {
+  id: string;
+  kind: string;
+  label: string;
+  state: 'Ready' | 'Pending staff action' | 'Needs review';
+  details: string[];
+};
+
 /** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
 export type LunaAnalysisWire = {
   workflow:
@@ -818,6 +827,7 @@ export type QuoteSession = {
   /** Preserves an explicit staff rate-strategy choice against later automatic prefill. */
   staffSalesStrategyEdited?: boolean;
   staffActions: ReservationistStaffAction[];
+  preparedStaffTasks?: ReservationistPreparedTask[];
   selectedStayKey: string | null;
   handledSourceKey: string | null;
   reviewItems: QuoteReviewItem[];
@@ -891,7 +901,7 @@ export type QuoteSessionAction =
   | { type: 'unhandle_review_item'; itemId: string }
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
-  | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }

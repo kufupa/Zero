@@ -65,6 +65,7 @@ const HOTEL_OPERATING_RULES = `Johannesburg timezone.
 ${MOVE_CATALOG_RULES}
 - Venue hire, boardroom, conference or delegate packages (DDR), and events: forward_to_partner (events team), no tools. A rooms-only group is quote at any size, 10+ rooms included.
 - Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room.
+- In stayAsk, adults and children drive the search and may use defaults; adultsTotal and childrenTotal are explicit stay-wide counts only, never inferred from rooms, occupancy, names or ages.
 - Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
@@ -86,8 +87,26 @@ export const reservationistDecisionSchema = z.object({
     .object({
       arrivalDate: z.string(),
       departureDate: z.string(),
-      adults: z.number().int(),
-      children: z.number().int(),
+      adults: z
+        .number()
+        .int()
+        .describe('Adults for the search; may be inferred and not explicitly stated.'),
+      children: z
+        .number()
+        .int()
+        .describe('Children for the search; may be inferred and not explicitly stated.'),
+      adultsTotal: z
+        .number()
+        .int()
+        .nullable()
+        .optional()
+        .describe('Explicit stay-wide adult count only; null/omit if unknown. Never copy inferred search adults.'),
+      childrenTotal: z
+        .number()
+        .int()
+        .nullable()
+        .optional()
+        .describe('Explicit stay-wide child count only; null/omit if unknown. Never copy inferred search children or ages.'),
       rooms: z.number().int(),
     })
     .nullable(),
