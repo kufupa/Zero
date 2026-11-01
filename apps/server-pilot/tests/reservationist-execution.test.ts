@@ -23,8 +23,26 @@ it('does not treat a quoted refusal as part of an unpunctuated current request',
  const request='Please send the tax certificate',text=`${request}\n\nFrom: Previous guest\nDo not send the certificate.`,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:request,start:0,end:request.length}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
 });
+it.each([
+ ['Do not send the tax certificate',false],
+ ['The tax certificate is not required',false],
+ ['Do not send the invoice or tax certificate',false],
+ ['Do not send the invoice',true],
+ ['We do not have the tax certificate',true],
+ ['Please send the tax certificate but not the invoice',true],
+] as const)('compares the same document request across alternatives: %s',(plain,expected)=>{
+ const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
+it('does not resolve a document rejected in the other authored alternative',async()=>{
+ const plain='Do not send the tax certificate',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),source={attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end},model=adapter([]),resolve=vi.fn(async()=>{throw new Error('unexpected document resolver');});
+ model.invoke.mockResolvedValue({modelId:'gpt-6-luna',output:{facts:[],tasks:[{id:'certificate',kind:'existing_document',factIds:[],source}],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}} as any);
+ const factory=createReservationistDependencies({adapter:model,admissions:[],header,converter:{url:'unused'},services:{resolveExistingDocument:resolve,authorizeExistingDocument:async()=>null}}),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]};
+ const result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.tasks[0].status).toBe('blocked');expect(result.artifacts).toEqual([]);expect(resolve).not.toHaveBeenCalled();
+});
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
 const voucherReviewRequest='Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.';
 function voucherReviewAdapter(mode:'combined'|'task_first',tasks:any[]){let call=0;return{reserveCalls:vi.fn(async()=>{}),invoke:vi.fn(async():Promise<ModelInvokeResult>=>{const index=call++,selectionTasks=mode==='task_first'?tasks.map(task=>({...task,source:{attachmentId:task.source.attachmentId,sourceHash:task.source.sourceHash,page:task.source.page,quote:task.source.quote}})):tasks,output=mode==='task_first'&&index>0?{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}:{facts:[],tasks:selectionTasks,unresolvedAsks:[]};return{modelId:'gpt-6-luna',output,usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}};})};}

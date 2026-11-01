@@ -24,7 +24,7 @@ import {deriveAuthorizedExtraLines,type AuthorizedProposalFacts} from '../quote-
 import {prepareBookingPacket,type BookingInput,type BookingEvidence,type BookingSourceProof} from './reservationist-booking-packet.js';
 import {prepareReservationistPendingAction,prepareReservationistChannelBookingSync,type ReservationistPendingActionInput,type ReservationistPendingActionEvidence} from './reservationist-pending-action.js';
 import {assertRevisionSourceFacts,assertSourceOfferFactAttestation,ReservationistSourceFactError,type SourceOfferFactAttestation} from './reservationist-source-facts.js';
-import {prepareReservationistExistingDocument,assertReservationistExistingDocumentTargets,reservationistDocumentRequestCount,deriveReservationistDocumentPurpose,type ReservationistExistingDocumentCapture,type ReservationistExistingDocumentBinding,type ReservationistExistingDocumentGrant,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
+import {prepareReservationistExistingDocument,assertReservationistExistingDocumentTargets,reservationistDocumentRequestCount,reservationistDocumentPurposes,deriveReservationistDocumentPurpose,type ReservationistExistingDocumentCapture,type ReservationistExistingDocumentBinding,type ReservationistExistingDocumentGrant,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
 import {deriveReservationistReadFields,prepareReservationistReadTask,type ReservationistReadTaskInput,type ReservationistReadTaskDependencies,type PaymentTargetBinding,type PaymentTargetReceipt} from './reservationist-read-task.js';
 import {compareRateClaim,type RateClaim,type RateComparison} from '../quote-proposal/rate-check.js';
 type Task=ValidatedDocumentPlan['tasks'][number];
@@ -58,14 +58,20 @@ function bookingViewsConflict(task:Task,input:ReservationistRuntimeInput):boolea
 export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
+ const sourceView=message.sourceViews?.find(item=>source.start!>=item.start&&source.end!<=item.end);
  let text=message.text,start=source.start!,end=source.end!;
  if(message.sourceViews){
   if(!validReservationistMessageViews(message.text,message.sourceViews))return false;
-  const view=message.sourceViews.find(item=>start>=item.start&&end<=item.end);
+  const view=sourceView;
   if(!view)return false;
   text=message.text.slice(view.start,view.end);start-=view.start;end-=view.start;
  }
  if(task.kind==='new_booking'&&bookingViewsConflict(task,input))return false;
+ if(sourceView&&task.kind==='existing_document'){
+  const purposes=reservationistDocumentPurposes(source.quote);
+  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b/i).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
+  if(conflict)return false;
+ }
  const history=text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  if(history>=0&&end>history)return false;
  if(history>=0)text=text.slice(0,history);
