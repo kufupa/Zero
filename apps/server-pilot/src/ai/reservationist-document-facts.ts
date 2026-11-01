@@ -193,11 +193,12 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  const other=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!).join('\n');
  const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
  const dateTokens=(text:string)=>[...text.matchAll(/\b(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/gi)].map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
- const citedDates=dateTokens(fact.source.quote??'');
+ const citedDates=dateTokens(fact.source.quote??''),otherDates=dateTokens(other);
+ const samePair=citedDates.length===2&&/\b(?:arrival|check[ -]?in)\b[\s\S]*\b(?:departure|check[ -]?out)\b/i.test(other)&&JSON.stringify(otherDates)===JSON.stringify(citedDates);
  if(other.split(/[;.!?\n]+/).some(sentence=>{
   const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
   const negated=/\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
-  const dates=dateTokens(sentence),sameDates=!negated&&dates.length>=2&&JSON.stringify(dates)===JSON.stringify(citedDates);
+  const dates=dateTokens(sentence),sameDates=!negated&&(dates.length>=2&&JSON.stringify(dates)===JSON.stringify(citedDates)||dates.length>0&&samePair);
   const correction=/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
   return (withdrawn||correction)&&!sameDates&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase());
  }))throw new Error('Explicit same-stay correction requires source clarification');
