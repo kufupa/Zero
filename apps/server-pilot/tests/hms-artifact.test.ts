@@ -929,6 +929,9 @@ describe('PDF read gates (U6)', () => {
     expect(revalidate).toHaveBeenCalledOnce();
     expect(await hashAuthorizedArtifactBytes(request)).toBe(sha256);
     expect(await hashAuthorizedArtifactBytes({ ...request, revalidate: async () => false })).toBeNull();
+    const revokeAfterRead = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect(await hashAuthorizedArtifactBytes({ ...request, revalidate: revokeAfterRead })).toBeNull();
+    expect(revokeAfterRead).toHaveBeenCalledTimes(2);
     expect(await readAuthorizedArtifactBytes({ ...request, allowSpreadsheet: true, expectedSha256: '0'.repeat(64) }))
       .toBeNull();
   });
