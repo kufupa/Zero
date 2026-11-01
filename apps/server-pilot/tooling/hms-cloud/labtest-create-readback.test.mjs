@@ -54,3 +54,36 @@ test('reconciliation reads complete census candidates and preserves incomplete e
   assert.deepEqual(incomplete.candidates, []);
   assert.equal(incomplete.census.outcome, 'incomplete');
 });
+
+test('reconciliation exposes mismatched and unreadable candidates without retrying a save', async () => {
+  const requests = [];
+  let censuses = 0;
+  const census = async () => {
+    censuses += 1;
+    return { outcome: 'existing_matches', coverage: { complete: true }, sameArrival: [
+      { confirmation: '123-1' }, { confirmation: '124-1' }, { confirmation: '125-1' },
+    ] };
+  };
+  const withSavedSession = async (operation) => operation({ runTool: async (request) => {
+    requests.push(request);
+    if (request.confirmation === '125-1') throw new Error('READ_UNAVAILABLE');
+    const record = request.confirmation === '124-1' ? { ...values, guestid: '999', rateplan: 'OTHER' } : values;
+    return { outcome: 'ok', record: { details: { fields: fields(record) } } };
+  } });
+  const result = await reconcileLabtestCreate({ stay, expected }, { census, withSavedSession });
+  assert.equal(censuses, 1);
+  assert.deepEqual(result.candidates[0].readback.mismatches, []);
+  assert.deepEqual(result.candidates[1].readback.mismatches.map(({ field }) => field), ['ratePlan', 'guestId']);
+  assert.deepEqual(result.candidates[2], { confirmation: '125-1', issue: 'readback_unverified' });
+  assert.deepEqual(requests.map(({ tool }) => tool), ['read', 'read', 'read']);
+});
+
+test('a failed reconciliation census never reads candidates', async () => {
+  let reads = 0;
+  const result = await reconcileLabtestCreate({ stay, expected }, {
+    census: async () => { throw new Error('CENSUS_UNAVAILABLE'); },
+    withSavedSession: async () => { reads += 1; },
+  });
+  assert.deepEqual(result, { census: { outcome: 'incomplete', issue: 'census_unverified' }, candidates: [] });
+  assert.equal(reads, 0);
+});

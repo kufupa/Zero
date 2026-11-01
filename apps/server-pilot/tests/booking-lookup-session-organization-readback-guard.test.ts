@@ -5,6 +5,7 @@ const fixtures = vi.hoisted(() => ({
   context: {},
   guardContexts: [] as unknown[],
   recordCalls: [] as unknown[],
+  saveCalls: 0,
   selection: {
     outcome: 'selected_unsaved', nativeId: '90210', searchId: 'org-search-1',
     displayedOrganization: 'Synthetic Company', profileProofToken: 'profile-proof-1',
@@ -43,7 +44,7 @@ vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
 }));
 vi.mock('../tooling/hms-cloud/guest-stay-save.mjs', async (importOriginal) => ({
   ...await importOriginal<typeof import('../tooling/hms-cloud/guest-stay-save.mjs')>(),
-  saveNewLabtestStay: async () => fixtures.saved,
+  saveNewLabtestStay: async () => { fixtures.saveCalls += 1; return fixtures.saved; },
 }));
 vi.mock('../tooling/hms-cloud/lookup.mjs', () => {
   const unused = async () => ({ outcome: 'input_gap' });
@@ -62,6 +63,20 @@ describe('organization readback fresh-context guard', () => {
     fixtures.events.length = 0;
     fixtures.guardContexts.length = 0;
     fixtures.recordCalls.length = 0;
+    fixtures.saveCalls = 0;
+  });
+
+  it('rejects stale preimage and mismatched organization before invoking save', async () => {
+    const page = {};
+    const session = { page, labtestPreimage: { outcome: 'clear', preimageId: 'preimage-1' } };
+    await runBookingLookupTool(session, { tool: 'selectOrganization', nativeId: '90210', searchId: 'org-search-1' });
+    const request = { tool: 'saveNewLabtestStay', preimageId: 'stale', guestId: '45678',
+      arrival: '2027-01-25', departure: '2027-01-27', roomType: 'DLXKNG', ratePlan: 'BAR',
+      guaranteeType: 'NGI', note: 'synthetic org create', organizationSelection: fixtures.selection };
+    expect(await runBookingLookupTool(session, request)).toMatchObject({ outcome: 'input_gap', issue: 'CURRENT_LABTEST_PREIMAGE_REQUIRED' });
+    expect(await runBookingLookupTool(session, { ...request, preimageId: 'preimage-1',
+      organizationSelection: { ...fixtures.selection, nativeId: '999' } })).toMatchObject({ outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_NOT_CURRENT' });
+    expect(fixtures.saveCalls).toBe(0);
   });
 
   it('installs the read-only fence before searching the saved confirmation', async () => {
