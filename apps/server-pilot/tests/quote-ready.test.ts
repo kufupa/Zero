@@ -291,6 +291,30 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.reason).toBe('missing_occupancy');
   });
 
+  it('keeps a complete stay quoteable when another stay has unknown occupancy', () => {
+    const first = payload().stays[0]!;
+    const second = {
+      ...first,
+      id: 'stay-2',
+      requested: { arrival: '2026-11-20', departure: '2026-11-21' },
+      totalRooms: 1,
+      totalAdults: 2,
+      totalChildren: 1,
+      rows: [{ ...first.rows[0]!, id: 'row-2', rooms: 1, adultsPerRoom: null, childAges: null }],
+    };
+    const plan = build({
+      stays: [first, second],
+      missing: [
+        { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+        { field: 'childAges', question: 'Confirm child ages.' },
+      ],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
+  });
+
   it('defaults a missing room count to one when dates and a guest row exist', () => {
     const stay = payload().stays[0]!;
     const plan = build({

@@ -141,6 +141,27 @@ describe('analyseQuoteSources', () => {
     });
   });
 
+  it('keeps child ages unresolved when regex fallback cannot parse a child request', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room for two adults and one child aged 6 from 2027-11-12 to 2027-11-14.',
+    });
+
+    expect(analysis.groups[0]).toMatchObject({ childrenAges: [], fields: { childAges: 'missing' } });
+  });
+
+  it.each(['no child', 'no children', 'without children'])(
+    'does not mark an explicit "%s" request as missing child ages',
+    (phrase) => {
+      const analysis = analyseQuoteSources({
+        subject: 'Quote request',
+        bodyText: `Please quote one room for two adults, ${phrase}, from 2027-11-12 to 2027-11-14.`,
+      });
+
+      expect(analysis.groups[0]?.fields).not.toHaveProperty('childAges');
+    },
+  );
+
   it.each([
     { note: 'Departure changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
     { note: 'Check-out changed from 2027-11-14 to 2027-11-15.', arrivalDate: '2027-11-12', departureDate: '2027-11-15' },
@@ -1300,6 +1321,31 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       // server booking-draft schema so the pane can send it back.
       expect(result.luna?.workflow).toBe('create_booking');
       expect(lunaAnalysisSchema.safeParse(result.luna).success).toBe(true);
+    }
+  });
+
+  it('carries unknown child ages through the live regex-fallback booking carrier', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room for two adults and one child aged 6 from 2027-11-12 to 2027-11-14.',
+      preceding: [],
+      attachments: [],
+    });
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<cache-child-ages@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 24,
+      treatAs: 'quote',
+    });
+
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('regex_fallback');
+      expect(result.groups[0]?.fields.childAges).toBe('missing');
+      expect(result.luna?.groups[0]?.childAges).toBeNull();
     }
   });
 

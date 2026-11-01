@@ -81,4 +81,24 @@ describe('staff stay-total correction projection', () => {
     ]);
     expect(corrected.missingQuoteReplyFields).toEqual([]);
   });
+
+  it('lets one corrected row complete an allocation when the other row was already known', () => {
+    const source = payload();
+    source.missing = [{ field: 'adultsPerRoom', question: 'Confirm adults per room.' }];
+    source.stays[0]!.rows = [
+      { id: 'row_1', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: 2, childAges: [], board: null },
+      { id: 'row_2', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: null, childAges: [], board: null },
+    ];
+
+    const corrected = storedAnalysis(
+      { kind: 'quote', payload: source, attachments: [] },
+      { [`stays[${STAY}].rows[row_2].adults`]: 3 },
+    ).analysis;
+
+    expect(corrected.groups.map(({ adults, fields }) => ({ adults, field: fields.adults }))).toEqual([
+      { adults: 2, field: 'extracted' },
+      { adults: 3, field: 'staff_corrected' },
+    ]);
+    expect(corrected.missingQuoteReplyFields).toEqual([]);
+  });
 });

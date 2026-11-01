@@ -389,11 +389,31 @@ describe('U10 availability probe (pure)', () => {
 
     expect(availabilityRequestsFor({ ...PAYLOAD, stays: [stayWithUnknownChildren] })).toEqual([]);
     expect(
-      availabilityRequestsFor({ ...PAYLOAD, missing: [{ field: 'childAges', question: 'Confirm child ages.' }] }),
+      availabilityRequestsFor({ ...PAYLOAD, stays: [STAY_A], missing: [{ field: 'childAges', question: 'Confirm child ages.' }] }),
     ).toEqual([]);
     expect(
-      availabilityRequestsFor({ ...PAYLOAD, missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }] }),
+      availabilityRequestsFor({ ...PAYLOAD, stays: [STAY_A], missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }] }),
     ).toEqual([]);
+  });
+
+  it('probes complete stays while skipping only the stay with unknown occupancy', () => {
+    const incomplete = {
+      ...STAY_INCOMPLETE,
+      totalRooms: 1,
+      totalAdults: 2,
+      totalChildren: 1,
+      rows: [{ ...STAY_INCOMPLETE.rows[0]!, rooms: 1, adultsPerRoom: null, childAges: null }],
+    };
+    const requests = availabilityRequestsFor({
+      ...PAYLOAD,
+      stays: [STAY_A, STAY_B, incomplete],
+      missing: [
+        { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+        { field: 'childAges', question: 'Confirm child ages.' },
+      ],
+    });
+
+    expect(requests.map(({ arrival }) => arrival)).toEqual(['2026-10-26', '2026-11-17']);
   });
 
   it('does not probe when per-room adults disagree with the explicit stay total', () => {

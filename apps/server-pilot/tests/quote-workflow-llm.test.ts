@@ -766,6 +766,60 @@ describe('mapLlmDecision', () => {
     expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 1');
   });
 
+  it('scopes unscoped occupancy warnings to the incomplete stay in multi-stay quotes', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 2,
+            childrenTotal: 0,
+            childAges: [],
+          },
+          {
+            ...group,
+            arrival: '2026-12-02',
+            departure: '2026-12-04',
+            rooms: 1,
+            adultsPerRoom: null,
+            childrenTotal: 1,
+            childAges: null,
+            roomPreference: null,
+            guestNames: [],
+          },
+        ],
+        missing: [
+          { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+          { field: 'childAges', question: 'Confirm child ages.' },
+        ],
+      })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ adults: 2, fields: { adults: 'extracted' } });
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
+    expect(mapped.groups[1]).toMatchObject({ fields: { adults: 'missing', childAges: 'missing' } });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 2');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 2');
+  });
+
+  it('does not default unknown adults for a single room without a stated double or twin', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, rooms: 1, adultsPerRoom: null, roomPreference: null, guestNames: [] }],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups[0]?.fields.adults).toBe('missing');
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+
   it('reconciles a stay-wide child total against every room in the stay', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
