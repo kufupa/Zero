@@ -14,6 +14,7 @@ import {
   assertPdfToolchain,
   createToolLedger,
   extractEmbeddedPdfText,
+  hashAuthorizedArtifactBytes,
   recheckAuthorizedArtifactIdentity,
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
@@ -926,8 +927,31 @@ describe('PDF read gates (U6)', () => {
     const admitted = await readAuthorizedArtifactBytes({ ...request, allowSpreadsheet: true });
     expect(admitted?.body).toEqual(body);
     expect(revalidate).toHaveBeenCalledOnce();
+    expect(await hashAuthorizedArtifactBytes(request)).toBe(sha256);
+    expect(await hashAuthorizedArtifactBytes({ ...request, revalidate: async () => false })).toBeNull();
+    const revokeAfterRead = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect(await hashAuthorizedArtifactBytes({ ...request, revalidate: revokeAfterRead })).toBeNull();
+    expect(revokeAfterRead).toHaveBeenCalledTimes(2);
     expect(await readAuthorizedArtifactBytes({ ...request, allowSpreadsheet: true, expectedSha256: '0'.repeat(64) }))
       .toBeNull();
+  });
+
+  it('checks sealed unsupported attachments by identity without exposing their bytes', async () => {
+    const body = Buffer.from('opaque business attachment');
+    const sha256 = createHash('sha256').update(body).digest('hex');
+    const key = `outlook-sync-originals/v1/${'a'.repeat(64)}/${sha256}`;
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({ key, body, contentType: 'application/octet-stream' });
+    const expectedLocator = locator({ s3Key: key, mimeType: 'application/octet-stream', sizeBytes: body.length, sha256 });
+    const request = {
+      attachmentId: 'att-opaque', authorizedAttachmentIds: new Set(['att-opaque']), s3,
+      signal: AbortSignal.timeout(5_000), expectedLocator, resolveLocator: resolveLocatorOf(expectedLocator),
+      revalidate: async () => true,
+    };
+    expect(await readAuthorizedArtifactBytes(request)).toBeNull();
+    expect(await hashAuthorizedArtifactBytes(request)).toBe(sha256);
+    expect(await hashAuthorizedArtifactBytes({ ...request, authorizedAttachmentIds: new Set() })).toBeNull();
+    expect(await hashAuthorizedArtifactBytes({ ...request, resolveLocator: resolveLocatorOf({ ...expectedLocator, sha256: null }) })).toBeNull();
   });
 
   // Real Poppler through the bwrap sandbox. Runs only on a host with the full toolchain, so it skips on a dev VPS.

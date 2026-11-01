@@ -81,6 +81,7 @@ export type StayGroupRequirement = {
   arrivalDate?: string;
   departureDate?: string;
   quantity?: number;
+  roomsTotal?: number;
   roomPreference?: string;
   /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
   roomTypeCode?: RoomTypeCode;
@@ -118,6 +119,7 @@ export type QuoteReviewItemKind =
   | 'pricing_fact'
   | 'document_failure'
   | 'question'
+  | 'staff_review'
   | 'analysis_failure'
   | 'signature_noise';
 
@@ -151,7 +153,7 @@ export type QuoteReviewItem = {
 /** U1 drafts/toDraftWire staffActions. Copied from the published handoff; not imported from the sibling tree. */
 export type ReservationistStaffAction = {
   id: string;
-  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
+  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact' | 'voucher_review';
   text: string;
   sourceRef: string;
   sourceHash?: string;
@@ -209,7 +211,7 @@ export type LunaAnalysisWire = {
     adultsTotal?: number | null;
     adultsPerRoom: number | null;
     childrenTotal?: number | null;
-    childAges: number[];
+    childAges: number[] | null;
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];

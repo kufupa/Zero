@@ -42,10 +42,11 @@ import {
 } from '../../ai/draft-evidence.js';
 import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
+import {voucherReviewRecoveryId} from '../../ai/reservationist-source-recovery.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
+import { hashAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
@@ -82,7 +83,7 @@ type InboundAttachmentIdentityReader = (input: {
   expectedSize: number;
 }) => Promise<{ sha256: string } | null>;
 let inboundAttachmentIdentityReader: InboundAttachmentIdentityReader | null = null;
-/** Compose with existing readAuthorizedArtifactBytes and fresh DB grant checks. */
+/** Compose with fresh DB grant checks and a bounded identity-only read. */
 export function configureInboundAttachmentIdentityReader(
   reader: InboundAttachmentIdentityReader | null,
 ): void {
@@ -209,7 +210,7 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
 
 export type ReservationistStaffAction = {
   id: string;
-  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
+  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact' | 'voucher_review';
   text: string;
   sourceRef: string;
   /** Missing only when an unread attachment has metadata identity but no verified byte hash. */
@@ -302,6 +303,18 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     }
   }
   for (const recovery of rows(result.sourceRecoveries).slice(0, 64)) {
+    if (recovery.kind === 'voucher_review') {
+      const id = voucherReviewRecoveryId(recovery);
+      const identity = originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
+      const quote = typeof recovery.quote === 'string' ? recovery.quote : undefined;
+      if (!id || !quote || !identity ||
+        identity.sourceKind !== 'message' || identity.sourceRef !== `message:${recovery.messageId}` ||
+        identity.messageId !== recovery.messageId) continue;
+      if (!staffActions.some(action => action.id === id)) staffActions.push({id, kind: 'voucher_review', text: quote, ...identity,
+        reason: 'Check the original email and attached hotel voucher. No voucher has been verified or action prepared.',
+        blockingQuote: false, status: 'open'});
+      continue;
+    }
     if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true) continue;
     const metadataOnly = recovery.sourceIdentity === 'metadata_only' && recovery.sourceHash === undefined &&
       recovery.sourceKind === 'attachment' && typeof recovery.sourceRef === 'string' &&
@@ -488,6 +501,7 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
           s3Key: attachment.s3Key,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
+          sha256: attachment.sha256,
         })
         .from(attachment)
         .innerJoin(message, eq(attachment.messageId, message.id))
@@ -508,7 +522,7 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
       initial.sizeBytes !== input.expectedSize
     )
       return null;
-    const bytes = await readAuthorizedArtifactBytes({
+    const sha256 = await hashAuthorizedArtifactBytes({
       attachmentId: input.attachmentId,
       authorizedAttachmentIds: new Set([input.attachmentId]),
       s3: storage,
@@ -522,11 +536,12 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
           current.s3Key === initial.s3Key &&
           current.sizeBytes === initial.sizeBytes &&
           current.mimeType === initial.mimeType &&
-          current.messageId === initial.messageId
+          current.messageId === initial.messageId &&
+          current.sha256 === initial.sha256
         );
       },
     });
-    return bytes ? { sha256: bytes.sha256 } : null;
+    return sha256 ? { sha256 } : null;
   });
 }
 
@@ -1280,18 +1295,22 @@ export const draftsRouter = tRouter({
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
-      const oldFiles = item ? outstandingSourceRecoveries(history).filter(file => file.runId !== latest.id) : [];
+      const oldSources = item ? outstandingSourceRecoveries(history).filter(source => source.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
-      for (const run of runs.filter(run => oldFiles.some(file => file.runId === run.id))) {
+      for (const run of runs.filter(run => oldSources.some(source => source.runId === run.id))) {
         const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
-        earlierSources.push(...(prior?.staffActions ?? []).filter(action => action.kind === 'business_document_failure' &&
-          oldFiles.some(file => file.runId === run.id && file.sourceRef === action.sourceRef)));
+        earlierSources.push(...(prior?.staffActions ?? []).filter(action => oldSources.some(source =>
+          source.runId === run.id && (source.kind === 'voucher_review'
+            ? action.kind === 'voucher_review' && source.id === action.id
+            : action.kind === 'business_document_failure' && source.sourceRef === action.sourceRef))));
       }
       if (!summary && !earlier.length && !earlierSources.length) return null;
       const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
+      const currentActions = reviewSummary.staffActions ?? [], currentActionIds = new Set(currentActions.map(action => action.id));
       return { replyToMessageId: input.messageId, runId: latest.id,
         ...(item ? { workItemId: input.workItemId } : {}),
-        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier], staffActions: [...(reviewSummary.staffActions ?? []), ...earlierSources] } };
+        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier],
+          staffActions: [...currentActions, ...earlierSources.filter(action => !currentActionIds.has(action.id))] } };
     }),
 
   /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */

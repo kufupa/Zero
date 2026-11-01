@@ -2,6 +2,7 @@
 // availability reads only return an already-stored admission result and never start an HMS read.
 
 import type { StayGroupRequirement } from './types';
+import { stayTotalMismatch } from './stay-allocation-validation';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -157,12 +158,15 @@ export function paneStayAvailabilityRequestFor(
       row.arrivalDate !== arrival ||
       row.departureDate !== departure ||
       !roomPreference?.trim() ||
+      row.fields.adults === 'missing' ||
+      row.fields.childAges === 'missing' ||
       typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1 ||
       typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 ||
       !Array.isArray(childrenAges)
     ) return null;
     rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });
   }
+  if (stayTotalMismatch(rows)) return null;
 
   return { threadId, kind: 'availability', arrival, departure, rooms };
 }
