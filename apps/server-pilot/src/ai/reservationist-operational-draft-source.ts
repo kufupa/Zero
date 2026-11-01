@@ -6,26 +6,29 @@ import {deriveStaffAnswerTopics} from './reservationist-execution.js';
 import {validateReservationistMailAnswers} from './reservationist-mail-answer-source.js';
 import type {ReservationistRuntimeInput,RuntimePlan} from './reservationist-runtime.js';
 import type {ReservationistPersistedResult} from './drafts.js';
+import {maskIncomingCardNumbers} from './card-mask.js';
+import {renderReservationistMessage,reservationistDisclosure,reservationistMessageAt} from './reservationist-worker-input.js';
 const id=z.string().min(1).max(512),hash=z.string().regex(/^[a-f0-9]{64}$/);
 const span=z.object({attachmentId:id,sourceHash:hash,page:z.literal(1),start:z.number().int().nonnegative(),end:z.number().int().positive(),quote:z.string().min(1).max(4096)}).strict();
 export const operationalDraftProofSchema=z.object({task:z.object({id,kind:z.literal('question'),required:z.literal(true),source:span}).strict(),binding:z.object({requestId:id,ownerRef:id,threadId:id,propertyCode:z.literal('HRCEN'),triggerMessageId:id,causalAt:z.string().datetime()}).strict(),answer:z.object({kind:z.enum(['parking','check_in','check_out']),value:z.union([z.boolean(),z.string().min(1).max(32)]),messageId:id,sourceHash:hash,start:z.number().int().nonnegative(),end:z.number().int().positive(),quote:z.string().min(1).max(4096),disclosure:z.literal('guest')}).strict(),authority:z.literal('causal_guest_mail')}).strict();
 export type OperationalDraftProof=z.infer<typeof operationalDraftProofSchema>;
-export type OperationalDraftMessageRow={id:string;transportId:string;threadId:string|null;direction:string;receivedAt:Date|null;sentAt:Date|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]};
+export type OperationalDraftMessageRow={id:string;transportId:string;threadId:string|null;direction:string;arrivedAt?:Date|null;createdAt?:Date|null;receivedAt:Date|null;sentAt:Date|null;pop3Uidl?:string|null;sourceProvenance?:Record<string,unknown>|null;textBody:string|null;htmlBody:string|null;subject:string|null;fromAddress:string;toAddresses:string[];ccAddresses:string[];bccAddresses:string[]};
 type Binding=OperationalDraftProof['binding'];
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 /** Guest disclosure is recomputed from the scoped actual trigger and original outbound To header. */
 export function operationalDraftMessages(rows:readonly OperationalDraftMessageRow[],binding:Binding):ReservationistRuntimeInput['messages']{
  const trigger=rows.find(row=>row.id===binding.triggerMessageId);
- if(binding.propertyCode!=='HRCEN'||binding.requestId!==binding.triggerMessageId||!trigger||trigger.transportId!==binding.ownerRef||trigger.threadId!==binding.threadId||trigger.direction!=='inbound'||trigger.receivedAt?.toISOString()!==binding.causalAt)throw new Error('operational_trigger_scope_invalid');
+ if(binding.propertyCode!=='HRCEN'||binding.requestId!==binding.triggerMessageId||!trigger||trigger.transportId!==binding.ownerRef||trigger.threadId!==binding.threadId||trigger.direction!=='inbound'||reservationistMessageAt(trigger)?.toISOString()!==binding.causalAt)throw new Error('operational_trigger_scope_invalid');
  const replyTo=deriveReplyToAddress(trigger.fromAddress);if(!replyTo)throw new Error('operational_guest_address_invalid');
- return rows.filter(row=>{const at=row.direction==='inbound'?row.receivedAt:row.sentAt;return at&&at.getTime()<=Date.parse(binding.causalAt);}).map(row=>{
-  const at=row.direction==='inbound'?row.receivedAt:row.sentAt;if(row.transportId!==binding.ownerRef||row.threadId!==binding.threadId||!at||!['inbound','outbound'].includes(row.direction))throw new Error('operational_message_scope_invalid');
-  return{id:row.id,at:at.toISOString(),direction:row.direction as 'inbound'|'outbound',text:row.textBody??row.htmlBody??'',...(row.subject!==null?{subject:row.subject}:{}),disclosure:row.direction==='inbound'||row.toAddresses.some(address=>address.toLowerCase()===replyTo.toLowerCase())?'guest' as const:'staff_only' as const};
+ return rows.filter(row=>{const at=reservationistMessageAt(row);return at&&at.getTime()<=Date.parse(binding.causalAt);}).map(row=>{
+  const at=reservationistMessageAt(row);if(row.transportId!==binding.ownerRef||row.threadId!==binding.threadId||!at||!['inbound','outbound'].includes(row.direction))throw new Error('operational_message_scope_invalid');
+  return{id:row.id,at:at.toISOString(),direction:row.direction as 'inbound'|'outbound',...renderReservationistMessage(row),...(row.subject!==null?{subject:maskIncomingCardNumbers(row.subject)}:{}),disclosure:reservationistDisclosure(row,replyTo.toLowerCase())};
  });
 }
 function requestValid(task:OperationalDraftProof['task'],input:ReservationistRuntimeInput):boolean{
  const message=input.messages.find(m=>m.id===input.trigger.id),s=task.source;
  if(!message||message.direction!=='inbound'||message.disclosure!=='guest'||message.at!==input.clock.causalAt||s.attachmentId!==`message:${message.id}`||s.sourceHash!==sha(message.text)||s.start<0||s.end-s.start!==s.quote.length||message.text.slice(s.start,s.end)!==s.quote)return false;
+ if(message.sourceViews&&!message.sourceViews.some(view=>s.start>=view.start&&s.end<=view.end))return false;
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{1,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  const authored=history<0?message.text:message.text.slice(0,history),topics=deriveStaffAnswerTopics(s.quote);
  return s.end<=authored.length&&!/^\s*>/m.test(authored)&&!(/\b(?:not|no|never|unless|without|whether|if|don't|disregard|withdraw|another|other|different|early|late|fee|fees|charge|charges|cost|costs|approved|approval|confirm(?:ed)?)\b/i.test(authored))&&topics.length===1&&['parking','check_in','check_out'].includes(topics[0]!);
@@ -46,7 +49,9 @@ export function deriveOperationalDraftSources(plan:RuntimePlan,result:Pick<Reser
    const answer={kind:topic,value:fact.value as string|boolean,messageId:message.id,sourceHash:sha(message.text),start:match.index!,end:match.index!+match[0].length,quote:match[0],disclosure:'guest' as const};
    try{validateReservationistMailAnswers([answer],input);return[answer];}catch{return[];}
   });
-  if(candidates.length!==1)continue;const answer=candidates[0]!;
+  // MIME alternatives may repeat the same independently validated answer.
+  if(message.sourceViews?candidates.length!==message.sourceViews.length||message.sourceViews.some(view=>candidates.filter(answer=>answer.start>=view.start&&answer.end<=view.end).length!==1):candidates.length!==1)continue;
+  const answer=candidates[0];if(!answer)continue;
   const proof=operationalDraftProofSchema.parse({task:parsed.data,binding,answer,authority:'causal_guest_mail'});
   if(!isDeepStrictEqual(fact,operationalDraftFact(proof))||result.tasks.filter(t=>isDeepStrictEqual(t,expectedTask(proof))).length!==1)continue;
   proofs.push(proof);

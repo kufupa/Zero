@@ -9,6 +9,7 @@ import {
 } from './reservationist-attachment-input.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
 import { HTML_ALTERNATIVE_MARKER, type ReservationistMessageView } from './reservationist-message-view.js';
+import { deriveReplyToAddress } from './workflows/candidate-draft.js';
 
 /** Rows must be loaded by the server for one mailbox and thread. */
 export type ReservationistWorkerMessage = {
@@ -25,6 +26,8 @@ export type ReservationistWorkerMessage = {
   /** Mailbox arrival, not a sender-supplied timestamp. */
   arrivedAt: Date | null;
   createdAt: Date;
+  pop3Uidl?: string | null;
+  sourceProvenance?: Record<string, unknown> | null;
 };
 
 export type ReservationistWorkerAttachment = {
@@ -41,8 +44,8 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
-/** Preserve plain/HTML boundaries for source spans and date/card masking. */
-function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
+/** Plain text retains paragraph and quote boundaries for source spans and masking. */
+function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
   $('details.quoted-toggle, blockquote').each((_, element) => {
@@ -64,7 +67,33 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   return maskIncomingCardNumbers(rendered);
 }
 
-/** Keep each complete authored alternative before quoted history; deduplication can detach negations or conditions. */
+/** Reuse the citable, masked text for intake and later draft checks. */
+export function renderReservationistMessage(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized?: string) {
+  if ((row.textBody?.length ?? 0) > 2_000_000 || (row.htmlBody?.length ?? 0) > 2_000_000) throw new Error('worker_intake_context_limit');
+  return combineMessageViews(modelMessageText(row, normalized ?? normalizeMessageText(row)), row.textBody?.trim() && row.htmlBody
+    ? modelMessageText({ textBody: null, htmlBody: row.htmlBody }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : '');
+}
+
+/** A POP3 Date header cannot move an observed message earlier, including returned native replies. */
+export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null; pop3Uidl?: string | null; sourceProvenance?: Record<string, unknown> | null }) {
+  const importedPop3 = row.pop3Uidl != null && row.sourceProvenance?.canonicalContentVersion == null;
+  if (row.direction === 'outbound') {
+    if (!importedPop3) return row.sentAt;
+    const observed = row.arrivedAt ?? row.createdAt ?? null;
+    return observed && row.sentAt && row.sentAt.getTime() > observed.getTime() ? row.sentAt : observed;
+  }
+  return row.arrivedAt ?? row.createdAt ?? row.receivedAt ?? null;
+}
+
+/** A past reply is guest-visible only when addressed to the current guest. */
+export function reservationistDisclosure(row: { direction: string; fromAddress: string; toAddresses: string[]; ccAddresses: string[]; bccAddresses: string[] }, guestAddress: string): 'guest' | 'staff_only' {
+  const address = (value: string) => deriveReplyToAddress(value)?.toLowerCase();
+  return row.direction === 'inbound'
+    ? address(row.fromAddress) === guestAddress ? 'guest' : 'staff_only'
+    : [...row.toAddresses, ...row.ccAddresses, ...row.bccAddresses].some(value => address(value) === guestAddress) ? 'guest' : 'staff_only';
+}
+
+/** Keep each complete authored alternative, including postscripts, before quoted history; deduplication can detach negations or conditions. */
 function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
   const comparable = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
   if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
@@ -176,7 +205,7 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  // Use mailbox arrival inbound and confirmed send outbound; queued or unproven sends are not context.
+  // Use mailbox arrival for POP3, and confirmed send time for native outbound mail.
   const triggerAt = time(trigger.arrivedAt);
   if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
@@ -184,7 +213,8 @@ export async function buildReservationistWorkerInput(options: {
   const selected: Array<{ row: ReservationistWorkerMessage; at: number }> = [];
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
-    const at = time(row.direction === 'outbound' ? row.sentAt : row.arrivedAt);
+    const at = time(reservationistMessageAt(row));
+    // Queued native outbound rows without a confirmed send are not context.
     if (at === null) { if (row.direction === 'outbound') continue; throw new Error('worker_intake_clock_invalid'); }
     if (at > triggerAt) continue;
     if (at === triggerAt) throw new Error('worker_intake_order_ambiguous');
@@ -204,8 +234,7 @@ export async function buildReservationistWorkerInput(options: {
     id: row.id,
     at: new Date(at).toISOString(),
     direction: row.direction,
-    ...combineMessageViews(modelMessageText(row, normalized.get(row.id)!), row.textBody?.trim() && row.htmlBody
-      ? modelMessageText({ ...row, textBody: null }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : ''),
+    ...renderReservationistMessage(row, normalized.get(row.id)!),
     ...(row.subject ? { subject: maskIncomingCardNumbers(row.subject) } : {}),
     disclosure: row.disclosure,
   }));

@@ -115,6 +115,18 @@ describe('reservationist worker input', () => {
     expect(input.messages[0]!.at).toBe(at(2).toISOString());
   });
 
+  it('uses observed POP3 arrival, not a backdated email Date header', async () => {
+    const { input } = await build([
+      row('imported-before', 1, { direction: 'outbound', pop3Uidl: 'before', sentAt: null }),
+      row('imported-after', 5, { direction: 'outbound', pop3Uidl: 'after', sentAt: at(1) }),
+      row('returned-native-after', 1, { direction: 'outbound', pop3Uidl: 'returned', arrivedAt: at(1), createdAt: at(1), sentAt: at(5) }),
+      row('outlook-sent-before', 5, { direction: 'outbound', pop3Uidl: 'synced', sourceProvenance: { canonicalContentVersion: '1' }, sentAt: at(2) }),
+      row('current', 4),
+    ]);
+    expect(input.messages.map((message) => message.id)).toEqual(['imported-before', 'outlook-sent-before', 'current']);
+    expect(input.messages[0]!.at).toBe(at(1).toISOString());
+  });
+
   it('includes earlier timestamp ties without ordering them, but refuses trigger-time ties', async () => {
     const earlierAt = at(1);
     const { input } = await build([
