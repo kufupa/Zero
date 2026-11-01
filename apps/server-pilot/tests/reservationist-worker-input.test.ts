@@ -207,6 +207,15 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
   });
 
+  it('keeps an earlier inline screenshot requested by a later message', async () => {
+    const result = await build([
+      row('prior', 1, { textBody: 'Hello\nKind regards\ncid:receipt' }),
+      row('current', 4, { textBody: 'Please check the payment screenshot and confirm the booking.' }),
+    ], [{ id: 'receipt', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'receipt', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['receipt']);
+  });
+
   it('refuses missing or non-hash attachment identity before admission', async () => {
     let admissions = 0;
     const admit: Build['admit'] = async (metadata) => {

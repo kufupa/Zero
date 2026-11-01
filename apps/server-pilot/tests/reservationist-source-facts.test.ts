@@ -222,12 +222,13 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('new_booking')).rejects.toThrow('Document fact value not entailed by source span');
  });
  it('retains a quote linked across differently worded MIME views, but refuses booking or negated occupancy',async()=>{
-  const plain='Please quote one double room for two adults.',marker=`\n\n${HTML_ALTERNATIVE_MARKER}`;
-  const run=async(html:string,kind:'quote'|'new_booking')=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:views';
+  const marker=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+  const run=async(html:string,kind:'quote'|'new_booking',plain='Please quote one double room for two adults.')=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:views';
    return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:2,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:html,view:'html'}}],tasks:[{id:'task',kind,factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'views',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'views',causalAt:at,admissions:[],signal:new AbortController().signal});};
   await expect(run('Kindly quote one double room for two adults.','quote')).resolves.toMatchObject({facts:[{convention:{rule:'centurion_staff_occupancy_v1'}}]});
   await expect(run('Kindly quote one double room for two adults.','new_booking')).rejects.toThrow();
   await expect(run('Kindly do not quote one double room for two adults.','quote')).rejects.toThrow();
+  await expect(run('Kindly quote one double room for two adults.','quote','Please do not quote one double room for two adults.')).rejects.toThrow('Conflicting quote request across message views');
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';

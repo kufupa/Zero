@@ -449,6 +449,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
   else if (fact.kind === 'document_reference') ok = exactText(quote, fact.value) && rows.some(row=>exactText(row,fact.value)&&/\b(?:quote|quotation|proposal)\b/i.test(row)&&/\b(?:resend|send|copy|attach|provide|previous|prior|existing|original)\b/i.test(row)&&!/\b(?:new|fresh|revised)\s+(?:quote|quotation|proposal)\b/i.test(row));
   else if (fact.kind === 'room') {
     const scope=citedSourceScope(fact,sources,facts,tasks),proofFact=scope?.fact??fact,proofFacts=scope?.facts??facts,proofTasks=scope?.tasks??tasks,boundTasks=proofTasks.filter(task=>task.factIds.includes(fact.id)).concat(scope?.alternativeTasks??[]);
+    if((scope?.alternativeTasks??[]).some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|book|reserve|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
     if(fact.value.quotationBasis==='per_room_rate'){
       const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=scope?.page??source?.pages?.[fact.source.page-1]??'',authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       const occupancyBody=authored.replace(/\bfamily\s+offices\b/gi,'corporate offices');
