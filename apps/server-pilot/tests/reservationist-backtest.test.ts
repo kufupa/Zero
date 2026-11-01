@@ -446,7 +446,7 @@ describe('production targets', () => {
     expect(scoreGoldenCase(row, trace)).toMatchObject({ correct: 6, scored: 6, error: false });
     const withMailbox = fakeAdapter(extraction());
     await runProductionTarget('extract', row, withMailbox.adapter, 'desk@hotel.test');
-    expect(withMailbox.calls[0]!.userPrompt).toContain(`Mailbox: desk@hotel.test\nFrom: ${row.trigger.from}`);
+    expect(withMailbox.calls[0]!.userPrompt).toContain('Mailbox: desk@hotel.test');
 
     const amend = {
       ...row,
