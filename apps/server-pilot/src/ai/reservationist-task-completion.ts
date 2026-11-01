@@ -43,12 +43,19 @@ export function handledRequestKeys(state: unknown): Set<string> {
   return new Set(Object.entries(saved).filter(([key, handled]) => /^[a-f0-9]{64}$/.test(key) && handled === true).map(([key]) => key));
 }
 
+export function hasOutstandingRequests(result: unknown, runId: string, state: unknown): boolean {
+  const value = object(result);
+  if (value.version !== 1 || !Array.isArray(value.tasks) || !value.tasks.length) return false;
+  const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
+  return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
+}
+
 /** Staff acknowledgement only; it does not authorize a send or an HMS write. */
 export async function setRequestHandled(db: DB, input: {
   transportId: string; workItemId: string; userId: string; runId: string; taskId: string; handled: boolean;
 }): Promise<'recorded' | 'not_found' | 'stale'> {
   return db.transaction(async tx => {
-    const [item] = await tx.select({ id: workItem.id, threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state })
+    const [item] = await tx.select({ id: workItem.id, threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state, status: workItem.status })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1).for('update');
     if (!item?.threadId || !item.sourceMessageId) return 'not_found';
     const [run] = await tx.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
@@ -65,9 +72,14 @@ export async function setRequestHandled(db: DB, input: {
     const state = { ...item.state };
     if (handled.size) state[STATE_KEY] = Object.fromEntries([...handled].map(saved => [saved, true]));
     else delete state[STATE_KEY];
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    const reopen = !input.handled && (item.status === 'done' || item.status === 'dismissed');
+    await tx.update(workItem).set({ state, updatedAt: new Date(), ...(reopen ? {
+      status: 'needs_you', sentAt: null, sentMessageId: null, followUpDueAt: null,
+    } : {}) }).where(eq(workItem.id, item.id));
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: input.userId,
       type: 'request.handled', value: { key, runId: run.id, handled: input.handled } });
+    if (reopen) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: input.userId,
+      type: 'status.changed', value: { from: item.status, to: 'needs_you', reason: 'request_reopened' } });
     return 'recorded';
   });
 }

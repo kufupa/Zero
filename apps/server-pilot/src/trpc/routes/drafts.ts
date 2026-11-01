@@ -32,6 +32,7 @@ import {
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
 import { handledRequestKeys, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
@@ -1261,9 +1262,15 @@ export const draftsRouter = tRouter({
   setRequestHandled: mailboxProcedure.input(z.object({
     workItemId: z.string().uuid(), runId: z.string().min(1).max(200), taskId: z.string().min(1).max(512), handled: z.boolean(),
   }).strict()).mutation(async ({ input, ctx }) => {
-    const result = await setRequestHandled(getDb(), { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    const db = getDb();
+    const result = await setRequestHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
     if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
     if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    if (input.handled) {
+      const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+      if (item?.threadId) await refreshThreadWork(db, { transportId: ctx.activeTransportId, threadId: item.threadId });
+    }
     return { handled: input.handled };
   }),
 

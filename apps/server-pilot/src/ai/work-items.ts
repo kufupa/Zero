@@ -69,6 +69,7 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
+import { hasOutstandingRequests } from './reservationist-task-completion.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1058,6 +1059,7 @@ const SUPERSEDED_BY_THREAD = 'superseded_by_thread';
 /** The reasons on the thread's system status changes (refreshThreadWork). */
 const HOTEL_REPLIED = 'hotel_replied';
 const NEW_INBOUND = 'new_inbound';
+const REQUESTS_OUTSTANDING = 'requests_outstanding';
 const STAFF_SENT_OTHER = 'staff_sent_other';
 
 /**
@@ -1255,7 +1257,7 @@ export function personTouchSql(alias: string): SQL {
 export type ThreadWorkChange =
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof HOTEL_REPLIED; sentAt: Date; sentMessageId: string }
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof STAFF_SENT_OTHER }
-  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND; previousSentMessageId: string | null }
+  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND | typeof REQUESTS_OUTSTANDING; previousSentMessageId: string | null; from?: 'dismissed' }
   | { workItemId: string; kind: MailKind; to: 'dismissed'; reason: typeof SUPERSEDED_BY_THREAD; supersededBy: string }
   | { workItemId: string; kind: MailKind; repoint: { sentAt: Date; sentMessageId: string } };
 
@@ -1329,6 +1331,12 @@ export async function planThreadWork(
         order by we.at desc, we.id desc
         limit 1
       )`,
+      lastStatusActor: sql<string | null>`(select we.actor_kind from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id and we.type = 'status.changed'
+        order by we.at desc, we.id desc limit 1)`,
+      lastStatusReason: sql<string | null>`(select we.value->>'reason' from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id and we.type = 'status.changed'
+        order by we.at desc, we.id desc limit 1)`,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
@@ -1340,11 +1348,19 @@ export async function planThreadWork(
       and(
         eq(workItem.transportId, input.transportId),
         eq(workItem.threadId, input.threadId),
-        inArray(workItem.status, ['needs_you', 'done']),
+        inArray(workItem.status, ['needs_you', 'done', 'dismissed']),
         ne(workItem.kind, 'spam'),
       ),
     );
   const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
+  const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
+  const runs = sourceIds.length ? await db.selectDistinctOn([aiWorkflowRun.triggerMessageId], {
+    id: aiWorkflowRun.id, sourceMessageId: aiWorkflowRun.triggerMessageId, metrics: aiWorkflowRun.metrics,
+  }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.threadId),
+    inArray(aiWorkflowRun.triggerMessageId, sourceIds), eq(aiWorkflowRun.runKind, 'candidate_draft'),
+    eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
+    .orderBy(aiWorkflowRun.triggerMessageId, desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)) : [];
+  const runsBySource = new Map(runs.map(run => [run.sourceMessageId, run]));
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -1396,14 +1412,28 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const untouched = !item.touched && Object.keys(item.state ?? {}).length === 0;
+    const run = runsBySource.get(source.id);
+    const outstanding = run ? hasOutstandingRequests(run.metrics?.reservationistResult, run.id, item.state) : false;
+    const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
+    if (item.status === 'dismissed') {
+      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
     const replyChange: ThreadWorkChange | undefined =
-      lastHotel && answered && !item.hmsOpen
+      lastHotel && answered && !item.hmsOpen && !outstanding
         ? {
             workItemId: item.id,
             kind,
@@ -1523,7 +1553,7 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
     await enqueueReplyCheckForItem(tx, change.workItemId, change.repoint.sentMessageId);
     return;
   }
-  const from = change.to === 'needs_you' ? 'done' : 'needs_you';
+  const from = change.to === 'needs_you' ? change.from ?? 'done' : 'needs_you';
   const link =
     change.to === 'done' && change.reason === HOTEL_REPLIED
       ? { sentAt: change.sentAt, sentMessageId: change.sentMessageId, followUpDueAt: null }
