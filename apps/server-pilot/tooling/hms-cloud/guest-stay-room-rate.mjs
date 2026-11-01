@@ -249,6 +249,10 @@ async function waitGrid(page, id, count, timeout = 15000) {
 }
 async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const spec = SPECS[kind];
+  const dismissUnavailable = async (timeout = 0) => {
+    if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
+    return dismissUnavailableMessage(page, timeout);
+  };
   await assertWindows(page, [], nativeDialog);
   const form = await formFields(page), formState = JSON.stringify(form);
   let initial;
@@ -267,14 +271,22 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     const response = await inquiry;
     if (!response || response.status() !== 200) throw new Error('RATE_SHOP_INQUIRY_UNVERIFIED');
     await responseText(response);
-    if (await dismissUnavailableMessage(page, 1000)) return { criteriaUnavailable: true };
-    await assertWindows(page, ['Rate Shop'], nativeDialog);
+    if (await dismissUnavailable(1000)) return { criteriaUnavailable: true };
+    try { await assertWindows(page, ['Rate Shop'], nativeDialog); }
+    catch (error) {
+      if (await dismissUnavailable()) return { criteriaUnavailable: true };
+      throw error;
+    }
     initial = page.waitForResponse((response) => {
       const req = response.request();
       return new URL(req.url()).pathname === '/web/base/BSMSLV' && allowedSearch(req, kind, new URL(page.url()).origin);
     }, { timeout: 20000 }).catch(() => null);
     const ratePlans = shop.locator('input[name="rateplans"]:visible').first();
-    await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
+    try { await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click({ timeout: 20000 }); }
+    catch (error) {
+      if (await dismissUnavailable()) return { criteriaUnavailable: true };
+      throw error;
+    }
   } else {
     initial = page.waitForResponse((response) => {
       const req = response.request();
@@ -284,10 +296,16 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     await room.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
   }
   const win = picker(page, spec.title);
-  await win.waitFor({ state: 'visible', timeout: 20000 });
+  try { await win.waitFor({ state: 'visible', timeout: 20000 }); }
+  catch (error) {
+    if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
+    throw error;
+  }
   const id = await win.getAttribute('id'); if (!id) throw new Error('PICKER_UNAVAILABLE');
   searches.set(page, { kind, windowId: id, shopId: searches.get(page)?.shopId, formState, cleanupOnly: true });
+  if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
   const response = await initial;
+  if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
   if (!response || response.status() !== 200) throw new Error('PICKER_REQUEST_UNVERIFIED');
   let nativeFilters = kind === 'roomType'
     ? [...new URLSearchParams(response.request().postData() || '')]
