@@ -101,4 +101,22 @@ describe('staff stay-total correction projection', () => {
     ]);
     expect(corrected.missingQuoteReplyFields).toEqual([]);
   });
+
+  it('keeps a legacy empty-age warning until staff confirms that room', () => {
+    const source = payload();
+    delete source.stays[0]!.totalChildren;
+    source.stays[0]!.totalAdults = 6;
+    source.missing = [{ field: 'childAges', question: 'Confirm the children’s ages.' }];
+
+    const unresolved = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }).analysis;
+    expect(unresolved.groups[0]).toMatchObject({ childrenAges: [], fields: { childAges: 'missing' } });
+    expect(unresolved.missingQuoteReplyFields).toContain('Child ages for stay 1');
+
+    const corrected = storedAnalysis(
+      { kind: 'quote', payload: source, attachments: [] },
+      { [`stays[${STAY}].rows[${ROW}].childAges`]: [7] },
+    ).analysis;
+    expect(corrected.groups[0]).toMatchObject({ childrenAges: [7], fields: { childAges: 'staff_corrected' } });
+    expect(corrected.missingQuoteReplyFields).not.toContain('Child ages for stay 1');
+  });
 });

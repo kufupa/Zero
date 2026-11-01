@@ -599,8 +599,9 @@ export function mapLlmDecision(
     );
     const arrivalDate = validIsoDate(anchoredDates.arrival);
     const anchoredDepartureDate = validIsoDate(anchoredDates.departure);
+    const rejectedCheckout = analysis.missing.some((item) => item.field === 'stayDates') && !group.departure;
     const departureDefaulted =
-      quoteDefaults && Boolean(arrivalDate) && !anchoredDepartureDate && !group.departure;
+      quoteDefaults && Boolean(arrivalDate) && !anchoredDepartureDate && !group.departure && !rejectedCheckout;
     const departureDate =
       anchoredDepartureDate ??
       (departureDefaulted && arrivalDate ? addDays(arrivalDate, 1) : undefined);
@@ -633,10 +634,16 @@ export function mapLlmDecision(
     );
     const unknownAdultAllocation = group.adultsPerRoom === null && !canDefaultTwinAdults;
     const adultNeedsReview = adultTotalMismatch || adultFieldMissing || unknownAdultAllocation;
+    const legacyEmptyChildAgesNeedReview =
+      hasMultipleKnownStays &&
+      childrenTotal == null &&
+      childAges.length === 0 &&
+      analysis.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
     const unknownChildAges =
       group.childAges === null ||
       childTotalMismatches.has(lunaStayKey(group, index)) ||
       unscopedMissing.some((item) => /child/i.test(`${item.field} ${item.question}`)) ||
+      legacyEmptyChildAgesNeedReview ||
       (typeof childrenTotal === 'number' && childrenTotal > 0 && childAges.length === 0);
     const hasGuestEvidence =
       group.adultsPerRoom !== null || childAges.length > 0 || group.guestNames.length > 0;

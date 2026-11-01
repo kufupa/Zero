@@ -285,10 +285,23 @@ export function buildPreparedStaffQuotePlan(input: {
   }
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
-  // `missing` is unscoped. For multiple stays, their row values and totals carry the stay-specific gaps.
-  const unscopedMissing = payload.stays.length === 1 ? payload.missing : [];
+  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
+  const missingForStay = (stay: (typeof payload.stays)[number]) => {
+    if (payload.stays.length === 1) return payload.missing;
+    const legacyEmptyAges =
+      stay.totalChildren == null && stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0);
+    return payload.missing.filter((item) => {
+      const fieldAndQuestion = `${item.field} ${item.question}`;
+      if (/child/i.test(fieldAndQuestion)) return hasChildAgeWarning && legacyEmptyAges;
+      if (/adult|occupancy/i.test(fieldAndQuestion) && !/total/i.test(item.field)) return false;
+      if (item.field === 'stayDates') {
+        return !validIsoDay(stay.requested.arrival) || !validIsoDay(stay.requested.departure);
+      }
+      return true;
+    });
+  };
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today, unscopedMissing, input.propertyCode);
+    const groupResult = groupForStay(stay, today, missingForStay(stay), input.propertyCode);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,

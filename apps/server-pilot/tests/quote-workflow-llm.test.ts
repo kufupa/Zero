@@ -648,6 +648,22 @@ describe('mapLlmDecision', () => {
     expect(mapped.missing.map((item) => item.field)).not.toContain('departureDate');
   });
 
+  it('does not replace a rejected checkout with a one-night default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-11-12', departure: null, dateEvidence: '12 Nov' }],
+          missing: [{ field: 'stayDates', question: 'The checkout must be after arrival.' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { departureDate: 'missing' } });
+    expect(mapped.groups[0]).not.toHaveProperty('departureDate');
+    expect(mapped.missingQuoteReplyFields).toContain('Departure date for stay 1');
+  });
+
   it('keeps checkout derived from stated nights instead of replacing it with one night', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
@@ -804,6 +820,34 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups[1]).toMatchObject({ fields: { adults: 'missing', childAges: 'missing' } });
     expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 2');
     expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 2');
+  });
+
+  it('keeps legacy empty child ages unresolved in a multi-stay warning', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            childrenTotal: 0,
+            childAges: [],
+          },
+          {
+            ...group,
+            arrival: '2026-12-02',
+            departure: '2026-12-04',
+            childAges: [],
+          },
+        ],
+        missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+      })),
+    );
+
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
+    expect(mapped.groups[1]?.fields.childAges).toBe('missing');
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 2');
   });
 
   it('does not default unknown adults for a single room without a stated double or twin', () => {

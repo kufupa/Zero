@@ -117,6 +117,13 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
   const missing = (payload as { missing?: unknown } | null | undefined)?.missing;
   const stays = (payload as { stays?: unknown } | null | undefined)?.stays;
   if (!Array.isArray(stays)) return [];
+  const hasChildAgeWarning =
+    Array.isArray(missing) &&
+    missing.some((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const value = item as { field?: unknown; question?: unknown };
+      return /child/i.test(`${String(value.field ?? '')} ${String(value.question ?? '')}`);
+    });
   if (
     stays.length === 1 &&
     Array.isArray(missing) &&
@@ -129,6 +136,16 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
     return [];
   }
   return stays.flatMap((stay: ExtractionStay | null) => {
+    if (
+      stays.length > 1 &&
+      hasChildAgeWarning &&
+      stay !== null &&
+      stay.totalChildren == null &&
+      Array.isArray(stay.rows) &&
+      stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0)
+    ) {
+      return [];
+    }
     const request = availabilityRequestForStay(stay);
     return request ? [request] : [];
   });

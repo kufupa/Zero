@@ -751,7 +751,17 @@ export function storedAnalysis(
         : Array.isArray(group?.childAges);
     });
   const adultsResolved = everyRowKnown('adults');
-  const childAgesResolved = everyRowKnown('childAges');
+  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
+  const legacyEmptyAgesNeedConfirmation = hasChildAgeWarning && stays.some((stay) => {
+    const sourceStay = payload.stays.find((item) => item.id === stay.id);
+    const totalPath = `stays[${stay.id}].totalChildren`;
+    const totalChildren = Object.hasOwn(state, totalPath) ? state[totalPath] : sourceStay?.totalChildren;
+    if (typeof totalChildren === 'number') return false;
+    return stay.rows.some((row) =>
+      row.childAges?.length === 0 && !Object.hasOwn(state, `stays[${stay.id}].rows[${row.id}].childAges`),
+    );
+  });
+  const childAgesResolved = everyRowKnown('childAges') && !legacyEmptyAgesNeedConfirmation;
   if (adultsResolved || childAgesResolved) {
     luna.missing = luna.missing.filter((item) => {
       const field = `${item.field} ${item.question}`;

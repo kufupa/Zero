@@ -292,7 +292,7 @@ describe('prepared quote input from stored extraction', () => {
   });
 
   it('keeps a complete stay quoteable when another stay has unknown occupancy', () => {
-    const first = payload().stays[0]!;
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
     const second = {
       ...first,
       id: 'stay-2',
@@ -313,6 +313,45 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs).toHaveLength(1);
     expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
     expect(plan.stays[1]).toMatchObject({ stayId: 'stay-2', reason: 'missing_occupancy' });
+  });
+
+  it('keeps legacy empty child ages unresolved without blocking an explicit zero-child stay', () => {
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
+    const legacy = {
+      ...first,
+      id: 'stay-legacy',
+      requested: { arrival: '2026-11-20', departure: '2026-11-21' },
+      totalRooms: 1,
+      totalChildren: undefined,
+      rows: [{ ...first.rows[0]!, id: 'row-legacy', rooms: 1, childAges: [] }],
+    };
+    const plan = build({
+      stays: [first, legacy],
+      missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-legacy', reason: 'missing_occupancy' });
+  });
+
+  it('keeps a rejected checkout missing when another stay is valid', () => {
+    const first = { ...payload().stays[0]!, totalChildren: 0 };
+    const rejected = {
+      ...first,
+      id: 'stay-rejected-checkout',
+      requested: { arrival: '2026-11-20', departure: null },
+      totalRooms: 1,
+      rows: [{ ...first.rows[0]!, id: 'row-rejected-checkout', rooms: 1 }],
+    };
+    const plan = build({
+      stays: [first, rejected],
+      missing: [{ field: 'stayDates', question: 'Confirm the requested checkout.' }],
+    });
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.stays[1]).toMatchObject({ stayId: 'stay-rejected-checkout', reason: 'invalid_dates' });
   });
 
   it('defaults a missing room count to one when dates and a guest row exist', () => {
