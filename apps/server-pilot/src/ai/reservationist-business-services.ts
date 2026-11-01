@@ -22,6 +22,7 @@ function missing(code:string,fields:string[]):never{throw new ReservationistTask
 function requestsAccessibleRoom(text:string):boolean{
  return [...text.matchAll(/\b(?:accessible|wheelchair)\b/gi)].some(match=>{
   const before=text.slice(Math.max(0,match.index!-60),match.index),after=text.slice(match.index!+match[0].length,match.index!+80);
+  if(/\b(?:parking|car[ -]?park|entrance|lobby|pool)\s+(?:(?:is|are|has|wheelchair|accessible)\s+){0,4}$/i.test(before)||/^\s+(?:(?:accessible|wheelchair)\s+)?(?:parking|car[ -]?park|entrance|lobby|pool|hire|rental)\b/i.test(after)||/\b(?:hire|rent)\s+(?:an?\s+)?$/i.test(before))return false;
   return !/\b(?:(?:no|without)\s+(?:need\s+for\s+)?(?:an?\s+)?|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need|require)\s+(?:an?\s+)?)(?:(?:wheelchair|accessible)\s+(?:or|and)\s+)?$/i.test(before)&&!/^(?:\s+[\p{L}-]+){0,3}\s+(?:(?:is|are)\s+)?not\s+(?:needed|required)\b/iu.test(after);
  });
 }

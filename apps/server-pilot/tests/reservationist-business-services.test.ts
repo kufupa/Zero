@@ -36,6 +36,11 @@ it('preserves room requirements from either email view and flags conflicting or 
  expect(run('Please quote one standard room. No wheelchair access is needed.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
  expect(run('Please quote a room. No wheelchair is needed, but an accessible room is required.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
  expect(run('We do not need wheelchair or accessible rooms.',generic,'HRDAV')().rooms[0].required.roomCodes).toBeUndefined();
+ expect(run('Please quote one standard room. Is your parking wheelchair accessible?',generic)().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
+ expect(run('Please quote one standard room. Is your parking wheelchair accessible?',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run('Please quote one standard room. Please arrange wheelchair hire.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run('Please quote one standard room. Can I hire a wheelchair?',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run('Please quote an accessible room and is your parking wheelchair accessible?',generic)).toThrow('business_room_allocation_ambiguous');
 });
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
