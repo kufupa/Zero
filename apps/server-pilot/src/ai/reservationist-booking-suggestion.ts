@@ -339,7 +339,8 @@ export async function buildReservationistBookingSuggestion(input: {
       requestScopesByLabel.set(label, owners);
     }
   }
-  if (hasMultipleStayLabels(task.source.quote ?? ''))
+  const multipleStayLabels = hasMultipleStayLabels(task.source.quote ?? '');
+  if (multipleStayLabels)
     missing.push('This request names multiple groups or booking references; staff must separate them before preparing a booking.');
   const ambiguousTaskFacts = requestScopes.length > 1 && validFacts.some(({ fact }) =>
     !factBelongsToBookingRequest(fact, targetScope, requestScopes, requestScopesByLabel, runtime, input.attachmentAdmissions));
@@ -427,6 +428,7 @@ export async function buildReservationistBookingSuggestion(input: {
     rooms.every(({ value }) => value.quantity !== null && value.childAges !== null && !(value.adults === 0 && value.childAges.length === 0)) &&
     partyNames.length <= 1 &&
     !ambiguousTaskFacts &&
+    !multipleStayLabels &&
     !missing.some((item) => item.startsWith('Some stay facts'));
 
   if (!canPrefill) return needsDetails();
