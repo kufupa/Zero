@@ -156,10 +156,11 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from','send'].includes(word)));
  const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b/i;
  const negative=/\b(?:no|not|never|without|excluding|exclude[ds]?|remove[ds]?|cancel(?:led|ed)?|no longer|do not|don['’]t)\b/i;
+ const withdrawReferent=/\b(?:(?:do\s+not|don['’]t|never|no\s+longer)\s+(?:send|provide|need|want|require|book|reserve|quote|reply|proceed|issue|create)|cancel|remove|omit|ignore)\s+(?:it|this|that|these|those|them)\b/i;
  const relevant=(part:string)=>{
   const modifying=correction.test(part)||negative.test(part),shared=(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
   return isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)):
-   modifying&&(shared||correction.test(part)||/\b(?:it|this|that|these|those|them)\b/i.test(part));
+   modifying&&(shared||correction.test(part)||withdrawReferent.test(part));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(relevant).join(' ')));
  if(tail[0]!==tail[1])return;
