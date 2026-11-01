@@ -22,6 +22,27 @@ function harness(options = {}) {
   const calls = [], sources = [...Array.from({ length: 100 }, (_, i) => ({ nativeCode: `X${i}`, description: `Other ${i}` })),
     { nativeCode: 'EMA', description: 'E-Mail' }];
   let freshReads = 0, censuses = 0;
+  const partyFields = {};
+  const partyDefaults = { organization: { nativeId: '41', name: 'Example Company' },
+    agency: { nativeId: '99', name: 'Example Agency', city: 'Pretoria', referenceNumber: '123' },
+    arAccount: { nativeId: '75', name: 'Example Account', accountNumber: 'AR-75', status: 'Active' } };
+  const partySearch = (kind, request) => {
+    const candidates = options.partyCandidates?.[kind] ?? [partyDefaults[kind]];
+    return options.partySearches?.[kind] ?? { outcome: candidates.length ? 'matches' : 'no_match', searchId: `search-${kind}`,
+      query: request.query, criteria: { query: request.query }, candidates, coverage: { loaded: candidates.length, possiblyTruncated: false },
+      correlation: { verifiedFields: ['nativeId', 'name'] } };
+  };
+  const partySelect = (kind, request, display, form) => {
+    const row = (options.partySearches?.[kind]?.candidates ?? options.partyCandidates?.[kind] ?? [partyDefaults[kind]]).find(({ nativeId }) => nativeId === request.nativeId);
+    partyFields[form] = row?.name;
+    return { outcome: 'selected_unsaved', nativeId: request.nativeId, searchId: request.searchId,
+      nativeIdEvidence: 'form_change_response', [display]: row?.name, selectedField: { name: form, value: row?.name },
+      ...(kind === 'agency' ? { agencyIataNumber: null, agencyReferenceNumberType: 'IATA',
+        agencyReferenceEvidence: { iataNumber: 'response_grid_correlated', referenceNumberType: 'response_grid_correlated' } } : {}),
+      ...(kind === 'arAccount' ? { nativeReadback: { araccountid: request.nativeId, araccountname: row?.name,
+        arstatuscodedesc: 'Active' } } : {}),
+      profileProofToken: 'token', ...options.partySelections?.[kind] };
+  };
   const runTool = async (request) => {
     calls.push(request);
     switch (request.tool) {
@@ -30,7 +51,7 @@ function harness(options = {}) {
       case 'closeGuestProfilePicker': return options.close || { outcome: 'closed_unsaved' };
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
-      case 'selectGuestStayDropdown': return { outcome: 'updated_unsaved', field: request.field, requested: request.value,
+      case 'selectGuestStayDropdown': return request.field === 'guaranteeType' && options.guaranteeResult ? options.guaranteeResult : { outcome: 'updated_unsaved', field: request.field, requested: request.value,
         actual: request.field === 'adults' ? { value: options.actualAdults ?? 2, display: '2' } : { value: options.actualGuarantee ?? 'NGI', display: 'Non-Guaranteed Individual' }, profileProofToken: 'token' };
       case 'setGuestStayChildAges': return { outcome: 'updated_unsaved', actualChildAges: options.actualChildAges ?? request.childAges,
         requestedChildAges: request.childAges, ageBandCounts: request.childAges.length === 0
@@ -45,11 +66,16 @@ function harness(options = {}) {
         hasMoreLoaded: request.offset + request.limit < sources.length };
       case 'selectGuestStaySourceBusiness': return { outcome: 'selected_unsaved', nativeCode: 'EMA', candidate: sources.at(-1),
         selectedField: { value: 'E-Mail' }, profileProofToken: 'token' };
-      case 'searchOrganization': return { outcome: 'matches', searchId: 'o', candidates: [{ nativeId: '41', name: 'Example Company' }] };
-      case 'selectOrganization': return { outcome: 'selected_unsaved', nativeId: '41', displayedOrganization: 'Example Company', profileProofToken: 'token' };
+      case 'searchOrganization': return partySearch('organization', request);
+      case 'searchPrimaryBookingAgency': return partySearch('agency', request);
+      case 'searchArAccount': return partySearch('arAccount', request);
+      case 'selectOrganization': return partySelect('organization', request, 'displayedOrganization', 'company');
+      case 'selectPrimaryBookingAgency': return partySelect('agency', request, 'displayedAgency', 'ta1');
+      case 'selectArAccount': return partySelect('arAccount', request, 'displayedArAccount', 'araccountname');
+      case 'closeGuestStayPartyPicker': return options.partyClose || { outcome: 'closed_unsaved' };
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
       case 'setGuestStayText': return { outcome: 'updated_unsaved', actual: request.value };
-      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || values) };
+      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
       case 'saveNewLabtestStay': return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true };
       case 'readSavedLabtestRecord': return { outcome: 'read_back_verified', organization: { nativeId: '41', name: 'Example Company' } };
       default: throw new Error(`unexpected call ${request.tool}`);
@@ -187,6 +213,24 @@ test('prepare reports an unstaged guarantee without claiming the draft is comple
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 
+test('safe guarantee refusal keeps prepare useful but never permits commit', async () => {
+  const guaranteeResult = { outcome: 'unsupported', issue: 'GUARANTEE_DRAFT_UNSUPPORTED' };
+  const preparing = harness({ guaranteeResult });
+  const prepared = await createReservation({ ...input, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'needs_input');
+  assert.ok(prepared.missing.includes('guaranteeType.staging'));
+  assert.ok(prepared.warnings.some(({ field, issue }) => field === 'guaranteeType' && issue === 'GUARANTEE_DRAFT_UNSUPPORTED'));
+  assert.equal(prepared.applied.note, input.note);
+  assert.equal(prepared.appliedVerification.visibleFields, true);
+  assert.equal(preparing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const committing = harness({ guaranteeResult });
+  const refused = await createReservation(input, committing.options);
+  assert.equal(refused.outcome, 'needs_input');
+  assert.equal(refused.issue, 'GUARANTEE_DRAFT_UNSUPPORTED');
+  assert.equal(committing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
 test('unknown ages differ from known zero and contradictions never reach session', async () => {
   for (const childAges of [undefined, null]) {
     const fake = harness();
@@ -290,7 +334,7 @@ test('ambiguous identity and unavailable rate retain useful preparation evidence
 test('prepare stages supported partial fields while retaining unsupported values and clears', async () => {
   for (const [change, unsupported] of [
     [{ guaranteeType: 'GTDCC', price: 100, parties: { organizationId: '41', agencyId: '99' } },
-      ['guaranteeType', 'price', 'parties.agencyId']],
+      ['guaranteeType', 'price']],
     [{ guest: { ...input.guest, searchExtra: { nested: { unknown: null } } } }, ['guest.searchExtra.nested.unknown']],
     [{ stay: { ...input.stay, occupancy: { other: 1 } } }, ['stay.occupancy.other']],
     [{ cms: { send: false, messageId: null } }, ['cms.messageId']],
@@ -341,4 +385,149 @@ test('conflicting prepare inputs still report unsupported requested values', asy
     assert.equal(result.approvalReady, false);
   }
   assert.equal(sessions, 0);
+});
+
+
+test('prepare stages explicit agency, organization and A/R from the same picker searches', async () => {
+  const fake = harness();
+  const parties = { organizationId: '41', agencyName: 'Example', agencyId: '99', arAccountName: 'Example', arAccountId: '75' };
+  const result = await createReservation({ ...input, mode: 'prepare', parties }, fake.options);
+  assert.equal(result.outcome, 'prepared');
+  assert.equal(result.approvalReady, false);
+  assert.deepEqual(result.applied.agency, { nativeId: '99', name: 'Example Agency' });
+  assert.deepEqual(result.applied.arAccount, { nativeId: '75', name: 'Example Account' });
+  assert.equal(result.applied.organization.nativeId, '41');
+  assert.equal(result.partySearches.agency.candidates[0].city, 'Pretoria');
+  assert.equal(result.partySearches.agency.candidates[0].referenceNumber, '123');
+  assert.equal(result.partySearches.arAccount.candidates[0].accountNumber, 'AR-75');
+  assert.equal(result.partySearches.arAccount.coverage.possiblyTruncated, false);
+  assert.deepEqual(result.partySearches.arAccount.selection.nativeReadback,
+    { araccountid: '75', araccountname: 'Example Account', arstatuscodedesc: 'Active' });
+  assert.equal(result.partySearches.agency.selection.agencyIataNumber, null);
+  assert.equal(result.partySearches.agency.selection.agencyReferenceEvidence.iataNumber, 'response_grid_correlated');
+  assert.equal(result.appliedVerification.agencyId, 'at_selection_only');
+  assert.equal(result.appliedVerification.arAccountId, 'at_selection_only');
+  for (const [tool, searchId, nativeId] of [['selectOrganization', 'search-organization', '41'],
+    ['selectPrimaryBookingAgency', 'search-agency', '99'], ['selectArAccount', 'search-arAccount', '75']]) {
+    assert.ok(fake.calls.some((call) => call.tool === tool && call.searchId === searchId && call.nativeId === nativeId));
+  }
+  assert.ok(fake.calls.findIndex(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType') <
+    fake.calls.findIndex(({ tool }) => tool === 'selectPrimaryBookingAgency'));
+  assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('prepare preserves ambiguous and truncated search evidence without automatic selection', async () => {
+  const cases = [
+    { candidates: [], truncated: false, issue: 'no_matches' },
+    { candidates: [{ nativeId: '99', name: 'Example Agency' }], truncated: false, issue: 'explicit_selection_required' },
+    { candidates: [{ nativeId: '99', name: 'Example Agency' }, { nativeId: '98', name: 'Example Agency' }], truncated: true, issue: 'explicit_selection_required' },
+    { candidates: [], truncated: true, issue: 'results_incomplete' },
+  ];
+  for (const { candidates, truncated, issue } of cases) {
+    const fake = harness({ partySearches: { agency: { outcome: candidates.length ? 'matches' : 'no_match', searchId: 'current', candidates,
+      coverage: { loaded: candidates.length, possiblyTruncated: truncated } } } });
+    const result = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', arAccountName: 'Example', arAccountId: '75' } }, fake.options);
+    assert.equal(result.outcome, 'needs_input');
+    assert.equal(result.partySearches.agency.issue, issue);
+    assert.deepEqual(result.partySearches.agency.candidates, candidates);
+    assert.equal(result.partySearches.agency.coverage.possiblyTruncated, truncated);
+    assert.ok(result.missing.includes('parties.agencyId'));
+    assert.equal(result.applied.arAccount.nativeId, '75');
+    assert.equal(result.applied.note, input.note);
+    assert.equal(fake.calls.some(({ tool }) => tool === 'selectPrimaryBookingAgency'), false);
+    assert.equal(fake.calls.filter(({ tool }) => tool === 'closeGuestStayPartyPicker').length, 1);
+  }
+});
+
+test('prepare resolves parties independently and refuses stale or mismatched selections', async () => {
+  const unresolved = harness({ partyCandidates: { organization: [{ nativeId: '41', name: 'Example Company' }, { nativeId: '42', name: 'Example Company' }] } });
+  const result = await createReservation({ ...input, mode: 'prepare', parties: { organizationName: 'Example Company', agencyId: '99', agencyName: 'Example', arAccountId: '75' } }, unresolved.options);
+  assert.equal(result.outcome, 'needs_input');
+  assert.equal(result.partySearches.organization.issue, 'explicit_selection_required');
+  assert.equal(result.applied.agency.nativeId, '99');
+  assert.ok(result.missing.includes('parties.arAccountName'));
+  assert.equal(unresolved.calls.some(({ tool }) => tool === 'selectOrganization' || tool === 'searchArAccount'), false);
+  for (const [partySelections, field] of [
+    [{ agency: { searchId: 'stale' } }, 'parties.agencyId'],
+    [{ agency: { nativeId: '98' } }, 'parties.agencyId'],
+    [{ arAccount: { nativeIdEvidence: 'unknown' } }, 'parties.arAccountId'],
+    [{ arAccount: { selectedField: { name: 'araccountname', value: 'Other' } } }, 'parties.arAccountId'],
+  ]) {
+    const fake = harness({ partySelections });
+    const attempt = await createReservation({ ...input, mode: 'prepare', parties: { agencyId: '99', agencyName: 'Example', arAccountId: '75', arAccountName: 'Example' } }, fake.options);
+    assert.equal(attempt.outcome, 'uncertain');
+    assert.equal(attempt.issue, 'requested_field_not_staged');
+    assert.equal(attempt.field, field);
+    assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  }
+});
+
+test('party selection handles duplicate IDs, truncated misses, picker errors and final readback mismatch', async () => {
+  for (const [candidates, truncated, issue] of [
+    [[{ nativeId: '99', name: 'One' }, { nativeId: '99', name: 'Two' }], false, 'id_ambiguous'],
+    [[{ nativeId: '98', name: 'Other' }], false, 'id_not_found'],
+    [[{ nativeId: '98', name: 'Other' }], true, 'id_not_in_loaded_results'],
+  ]) {
+    const fake = harness({ partySearches: { agency: { outcome: 'matches', searchId: 'current', candidates,
+      coverage: { loaded: candidates.length, possiblyTruncated: truncated } } } });
+    const result = await createReservation({ ...input, mode: 'prepare', parties: { agencyId: '99', agencyName: 'Example' } }, fake.options);
+    assert.equal(result.partySearches.agency.issue, issue);
+    assert.ok(result.missing.includes('parties.agencyId.selection'));
+    assert.equal(fake.calls.some(({ tool }) => tool === 'selectPrimaryBookingAgency'), false);
+  }
+  const failedClose = harness({ partyCandidates: { agency: [] }, partyClose: { outcome: 'close_uncertain', issue: 'PARTY_CANCEL_UNVERIFIED' } });
+  const closeResult = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', arAccountName: 'Example', arAccountId: '75' } }, failedClose.options);
+  assert.equal(closeResult.outcome, 'uncertain');
+  assert.equal(closeResult.partySearches.agency.issue, 'no_matches');
+  assert.equal(failedClose.calls.some(({ tool }) => tool === 'searchArAccount'), false);
+  const wrong = harness({ draft: { ...values, ta1: 'Other Agency' } });
+  const mismatch = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', agencyId: '99' } }, wrong.options);
+  assert.equal(mismatch.outcome, 'uncertain');
+  assert.equal(mismatch.issue, 'draft_readback_mismatch');
+  assert.equal(mismatch.field, 'ta1');
+});
+
+test('party commit requests and explicit clears remain unsupported before session', async () => {
+  let sessions = 0;
+  const noSession = async () => { sessions++; throw new Error('unexpected session'); };
+  for (const parties of [{ agencyId: '99', organizationId: '41' }, { agencyName: 'Example' },
+    { arAccountId: '75' }, { arAccountName: 'Example' }, { agencyId: null }, { arAccountName: null }]) {
+    const result = await createReservation({ ...input, parties }, { withSession: noSession });
+    assert.equal(result.outcome, 'unsupported');
+    assert.equal(result.approvalReady, false);
+  }
+  assert.equal(sessions, 0);
+});
+
+
+test('explicit loaded IDs survive truncated search but not duplicate or conflicting organization evidence', async () => {
+  const fake = harness({ partySearches: { agency: { outcome: 'matches', searchId: 'current',
+    candidates: [{ nativeId: '99', name: 'Example Agency' }], coverage: { loaded: 1, possiblyTruncated: true } } } });
+  const selected = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', agencyId: '99' } }, fake.options);
+  assert.equal(selected.outcome, 'prepared');
+  assert.equal(selected.partySearches.agency.coverage.possiblyTruncated, true);
+  assert.equal(selected.applied.agency.nativeId, '99');
+  const conflict = harness();
+  const result = await createReservation({ ...input, mode: 'prepare', parties: { organizationId: '41', organizationName: 'Other',
+    arAccountName: 'Example', arAccountId: '75' } }, conflict.options);
+  assert.equal(result.partySearches.organization.issue, 'id_name_conflict');
+  assert.equal(result.applied.arAccount.nativeId, '75');
+  assert.equal(conflict.calls.some(({ tool }) => tool === 'selectOrganization'), false);
+  const duplicate = harness({ partyCandidates: { organization: [{ nativeId: '41', name: 'One' }, { nativeId: '41', name: 'Two' }] } });
+  const ambiguous = await createReservation({ ...input, mode: 'prepare', parties: { organizationId: '41', organizationName: 'One' } }, duplicate.options);
+  assert.equal(ambiguous.partySearches.organization.issue, 'id_ambiguous');
+  assert.equal(duplicate.calls.some(({ tool }) => tool === 'selectOrganization'), false);
+});
+
+test('failed picker search or uncertain selection does not continue', async () => {
+  const failedSearch = harness({ partySearches: { agency: { outcome: 'execution_failure', issue: 'LOOKUP_SEARCH_UNVERIFIED' } } });
+  const failed = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', arAccountName: 'Example', arAccountId: '75' } }, failedSearch.options);
+  assert.equal(failed.outcome, 'uncertain');
+  assert.equal(failed.issue, 'LOOKUP_SEARCH_UNVERIFIED');
+  assert.equal(failedSearch.calls.some(({ tool }) => tool === 'searchArAccount'), false);
+  const failedSelection = harness({ partySelections: { agency: { outcome: 'selection_uncertain', issue: 'LOOKUP_SELECTION_NOT_CONFIRMED' } } });
+  const uncertain = await createReservation({ ...input, mode: 'prepare', parties: { agencyName: 'Example', agencyId: '99', arAccountName: 'Example', arAccountId: '75' } }, failedSelection.options);
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.equal(uncertain.partySearches.agency.candidates[0].nativeId, '99');
+  assert.equal(failedSelection.calls.some(({ tool }) => tool === 'searchArAccount'), false);
 });
