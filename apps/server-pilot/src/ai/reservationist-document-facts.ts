@@ -195,10 +195,11 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  const dateTokens=(text:string)=>[...text.matchAll(/\b(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/gi)].map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
  const citedDates=dateTokens(fact.source.quote??'');
  if(other.split(/[;.!?\n]+/).some(sentence=>{
-  const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote|stay|travel)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
+  const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote|stay|travel)|(?:cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|a)\s+)*(?:booking|reservation|rooms?|stay|nights?))\b/i.test(sentence);
   const negated=/\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
   const dates=dateTokens(sentence),sameDates=!negated&&dates.length>=2&&JSON.stringify(dates)===JSON.stringify(citedDates);
-  return (withdrawn||/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence))&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence)&&!sameDates&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase());
+  const correction=/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
+  return (withdrawn||correction)&&!sameDates&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase());
  }))throw new Error('Explicit same-stay correction requires source clarification');
  if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
  const quoted=source.sourceViews.find(candidate=>candidate.quoted&&start>=candidate.quoted.start&&end<=candidate.quoted.end)?.quoted;
