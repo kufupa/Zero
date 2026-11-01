@@ -562,6 +562,8 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
     if(conflictingOccupancy)throw new Error('Conflicting occupancy across message views');
+    const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirementForRoom(originalPage.slice(view.start,view.end),fact,facts));
+    if(boundTasks.some(task=>task.kind==='quote')&&viewHasChild)throw new Error('Conflicting occupancy across message views');
     if(fact.value.quotationBasis==='per_room_rate'){
       const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=scope?.page??source?.pages?.[fact.source.page-1]??'',authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       const occupancyBody=authored.replace(/\bfamily\s+offices\b/gi,'corporate offices');
@@ -570,7 +572,6 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return;
     }
     const staff=scope&&fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(proofFact,sources,proofFacts,proofTasks,scope.page):undefined;
-    const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirementForRoom(originalPage.slice(view.start,view.end),fact,facts));
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){if(viewHasChild)throw new Error('Conflicting occupancy across message views');fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
     const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&!!scope&&soleExplicitAdultRoom(scope.page);
     if(sole&&viewHasChild)throw new Error('Conflicting occupancy across message views');
