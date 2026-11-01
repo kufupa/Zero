@@ -14,6 +14,15 @@ it.each(['plain','html'] as const)('does not assume an unspecified board when ei
  expect(run(true)).toThrow('business_board_unavailable');
  expect(run(false)().rooms[0].required.boardBases).toBeUndefined();
 });
+it('preserves room requirements from either email view and flags conflicting or unsupported ones',()=>{
+ const run=(plain:string,html:string,propertyCode='HRCEN')=>{const c=ctx(),separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:html,start:htmlStart,end:text.length};
+  c.input.propertyCode=propertyCode;c.input.messages[0]={...c.input.messages[0],text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]};c.task.source=selectedSource;c.facts=c.facts.filter((f:any)=>f.kind==='dates'||f.kind==='room').map((f:any)=>({...f,source:selectedSource}));return()=>deriveReservationistQuoteRequest(c);};
+ const generic='Please quote one room for one adult.',deluxe='Please quote one deluxe room for one adult.',standard='Please quote one standard room for one adult.';
+ expect(run(deluxe,generic)().rooms[0].required.roomCodes).toEqual(['DLXQN']);
+ expect(run(generic,'Please quote one accessible room for one adult.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run(deluxe,standard)).toThrow('business_room_allocation_ambiguous');
+ expect(run('Please quote one accessible room for one adult.',generic)).toThrow('business_room_allocation_ambiguous');
+});
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
  if(!government){c.input.messages[0].text=requestText;c.task.source={...c.task.source,quote:requestText,end:requestText.length,sourceHash:createHash('sha256').update(requestText).digest('hex')};c.facts=c.facts.map((f:any)=>({...f,source:c.task.source,...(f.kind==='party'?{value:name}:{})}));}
