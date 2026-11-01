@@ -271,6 +271,18 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(screen.getByRole('button', {name:'Show in email'}));
     expect(view).toHaveBeenCalledWith(source);
   });
+  it('does not replace an earlier request with a current request sharing its task id', () => {
+    const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
+      text:'Current question?',sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};
+    const task = {id:'one',kind:'question',label:'Answer question',state:'Needs review' as const,
+      details:['Request: Current question?'],runId:'current',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source],preparedStaffTasks:[task,
+      {...task,runId:'earlier',earlier:true,details:['Request: Earlier question?']}]};
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={vi.fn().mockResolvedValue(undefined)} />);
+    expect(screen.getByText('Request: Current question?')).toBeDefined();
+    expect(screen.getByText('Request: Earlier question?')).toBeDefined();
+    expect(screen.getAllByRole('button', {name:'Mark handled'})).toHaveLength(2);
+  });
   it('shows each unanswered question on a non-quote email', () => {
     const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
       {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},

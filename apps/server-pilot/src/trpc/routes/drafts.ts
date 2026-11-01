@@ -31,7 +31,8 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { handledRequestKeys, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
@@ -187,19 +188,23 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
     .orderBy(desc(aiWorkflowRun.createdAt))
     .limit(1);
   const result = run?.metrics?.reservationistResult;
+  return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
+}
+
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
   const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
     .filter(item => item?.sourceKind === 'attachment' && typeof item.sourceRef === 'string')
     .map(item => item.sourceRef!))].slice(0, 64) : [];
-  const sources = attachmentIds.length && draft.threadId ? await db
+  const sources = attachmentIds.length && threadId ? await db
     .select({ sourceRef: attachment.id, filename: attachment.filename, messageId: attachment.messageId })
     .from(attachment).innerJoin(message, eq(attachment.messageId, message.id))
-    .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, draft.transportId), eq(message.threadId, draft.threadId))) : [];
+    .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, transportId), eq(message.threadId, threadId))) : [];
   const summary = buildReservationistReviewSummary(result, new Date(), sources);
-  if (!summary || !run || workState === undefined) return summary;
-  const keys = requestCompletionKeys(result, run.id), handled = handledRequestKeys(workState);
-  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, handled: handled.has(keys.get(task.id) ?? '') })) };
+  if (!summary || !runId || workState === undefined) return summary;
+  const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
+  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
 }
 
 export type ReservationistStaffAction = {
@@ -1246,32 +1251,53 @@ export const draftsRouter = tRouter({
     .query(async ({ input, ctx }) => {
       const db = getDb(), transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
-      const [match] = await db.select({ draft: mailDraft, runId: aiWorkflowRun.id }).from(aiWorkflowRun)
-        .leftJoin(mailDraft, and(eq(mailDraft.generationId, aiWorkflowRun.generationId),
-          eq(mailDraft.transportId, aiWorkflowRun.transportId), eq(mailDraft.threadId, aiWorkflowRun.threadId),
-          eq(mailDraft.replyToMessageId, input.messageId), eq(mailDraft.isSent, false),
-          inArray(mailDraft.status, ['active', 'candidate'])))
+      const runs = await db.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
         .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.threadId, input.threadId),
           eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
           eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
-        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id), desc(mailDraft.createdAt), desc(mailDraft.id)).limit(1);
-      if (!match?.draft) return null;
+        .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
+      const latest = runs[0];
+      if (!latest) return null;
       const [item] = input.workItemId ? await db.select({ state: workItem.state }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, transportId),
           eq(workItem.threadId, input.threadId), eq(workItem.sourceMessageId, input.messageId))).limit(1) : [];
       if (input.workItemId && !item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-      return { replyToMessageId: match.draft.replyToMessageId, runId: match.runId,
+      const states = item ? await handledRequestStates(db, { transportId, threadId: input.threadId, sourceIds: [input.messageId] }) : undefined;
+      const requestState = item ? states?.get(input.messageId) ?? {} : undefined;
+      const history = runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource }));
+      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState);
+      const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
+      const earlier = item ? requestHistory(history, requestState)
+        .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
+          kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
+          details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
+      const oldFiles = item ? outstandingSourceRecoveries(history).filter(file => file.runId !== latest.id) : [];
+      const earlierSources: ReservationistStaffAction[] = [];
+      for (const run of runs.filter(run => oldFiles.some(file => file.runId === run.id))) {
+        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
+        earlierSources.push(...(prior?.staffActions ?? []).filter(action => action.kind === 'business_document_failure' &&
+          oldFiles.some(file => file.runId === run.id && file.sourceRef === action.sourceRef)));
+      }
+      if (!summary && !earlier.length && !earlierSources.length) return null;
+      const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
+      return { replyToMessageId: input.messageId, runId: latest.id,
         ...(item ? { workItemId: input.workItemId } : {}),
-        reviewSummary: await loadDraftReviewSummary(db, match.draft, match.runId, item?.state) };
+        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier], staffActions: [...(reviewSummary.staffActions ?? []), ...earlierSources] } };
     }),
 
   /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */
   setRequestHandled: mailboxProcedure.input(z.object({
     workItemId: z.string().uuid(), runId: z.string().min(1).max(200), taskId: z.string().min(1).max(512), handled: z.boolean(),
   }).strict()).mutation(async ({ input, ctx }) => {
-    const result = await setRequestHandled(getDb(), { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    const db = getDb();
+    const result = await setRequestHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
     if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
     if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    if (input.handled) {
+      const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+      if (item?.threadId) await refreshThreadWork(db, { transportId: ctx.activeTransportId, threadId: item.threadId });
+    }
     return { handled: input.handled };
   }),
 
