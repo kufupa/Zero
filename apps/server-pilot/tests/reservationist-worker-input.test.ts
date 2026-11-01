@@ -83,6 +83,7 @@ describe('reservationist worker input', () => {
     expect((await extract('Can we check in early?')).facts[0]!.convention?.rule).toBe('centurion_staff_occupancy_v1');
     await expect(extract('Correction: please quote two rooms instead.')).rejects.toThrow();
     await expect(extract('Actually make that two.')).rejects.toThrow();
+    await expect(extract('Can we check in early? Actually make that two.')).rejects.toThrow();
     await expect(extract('There are two kids staying.')).rejects.toThrow();
   });
 
@@ -210,6 +211,7 @@ describe('reservationist worker input', () => {
     await expect(extract('', '', 'Actually, do not send it.')).rejects.toThrow('Ambiguous original text span');
     await expect(extract('', '', 'I do not want you to send it.')).rejects.toThrow('Ambiguous original text span');
     await expect(extract('', '', 'If not, is it possible to leave our luggage?')).resolves.toMatchObject({ tasks: [{ id: 'certificate' }, { id: 'checkin' }] });
+    await expect(extract('', '', 'Can you arrange a taxi? Actually make that two.')).resolves.toMatchObject({ tasks: [{ id: 'certificate' }, { id: 'checkin' }] });
   });
 
   it('binds a shared stay fact across equivalent authored views', async () => {
@@ -275,6 +277,7 @@ describe('reservationist worker input', () => {
     };
     for (const explicit of [false, true]) {
       await expect(extract('Do not include it.', explicit)).rejects.toThrow('Ambiguous original text span');
+      await expect(extract('Do not select it.', explicit)).rejects.toThrow('Ambiguous original text span');
       await expect(extract('Can you store our luggage? Please do not leave it outside.', explicit))
         .resolves.toMatchObject({ facts: [{ id: 'meal', value: 'breakfast' }] });
     }
