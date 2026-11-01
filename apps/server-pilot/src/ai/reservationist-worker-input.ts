@@ -47,6 +47,21 @@ const time = (date: Date | null): number | null =>
 /** Plain text retains paragraph and quote boundaries for source spans and masking. */
 function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
+  // Outlook sometimes puts the old body beside, rather than inside, its header.
+  // Group that body before the existing quoted-HTML normalization runs.
+  if (row.htmlBody?.includes('OutlookMessageHeader')) {
+    const original = load(row.htmlBody, null, false);
+    original('.OutlookMessageHeader').each((_, element) => {
+      const header = original(element);
+      if (header.parents('blockquote, .gmail_quote, #divRplyFwdMsg, details.quoted-toggle').length) return;
+      const following = header.nextAll();
+      if (!following.length) return;
+      const quoted = original('<div class="gmail_quote"></div>');
+      header.before(quoted);
+      quoted.append(header).append(following);
+    });
+    normalized = normalizeMessageText({ textBody: null, htmlBody: original.root().html() ?? '' });
+  }
   const $ = load(normalized, null, false);
   $('details.quoted-toggle > summary').remove();
   $('br, hr').replaceWith('\n');

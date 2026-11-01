@@ -36,6 +36,16 @@ describe('reservationist worker input', () => {
     const task = {id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:current',sourceHash:createHash('sha256').update(message.text).digest('hex'),page:1,quote,start,end:start+quote.length}};
     expect(currentAuthoredGuestRequest(task as any,input)).toBe(true);
   });
+  it('keeps an Outlook header and its following older body together as history', async () => {
+    const oldRequest = 'Please cancel reservation 12345678.';
+    const { input } = await build([row('current', 4, { textBody: null,
+      htmlBody: `<p>Thanks.</p><div class="OutlookMessageHeader"><p>From: guest@example.invalid</p><p>Sent: Monday</p><p>Subject: Booking</p></div><p>${oldRequest}</p>` })]);
+    const message = input.messages[0]!, start = message.text.indexOf(oldRequest), history = message.text.indexOf('From: quoted history');
+    expect(history).toBeGreaterThanOrEqual(0);
+    expect(start).toBeGreaterThan(history);
+    const task = { id: 'cancel', kind: 'cancel_request', factIds: [], source: { attachmentId: 'message:current', sourceHash: createHash('sha256').update(message.text).digest('hex'), page: 1, quote: oldRequest, start, end: start + oldRequest.length } };
+    expect(currentAuthoredGuestRequest(task as any, input)).toBe(false);
+  });
   it('masks the subject and retains plain and HTML source views', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Please quote. Card 4111 1111 1111 1111',
@@ -85,6 +95,19 @@ describe('reservationist worker input', () => {
     await expect(extract('Actually make that two.')).rejects.toThrow();
     await expect(extract('Can we check in early? Actually make that two.')).rejects.toThrow();
     await expect(extract('There are two kids staying.')).rejects.toThrow();
+  });
+
+  it('does not quote a numbered adult-only room when the alternate adds a child', async () => {
+    const request = 'Please quote one room.', room = 'Room 1: 1 adult.';
+    const { input } = await build([row('current', 4, { textBody: `${request}\n${room}`,
+      htmlBody: `<p>${request}</p><p>${room}</p><p>We also have a child aged 5.</p>` })]);
+    const message = input.messages[0]!, hash = createHash('sha256').update(message.text).digest('hex');
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash, page: 1, quote });
+    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [{ id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source: source(room) }],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['room'], source: source(request) }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal })).rejects.toThrow();
   });
 
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
