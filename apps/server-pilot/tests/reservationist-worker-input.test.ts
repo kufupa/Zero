@@ -82,6 +82,7 @@ describe('reservationist worker input', () => {
     };
     expect((await extract('Can we check in early?')).facts[0]!.convention?.rule).toBe('centurion_staff_occupancy_v1');
     await expect(extract('Correction: please quote two rooms instead.')).rejects.toThrow();
+    await expect(extract('Actually make that two.')).rejects.toThrow();
     await expect(extract('There are two kids staying.')).rejects.toThrow();
   });
 
@@ -257,19 +258,27 @@ describe('reservationist worker input', () => {
     }
   });
 
-  it('does not use a meal fact withdrawn by pronoun in the other view', async () => {
+  it('distinguishes a withdrawn meal from an unrelated pronoun instruction', async () => {
     const meal = 'Breakfast included.', request = 'Please quote one room.';
-    const { input } = await build([row('current', 4, {
-      textBody: `${meal}\n${request}`,
-      htmlBody: `<p>${meal}</p><p>Do not include it.</p><p>Kindly quote one room.</p>`,
-    })]);
-    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
-    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
-    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
-      facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(meal) }],
-      tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
-    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
-      admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+    const extract = async (extra: string, explicit: boolean) => {
+      const { input } = await build([row('current', 4, {
+        textBody: `${meal}\n${request}`,
+        htmlBody: `<p>${meal}</p><p>${extra}</p><p>Kindly quote one room.</p>`,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest',
+          source: { ...source(meal), ...(explicit ? { start: 0, end: meal.length } : {}) } }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    for (const explicit of [false, true]) {
+      await expect(extract('Do not include it.', explicit)).rejects.toThrow('Ambiguous original text span');
+      await expect(extract('Can you store our luggage? Please do not leave it outside.', explicit))
+        .resolves.toMatchObject({ facts: [{ id: 'meal', value: 'breakfast' }] });
+    }
   });
 
   it('keeps a scoped meal correction from disappearing between authored views', async () => {
@@ -377,6 +386,8 @@ describe('reservationist worker input', () => {
     await expect(extract(groupA, 'Group B: Correction: use Group B’s dates for Group A: arrival 24 December and departure 26 December.', groupA, '21 December', '23 December'))
       .rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(groupA, 'Group B:\nCorrection: change arrival to 24 December and departure to 26 December for both stays.', groupA, '21 December', '23 December'))
+      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(groupA, `Group B:\n${groupB}\n${groupA}\nCancel the stay.`, groupA, '21 December', '23 December'))
       .rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(groupA, 'Group B: Please quote one room: Arrival 21 December; departure 24 December.', groupA, '21 December', '23 December'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
