@@ -55,6 +55,52 @@ describe('shared Labtest amendment save lifecycle', () => {
     expect(save.click).not.toHaveBeenCalled();
   });
 
+  it('never arms or clicks Save in prepare-only mode even if callbacks approve', async () => {
+    const { page } = mockPage();
+    const save = { click: vi.fn() };
+    const match = vi.fn(() => true);
+    const result = await runLabtestAmendSave(page as never, {
+      prepareOnly: true,
+      prepare: async () => ({ frame: {}, save }),
+      stage: async () => ({ draft: true }),
+      matches: match,
+      validate: async () => true,
+    });
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'PREPARE_ONLY' });
+    expect(save.click).not.toHaveBeenCalled();
+    expect(page.waitForResponse).not.toHaveBeenCalled();
+  });
+
+  it('blocks an unexpected Save during prepare-only staging without calling its matcher', async () => {
+    const routes = mockPage();
+    const frame = {};
+    const save = { click: vi.fn() };
+    const matches = vi.fn(() => true);
+    const abort = vi.fn();
+    const request = {
+      url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
+      method: () => 'POST', postData: () => '', frame: () => frame,
+    };
+    const result = await runLabtestAmendSave(routes.page as never, {
+      prepareOnly: true,
+      prepare: async () => ({ frame, save }),
+      stage: async () => {
+        await routes.pageRoutes[1]!({
+          request: () => request,
+          fallback: async () => routes.pageRoutes[0]!({ request: () => request, abort, fallback: vi.fn() }),
+          abort: vi.fn(),
+        });
+        return { draft: true };
+      },
+      matches,
+      validate: async () => true,
+    });
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_DRAFT_CHANGED' });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(matches).not.toHaveBeenCalled();
+    expect(save.click).not.toHaveBeenCalled();
+  });
+
   it('reports uncertain when another save request is blocked after the approved dispatch', async () => {
     const routes = mockPage();
     const response = deferredValue<any>();
