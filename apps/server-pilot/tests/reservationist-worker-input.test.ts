@@ -173,6 +173,31 @@ describe('reservationist worker input', () => {
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
   });
 
+  it('binds a shared stay fact across equivalent authored views', async () => {
+    const stay = 'Please quote one room: Arrival 21 December; departure 23 December.';
+    const checkin = 'Can we check in early?';
+    const extract = async (plainPrefix = '', htmlPrefix = '') => {
+      const at = new Date('2026-10-01T08:00:00.000Z');
+      const { input } = await build([row('current', 4, {
+        textBody: `${plainPrefix}${stay}\nKind regards`,
+        htmlBody: `<p>${htmlPrefix}${stay}</p><p>${checkin}</p><p>Kind regards</p>`,
+        receivedAt: at, arrivedAt: at, createdAt: at,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'stay', kind: 'dates', value: { arrival: '21 December', departure: '23 December' }, disclosure: 'guest', source: source(stay) }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source: source(stay) },
+          { id: 'checkin', kind: 'question', factIds: [], source: source(checkin) }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    const plan = await extract();
+    expect(plan.facts[0]!.value).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
+    expect(plan.facts[0]!.source).toMatchObject({ quote: stay, start: 0 });
+    await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
+  });
+
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Room 1: 1 adult Room 2: 2 adults',
@@ -249,6 +274,18 @@ describe('reservationist worker input', () => {
     ], [{ id: 'logo', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
     expect(referenced.ignoredSignatures).toBe(0);
     expect(referenced.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
+  });
+
+  it('keeps an attached plan mentioned after the signoff while still filtering an unreferenced image CID', async () => {
+    const plan = await build([row('current', 4, { textBody: 'Please quote one room.\nKind regards\nP.S. The attached floor plan shows the layout.\ncid:plan' })], [
+      { id: 'plan', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'plan', disclosure: 'guest' },
+    ]);
+    expect(plan.ignoredSignatures).toBe(0);
+    expect(plan.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['plan']);
+    const logo = await build([row('current', 4, { textBody: 'Please quote one room.\nKind regards\nGuest\ncid:image' })], [
+      { id: 'image', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: null, isInline: true, contentId: 'image', disclosure: 'guest' },
+    ]);
+    expect(logo.ignoredSignatures).toBe(1);
   });
 
   it('filters a signature CID in HTML when the plain alternative omits it', async () => {
