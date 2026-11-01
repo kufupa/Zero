@@ -449,6 +449,14 @@ it('accepts a yearless checking-in/out stay statement', () => {
  }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
+it('rejects a conflicting labeled shared-month checkout across views', () => {
+ const plain='Please quote accommodation: Checking in 21 and checking out 23 December';
+ const html='Please quote accommodation: Checking in 21 and checking out 24 December';
+ expect(()=>validateCrossViewDates(plain,html,plain,{
+  arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
+ })).toThrow('Explicit same-stay correction requires source clarification');
+});
+
 it('checks the checkout when a labelled stay pair overlaps its printed range', () => {
  const plain='Arrival 21 December 2026 to 23 December 2026; departure 23 December 2026.';
  expect(()=>validateCrossViewDates(plain,'Arrival 21 December 2026; departure 24 December 2026.',plain))
@@ -470,6 +478,16 @@ it('keeps a correction postscript after a terminal signoff in scope', () => {
  expect(()=>validateCrossViewDates(plain,html,citation,{
   arrival:'21 December',departure:'2 nights',causalAt:'2026-10-01T08:00:00Z',
  })).toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('does not discard a stay withdrawal after a terminal signoff', () => {
+ const request='Please quote accommodation 21 December for 2 nights.';
+ const harmless=`${request}\n\nKind regards,\nFamily Travel`;
+ const withdrawal=`${request}\n\nKind regards,\nWe do not need accommodation`;
+ const options={arrival:'21 December',departure:'2 nights',causalAt:'2026-10-01T08:00:00Z'};
+ expect(()=>validateCrossViewDates(withdrawal,harmless,request,options)).toThrow();
+ expect(()=>validateCrossViewDates(harmless,withdrawal,request,options))
+  .toThrow('Explicit same-stay correction requires source clarification');
 });
 
 it.each([
