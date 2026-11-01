@@ -22,7 +22,7 @@ function missing(code:string,fields:string[]):never{throw new ReservationistTask
 function requestsAccessibleRoom(text:string):boolean{
  return [...text.matchAll(/\b(?:accessible|wheelchair)\b/gi)].some(match=>{
   const before=text.slice(Math.max(0,match.index!-60),match.index),after=text.slice(match.index!+match[0].length,match.index!+80);
-  return !/\b(?:(?:no|without)\s+(?:need\s+for\s+)?(?:an?\s+)?|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need|require)\s+(?:an?\s+)?)$/i.test(before)&&!/^(?:\s+[\p{L}-]+){0,3}\s+(?:(?:is|are)\s+)?not\s+(?:needed|required)\b/iu.test(after);
+  return !/\b(?:(?:no|without)\s+(?:need\s+for\s+)?(?:an?\s+)?|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need|require)\s+(?:an?\s+)?)(?:(?:wheelchair|accessible)\s+(?:or|and)\s+)?$/i.test(before)&&!/^(?:\s+[\p{L}-]+){0,3}\s+(?:(?:is|are)\s+)?not\s+(?:needed|required)\b/iu.test(after);
  });
 }
 function hrdavRequestedRoomCodes(text:string):string[]|undefined{
@@ -50,7 +50,7 @@ function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
 function viewBoardHints(text:string):Board[]{
  const found=new Set<Board>();
  let rest=text.toLowerCase().replace(/\s+/g,' ').replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b|\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'').replace(/\broom-only\b/g,'room only');
- rest=rest.replace(/\b(?:no|without)\s+breakfast\b/g,()=>{found.add('room_only');return' ';});
+ rest=rest.replace(/\b(?:no|without)\s+breakfast\b|\bbreakfast\s+(?:is\s+)?not\s+(?:needed|required|included|requested)\b/g,()=>{found.add('room_only');return' ';});
  for(const [label,board] of Object.entries(boards).sort((a,b)=>b[0].length-a[0].length)){
   let from=0,index:number;while((index=rest.indexOf(label,from))>=0){const end=index+label.length;
    if(!/[\p{L}\p{N}_]/u.test(rest[index-1]??'')&&!/[\p{L}\p{N}_]/u.test(rest[end]??'')){found.add(board);rest=rest.slice(0,index)+' '.repeat(label.length)+rest.slice(end);}

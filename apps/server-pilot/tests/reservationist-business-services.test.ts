@@ -20,6 +20,8 @@ it('does not use a verified board when alternative views disagree about meals',(
  expect(run('Please quote a room, room only.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
  expect(run('Please quote a room.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
  expect(run('Please quote a room, room only.','Please quote a room without breakfast.','room only')().rooms[0].required.boardBases).toEqual(['room_only']);
+ expect(run('Room only. Breakfast is not required.','Room only. No breakfast.','room only')().rooms[0].required.boardBases).toEqual(['room_only']);
+ expect(run('Please quote DBB.','Please quote dinner bed and breakfast.','DBB')().rooms[0].required.boardBases).toEqual(['dinner_bed_breakfast']);
  expect(run('Please quote dinner, bed, breakfast & beverage r.','Please quote dinner, bed, breakfast & beverage r.','dinner, bed, breakfast & beverage r')().rooms[0].required.boardBases).toEqual(['dinner_bed_breakfast']);
 });
 it('preserves room requirements from either email view and flags conflicting or unsupported ones',()=>{
@@ -33,6 +35,7 @@ it('preserves room requirements from either email view and flags conflicting or 
  expect(run('Please quote one standard room. No wheelchair access is needed.',generic)().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
  expect(run('Please quote one standard room. No wheelchair access is needed.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
  expect(run('Please quote a room. No wheelchair is needed, but an accessible room is required.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run('We do not need wheelchair or accessible rooms.',generic,'HRDAV')().rooms[0].required.roomCodes).toBeUndefined();
 });
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
