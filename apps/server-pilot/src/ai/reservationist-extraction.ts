@@ -118,7 +118,7 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
   for(const hit of current.matchAll(/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/gi)){
   const localStart=hit.index!,start=view.start+localStart,end=start+hit[0].length,previousBreak=[...current.slice(0,localStart).matchAll(/\r?\n[\t ]*\r?\n/g)].pop(),paragraphStart=previousBreak?previousBreak.index!+previousBreak[0].length:0,lineStart=current.lastIndexOf('\n',localStart-1)+1,lineEnd=current.indexOf('\n',localStart),line=current.slice(lineStart,lineEnd<0?current.length:lineEnd),sentenceStart=Math.max(paragraphStart,current.lastIndexOf('.',localStart-1)+1,current.lastIndexOf('!',localStart-1)+1,current.lastIndexOf('?',localStart-1)+1,current.lastIndexOf(';',localStart-1)+1),tail=current.slice(sentenceStart),sentenceTail=tail.search(/[.!?;]/),paragraphTail=tail.search(/\r?\n[\t ]*\r?\n/),endOffset=[sentenceTail,paragraphTail].filter(offset=>offset>=0).sort((a,b)=>a-b)[0]??tail.length,parent=tail.slice(0,endOffset+(endOffset===sentenceTail?1:0));
   if(/^\s*>/.test(line)||/^\s*>/m.test(parent)||/\b(?:not|never|no|don't|do not|if|unless|without|withdraw|disregard|ignore|historical|previous|whether|was|were|other property|another property)\b/i.test(parent))continue;
-  const key=parent.trim().replace(/\s+/g,' ').replace(/[.!?;]+$/,'').toLowerCase(),requestIndex=[...current.slice(sentenceStart,localStart).matchAll(/(?:\b(?:please|kindly|and|but)\s+(?:(?:please|kindly|also)\s+)*|(?:^|[,;]\s*)also\s+)(?:review|check|verify|confirm)\b/gi)].length,requests=sentenceGroups.get(sentenceStart)??new Map<number,{key:string;sources:ValidatedDocumentPlan['tasks'][number]['source'][]}>(),group=requests.get(requestIndex)??{key,sources:[]};group.sources.push({attachmentId:`message:${m.id}`,sourceHash:createHash('sha256').update(m.text).digest('hex'),page:1,start,end,quote:hit[0]});requests.set(requestIndex,group);sentenceGroups.set(sentenceStart,requests);
+  const key=parent.trim().replace(/\s+/g,' ').replace(/\b(?:the|a|an)\s+(?=(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b)/gi,'').replace(/[.!?;]+$/,'').toLowerCase(),requestIndex=[...current.slice(sentenceStart,localStart).matchAll(/(?:\b(?:please|kindly|and|but)\s+(?:(?:please|kindly|also)\s+)*(?:review|check|verify|confirm|look\s+at)\b|(?:^|[,;]\s*)also\s+(?:review|check|verify|confirm|look\s+at)\b)/gi)].length,requests=sentenceGroups.get(sentenceStart)??new Map<number,{key:string;sources:ValidatedDocumentPlan['tasks'][number]['source'][]}>(),group=requests.get(requestIndex)??{key,sources:[]};group.sources.push({attachmentId:`message:${m.id}`,sourceHash:createHash('sha256').update(m.text).digest('hex'),page:1,start,end,quote:hit[0]});requests.set(requestIndex,group);sentenceGroups.set(sentenceStart,requests);
   }
   for(const requests of sentenceGroups.values())for(const group of requests.values()){const groups=sentences.get(group.key)??[];groups.push(group.sources);sentences.set(group.key,groups);}
   byView.set(view.name,sentences);
@@ -128,11 +128,11 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  for(const key of keys){const copies=names.map(name=>byView.get(name)?.get(key)??[]),count=Math.max(...copies.map(groups=>groups.length));for(let index=0;index<count;index++){const alternatives=copies.flatMap(groups=>groups[index]??[]);out.push(alternatives);}}
  return out;
 }
-function assertCurrentVoucherReviewCompleteness(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
+function noteCurrentVoucherReviewGrouping(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
  const covered=new Set<ValidatedDocumentPlan['tasks'][number]>();
  for(const required of currentVoucherReviewSources(messages,triggerMessageId)){
   const matches=plan.tasks.filter(t=>!covered.has(t)&&t.kind==='question'&&required.some(source=>t.source.attachmentId===source.attachmentId&&t.source.sourceHash===source.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&t.source.start<=source.start!&&t.source.end>=source.end!&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??'')));
-  if(matches.length!==1)throw new Error('current_voucher_review_task_omitted_or_ambiguous');
+  if(matches.length!==1){const note='One or more attached voucher requests need staff review; check the original email and attachments.';if(!plan.unresolvedAsks.includes(note)&&plan.unresolvedAsks.length<32)plan.unresolvedAsks.push(note);return;}
   covered.add(matches[0]!);
  }
 }
@@ -565,7 +565,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     const selected=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(selectedOutput,requestSpans),sources),sources);
     if(selected.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
     if(selected.facts.length||selected.tasks.some(task=>task.factIds.length))throw new Error('task_first_selection_contains_facts');
-    assertCurrentVoucherReviewCompleteness(selected,input.messages,triggerMessageId);
+    noteCurrentVoucherReviewGrouping(selected,input.messages,triggerMessageId);
     if(!selected.tasks.length){if(selected.facts.length||selected.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...selected,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}
     for(const task of selected.tasks){assertNewBookingTask(task,sources,triggerMessageId);if(task.kind==='existing_document'&&task.source.attachmentId.startsWith('message:')&&task.source.attachmentId!==`message:${triggerMessageId}`&&!boundContinuations.some(c=>c.taskId===task.id))throw new Error('historical_document_request_requires_continuation');}
     const selectedTasks=structuredClone(selected.tasks),selectedIdentity=JSON.stringify(selectedTasks);
