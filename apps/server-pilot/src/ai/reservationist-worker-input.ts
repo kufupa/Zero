@@ -218,6 +218,8 @@ export async function buildReservationistWorkerInput(options: {
   const alternateHtmlSize = selected.reduce((sum, { row }) => sum + (row.textBody?.trim() ? row.htmlBody?.length ?? 0 : 0), 0);
   const signatureViews = new Map(messages.map((message) => [message.id,
     signatureInspection(selectedById.get(message.id)!.row, normalized.get(message.id)!, alternateHtmlSize <= 8_000_000)]));
+  const requestTexts = (message: (typeof messages)[number]) => [...signatureViews.get(message.id)!.texts,
+    ...(message.sourceViews?.map((view) => message.text.slice(view.start, view.end)) ?? [message.text])];
   const preserveAllImages = [...signatureViews.values()].some((view) => view.preserveAll);
   const relevant = options.attachments.filter((a) => selectedById.has(a.messageId)).sort((a, b) => a.id.localeCompare(b.id));
   if (relevant.length > 256) throw new Error('worker_intake_attachment_limit');
@@ -234,7 +236,7 @@ export async function buildReservationistWorkerInput(options: {
         .some((reference) => normalizeContentId(reference[1]!) === cid))
       : [];
     // Intervening messages may make footer images relevant; plain may omit an HTML CID, which still participates in dependency checks.
-    const signatureNoise = cidSourceViews.length > 0 && !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && cidSourceViews.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
+    const signatureNoise = cidSourceViews.length > 0 && !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && cidSourceViews.every((sourceText) => messages.every((message) => requestTexts(message).every((requestText) => isReservationistSignatureNoise({
       messageText: sourceText,
       currentSubject: message.subject,
       currentRequestText: requestText,
