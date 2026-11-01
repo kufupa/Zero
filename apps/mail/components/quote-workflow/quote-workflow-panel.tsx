@@ -102,7 +102,7 @@ function PreparedStaffTasks({ tasks, onSetHandled }: {
       <p className="text-sm font-semibold">Prepared requests</p>
       <p className="text-xs text-muted-foreground">These details were prepared earlier. Check the current HMS record before acting.</p>
       {tasks.map((task) => (
-        <div key={task.id} className="rounded-md border p-3 text-sm">
+        <div key={`${task.runId ?? ''}:${task.id}`} className="rounded-md border p-3 text-sm">
           <p className="font-medium">{task.label} · {task.handled ? 'Marked handled' : task.state === 'Ready' ? 'Review information' : task.state}</p>
           {task.details.length ? (
             <ul className="mt-2 flex list-disc flex-col gap-1 pl-4">

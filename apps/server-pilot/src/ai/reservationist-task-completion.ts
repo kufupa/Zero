@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
@@ -43,6 +43,27 @@ export function handledRequestKeys(state: unknown): Set<string> {
   return new Set(Object.entries(saved).filter(([key, handled]) => /^[a-f0-9]{64}$/.test(key) && handled === true).map(([key]) => key));
 }
 
+/** Newest first: retain a previously identified ask until staff acknowledge it. */
+export function outstandingRequestHistory(runs: readonly { id: string; result: unknown }[], state: unknown) {
+  const handled = handledRequestKeys(state), seen = new Set<string>();
+  const outstanding: { runId: string; taskId: string; kind: string; quote: string }[] = [];
+  for (const run of runs) {
+    const value = object(run.result), keys = requestCompletionKeys(run.result, run.id);
+    if (!Array.isArray(value.tasks)) continue;
+    for (const raw of value.tasks) {
+      const task = object(raw), taskId = typeof task.id === 'string' ? task.id : '';
+      const key = keys.get(taskId);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      if (handled.has(key)) continue;
+      const source = object(task.requestSource);
+      outstanding.push({ runId: run.id, taskId, kind: typeof task.kind === 'string' ? task.kind : '',
+        quote: typeof source.quote === 'string' ? source.quote.slice(0, 256) : '' });
+    }
+  }
+  return outstanding;
+}
+
 export function hasOutstandingRequests(result: unknown, runId: string, state: unknown): boolean {
   if (result == null) return false; // Older non-reservationist runs have no task inventory.
   const value = object(result);
@@ -61,11 +82,10 @@ export async function setRequestHandled(db: DB, input: {
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1).for('update');
     if (!item?.threadId || !item.sourceMessageId) return 'not_found';
     const [run] = await tx.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
-      .where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, item.threadId),
+      .where(and(eq(aiWorkflowRun.id, input.runId), eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, item.threadId),
         eq(aiWorkflowRun.triggerMessageId, item.sourceMessageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
-        eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
-      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)).limit(1);
-    if (!run || run.id !== input.runId) return 'stale';
+        eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded'))).limit(1);
+    if (!run) return 'stale';
     const key = requestCompletionKeys(run.metrics?.reservationistResult, run.id).get(input.taskId);
     if (!key) return 'stale';
     const handled = handledRequestKeys(item.state);

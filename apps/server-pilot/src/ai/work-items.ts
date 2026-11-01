@@ -1354,13 +1354,19 @@ export async function planThreadWork(
     );
   const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
   const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
-  const runs = sourceIds.length ? await db.selectDistinctOn([aiWorkflowRun.triggerMessageId], {
+  const runs = sourceIds.length ? await db.select({
     id: aiWorkflowRun.id, sourceMessageId: aiWorkflowRun.triggerMessageId, metrics: aiWorkflowRun.metrics,
   }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.threadId),
     inArray(aiWorkflowRun.triggerMessageId, sourceIds), eq(aiWorkflowRun.runKind, 'candidate_draft'),
     eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
     .orderBy(aiWorkflowRun.triggerMessageId, desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)) : [];
-  const runsBySource = new Map(runs.map(run => [run.sourceMessageId, run]));
+  const runsBySource = new Map<string, typeof runs>();
+  for (const run of runs) {
+    if (!run.sourceMessageId) continue;
+    const sourceRuns = runsBySource.get(run.sourceMessageId) ?? [];
+    sourceRuns.push(run);
+    runsBySource.set(run.sourceMessageId, sourceRuns);
+  }
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -1412,8 +1418,8 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const run = runsBySource.get(source.id);
-    const outstanding = run ? hasOutstandingRequests(run.metrics?.reservationistResult, run.id, item.state) : false;
+    const outstanding = (runsBySource.get(source.id) ?? [])
+      .some(run => hasOutstandingRequests(run.metrics?.reservationistResult, run.id, item.state));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
     if (item.status === 'dismissed') {
