@@ -288,10 +288,6 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     const close = await closeRoomRatePicker(page);
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     if (close.outcome !== 'closed_unsaved') throw new Error('RATE_CATALOG_CLOSE_UNVERIFIED');
-    if (search.outcome === 'criteria_unavailable') return { ...search, cleanupRequired: false, cleanup: close.outcome };
-    if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
-        search.coverage.returned !== search.coverage.matchingLoaded ||
-        search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
     const inquiry = sessions.filter(item => item.kind === 'inquiry'), cancel = sessions.filter(item => item.kind === 'cancel');
     if (inquiry.length !== 1 || cancel.length !== 1 || !inquiry[0].id || inquiry[0].id !== cancel[0].id ||
         inquiry[0].status !== 200 || cancel[0].status !== 200 ||
@@ -302,6 +298,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     if (JSON.stringify(ready.fields) !== JSON.stringify(before.fields) || JSON.stringify(readyProof) !== JSON.stringify(dates)) {
       throw new Error('DRAFT_CHANGED_DURING_SEARCH');
     }
+    if (search.outcome === 'criteria_unavailable') return { ...search, cleanupRequired: false, cleanup: close.outcome };
+    if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
+        search.coverage.returned !== search.coverage.matchingLoaded ||
+        search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
     guard = async route => {
       const request = route.request();
       let kind = null;

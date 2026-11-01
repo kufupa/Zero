@@ -40,9 +40,9 @@ If Rate Shop returns its exact informational message `Selected criteria is not
 available for these dates.`, `searchRatePlans` returns
 `criteria_unavailable` with `RATE_SHOP_CRITERIA_UNAVAILABLE`. It closes only a
 single matching message box and leaves Rate Shop in cleanup-only state; call
-`closeRoomRatePicker` to cancel and verify that session. The saved-stay
-selector closes it itself and returns `cleanupRequired: false` only after that
-verified cancellation. This is not a Hotel Availability quote or proof that
+`closeRoomRatePicker` to cancel and verify that session. The rate-plan selector
+closes it itself and returns `cleanupRequired: false` only after that verified
+cancellation. This is not a Hotel Availability quote or proof that
 the hotel is sold out.
 
 Room results include `criteria.nativeFilters` from the native picker request.

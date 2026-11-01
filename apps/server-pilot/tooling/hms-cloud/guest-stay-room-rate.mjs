@@ -21,18 +21,20 @@ const picker = (page, title) => page.locator('.x-window:visible:not(.x-menu)').f
   has: page.locator('.x-window-header-text').filter({ hasText: new RegExp(`^${title}$`) }),
 }).last();
 
-async function assertWindows(page, allowed, nativeDialog) {
+async function assertWindows(page, allowed, nativeDialog, allowUnavailableMessage = false) {
   if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
   const wins = page.locator('.x-window:visible:not(.x-menu)');
   const titles = [];
   for (let i = 0; i < await wins.count(); i += 1) {
-    const headers = await wins.nth(i).locator('.x-window-header-text:visible').allTextContents();
+    const win = wins.nth(i);
+    if (allowUnavailableMessage && await win.evaluate((el) => el.matches('.x-message-box'))) continue;
+    const headers = await win.locator('.x-window-header-text:visible').allTextContents();
     if (headers.length !== 1 || !allowed.includes(headers[0].trim())) throw new Error('UNEXPECTED_DIALOG');
     titles.push(headers[0].trim());
   }
   if (new Set(titles).size !== titles.length) throw new Error('UNEXPECTED_DIALOG');
 }
-async function dismissUnavailableMessage(page, timeout = 0) {
+async function dismissUnavailableMessage(page, nativeDialog, allowedWindows, timeout = 0) {
   const dialog = page.locator('.x-message-box:visible').filter({
     has: page.getByText(UNAVAILABLE_MESSAGE, { exact: true }),
   });
@@ -40,6 +42,8 @@ async function dismissUnavailableMessage(page, timeout = 0) {
   const count = await dialog.count();
   if (!count) return false;
   if (count !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
+  if (await page.locator('.x-message-box:visible').count() !== count) throw new Error('UNEXPECTED_DIALOG');
+  await assertWindows(page, allowedWindows, nativeDialog, true);
   const ok = dialog.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
   if (await ok.count() !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
   await ok.click();
@@ -250,8 +254,11 @@ async function waitGrid(page, id, count, timeout = 15000) {
 async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const spec = SPECS[kind];
   const dismissUnavailable = async (timeout = 0) => {
+    const state = searches.get(page);
     if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
-    return dismissUnavailableMessage(page, timeout);
+    if (kind !== 'ratePlan' || state?.kind !== 'ratePlan' || !state.shopId) throw new Error('SEARCH_STALE');
+    return dismissUnavailableMessage(page, nativeDialog,
+      ['Rate Shop', ...(state.windowId ? ['Rate Plans'] : [])], timeout);
   };
   await assertWindows(page, [], nativeDialog);
   const form = await formFields(page), formState = JSON.stringify(form);
