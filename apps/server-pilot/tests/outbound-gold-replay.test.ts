@@ -96,7 +96,7 @@ function trigger(threadId = THREAD_A): ReplayTrigger {
   return {
     threadId,
     messageId: 'message-fixture-1',
-    transportId: 'transport-fixture',
+    transportId: 'transport-centurion',
     fromAddress: 'agent@example.test',
     mailbox: 'reservations@example.test',
     at: REQUEST_AT,
@@ -225,6 +225,7 @@ describe('outbound-gold replay runner', () => {
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]?.letters).toHaveLength(1);
     expect(result.rows[0]?.cards).toHaveLength(1);
+    expect(source.extract).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRCEN' }));
 
     const parsed = parseFixtureJsonl(result.rows.map((row) => JSON.stringify(row)).join('\n'));
     const scored = scoreOutboundGoldFixture(parsed.rows, parsed.jsonlErrors);

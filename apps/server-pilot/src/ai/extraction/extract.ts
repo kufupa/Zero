@@ -2,7 +2,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedrock/adapter.js';
 import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
 import { maskCardNumbers } from '../card-mask.js';
-import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import { hotelRulesForProperty } from '../reservationist-decision.js';
 import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import { renderPdfPagesForVision, type VisionPage } from '../../mail/artifacts/read-artifact.js';
 import type {
@@ -146,6 +146,7 @@ export function buildInboundPrompt(
     maxChars?: number;
     visualAttachments?: VisualAttachmentMarker[];
     env?: NodeJS.ProcessEnv;
+    propertyCode?: string | null;
   } = {},
 ): {
   system: string;
@@ -228,7 +229,7 @@ export function buildInboundPrompt(
     return { id: range.id, status: 'read' };
   });
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
+    system: `${hotelRulesForProperty(options.propertyCode)}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
     user,
     attachmentReads,
     threadContextTruncated,
@@ -621,6 +622,7 @@ export async function extractInboundMail(input: {
   from?: string | null;
   /** The address of the mailbox the mail came into (the transport's email). */
   mailbox?: string | null;
+  propertyCode?: string | null;
   signal?: AbortSignal;
   deadlineMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -634,6 +636,7 @@ export async function extractInboundMail(input: {
   const prompt = buildInboundPrompt(input.selection, input.from, input.mailbox, {
     env,
     visualAttachments: vision.visualAttachments,
+    propertyCode: input.propertyCode,
   });
   const reads = attachmentReads(input.selection.attachments, {
     text: prompt.attachmentReads,
