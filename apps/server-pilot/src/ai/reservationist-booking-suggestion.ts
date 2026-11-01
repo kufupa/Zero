@@ -162,14 +162,13 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-function currentBookingRequestSource(
+function currentTaskRequestSource(
   task: Task,
   runtime: ReservationistRuntimeInput,
 ): ReservationistBookingSuggestionCitation | null {
   const trigger = runtime.messages.find((message) => message.id === runtime.trigger.id);
   const source = citation(task.source);
-  return task.kind === 'new_booking' &&
-    !!source &&
+  return !!source &&
     !!trigger &&
     trigger.direction === 'inbound' &&
     trigger.disclosure !== 'staff_only' &&
@@ -182,6 +181,26 @@ function currentBookingRequestSource(
     : null;
 }
 
+function currentBookingRequestSource(
+  task: Task,
+  runtime: ReservationistRuntimeInput,
+): ReservationistBookingSuggestionCitation | null {
+  return task.kind === 'new_booking' ? currentTaskRequestSource(task, runtime) : null;
+}
+
+function currentStayRequestSource(
+  task: Task,
+  runtime: ReservationistRuntimeInput,
+): ReservationistBookingSuggestionCitation | null {
+  return ['new_booking', 'quote', 'acceptance', 'change', 'cancel_request', 'channel_booking_sync'].includes(task.kind)
+    ? currentTaskRequestSource(task, runtime)
+    : null;
+}
+
+function requestScope(task: Task, source: ReservationistBookingSuggestionCitation): string {
+  return [task.id, task.kind, source.sourceRef, source.sourceHash, source.page, source.start, source.end].join('\0');
+}
+
 /** Only explicit stay labels are shared between a request and a separately cited row. */
 function explicitStayLabels(text: string): string[] {
   const labels = new Set<string>();
@@ -192,7 +211,7 @@ function explicitStayLabels(text: string): string[] {
   ]);
   for (const match of text.matchAll(/\b(group|stay)\s+(?:id\s*[:#-]?\s*)?([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})\b/giu)) {
     const value = match[2]!.toLowerCase();
-    if (!generic.has(value)) labels.add(`${match[1]!.toLowerCase()}:${value}`);
+    if (!generic.has(value) || match[2] === 'A') labels.add(`${match[1]!.toLowerCase()}:${value}`);
   }
   for (const match of text.matchAll(/\b(?:booking|reservation|confirmation)\s+(?:reference|ref(?:erence)?|number|no\.?|id)\s*[:#-]?\s*([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})/giu))
     labels.add(`reference:${match[1]!.toLowerCase()}`);
@@ -239,38 +258,42 @@ function factSourceContext(
   const previousLineEnd = start > lower ? start - 1 : lower;
   const previousLineStart = Math.max(lower, page.lastIndexOf('\n', previousLineEnd - 1) + 1);
   const previousLine = page.slice(previousLineStart, previousLineEnd).trim();
-  if (previousLine.endsWith(':') && explicitStayLabels(previousLine).length) context = `${previousLine} ${context}`;
+  if (start > lower && page[start - 1] === '\n' && previousLine.endsWith(':') && explicitStayLabels(previousLine).length)
+    context = `${previousLine} ${context}`;
   return context;
 }
 
 function factBelongsToBookingRequest(
   fact: ValidatedDocumentFact,
-  task: Task,
-  tasks: readonly Task[],
-  taskIdsByLabel: ReadonlyMap<string, ReadonlySet<string>>,
+  taskScope: string,
+  requestScopes: readonly { key: string; source: ReservationistBookingSuggestionCitation }[],
+  requestScopesByLabel: ReadonlyMap<string, ReadonlySet<string>>,
   runtime: ReservationistRuntimeInput,
   admissions: readonly AttachmentAdmission[],
 ): boolean {
   const factSource = citation(fact.source)!, factContextLabels = explicitStayLabels(factSourceContext(fact, runtime, admissions));
-  const labelOwners = new Set(factContextLabels.flatMap((label) => [...(taskIdsByLabel.get(label) ?? [])]));
-  const spanOwners = tasks.filter((candidate) => {
-    const source = citation(candidate.source);
-    return source && source.sourceRef === factSource.sourceRef && source.sourceHash === factSource.sourceHash &&
+  const labelOwners = new Set(factContextLabels.flatMap((label) => [...(requestScopesByLabel.get(label) ?? [])]));
+  const containingScopes = requestScopes.filter(({ source }) => {
+    return source.sourceRef === factSource.sourceRef && source.sourceHash === factSource.sourceHash &&
       source.page === factSource.page && factSource.start >= source.start && factSource.end <= source.end;
   });
+  const specificSpanLength = Math.min(...containingScopes.map(({ source }) => source.end - source.start));
+  const spanOwners = new Set(containingScopes
+    .filter(({ source }) => source.end - source.start === specificSpanLength)
+    .map(({ key }) => key));
 
-  if (spanOwners.length === 1) {
-    const owner = spanOwners[0]!.id;
-    return owner === task.id && (!labelOwners.size || labelOwners.size === 1 && labelOwners.has(owner));
+  if (spanOwners.size === 1) {
+    const owner = [...spanOwners][0]!;
+    return owner === taskScope && (!labelOwners.size || labelOwners.size === 1 && labelOwners.has(owner));
   }
-  return labelOwners.size === 1 && labelOwners.has(task.id);
+  return labelOwners.size === 1 && labelOwners.has(taskScope);
 }
 
 /** Creates only a cited form prefill; it does not check HMS, price a stay, or authorize a save. */
 export async function buildReservationistBookingSuggestion(input: {
   task: Task;
   facts: readonly ValidatedDocumentFact[];
-  bookingTasks?: readonly Task[];
+  requestTasks?: readonly Task[];
   runtime: ReservationistRuntimeInput;
   attachmentAdmissions: readonly AttachmentAdmission[];
 }): Promise<ReservationistBookingSuggestion | null> {
@@ -285,20 +308,23 @@ export async function buildReservationistBookingSuggestion(input: {
   });
   if (validFacts.length !== input.facts.length) missing.push('Some stay facts are not bound to the current email or its current readable attachments.');
 
-  const currentTasks = new Map<string, Task>();
-  for (const candidate of [...(input.bookingTasks ?? []), task])
-    if (currentBookingRequestSource(candidate, runtime)) currentTasks.set(candidate.id, candidate);
-  const bookingTasks = [...currentTasks.values()];
-  const taskIdsByLabel = new Map<string, Set<string>>();
-  for (const candidate of bookingTasks) {
-    for (const label of explicitStayLabels(candidate.source.quote ?? '')) {
-      const ids = taskIdsByLabel.get(label) ?? new Set<string>();
-      ids.add(candidate.id);
-      taskIdsByLabel.set(label, ids);
+  const requestSources = new Map<string, { source: ReservationistBookingSuggestionCitation; quote: string }>();
+  for (const candidate of [...(input.requestTasks ?? []), task]) {
+    const source = currentStayRequestSource(candidate, runtime);
+    if (source) requestSources.set(requestScope(candidate, source), { source, quote: candidate.source.quote ?? '' });
+  }
+  const requestScopes = [...requestSources].map(([key, { source }]) => ({ key, source }));
+  const targetScope = requestScope(task, request);
+  const requestScopesByLabel = new Map<string, Set<string>>();
+  for (const [key, { quote }] of requestSources) {
+    for (const label of explicitStayLabels(quote)) {
+      const owners = requestScopesByLabel.get(label) ?? new Set<string>();
+      owners.add(key);
+      requestScopesByLabel.set(label, owners);
     }
   }
-  const ambiguousTaskFacts = bookingTasks.length > 1 && validFacts.some(({ fact }) =>
-    !factBelongsToBookingRequest(fact, task, bookingTasks, taskIdsByLabel, runtime, input.attachmentAdmissions));
+  const ambiguousTaskFacts = requestScopes.length > 1 && validFacts.some(({ fact }) =>
+    !factBelongsToBookingRequest(fact, targetScope, requestScopes, requestScopesByLabel, runtime, input.attachmentAdmissions));
   if (ambiguousTaskFacts) missing.push('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');
 
   const dates = validFacts.flatMap(({ fact, source }) => fact.kind === 'dates'

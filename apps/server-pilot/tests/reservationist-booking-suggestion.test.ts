@@ -121,7 +121,7 @@ describe('reservationist booking suggestion', () => {
     expect(result?.missing).toContain('Child occupancy is unknown; confirm no children or provide every child’s age.');
   });
 
-  it('does not prefill another booking when current task factIds are swapped', async () => {
+  it('binds facts to their current stay request without suppressing unrelated questions', async () => {
     const requestA = 'Please book Group A, 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
     const requestB = 'Please book Group B, 1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
     const body = `${requestA}\n${requestB}`;
@@ -132,20 +132,50 @@ describe('reservationist booking suggestion', () => {
     const taskA = currentBookingTask(body, 'task-a', requestA, [dateB.id, roomB.id]);
     const taskB = currentBookingTask(body, 'task-b', requestB, [dateA.id, roomA.id]);
     const result = await buildReservationistBookingSuggestion({ task: taskA, facts: [dateB, roomB],
-      bookingTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: [] });
+      requestTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: [] });
 
     expect(result?.status).toBe('needs_details');
     expect(result?.draft).toBeUndefined();
     expect(result?.missing).toContain('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');
     expect(result?.facts.dates[0]?.source).toMatchObject({ sourceRef: `message:${triggerId}`, start: body.indexOf('2027-01-10') });
     expect(result?.facts.rooms[0]?.source).toMatchObject({ sourceRef: `message:${triggerId}`, start: body.indexOf('Group B, 1 room') });
+    const correctlyBound = await buildReservationistBookingSuggestion({ task: taskA, facts: [dateA, roomA],
+      requestTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: [] });
+    expect(correctlyBound?.status).toBe('prefill');
+
+    const quoteB = 'Please quote Group B, 1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
+    const mixedBody = `${requestA}\n${quoteB}`;
+    const mixedDateB = currentFact(mixedBody, 'mixed-dates-b', 'dates', { arrival: '2027-01-10', departure: '2027-01-12' }, '2027-01-10 to 2027-01-12');
+    const mixedRoomB = currentFact(mixedBody, 'mixed-room-b', 'room', { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, 'Group B, 1 room for 2 adults only');
+    const bookingA = currentBookingTask(mixedBody, 'booking-a', requestA, [mixedDateB.id, mixedRoomB.id]);
+    const quoteTaskB = { id: 'quote-b', kind: 'quote' as const, factIds: [mixedDateB.id, mixedRoomB.id], source: sourceSpan(mixedBody, quoteB) };
+    const mixed = await buildReservationistBookingSuggestion({ task: bookingA, facts: [mixedDateB, mixedRoomB],
+      requestTasks: [bookingA, quoteTaskB], runtime: runtimeFor(mixedBody), attachmentAdmissions: [] });
+    expect(mixed?.status).toBe('needs_details');
+    expect(mixed?.draft).toBeUndefined();
+    expect(mixed?.missing).toContain('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');
+    const wholeEmail = sourceSpan(mixedBody, mixedBody);
+    const broadBookingA = { ...bookingA, source: wholeEmail };
+    const broadQuoteB = { ...quoteTaskB, source: wholeEmail };
+    const broadMixed = await buildReservationistBookingSuggestion({ task: broadBookingA, facts: [mixedDateB, mixedRoomB],
+      requestTasks: [broadBookingA, broadQuoteB], runtime: runtimeFor(mixedBody), attachmentAdmissions: [] });
+    expect(broadMixed?.status).toBe('needs_details');
+    expect(broadMixed?.draft).toBeUndefined();
+
+    const question = 'Can you confirm breakfast hours?';
+    const singleBody = `${requestA}\n${question}`;
+    const single = plan(singleBody, [], undefined, requestA);
+    const questionTask = { id: 'question', kind: 'question' as const, factIds: [], source: sourceSpan(singleBody, question) };
+    const unaffected = await buildReservationistBookingSuggestion({ task: single.task, facts: single.facts,
+      requestTasks: [single.task, questionTask], runtime: single.runtime, attachmentAdmissions: [] });
+    expect(unaffected?.status).toBe('prefill');
   });
 
   it('accepts current attachment facts linked by a unique explicit group label', async () => {
     const requestA = 'Please book Group A using the attached rooming list.';
     const requestB = 'Please book Group B using the attached rooming list.';
     const body = `${requestA}\n${requestB}`;
-    const page = 'Group A: 1 room for 2 adults only from 2026-12-03 to 2026-12-05.\nGroup B: 1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
+    const page = 'Group A:\n1 room for 2 adults only from 2026-12-03 to 2026-12-05.\nGroup B:\n1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
     const attachmentId = 'rooming-list-1';
     const sourceHash = createHash('sha256').update(page).digest('hex');
     const span = (quote: string) => {
@@ -158,17 +188,35 @@ describe('reservationist booking suggestion', () => {
     const dateA: ValidatedDocumentFact = { id: 'dates-a', kind: 'dates', value: { arrival: '2026-12-03', departure: '2026-12-05' },
       source: span('2026-12-03 to 2026-12-05'), disclosure: 'guest', verification: 'text_verified', authority: 'customer_claim' } as ValidatedDocumentFact;
     const roomA: ValidatedDocumentFact = { id: 'room-a', kind: 'room', value: { roomRef: 'A', quantity: 1, adults: 2, childAges: [] },
-      source: span('Group A: 1 room for 2 adults only'), disclosure: 'guest', verification: 'text_verified', authority: 'customer_claim' } as ValidatedDocumentFact;
+      source: span('1 room for 2 adults only'), disclosure: 'guest', verification: 'text_verified', authority: 'customer_claim' } as ValidatedDocumentFact;
     const admissions = [{ status: 'admitted', reason: 'text', relation: 'current', draftReady: false,
       metadata: { attachmentId, messageId: triggerId, ownerRef, threadId, sourceHash, disclosure: 'guest' },
       source: { attachmentId, sourceHash, disclosure: 'guest', pages: [page], pageCount: 1 } } as AttachmentAdmission];
     const result = await buildReservationistBookingSuggestion({ task: taskA, facts: [dateA, roomA],
-      bookingTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: admissions });
+      requestTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: admissions });
 
     expect(result?.status).toBe('prefill');
     expect(result?.draft?.rooms[0]?.request).toMatchObject({ arrival: '2026-12-03', departure: '2026-12-05', adults: 2, childAges: [] });
     expect(result?.facts.dates[0]?.source).toMatchObject({ sourceRef: attachmentId, sourceHash, page: 1 });
     expect(result?.facts.rooms[0]?.source).toMatchObject({ sourceRef: attachmentId, sourceHash, page: 1 });
+
+    const inlinePage = 'Group A: use these settings. 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
+    const inlineHash = createHash('sha256').update(inlinePage).digest('hex');
+    const inlineSpan = (quote: string) => {
+      const start = inlinePage.indexOf(quote);
+      return { attachmentId, sourceHash: inlineHash, page: 1, quote, start, end: start + quote.length };
+    };
+    const inlineFacts: ValidatedDocumentFact[] = [
+      { ...dateA, source: inlineSpan('2026-12-03 to 2026-12-05') },
+      { ...roomA, source: inlineSpan('1 room for 2 adults only') },
+    ];
+    const inlineAdmissions = [{ status: 'admitted', reason: 'text', relation: 'current', draftReady: false,
+      metadata: { attachmentId, messageId: triggerId, ownerRef, threadId, sourceHash: inlineHash, disclosure: 'guest' },
+      source: { attachmentId, sourceHash: inlineHash, disclosure: 'guest', pages: [inlinePage], pageCount: 1 } } as AttachmentAdmission];
+    const inlineResult = await buildReservationistBookingSuggestion({ task: taskA, facts: inlineFacts,
+      requestTasks: [taskA, taskB], runtime: runtimeFor(body), attachmentAdmissions: inlineAdmissions });
+    expect(inlineResult?.status).toBe('needs_details');
+    expect(inlineResult?.draft).toBeUndefined();
   });
 
   it('does not collapse the same room label from separate rooming lists', async () => {
