@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { makeFormula, makeRichText, type CellValue } from '@office-kit/xlsx/cell';
 import { workbookToBytes } from '@office-kit/xlsx/io';
@@ -9,6 +10,7 @@ import {
 } from '../src/ai/reservationist-xlsx.js';
 import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
+import { extractReservationistPlan } from '../src/ai/reservationist-extraction.js';
 
 type WorkbookSheet = {
   name: string;
@@ -27,6 +29,89 @@ async function makeWorkbook(sheets: WorkbookSheet[]): Promise<Uint8Array> {
 async function extract(body: Uint8Array) {
   return extractReservationistXlsxText({ body, signal: new AbortController().signal });
 }
+
+describe('spreadsheet rows in reservationist extraction', () => {
+  it.each(['valid', 'unprinted room index', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total', 'masked name', 'conflicting stay', 'conflicting board'])('binds row facts and retains independent mail asks: %s', async (mode) => {
+    const columns = ['Room', 'Adults', 'Children', 'First name', 'Last name', 'Arrival', 'Departure', 'Quantity', 'Total guests', ...(mode === 'conflicting board' ? ['Board'] : [])];
+    const values = ['1', '2', mode === 'missing child count' ? '' : '0', mode === 'masked name' ? '4111 1111 1111 1111' : 'Alex', 'Example', '2027-02-10', '2027-02-11', mode === 'conflicting quantity' ? '30' : '1', mode === 'conflicting total' ? '3' : '2', ...(mode === 'conflicting board' ? ['BB'] : [])];
+    const other = ['2', '1', '0', 'Jamie', 'Other', mode === 'conflicting stay' ? '2027-03-10' : '2027-02-10', mode === 'conflicting stay' ? '2027-03-11' : '2027-02-11', '1', '1', ...(mode === 'conflicting board' ? ['RO'] : [])];
+    const body = await makeWorkbook([{ name: 'Rooming list', cells: [columns, values, other].flatMap((row, i) =>
+      row.map((value, j) => ({ row: i + 1, column: j + 1, value }))) }]);
+    const sheet = (await extract(body)).text!;
+    const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+    const hash = sha(body), text = 'Reference: A123. Please book the rooms in the attachment. Is parking free?';
+    const at = '2026-10-31T10:00:00Z', book = 'Please book the rooms in the attachment.', question = 'Is parking free?';
+    const mailSource = (quote: string) => ({ attachmentId: 'message:m', sourceHash: sha(text), page: 1, quote });
+    const row = sheet.split('\n')[2]!, otherRow = sheet.split('\n')[3]!;
+    const sheetSource = { attachmentId: 'sheet', sourceHash: hash, page: 1, quote: row };
+    const otherSource = { ...sheetSource, quote: otherRow };
+    const facts = [
+      { id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, disclosure: 'guest', source: sheetSource },
+      { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : mode === 'masked name' ? '[card ••••1111]' : 'Alex', lastName: 'Example', roomRef: '1', ...(mode === 'unprinted room index' ? { roomIndex: 1 } : {}) }, disclosure: 'guest', source: sheetSource },
+      { id: 'dates', kind: 'dates', value: { arrival: mode === 'conflicting stay' ? '2027-03-10' : '2027-02-10', departure: mode === 'conflicting stay' ? '2027-03-11' : '2027-02-11' }, disclosure: 'guest', source: mode === 'conflicting stay' ? otherSource : sheetSource },
+      ...(mode === 'conflicting board' ? [{ id: 'board', kind: 'board', value: 'RO', disclosure: 'guest', source: otherSource }] : []),
+    ];
+    const metadata = { attachmentId: 'sheet', messageId: 'm', threadId: 't', ownerRef: 'o', messageAt: at,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: body.length, sourceHash: hash, disclosure: 'guest' as const };
+    let call = 0;
+    const adapter = { reserveCalls: async () => {}, invoke: async () => {
+      const index = call++;
+      if (index === 0) return { output: { facts: [], tasks: [
+        { id: 'book', kind: 'new_booking', factIds: [], source: mailSource(book) },
+        { id: 'parking', kind: 'question', factIds: [], source: mailSource(question) },
+      ], unresolvedAsks: [] } };
+      if (index === 1) return { output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: 'A123', disclosure: 'guest', source: mailSource('Reference: A123') }],
+        assignments: [{ taskId: 'book', factIds: ['ref'] }, { taskId: 'parking', factIds: [] }], unresolvedAsks: [] } };
+      return { output: { facts, assignments: [{ taskId: 'book', factIds: facts.map(fact => fact.id) }, { taskId: 'parking', factIds: [] }], unresolvedAsks: [] } };
+    } };
+    const result = await extractReservationistPlan({ adapter: adapter as any, mode: 'task_first', factEnrichmentMode: 'source_batches', messageBatching: 'per_source',
+      triggerMessageId: 'm', messages: [{ id: 'm', at, text, direction: 'inbound' }], causalAt: at, signal: new AbortController().signal,
+      admissions: [{ status: 'admitted', reason: 'text', metadata, source: { attachmentId: 'sheet', sourceHash: hash, disclosure: 'guest', pages: [sheet], pageCount: 1 }, bytes: { body, sha256: hash } as any, draftReady: false }] });
+    expect(result.tasks.map(task => task.id)).toEqual(['book', 'parking']);
+    expect(result.facts.some(fact => fact.kind === 'reservation_reference' && fact.value === 'A123')).toBe(true);
+    expect(result.facts.some(fact => fact.kind === 'dates')).toBe(true);
+    expect(result.facts.some(fact => fact.kind === 'guest')).toBe(!['cross-row name', 'masked name', 'conflicting stay'].includes(mode));
+    if (mode === 'unprinted room index') expect(result.facts.find(fact => fact.kind === 'guest')?.value).not.toHaveProperty('roomIndex');
+    expect(result.facts.some(fact => fact.kind === 'room')).toBe(!['missing child count', 'conflicting quantity', 'conflicting total', 'conflicting stay', 'conflicting board'].includes(mode));
+    expect(result.sourceIncomplete?.some(item => item.attachmentId === 'sheet')).toBe(mode !== 'valid');
+  });
+
+  it('retains a workbook review warning across combined attachment batches', async () => {
+    const rows = [['Room', 'Adults', 'Children'], ['1', '2', '']];
+    const body = await makeWorkbook([{ name: 'Rooms', cells: rows.flatMap((row, i) =>
+      row.map((value, j) => ({ row: i + 1, column: j + 1, value }))) }]);
+    const sheet = (await extract(body)).text!;
+    const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+    const at = '2026-10-31T10:00:00Z', text = 'Please book the rooms in the attachment.';
+    const admission = (id: string, bytes: Uint8Array, page: string, mimeType: string) => {
+      const sourceHash = sha(bytes);
+      return { status: 'admitted' as const, reason: 'text',
+        metadata: { attachmentId: id, messageId: 'm', threadId: 't', ownerRef: 'o', messageAt: at, mimeType,
+          sizeBytes: bytes.length, sourceHash, disclosure: 'guest' as const },
+        source: { attachmentId: id, sourceHash, disclosure: 'guest' as const, pages: [page], pageCount: 1 },
+        bytes: { body: bytes, sha256: sourceHash }, draftReady: false as const };
+    };
+    const xlsx = admission('sheet', body, sheet, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const notes = Array.from({ length: 8 }, (_, i) => {
+      const content = `Note ${i}`;
+      return admission(`note-${i}`, Buffer.from(content), content, 'text/plain');
+    });
+    let call = 0;
+    const adapter = { reserveCalls: async () => {}, invoke: async () => {
+      const facts = call++ ? [] : [{ id: 'room', kind: 'room',
+        value: { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, disclosure: 'guest',
+        source: { attachmentId: 'sheet', sourceHash: xlsx.metadata.sourceHash, page: 1, quote: sheet.split('\n')[2] } }];
+      return { output: { facts, tasks: [{ id: 'book', kind: 'new_booking', factIds: facts.map(fact => fact.id),
+        source: { attachmentId: 'message:m', sourceHash: sha(text), page: 1, quote: text } }], unresolvedAsks: [] } };
+    } };
+    const result = await extractReservationistPlan({ adapter: adapter as any, mode: 'combined',
+      triggerMessageId: 'm', messages: [{ id: 'm', at, text, direction: 'inbound' }], causalAt: at,
+      signal: new AbortController().signal, admissions: [xlsx, ...notes] as any });
+    expect(result.tasks).toHaveLength(1);
+    expect(result.sourceIncomplete).toContainEqual(expect.objectContaining({ attachmentId: 'sheet', reason: 'spreadsheet_row_unverified' }));
+    expect(result.manualRequired).toContain('spreadsheet_row_unverified');
+  });
+});
 
 describe('reservationist XLSX intake', () => {
   it('preserves multiple sheets and sparse rows, marks visible empty sheets, and masks card-like cells', async () => {
