@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
-import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
-import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { TEST_DB_AVAILABLE, openTestDbSession, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 
 const task = (id: string, start: number) => ({ id, kind: 'question', requestSource: {
   attachmentId: 'message:one', sourceHash: 'a'.repeat(64), page: 1, start, end: start + 4, quote: 'test',
@@ -49,6 +49,11 @@ it('clears an old unread-file warning only after reviewing that file, without lo
   expect(hasOutstandingRequestHistory([{id:'legacy',result:undefined}, oldWarning], {})).toBe(true);
   const oldAsk = {id:'older', result:{version:1,tasks:[task('one',0)]}};
   expect(hasOutstandingRequestHistory([latest, oldAsk], {})).toBe(true);
+  const oldEmail = {id:'old-email', result:{version:1,tasks:[],sourceRecoveries:[{...recovery,sourceKind:'message',sourceRef:'message:mail'}]}};
+  expect(hasOutstandingRequestHistory([{...latest,source:{messages:[{id:'mail',sourceHash:'a'.repeat(64)}]}}, oldEmail], {})).toBe(false);
+  const oldSubject = {id:'old-subject',result:{version:1,tasks:[],sourceRecoveries:[{...recovery,sourceKind:'message',sourceRef:'message-subject:mail'}]},source:{messages:[{id:'mail',identityHash:'b'.repeat(64)}]}};
+  expect(hasOutstandingRequestHistory([{...latest,source:{messages:[{id:'mail',identityHash:'b'.repeat(64)}]}}, oldSubject], {})).toBe(false);
+  expect(hasOutstandingRequestHistory([{...latest,source:{messages:[{id:'mail',identityHash:'c'.repeat(64)}]}}, oldSubject], {})).toBe(true);
 });
 
 const reachable = await probeTestDb();
@@ -167,4 +172,57 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       expect(await status(laterItem!.id)).toBe('done');
     });
   });
+
+  it('serializes a completed analysis with a reply already closing its work item', async () => {
+    const setup = openTestDbSession(), locker = openTestDbSession(), finisher = openTestDbSession();
+    const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID(), replyId=randomUUID(), runId=randomUUID();
+    let release: () => void = () => {};
+    let held: Promise<void> | undefined, completion: ReturnType<typeof markAiRunSucceeded> | undefined;
+    try {
+      const receivedAt=new Date(Date.now()-60_000), sentAt=new Date(receivedAt.getTime()+30_000);
+      await setup.db.insert(mailboxTransport).values({id:transportId,email:`${transportId}@example.invalid`,ownerHeaderValue:transportId});
+      await setup.db.insert(mailThread).values({id:threadId,transportId,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:sentAt});
+      await setup.db.insert(message).values([
+        {id:messageId,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[],textBody:'test',receivedAt},
+        {id:replyId,transportId,threadId,direction:'outbound',fromAddress:`${transportId}@example.invalid`,toAddresses:[],sentAt,receivedAt:sentAt},
+      ]);
+      const [item] = await setup.db.insert(workItem).values({transportId,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      await setup.db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId,threadId,triggerMessageId:messageId,
+        runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'running',claimOwner:'worker',claimToken:'token',
+        metrics:{reservationistResult:{version:1,tasks:[task('one',0)]}}});
+      let acquired!: (pid: number) => void;
+      const locked = new Promise<number>(resolve => { acquired = resolve; });
+      const unlock = new Promise<void>(resolve => { release = resolve; });
+      held = locker.db.transaction(async tx => {
+        const [connection] = await tx.execute(sql<{pid:number}>`select pg_backend_pid() as pid`);
+        await tx.select({id:workItem.id}).from(workItem).where(eq(workItem.id,item!.id)).for('update');
+        acquired(connection!.pid);
+        await unlock;
+        await tx.update(workItem).set({status:'done',sentAt,sentMessageId:replyId}).where(eq(workItem.id,item!.id));
+        await tx.insert(workEvent).values({workItemId:item!.id,actorKind:'system',type:'status.changed',
+          value:{from:'needs_you',to:'done',reason:'hotel_replied'}});
+      });
+      const holderPid = await locked;
+      completion = markAiRunSucceeded({runId,claimOwner:'worker',claimToken:'token',expectedStates:['running']},finisher.db);
+      let blocked = false;
+      for (let attempt=0; attempt<100; attempt++) {
+        const [state] = await setup.db.execute(sql<{blocked:boolean}>`select exists (
+          select 1 from pg_stat_activity a where a.datname=current_database()
+            and a.wait_event_type='Lock' and ${holderPid}=any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if (state!.blocked) { blocked=true; break; }
+        await new Promise(resolve => setTimeout(resolve,20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      await held;
+      await completion;
+      expect((await setup.db.select().from(workItem).where(eq(workItem.id,item!.id)))[0]?.status).toBe('needs_you');
+    } finally {
+      release();
+      if (held) await held.catch(() => undefined);
+      if (completion) await completion.catch(() => undefined);
+      await Promise.all([setup.close(),locker.close(),finisher.close()]);
+    }
+  }, 15_000);
 });

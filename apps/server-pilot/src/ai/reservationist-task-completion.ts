@@ -107,30 +107,44 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
 
 type HistoryRun = { id: string; result: unknown; source?: unknown };
 
-/** Only a later review of the same file can clear an unread-file warning. */
+/** Only a later review of the same source can clear an unread-source warning. */
 export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
   const failures = new Set<string>(), successes = new Map<string, Set<string>>();
   const outstanding: { runId: string; sourceRef: string }[] = [];
+  const remember = (ref: unknown, hash: unknown) => {
+    if (typeof ref !== 'string' || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) return;
+    const hashes = successes.get(ref) ?? new Set<string>();
+    hashes.add(hash);
+    successes.set(ref, hashes);
+  };
   for (const run of runs) {
     const result = object(run.result);
     if (result.version !== 1) continue;
+    const source = object(run.source);
+    const emails = Array.isArray(source.messages) ? source.messages.map(object) : [];
     if (Array.isArray(result.sourceRecoveries)) for (const raw of result.sourceRecoveries) {
       const recovery = object(raw), ref = recovery.sourceRef, hash = recovery.sourceHash;
       if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true ||
           typeof ref !== 'string' || !ref) continue;
       const laterHashes = successes.get(ref);
+      const subject = ref.startsWith('message-subject:');
+      // The snapshot binds the subject through identityHash, not the body hash.
+      const identity = subject ? emails.find(email => `message-subject:${email.id}` === ref)?.identityHash : hash;
       const failureKey = JSON.stringify([ref, typeof hash === 'string' ? hash : null]);
-      if (!failures.has(failureKey) && !(laterHashes && (typeof hash !== 'string' || laterHashes.has(hash))))
+      const reviewed = laterHashes && (typeof identity === 'string' ? laterHashes.has(identity) : !subject && typeof hash !== 'string');
+      if (!failures.has(failureKey) && !reviewed)
         outstanding.push({ runId: run.id, sourceRef: ref });
       failures.add(failureKey);
     }
-    const source = object(run.source);
     if (Array.isArray(source.attachments)) for (const raw of source.attachments) {
-      const attachment = object(raw), ref = attachment.attachmentId, hash = attachment.sourceHash;
-      if (typeof ref !== 'string' || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) continue;
-      const hashes = successes.get(ref) ?? new Set<string>();
-      hashes.add(hash);
-      successes.set(ref, hashes);
+      const attachment = object(raw);
+      remember(attachment.attachmentId, attachment.sourceHash);
+    }
+    for (const email of emails) {
+      if (typeof email.id === 'string') {
+        remember(`message:${email.id}`, email.sourceHash);
+        remember(`message-subject:${email.id}`, email.identityHash);
+      }
     }
   }
   return outstanding;

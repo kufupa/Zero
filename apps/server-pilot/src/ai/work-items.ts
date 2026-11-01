@@ -1617,13 +1617,15 @@ async function enqueueReplyCheckForItem(tx: WorkTx, workItemId: string, replyMes
  * Applies planThreadWork for one thread: the reply link (C2), the same-thread collapse (C3) and the staff-sent other rule.
  * A hotel reply only closes an item after its latest hms_write has review.ok. The plan is read again under the item row
  * locks, the same lock a field save or a dismissal takes, so nothing a person touched after the first read is changed.
- * Takes the lock only when there is something to change. Returns the changes made.
+ * Normally takes the lock only when there is something to change. A newly completed
+ * analysis must lock even on a no-op to serialize with an in-flight reply refresh.
  */
 export async function refreshThreadWork(
   db: DB,
   input: { transportId: string; threadId: string },
+  opts: { lockEvenIfUnchanged?: boolean } = {},
 ): Promise<ThreadWorkChange[]> {
-  if (!(await planThreadWork(db, input)).length) return [];
+  if (!opts.lockEvenIfUnchanged && !(await planThreadWork(db, input)).length) return [];
   return db.transaction(async (tx) => {
     const changes = await planThreadWork(tx, input, { lock: true });
     for (const change of changes) await applyThreadWorkChange(tx, change);

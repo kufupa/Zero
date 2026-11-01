@@ -923,7 +923,7 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
       // The result can arrive after thread rules dismissed its work item. Reconcile
       // while the succeeded result and the work-item change share one commit.
       const { refreshThreadWork } = await import('./work-items.js');
-      await refreshThreadWork(tx as unknown as DB, { transportId: row.transportId, threadId: row.threadId });
+      await refreshThreadWork(tx as unknown as DB, { transportId: row.transportId, threadId: row.threadId }, { lockEvenIfUnchanged: true });
     }
     return row ?? null;
   });
