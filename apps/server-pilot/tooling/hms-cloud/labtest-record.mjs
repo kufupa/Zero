@@ -8,6 +8,15 @@ const unchangedBusinessPartyFields = new Set([
   'companyid', 'company', 'companyname',
 ]);
 
+function normalizeExpectedOrganization(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2 ||
+      !Object.hasOwn(value, 'nativeId') || !Object.hasOwn(value, 'name') ||
+      typeof value.nativeId !== 'string' || typeof value.name !== 'string') return null;
+  const nativeId = value.nativeId.trim(), name = value.name.trim();
+  return nativeId.length > 0 && nativeId.length <= 100 && name.length > 0 && name.length <= 100
+    ? { nativeId, name } : null;
+}
+
 function date(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return null;
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -18,11 +27,17 @@ function date(value) {
 
 export async function currentLabtestRecord(page, expected, options = {}) {
   const { allowBlankNote = false, allowUnchangedBusinessParties = false } = options || {};
+  const hasExpectedOrganization = Boolean(options && Object.hasOwn(options, 'expectedOrganization'));
+  const expectedOrganization = hasExpectedOrganization
+    ? normalizeExpectedOrganization(options.expectedOrganization) : null;
   const { confirmation, guestId, arrival, departure, roomType, ratePlan, note } = expected || {};
   const start = date(arrival), end = date(departure);
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
-      Object.keys(options).some((key) => !['allowBlankNote', 'allowUnchangedBusinessParties'].includes(key)) ||
+      Object.keys(options).some((key) => ![
+        'allowBlankNote', 'allowUnchangedBusinessParties', 'expectedOrganization',
+      ].includes(key)) ||
       typeof allowBlankNote !== 'boolean' || typeof allowUnchangedBusinessParties !== 'boolean' ||
+      (hasExpectedOrganization && (!expectedOrganization || !allowUnchangedBusinessParties)) ||
       !/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') || !start || !end ||
       arrival < '2027-01-01' || arrival >= departure || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || typeof note !== 'string' ||
@@ -37,7 +52,7 @@ export async function currentLabtestRecord(page, expected, options = {}) {
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
   const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields,
-    unchangedBusinessPartyFields, allowUnchangedBusinessParties }) => {
+    unchangedBusinessPartyFields, allowUnchangedBusinessParties, expectedOrganization }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
@@ -77,9 +92,12 @@ export async function currentLabtestRecord(page, expected, options = {}) {
           return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
         }
       } else {
+        // The selected organization ID may exist only in Ext model data on the saved form.
+        const selectedCompanyId = key === 'companyid' && expectedOrganization &&
+          String(value).trim() === expectedOrganization.nativeId;
         if (!allowUnchangedBusinessParties || !unchangedBusinessPartyFields.includes(key) ||
             !['string', 'number'].includes(typeof value) || !String(value).trim() ||
-            (!valueNames.length && !inputs.length) ||
+            (!valueNames.length && !inputs.length && !selectedCompanyId) ||
             (valueNames.length && String(formValues[key] ?? '') !== String(value)) ||
             (inputs.length && String(inputs[0].value ?? '') !== String(value))) {
           return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
@@ -94,6 +112,21 @@ export async function currentLabtestRecord(page, expected, options = {}) {
           !linked('taid1'))) {
       return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
     }
+    if (expectedOrganization) {
+      const organizationNames = ['company', 'companyname']
+        .map((key) => partyPreimage[key]).filter((name) => name.trim());
+      const visibleOrganizationNames = partyInputs
+        .filter((el) => ['company', 'companyname'].includes(el.name.toLowerCase()))
+        .map((el) => String(el.value ?? '').trim()).filter(Boolean);
+      const otherLinkedParties = blankSavedPartyFields.filter((key) =>
+        !['companyid', 'company', 'companyname'].includes(key));
+      if (partyPreimage.companyid !== expectedOrganization.nativeId || !organizationNames.length ||
+          organizationNames.some((name) => name !== expectedOrganization.name) ||
+          !visibleOrganizationNames.length || visibleOrganizationNames.some((name) => name !== expectedOrganization.name) ||
+          otherLinkedParties.some((key) => partyPreimage[key] !== '')) {
+        return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+      }
+    }
     const native = {};
     for (const key of ['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid']) {
       if (!unique(key) || !String(data[key] ?? '').trim()) return null;
@@ -101,7 +134,8 @@ export async function currentLabtestRecord(page, expected, options = {}) {
     }
     return { native, track: value('track'), partyPreimage };
   }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields,
-    unchangedBusinessPartyFields: [...unchangedBusinessPartyFields], allowUnchangedBusinessParties });
+    unchangedBusinessPartyFields: [...unchangedBusinessPartyFields], allowUnchangedBusinessParties,
+    expectedOrganization });
   if (state?.issue) throw new Error(state.issue);
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
