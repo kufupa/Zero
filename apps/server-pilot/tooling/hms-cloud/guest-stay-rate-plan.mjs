@@ -288,7 +288,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     const close = await closeRoomRatePicker(page);
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
     if (close.outcome !== 'closed_unsaved') throw new Error('RATE_CATALOG_CLOSE_UNVERIFIED');
-    if (search.outcome === 'criteria_unavailable') return { ...search, cleanup: close.outcome };
+    if (search.outcome === 'criteria_unavailable') return { ...search, cleanupRequired: false, cleanup: close.outcome };
     if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
         search.coverage.returned !== search.coverage.matchingLoaded ||
         search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
