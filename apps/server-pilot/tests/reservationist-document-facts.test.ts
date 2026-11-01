@@ -419,6 +419,25 @@ it('requires clarification when one citation overlaps duplicate stays and anothe
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
+it('does not compare duplicate pairs with an empty authored view containing only different quoted history', () => {
+ const stay='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const plain=`${stay}\n${stay}`, separator=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+ const htmlStart=plain.length+separator.length, plainHistory='From: earlier request\nArrival 18 December 2026; departure 20 December 2026.';
+ const contextSeparator='\n\n[HTML alternative context]\n';
+ const htmlHistory='From: other message\nArrival 28 December 2026; departure 30 December 2026.';
+ const page=`${plain}${separator}\n\n${plainHistory}${contextSeparator}${htmlHistory}`;
+ const plainHistoryStart=htmlStart+2, plainHistoryEnd=plainHistoryStart+plainHistory.length;
+ const htmlHistoryStart=plainHistoryEnd+contextSeparator.length;
+ const sourceHash=createHash('sha256').update(page).digest('hex');
+ const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
+  sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:plainHistoryStart,end:plainHistoryEnd}},
+   {name:'html' as const,start:htmlStart,end:htmlStart,quoted:{start:htmlHistoryStart,end:page.length}}]};
+ const source={attachmentId:original.attachmentId,sourceHash,page:1,quote:plain,start:0,end:plain.length};
+ const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
+ expect(validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it('keeps printed arrival and departure years in a valid cross-year range', () => {
  const ranged='Please quote the stay: 30 December 2026 to 2 January 2027.';
  expect(validateCrossViewDates(ranged,'Arrival 30 December 2026; departure 2 January 2027.',ranged,{arrival:'2026-12-30',departure:'2027-01-02'}).facts[0]!.value)
