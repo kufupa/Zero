@@ -40,15 +40,6 @@ describe('original source facts bound to native revision',()=>{
  });
 });
 
-it('holds invoice continuation when either message has differing MIME views',()=>{
- const at='2026-10-01T08:00:00Z',request='Please send the final invoice for payment for the booking.';
- const prior={id:'prior',at:'2026-09-30T08:00:00Z',direction:'inbound' as const,text:request};
- const trigger={id:'current',at,direction:'inbound' as const,text:`Please see the quotation. You can book the rooms.\n\nFrom: guest@example.invalid\n\n${request}`};
- const derive=(messages:any[])=>deriveDocumentRequestContinuations({messages,triggerMessageId:'current',causalAt:at});
- expect(derive([prior,trigger])).toHaveLength(1);
- expect(derive([prior,{...trigger,sourceViews:[{}]}])).toEqual([]);
- expect(derive([{...prior,sourceViews:[{}]},trigger])).toEqual([]);
-});
 describe('explicit native acronym remains bound to selected quotation context',()=>{
  it('accepts an explicitly printed native suffix only for quotation facts',async()=>{const r=structuredClone(await syntheticRevision(['100.00'],'Room Only R','STQN')); r.groups[0]!.context={organization:{nativeId:'63',name:'Example Public Service - EPS'}};expect(()=>assertRevision([fact('party','party','EPS')],r)).not.toThrow();expect(()=>assertRevision([fact('party','party','EPS')],r,[])).toThrow('source_fact_party_mismatch');});
  it.each(['Other Organization','EPS Other Organization','Example Public Service - EPS Holdings','Example Public Service (EPS'])('rejects unsupported label %s',async name=>{const r=structuredClone(await syntheticRevision(['100.00'],'Room Only R','STQN')); r.groups[0]!.context={organization:{nativeId:'63',name}};expect(()=>assertRevision([fact('party','party','EPS')],r)).toThrow('source_fact_party_mismatch');});
@@ -266,4 +257,20 @@ describe('plain and HTML citation binding',()=>{
   await expect(run(descriptiveSameRequest,descriptiveSameRequest,[{id:'one-request',quote:'Please review attached voucher for guest A',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'one-request'}]});
   await expect(run('Please quote one room\n\nDo not use attached voucher.','No voucher is attached.',[{id:'quote',quote:'Please quote one room',view:'plain',kind:'quote'}])).resolves.toMatchObject({tasks:[{id:'quote'}]});
  });
+});
+it('deduplicates equivalent plain/HTML activations before continuing a prior invoice request',async()=>{
+ const at='2026-10-01T08:00:00Z',priorText='Please send the final invoice for payment for the booking.',plain='Please see the quotation. You can book the allocated rooms',html=`${plain}\nKind regards`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length,quotedStart=htmlEnd+2,text=`${plain}${separator}${html}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,sourceViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:quotedStart,end:text.length}},{name:'html' as const,start:htmlStart,end:htmlEnd}],prior={id:'prior-invoice',at:'2026-09-30T08:00:00Z',direction:'inbound' as const,text:priorText};let calls=0;
+ const plan=await extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:[{id:'invoice',kind:'existing_document',factIds:[],sourceContinuationId:'invoice-continuation-1'}],unresolvedAsks:[]}};return{output:{facts:[],assignments:[{taskId:'invoice',factIds:[]}],unresolvedAsks:[]}};}} as any,messages:[prior,{id:'current-renewal',at,direction:'inbound',text,sourceViews}],triggerMessageId:'current-renewal',causalAt:at,admissions:[],signal:new AbortController().signal});
+ expect(plan.tasks).toMatchObject([{id:'invoice',kind:'existing_document',source:{attachmentId:'message:prior-invoice',quote:'send the final invoice for payment'}}]);
+ const conditionalPlain='Please see the quotation. You can book the rooms.',conditionalHtml=`${conditionalPlain}\n\nOnly if breakfast is included\nKind regards`,conditionalHtmlStart=conditionalPlain.length+separator.length,conditionalHtmlEnd=conditionalHtmlStart+conditionalHtml.length,conditionalQuotedStart=conditionalHtmlEnd+2,conditionalText=`${conditionalPlain}${separator}${conditionalHtml}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,conditionalViews=[{name:'plain' as const,start:0,end:conditionalPlain.length,quoted:{start:conditionalQuotedStart,end:conditionalText.length}},{name:'html' as const,start:conditionalHtmlStart,end:conditionalHtmlEnd}];
+ expect(deriveDocumentRequestContinuations({messages:[prior,{id:'conditional-renewal',at,direction:'inbound',text:conditionalText,sourceViews:conditionalViews}],triggerMessageId:'conditional-renewal',causalAt:at})).toEqual([]);
+ const consumedCondition='Please see the quotation. You can book the rooms\n\nOnly if breakfast is included';
+ expect(deriveDocumentRequestContinuations({messages:[prior,{id:'consumed-condition',at,direction:'inbound',text:`${consumedCondition}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`}],triggerMessageId:'consumed-condition',causalAt:at})).toEqual([]);
+ const questionHtml=`${plain}. Are you available to discuss parking?`,questionHtmlStart=plain.length+separator.length,questionHtmlEnd=questionHtmlStart+questionHtml.length,questionQuotedStart=questionHtmlEnd+2,questionText=`${plain}${separator}${questionHtml}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,questionViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:questionQuotedStart,end:questionText.length}},{name:'html' as const,start:questionHtmlStart,end:questionHtmlEnd}];
+ expect(deriveDocumentRequestContinuations({messages:[prior,{id:'question-renewal',at,direction:'inbound',text:questionText,sourceViews:questionViews}],triggerMessageId:'question-renewal',causalAt:at})).toHaveLength(1);
+});
+
+it('counts an identical earlier invoice request once across MIME views with separate histories',()=>{
+ const at='2026-10-01T08:00:00Z',request='Please send the final invoice for payment for the booking.',plainHistory='From: plain@example.invalid\nSubject: Earlier stay\n\nArrival 21 December 2026; departure 23 December 2026',htmlHistory='From: html@example.invalid\nSubject: Other quoted stay\n\nArrival 22 December 2026; departure 24 December 2026',separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=request.length+separator.length,htmlEnd=htmlStart+request.length,text=`${request}${separator}${request}\n\n${plainHistory}\n\n[HTML alternative context]\n${htmlHistory}`,plainHistoryStart=text.indexOf(plainHistory),htmlHistoryStart=text.indexOf(htmlHistory),priorViews=[{name:'plain' as const,start:0,end:request.length,quoted:{start:plainHistoryStart,end:plainHistoryStart+plainHistory.length}},{name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:htmlHistoryStart,end:text.length}}],prior={id:'prior-invoice',at:'2026-09-30T08:00:00Z',direction:'inbound' as const,text,sourceViews:priorViews},activation='Please see the quotation. You can book the allocated rooms.',current={id:'current-renewal',at,direction:'inbound' as const,text:`${activation}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${request}`};
+ expect(deriveDocumentRequestContinuations({messages:[prior,current],triggerMessageId:current.id,causalAt:at})).toHaveLength(1);
 });
