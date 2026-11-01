@@ -116,7 +116,7 @@ function normalizeAgencySelection(selection) {
     profileProofToken: clean(selection.profileProofToken) };
 }
 
-function normalizeOrganizationSelection(selection) {
+export function normalizeOrganizationSelection(selection) {
   if (!selection) return null;
   const nativeId = clean(selection.nativeId);
   const name = clean(selection.displayedOrganization);

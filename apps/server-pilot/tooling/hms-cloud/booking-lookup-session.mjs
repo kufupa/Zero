@@ -32,7 +32,7 @@ import {
 } from './guest-stay-room-rate.mjs';
 import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
-import { saveNewLabtestStay } from './guest-stay-save.mjs';
+import { normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -63,17 +63,17 @@ const QUERY_ERRORS = new Set([
 ]);
 
 function organizationSelectionProof(value) {
-  const nativeId = value?.nativeId, name = value?.displayedOrganization;
-  if (value?.outcome !== 'selected_unsaved' || typeof nativeId !== 'string' || !nativeId.trim() ||
-      nativeId !== nativeId.trim() || typeof name !== 'string' || !name.trim() || name !== name.trim() ||
+  const normalized = normalizeOrganizationSelection(value);
+  const name = value?.displayedOrganization;
+  if (!normalized || value.nativeId !== normalized.nativeId || name !== normalized.name ||
       typeof value.searchId !== 'string' || !value.searchId.trim() ||
       typeof value.profileProofToken !== 'string' || !value.profileProofToken.trim() ||
       value.nativeIdEvidence !== 'form_change_response' || value.selectedField?.name !== 'company' ||
-      value.selectedField?.value !== name) return null;
+      value.selectedField.value !== name) return null;
   return {
-    outcome: 'selected_unsaved', nativeId, displayedOrganization: name,
+    outcome: 'selected_unsaved', nativeId: normalized.nativeId, displayedOrganization: normalized.name,
     searchId: value.searchId, profileProofToken: value.profileProofToken,
-    nativeIdEvidence: value.nativeIdEvidence, selectedField: { name: 'company', value: name },
+    nativeIdEvidence: value.nativeIdEvidence, selectedField: { name: 'company', value: normalized.name },
   };
 }
 
@@ -128,6 +128,7 @@ async function readSavedOrganizationCreate(state, request) {
   }
   try {
     return await withCenturionStay360Page(async (page) => {
+      await installReadOnlyGuard(page.context());
       const stay = await readConfirmationFromStay360(page, target.confirmation, {
         guestName: 'Proof Labtest', arrivalDate: target.expected.arrival,
       });
