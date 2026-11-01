@@ -521,7 +521,7 @@ describe('projectFinanceDisplayPreflight', () => {
         basis: 'stay360_display_only_not_ledger',
         balance: { amount: { state: 'observed_zero', value: '0.00' }, currency: { value: 'ZAR' } },
         depositReceived: { amount: { state: 'observed', value: '125.00' } },
-        depositDue: { state: 'observed', value: '300.00' },
+        depositDue: { amount: { state: 'observed', value: '300.00' } },
         depositDueDate: { state: 'observed', value: '02-FEB-2027' },
       },
       folioCard: {
