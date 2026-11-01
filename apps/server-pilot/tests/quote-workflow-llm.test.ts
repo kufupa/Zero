@@ -153,6 +153,70 @@ describe('lunaAnalysisSchema', () => {
   });
 });
 
+describe('per-stay quote allocation', () => {
+  it('keeps the source-bound sole-adult no-child convention quote-only', () => {
+    expect(CENTURION_HOTEL_RULES).toContain('current person-authored Centurion quote requests only');
+    expect(CENTURION_HOTEL_RULES).toContain('two adults sharing one room');
+    expect(CENTURION_HOTEL_RULES).toContain('Never apply this convention to booking/create');
+    expect(K2_MAPPING).toContain('property-specific quote convention in the hotel rules applies');
+  });
+
+  it('defaults a single room independently for each distinct stay', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          { ...group, arrival: '2026-11-12', departure: '2026-11-14', rooms: null, adultsPerRoom: 2, childAges: [] },
+          { ...group, arrival: '2026-12-12', departure: '2026-12-14', rooms: null, adultsPerRoom: 2, childAges: [] },
+        ],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups.map(({ quantity, fields }) => [quantity, fields.quantity])).toEqual([
+      [1, 'defaulted'],
+      [1, 'defaulted'],
+    ]);
+  });
+
+  it('keeps a scoped occupancy warning on the stay even when its extracted count is present', () => {
+    const parsed = lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote',
+      groups: [
+        { ...group, arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 2, childAges: [] },
+        { ...group, arrival: '2026-12-12', departure: '2026-12-14', rooms: 1, adultsPerRoom: 1, childAges: [] },
+      ],
+      missing: [],
+    }));
+    const analysisWithStayIds = {
+      ...parsed,
+      groups: parsed.groups.map((row, index) => ({ ...row, stayId: index === 0 ? 'stay-a' : 'stay-b' })),
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm the second stay’s occupancy.', stayId: 'stay-b' }],
+    } as Parameters<typeof mapLlmDecision>[0];
+    const mapped = mapLlmDecision(analysisWithStayIds);
+
+    expect(mapped.groups.map(({ fields }) => fields.adults)).toEqual(['extracted', 'missing']);
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 2');
+  });
+
+  it('does not let the double/twin quote default erase a scoped occupancy warning', () => {
+    const parsed = lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote',
+      groups: [{ ...group, rooms: 1, adultsPerRoom: null, roomPreference: 'twin' }],
+      missing: [],
+    }));
+    const mapped = mapLlmDecision({
+      ...parsed,
+      groups: parsed.groups.map((row) => ({ ...row, stayId: 'stay-a' })),
+      missing: [{ field: 'adultsPerRoom', question: 'Verify this stay’s source occupancy.', stayId: 'stay-a' }],
+    } as Parameters<typeof mapLlmDecision>[0]);
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { adults: 'missing' } });
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+});
+
 describe('buildQuoteWorkflowPrompt', () => {
   it('uses the hotel rules verbatim and wraps thread, body and attachment text as data', () => {
     const prompt = buildQuoteWorkflowPrompt({
@@ -584,7 +648,7 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           workflow: 'quote',
-          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 5, childrenTotal: 0 }],
+          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 6, childrenTotal: 0 }],
         }),
       ),
     );
@@ -592,7 +656,7 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups[0]).toMatchObject({
       quantity: 2,
       adults: 3,
-      adultsTotal: 5,
+      adultsTotal: 6,
       childrenTotal: 0,
       fields: { adultsTotal: 'extracted', childrenTotal: 'extracted' },
     });
@@ -646,6 +710,22 @@ describe('mapLlmDecision', () => {
 
     expect(mapped.groups[0]?.departureDate).toBe('2026-11-13');
     expect(mapped.missing.map((item) => item.field)).not.toContain('departureDate');
+  });
+
+  it('does not replace a rejected checkout with a one-night default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-11-12', departure: null, dateEvidence: '12 Nov' }],
+          missing: [{ field: 'stayDates', question: 'The checkout must be after arrival.' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { departureDate: 'missing' } });
+    expect(mapped.groups[0]).not.toHaveProperty('departureDate');
+    expect(mapped.missingQuoteReplyFields).toContain('Departure date for stay 1');
   });
 
   it('keeps checkout derived from stated nights instead of replacing it with one night', () => {
@@ -717,6 +797,212 @@ describe('mapLlmDecision', () => {
     expect(mapped.missingQuoteReplyFields).toEqual([]);
   });
 
+  it('does not turn an explicit multi-room adult total into an even split or a two-adult default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 2, adultsPerRoom: null, adultsTotal: 5 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      adultsTotal: 5,
+      fields: { adults: 'missing' },
+    });
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+
+  it('reconciles a single defaulted room with its guest total', () => {
+    const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote', missing: [], groups: [{ ...group, rooms: null, adultsPerRoom: 2, adultsTotal: 2 }],
+    })));
+    expect(mapped.groups[0]).toMatchObject({ quantity: 1, adults: 2, fields: { adults: 'extracted' } });
+    expect(mapped.missingQuoteReplyFields).not.toContain('Number of guests per room for stay 1');
+  });
+
+  it('marks a stay-wide adult total that disagrees with its per-room rows as incomplete', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, adultsPerRoom: 2, adultsTotal: 5 }],
+      })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { adults: 'missing' } });
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+    expect(mapped.missing).toContainEqual(expect.objectContaining({ field: 'adults' }));
+  });
+
+  it('reconciles stay totals across room rows that share a quote one-night default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: null,
+            rooms: 1,
+            adultsPerRoom: 2,
+            adultsTotal: 5,
+            childrenTotal: 1,
+            childAges: [7],
+          },
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: null,
+            rooms: 1,
+            adultsPerRoom: 3,
+            adultsTotal: 5,
+            childrenTotal: 1,
+            childAges: [],
+          },
+        ],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups).toMatchObject([
+      { departureDate: '2026-11-13', fields: { adults: 'extracted' } },
+      { departureDate: '2026-11-13', fields: { adults: 'extracted' } },
+    ]);
+    expect(mapped.groups.map(({ fields }) => fields.childAges)).toEqual([undefined, undefined]);
+    expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
+  it('keeps unknown child ages visibly incomplete instead of treating them as no children', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 1, adultsPerRoom: 2, childrenTotal: 1, childAges: null }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      childrenAges: [],
+      fields: { childAges: 'missing' },
+    });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 1');
+  });
+
+  it('scopes unscoped occupancy warnings to the incomplete stay in multi-stay quotes', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 2,
+            childrenTotal: 0,
+            childAges: [],
+          },
+          {
+            ...group,
+            arrival: '2026-12-02',
+            departure: '2026-12-04',
+            rooms: 1,
+            adultsPerRoom: null,
+            childrenTotal: 1,
+            childAges: null,
+            roomPreference: null,
+            guestNames: [],
+          },
+        ],
+        missing: [
+          { field: 'adultsPerRoom', question: 'Confirm adults per room.' },
+          { field: 'childAges', question: 'Confirm child ages.' },
+        ],
+      })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ adults: 2, fields: { adults: 'extracted' } });
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
+    expect(mapped.groups[1]).toMatchObject({ fields: { adults: 'missing', childAges: 'missing' } });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 2');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 2');
+  });
+
+  it('keeps legacy empty child ages unresolved in a multi-stay warning', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            childrenTotal: 0,
+            childAges: [],
+          },
+          {
+            ...group,
+            arrival: '2026-12-02',
+            departure: '2026-12-04',
+            childAges: [],
+          },
+        ],
+        missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+      })),
+    );
+
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
+    expect(mapped.groups[1]?.fields.childAges).toBe('missing');
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 2');
+  });
+
+  it('does not default unknown adults for a single room without a stated double or twin', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, rooms: 1, adultsPerRoom: null, roomPreference: null, guestNames: [] }],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups[0]?.fields.adults).toBe('missing');
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+
+  it('reconciles a stay-wide child total against every room in the stay', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 2, adultsPerRoom: 2, childrenTotal: 3, childAges: [7] }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      childrenTotal: 3,
+      childrenAges: [7],
+      fields: { childAges: 'missing' },
+    });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 1');
+  });
+
+  it('does not treat a null stay-wide total as an explicit occupancy mismatch', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, childrenTotal: null, childAges: [] }],
+      })),
+    );
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
+  });
+
   it('marks an unresolved quote room type as a defaulted any-type choice', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
@@ -778,6 +1064,30 @@ describe('mapLlmDecision', () => {
       'Arrival date for stay 1',
       'Number of rooms for stay 1',
     ]);
+  });
+
+  it('does not assume one room for every row when a multi-row stay omits quantities', () => {
+    const source = group;
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          { ...source, rooms: null },
+          { ...source, rooms: null, roomPreference: 'STD SGL' },
+        ],
+      })),
+    );
+
+    expect(mapped.groups.map((row) => row.quantity)).toEqual([undefined, undefined]);
+    expect(mapped.groups.map((row) => row.fields.quantity)).toEqual(['missing', 'missing']);
+  });
+
+  it('keeps a single unspecified room default for one complete guest row', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [{ ...group, rooms: null }] })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ quantity: 1, fields: { quantity: 'defaulted' } });
   });
 
   it('does not apply quote room or occupancy defaults to create_booking', () => {

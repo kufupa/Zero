@@ -115,14 +115,14 @@ it('binds review-only cancellation preflight to the exact inbound draft source',
 
 afterEach(()=>{vi.unstubAllEnvs();});
 
-it('resolves registered draft properties and refuses unknown transports',()=>{
- const ready={HMS_DAVINCI_MAKE_QUOTE:'on',RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV:'/tmp/hrdav-quote.json'};
- expect(()=>reservationistDraftPropertyCode('owner')).toThrow();
+it('resolves draft property HRDAV only for Da Vinci transports when HMS_DAVINCI_MAKE_QUOTE is on',()=>{
+ expect(()=>reservationistDraftPropertyCode('owner')).toThrow('This mailbox is not set up for this hotel');
  expect(reservationistDraftPropertyCode('transport-centurion')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-davinci')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-faith',{HMS_DAVINCI_MAKE_QUOTE:'true'})).toBe('HRCEN');
- expect(reservationistDraftPropertyCode('transport-davinci',ready)).toBe('HRDAV');
- expect(reservationistDraftPropertyCode('transport-kmgidi',ready)).toBe('HRDAV');
+ const davinciQuoteEnv={HMS_DAVINCI_MAKE_QUOTE:'on',RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV:'/synthetic/hrdav-quote.json'};
+ expect(reservationistDraftPropertyCode('transport-davinci',davinciQuoteEnv)).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-kmgidi',davinciQuoteEnv)).toBe('HRDAV');
  expect(reservationistDraftPropertyCode('transport-centurion',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRCEN');
  expect(()=>sealReservationistDraftSource({...source,transportId:'transport-davinci',propertyCode:'HRDAV'})).not.toThrow();
 });

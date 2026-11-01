@@ -638,6 +638,7 @@ export function storedAnalysis(
   );
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
+  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
   const stays = formStays(payload, state);
   const totalRoomsDefaultRowIds = new Set(
     stays.flatMap((stay) => {
@@ -654,6 +655,23 @@ export function storedAnalysis(
       return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
     }),
   );
+  const roomTotalByStay = new Map(stays.map((stay) => {
+    const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
+    const staffReconciled = counts.every((count) => isInt(count, 1, 999)) && stay.rows.some((row) =>
+      Object.hasOwn(state, `stays[${stay.id}].rows[${row.id}].count`),
+    );
+    return [stay.id, staffReconciled ? counts.reduce<number>((sum, count) => sum + Number(count), 0) : stay.totalRooms] as const;
+  }));
+  const roomTotalNeedsReview = new Set(stays.flatMap((stay) => {
+    const clearedCount = stay.rows.some((row) => {
+      const path = `stays[${stay.id}].rows[${row.id}].count`;
+      return Object.hasOwn(state, path) && state[path] === null;
+    });
+    if (stay.totalRooms === null && stay.rows.length <= 1 && !clearedCount) return [];
+    const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
+    const totalWasReconciledByStaff = roomTotalByStay.get(stay.id) !== stay.totalRooms;
+    return counts.some((count) => !isInt(count, 1, 999)) || (!totalWasReconciledByStaff && stay.totalRooms !== null && counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms) ? [stay.id] : [];
+  }));
   const dateKeys = new Set(
     stays.map((stay) => {
       const arrival = pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival);
@@ -682,7 +700,7 @@ export function storedAnalysis(
         ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: null,
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
-        childAges: [],
+        childAges: null,
         board: null,
         roomPreference: null,
         guestNames,
@@ -698,6 +716,14 @@ export function storedAnalysis(
       const rowNames = guestNames.slice(guestAt, guestAt + take);
       guestAt += take;
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
+      const childAgesPath = at('childAges');
+      const childAges = pick<number[] | null>(childAgesPath, row.childAges);
+      const totalChildrenPath = `stays[${stay.id}].totalChildren`;
+      const totalChildren = Object.hasOwn(state, totalChildrenPath) ? state[totalChildrenPath] : sourceStay?.totalChildren;
+      const unresolvedLegacyEmptyAges = Boolean(
+        hasChildAgeWarning && sourceStay && sourceStay.totalChildren == null &&
+        typeof totalChildren !== 'number' && childAges?.length === 0 && !Object.hasOwn(state, childAgesPath),
+      );
       groups.push({
         ...dates,
         dateEvidence: null,
@@ -705,7 +731,7 @@ export function storedAnalysis(
         ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
+        childAges: unresolvedLegacyEmptyAges ? null : childAges,
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,
@@ -743,6 +769,31 @@ export function storedAnalysis(
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
+  const everyRowKnown = (field: 'adults' | 'childAges') =>
+    order.length > 0 && order.every((slot, index) => {
+      if (!slot.rowId) return false;
+      const group = groups[index];
+      return field === 'adults'
+        ? typeof group?.adultsPerRoom === 'number'
+        : Array.isArray(group?.childAges);
+    });
+  const adultsResolved = everyRowKnown('adults');
+  const childAgesResolved = everyRowKnown('childAges');
+  if (stays.length > 1) {
+    luna.missing = luna.missing.filter((item) =>
+      !/child/i.test(`${item.field} ${item.question}`) ||
+      Boolean((item as typeof item & { stayId?: string }).stayId),
+    );
+  }
+  if (adultsResolved || childAgesResolved) {
+    luna.missing = luna.missing.filter((item) => {
+      const field = `${item.field} ${item.question}`;
+      return Boolean((item as typeof item & { stayId?: string }).stayId) || !(
+        (childAgesResolved && /child/i.test(field)) ||
+        (adultsResolved && /adult|occupancy/i.test(field) && !/total/i.test(item.field))
+      );
+    });
+  }
   const mapped = mapLlmDecision(luna, {
     channel: aopQuoteChannelFromSender({
       fromAddress: read.fromAddress,
@@ -755,6 +806,11 @@ export function storedAnalysis(
     const slot = order[index];
     if (!slot) return;
     group.id = slot.groupId;
+    if (slot.rowId && roomTotalNeedsReview.has(slot.stayId)) {
+      const row = stays.find((stay) => stay.id === slot.stayId)?.rows.find((item) => item.id === slot.rowId);
+      group.fields.quantity = 'missing';
+      if (row && pick(`stays[${slot.stayId}].rows[${row.id}].count`, row.rooms) == null) delete group.quantity;
+    }
     if (slot.rowId && totalRoomsDefaultRowIds.has(slot.rowId)) group.fields.quantity = 'defaulted';
     const stayPath = `stays[${slot.stayId}].requested`;
     const corrected: Array<[string, string]> = [
@@ -768,15 +824,22 @@ export function storedAnalysis(
       corrected.push(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
+        ['childAges', `${rowPath}.childAges`],
         ['board', `${rowPath}.board`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.
       if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
     }
     for (const [key, path] of corrected) {
-      if (Object.hasOwn(state, path)) group.fields[key] = 'staff_corrected';
+      if (!Object.hasOwn(state, path) || (key === 'quantity' && state[path] === null) || (key === 'childAges' && !Array.isArray(state[path])) || (key === 'adults' && typeof state[path] !== 'number')) continue;
+      group.fields[key] = 'staff_corrected';
     }
   });
+  const childAgesUnresolved = mapped.groups.some((group) => group.fields.childAges === 'missing');
+  const mappedMissing = mapped.missing.filter((item) => childAgesUnresolved || !/child/i.test(item.field));
+  const missingQuoteReplyFields = mapped.missingQuoteReplyFields.filter(
+    (field) => childAgesUnresolved || !/child/i.test(field),
+  );
   const refs: Record<string, GroupRef> = Object.fromEntries(
     order.map((slot) => [slot.groupId, { stayId: slot.stayId, rowId: slot.rowId }]),
   );
@@ -791,16 +854,17 @@ export function storedAnalysis(
         const confirmationNumber = confirmationForStay(sourceStay, payload);
         return {
           ...group,
+          ...(stayId && roomTotalByStay.get(stayId) != null ? { roomsTotal: roomTotalByStay.get(stayId)! } : {}),
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
           ...(confirmationNumber ? { confirmationNumber } : {}),
         };
       }),
-      missingQuoteReplyFields: mapped.missingQuoteReplyFields,
+      missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
-      reviewItems: [...failures, ...numberReviews, ...questionItems(mapped.missing)],
+      reviewItems: [...failures, ...numberReviews, ...questionItems(mappedMissing)],
       requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,

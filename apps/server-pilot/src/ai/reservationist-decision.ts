@@ -51,6 +51,11 @@ const MOVE_CATALOG_RULES = `Move catalog — pick one workflow. Never claim an H
 - workflow=acknowledge: thank-you or "received" with no remaining ask, where staff would send a short ack. replyDraft short or empty. File-and-forget FYI stays skip.
 - workflow=hms_todo: staff must do HMS work this agent cannot. Fill todoTarget, todoReason, todoNextStep. replyDraft empty or holding. Never claim the action was done.`;
 
+const GENERIC_MOVE_CATALOG_RULES = MOVE_CATALOG_RULES.replace(
+  'property or partner (Da Vinci, events/conference team, accounts, another hotel)',
+  'property or partner (another hotel, events/conference team, accounts)',
+);
+
 const HOTEL_OPERATING_RULES = `Johannesburg timezone.
 - Dates are ISO yyyy-mm-dd; departureDate is the checkout day (exclusive). Rates are per room per night in ZAR.
 - Quote/quotation, price, rate or availability asks stay workflow=quote despite book/reserve.
@@ -62,23 +67,28 @@ const HOTEL_OPERATING_RULES = `Johannesburg timezone.
 - Cold vendor/sales outreach, newsletters, promos, quarantine digests and cold solicitation are spam. OTP codes, bounces, payment notices, OTA relays, job/CV, day-visitor or F&B asks are not spam.
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel.
-${MOVE_CATALOG_RULES}
+${GENERIC_MOVE_CATALOG_RULES}
 - Venue hire, boardroom, conference or delegate packages (DDR), and events: forward_to_partner (events team), no tools. A rooms-only group is quote at any size, 10+ rooms included.
-- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room.
-- In stayAsk, adults and children drive the search and may use defaults; adultsTotal and childrenTotal are explicit stay-wide counts only, never inferred from rooms, occupancy, names or ages.
+- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A stay-wide adult count across multiple rooms does not prove the number in each room, even when it divides evenly.
+- In stayAsk, adults and children drive the search and may use defaults; adultsTotal and childrenTotal are explicit stay-wide counts only, never inferred from rooms, occupancy, names or ages. Do not divide or round a stay-wide adult count into adults per room.
 - Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
-export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), ${HOTEL_OPERATING_RULES}`;
+export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), ${HOTEL_OPERATING_RULES.replace(
+  'property or partner (another hotel, events/conference team, accounts)',
+  'property or partner (Da Vinci, events/conference team, accounts, another hotel)',
+)}\n- For current person-authored Centurion quote requests only, apply the source-clear adult occupancy conventions: one verified adult/one room, two adults sharing one room, or N named adults in N rooms means no children (childAges:[]), only absent child/family/minor or conflicting evidence. Never apply this convention to booking/create, quoted history, attachments or ambiguous requests.`;
 
 export const DAVINCI_HOTEL_RULES = `Property: Da Vinci Hotel and Suites (HMS property code HRDAV), ${HOTEL_OPERATING_RULES.replace(
-  'property or partner (Da Vinci, events/conference team, accounts, another hotel)',
+  'property or partner (another hotel, events/conference team, accounts)',
   'property or partner (another Legacy hotel, events/conference team, accounts)',
 )}`;
 
-/** Quote prompts pick hotel identity from the HMS property. Unknown codes stay HRCEN. */
+/** Undefined preserves the legacy HRCEN default; null or unknown codes get only generic rules. */
 export function hotelRulesForProperty(propertyCode?: string | null): string {
-  return propertyCode === 'HRDAV' ? DAVINCI_HOTEL_RULES : CENTURION_HOTEL_RULES;
+  if (propertyCode === undefined || propertyCode === 'HRCEN') return CENTURION_HOTEL_RULES;
+  if (propertyCode === 'HRDAV') return DAVINCI_HOTEL_RULES;
+  return HOTEL_OPERATING_RULES;
 }
 
 export const reservationistDecisionSchema = z.object({
@@ -145,14 +155,17 @@ const lunaGroupSchema = z.object({
     .number()
     .int()
     .nullable()
-    .describe("Adults in EACH room; '6 adults in 3 rooms' = 2"),
+    .describe('Adults in EACH room; null when only a stay-wide total is known across multiple rooms.'),
   childrenTotal: z
     .number()
     .int()
     .nullable()
     .optional()
     .describe('Stay-wide child total when explicitly stated; null or omitted when unknown.'),
-  childAges: z.array(z.number().int()),
+  childAges: z
+    .array(z.number().int())
+    .nullable()
+    .describe('Actual ages, [] only for an affirmed no-children/zero-children request, or null when child presence, count or ages are unknown.'),
   board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),

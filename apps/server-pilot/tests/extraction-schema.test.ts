@@ -75,6 +75,41 @@ describe('mail extraction contract', () => {
     expect(legacyPayload.stays[0]!.totalChildren).toBeUndefined();
   });
 
+  it('binds a reversed-checkout warning to the stay that produced it', () => {
+    const invalidStay = {
+      ...AE1_OUTPUT.stays[1]!,
+      requested: { arrival: '2027-11-17', departure: '2027-11-12' },
+    };
+    const parsed = mailExtractionSchema.parse({ ...ACTION_OUTPUT, stays: [AE1_OUTPUT.stays[0]!, invalidStay] });
+    const { payload } = sanitizeExtraction(parsed, { messageId: 'msg-reversed-stay', sourceText: AE1_TEXT });
+
+    expect(payload.stays[1]?.requested).toMatchObject({ arrival: '2027-11-17', departure: null });
+    expect(payload.missing).toContainEqual(expect.objectContaining({
+      field: 'stayDates',
+      stayId: payload.stays[1]?.id,
+    }));
+    expect(mailExtractionPayloadSchema.parse(payload).missing).toEqual(payload.missing);
+  });
+
+  it('preserves an explicit unknown-child-ages marker instead of normalizing it to no children', () => {
+    const output = {
+      ...AE1_OUTPUT,
+      stays: AE1_OUTPUT.stays.map((stay, stayIndex) =>
+        stayIndex === 0
+          ? { ...stay, rows: stay.rows.map((row, rowIndex) => rowIndex === 0 ? { ...row, childAges: null } : row) }
+          : stay,
+      ),
+    };
+    const parsed = mailExtractionSchema.parse(output);
+    const { payload } = sanitizeExtraction(parsed, {
+      messageId: 'msg-unknown-child-ages',
+      sourceText: AE1_TEXT,
+    });
+
+    expect(payload.stays[0]?.rows[0]?.childAges).toBeNull();
+    expect(mailExtractionPayloadSchema.parse(payload).stays[0]?.rows[0]?.childAges).toBeNull();
+  });
+
   it('parses an older stored payload without origin', () => {
     const parsed = mailExtractionSchema.safeParse(AE1_OUTPUT);
     expect(parsed.success).toBe(true);
@@ -117,6 +152,12 @@ describe('mail extraction contract', () => {
     expect(EXTRACTION_RULES).toContain(
       'A voucher-only delivery or confirmation with no new booking request remains voucher_pop; a voucher alone is not proof of payment.',
     );
+  });
+
+  it('instructs extraction to keep unknown child ages distinct from an empty child list', () => {
+    expect(EXTRACTION_RULES).toContain('for a person-authored Centurion kind:quote only');
+    expect(EXTRACTION_RULES).toContain('Never use that convention for booking');
+    expect(EXTRACTION_RULES).toContain('use null when count or ages remain unknown');
   });
 });
 

@@ -4,9 +4,38 @@ import {createHash} from 'node:crypto';
 import {resolveQuoteRevision,quoteDigest} from '../src/quote-proposal/quote-revision.js';
 import {compareRateClaim} from '../src/quote-proposal/rate-check.js';
 import {assertRevisionSourceFacts} from '../src/ai/reservationist-source-facts.js';
+import {HTML_ALTERNATIVE_MARKER} from '../src/ai/reservationist-message-view.js';
 const text='Please quote 1 room for 1 official from Provincial Treasury. Standard room, dinner, bed & breakfast. Government rate. Check in 11 October 2026, check out 16 October 2026.',sha=createHash('sha256').update(text).digest('hex'),source={attachmentId:'message:m',sourceHash:sha,page:1,quote:text,start:0,end:text.length};
 const fact=(kind:string,value:any)=>({id:kind,kind,value,source,disclosure:'guest',verification:'text_verified',authority:'customer_claim'} as any);
 const ctx=()=>({task:{id:'q',kind:'quote',factIds:['dates','room','board','party'],source},facts:[fact('dates',{arrival:'2026-10-11',departure:'2026-10-16'}),fact('room',{roomRef:'1',quantity:1,adults:1,childAges:[]}),fact('board','dinner, bed & breakfast'),fact('party','Provincial Treasury')],input:{version:1,requestId:'m',propertyCode:'HRCEN',authorizationScope:{ownerRef:'owner',threadId:'thread'},trigger:{id:'m',at:'2026-09-30T12:00:00Z'},messages:[{id:'m',at:'2026-09-30T12:00:00Z',direction:'inbound',text}],authorizedArtifacts:[],clock:{causalAt:'2026-09-30T12:00:00Z',sourceAt:new Date().toISOString(),sourceMode:'current_read',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false,emailSend:false}},signal:new AbortController().signal} as any);
+it.each(['plain','html'] as const)('does not assume an unspecified board when either %s or the other email view requests breakfast',selected=>{
+ const run=(breakfast:boolean)=>{const c=ctx(),plain='Please quote 1 room for 1 adult.\nKind regards',html=`Please quote 1 room for 1 adult.${breakfast?' Breakfast required.':''}`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,start=selected==='plain'?0:htmlStart,end=selected==='plain'?plain.length:text.length,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:text.slice(start,end),start,end};
+  c.input.messages[0]={...c.input.messages[0],text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]};c.task.source=selectedSource;c.facts=c.facts.filter((f:any)=>f.kind==='dates'||f.kind==='room').map((f:any)=>({...f,source:selectedSource}));return()=>deriveReservationistQuoteRequest(c);};
+ expect(run(true)).toThrow('business_board_unavailable');
+ expect(run(false)().rooms[0].required.boardBases).toBeUndefined();
+});
+it('preserves room requirements from either email view and flags conflicting or unsupported ones',()=>{
+ const run=(plain:string,html:string,propertyCode='HRCEN')=>{const c=ctx(),separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:html,start:htmlStart,end:text.length};
+  c.input.propertyCode=propertyCode;c.input.messages[0]={...c.input.messages[0],text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]};c.task.source=selectedSource;c.facts=c.facts.filter((f:any)=>f.kind==='dates'||f.kind==='room').map((f:any)=>({...f,source:selectedSource}));return()=>deriveReservationistQuoteRequest(c);};
+ const generic='Please quote one room for one adult.',deluxe='Please quote one deluxe room for one adult.',standard='Please quote one standard room for one adult.';
+ expect(run(deluxe,generic)().rooms[0].required.roomCodes).toEqual(['DLXQN']);
+ expect(run(generic,'Please quote one accessible room for one adult.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run(deluxe,standard)).toThrow('business_room_allocation_ambiguous');
+ expect(run('Please quote one accessible room for one adult.',generic)).toThrow('business_room_allocation_ambiguous');
+ expect(run(generic,'Please quote one standard room for one adult. Is the restaurant wheelchair accessible?')().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
+ expect(run(generic,'Please quote one standard room for one adult. Is the restaurant wheelchair accessible?','HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run(generic,'Please quote one room for a wheelchair user.')).toThrow('business_room_allocation_ambiguous');
+ expect(run(generic,'Please quote one room for a wheelchair user.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run(generic,'Please quote one room for one adult. It must be wheelchair accessible.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run(generic,'Please quote one room for one adult. It must be wheelchair accessible.')).toThrow('business_room_allocation_ambiguous');
+ expect(run(standard,standard+" It doesn't have to be wheelchair accessible.")().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
+ expect(run(standard,standard+" It doesn't have to be wheelchair accessible.",'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run(generic,'We need a wheelchair accessible room, parking is not required.','HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
+ expect(run(generic,'We need a wheelchair accessible room, parking is not required.')).toThrow('business_room_allocation_ambiguous');
+ expect(run(standard,standard+' Wheelchair access is not required.','HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run(standard,standard+' It does not need to be wheelchair accessible.','HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run(standard,standard+' It does not need to be wheelchair accessible.')().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
+});
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
  if(!government){c.input.messages[0].text=requestText;c.task.source={...c.task.source,quote:requestText,end:requestText.length,sourceHash:createHash('sha256').update(requestText).digest('hex')};c.facts=c.facts.map((f:any)=>({...f,source:c.task.source,...(f.kind==='party'?{value:name}:{})}));}

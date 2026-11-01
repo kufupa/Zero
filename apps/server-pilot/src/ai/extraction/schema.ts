@@ -120,7 +120,10 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .describe('Adults in EACH room, not in total.'),
-          childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
+          childAges: z
+            .array(z.number().int())
+            .nullable()
+            .describe('Actual ages in these rooms; [] for explicit zero children or the source-clear person-authored Centurion quote-only adult convention, never for booking, children/family or ambiguous requests; null when child count or ages remain unknown.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
       ),
@@ -150,7 +153,7 @@ export type ExtractionRow = {
   roomType: string | null;
   rooms: number | null;
   adultsPerRoom: number | null;
-  childAges: number[];
+  childAges: number[] | null;
   board: ExtractionBoard | null;
 };
 export type ExtractionGuest = {
@@ -198,7 +201,7 @@ export const mailExtractionPayloadSchema = z.object({
   endClient: mailExtractionObjectSchema.shape.endClient,
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
-  missing: mailExtractionObjectSchema.shape.missing,
+  missing: z.array(z.object({ field: z.string(), question: z.string(), stayId: z.string().optional() })),
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
@@ -377,9 +380,9 @@ export function sanitizeExtraction(
         roomType: cleanText(row.roomType),
         rooms: countOf(row.rooms, 1, 999),
         adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
-        childAges: row.childAges
-          .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
-          .slice(0, 9),
+        childAges: row.childAges === null
+          ? null
+          : row.childAges.filter((age) => Number.isInteger(age) && age >= 0 && age <= 17).slice(0, 9),
         board: row.board,
       })),
       ...(guests !== undefined ? { guests } : {}),
@@ -405,11 +408,12 @@ export function sanitizeExtraction(
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
   });
-  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
+  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay, index) => {
     const arrival = validIsoDate(stay.requested.arrival);
     const departure = validIsoDate(stay.requested.departure);
+    const stayId = stays[index]?.id;
     return arrival && departure && departure <= arrival
-      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
+      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.', ...(stayId ? { stayId } : {}) }]
       : [];
   });
   const missing = [
@@ -420,6 +424,7 @@ export function sanitizeExtraction(
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',
       question: cleanText(item.question) ?? '',
+      ...('stayId' in item && typeof item.stayId === 'string' && item.stayId ? { stayId: item.stayId } : {}),
     }))
     .filter((item) => item.question);
   const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';

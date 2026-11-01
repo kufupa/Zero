@@ -49,22 +49,22 @@ const time = (date: Date | null): number | null =>
 function modelMessageText(row: Pick<ReservationistWorkerMessage, 'textBody' | 'htmlBody'>, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
-  $('details.quoted-toggle, blockquote').each((_, element) => {
-    $(element).prepend('\nFrom: quoted history\n');
-    $(element).children('summary').remove();
-  });
-  $('br, hr').each((_, element) => {
-    $(element).replaceWith('\n');
-  });
+  $('details.quoted-toggle > summary').remove();
+  $('br, hr').replaceWith('\n');
   $('td, th').append('\t');
-  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => {
-    $(element).prepend('\n').append('\n');
-  });
+  $('p, div, li, tr, h1, h2, h3, h4, h5, h6').prepend('\n').append('\n');
   $('img').each((_, element) => {
     const alt = $(element).attr('alt')?.trim() ?? '';
     $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
   });
-  const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
+  const history: string[] = [];
+  $('details.quoted-toggle, blockquote').each((_, element) => {
+    if ($(element).parents('details.quoted-toggle, blockquote').length) return;
+    const quoted = $(element).text().trim();
+    if (quoted) history.push(`From: quoted history\n${quoted}`);
+    $(element).remove();
+  });
+  const rendered = [$.root().text().trim(), ...history].filter(Boolean).join('\n\n').replace(/\u00a0/g, ' ').trim();
   return maskIncomingCardNumbers(rendered);
 }
 
@@ -124,10 +124,9 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
   else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
-  const views = sourceViews.length === 2 ? sourceViews.map(view => {
-    const history = quoted[view.name];
-    return history ? { ...view, quoted: history } : view;
-  }) : undefined;
+  const views = sourceViews.length === 2
+    ? sourceViews.map(view => ({ ...view, ...(quoted[view.name] ? { quoted: quoted[view.name] } : {}) }))
+    : undefined;
   return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
