@@ -58,13 +58,13 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  }
  if(task.kind==='new_booking'&&viewName){
   const target=source.quote.match(/\b(?:this|that|these|those|the)\s+rooms?\b|\b(?:\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0];
-  if(target&&message.sourceViews!.some(view=>view.name!==viewName&&/\b(?:not|never|no|don't|do not)\b[^.!?;\n]{0,80}\b(?:book|reserve)\b[^.!?;\n]*/i.exec(message.text.slice(view.start,view.end))?.[0].toLowerCase().includes(target.toLowerCase())))return false;
+  if(target&&message.sourceViews!.some(view=>view.name!==viewName&&/\b(?:not|never|no|don't|do not)\b[^.!?;\n]{0,80}\b(?:book|reserve)\b[^.!?;\n]*/i.exec(message.text.slice(view.start,view.end).replace(/\b(?:no|without)\s+(?:children|child|kids?|infants?|minors?)\b/gi,''))?.[0].toLowerCase().includes(target.toLowerCase())))return false;
  }
  const history=text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  if(history>=0&&end>history)return false;
  const prefix=text.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(text.slice(end)),next=text.slice(end).search(/[.!?;](?=\s|$)/),sentence=text.slice(sentenceStart,terminalBoundary?end:next<0?text.length:end+next);
  if(/^\s*>/m.test(text.slice(0,end)))return false;
- return !/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,''));
+ return !/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\b(?:no|without)\s+(?:children|child|kids?|infants?|minors?)\b/gi,'').replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,''));
 }
 function appendRequestedAmendment(task:Task,input:ReservationistRuntimeInput,reply:string):string{
  if(task.kind!=='change'||!currentAuthoredGuestRequest(task,input))return reply;

@@ -21,6 +21,7 @@ const roomSchema = z.object({
   childAges: z.array(z.number().int()),
   roomTypeText: z.string().nullable(),
   guestName: z.string().nullable(),
+  firstName: z.string().optional(), lastName: z.string().optional(),
 });
 
 export const buildCreatePrefillInputSchema = z.object({
@@ -245,8 +246,9 @@ export async function buildCreatePrefill(
     else missing.push({ field: 'roomType', question: roomTypeQuestion(roomCount, roomIndex) });
 
     const guestName = trimmed(room.guestName);
-    if (guestName) {
-      const names = splitGuestName(guestName);
+    const firstName = trimmed(room.firstName), lastName = trimmed(room.lastName);
+    const names = firstName && lastName ? { firstName, lastName } : guestName ? splitGuestName(guestName) : null;
+    if (names) {
       if (names.firstName) request.firstName = names.firstName;
       if (names.lastName) request.lastName = names.lastName;
       if (!names.firstName || !names.lastName) {

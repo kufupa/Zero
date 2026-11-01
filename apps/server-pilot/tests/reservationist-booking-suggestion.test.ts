@@ -32,7 +32,7 @@ function plan(
   const requestStart = body.indexOf(requestQuote);
   if (requestStart < 0) throw new Error('test request quote missing');
   const request = { attachmentId: sourceRef, sourceHash, page: 1, quote: requestQuote, start: requestStart, end: requestStart + requestQuote.length };
-  const roomQuote = body.includes('adults only') ? '1 room for 2 adults only' : '1 room for 2 adults';
+  const roomQuote = body.includes('adults with no children') ? '1 room for 2 adults with no children' : body.includes('adults only') ? '1 room for 2 adults only' : '1 room for 2 adults';
   const facts: ValidatedDocumentFact[] = [
     {
       id: 'dates-1', kind: 'dates', value: { arrival: '2026-12-03', departure: '2026-12-05' },
@@ -115,6 +115,25 @@ describe('reservationist booking suggestion', () => {
     expect(result?.missing).toContain('Multiple party names are present; staff must resolve which party applies before preparing a booking.');
   });
 
+  it('preserves the source-verified boundary of a compound surname', async () => {
+    const body = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05 for Mary Van der Merwe.';
+    const result = await buildReservationistBookingSuggestion(plan(body, [{kind:'guest',value:{firstName:'Mary',lastName:'Van der Merwe',roomRef:'1',roomIndex:1},quote:'Mary Van der Merwe'}]));
+    expect(result?.draft?.rooms[0]?.request).toMatchObject({firstName:'Mary',lastName:'Van der Merwe'});
+  });
+
+  it.each([['RO','room_only'],['B&B','bb'],['dinner and breakfast','dinner_bb']] as const)('maps supported meal label %s', async (label,expected) => {
+    const body = `Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05 with ${label}.`;
+    const result = await buildReservationistBookingSuggestion(plan(body,[{kind:'board',value:label,quote:label}]));
+    expect(result?.draft?.rooms[0]?.board).toBe(expected);
+  });
+
+  it('surfaces conflicting or unsupported meal choices for staff', async () => {
+    const body = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05 with BB or DBB.';
+    const result = await buildReservationistBookingSuggestion(plan(body,[{kind:'board',value:'BB',quote:'BB'},{kind:'board',value:'DBB',quote:'DBB'}]));
+    expect(result?.draft?.rooms[0]?.board).toBe('unknown');
+    expect(result?.missing).toContain('Meal preferences conflict or are unsupported; staff must check the requested board.');
+  });
+
   it('checks an HTML booking task against its own authored view, not plain text or quoted tails', async () => {
     const request = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
     const rendered = renderReservationistMessage({
@@ -135,5 +154,13 @@ describe('reservationist booking suggestion', () => {
     const conflicting = renderReservationistMessage({ textBody: 'Do not book this room', htmlBody: conflictRequest });
     const conflict = plan(conflicting.text, [], conflicting.sourceViews, conflictRequest);
     expect(currentAuthoredGuestRequest(conflict.task, conflict.runtime)).toBe(false);
+  });
+
+  it('accepts a multipart booking specifying no children', async () => {
+    const request='Please book 1 room for 2 adults with no children from 2026-12-03 to 2026-12-05.';
+    const rendered=renderReservationistMessage({textBody:request,htmlBody:`${request}\nKind regards\nGuest`});
+    const current=plan(rendered.text,[],rendered.sourceViews,request);
+    expect(currentAuthoredGuestRequest(current.task,current.runtime)).toBe(true);
+    expect((await buildReservationistBookingSuggestion(current))?.draft?.rooms[0]?.request.childAges).toEqual([]);
   });
 });
