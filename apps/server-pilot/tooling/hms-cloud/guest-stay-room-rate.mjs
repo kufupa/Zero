@@ -266,6 +266,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     searches.set(page, { kind, shopId, formState, cleanupOnly: true });
     const response = await inquiry;
     if (!response || response.status() !== 200) throw new Error('RATE_SHOP_INQUIRY_UNVERIFIED');
+    await responseText(response);
     if (await dismissUnavailableMessage(page, 1000)) return { criteriaUnavailable: true };
     await assertWindows(page, ['Rate Shop'], nativeDialog);
     initial = page.waitForResponse((response) => {
