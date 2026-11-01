@@ -514,7 +514,11 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
     const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).concat(viewComparisons).some(task=>{
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
-      if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
+      if(!occupancy.childAges.length&&alternative){
+        const rows=alternative.page.split(/[.!?;\r\n]+/),otherGroups=facts.filter(f=>f.kind==='room'&&f.id!==fact.id&&f.source.attachmentId===fact.source.attachmentId&&f.source.page===fact.source.page&&f.value.roomRef!==occupancy.roomRef).map(f=>f.kind==='room'?f.value.roomRef:'');
+        const relevant=rows.some(row=>labeled(row,'room|group',occupancy.roomRef))?rows.filter(row=>labeled(row,'room|group',occupancy.roomRef)||!otherGroups.some(ref=>labeled(row,'room|group',ref))).join('\n'):alternative.page;
+        if(childRequirement(relevant))return true;
+      }
       // A room count can contradict the selected view even when per-room occupancy is unclear.
       const rows=viewComparisons.includes(task)?quoted.split(/[.!?;\n]+/).filter(row=>/\b(?:quote|quotation|rates?|prices?)\b/i.test(row)&&/\brooms?\b/i.test(row)):[];
       const counts=rows.length===1?[...rows[0]!.matchAll(/\b(\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b/gi)]:[];
