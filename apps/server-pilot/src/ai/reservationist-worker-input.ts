@@ -134,7 +134,7 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   const hasText = Boolean(row.textBody?.trim());
   const html = hasText ? row.htmlBody : normalized;
   const describedCids = new Set<string>();
-  if (!html || !html.includes('<')) return { texts: [normalized], describedCids, preserveAll: false };
+  if (!html || !html.includes('<')) return { texts: hasText && html ? [normalized, html] : [normalized], describedCids, preserveAll: false };
   // An oversized unused HTML alternative is never parsed; keep its images instead.
   if (hasText && (!inspectAlternateHtml || html.length > 2_000_000))
     return { texts: [normalized], describedCids, preserveAll: true };
