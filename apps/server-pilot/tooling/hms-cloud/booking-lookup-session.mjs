@@ -9,6 +9,9 @@ import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
+import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
+import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
+import { currentLabtestRecord } from './labtest-record.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
@@ -41,6 +44,7 @@ const PROPERTY = 'HRCEN';
 const DEFAULT_DATA_DIR = '/home/orca/.local/share/zero/research/halloween/raw-data';
 const quoteSnapshots = new WeakMap();
 const unexpectedNativeDialogs = new WeakSet();
+const sessionEvidence = new WeakMap();
 const VIEW_FILTERS = new Set(['roomTypes', 'ratePlans', 'offset', 'limit', 'nightOffset', 'nightLimit', 'includeNightlyValueSum']);
 const QUERY_ERRORS = new Set([
   'Query must be a string or query object.',
@@ -57,6 +61,96 @@ const QUERY_ERRORS = new Set([
   'Name query must contain searchable characters.',
   'Invalid source of business filter.',
 ]);
+
+function organizationSelectionProof(value) {
+  const nativeId = value?.nativeId, name = value?.displayedOrganization;
+  if (value?.outcome !== 'selected_unsaved' || typeof nativeId !== 'string' || !nativeId.trim() ||
+      nativeId !== nativeId.trim() || typeof name !== 'string' || !name.trim() || name !== name.trim() ||
+      typeof value.searchId !== 'string' || !value.searchId.trim() ||
+      typeof value.profileProofToken !== 'string' || !value.profileProofToken.trim() ||
+      value.nativeIdEvidence !== 'form_change_response' || value.selectedField?.name !== 'company' ||
+      value.selectedField?.value !== name) return null;
+  return {
+    outcome: 'selected_unsaved', nativeId, displayedOrganization: name,
+    searchId: value.searchId, profileProofToken: value.profileProofToken,
+    nativeIdEvidence: value.nativeIdEvidence, selectedField: { name: 'company', value: name },
+  };
+}
+
+export function sameSessionOrganizationSelection(selected, requested) {
+  const current = organizationSelectionProof(selected), supplied = organizationSelectionProof(requested);
+  return Boolean(current && supplied && current.nativeId === supplied.nativeId &&
+    current.displayedOrganization === supplied.displayedOrganization && current.searchId === supplied.searchId &&
+    current.profileProofToken === supplied.profileProofToken);
+}
+
+export function labtestRecordOptionsForOrganizationSelection(selection) {
+  const proof = organizationSelectionProof(selection);
+  return proof ? { allowUnchangedBusinessParties: true,
+    expectedOrganization: { nativeId: proof.nativeId, name: proof.displayedOrganization } } : null;
+}
+
+export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization) {
+  const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
+  const confirmation = saveResult?.confirmation;
+  if (saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
+      !request || typeof request !== 'object' || request.agencySelection != null || !recordOptions ||
+      !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection) ||
+      !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
+      typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
+      !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
+      typeof request.note !== 'string' || !request.note.trim() || request.note.length > 200) return null;
+  return {
+    confirmation,
+    expected: {
+      confirmation, guestId: String(request.guestId).trim(), arrival: request.arrival,
+      departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
+    },
+    expectedOrganization: recordOptions.expectedOrganization,
+  };
+}
+
+function sessionState(page) {
+  let state = sessionEvidence.get(page);
+  if (!state) {
+    state = { organizationSelection: null, savedOrganizationCreate: null };
+    sessionEvidence.set(page, state);
+  }
+  return state;
+}
+
+async function readSavedOrganizationCreate(state, request) {
+  const target = state?.savedOrganizationCreate;
+  if (!target) return { outcome: 'input_gap', issue: 'SAVED_ORG_LABTEST_CREATE_REQUIRED' };
+  if (Object.keys(request || {}).some((key) => !['id', 'tool', 'confirmation'].includes(key)) ||
+      request?.confirmation !== target.confirmation) {
+    return { outcome: 'input_gap', issue: 'CURRENT_CREATE_CONFIRMATION_REQUIRED' };
+  }
+  try {
+    return await withCenturionStay360Page(async (page) => {
+      const stay = await readConfirmationFromStay360(page, target.confirmation, {
+        guestName: 'Proof Labtest', arrivalDate: target.expected.arrival,
+      });
+      if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
+      await readRecordViewFromStay360(page, target.confirmation);
+      const record = await currentLabtestRecord(page, target.expected, {
+        allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
+      });
+      const organizationName = record.partyPreimage.company || record.partyPreimage.companyname;
+      if (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
+          organizationName !== target.expectedOrganization.name) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+      return {
+        outcome: 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
+        stay: { arrival: target.expected.arrival, departure: target.expected.departure,
+          roomType: target.expected.roomType, ratePlan: target.expected.ratePlan },
+        organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
+        otherLinkedPartiesBlank: true,
+      };
+    });
+  } catch {
+    return { outcome: 'execution_failure', issue: 'LABTEST_READBACK_UNVERIFIED' };
+  }
+}
 
 function defaultMemorySources(env) {
   if (env.HMS_MEMORY_PMS_PATH) {
@@ -290,6 +384,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
       selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
       closeHotelAvailability, readQuote, viewQuoteSnapshot, saveNewLabtestStay,
+      readSavedLabtestRecord: readSavedOrganizationCreate,
     };
     if (!Object.hasOwn(tools, tool)) return { id, tool, outcome: 'input_gap', issue: 'unknown_tool' };
     const action = tools[tool];
@@ -297,9 +392,16 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     if (unexpectedNativeDialogs.has(page) && tool !== 'viewQuoteSnapshot') {
       return { id, tool, outcome: 'execution_failure', issue: 'UNEXPECTED_DIALOG' };
     }
+    const state = sessionState(page);
+    if (['organization', 'searchOrganization', 'selectOrganization', 'searchGuestProfiles', 'selectGuestProfile']
+        .includes(tool)) state.organizationSelection = null;
     if (tool === 'saveNewLabtestStay' && (!labtestPreimage || labtestPreimage.outcome !== 'clear' ||
         request.preimageId !== labtestPreimage.preimageId)) {
       return { id, tool, outcome: 'input_gap', issue: 'CURRENT_LABTEST_PREIMAGE_REQUIRED' };
+    }
+    if (tool === 'saveNewLabtestStay' && request.organizationSelection != null &&
+        !sameSessionOrganizationSelection(state.organizationSelection, request.organizationSelection)) {
+      return { id, tool, outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_NOT_CURRENT' };
     }
     let result;
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
@@ -324,6 +426,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       }
     } else if (tool === 'viewQuoteSnapshot') {
       result = await action(page, request);
+    } else if (tool === 'readSavedLabtestRecord') {
+      result = await action(state, request);
     } else if (tool === 'selectAgency') {
       const selection = request.selection ?? (request.searchId === undefined
         ? request.nativeId : { nativeId: request.nativeId, searchId: request.searchId });
@@ -344,8 +448,16 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     } else {
       result = await action(page, request.query, request.options);
     }
+    if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
+    if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
+      state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
+        result, request, state.organizationSelection);
+    }
     return { id, tool, ...result };
   } catch (error) {
+    if (tool === 'readSavedLabtestRecord') {
+      return { id, tool, outcome: 'execution_failure', issue: 'LABTEST_READBACK_UNVERIFIED' };
+    }
     if (tool === 'readGuestStay' && [
       'FORM_READ_TIMEOUT', 'NOTE_PRIVATE_DIRECTORY_UNSAFE', 'NOTE_CLOSE_NOT_UNIQUE', 'UNEXPECTED_DIALOG',
     ].includes(error?.message)) {
@@ -415,7 +527,8 @@ export async function withBookingLookupSession(operation, { memory, memorySource
 const usage = 'Usage: node booking-lookup-session.mjs --jsonl [--labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD]\n' +
   'Tools: queryBookingMemory, searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchOrganization, ' +
   'selectOrganization, searchArAccount, selectArAccount, readGuestStay, guest/profile/form tools, ' +
-  'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, saveNewLabtestStay, quit. Legacy names remain available.\n' +
+  'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, ' +
+  'saveNewLabtestStay, readSavedLabtestRecord, quit. Legacy names remain available.\n' +
   'JSONL results contain private data; redirect them to a private location.\n';
 
 const writeJsonLine = (value) => new Promise((done, fail) => {
