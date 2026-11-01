@@ -90,10 +90,11 @@ function authoredEnd(
     offset = view.start;
     text = text.slice(view.start, view.end);
   }
-  const boundaries = [
-    text.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im),
-    text.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu),
-  ].filter((position) => position >= 0);
+  const history = text.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
+  const signoff = text.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu);
+  const postscript = signoff < 0 ? -1 : text.slice(signoff).search(/^[\t ]*p[\t ]*\.?[\t ]*s[\t ]*\.?(?=[\s:]|$)/im);
+  const inPostscript = postscript >= 0 && span?.start !== undefined && span.start - offset >= signoff + postscript;
+  const boundaries = [history, inPostscript ? -1 : signoff].filter((position) => position >= 0);
   return offset + (boundaries.length ? Math.min(...boundaries) : text.length);
 }
 
@@ -302,7 +303,7 @@ export async function buildReservationistBookingSuggestion(input: {
     }
   }
 
-  const nameByRoom = new Map<string, Array<{ firstName: string; lastName: string }>>();
+  const nameByRoom = new Map<string, Array<{ firstName: string; lastName: string; child: boolean }>>();
   for (const guest of guests) {
     if (!guest.roomRef) continue;
     const group = grouped.get(guest.roomRef);
@@ -311,7 +312,10 @@ export async function buildReservationistBookingSuggestion(input: {
     if (localIndex === undefined || localIndex < 1 || localIndex > group.value.quantity) continue;
     const key = `${guest.roomRef}\0${localIndex}`;
     const names = nameByRoom.get(key) ?? [];
-    if (!names.some((name) => name.firstName === guest.firstName && name.lastName === guest.lastName)) names.push({ firstName: guest.firstName, lastName: guest.lastName });
+    const existing = names.find((name) => name.firstName === guest.firstName && name.lastName === guest.lastName);
+    const child = guest.age !== undefined && guest.age < 18;
+    if (existing) existing.child ||= child;
+    else names.push({ firstName: guest.firstName, lastName: guest.lastName, child });
     nameByRoom.set(key, names);
   }
 
@@ -323,7 +327,8 @@ export async function buildReservationistBookingSuggestion(input: {
       departure: stay.departure,
       nights: null,
       rooms: physicalRooms.map((room) => {
-        const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`), name = names?.length === 1 ? names[0] : undefined;
+        const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`)?.filter(name => !name.child);
+        const name = names?.length === 1 ? { firstName: names[0]!.firstName, lastName: names[0]!.lastName } : undefined;
         return {
           adults: room.adults, childAges: [...room.childAges], roomTypeText: null,
           guestName: name ? `${name.firstName} ${name.lastName}` : null, ...name,

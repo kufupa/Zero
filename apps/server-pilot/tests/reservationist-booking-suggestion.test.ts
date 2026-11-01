@@ -152,6 +152,17 @@ describe('reservationist booking suggestion', () => {
     expect(result?.draft?.rooms[0]?.request).toMatchObject({firstName:'Mary',lastName:'Van der Merwe'});
   });
 
+  it('uses an adult name, never a known child, for the booking guest', async () => {
+    const body='Please book 1 room for 2 adults and Jane Sample age 7 from 2026-12-03 to 2026-12-05 with Alex Example.';
+    const child={kind:'guest',value:{firstName:'Jane',lastName:'Sample',age:7,roomRef:'1'},quote:'Jane Sample age 7'};
+    const adult={kind:'guest',value:{firstName:'Alex',lastName:'Example',roomRef:'1'},quote:'Alex Example'};
+    const run=async(facts:Array<{kind:string;value:unknown;quote:string}>)=>{const input=plan(body,facts);input.facts=input.facts.map(fact=>fact.kind==='room'?{...fact,value:{...fact.value,childAges:[7]}}:fact);return buildReservationistBookingSuggestion(input);};
+    const onlyChild=await run([child]);
+    expect(onlyChild?.status).toBe('prefill');
+    expect(onlyChild?.draft?.rooms[0]?.request.firstName).not.toBe('Jane');
+    expect((await run([child,adult]))?.draft?.rooms[0]?.request).toMatchObject({firstName:'Alex',lastName:'Example'});
+  });
+
   it.each([['RO','room_only'],['B&B','bb'],['dinner and breakfast','dinner_bb']] as const)('maps supported meal label %s', async (label,expected) => {
     const body = `Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05 with ${label}.`;
     const result = await buildReservationistBookingSuggestion(plan(body,[{kind:'board',value:label,quote:label}]));
@@ -189,6 +200,32 @@ describe('reservationist booking suggestion', () => {
     const laterRefusal = renderReservationistMessage({ textBody: 'Do not book that room. Do not book this room.', htmlBody: conflictRequest });
     const laterConflict = plan(laterRefusal.text, [], laterRefusal.sourceViews, conflictRequest);
     expect(currentAuthoredGuestRequest(laterConflict.task, laterConflict.runtime)).toBe(false);
+
+    const indefiniteRequest = 'Please book a room, 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
+    const indefinite = renderReservationistMessage({ textBody: 'Do not book a room.', htmlBody: indefiniteRequest });
+    const indefiniteConflict = plan(indefinite.text, [], indefinite.sourceViews, indefiniteRequest);
+    expect(currentAuthoredGuestRequest(indefiniteConflict.task, indefiniteConflict.runtime)).toBe(false);
+
+    const deferred = renderReservationistMessage({ textBody: 'Please book this room, but not yet.', htmlBody: conflictRequest });
+    const deferredConflict = plan(deferred.text, [], deferred.sourceViews, conflictRequest);
+    expect(currentAuthoredGuestRequest(deferredConflict.task, deferredConflict.runtime)).toBe(false);
+  });
+
+  it('does not prepare a booking the guest postponed', () => {
+    const body = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05, but not yet.';
+    const current = plan(body);
+    expect(currentAuthoredGuestRequest(current.task, current.runtime)).toBe(false);
+    const missingName = plan('Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05, but the guest name is not yet available.');
+    expect(currentAuthoredGuestRequest(missingName.task, missingName.runtime)).toBe(true);
+  });
+
+  it('uses current postscript stay facts but not the signature as a guest', async () => {
+    const request = 'Please book my stay.';
+    const body = `${request}\nKind regards\nAlice Signature\nP.S. 1 room for 2 adults only from 2026-12-03 to 2026-12-05.`;
+    const current = plan(body, [], undefined, request);
+    expect((await buildReservationistBookingSuggestion(current))?.status).toBe('prefill');
+    const signature = plan(body, [{ kind: 'guest', value: { firstName: 'Alice', lastName: 'Signature' }, quote: 'Alice Signature' }], undefined, request);
+    expect((await buildReservationistBookingSuggestion(signature))?.facts.guests).toEqual([]);
   });
 
   it('accepts another room without breakfast when the alternatives agree', async () => {
