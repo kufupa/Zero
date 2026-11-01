@@ -181,9 +181,11 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
   const boardCorrection=modifying&&
     /\b(?:room[\s-]*only|breakfast|dinner|meals?|board)\b/i.test(part)&&
     /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
+   const roomOnly=/\b(?:room[\s-]*only|RO)\b/i, meal=/\b(?:breakfast|dinner|bed\s*(?:and|&)\s*breakfast|B\s*&\s*B)\b/i;
+   const incompatibleBoard=isFact&&!part.trim().endsWith('?')&&((meal.test(quote)&&roomOnly.test(part))||(roomOnly.test(quote)&&meal.test(part)))&&/\b(?:stay|book|reserve|need|want|require|prefer|choose|include|included|basis|plan)\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
   const relevantReferent=referent&&(!previous&&negative.test(part)||/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part));
-  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared&&!timeDetail||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||modifying&&relevantReferent):
+   return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(incompatibleBoard||shared&&!timeDetail||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||modifying&&relevantReferent):
    modifying&&(shared||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||relevantReferent));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter((part,i,parts)=>relevant(part,parts[i-1])).join(' ')));
@@ -385,7 +387,7 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
 function childRequirement(page:string):boolean{const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
- const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay|sleep|rooms?|beds?|accommodation|guests?|we|us|\d+)\b/i.test(row)||/\b(?:one|two|three|four|our|my|their|his|her|the)\s+(?:[\p{L}-]+\s+){0,3}(?:child|children|kids?|infants?)\b/iu.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
+ const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay(?:ing)?|sleep|rooms?|beds?|accommodation)\b/i.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
 }
 function childRequirementForRoom(page:string,fact:ValidatedDocumentFact,facts:readonly ValidatedDocumentFact[]):boolean{
  if(fact.kind!=='room')return childRequirement(page);
