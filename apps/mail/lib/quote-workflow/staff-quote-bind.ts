@@ -12,6 +12,7 @@ import type {
   QuoteOffer,
   QuoteRunScreenshotResult,
   RateOption,
+  ReservationistPreparedTask,
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
@@ -622,6 +623,32 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
   return actions;
 }
 
+/** The draft summary is display-only; the stored packet remains the action authority. */
+export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTask[] {
+  if (!value || typeof value !== 'object') return [];
+  const summary = (value as { reviewSummary?: { tasks?: unknown } }).reviewSummary;
+  if (!Array.isArray(summary?.tasks)) return [];
+  const kinds = new Set(['new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question']);
+  const tasks: ReservationistPreparedTask[] = [];
+  const ids = new Set<string>();
+  for (const item of summary.tasks.slice(0, 32)) {
+    if (!item || typeof item !== 'object') continue;
+    const task = item as Record<string, unknown>;
+    if (typeof task.id !== 'string' || !task.id.trim() || ids.has(task.id)) continue;
+    if (typeof task.kind !== 'string' || !kinds.has(task.kind)) continue;
+    if (typeof task.label !== 'string' || !task.label.trim()) continue;
+    if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
+    const allDetails = Array.isArray(task.details) ? task.details.filter((detail): detail is string => typeof detail === 'string' && !!detail.trim()) : [];
+    if (task.kind === 'question' ? allDetails.length === 0 : task.state === 'Ready') continue;
+    const details = allDetails.length > 400
+      ? [...allDetails.slice(0, 395), 'Some prepared details are not shown. Check the request and HMS.', ...allDetails.slice(-5)]
+      : allDetails;
+    ids.add(task.id);
+    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details });
+  }
+  return tasks;
+}
+
 const RATE_OPTION_BOARDS = new Set<string>(['room_only', 'bb', 'dinner_bb']);
 
 /**
@@ -834,7 +861,7 @@ export async function bindStaffQuoteSource(args: {
 
 export type BoundStaffActions =
   | { kind: 'unavailable'; reason: string }
-  | { kind: 'ready'; actions: ReservationistStaffAction[] };
+  | { kind: 'ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] };
 
 export async function bindStaffActions(args: {
   query?: (input: { threadId: string; messageId: string }) => Promise<unknown>;
@@ -852,7 +879,8 @@ export async function bindStaffActions(args: {
     if (source == null) return { kind: 'ready', actions: [] };
     if (typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)
       return { kind: 'unavailable', reason: 'The email review changed. Select it again.' };
-    return { kind: 'ready', actions: readStaffActions(source) };
+    const tasks = readPreparedStaffTasks(source);
+    return { kind: 'ready', actions: readStaffActions(source), ...(tasks.length ? { tasks } : {}) };
   } catch (error) {
     return { kind: 'unavailable', reason: rejectionReason(error) };
   }

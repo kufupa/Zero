@@ -3153,6 +3153,9 @@ describe('quote session staff review items', () => {
     });
     expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
     expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
+    s = reduceQuoteSession(s, { type: 'staff_actions_ready', actions: [] });
+    expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
+    expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
     s = reduceQuoteSession(s, {
       type: 'staff_quote_ready',
       offer,
