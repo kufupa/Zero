@@ -10,7 +10,6 @@ import {
 import type { ValidatedDocumentFact, ValidatedDocumentPlan } from './reservationist-document-facts.js';
 import { validReservationistMessageViews } from './reservationist-message-view.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
-
 export type ReservationistBookingSuggestionCitation = {
   sourceRef: string;
   sourceHash: string;
@@ -18,7 +17,6 @@ export type ReservationistBookingSuggestionCitation = {
   start: number;
   end: number;
 };
-
 export type ReservationistBookingSuggestion = {
   version: 1;
   taskId: string;
@@ -38,7 +36,6 @@ export type ReservationistBookingSuggestion = {
   draft?: BookingDraft;
   options?: ReturnType<typeof createRequestFieldOptions>;
 };
-
 type Task = ValidatedDocumentPlan['tasks'][number];
 type CitationSource = {
   attachmentId: string;
