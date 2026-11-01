@@ -4,10 +4,12 @@ import {
   buildReservationistBookingSuggestion,
   reservationistBookingSuggestionGroupId,
 } from '../src/ai/reservationist-booking-suggestion.js';
+import { currentAuthoredGuestRequest } from '../src/ai/reservationist-execution.js';
 import type { AttachmentAdmission } from '../src/ai/reservationist-attachment-input.js';
 import type { ValidatedDocumentFact } from '../src/ai/reservationist-document-facts.js';
 import type { ReservationistMessageView } from '../src/ai/reservationist-message-view.js';
 import type { ReservationistRuntimeInput } from '../src/ai/reservationist-runtime.js';
+import { renderReservationistMessage } from '../src/ai/reservationist-worker-input.js';
 
 const triggerId = 'message-1';
 const ownerRef = 'mailbox-1';
@@ -114,18 +116,19 @@ describe('reservationist booking suggestion', () => {
   });
 
   it('validates HTML-alternative citations against that authored view, not a plain-text signoff', async () => {
-    const plain = 'Best regards\nReservations';
-    const marker = '\n\n[HTML alternative of the same message]\n';
     const request = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
-    const body = plain + marker + request;
-    const sourceViews: ReservationistMessageView[] = [
-      { name: 'plain', start: 0, end: plain.length },
-      { name: 'html', start: plain.length + marker.length, end: body.length },
-    ];
-    const result = await buildReservationistBookingSuggestion(plan(body, [], sourceViews, request));
+    const rendered = renderReservationistMessage({
+      textBody: 'Best regards\nReservations\n\nFrom: Previous guest\nSubject: Older request\nPlease do not create a booking.',
+      htmlBody: `${request}\n\nFrom: Earlier correspondent\nSubject: Previous request\nPlease do not create a booking.`,
+    });
+    const htmlView = rendered.sourceViews?.find((view) => view.name === 'html');
+    expect(htmlView?.quoted?.start).toBeGreaterThan(htmlView?.end ?? 0);
+    const current = plan(rendered.text, [], rendered.sourceViews, request);
+    expect(currentAuthoredGuestRequest(current.task, current.runtime)).toBe(true);
+    const result = await buildReservationistBookingSuggestion(current);
 
     expect(result?.status).toBe('prefill');
-    expect(result?.source.start).toBe(plain.length + marker.length);
+    expect(result?.source.start).toBe(htmlView?.start);
     expect(result?.draft?.rooms).toHaveLength(1);
   });
 });
