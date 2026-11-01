@@ -21,6 +21,7 @@ const roomSchema = z.object({
   childAges: z.array(z.number().int()),
   roomTypeText: z.string().nullable(),
   guestName: z.string().nullable(),
+  firstName: z.string().optional(), lastName: z.string().optional(),
 });
 
 export const buildCreatePrefillInputSchema = z.object({
@@ -38,6 +39,8 @@ export const buildCreatePrefillInputSchema = z.object({
   billingReference: z.string().nullable(),
   paidBy: z.enum(['agency', 'guest', 'company']).nullable(),
   partyKind: z.enum(['agency', 'organization', 'government']).nullable().optional(),
+  /** Suppress direct-individual defaults when source names a party but its native kind is unresolved. */
+  partyContextUnresolved: z.boolean().optional(),
   defaults: z.object({
     track: z.string().nullable(),
     sourceOfBusiness: z.string().nullable(),
@@ -166,6 +169,7 @@ export async function buildCreatePrefill(
   if (!departure) missing.push({ field: 'departure', question: 'Departure date for this booking?' });
 
   const partySet = Boolean(
+    parsed.partyContextUnresolved === true ||
     trimmed(parsed.agencyName) ||
       trimmed(parsed.organizationName) ||
       parsed.partyKind === 'agency' ||
@@ -242,8 +246,9 @@ export async function buildCreatePrefill(
     else missing.push({ field: 'roomType', question: roomTypeQuestion(roomCount, roomIndex) });
 
     const guestName = trimmed(room.guestName);
-    if (guestName) {
-      const names = splitGuestName(guestName);
+    const firstName = trimmed(room.firstName), lastName = trimmed(room.lastName);
+    const names = firstName && lastName ? { firstName, lastName } : guestName ? splitGuestName(guestName) : null;
+    if (names) {
       if (names.firstName) request.firstName = names.firstName;
       if (names.lastName) request.lastName = names.lastName;
       if (!names.firstName || !names.lastName) {
