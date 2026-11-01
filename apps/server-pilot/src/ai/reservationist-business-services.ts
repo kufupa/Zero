@@ -7,6 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
+import {validReservationistMessageViews} from './reservationist-message-view.js';
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
@@ -18,9 +19,16 @@ export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availabilit
 // The quote contract is an ESM tool outside src. Async callers load it here; the sync joint search takes the profile flag.
 const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
 function missing(code:string,fields:string[]):never{throw new ReservationistTaskEvidenceUnavailable(code,fields);}
+function requestsAccessibleRoom(text:string):boolean{
+ return [...text.matchAll(/\b(?:accessible|wheelchair)\b/gi)].some(match=>{
+  const before=text.slice(Math.max(0,match.index!-60),match.index),after=text.slice(match.index!+match[0].length,match.index!+80);
+  if(/\b(?:parking|car[ -]?park|entrance|lobby|pool)\s+(?:(?:is|are|has|wheelchair|accessible)\s+){0,4}$/i.test(before)||/^\s+(?:(?:accessible|wheelchair)\s+)?(?:parking|car[ -]?park|entrance|lobby|pool|hire|rental)\b/i.test(after)||/\b(?:hire|rent)\s+(?:an?\s+)?$/i.test(before))return false;
+  return !/\b(?:(?:no|without)\s+(?:need\s+for\s+)?(?:an?\s+)?|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need|require)\s+(?:an?\s+)?)(?:(?:wheelchair|accessible)\s+(?:or|and)\s+)?$/i.test(before)&&!/^(?:\s+[\p{L}-]+){0,3}\s+(?:(?:is|are)\s+)?not\s+(?:needed|required)\b/iu.test(after);
+ });
+}
 function hrdavRequestedRoomCodes(text:string):string[]|undefined{
  if(/\bjunior\s+suite\b/i.test(text))return['JNRSUI'];
- if(/\baccessible\b/i.test(text))return['ACCES'];
+ if(requestsAccessibleRoom(text))return['ACCES'];
  if(/\bexecutive\s+king\b/i.test(text))return['EXKNGB','EXKNGR','EXKNGS'];
  if(/\bdeluxe\s+(?:patio|king|room)\b/i.test(text))return['DLXPAT','DLXKNG'];
  if(/\bstandard\s+(?:king|twin|room)\b/i.test(text))return['STKNG','STWN'];
@@ -39,7 +47,24 @@ function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
  }
  return boards[key];
 }
-function authored(ctx:Context){const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId);return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??ctx.task.source.quote??'';}
+/** Only detect explicit meal bases; alternative views must not silently disagree. */
+function viewBoardHints(text:string):Board[]{
+ const found=new Set<Board>();
+ let rest=text.toLowerCase().replace(/\s+/g,' ').replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b|\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'').replace(/\broom-only\b/g,'room only');
+ rest=rest.replace(/\b(?:no|without)\s+breakfast\b|\bbreakfast\s+(?:is\s+)?not\s+(?:needed|required|included|requested)\b/g,()=>{found.add('room_only');return' ';});
+ for(const [label,board] of Object.entries(boards).sort((a,b)=>b[0].length-a[0].length)){
+  let from=0,index:number;while((index=rest.indexOf(label,from))>=0){const end=index+label.length;
+   if(!/[\p{L}\p{N}_]/u.test(rest[index-1]??'')&&!/[\p{L}\p{N}_]/u.test(rest[end]??'')){found.add(board);rest=rest.slice(0,index)+' '.repeat(label.length)+rest.slice(end);}
+   from=end;
+  }
+ }
+ return [...found].sort();
+}
+function authored(ctx:Context){
+ const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),span=ctx.task.source;
+ if(m?.sourceViews){if(!validReservationistMessageViews(m.text,m.sourceViews)||span.start===undefined||span.end===undefined)return'';const view=m.sourceViews.find(v=>span.start!>=v.start&&span.end!<=v.end);return view?m.text.slice(view.start,view.end):'';}
+ return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??span.quote??'';
+}
 /** Original authored event scope only; this predicate grants no price or party authority. */
 export function isReservationistConferenceOnlyQuote(ctx:Context):boolean{
  const requestText=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
@@ -52,8 +77,9 @@ export function isReservationistConferenceOnlyQuote(ctx:Context):boolean{
 function requestedQuoteAlternatives(ctx:Context):boolean{
  const message=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),span=ctx.task.source;
  if(ctx.task.kind!=='quote'||!message||message.direction!=='inbound'||message.disclosure==='staff_only'||span.sourceHash!==createHash('sha256').update(message.text).digest('hex')||span.quote===undefined||span.start===undefined||span.end===undefined||message.text.slice(span.start,span.end)!==span.quote)return false;
- const text=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
- return text.split(/[.!?;\r\n]+/).some(row=>/\b(?:room|breakfast|board|rate)\s+options?\b|\b(?:options?|alternatives?)\b.{0,40}\b(?:rooms?|breakfast|board|rates?)\b/i.test(row)&&!/\b(?:not|no|never|without|previous|old)\b/i.test(row));
+ const selected=authored(ctx);if(!selected)return false;
+ const views=message.sourceViews?.map(view=>message.text.slice(view.start,view.end))??[selected];
+ return views.some(value=>value.split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!.split(/[.!?;\r\n]+/).some(row=>/\b(?:room|breakfast|board|rate)\s+options?\b|\b(?:options?|alternatives?)\b.{0,40}\b(?:rooms?|breakfast|board|rates?)\b/i.test(row)&&!/\b(?:not|no|never|without|previous|old)\b/i.test(row)));
 }
 /** Only a complete same-message quote may leave meal selection to native evidence. */
 function sourceLeavesBoardUnspecified(ctx:Context):boolean{
@@ -64,9 +90,9 @@ function sourceLeavesBoardUnspecified(ctx:Context):boolean{
   const item=raw as {attachmentId?:string;sourceHash?:string},admission=admissions.find(a=>a.metadata.attachmentId===item?.attachmentId&&a.metadata.sourceHash===item?.sourceHash),m=admission?.metadata,owner=m&&ctx.input.messages.find(message=>message.id===m.messageId);
   return !m||!owner||admission.status!=='ignored_signature'||admission.reason!=='signature_noise'||m.ownerRef!==ctx.input.authorizationScope?.ownerRef||m.threadId!==ctx.input.authorizationScope?.threadId||m.messageAt!==owner.at||Date.parse(m.messageAt)>Date.parse(ctx.input.clock.causalAt)||!isReservationistSignatureNoise({messageText:owner.text,currentRequestText:message.text,attachment:{id:m.attachmentId,messageId:m.messageId,isInline:m.inline===true,contentId:m.contentId??null,mimeType:m.mimeType},attachments:descriptors});
  }))return false;
- const text=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
-  const requirements=text.replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b/gi,'').replace(/\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'');
- return !/\b(?:breakfast|dinner|lunch|meals?|board|DBB|BB|RO)\b|\bB\s*&\s*B\b|\broom\s+only\b/i.test(requirements);
+ if(message.sourceViews&&(!validReservationistMessageViews(message.text,message.sourceViews)||!authored(ctx)))return false;
+ const texts=message.sourceViews?.map(view=>message.text.slice(view.start,view.end))??[authored(ctx)];
+ return texts.every(value=>{const text=value.split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!,requirements=text.replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b/gi,'').replace(/\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'');return !/\b(?:breakfast|dinner|lunch|meals?|board|DBB|BB|RO)\b|\bB\s*&\s*B\b|\broom\s+only\b/i.test(requirements);});
 }
 /** Facts determine native search scope; customer class never changes the requested task. */
 export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest{
@@ -77,7 +103,13 @@ export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest
  if(!dates.length||new Set(dates.map(f=>f.kind==='dates'?quoteDigest({arrival:f.value.arrival,departure:f.value.departure}):'')).size!==1)missing('business_dates_unavailable',['one source-bound stay date range']);
  const stay=dates[0]!.value as {arrival:string;departure:string};occupiedDates(stay.arrival,stay.departure);
  const roomFacts=[...new Map(facts.filter(f=>f.kind==='room').map(f=>[quoteDigest(f.value),f])).values()];if(!roomFacts.length)missing('business_room_allocation_unavailable',['explicit room quantity and occupancy']);
- const text=authored(ctx),isGovernment=/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(text)&&/\bofficial|government\s+rate\b/i.test(text),roomCodes=requestedRoomCodes(ctx.input.propertyCode,text);
+ const text=authored(ctx),message=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),views=message?.sourceViews&&validReservationistMessageViews(message.text,message.sourceViews)?message.sourceViews.map(v=>message.text.slice(v.start,v.end).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!):[text];
+ const viewBoards=views.length>1?views.map(viewBoardHints).filter(value=>value.length):[];
+ if(new Set(viewBoards.map(value=>JSON.stringify(value))).size>1)missing('business_board_unavailable',['consistent meal requirements across message views']);
+ const factBoards=new Set(facts.filter(f=>f.kind==='board').map(f=>f.kind==='board'?mapRequestedBoard(ctx.input.propertyCode,typeof f.value==='string'?f.value:f.value.board):undefined).filter((value):value is Board=>Boolean(value)));
+ if(factBoards.size===1&&viewBoards.length&&viewBoards[0]!.length===1&&!factBoards.has(viewBoards[0]![0]!))missing('business_board_unavailable',['consistent meal requirements across message views']);
+ const isGovernment=views.some(value=>/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(value)&&/\bofficial|government\s+rate\b/i.test(value)),types=views.map(value=>requestedRoomCodes(ctx.input.propertyCode,value)).filter((value):value is string[]=>Boolean(value)),roomCodes=types[0];
+ if(new Set(types.map(value=>JSON.stringify(value))).size>1||ctx.input.propertyCode!=='HRDAV'&&views.some(requestsAccessibleRoom))missing('business_room_allocation_ambiguous',['consistent supported room requirements']);
  const rooms=roomFacts.map(f=>{if(f.kind!=='room')throw new Error('business_room_type');if(f.value.quantity===undefined)missing('business_room_quantity_unavailable',['explicit room quantity']);const requestedBoards=facts.filter(b=>b.kind==='board'&&(typeof b.value==='string'||b.value.roomRef===f.value.roomRef)).map(b=>{if(b.kind!=='board')throw new Error('business_board_type');return mapRequestedBoard(ctx.input.propertyCode,typeof b.value==='string'?b.value:b.value.board);});if(!requestedBoards.length&&!sourceLeavesBoardUnspecified(ctx)||requestedBoards.some(b=>!b)||new Set(requestedBoards).size>1)missing('business_board_unavailable',['one supported board for each room allocation']);return{id:f.value.roomRef,quantity:f.value.quantity,adults:f.value.adults,children:f.value.childAges.length,childAges:[...f.value.childAges],required:{...(requestedBoards.length?{boardBases:[requestedBoards[0]!]}:{}),...(roomCodes?{roomCodes}:{} )}};});
  if(new Set(rooms.map(r=>r.id)).size!==rooms.length)missing('business_room_allocation_ambiguous',['unique room allocation references']);
  return{propertyCode:ctx.input.propertyCode,arrivalDate:stay.arrival,departureDate:stay.departure,requestedCurrency:'ZAR',rooms,search:{includeRestricted:false,includeAlternatives:false,salesStrategy:isGovernment?'Government':'BAR'},details:'full',maxOptionsPerGroup:50};
