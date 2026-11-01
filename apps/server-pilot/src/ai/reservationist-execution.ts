@@ -66,7 +66,7 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  const sourceView=message.sourceViews?.find(view=>source.start!>=view.start&&source.end!<=view.end);
  if(message.sourceViews&&!sourceView)return false;
  if(sourceView&&task.kind==='cancel_request'){
-  const requestedRefs=targetRefs(source.quote),refused=message.sourceViews!.filter(view=>view!==sourceView).some(view=>message.text.slice(view.start,view.end).split(/[.!?;]+|\b(?:but|however)\b|(?:,\s*|\band\s+|\n\s*)(?=(?:(?:please|kindly)\s+)?(?:not|no|never|without|do\s+not|don['’]t|cancel|withdraw)\b)/i).some(clause=>{
+  const requestedRefs=targetRefs(/^[\w-]{3,32}$/.test(source.quote.trim())?`reservation ${source.quote}`:source.quote),refused=message.sourceViews!.filter(view=>view!==sourceView).some(view=>message.text.slice(view.start,view.end).split(/[.!?;]+|\b(?:but|however)\b|(?:,\s*|\band\s+|\n\s*)(?=(?:(?:please|kindly)\s+)?(?:not|no|never|without|do\s+not|don['’]t|cancel|withdraw)\b)/i).some(clause=>{
    const refusedRefs=targetRefs(clause);return refusesCancellation.test(clause)&&(!requestedRefs.length||!refusedRefs.length||requestedRefs.some(ref=>refusedRefs.includes(ref)));
   }));
   if(refused)return false;
