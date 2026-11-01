@@ -765,6 +765,44 @@ describe('mapLlmDecision', () => {
     expect(mapped.missing).toContainEqual(expect.objectContaining({ field: 'adults' }));
   });
 
+  it('reconciles stay totals across room rows that share a quote one-night default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: null,
+            rooms: 1,
+            adultsPerRoom: 2,
+            adultsTotal: 5,
+            childrenTotal: 1,
+            childAges: [7],
+          },
+          {
+            ...group,
+            arrival: '2026-11-12',
+            departure: null,
+            rooms: 1,
+            adultsPerRoom: 3,
+            adultsTotal: 5,
+            childrenTotal: 1,
+            childAges: [],
+          },
+        ],
+        missing: [],
+      })),
+    );
+
+    expect(mapped.groups).toMatchObject([
+      { departureDate: '2026-11-13', fields: { adults: 'extracted' } },
+      { departureDate: '2026-11-13', fields: { adults: 'extracted' } },
+    ]);
+    expect(mapped.groups.map(({ fields }) => fields.childAges)).toEqual([undefined, undefined]);
+    expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
   it('keeps unknown child ages visibly incomplete instead of treating them as no children', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

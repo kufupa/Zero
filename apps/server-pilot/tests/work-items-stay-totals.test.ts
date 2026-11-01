@@ -82,6 +82,65 @@ describe('staff stay-total correction projection', () => {
     expect(corrected.missingQuoteReplyFields).toEqual([]);
   });
 
+  it('rechecks the mismatch marker after staff corrects the stay-wide adult total', () => {
+    const source = payload();
+    source.stays[0]!.rows = [
+      { id: ROW, roomType: 'Double/Twin', rooms: 2, adultsPerRoom: 2, childAges: [], board: null },
+    ];
+    const totalAdultsPath = `stays[${STAY}].totalAdults`;
+
+    const unresolved = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }, {}).analysis;
+    expect(unresolved.groups[0]?.fields.adults).toBe('missing');
+
+    const corrected = storedAnalysis(
+      { kind: 'quote', payload: source, attachments: [] },
+      { [totalAdultsPath]: 4 },
+    ).analysis;
+    expect(corrected.groups[0]).toMatchObject({
+      adultsTotal: 4,
+      adults: 2,
+      quantity: 2,
+      fields: { adultsTotal: 'staff_corrected' },
+    });
+    expect(corrected.groups[0]?.fields.adults).not.toBe('missing');
+    expect(corrected.missingQuoteReplyFields).not.toContain('Number of guests per room for stay 1');
+  });
+
+  it('keeps a rejected checkout warning on its identified stay', () => {
+    const source = payload();
+    const base = source.stays[0]!;
+    source.stays = [
+      {
+        ...base,
+        id: 'stay-valid',
+        requested: { arrival: '2027-10-26', departure: null },
+      },
+      {
+        ...base,
+        id: 'stay-rejected',
+        requested: { arrival: '2027-11-17', departure: null },
+      },
+    ];
+    source.missing = [{
+      field: 'stayDates',
+      question: 'Departure date must be after arrival; confirm the requested stay dates.',
+      stayId: 'stay-rejected',
+    }] as typeof source.missing;
+
+    const analysis = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }, {}).analysis;
+
+    expect(analysis.groups[0]).toMatchObject({
+      stayId: 'stay-valid',
+      departureDate: '2027-10-27',
+      fields: { departureDate: 'defaulted' },
+    });
+    expect(analysis.groups[1]).toMatchObject({
+      stayId: 'stay-rejected',
+      fields: { departureDate: 'missing' },
+    });
+    expect(analysis.missingQuoteReplyFields).toContain('Departure date for stay 2');
+  });
+
   it('lets one corrected row complete an allocation when the other row was already known', () => {
     const source = payload();
     source.missing = [{ field: 'adultsPerRoom', question: 'Confirm adults per room.' }];

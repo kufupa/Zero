@@ -344,14 +344,35 @@ describe('prepared quote input from stored extraction', () => {
       totalRooms: 1,
       rows: [{ ...first.rows[0]!, id: 'row-rejected-checkout', rooms: 1 }],
     };
+    const validNoCheckout = {
+      ...first,
+      id: 'stay-valid-no-checkout',
+      requested: { arrival: '2026-10-20', departure: null },
+    };
     const plan = build({
-      stays: [first, rejected],
-      missing: [{ field: 'stayDates', question: 'Confirm the requested checkout.' }],
+      stays: [validNoCheckout, rejected],
+      missing: [{ field: 'stayDates', question: 'Confirm the requested checkout.', stayId: 'stay-rejected-checkout' }],
     });
 
     expect(plan.inputs).toHaveLength(1);
     expect(plan.inputs[0]?.groups[0]?.arrivalDate).toBe('2026-10-20');
+    expect(plan.inputs[0]?.groups[0]?.departureDate).toBe('2026-10-21');
     expect(plan.stays[1]).toMatchObject({ stayId: 'stay-rejected-checkout', reason: 'invalid_dates' });
+  });
+
+  it('defaults one room before reconciling a stated zero-child total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: null,
+        totalChildren: 0,
+        rows: [{ ...stay.rows[0]!, rooms: null, adultsPerRoom: 2, childAges: [] }],
+      }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2, childrenAges: [] });
+    expect(plan.reason).toBeNull();
   });
 
   it('defaults a missing room count to one when dates and a guest row exist', () => {
