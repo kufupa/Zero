@@ -9,7 +9,7 @@ export function toDraftWire(
   reviewSummary?: {
     readinessLabel: string;
     reason: string;
-    tasks: { label: string; state: string; details?: string[] }[];
+    tasks: { id: string; kind: string; label: string; state: string; details?: string[] }[];
     pricingProof: string[];
     staffActions?: ReservationistStaffAction[];
   },
