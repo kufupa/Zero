@@ -38,7 +38,8 @@ import {
   type HmsEvidenceRef,
   type MailEvidenceRef,
 } from '../../ai/draft-evidence.js';
-import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
+import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
+import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -347,7 +348,8 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       const packets = rows(result.packets).filter(packet => packet.taskId === taskId);
       if (expectedKind && packets.length === 1) {
         const packet = packets[0]!;
-        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && packet.businessRulesValidated === true) {
+        const cancellationReviewPacket=kind==='cancel_request'&&Boolean(isReservationistCancellationReviewPacket(packet));
+        if (task.status === 'pending_pms_action' && packet.kind === expectedKind && packet.status === 'pending_pms_action' && packet.saved === false && (kind === 'cancel_request' ? cancellationReviewPacket : packet.businessRulesValidated === true) && (kind !== 'cancel_request' || !actionFreshnessReason)) {
           if (kind === 'acceptance' || kind === 'new_booking') {
             const total = money(packet.totalMinor, packet.currency);
             if (total) details.push(`${kind === 'acceptance' ? 'Agreed quote total' : 'Selected booking total'}: ${total}`);
@@ -393,13 +395,30 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
               details.push('No system update has been saved. The native reservation remains unverified. Staff must review the reported channel booking.');
             }
           } else {
-            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding);
-            details.push(`Reservation ${text(packet.reservationRef)}`);
+            const current = record(packet.current), requested = record(packet.requested), binding = record(packet.requestBinding),
+              currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
+            if(kind==='cancel_request'){
+              details.push(`Requested reference: ${text(packet.reservationRef)}`);
+              details.push(`HMS confirmation read: ${text(currentProof?.resolvedConfirmation)}`);
+            }else details.push(`Reservation ${text(packet.reservationRef)}`);
             if (current.arrivalDate && current.departureDate) details.push(`Recorded stay: ${text(current.arrivalDate)} to ${text(current.departureDate)}`);
             if (kind === 'change' && requested.arrivalDate && requested.departureDate) details.push(`Requested stay: ${text(requested.arrivalDate)} to ${text(requested.departureDate)}`);
-            const currentProof = rows(packet.sourceProofs).find(proof => proof.kind === 'current');
             if (currentProof?.observedAt) details.push(`Observed ${text(currentProof.observedAt)}`);
             if (binding.observedAt) details.push(`Requested ${text(binding.observedAt)}`);
+            if (kind === 'cancel_request') {
+              const review = record(packet.cancellationReview);
+              const roomScope = record(review.roomScope), policy = record(review.policy);
+              const fee = record(review.fee), action = record(review.action);
+              if (review.outcome === 'prepared_for_human_review') {
+                if (roomScope.state === 'unresolved' && roomScope.complete === false)
+                  details.push('Cancellation room scope remains unresolved; staff must verify the affected room(s).');
+                if (policy.state === 'unknown') details.push('Applicable cancellation policy has not been verified.');
+                if (fee.state === 'unknown_precommit' && fee.amount === null && fee.currency === null)
+                  details.push('Cancellation fee is unknown before commitment; no amount has been established.');
+                if (action.cancellationStarted === false && action.commitAvailable === false)
+                  details.push('Cancellation has not been started; no commit is available.');
+              }
+            }
             details.push(kind === 'change' ? 'No changes have been saved. Staff must complete the amendment.' : 'No cancellation has been saved. Staff must complete the cancellation.');
           }
         }
@@ -872,7 +891,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const quoted=selectedQuotes.length>0;
  const typedQuoteFactKeys=new Set<string>();
  const selectedQuoteTotals=new Map<string,number>();
- if((result.rateComparisons?.length??0)||(result.paymentComparisons?.length??0)||(result.importedOffers?.length??0)||(result.approvedOverrides?.length??0)||(result.readReceipts?.length??0)||(result.existingDocumentReceipts?.length??0)||(result.recipientPreparations?.length??0)||(result.packets??[]).some(packet=>(packet as {kind?:string}).kind!=='channel_booking_sync')||!quoted&&((result.proposalFacts?.length??0)||(result.quoteRevisionIds?.length??0)||(result.currentNativeObservations?.length??0)))throw new Error('reservationist_hotel_evidence_unavailable');
+ if((result.rateComparisons?.length??0)||(result.paymentComparisons?.length??0)||(result.importedOffers?.length??0)||(result.approvedOverrides?.length??0)||(result.readReceipts?.length??0)||(result.existingDocumentReceipts?.length??0)||(result.recipientPreparations?.length??0)||(result.packets??[]).some(packet=>{const kind=(packet as {kind?:string}).kind;return kind!=='channel_booking_sync'&&!(kind==='cancel_request'&&isReservationistCancellationReviewPacket(packet));})||!quoted&&((result.proposalFacts?.length??0)||(result.quoteRevisionIds?.length??0)||(result.currentNativeObservations?.length??0)))throw new Error('reservationist_hotel_evidence_unavailable');
  if(quoted){
   const tasks=result.tasks.map(raw=>{const task=raw as {kind?:string;status?:string;evidenceRefs?:string[]};if(!task||!Array.isArray(task.evidenceRefs)||task.evidenceRefs.some(ref=>typeof ref!=='string'))throw new Error('reservationist_quote_task_invalid');return {...task,evidenceRefs:task.evidenceRefs};});
   if(new Set(result.quoteRevisionIds).size!==selectedQuotes.length||result.quoteRevisionIds.length!==selectedQuotes.length||selectedQuotes.some(revision=>revision.propertyCode!==RESERVATIONIST_DRAFT_PROPERTY_CODE||!result.quoteRevisionIds.includes(revision.id)))throw new Error('reservationist_quote_binding_invalid');
@@ -916,7 +935,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
   sources.push(descriptor(item,bytes.sha256));
  }
  assertReservationistDraftSource(metrics.reservationistDraftSource,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:sources.sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
- for(const packet of result.packets??[])assertChannelPacketDraftSource(packet,saved,input.now??new Date());
+ for(const packet of result.packets??[]){if((packet as {kind?:string}).kind==='channel_booking_sync')assertChannelPacketDraftSource(packet,saved,input.now??new Date());else assertCancellationPacketDraftSource(packet,saved);}
  await verifyGeneratedAttachments(input.draft.attachments);
 }
 

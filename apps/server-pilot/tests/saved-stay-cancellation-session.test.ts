@@ -30,12 +30,15 @@ const fixtures = vi.hoisted(() => {
     readRecord: vi.fn(async () => structuredClone(record)),
     openCancel: vi.fn(),
     confirmCancel: vi.fn(),
+    pageOptions: undefined as { headless?: boolean; signal?: AbortSignal } | undefined,
   };
 });
 
 vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>) =>
-    operation({ context: () => ({}), on: () => {} }),
+  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>, options?: { headless?: boolean; signal?: AbortSignal }) => {
+    fixtures.pageOptions = options;
+    return operation({ context: () => ({}), on: () => {} });
+  },
 }));
 vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({
   installReadOnlyGuard: async () => {},
@@ -55,6 +58,12 @@ vi.mock('../tooling/hms-cloud/guest-stay-amend.mjs', () => ({
 import { withSavedStayAgentSession } from '../tooling/hms-cloud/saved-stay-agent-session.mjs';
 
 describe('saved-stay cancellation preparation', () => {
+  it('passes the execution abort signal through to the page owner', async () => {
+    const controller = new AbortController();
+    await withSavedStayAgentSession(async () => undefined, { signal: controller.signal });
+    expect(fixtures.pageOptions).toMatchObject({ headless: true, signal: controller.signal });
+  });
+
   it('requires a full read and uses a private snapshot without entering cancellation', async () => {
     await withSavedStayAgentSession(async ({ runTool }) => {
       expect(await runTool({ tool: 'prepareCancellation' })).toMatchObject({
