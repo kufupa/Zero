@@ -154,7 +154,7 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
  // Compare relevant corrections or withdrawals, while retaining independent asks.
  const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from','send'].includes(word)));
- const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b/i;
+ const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b|\b(?:make|set|increase|reduce)\s+(?:it|this|that|them)\s+(?:to\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i;
  const negative=/\b(?:no|not|never|without|excluding|exclude[ds]?|remove[ds]?|cancel(?:led|ed)?|no longer|do not|don['’]t)\b/i;
  const explicitScopes=(text:string)=>new Set([...text.matchAll(/\bgroup\s+([\p{L}\p{N}_-]+)\b|\broom\s+(?:#\s*)?(\d+)\b/giu)].map(match=>match[1]?`group:${match[1].toLowerCase()}`:`room:${match[2]}`)),quoteScopes=explicitScopes(quote);
  const relevant=(part:string)=>{
@@ -165,8 +165,9 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
     /\b(?:room[\s-]*only|breakfast|dinner|meals?|board)\b/i.test(part)&&
     /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
-  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)||modifying&&referent):
-   modifying&&(shared||correction.test(part)||referent));
+  const relevantReferent=referent&&/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part);
+  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)||modifying&&relevantReferent):
+   modifying&&(shared||correction.test(part)||relevantReferent));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(relevant).join(' ')));
  if(tail[0]!==tail[1])return;
