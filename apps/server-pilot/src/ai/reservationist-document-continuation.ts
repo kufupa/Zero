@@ -8,7 +8,9 @@ export type DocumentRequestContinuation={id:string;taskId?:string;kind:'invoice_
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const history=(text:string)=>text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)\s*-{2,})/im);
 const authoredText=(text:string)=>{const cut=history(text);return cut<0?text:text.slice(0,cut);};
-const paragraph=(text:string,index:number)=>{const left=text.lastIndexOf('\n\n',index),right=text.indexOf('\n\n',index);return text.slice(left<0?0:left+2,right<0?text.length:right).trim();};
+const trimSignoff=(text:string)=>text.replace(/\r?\n[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)\b[^\r\n]*(?:\r?\n[\s\S]*)?$/i,'').trim();
+const paragraph=(text:string,index:number)=>{const left=text.lastIndexOf('\n\n',index),right=text.indexOf('\n\n',index);return trimSignoff(text.slice(left<0?0:left+2,right<0?text.length:right));};
+const equivalentText=(text:string)=>text.replace(/\s+/g,' ').toLowerCase();
 const blocked=(text:string)=>/\b(?:withdraw\w*|supersed\w*|cancel\w*|disregard|ignore|already\s+(?:sent|received|paid)|(?:received|sent|delivered|paid)\s+(?:(?:the|your|our|my|their)\s+)?(?:final\s+)?invoice|invoice[^.!?;\n]{0,60}\b(?:received|sent|delivered|paid)|no\s+(?:invoice|booking)|do\s+not)\b/i.test(text);
 const affirmative=(text:string)=>!(/\b(?:no|not|never|without|unless|whether|previous|historical|don't|do not)\b|\?/i.test(text))&&!/\bif\b/i.test(text.replace(/\bif\s+you\s+could\s+(?:(?:kindly|please)\s+)*please?\s*/ig,''));
 const namedProperties=(text:string)=>[...text.matchAll(/\b(?:for|at|our|the)\s+([A-Z][\p{L}'’-]*(?:\s+[A-Z][\p{L}'’-]*){0,3}\s+Hotel)\b/gu)].map(m=>m[1]!);
@@ -25,7 +27,7 @@ export function deriveDocumentRequestContinuations(input:{messages:readonly Mess
   const text=trigger.sourceViews?trigger.text.slice(view.start,view.end):current,activations=new Map<string,{quote:string;start:number}[]>();
   for(const active of text.matchAll(/[^.!?;]*\b(?:quote|quotation|offer)\b[^.!?;]*[.!?;]?\s*[^.!?;]*\b(?:accept|book|reserve)\b[^.!?;]*[.!?;]?/gi)){
    const matched=active[0].trim(),verb=/\b(?:accept|book|reserve)\b/i.exec(matched)!,tail=matched.slice(verb.index!+verb[0].length),sentenceTail=tail.search(/[.!?;]/),paragraphTail=tail.search(/\r?\n[\t ]*\r?\n/),signoffTail=tail.search(/\r?\n[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\r\n]*(?=\r?\n|$)/i),endOffset=[sentenceTail,paragraphTail,signoffTail].filter(offset=>offset>=0).sort((a,b)=>a-b)[0]??tail.length,quote=matched.slice(0,verb.index!+verb[0].length+endOffset+(endOffset===sentenceTail?1:0)).trim(),following=text.slice(active.index!+active[0].indexOf(matched)+quote.length).trimStart(),nextBreak=following.search(/\r?\n[\t ]*\r?\n/),nextParagraph=following.slice(0,nextBreak<0?following.length:nextBreak),start=view.start+active.index!+active[0].indexOf(matched),key=quote.replace(/\s+/g,' ').replace(/[.!?;]+$/,'').toLowerCase(),copies=activations.get(key)??[];
-   if(condition.test(quote)||/^(?:only\s+if|unless|provided\s+(?:that\s+)?|subject\s+to)\b/i.test(nextParagraph))conditionalActivation=true;
+   if(condition.test(quote)||/^(?:if|only\s+if|unless|provided\s+(?:that\s+)?|subject\s+to)\b/i.test(nextParagraph))conditionalActivation=true;
    copies.push({quote,start});activations.set(key,copies);
   }
   activationsByView.set(view.name,activations);
@@ -36,11 +38,11 @@ export function deriveDocumentRequestContinuations(input:{messages:readonly Mess
  const found:DocumentRequestContinuation[]=[];
  for(const message of input.messages){
   if(message.id===trigger.id||message.direction!=='inbound'||message.disclosure==='staff_only'||!Number.isFinite(Date.parse(message.at))||Date.parse(message.at)>=causal)continue;
-  const cut=history(message.text),authored=cut<0?message.text:message.text.slice(0,cut),requestViews=message.sourceViews?.map(view=>({text:message.text.slice(view.start,view.end),offset:view.start}))??[{text:authored,offset:0}],copies=requestViews.flatMap((view,viewIndex)=>[...view.text.matchAll(/\bsend\s+(?:the\s+)?(?:final\s+)?invoice(?:\s+for\s+payment)?[.]?/gi)].map((match,index)=>({quote:match[0],parent:paragraph(view.text,match.index!),start:view.offset+match.index!,viewIndex,index}))),requests=copies.filter((request,index)=>!copies.slice(0,index).some(previous=>previous.viewIndex!==request.viewIndex&&previous.index===request.index&&previous.quote===request.quote&&previous.parent===request.parent));
+  const cut=history(message.text),authored=cut<0?message.text:message.text.slice(0,cut),requestViews=message.sourceViews?.map(view=>({text:message.text.slice(view.start,view.end),offset:view.start}))??[{text:authored,offset:0}],copies=requestViews.flatMap((view,viewIndex)=>[...view.text.matchAll(/\bsend\s+(?:the\s+)?(?:final\s+)?invoice(?:\s+for\s+payment)?[.]?/gi)].map((match,index)=>({quote:match[0],parent:paragraph(view.text,match.index!),start:view.offset+match.index!,viewIndex,index}))),requests=copies.filter((request,index)=>!copies.slice(0,index).some(previous=>previous.viewIndex!==request.viewIndex&&previous.index===request.index&&equivalentText(previous.quote)===equivalentText(request.quote)&&equivalentText(previous.parent)===equivalentText(request.parent)));
   if(requests.length!==1||blocked(authored))continue;
   const currentProperties=namedProperties(current),priorProperties=namedProperties(authored);if(currentProperties.length&&(!priorProperties.length||currentProperties.some(p=>!priorProperties.includes(p))))continue;
   const request=requests[0]!,quote=request.quote,parent=request.parent;if(!affirmative(parent)||!quoted.includes(parent)||!(/\b(?:book|booking|reservation|accommodation)\b/i.test(parent)))continue;
-  const scopeParagraphs=[...new Set(requestViews.flatMap(view=>view.text.split(/\n\s*\n/).map(p=>p.trim())))].filter(p=>p!==parent&&/\b(?:request|booking|reservation|accommodation)\b/i.test(p)&&/\b(?:event|group|stay|booking|reservation)\b/i.test(p));
+  const scopeParagraphs=[...new Set(requestViews.flatMap(view=>view.text.split(/\n\s*\n/).map(trimSignoff)))].filter(p=>equivalentText(p)!==equivalentText(parent)&&/\b(?:request|booking|reservation|accommodation)\b/i.test(p)&&/\b(?:event|group|stay|booking|reservation)\b/i.test(p));
   if(scopeParagraphs.length&&!scopeParagraphs.some(p=>quoted.includes(p)))continue;
   if(input.messages.some(m=>m.id!==trigger.id&&Date.parse(m.at)>Date.parse(message.at)&&Date.parse(m.at)<=causal&&blocked(authoredText(m.text))))continue;if(authored.slice(Math.max(0,request.start-150),request.start).split('\n').at(-1)?.trim().startsWith('>'))continue;
   if(quoted.indexOf(quote)<0)continue;
