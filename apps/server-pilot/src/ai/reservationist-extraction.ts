@@ -381,10 +381,12 @@ function childRequirement(page:string):boolean{const authored=page.split(/^(?:\s
  const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay|sleep|rooms?|beds?|accommodation|guests?|we|us|\d+)\b/i.test(row)||/\b(?:one|two|three|four|our|my|their|his|her|the)\s+(?:[\p{L}-]+\s+){0,3}(?:child|children|kids?|infants?)\b/iu.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
 }
 function childRequirementForRoom(page:string,fact:ValidatedDocumentFact,facts:readonly ValidatedDocumentFact[]):boolean{
+ if(fact.kind!=='room')return childRequirement(page);
  const otherGroups=facts
-  .filter(other=>other.kind==='room'&&fact.kind==='room'&&other.id!==fact.id&&other.source.attachmentId===fact.source.attachmentId&&other.source.page===fact.source.page&&other.value.roomRef!==fact.value.roomRef)
+  .filter(other=>other.kind==='room'&&other.id!==fact.id&&other.source.attachmentId===fact.source.attachmentId&&other.source.page===fact.source.page&&other.value.roomRef!==fact.value.roomRef)
   .map(other=>other.kind==='room'?other.value.roomRef:'');
- const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>!otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref)));
+ const inThisGroup=(row:string)=>labeled(row,'room|group',fact.value.roomRef)||numberedRoomLabel(row,fact.value.roomRef);
+ const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>inThisGroup(row)||!otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref)));
  return childRequirement(scopedRows.join('\n'));
 }
 function quoteRoomQuantity(fact:ValidatedDocumentFact,task:ValidatedDocumentPlan['tasks'][number],facts:readonly ValidatedDocumentFact[]):number|undefined{
