@@ -47,11 +47,14 @@ describe('property-scoped inbound extraction', () => {
     const unknown = buildInboundPrompt(selection, undefined, undefined, { propertyCode: null }).system;
 
     expect(centurion).toContain('Property: Centurion Hotel');
+    expect(centurion).toContain('property or partner (Da Vinci, events/conference team');
     expect(davinci).toContain('Property: Da Vinci Hotel');
     expect(davinci).not.toContain('Property: Centurion Hotel');
     expect(davinci).toContain('property or partner (another Legacy hotel');
     expect(unknown).not.toContain('Property: Centurion Hotel');
     expect(unknown).not.toContain('Property: Da Vinci Hotel');
+    expect(unknown).not.toContain('Da Vinci');
+    expect(unknown).toContain('property or partner (another hotel, events/conference team, accounts)');
     expect(buildInboundPrompt(selection).system).toContain('Property: Centurion Hotel');
     expect(inboundPropertyCodeForTransport('transport-faith')).toBe('HRDAV');
     expect(inboundPropertyCodeForTransport('transport-centurion')).toBe('HRCEN');
