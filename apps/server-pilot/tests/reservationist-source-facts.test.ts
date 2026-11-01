@@ -281,6 +281,9 @@ describe('plain and HTML citation binding',()=>{
   const thenCheck='Please review attached voucher for guest A, then check enclosed hotel voucher for guest B.',thenTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'then check enclosed hotel voucher for guest B',view:'plain' as const}];
   await expect(run(thenCheck,thenCheck,thenTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
   await expect(run(thenCheck,thenCheck,thenTasks.slice(0,1))).resolves.toMatchObject({tasks:[{id:'guest-a'}],voucherReviewSources:[expect.objectContaining({quote:'enclosed hotel voucher'})]});
+  const nextLine='Please review attached voucher for guest A\nPlease also review enclosed hotel voucher for guest B',lineTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'Please also review enclosed hotel voucher for guest B',view:'plain' as const}];
+  await expect(run(nextLine,nextLine,lineTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
+  await expect(run(nextLine,nextLine,lineTasks.slice(0,1))).resolves.toMatchObject({tasks:[{id:'guest-a'}],voucherReviewSources:[expect.objectContaining({quote:'enclosed hotel voucher'})]});
   await expect(run('Please review attached voucher for guest A.','Please review the attached voucher for guest A.',[{id:'one-request',quote:'Please review attached voucher for guest A.',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'one-request'}]});
   const descriptiveSameRequest='Please review attached voucher for guest A (our accounts team will also check the attached voucher tomorrow).';
   await expect(run(descriptiveSameRequest,descriptiveSameRequest,[{id:'one-request',quote:'Please review attached voucher for guest A',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'one-request'}]});
