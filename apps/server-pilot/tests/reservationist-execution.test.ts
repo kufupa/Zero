@@ -33,6 +33,8 @@ it.each([
  ['Please send the tax certificate, not the invoice',true],
  ['Do not send the invoice, tax certificate',false],
  ['Do not send the invoice and send the tax certificate',true],
+ ['Do not download and send the tax certificate',false],
+ ['Please send the invoice and do not send the tax certificate',false],
 ] as const)('compares the same document request across alternatives: %s',(plain,expected)=>{
  const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
