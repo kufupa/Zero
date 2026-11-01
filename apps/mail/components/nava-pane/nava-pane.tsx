@@ -298,6 +298,7 @@ export function NavaPane({
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
+  const preparedTaskGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const runQuoteStepRef = useRef<(stepId: string, autoStart?: boolean, readBack?: boolean) => void>(() => undefined);
   const {
@@ -888,13 +889,14 @@ export function NavaPane({
       if (source.kind !== 'ready') return;
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
       const refreshActions = async () => {
+        const generation = preparedTaskGeneration.current;
         const actions = await bindStaffActions({
           query: staff.drafts.reviewForMessage?.query,
           threadId: source.source.threadId,
           messageId: source.source.messageId,
           ...(paneWorkItemId ? { workItemId: paneWorkItemId } : {}),
         });
-        if (cancelled || actions.kind !== 'ready') return false;
+        if (cancelled || generation !== preparedTaskGeneration.current || actions.kind !== 'ready') return false;
         dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
         return true;
       };
@@ -2387,7 +2389,12 @@ export function NavaPane({
               onSetPreparedTaskHandled={async (task, handled) => {
                 const mutate = staffQuoteFromTrpc(trpcClient).drafts.setRequestHandled?.mutate;
                 if (!mutate || !task.workItemId || !task.runId) throw new Error('Request review unavailable');
-                await mutate({ workItemId: task.workItemId, runId: task.runId, taskId: task.id, handled });
+                preparedTaskGeneration.current++;
+                try {
+                  await mutate({ workItemId: task.workItemId, runId: task.runId, taskId: task.id, handled });
+                } finally {
+                  preparedTaskGeneration.current++;
+                }
                 dispatchQuote({ type: 'prepared_task_handled', taskId: task.id, runId: task.runId, handled });
               }}
               onPatchStaffHeader={(header, options) => {

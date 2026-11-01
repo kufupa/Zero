@@ -255,6 +255,20 @@ describe('QuoteWorkflowPanel', () => {
     expect(handled).toHaveBeenCalledTimes(1);
     expect(screen.getByText('No cancellation has been saved.', { selector: 'li' })).toBeDefined();
   });
+  it('shows one persistent control for a prepared question and keeps its source link', () => {
+    const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
+      text:'Parking?',sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};
+    const task = {id:'one',kind:'question',label:'Answer question',state:'Needs review' as const,
+      details:['Request: Parking?'],runId:'run',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,preparedStaffTasks:[task],reviewItems:[source,
+      {...source,id:'other',text:'Another question?'}]};
+    const view = vi.fn();
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={vi.fn().mockResolvedValue(undefined)} onViewSource={view} />);
+    expect(screen.queryByRole('button', {name:'Mark as done: Parking?'})).toBeNull();
+    expect(screen.getByRole('button', {name:'Mark as done: Another question?'})).toBeDefined();
+    fireEvent.click(screen.getByRole('button', {name:'Show in email'}));
+    expect(view).toHaveBeenCalledWith(source);
+  });
   it('shows each unanswered question on a non-quote email', () => {
     const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
       {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},
