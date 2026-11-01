@@ -124,7 +124,7 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
 
 type HistoryRun = { id: string; result: unknown; source?: unknown };
 
-/** A later read can clear an attachment warning; rereading does not clear a voucher check. */
+/** A later read can clear an attachment warning; voucher checks wait for individual staff acknowledgements. */
 export function outstandingSourceRecoveries(runs: readonly HistoryRun[], state?: unknown) {
   const failures = new Set<string>(), seenVouchers = new Set<string>(), successes = new Map<string, Set<string>>();
   const handled = handledRequestKeys(state);

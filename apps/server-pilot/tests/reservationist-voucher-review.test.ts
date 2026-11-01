@@ -60,7 +60,6 @@ it('acknowledges voucher citations independently and retains only unhandled cite
  expect(hasOutstandingRequestHistory([{id:'reread',result},{id:'old',result}],bothDone)).toBe(false);
  expect(outstandingSourceRecoveries([{id:'reread',result},{id:'old',result}],bothDone)).toEqual([]);
 });
-
 it.each([
  {...recovery,sourceHash:'b'.repeat(64)},
  {...recovery,sourceRef:'message:other'},
