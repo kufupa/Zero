@@ -1087,7 +1087,7 @@ export const workstationRouter = router({
       if (
         !group?.arrival ||
         groups.length !== 1 ||
-        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
+        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1 || r.childAges === null)
       ) {
         return unavailable;
       }
@@ -1097,7 +1097,7 @@ export const workstationRouter = router({
         const prefill = await buildCreatePrefill({
           arrival: group.arrival, departure: group.departure ?? null, nights: null,
           rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
-            adults: row.adultsPerRoom ?? 0, childAges: [...row.childAges],
+            adults: row.adultsPerRoom ?? 0, childAges: [...row.childAges!],
             roomTypeText: row.roomPreference ?? null, guestName: row.guestNames[i] ?? null,
           }))),
           boardText: group.board ?? null, rateText: input.rateCode ?? null,

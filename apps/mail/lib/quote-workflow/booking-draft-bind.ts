@@ -163,7 +163,7 @@ export function overlayLunaGroupsFromStaff(
       departure: group.departureDate ?? null,
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
-      childAges: [...(group.childrenAges ?? [])],
+      childAges: group.fields.childAges === 'missing' ? null : [...(group.childrenAges ?? [])],
       board:
         group.board === 'dinner_bb'
           ? 'dbb'

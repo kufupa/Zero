@@ -94,7 +94,7 @@ describe('agentDecisionToLunaAnalysis', () => {
     expect(agentDecisionToLunaAnalysis(decision('spam'), selection).workflow).toBe('skip');
   });
 
-  it('folds stayAsk into one luna group with per-room adults', () => {
+  it('does not divide a multi-room stay total into per-room adults', () => {
     const analysis = agentDecisionToLunaAnalysis(
       decision('quote', {
         stayAsk: {
@@ -114,7 +114,7 @@ describe('agentDecisionToLunaAnalysis', () => {
         departure: '2026-11-14',
         dateEvidence: null,
         rooms: 2,
-        adultsPerRoom: 2,
+        adultsPerRoom: null,
         childAges: [],
         board: null,
         roomPreference: null,
@@ -122,9 +122,14 @@ describe('agentDecisionToLunaAnalysis', () => {
       },
     ]);
     expect(parsed.workflow).toBe('quote');
+    expect(analysis.missing).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'adultsPerRoom' }),
+      ]),
+    );
   });
 
-  it('ceils adults across rooms and keeps children', () => {
+  it('keeps multi-room adults unresolved and never invents child ages', () => {
     const parsed = lunaAnalysisSchema.parse(
       agentDecisionToLunaAnalysis(
         decision('quote', {
@@ -139,10 +144,16 @@ describe('agentDecisionToLunaAnalysis', () => {
         selection,
       ),
     );
-    expect(parsed.groups[0]?.adultsPerRoom).toBe(3);
+    expect(parsed.groups[0]?.adultsPerRoom).toBeNull();
     expect(parsed.groups[0]).not.toHaveProperty('adultsTotal');
-    expect(parsed.groups[0]?.childAges).toHaveLength(2);
+    expect(parsed.groups[0]?.childAges).toBeNull();
     expect(parsed.groups[0]).not.toHaveProperty('childrenTotal');
+    expect(parsed.missing).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'adultsPerRoom' }),
+        expect.objectContaining({ field: 'childAges' }),
+      ]),
+    );
   });
 
   it('carries only separately supplied stay-wide totals alongside inferred occupancy', () => {
@@ -163,11 +174,30 @@ describe('agentDecisionToLunaAnalysis', () => {
 
     expect(parsed.groups[0]).toMatchObject({
       rooms: 2,
-      adultsPerRoom: 3,
+      adultsPerRoom: null,
       adultsTotal: 5,
       childAges: [],
       childrenTotal: 0,
     });
+  });
+
+  it('does not fill a one-room child count with a made-up age', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(
+        decision('quote', {
+          stayAsk: {
+            arrivalDate: '2026-11-12',
+            departureDate: '2026-11-14',
+            adults: 2,
+            children: 1,
+            rooms: 1,
+          },
+        }),
+        selection,
+      ),
+    );
+    expect(parsed.groups[0]).toMatchObject({ rooms: 1, adultsPerRoom: 2, childAges: null });
+    expect(parsed.missing).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'childAges' })]));
   });
 
   it('keeps confirmation numbers that appear in the selection and drops invented ones', () => {
