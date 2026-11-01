@@ -588,6 +588,7 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
         ? { filename: action.filename }
         : {}),
       ...(typeof action.reason === 'string' && action.reason.trim() ? { reason: action.reason } : {}),
+      ...(action.kind === 'business_document_failure' && action.readable === true ? { readable: true } : {}),
     });
   }
   return actions;

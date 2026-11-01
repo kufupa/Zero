@@ -2909,6 +2909,7 @@ describe('an unread document is a needs-review row, never a stop', () => {
         sourceRef: 'rooming',
         sourceKind: 'attachment',
         filename: 'rooming.xlsx',
+        reason: 'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',
         readable: true,
         blocking: false,
       }],
@@ -2916,6 +2917,7 @@ describe('an unread document is a needs-review row, never a stop', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Nava sent only the beginning of this spreadsheet for analysis. Review later rows and any masked number groups in the original file.'))
       .toBeDefined();
+    expect(screen.getByText('Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.')).toBeDefined();
     expect(screen.queryByText('Needs review. Nava did not read this file.')).toBeNull();
   });
 });

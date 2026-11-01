@@ -42,6 +42,8 @@ import {
 } from '../../ai/draft-evidence.js';
 import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
+import {reservationistBookingSuggestionGroupId, type ReservationistBookingSuggestionCitation} from '../../ai/reservationist-booking-suggestion.js';
+import {staffQuoteSourceHash} from '../../ai/staff-quote-workflow.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -193,7 +195,7 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
   return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
 }
 
-async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown) {
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown, selectedMessageId?: string, selectedMessageSourceHash?: string, staffSourceHash?: string) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
   const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
@@ -203,7 +205,7 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
     .select({ sourceRef: attachment.id, filename: attachment.filename, messageId: attachment.messageId })
     .from(attachment).innerJoin(message, eq(attachment.messageId, message.id))
     .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, transportId), eq(message.threadId, threadId))) : [];
-  const summary = buildReservationistReviewSummary(result, new Date(), sources);
+  const summary = buildReservationistReviewSummary(result, new Date(), sources, selectedMessageId, selectedMessageSourceHash, staffSourceHash);
   if (!summary || !runId || workState === undefined) return summary;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
   return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
@@ -221,12 +223,13 @@ export type ReservationistStaffAction = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  readable?: boolean;
   blockingQuote: boolean;
   status: 'open';
 };
 
 /** Read-only human review DTO; stored task/packet bindings remain the authority boundary. */
-export function buildReservationistReviewSummary(raw: unknown, now = new Date(), attachmentSources: readonly {sourceRef:string;filename:string;messageId:string}[] = []) {
+export function buildReservationistReviewSummary(raw: unknown, now = new Date(), attachmentSources: readonly {sourceRef:string;filename:string;messageId:string}[] = [], selectedMessageId?: string, selectedMessageSourceHash?: string, staffSourceHash?: string) {
   const record = (value: unknown): Record<string, unknown> =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
@@ -282,6 +285,31 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     const messageId = sourceRef.match(/^message(?:-subject)?:([\s\S]+)$/)?.[1];
     return { sourceRef, sourceHash, sourceKind: messageId ? 'message' as const : 'attachment' as const, ...(messageId ? {messageId} : {}) };
   };
+  const currentBookingSuggestion = (task: Record<string, unknown>, taskId: string) => {
+    if (!selectedMessageId || !selectedMessageSourceHash || !staffSourceHash || task.kind !== 'new_booking') return undefined;
+    const suggestion = record(task.bookingSuggestion), requestSource = record(task.requestSource), source = record(suggestion.source);
+    if (
+      suggestion.version !== 1 || suggestion.taskId !== taskId || suggestion.displayOnly !== true || suggestion.saved !== false ||
+      (suggestion.status !== 'prefill' && suggestion.status !== 'needs_details') ||
+      !Array.isArray(suggestion.partyNames) || suggestion.partyNames.some(name => typeof name !== 'string' || !name.trim()) ||
+      requestSource.attachmentId !== `message:${selectedMessageId}` ||
+      typeof requestSource.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(requestSource.sourceHash) ||
+      requestSource.sourceHash !== selectedMessageSourceHash || !/^[a-f0-9]{64}$/.test(staffSourceHash) ||
+      !Number.isSafeInteger(requestSource.page) || !Number.isSafeInteger(requestSource.start) || !Number.isSafeInteger(requestSource.end) ||
+      source.sourceRef !== requestSource.attachmentId || source.sourceHash !== requestSource.sourceHash ||
+      source.page !== requestSource.page || source.start !== requestSource.start || source.end !== requestSource.end
+    ) return undefined;
+    const citation: ReservationistBookingSuggestionCitation = {
+      sourceRef: requestSource.attachmentId as string,
+      sourceHash: requestSource.sourceHash as string,
+      page: requestSource.page as number,
+      start: requestSource.start as number,
+      end: requestSource.end as number,
+    };
+    const expectedGroupId = reservationistBookingSuggestionGroupId(citation);
+    if (suggestion.groupId !== expectedGroupId || !/^[A-Za-z0-9_-]{1,32}$/.test(expectedGroupId)) return undefined;
+    return { ...suggestion, staffSourceHash } as Record<string, unknown> & { staffSourceHash: string };
+  };
   for (const task of rows(result.tasks).slice(0, 32)) {
     if (!['needs_clarification', 'blocked'].includes(String(task.status))) continue;
     const source = record(task.requestSource), identity = originalSource(source);
@@ -322,27 +350,47 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       malformed_or_unsupported_raster: 'This image could not be read.', malformed: 'This document could not be read.',
       no_embedded_text: 'Document text could not be extracted.', page_boundaries_unavailable: 'Document pages could not be identified.',
       ambiguous_number_groups: 'Some number groups may be room numbers or card details. Check the original source.',
+      masked_card_numbers: 'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',
+      spreadsheet_row_unverified: 'Some spreadsheet rows could not be verified; check the original file.',
       too_large: 'This document exceeds the reading limit.', attachment_total_resource_unavailable: 'This attachment exceeds the available reading budget.', identity_or_authorization_changed: 'The source changed or access is unavailable.',
       attachment_identity_unavailable: 'This attachment could not be checked; open the original source.',
       encrypted: 'This document is password protected.', timeout: 'Document reading timed out.',
       parser_failure: 'Document reading failed.', too_many_pages: 'This document exceeds the page limit.',
     };
-    const reason = reasons[recovery.reason] ?? (/^(?:source_batch_\d+_(?:unavailable|not_attempted)|attachment_batch_unavailable|fact_enrichment_unavailable)$/.test(recovery.reason)
-      ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
+    const xlsxMime = typeof recovery.mimeType === 'string' && recovery.mimeType.split(';', 1)[0]?.trim().toLowerCase() === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const spreadsheetFailure = xlsxMime && /^spreadsheet_[a-z_]+$/.test(recovery.reason);
+    const reason = reasons[recovery.reason] ?? (spreadsheetFailure
+      ? 'This spreadsheet could not be read fully or safely; check the original file and handle it manually.'
+      : /^(?:source_batch_\d+_(?:unavailable|not_attempted)|attachment_batch_unavailable|fact_enrichment_unavailable)$/.test(recovery.reason)
+        ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
     if (!reason) continue;
     const sourceLabel = identity.sourceKind === 'message' ? 'Email' : filename ?? 'Attachment';
-    staffActions.push({id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
+    const readable = recovery.reason === 'ambiguous_number_groups' || recovery.reason === 'masked_card_numbers' || recovery.reason === 'spreadsheet_row_unverified';
+    const action: ReservationistStaffAction = {id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
       ...(typeof recovery.messageId === 'string' ? {messageId: recovery.messageId} : {}), ...(filename ? {filename} : {}), reason,
+      ...(readable ? {readable: true} : {}),
       blockingQuote: rows(result.tasks).some(t => t.kind === 'quote' && ['needs_clarification', 'blocked'].includes(String(t.status)) && (
         record(t.requestSource).attachmentId === identity.sourceRef || Array.isArray(t.evidenceRefs) && t.evidenceRefs.includes(identity.sourceRef) ||
-        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_/.test(String(recovery.reason)))
-      )), status: 'open'});
+        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_|^spreadsheet_row_unverified$/.test(String(recovery.reason)))
+      )), status: 'open'};
+    const prior = staffActions.find(item => item.kind === action.kind && item.id === action.id);
+    if (!prior) staffActions.push(action);
+    else {
+      if (!prior.reason?.includes(reason)) prior.reason = [prior.reason, reason].filter(Boolean).join(' ');
+      prior.text = `${sourceLabel}: ${prior.reason}`;
+      prior.blockingQuote ||= action.blockingQuote;
+      if (!action.readable) delete prior.readable;
+    }
   }
   const tasks = rows(result.tasks).slice(0, 32).map(task => {
     const details: string[] = [];
     const taskId = text(task.id, 512), kind = text(task.kind);
+    const bookingSuggestion = taskId ? currentBookingSuggestion(task, taskId) : undefined;
     const request = record(task.requestSource);
     if (typeof request.quote === 'string' && request.quote.trim()) details.push(`Request: ${text(request.quote.trim(), 256)}`);
+    if (bookingSuggestion && Array.isArray(bookingSuggestion.missing))
+      details.push(...bookingSuggestion.missing.filter((item): item is string => typeof item === 'string').slice(0, 16));
+    if (bookingSuggestion?.status === 'prefill') details.push('A source-cited booking prefill is display-only; no booking has been saved.');
     if (taskId) {
       for (const recovery of rows(result.readRecoveries).filter(item => item.taskId === taskId))
         if (Array.isArray(recovery.codes)) for (const code of recovery.codes.slice(0, 16)) if (typeof code === 'string') details.push(recoveryText(code));
@@ -437,7 +485,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
         }
       }
     }
-    return { id: taskId, kind, label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)] };
+    return { id: taskId, kind, label: labels[kind] ?? 'Review request', state: task.status === 'complete' ? 'Ready' : task.status === 'pending_pms_action' ? 'Pending staff action' : 'Needs review', details: [...new Set(details)], ...(bookingSuggestion ? { bookingSuggestion } : {}) };
   });
   const pricingProof: string[] = [];
   for (const quote of rows(result.quoteRevisions).slice(0, 8)) {
@@ -929,11 +977,11 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
  const originalIds=causal.map(row=>row.id),attached=originalIds.length?await input.db.select().from(attachment).where(inArray(attachment.messageId,originalIds)):[];
  const saved=metrics.reservationistDraftSource;
  const originals=new Map(saved.attachments.map(item=>[item.attachmentId,item]));
- if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity==='metadata_only'?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
+ if(attached.length>256||attached.some(item=>!Number.isSafeInteger(item.sizeBytes)||item.sizeBytes<0)||attached.reduce((sum,item)=>sum+(originals.get(item.id)?.sourceIdentity?0:item.sizeBytes),0)>20*1024*1024)throw new Error('reservationist_attachment_source_limit');
  const descriptor=(item:typeof attachment.$inferSelect,sourceHash?:string):ReservationistDraftSource['attachments'][number]=>{
   const base={attachmentId:item.id,messageId:item.messageId,s3Key:item.s3Key,mimeType:item.mimeType,sizeBytes:item.sizeBytes,inline:item.isInline};
   const original=originals.get(item.id);
-  return original?.sourceIdentity==='metadata_only'?{...base,sourceIdentity:'metadata_only',contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
+  return original?.sourceIdentity?{...base,sourceIdentity:original.sourceIdentity,contentId:item.contentId??null}:{...base,sourceHash:sourceHash??original?.sourceHash??''};
  };
  assertReservationistDraftSource(saved,{version:1,runId:run.id,generationId:input.generation.id,transportId:input.transportId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,threadId:input.draft.threadId!,requestedByUserId:input.generation.requestedByUserId!,triggerMessageId:input.draft.replyToMessageId!,causalAt,resultDigest:metrics.resultDigest!,messages:causal,attachments:attached.map(item=>descriptor(item)).sort((a,b)=>a.attachmentId.localeCompare(b.attachmentId)),...(saved.arrivalAcknowledgements?{arrivalAcknowledgements:saved.arrivalAcknowledgements}:{}),...(saved.operationalAnswers?{operationalAnswers:saved.operationalAnswers}:{})});
  assertMetadataSourceRecoveries(saved,result);
@@ -941,7 +989,7 @@ async function assertSealedReservationistDraftFresh(input:{db:DB;transportId:str
 
  const sources:ReservationistDraftSource['attachments']=[];
  for(const item of attached){
-  if(originals.get(item.id)?.sourceIdentity==='metadata_only'){sources.push(descriptor(item));continue;}
+  if(originals.get(item.id)?.sourceIdentity){sources.push(descriptor(item));continue;}
   if(!inboundAttachmentIdentityReader)throw new Error('reservationist_attachment_reader_unavailable');
   const bytes=await inboundAttachmentIdentityReader({attachmentId:item.id,transportId:input.transportId,threadId:input.draft.threadId!,expectedS3Key:item.s3Key,expectedSize:item.sizeBytes});
   if(!bytes)throw new Error('reservationist_attachment_source_unavailable');
@@ -1259,7 +1307,24 @@ export const draftsRouter = tRouter({
       const states = item ? await handledRequestStates(db, { transportId, threadId: input.threadId, sourceIds: [input.messageId] }) : undefined;
       const requestState = item ? states?.get(input.messageId) ?? {} : undefined;
       const history = runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource }));
-      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState);
+      const [selectedMessage] = await db.select({...getTableColumns(message),arrivedAt:MESSAGE_ARRIVED_AT}).from(message)
+        .where(and(eq(message.id,input.messageId),eq(message.transportId,transportId),eq(message.threadId,input.threadId))).limit(1);
+      let selectedMessageSourceHash: string | undefined, staffSourceHash: string | undefined;
+      const metrics = latest.metrics as (typeof latest.metrics & {reservationistDraftSource?:ReservationistDraftSource & {digest?:string};resultDigest?:string}) | null;
+      const savedSource = metrics?.reservationistDraftSource;
+      const savedMessage = savedSource?.messages.find(item => item.id === input.messageId);
+      if (selectedMessage && savedSource && savedMessage && savedSource.triggerMessageId === input.messageId && savedSource.resultDigest === metrics?.resultDigest) {
+        try {
+          const {digest: _digest, ...sourcePayload} = savedSource;
+          assertReservationistDraftSource(savedSource, sourcePayload);
+          const liveMessage = draftSourceMessage(selectedMessage);
+          if (savedMessage.sourceHash === liveMessage.sourceHash && savedMessage.identityHash === liveMessage.identityHash && savedMessage.at === liveMessage.at && savedMessage.direction === liveMessage.direction && liveMessage.direction === 'inbound') {
+            selectedMessageSourceHash = liveMessage.sourceHash;
+            staffSourceHash = staffQuoteSourceHash(selectedMessage);
+          }
+        } catch { /* stale or malformed source suppresses the display-only card */ }
+      }
+      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState, input.messageId, selectedMessageSourceHash, staffSourceHash);
       const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
       const earlier = item ? requestHistory(history, requestState)
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,

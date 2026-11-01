@@ -3,14 +3,18 @@ import {assertReservationistSubjectReference} from './reservationist-subject-sou
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {createHash} from 'node:crypto';
 import {AMBIGUOUS_NUMBER_GROUPS} from './card-mask.js';
+import {isReservationistXlsxMimeType} from './reservationist-xlsx.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistResultFreshForAction} from './draft-approval.js';
 import type {ModelAdapter} from './bedrock/adapter.js';
 import type {AttachmentAdmission} from './reservationist-attachment-input.js';
+import {validReservationistMessageViews} from './reservationist-message-view.js';
 import {assertDocumentRequestContinuation} from './reservationist-document-continuation.js';
 import {extractReservationistPlan} from './reservationist-extraction.js';
 import type {ValidatedDocumentPlan,ValidatedDocumentFact} from './reservationist-document-facts.js';
 import type {PreparedFact} from './prepared-draft-input.js';
+import {buildReservationistBookingSuggestion} from './reservationist-booking-suggestion.js';
+import type {ReservationistBookingSuggestion} from './reservationist-booking-suggestion.js';
 import type {GeneratedDraftArtifact} from './drafts.js';
 import type {RuntimePlan,RuntimeWorkResult,ReservationistRuntimeInput,runReservationistRuntime} from './reservationist-runtime.js';
 import {quoteDigest,resolveQuoteRevision,type QuoteRevision,type QuoteSourceRecord,type ImportedOffer,resolveApprovedOverride} from '../quote-proposal/quote-revision.js';
@@ -45,10 +49,22 @@ class SourceRequestClarification extends Error{constructor(readonly reply:string
 export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
- const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
- if(history>=0&&source.end!>history)return false;
- const prefix=message.text.slice(0,source.start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(message.text.slice(source.end)),next=message.text.slice(source.end).search(/[.!?;](?=\s|$)/),sentence=message.text.slice(sentenceStart,terminalBoundary?source.end:next<0?message.text.length:source.end!+next);
- return !(/^\s*>/m.test(message.text.slice(0,source.end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
+ let text=message.text,start=source.start!,end=source.end!,viewName:'plain'|'html'|undefined;
+ if(message.sourceViews){
+  if(!validReservationistMessageViews(message.text,message.sourceViews))return false;
+  const view=message.sourceViews.find(item=>start>=item.start&&end<=item.end);
+  if(!view)return false;
+  text=message.text.slice(view.start,view.end);start-=view.start;end-=view.start;viewName=view.name;
+ }
+ if(task.kind==='new_booking'&&viewName){
+  const target=source.quote.match(/\b(?:this|that|these|those|the)\s+rooms?\b|\b(?:\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0];
+  if(target&&message.sourceViews!.some(view=>view.name!==viewName&&/\b(?:not|never|no|don't|do not)\b[^.!?;\n]{0,80}\b(?:book|reserve)\b[^.!?;\n]*/i.exec(message.text.slice(view.start,view.end))?.[0].toLowerCase().includes(target.toLowerCase())))return false;
+ }
+ const history=text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
+ if(history>=0&&end>history)return false;
+ const prefix=text.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(text.slice(end)),next=text.slice(end).search(/[.!?;](?=\s|$)/),sentence=text.slice(sentenceStart,terminalBoundary?end:next<0?text.length:end+next);
+ if(/^\s*>/m.test(text.slice(0,end)))return false;
+ return !/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,''));
 }
 function appendRequestedAmendment(task:Task,input:ReservationistRuntimeInput,reply:string):string{
  if(task.kind!=='change'||!currentAuthoredGuestRequest(task,input))return reply;
@@ -153,11 +169,17 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
  const modeIdentity=()=>quoteDigest({extractionMode:options.extractionMode??'combined',factEnrichmentMode:options.factEnrichmentMode??null,messageBatching:options.messageBatching??null}),originalModeIdentity=modeIdentity();
  const guardModes=()=>{if(modeIdentity()!==originalModeIdentity)throw new Error('extraction_options_mutated');};
  const planScopes=new WeakMap<RuntimePlan,string>(),scopeIdentity=(input:ReservationistRuntimeInput)=>quoteDigest({requestId:input.requestId,scope:input.authorizationScope,propertyCode:input.propertyCode,trigger:input.trigger,messages:input.messages,causalAt:input.clock.causalAt});
- const ambiguousAttachments=()=>options.admissions.flatMap(a=>a.status==='admitted'&&a.source?.pages?.some(page=>page.includes(AMBIGUOUS_NUMBER_GROUPS))?[{
-  kind:'attachment_manual' as const,reason:'ambiguous_number_groups',sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,
-  sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,disclosure:'staff_only' as const,
-  provenance:{reason:'ambiguous_number_groups',taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
- }]:[]);
+ const numberReviewAttachments=()=>options.admissions.flatMap(a=>{
+  if(a.status!=='admitted'||!a.source?.pages)return[];
+  const text=a.source.pages.join('\n'),ambiguous=text.includes(AMBIGUOUS_NUMBER_GROUPS);
+  const maskedXlsx=isReservationistXlsxMimeType(a.metadata.mimeType)&&/\[(?:card ••••\d{4}|code masked)\]/u.test(text);
+  const reason=maskedXlsx?'masked_card_numbers':ambiguous?'ambiguous_number_groups':null;
+  return reason?[{
+   kind:'attachment_manual' as const,reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,
+   sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,disclosure:'staff_only' as const,
+   provenance:{reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
+  }]:[];
+ });
  const manualAttachments=(withProvenance=false)=>options.admissions.filter(a=>a.status==='manual_required').map(a=>{
   const m=a.metadata,common={kind:'attachment_manual' as const,reason:a.reason,sourceRef:m.attachmentId,sourceKind:'attachment' as const,messageId:m.messageId,mimeType:m.mimeType,signatureNoise:m.signatureNoise===true,disclosure:'staff_only' as const};
   return m.sourceIdentity==='metadata_only'?{...common,sourceIdentity:'metadata_only' as const}:{...common,sourceHash:m.sourceHash,...(withProvenance?{provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:m.attachmentId,sourceHash:m.sourceHash}]}}:{})};
@@ -214,7 +236,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     if(fact.source.attachmentId.startsWith('message-subject:'))assertReservationistSubjectReference(fact,task,input);
    }
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
-   const ambiguity=ambiguousAttachments();
+   const ambiguity=numberReviewAttachments();
    const manual=manualAttachments(true);
    const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:[...manual,...ambiguity],noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length||manual.some(r=>'sourceIdentity' in r&&r.sourceIdentity==='metadata_only')?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
@@ -227,7 +249,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
     const message=input.messages.find(m=>sourceRef===`message:${m.id}`||sourceRef===`message-subject:${m.id}`);
     return{sourceHash,...(message?{sourceKind:'message' as const,messageId:message.id}:{})};
    };
-   work.sourceRecoveries=[...ambiguousAttachments(),...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...manualAttachments(),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
+   work.sourceRecoveries=[...numberReviewAttachments(),...(extracted.unresolvedDiagnostics??[]).map(d=>({kind:'unresolved_fact' as const,reason:d.reason,disclosure:'staff_only' as const,...(d.phase==='fact_enrichment'?{provenance:{reason:d.reason,taskIds:structuredClone(d.taskIds),sources:structuredClone(d.sources)}}:{})})),...extracted.unresolvedAsks.filter(reason=>!extracted.unresolvedDiagnostics?.some(d=>d.reason===reason)).map(reason=>({kind:'unresolved_fact' as const,reason,disclosure:'staff_only' as const})),...manualAttachments(),...(extracted.sourceIncomplete??[]).map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.attachmentId,...recoverySource(a.attachmentId,a.sourceHash),disclosure:'staff_only' as const}))];
    const artifact=(pdf:Uint8Array,fileName:string)=>{const sha256=createHash('sha256').update(pdf).digest('hex'),ref=`generated:${sha256}`;generated.set(ref,{artifactRef:ref,filename:fileName,mimeType:'application/pdf',body:Buffer.from(pdf),sha256});work.artifacts.push({ref,sha256,sizeBytes:pdf.length,fileName,mimeType:'application/pdf'});return ref;};
    const checkRateClaims=async(ctx:Context,revision:QuoteRevision):Promise<string[]>=>{
     const {task,input}=ctx;let evidenceRefs:string[]=[];
@@ -260,7 +282,11 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
       }
     return evidenceRefs;
    };
-   for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';
+   for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';let bookingSuggestion:ReservationistBookingSuggestion|undefined;
+    if(task.kind==='new_booking'&&planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)){
+     try{bookingSuggestion=await buildReservationistBookingSuggestion({task,facts:ctx.facts,runtime:input,attachmentAdmissions:options.admissions})??undefined;}
+     catch{bookingSuggestion=undefined;}
+    }
     try{
      const unsupported=unsupportedTaskFacts(task,ctx.facts,input);if(unsupported.length){if(planScopes.get(plan)!==scopeIdentity(input))throw new Error('execution_scope_invalid');throw new FactTaskMappingError(unsupported.map(f=>f.id));}
      if(planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)&&isReservationistConferenceOnlyQuote(ctx))throw new ReservationistTaskEvidenceUnavailable('conference_quote_source_unavailable',['source-backed conference package availability, rates and terms'],['conference_package']);
@@ -366,6 +392,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
       if(ctx.facts.some(f=>f.kind==='room'&&f.value.quotationBasis==='per_room_rate'))guestText+=' Each quotation prices one room for the stated stay and occupancy. Final group allocation and combined availability require separate verification.';
       }
      }else if(task.kind==='acceptance'||task.kind==='new_booking'){
+      if(task.kind==='new_booking'&&task.source.attachmentId===`message:${input.trigger.id}`&&input.messages.find(m=>m.id===input.trigger.id)?.sourceViews&&!currentAuthoredGuestRequest(task,input))throw new SourceRequestClarification('Staff must resolve the booking request against the conflicting message views before preparing it.',[task.source.attachmentId],'booking_request_views_conflict');
       if(!services.resolveBookingTask)throw new Error('booking_evidence_unavailable');
       const booking=await services.resolveBookingTask(ctx);assertRevisionSourceFacts(ctx.facts,booking.evidence.revision,booking.input.rooms,booking.evidence.guestFacts);if(task.kind==='new_booking'?booking.input.kind!=='new_booking':booking.input.kind==='new_booking')throw new Error('booking_task_intent_mismatch');evidenceRefs=await checkRateClaims(ctx,booking.evidence.revision);const packet=await prepareBookingPacket({...booking.input,taskId:task.id},{resolveEvidence:async()=>booking.evidence,authorizeSource:(proof,edge)=>tool(edge,()=>booking.authorizeSource(proof,edge)),signal,deadlineAt:input.clock.deadlineAt,clock:{causalAt:input.clock.causalAt,sourceAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}});work.packets.push(packet);status=packet.status;evidenceRefs=[...new Set([...evidenceRefs,...packet.sourceRefs])];guestText=packet.status==='pending_pms_action'?'Your booking request is prepared, subject to staff completion and availability.':'Please confirm the missing booking details so staff can review your request.';
      }else if(task.kind==='change'||task.kind==='cancel_request'){
@@ -484,7 +511,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
      }else{
      const unavailable=/unavailable|manual_source_review|missing/i.test(reason);status=unavailable?'needs_clarification':'blocked';if(!unavailable)work.errors.push(`${task.id}:authority_or_integrity_failure`);
      guestText=task.kind==='quote'?'Please confirm the stay details so we can prepare a verified quotation.':(task.kind==='acceptance'||task.kind==='new_booking')?'Please confirm the booking details and accepted offer so staff can review your request.':task.kind==='existing_document'?'Please confirm which existing document you need.':'Please confirm the details of this request so staff can verify the answer.';evidenceRefs=[];}}
-    work.tasks.push({id:task.id,status,guestText,evidenceRefs,disclosure});work.approvedGuestClauses![task.id]=guestText;clauses.set(task.id,guestText);
+    work.tasks.push({id:task.id,status,guestText,evidenceRefs,disclosure,...(bookingSuggestion?{bookingSuggestion}:{})});work.approvedGuestClauses![task.id]=guestText;clauses.set(task.id,guestText);
    }
    return work;
   },

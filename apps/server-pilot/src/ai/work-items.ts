@@ -1023,33 +1023,43 @@ export async function ensureWorkItemForMessage(
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
-  const latest = await succeededRead(db, input.messageId);
-  if (!msg || !latest || latest.kind === 'spam') return null;
-  const item = await ensureWorkItem(db, {
-    transportId: input.transportId,
-    threadId: msg.threadId,
-    messageId: input.messageId,
-    kind: latest.kind,
-    extractionId: latest.id,
+  if (!msg) return null;
+  return db.transaction(async tx => {
+    const transaction = tx as unknown as DB;
+    // A reread can relink or restore one item before refreshing the whole thread.
+    // Take thread items in the same order as the refresh before touching any one,
+    // including dismissed items that the reread may restore.
+    await tx.select({ id: workItem.id }).from(workItem)
+      .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, msg.threadId)))
+      .orderBy(workItem.id).for('update');
+    const latest = await succeededRead(transaction, input.messageId);
+    if (!latest || latest.kind === 'spam') return null;
+    const item = await ensureWorkItem(transaction, {
+      transportId: input.transportId,
+      threadId: msg.threadId,
+      messageId: input.messageId,
+      kind: latest.kind,
+      extractionId: latest.id,
+    });
+    const current =
+      item.status === 'dismissed'
+        ? await restoreSupersededItem(transaction, { workItemId: item.id, status: 'needs_you', latestId: latest.id })
+        : item;
+    await dismissSupersededItems(transaction, {
+      transportId: input.transportId,
+      threadId: msg.threadId,
+      messageId: input.messageId,
+      latest,
+    });
+    // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
+    if (msg.threadId) await refreshThreadWork(transaction, { transportId: input.transportId, threadId: msg.threadId });
+    const [fresh] = await tx
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+      .from(workItem)
+      .where(eq(workItem.id, current.id))
+      .limit(1);
+    return fresh ?? current;
   });
-  const current =
-    item.status === 'dismissed'
-      ? await restoreSupersededItem(db, { workItemId: item.id, status: 'needs_you', latestId: latest.id })
-      : item;
-  await dismissSupersededItems(db, {
-    transportId: input.transportId,
-    threadId: msg.threadId,
-    messageId: input.messageId,
-    latest,
-  });
-  // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
-  if (msg.threadId) await refreshThreadWork(db, { transportId: input.transportId, threadId: msg.threadId });
-  const [fresh] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
-    .from(workItem)
-    .where(eq(workItem.id, current.id))
-    .limit(1);
-  return fresh ?? current;
 }
 
 /** The reason on a system dismissal of an item a kind-changing re-read replaced. */

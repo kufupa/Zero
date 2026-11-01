@@ -50,6 +50,33 @@ describe('reservationist worker input', () => {
     expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
+  it('shares identical quoted history between differing authored views without duplicating it', async () => {
+    const { input } = await build([row('current', 4, {
+      textBody: 'Please review the earlier request.\nFrom: guest@example.invalid\nSubject: Prior stay\n\nPlease quote one room for one adult.',
+      htmlBody: '<p>Please quote the earlier request.</p><p>From: guest@example.invalid</p><p>Subject: Prior stay</p><p>Please quote one room for one adult.</p>',
+    })]);
+    const message = input.messages[0]!, [plain, html] = message.sourceViews ?? [];
+    expect(plain?.quoted).toBeDefined();
+    expect(html?.quoted).toEqual(plain?.quoted);
+    expect(message.text.match(/Please quote one room for one adult\./g)).toHaveLength(1);
+    expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
+  });
+
+  it('retains separate quoted ranges when plain and HTML authored bodies match', async () => {
+    const authored = 'Please rebook the same stay as previously quoted.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${authored}\nFrom: plain@example.invalid\nSubject: Prior stay\n\nArrival 21 December 2026; departure 23 December 2026`,
+      htmlBody: `<p>${authored}</p><blockquote><p>From: html@example.invalid</p><p>Subject: Alternate prior stay</p><p>Arrival 22 December 2026; departure 24 December 2026</p></blockquote>`,
+    })]);
+    const message = input.messages[0]!, views = message.sourceViews ?? [];
+    expect(views).toHaveLength(2);
+    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, authored]);
+    expect(views.map(view => message.text.slice(view.quoted!.start, view.quoted!.end))).toEqual(expect.arrayContaining([
+      expect.stringContaining('Arrival 21 December 2026'), expect.stringContaining('Arrival 22 December 2026'),
+    ]));
+    expect(validReservationistMessageViews(message.text, views)).toBe(true);
+  });
+
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Room 1: 1 adult Room 2: 2 adults',
@@ -92,6 +119,7 @@ describe('reservationist worker input', () => {
     const { input } = await build([
       row('imported-before', 1, { direction: 'outbound', pop3Uidl: 'before', sentAt: null }),
       row('imported-after', 5, { direction: 'outbound', pop3Uidl: 'after', sentAt: at(1) }),
+      row('returned-native-after', 1, { direction: 'outbound', pop3Uidl: 'returned', arrivedAt: at(1), createdAt: at(1), sentAt: at(5) }),
       row('outlook-sent-before', 5, { direction: 'outbound', pop3Uidl: 'synced', sourceProvenance: { canonicalContentVersion: '1' }, sentAt: at(2) }),
       row('current', 4),
     ]);

@@ -363,12 +363,12 @@ export async function runInboundExtraction(
         ...(translationUsage ? { translation: translationUsage } : {}),
       },
     });
-    // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
-    await ensureWorkItemForMessage(tx, { transportId: run.transportId, messageId: run.triggerMessageId });
     // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
     // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this
     // read writes spam with the classifier's guards.
     if (spamWrites) await writeSpamDecision(tx, run, trigger, extraction.kind);
+    // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
+    await ensureWorkItemForMessage(tx, { transportId: run.transportId, messageId: run.triggerMessageId });
   });
   return 'stored';
 }
@@ -385,6 +385,13 @@ async function writeSpamDecision(
   trigger: { threadId: string; fromAddress: string },
   kind: string,
 ): Promise<void> {
+  // Reply import takes the thread lock before its work-item locks. Take the same
+  // order and re-read the spam guards after any concurrent import commits. A
+  // non-key lock still allows an approval holding an item to insert its run.
+  const [thread] = await db.select({ id: mailThread.id }).from(mailThread)
+    .where(and(eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId)))
+    .limit(1).for('no key update');
+  if (!thread) return;
   const [latest] = await db
     .select({ id: message.id })
     .from(message)

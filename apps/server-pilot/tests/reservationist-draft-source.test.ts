@@ -8,6 +8,9 @@ import {deriveOperationalDraftSources,operationalDraftMessages} from '../src/ai/
 import {validateReservationistMailAnswers} from '../src/ai/reservationist-mail-answer-source.js';
 const source={version:1 as const,runId:'run',generationId:'generation',transportId:'owner',propertyCode:'HRCEN',threadId:'thread',requestedByUserId:'user',triggerMessageId:'trigger',causalAt:'2026-10-05T01:00:00.000Z',resultDigest:'e'.repeat(64),messages:[{id:'trigger',at:'2026-10-05T01:00:00.000Z',direction:'inbound' as const,sourceHash:'a'.repeat(64),identityHash:'b'.repeat(64)}],attachments:[]};
 it('seals exact bounded source scope and accepts only its unchanged live contract',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,source)).not.toThrow();});
+it('rejects oversized changed source bodies before rendering',()=>{
+ expect(()=>renderReservationistMessage({textBody:null,htmlBody:'x'.repeat(2_000_001)})).toThrow('worker_intake_context_limit');
+});
 it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  const row={id:'trigger',direction:'inbound',arrivedAt:new Date('2026-10-05T01:00:00.000Z'),receivedAt:new Date('2026-10-01T01:00:00.000Z'),sentAt:null,textBody:'Please quote.',htmlBody:'<p>Please quote.</p>',subject:null,fromAddress:'guest@example.invalid',toAddresses:['hotel@example.invalid'],ccAddresses:[],bccAddresses:[]};
  const original=draftSourceMessage(row),changed=draftSourceMessage({...row,htmlBody:'<p>Different dates.</p>'});
@@ -17,9 +20,26 @@ it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  const fallback={...row,arrivedAt:null,createdAt:new Date('2026-10-05T02:00:00.000Z')};expect(draftSourceMessage(fallback).at).toBe(fallback.createdAt.toISOString());
  const outbound={...row,transportId:'owner',threadId:'thread',direction:'outbound',arrivedAt:new Date('2026-10-05T00:00:00.000Z')};
  const imported={...outbound,id:'imported',pop3Uidl:'before',sentAt:null};
- const rows=[{...row,transportId:'owner',threadId:'thread'},{...outbound,id:'unsent',sentAt:null},{...outbound,id:'late',sentAt:new Date('2026-10-05T02:00:00.000Z')},{...outbound,id:'sent',sentAt:new Date('2026-10-05T00:30:00.000Z')},imported,{...imported,id:'backdated',arrivedAt:new Date('2026-10-05T02:00:00.000Z'),sentAt:new Date('2026-10-05T00:30:00.000Z')}];
+ const rows=[{...row,transportId:'owner',threadId:'thread'},{...outbound,id:'unsent',sentAt:null},{...outbound,id:'late',sentAt:new Date('2026-10-05T02:00:00.000Z')},{...outbound,id:'sent',sentAt:new Date('2026-10-05T00:30:00.000Z')},imported,{...imported,id:'backdated',arrivedAt:new Date('2026-10-05T02:00:00.000Z'),sentAt:new Date('2026-10-05T00:30:00.000Z')},{...imported,id:'returned-native',createdAt:new Date('2026-10-05T00:00:00.000Z'),sentAt:new Date('2026-10-05T02:00:00.000Z')}];
  expect(operationalDraftMessages(rows,{requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN',triggerMessageId:'trigger',causalAt:row.arrivedAt.toISOString()}).map(m=>m.id)).toEqual(['trigger','sent','imported']);
  expect(draftSourceMessage(imported).at).toBe(imported.arrivedAt.toISOString());
+});
+it('retains equivalent wrapped answers across MIME views, but rejects a conflicting view',()=>{
+ const at=new Date('2026-10-05T01:00:00.000Z'),sent=new Date('2026-10-04T01:00:00.000Z');
+ const addresses={transportId:'owner',threadId:'thread',subject:null,ccAddresses:[],bccAddresses:[]};
+ const trigger={...addresses,id:'trigger',direction:'inbound',arrivedAt:at,createdAt:at,receivedAt:at,sentAt:null,textBody:'When is check-in?',htmlBody:null,fromAddress:'guest@example.invalid',toAddresses:['hotel@example.invalid']};
+ const prior={...addresses,id:'reply',direction:'outbound',arrivedAt:sent,createdAt:sent,receivedAt:sent,sentAt:sent,textBody:'Check-in time is\n14:00.',htmlBody:'<p>Check-in time is 14:00.</p>',fromAddress:'hotel@example.invalid',toAddresses:['guest@example.invalid']};
+ const binding={requestId:'trigger',ownerRef:'owner',threadId:'thread',propertyCode:'HRCEN' as const,triggerMessageId:'trigger',causalAt:at.toISOString()};
+ for(const reply of [prior,{...prior,textBody:'Check-in time is 14:00.',htmlBody:'<p>Check-in time is<br>14:00.</p>'}]){
+  const messages=operationalDraftMessages([reply,trigger],binding),request=messages.find(m=>m.id==='trigger')!,answer=messages.find(m=>m.id==='reply')!;
+  const source={attachmentId:'message:trigger',sourceHash:createHash('sha256').update(request.text).digest('hex'),page:1,start:0,end:request.text.length,quote:request.text};
+  const sourceHash=createHash('sha256').update(answer.text).digest('hex'),result={tasks:[{id:'check-in',status:'complete',guestText:'Check-in time is 14:00.',evidenceRefs:['message:reply'],disclosure:'guest',kind:'question',required:true}],preparedFacts:[{key:'check_in_check-in',label:'check_in',value:'14:00',source:'mail',authority:'authorized',status:'known',evidenceRef:'message:reply',sourceHash,scopeVerified:true,disclosure:'guest'}]} as any;
+  expect(deriveOperationalDraftSources({tasks:[{id:'check-in',kind:'question',required:true,source}],facts:[]},result,binding,[reply,trigger],new AbortController().signal)).toHaveLength(1);
+  const conflict={...reply,htmlBody:'<p>Check-in time is 15:00.</p>'};
+  const conflictText=operationalDraftMessages([conflict,trigger],binding).find(m=>m.id==='reply')!.text;
+  const conflictResult={...result,preparedFacts:[{...result.preparedFacts[0],sourceHash:createHash('sha256').update(conflictText).digest('hex')}]};
+  expect(deriveOperationalDraftSources({tasks:[{id:'check-in',kind:'question',required:true,source}],facts:[]},conflictResult,binding,[conflict,trigger],new AbortController().signal)).toHaveLength(0);
+ }
 });
 it('proves the same parking answer in both MIME alternatives but rejects a conflict',()=>{
  const at=new Date('2026-10-05T01:00:00.000Z'),sent=new Date('2026-10-04T01:00:00.000Z');
@@ -84,13 +104,14 @@ it('binds review-only cancellation preflight to the exact inbound draft source',
 
 afterEach(()=>{vi.unstubAllEnvs();});
 
-it('resolves draft property HRDAV only for Da Vinci transports when HMS_DAVINCI_MAKE_QUOTE is on',()=>{
- expect(reservationistDraftPropertyCode('owner')).toBe('HRCEN');
+it('resolves registered draft properties and refuses unknown transports',()=>{
+ const ready={HMS_DAVINCI_MAKE_QUOTE:'on',RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV:'/tmp/hrdav-quote.json'};
+ expect(()=>reservationistDraftPropertyCode('owner')).toThrow();
  expect(reservationistDraftPropertyCode('transport-centurion')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-davinci')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-faith',{HMS_DAVINCI_MAKE_QUOTE:'true'})).toBe('HRCEN');
- expect(reservationistDraftPropertyCode('transport-davinci',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
- expect(reservationistDraftPropertyCode('transport-kmgidi',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-davinci',ready)).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-kmgidi',ready)).toBe('HRDAV');
  expect(reservationistDraftPropertyCode('transport-centurion',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRCEN');
  expect(()=>sealReservationistDraftSource({...source,transportId:'transport-davinci',propertyCode:'HRDAV'})).not.toThrow();
 });

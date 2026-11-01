@@ -137,7 +137,7 @@ export async function loadReservationistMailboxInput(options: {
     bytes: admission.bytes && { sha256: createHash('sha256').update(admission.bytes.body).digest('hex'),
       contentType: admission.bytes.contentType, locator: admission.bytes.locator },
   }));
-  const fingerprint = () => createHash('sha256').update(JSON.stringify({ input: result.input, admissions: admissionFingerprint() })).digest('hex');
+  const fingerprint = () => createHash('sha256').update(JSON.stringify({ input: result.input, admissions: admissionFingerprint(), ignoredSignatureIds: result.ignoredSignatureIds })).digest('hex');
   const originalFingerprint = fingerprint();
   const admittedSources = built.admissions.flatMap((admission) => admission.metadata.sourceIdentity !== 'metadata_only' &&
     (admission.bytes || resolvedHashes.has(admission.metadata.attachmentId))
@@ -167,6 +167,12 @@ export async function loadReservationistMailboxInput(options: {
     const files: ReservationistDraftSource['attachments'] = [];
     for (const file of snapshot.files) {
       const locator = locators.get(file.id)!;
+      if (built.ignoredSignatureIds.includes(file.id)) {
+        files.push({ attachmentId: file.id, messageId: file.messageId, s3Key: file.s3Key,
+          mimeType: file.mimeType, sizeBytes: file.sizeBytes, inline: file.isInline,
+          sourceIdentity: 'ignored_signature', contentId: file.contentId });
+        continue;
+      }
       const metadataOnly = persisted.sourceRecoveries?.some((recovery) => recovery.kind === 'attachment_manual' &&
         recovery.sourceIdentity === 'metadata_only' && recovery.sourceHash === undefined &&
         recovery.sourceKind === 'attachment' && recovery.sourceRef === file.id && recovery.messageId === file.messageId &&

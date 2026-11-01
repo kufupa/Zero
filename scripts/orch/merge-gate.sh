@@ -37,7 +37,7 @@ thread_count=$(jq -er --arg sha "$sha" '
   if $pr == null or $pr.headRefOid != $sha or $pr.reviewThreads.pageInfo.hasNextPage != false then error("incomplete review threads")
   elif any($pr.reviewThreads.nodes[]?; .comments.pageInfo.hasNextPage != false) then error("incomplete thread comments")
   elif any($pr.reviewThreads.nodes[]?; (.isResolved | type) != "boolean" or (.comments.nodes | type) != "array") then error("invalid review thread")
-  else [$pr.reviewThreads.nodes[]? | select(.isResolved == false) | select(any(.comments.nodes[]?; .author.login == "greptile-apps[bot]" and (.body | test("P[01]"))))] | length
+  else [$pr.reviewThreads.nodes[]? | select(.isResolved == false) | select(any(.comments.nodes[]?; (.author.login == "greptile-apps" or .author.login == "greptile-apps[bot]") and (.body | test("P[01]"))))] | length
   end
 ' <<<"$thread_json" 2>/dev/null) || blocked invalid-review-threads
 [[ $thread_count == 0 ]] || blocked unresolved-greptile-p0-p1

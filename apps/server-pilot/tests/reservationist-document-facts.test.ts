@@ -195,6 +195,20 @@ describe('booking source vocabulary', () => {
       expect(() => validateDocumentPlan(bad.candidate, [bad.original])).toThrow('bounded');
     }
   });
+  it('does not compare a guest with a room quantity from an unrelated source and task', () => {
+    const earlier = { ...source, attachmentId: 'earlier', sourceHash: 'b'.repeat(64), pages: ['Group A: 1 room.'] };
+    const later = { ...source, attachmentId: 'later', sourceHash: 'c'.repeat(64), pages: ['Group A: 2 rooms. Room 2: Alex Example.'] };
+    const ref = (item: typeof earlier) => ({ attachmentId: item.attachmentId, sourceHash: item.sourceHash, page: 1, quote: item.pages[0], start: 0, end: item.pages[0]!.length });
+    const guest = { id: 'guest', kind: 'guest', value: { firstName: 'Alex', lastName: 'Example', roomRef: 'A', roomIndex: 2 }, disclosure: 'guest', source: ref(later) };
+    const room = (id: string, quantity: number, item: typeof earlier) => ({ id, kind: 'room', value: { roomRef: 'A', quantity, adults: 1, childAges: [] }, disclosure: 'guest', source: ref(item) });
+    const candidate = { facts: [guest, room('old', 1, earlier), room('new', 2, later)], tasks: [
+      { id: 'old', kind: 'quote', factIds: ['old'], source: ref(earlier) },
+      { id: 'new', kind: 'quote', factIds: ['guest', 'new'], source: ref(later) },
+    ], unresolvedAsks: [] };
+    expect(validateDocumentPlan(candidate, [earlier, later]).facts).toHaveLength(3);
+    candidate.facts[2] = room('new', 1, later);
+    expect(() => validateDocumentPlan(candidate, [earlier, later])).toThrow('quantity');
+  });
   it('retains reservation references and distinguishes a new booking from acceptance', () => {
     const text = 'Please book a new room; reservation reference R-42.';
     const { original, candidate } = sourcedPlanFact('reservation_reference', 'R-42', text);
