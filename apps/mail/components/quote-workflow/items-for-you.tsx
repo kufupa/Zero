@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import type { QuoteReviewItem } from '@/lib/quote-workflow/types';
 
 export function ItemsForYou({
@@ -13,11 +14,30 @@ export function ItemsForYou({
   handledItems: QuoteReviewItem[];
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
-  onHandle?: (itemId: string) => void;
-  onUndo?: (itemId: string) => void;
+  onHandle?: (itemId: string) => void | Promise<void>;
+  onUndo?: (itemId: string) => void | Promise<void>;
   /** Runs the read again. Shown on an analysis failure only. */
   onRetry?: () => void;
 }) {
+  const inFlight = useRef(new Set<string>());
+  const [pendingItems, setPendingItems] = useState<Set<string>>(() => new Set());
+  const saveReviewItem = (itemId: string, action: ((itemId: string) => void | Promise<void>) | undefined) => {
+    if (!action || inFlight.current.has(itemId)) return;
+    inFlight.current.add(itemId);
+    setPendingItems(new Set(inFlight.current));
+    let result: void | Promise<void>;
+    try {
+      result = action(itemId);
+    } catch (error) {
+      inFlight.current.delete(itemId);
+      setPendingItems(new Set(inFlight.current));
+      throw error;
+    }
+    void Promise.resolve(result).catch(() => undefined).finally(() => {
+      inFlight.current.delete(itemId);
+      setPendingItems(new Set(inFlight.current));
+    });
+  };
   if (!openItems.length && !handledItems.length) return null;
   return (
     <section className="flex flex-col gap-1.5" aria-label="Check before sending">
@@ -74,14 +94,17 @@ export function ItemsForYou({
                 Edit reply
               </button>
             ) : null}
-            {!item.blocking && item.kind !== 'pricing_fact' && item.kind !== 'staff_review' ? (
+            {!item.blocking && item.kind !== 'pricing_fact' &&
+            (item.kind !== 'staff_review' || Boolean(item.runId && item.workItemId)) ? (
               <button
                 type="button"
                 className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
                 aria-label={`Mark as done: ${item.text}`}
-                onClick={() => onHandle?.(item.id)}
+                disabled={pendingItems.has(item.id)}
+                aria-busy={pendingItems.has(item.id) || undefined}
+                onClick={() => saveReviewItem(item.id, onHandle)}
               >
-                Mark as done
+                {pendingItems.has(item.id) ? 'Saving…' : 'Mark as done'}
               </button>
             ) : null}
           </div>
@@ -90,14 +113,18 @@ export function ItemsForYou({
       {handledItems.map((item) => (
         <div key={`handled-${item.id}`} className="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
           <p className="text-[11px] text-[#64748b]">Done: {item.text}</p>
-          <button
-            type="button"
-            className="h-7 self-start rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-            aria-label={`Undo mark as done: ${item.text}`}
-            onClick={() => onUndo?.(item.id)}
-          >
-            Undo
-          </button>
+          {item.kind !== 'staff_review' || Boolean(item.runId && item.workItemId) ? (
+            <button
+              type="button"
+              className="h-7 self-start rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+              aria-label={`Undo mark as done: ${item.text}`}
+              disabled={pendingItems.has(item.id)}
+              aria-busy={pendingItems.has(item.id) || undefined}
+              onClick={() => saveReviewItem(item.id, onUndo)}
+            >
+              {pendingItems.has(item.id) ? 'Saving…' : 'Undo'}
+            </button>
+          ) : null}
         </div>
       ))}
     </section>
