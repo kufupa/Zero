@@ -332,9 +332,17 @@ export async function createReservation(input, { withSession = withBookingLookup
       const labtestDraft = state.guest?.guest.firstName === 'Proof' && state.guest?.guest.lastName === 'Labtest' &&
         date(stay.arrival) && stay.arrival >= '2027-01-01' && date(stay.departure) && stay.arrival < stay.departure;
       if (input.guaranteeType === 'NGI' && (commit || labtestDraft)) {
-        state.guarantee = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'guaranteeType', value: input.guaranteeType });
-        if (state.guarantee.actual?.value !== input.guaranteeType) stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
-        output.applied.guaranteeType = state.guarantee.actual.display;
+        const result = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'guaranteeType', value: input.guaranteeType },
+          ['updated_unsaved', 'unchanged_unsaved', 'selected_unsaved', 'ok', 'unsupported']);
+        if (!commit && result.outcome === 'unsupported' && result.issue === 'GUARANTEE_DRAFT_UNSUPPORTED') {
+          missing.push('guaranteeType.staging');
+          output.warnings.push({ field: 'guaranteeType', issue: result.issue });
+        } else {
+          if (result.outcome === 'unsupported') stop('needs_input', result.issue || 'selectGuestStayDropdown_failed', { stage: 'selectGuestStayDropdown', detail: result });
+          state.guarantee = result;
+          if (state.guarantee.actual?.value !== input.guaranteeType) stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
+          output.applied.guaranteeType = state.guarantee.actual.display;
+        }
       } else if (!commit && input.guaranteeType === 'NGI') {
         missing.push('guaranteeType.staging');
         output.warnings.push({ field: 'guaranteeType', issue: 'requires_verified_labtest_draft' });

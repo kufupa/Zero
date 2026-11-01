@@ -51,7 +51,7 @@ function harness(options = {}) {
       case 'closeGuestProfilePicker': return options.close || { outcome: 'closed_unsaved' };
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
-      case 'selectGuestStayDropdown': return { outcome: 'updated_unsaved', field: request.field, requested: request.value,
+      case 'selectGuestStayDropdown': return request.field === 'guaranteeType' && options.guaranteeResult ? options.guaranteeResult : { outcome: 'updated_unsaved', field: request.field, requested: request.value,
         actual: request.field === 'adults' ? { value: options.actualAdults ?? 2, display: '2' } : { value: options.actualGuarantee ?? 'NGI', display: 'Non-Guaranteed Individual' }, profileProofToken: 'token' };
       case 'setGuestStayChildAges': return { outcome: 'updated_unsaved', actualChildAges: options.actualChildAges ?? request.childAges,
         requestedChildAges: request.childAges, ageBandCounts: request.childAges.length === 0
@@ -211,6 +211,24 @@ test('prepare reports an unstaged guarantee without claiming the draft is comple
   assert.equal(result.applied.guest.firstName, 'Real');
   assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), false);
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('safe guarantee refusal keeps prepare useful but never permits commit', async () => {
+  const guaranteeResult = { outcome: 'unsupported', issue: 'GUARANTEE_DRAFT_UNSUPPORTED' };
+  const preparing = harness({ guaranteeResult });
+  const prepared = await createReservation({ ...input, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'needs_input');
+  assert.ok(prepared.missing.includes('guaranteeType.staging'));
+  assert.ok(prepared.warnings.some(({ field, issue }) => field === 'guaranteeType' && issue === 'GUARANTEE_DRAFT_UNSUPPORTED'));
+  assert.equal(prepared.applied.note, input.note);
+  assert.equal(prepared.appliedVerification.visibleFields, true);
+  assert.equal(preparing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const committing = harness({ guaranteeResult });
+  const refused = await createReservation(input, committing.options);
+  assert.equal(refused.outcome, 'needs_input');
+  assert.equal(refused.issue, 'GUARANTEE_DRAFT_UNSUPPORTED');
+  assert.equal(committing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 
 test('unknown ages differ from known zero and contradictions never reach session', async () => {
