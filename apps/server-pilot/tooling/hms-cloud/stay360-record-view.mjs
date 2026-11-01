@@ -109,6 +109,7 @@ export async function readRecordViewFromStay360(page, confirmation) {
           name: element.name || null,
           type,
           value,
+          ...(element.name === 'reservationnote' ? { rawValue: String(element.value ?? element.innerText ?? element.textContent ?? '') } : {}),
         };
       });
     const grids = [...document.querySelectorAll('.x-grid')].filter(shown)
