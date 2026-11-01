@@ -176,11 +176,11 @@ describe('reservationist worker input', () => {
   it('binds a shared stay fact across equivalent authored views', async () => {
     const stay = 'Please quote one room: Arrival 21 December; departure 23 December.';
     const checkin = 'Can we check in early?';
-    const extract = async (plainPrefix = '', htmlPrefix = '') => {
+    const extract = async (plainPrefix = '', htmlPrefix = '', extra = '') => {
       const at = new Date('2026-10-01T08:00:00.000Z');
       const { input } = await build([row('current', 4, {
         textBody: `${plainPrefix}${stay}\nKind regards`,
-        htmlBody: `<p>${htmlPrefix}${stay}</p><p>${checkin}</p><p>Kind regards</p>`,
+        htmlBody: `<p>${htmlPrefix}${stay}</p><p>${checkin}</p><p>${extra}</p><p>Kind regards</p>`,
         receivedAt: at, arrivedAt: at, createdAt: at,
       })]);
       const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
@@ -195,13 +195,14 @@ describe('reservationist worker input', () => {
     const plan = await extract();
     expect(plan.facts[0]!.value).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
     expect(plan.facts[0]!.source).toMatchObject({ quote: stay, start: 0 });
+    await expect(extract('', '', 'I will need a taxi.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
   });
 
-  it('does not share a fact when another message view corrects it', async () => {
+  it.each([false, true])('does not share a corrected fact (quoted history: %s)', async (history) => {
     const request = 'Please quote one room.', meal = 'Breakfast included.';
     const { input } = await build([row('current', 4, {
-      textBody: `${request}\n${meal}\nKind regards`,
+      textBody: `${request}\n${meal}\nKind regards${history ? `\nFrom: guest@example.invalid\nSubject: Prior\n\n${meal}` : ''}`,
       htmlBody: `<p>${request}</p><p>${meal}</p><p>Correction: breakfast is not included.</p><p>Kind regards</p>`,
     })]);
     const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');

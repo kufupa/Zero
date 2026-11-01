@@ -152,24 +152,26 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
 }
 function authoredQuoteOffsets(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):[number,number]|undefined{
  if(!views||views.length!==2)return;
- const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
- if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
- const hits=views.map(view=>[first,second].filter(start=>start>=view.start&&start+quote.length<=view.end));
- if(hits.some(viewHits=>viewHits.length!==1))return;
- return [hits[0]![0]!,hits[1]![0]!];
+ const hits=views.map(view=>{
+  const first=page.indexOf(quote,view.start),next=page.indexOf(quote,first+1);
+  return first>=view.start&&first+quote.length<=view.end&&(next<0||next+quote.length>view.end)?first:-1;
+ });
+ if(hits.some(hit=>hit<0))return;
+ return [hits[0]!,hits[1]!];
 }
 /** Matching evidence in both authored alternatives can share the original plain span. */
-function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean):number|undefined{
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean,allowHistory=false):number|undefined{
  const hits=authoredQuoteOffsets(page,quote,views);
  if(!hits||!views)return;
+ if(!allowHistory&&page.indexOf(quote,page.indexOf(quote,page.indexOf(quote)+1)+1)>=0)return;
  const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
  const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
  if(isFact){
-  // Different later statements may qualify or correct the fact, even after a period.
-  // A separate question with no shared content words can coexist with it.
+  // Later text about the same fact may qualify or correct it, even after a period.
+  // Unrelated additional requests or details can coexist with the shared fact.
   const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from'].includes(word)));
-  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>!part.trim().endsWith('?')||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
+  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdrawn|revised)\b/i.test(part)||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
   if(tail[0]!==tail[1])return;
  }
  return before[0]===before[1]&&after[0]===after[1]?hits[0]:undefined;
@@ -189,7 +191,7 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
    if(range&&(Number.isInteger(span.start)&&span.start<range.start||Number.isInteger(span.end)&&span.end>range.end))throw new Error('Citation outside selected source view');
    const views=source?.sourceViews,hits=list===candidate.facts?authoredQuoteOffsets(page,span.quote,views):undefined;
    if(hits&&views&&page.slice(views[0]!.start,hits[0]).replace(/\s+/g,' ').trim()===page.slice(views[1]!.start,hits[1]).replace(/\s+/g,' ').trim()&&
-     equivalentAuthoredOffset(page,span.quote,views,true)===undefined)throw new Error('Ambiguous original text span');
+     equivalentAuthoredOffset(page,span.quote,views,true,true)===undefined)throw new Error('Ambiguous original text span');
    if(span.start===undefined&&span.end===undefined){
     const rangeStart=range?.start??0,searchPage=page.slice(rangeStart,range?.end??page.length);let start=searchPage.indexOf(span.quote);
     if(start<0){
