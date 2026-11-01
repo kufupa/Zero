@@ -98,6 +98,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
         { id: 'new', runId: newRun, handled: false }, { id: 'old', runId: oldRun, handled: false },
       ]);
+      const laterRun = (minutes: number, attachments: unknown[]) => ({ id: randomUUID(), idempotencyKey: randomUUID(),
+        transportId: TRANSPORT_ID, threadId, triggerMessageId: parentMessageId, runKind: 'candidate_draft' as const,
+        modelId: 'test', promptVersion: 'test', state: 'succeeded' as const, createdAt: new Date(`2026-07-06T10:${minutes}:00Z`),
+        metrics: { reservationistResult: {version:1,readiness:'no_action',tasks:[]}, reservationistDraftSource: {attachments} } });
+      await db.insert(aiWorkflowRun).values(laterRun(40, []));
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
+        {kind:'business_document_failure',filename:'document.pdf'},
+      ]);
+      await db.insert(aiWorkflowRun).values(laterRun(50, [{attachmentId:fileId,sourceHash:'a'.repeat(64)}]));
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toEqual([]);
     });
   });
 

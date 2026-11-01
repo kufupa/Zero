@@ -38,11 +38,13 @@ it('keeps an unread business attachment open even when no request could be extra
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,signatureNoise:true}]}, 'run', {})).toBe(false);
 });
 
-it('replaces an old unread-file warning after a later review, without losing earlier requests', () => {
-  const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', reason:'too_large'};
-  const latest = {id:'new', result:{version:1,tasks:[]}};
+it('clears an old unread-file warning only after reviewing that file, without losing earlier requests', () => {
+  const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', sourceHash:'a'.repeat(64), reason:'too_large'};
+  const latest = {id:'new', result:{version:1,tasks:[]}, source:{attachments:[{attachmentId:'sheet',sourceHash:'a'.repeat(64)}]}};
   const oldWarning = {id:'old', result:{version:1,tasks:[],sourceRecoveries:[recovery]}};
   expect(hasOutstandingRequestHistory([latest, oldWarning], {})).toBe(false);
+  expect(hasOutstandingRequestHistory([{...latest,source:{attachments:[]}}, oldWarning], {})).toBe(true);
+  expect(hasOutstandingRequestHistory([{...latest,source:{attachments:[{attachmentId:'sheet',sourceHash:'b'.repeat(64)}]}}, oldWarning], {})).toBe(true);
   expect(hasOutstandingRequestHistory([oldWarning], {})).toBe(true);
   expect(hasOutstandingRequestHistory([{id:'legacy',result:undefined}, oldWarning], {})).toBe(true);
   const oldAsk = {id:'older', result:{version:1,tasks:[task('one',0)]}};
