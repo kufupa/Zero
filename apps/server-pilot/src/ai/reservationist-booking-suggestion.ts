@@ -143,7 +143,7 @@ function noChildrenExplicitlyKnown(
   room: Extract<ValidatedDocumentFact, { kind: 'room' }>,
 ): boolean {
   if (/\b(?:adults?\s+only|only\s+adults?)\b/i.test(quote)) return true;
-  const zeroChild = /\b(?:no|without|zero|0)\s+(?:children|kids?|infants?|minors?)\b|\b(?:children|kids?)\s*[:=]\s*0\b/i;
+  const zeroChild = /\b(?:no|without|zero|0)\s+(?:children|kids?|minors?)\b|\b(?:children|kids?)\s*[:=]\s*0\b/i;
   if (zeroChild.test(quote) && !/\b(?:under|over|aged?|age|younger|older)\b/i.test(quote)) return true;
   // Existing extraction semantics support this one narrowly explicit adult-only case.
   return room.value.quantity === 1 && room.value.adults === 1 && room.value.childAges.length === 0 &&
@@ -241,6 +241,7 @@ export async function buildReservationistBookingSuggestion(input: {
     const previous = grouped.get(room.value.roomRef);
     if (!previous) grouped.set(room.value.roomRef, room);
     else if (
+      previous.source.sourceRef !== room.source.sourceRef || previous.source.page !== room.source.page ||
       previous.value.quantity !== room.value.quantity ||
       previous.value.adults !== room.value.adults ||
       JSON.stringify(previous.value.childAges) !== JSON.stringify(room.value.childAges)
@@ -261,6 +262,10 @@ export async function buildReservationistBookingSuggestion(input: {
     parties: parties.map(({ source }) => ({ source })),
   };
   const groupId = reservationistBookingSuggestionGroupId(request);
+  const needsDetails = (details = missing): ReservationistBookingSuggestion => ({
+    version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
+    groupId, source: request, partyNames, facts: sourceFacts, missing: uniqueStrings(details),
+  });
   const canPrefill =
     datePairs.size === 1 &&
     rooms.length > 0 &&
@@ -269,20 +274,7 @@ export async function buildReservationistBookingSuggestion(input: {
     partyNames.length <= 1 &&
     !missing.some((item) => item.startsWith('Some stay facts'));
 
-  if (!canPrefill) {
-    return {
-      version: 1,
-      taskId: task.id,
-      status: 'needs_details',
-      displayOnly: true,
-      saved: false,
-      groupId,
-      source: request,
-      partyNames,
-      facts: sourceFacts,
-      missing: uniqueStrings(missing),
-    };
-  }
+  if (!canPrefill) return needsDetails();
 
   const stay = datePairs.values().next().value as (typeof dates)[number];
   const orderedGroups = [...grouped.values()].sort((a, b) =>
@@ -293,10 +285,7 @@ export async function buildReservationistBookingSuggestion(input: {
     const quantity = group.value.quantity!;
     if (!Number.isSafeInteger(quantity) || quantity < 1 || physicalRooms.length + quantity > 96) {
       missing.push('Room quantity exceeds the supported preparation limit.');
-      return {
-        version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-        groupId, source: request, partyNames, facts: sourceFacts, missing: uniqueStrings(missing),
-      };
+      return needsDetails();
     }
     const groupBoards = boards.filter((board) => board.roomRef === group.value.roomRef || board.roomRef === undefined);
     const boardCodes = new Set(groupBoards.map((board) => boardValue(board.board)));
@@ -354,19 +343,9 @@ export async function buildReservationistBookingSuggestion(input: {
       propertyCode: runtime.propertyCode,
     });
     options = createRequestFieldOptions(runtime.propertyCode);
+    if (!prefill.requests.length) throw new Error('empty_booking_prefill');
   } catch {
-    return {
-      version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-      groupId, source: request, partyNames, facts: sourceFacts,
-      missing: uniqueStrings([...missing, 'The current property form could not prepare a booking draft.']),
-    };
-  }
-  if (!prefill.requests.length) {
-    return {
-      version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-      groupId, source: request, partyNames, facts: sourceFacts,
-      missing: uniqueStrings([...missing, 'The current property form could not prepare a booking draft.']),
-    };
+    return needsDetails([...missing, 'The current property form could not prepare a booking draft.']);
   }
   const draft = bookingDraftFromPrefill({
     requests: prefill.requests,

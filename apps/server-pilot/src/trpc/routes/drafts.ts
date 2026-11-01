@@ -390,7 +390,6 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     if (typeof request.quote === 'string' && request.quote.trim()) details.push(`Request: ${text(request.quote.trim(), 256)}`);
     if (bookingSuggestion && Array.isArray(bookingSuggestion.missing))
       details.push(...bookingSuggestion.missing.filter((item): item is string => typeof item === 'string').slice(0, 16));
-    if (bookingSuggestion?.status === 'prefill') details.push('A source-cited booking prefill is display-only; no booking has been saved.');
     if (taskId) {
       for (const recovery of rows(result.readRecoveries).filter(item => item.taskId === taskId))
         if (Array.isArray(recovery.codes)) for (const code of recovery.codes.slice(0, 16)) if (typeof code === 'string') details.push(recoveryText(code));

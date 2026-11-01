@@ -83,6 +83,37 @@ describe('reservationist booking suggestion', () => {
     expect(reservationistBookingSuggestionGroupId(explicitZero!.source)).toBe(explicitZero?.groupId);
   });
 
+  it('does not turn no infants into a zero-children assumption', async () => {
+    const quote = '1 room for 2 adults with no infants';
+    const input = plan(`Please book ${quote} from 2026-12-03 to 2026-12-05.`);
+    input.facts = input.facts.map(fact => fact.kind === 'room'
+      ? { ...fact, source: { ...fact.source, quote, end: fact.source.start! + quote.length } }
+      : fact);
+    const result = await buildReservationistBookingSuggestion(input);
+    expect(result?.status).toBe('needs_details');
+    expect(result?.missing).toContain('Child occupancy is unknown; confirm no children or provide every child’s age.');
+  });
+
+  it('does not collapse the same room label from separate rooming lists', async () => {
+    const input = plan('Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05.');
+    const template = input.facts.find(fact => fact.kind === 'room')!;
+    const quote = 'Room 1: 2 adults only';
+    const sourceHash = createHash('sha256').update(quote).digest('hex');
+    const ids = ['list-1', 'list-2'];
+    input.facts = [input.facts[0]!, ...ids.map(attachmentId => ({
+      ...template, id: attachmentId,
+      source: { attachmentId, sourceHash, page: 1, start: 0, end: quote.length, quote },
+    }))];
+    input.attachmentAdmissions = ids.map(attachmentId => ({
+      status: 'admitted', reason: 'text', relation: 'current', draftReady: false,
+      metadata: { attachmentId, messageId: triggerId, ownerRef, threadId, sourceHash, disclosure: 'guest' },
+      source: { attachmentId, sourceHash, disclosure: 'guest', pages: [quote], pageCount: 1 },
+    } as AttachmentAdmission));
+    const result = await buildReservationistBookingSuggestion(input);
+    expect(result?.status).toBe('needs_details');
+    expect(result?.missing).toContain('Room allocations conflict; staff must resolve them before preparing a booking.');
+  });
+
   it('keeps an untyped party as a picker candidate and suppresses direct-individual defaults', async () => {
     const body = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05 for ACME Travel.';
     const result = await buildReservationistBookingSuggestion(plan(body, [
@@ -154,6 +185,18 @@ describe('reservationist booking suggestion', () => {
     const conflicting = renderReservationistMessage({ textBody: 'Do not book this room', htmlBody: conflictRequest });
     const conflict = plan(conflicting.text, [], conflicting.sourceViews, conflictRequest);
     expect(currentAuthoredGuestRequest(conflict.task, conflict.runtime)).toBe(false);
+
+    const laterRefusal = renderReservationistMessage({ textBody: 'Do not book that room. Do not book this room.', htmlBody: conflictRequest });
+    const laterConflict = plan(laterRefusal.text, [], laterRefusal.sourceViews, conflictRequest);
+    expect(currentAuthoredGuestRequest(laterConflict.task, laterConflict.runtime)).toBe(false);
+  });
+
+  it('accepts another room without breakfast when the alternatives agree', async () => {
+    const request = 'Please book another room without breakfast, 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
+    const rendered = renderReservationistMessage({ textBody: request, htmlBody: `${request}\nKind regards\nGuest` });
+    const current = plan(rendered.text, [], rendered.sourceViews, request);
+    expect(currentAuthoredGuestRequest(current.task, current.runtime)).toBe(true);
+    expect((await buildReservationistBookingSuggestion(current))?.status).toBe('prefill');
   });
 
   it('accepts a multipart booking specifying no children', async () => {
