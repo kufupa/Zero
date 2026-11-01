@@ -50,6 +50,45 @@ describe('reservationist worker input', () => {
     expect(input.capabilities).toEqual({ pmsWrite: false, emailSend: false });
   });
 
+  it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
+    const extractStay = (message: any, dateQuote: string, dateStart: number, taskQuote: string, taskStart: number) => {
+      const sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = (quote: string, start: number) => ({ attachmentId: `message:${message.id}`, sourceHash, page: 1, quote, start, end: start + quote.length });
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'stay', kind: 'dates', value: { arrival: '21 December', departure: '23 December' }, disclosure: 'guest', source: source(dateQuote, dateStart) }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source: source(taskQuote, taskStart) }], unresolvedAsks: [],
+      } }) } as any, messages: [message], triggerMessageId: message.id, causalAt: message.at,
+        admissions: [], signal: new AbortController().signal });
+    };
+    const at = new Date('2026-10-01T08:00:00.000Z');
+    const htmlQuote = 'Please quote one room: Arrival 21 December; departure 23 December.';
+    const { input } = await build([row('current', 4, {
+      textBody: 'Please review my booking.\nKind regards\nGuest', htmlBody: `<p>${htmlQuote}</p>`, receivedAt: at, arrivedAt: at, createdAt: at,
+    })]);
+    const message = input.messages[0] as any, html = message.sourceViews.find((view: any) => view.name === 'html');
+    const htmlStart = message.text.indexOf(htmlQuote, html.start);
+    expect(message.text.indexOf('Kind regards')).toBeLessThan(html.start);
+    expect(htmlStart).toBeGreaterThanOrEqual(html.start);
+    const result = await extractStay(message, htmlQuote, htmlStart, htmlQuote, htmlStart);
+    expect(result.facts[0]!.value).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
+
+    await expect(extractStay({ ...message, sourceViews: [{ ...message.sourceViews[0], start: 1 }, ...message.sourceViews.slice(1)] }, htmlQuote, htmlStart, htmlQuote, htmlStart))
+      .rejects.toThrow('Invalid bounded causal extraction input');
+
+    const plainQuote = 'Please rebook the same stay as previously quoted.';
+    const oldDates = 'Arrival 21 December; departure 23 December';
+    const { input: quotedInput } = await build([row('current', 4, {
+      textBody: `${plainQuote}\nFrom: plain@example.invalid\nSubject: Prior stay\n\n${oldDates}`,
+      htmlBody: `<p>Please confirm the earlier requested dates.</p><blockquote><p>From: html@example.invalid</p><p>Subject: Prior stay</p><p>${oldDates}</p></blockquote>`,
+      receivedAt: at, arrivedAt: at, createdAt: at,
+    })]);
+    const quotedMessage = quotedInput.messages[0] as any, htmlHistory = quotedMessage.sourceViews.find((view: any) => view.name === 'html').quoted;
+    const historyStart = quotedMessage.text.indexOf(oldDates, htmlHistory.start);
+    const currentStart = quotedMessage.text.indexOf(plainQuote);
+    await expect(extractStay(quotedMessage, oldDates, historyStart, plainQuote, currentStart))
+      .rejects.toThrow('Yearless date source is quoted history');
+  });
+
   it('binds quoted history to its own plain or HTML alternative', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Please rebook the same stay as previously quoted.\nFrom: plain@example.invalid\nSubject: Prior stay\n\nArrival 21 December 2026; departure 23 December 2026',
