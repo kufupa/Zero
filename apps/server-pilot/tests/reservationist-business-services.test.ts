@@ -14,6 +14,13 @@ it.each(['plain','html'] as const)('does not assume an unspecified board when ei
  expect(run(true)).toThrow('business_board_unavailable');
  expect(run(false)().rooms[0].required.boardBases).toBeUndefined();
 });
+it('does not use a verified board when alternative views disagree about meals',()=>{
+ const run=(plain:string,html:string,board:string)=>{const c=ctx(),separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:plain,start:0,end:plain.length};
+  c.input.messages[0]={...c.input.messages[0],text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]};c.task.source=selectedSource;c.facts=c.facts.filter((f:any)=>['dates','room','board'].includes(f.kind)).map((f:any)=>({...f,source:selectedSource,...(f.kind==='board'?{value:board}:{})}));return()=>deriveReservationistQuoteRequest(c);};
+ expect(run('Please quote a room, room only.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
+ expect(run('Please quote a room.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
+ expect(run('Please quote a room, room only.','Please quote a room without breakfast.','room only')().rooms[0].required.boardBases).toEqual(['room_only']);
+});
 it('preserves room requirements from either email view and flags conflicting or unsupported ones',()=>{
  const run=(plain:string,html:string,propertyCode='HRCEN')=>{const c=ctx(),separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:html,start:htmlStart,end:text.length};
   c.input.propertyCode=propertyCode;c.input.messages[0]={...c.input.messages[0],text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]};c.task.source=selectedSource;c.facts=c.facts.filter((f:any)=>f.kind==='dates'||f.kind==='room').map((f:any)=>({...f,source:selectedSource}));return()=>deriveReservationistQuoteRequest(c);};

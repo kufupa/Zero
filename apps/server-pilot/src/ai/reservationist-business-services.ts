@@ -40,6 +40,15 @@ function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
  }
  return boards[key];
 }
+/** Only detect explicit meal bases; alternative views must not silently disagree. */
+function viewBoardHints(text:string):Board[]{
+ const found=new Set<Board>();
+ let rest=text.replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b|\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'');
+ rest=rest.replace(/\b(?:DBB|dinner(?:\s*,\s*|\s+)(?:(?:bed\s*(?:and|&)\s*)|(?:and|&)\s*)?breakfast|breakfast\s+(?:and|&)\s+dinner)\b/gi,()=>{found.add('dinner_bed_breakfast');return' ';});
+ rest=rest.replace(/\b(?:room[ -]?only|RO|(?:no|without)\s+breakfast)\b/gi,()=>{found.add('room_only');return' ';});
+ if(/\b(?:breakfast|BB|B\s*&\s*B)\b/i.test(rest))found.add('breakfast');
+ return [...found].sort();
+}
 function authored(ctx:Context){
  const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),span=ctx.task.source;
  if(m?.sourceViews){if(!validReservationistMessageViews(m.text,m.sourceViews)||span.start===undefined||span.end===undefined)return'';const view=m.sourceViews.find(v=>span.start!>=v.start&&span.end!<=v.end);return view?m.text.slice(view.start,view.end):'';}
@@ -83,6 +92,10 @@ export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest
  const stay=dates[0]!.value as {arrival:string;departure:string};occupiedDates(stay.arrival,stay.departure);
  const roomFacts=[...new Map(facts.filter(f=>f.kind==='room').map(f=>[quoteDigest(f.value),f])).values()];if(!roomFacts.length)missing('business_room_allocation_unavailable',['explicit room quantity and occupancy']);
  const text=authored(ctx),message=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),views=message?.sourceViews&&validReservationistMessageViews(message.text,message.sourceViews)?message.sourceViews.map(v=>message.text.slice(v.start,v.end).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!):[text];
+ const viewBoards=views.length>1?views.map(viewBoardHints).filter(value=>value.length):[];
+ if(new Set(viewBoards.map(value=>JSON.stringify(value))).size>1)missing('business_board_unavailable',['consistent meal requirements across message views']);
+ const factBoards=new Set(facts.filter(f=>f.kind==='board').map(f=>f.kind==='board'?mapRequestedBoard(ctx.input.propertyCode,typeof f.value==='string'?f.value:f.value.board):undefined).filter((value):value is Board=>Boolean(value)));
+ if(factBoards.size===1&&viewBoards.length&&viewBoards[0]!.length===1&&!factBoards.has(viewBoards[0]![0]!))missing('business_board_unavailable',['consistent meal requirements across message views']);
  const isGovernment=views.some(value=>/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(value)&&/\bofficial|government\s+rate\b/i.test(value)),types=views.map(value=>requestedRoomCodes(ctx.input.propertyCode,value)).filter((value):value is string[]=>Boolean(value)),roomCodes=types[0];
  if(new Set(types.map(value=>JSON.stringify(value))).size>1||ctx.input.propertyCode!=='HRDAV'&&views.some(value=>/\b(?:accessible|wheelchair)\b/i.test(value)))missing('business_room_allocation_ambiguous',['consistent supported room requirements']);
  const rooms=roomFacts.map(f=>{if(f.kind!=='room')throw new Error('business_room_type');if(f.value.quantity===undefined)missing('business_room_quantity_unavailable',['explicit room quantity']);const requestedBoards=facts.filter(b=>b.kind==='board'&&(typeof b.value==='string'||b.value.roomRef===f.value.roomRef)).map(b=>{if(b.kind!=='board')throw new Error('business_board_type');return mapRequestedBoard(ctx.input.propertyCode,typeof b.value==='string'?b.value:b.value.board);});if(!requestedBoards.length&&!sourceLeavesBoardUnspecified(ctx)||requestedBoards.some(b=>!b)||new Set(requestedBoards).size>1)missing('business_board_unavailable',['one supported board for each room allocation']);return{id:f.value.roomRef,quantity:f.value.quantity,adults:f.value.adults,children:f.value.childAges.length,childAges:[...f.value.childAges],required:{...(requestedBoards.length?{boardBases:[requestedBoards[0]!]}:{}),...(roomCodes?{roomCodes}:{} )}};});
