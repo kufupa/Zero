@@ -109,11 +109,11 @@ function unpickedTwinRoomCode(roomType: string | undefined): 'STWN' | undefined 
 function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
-  missing: ReadonlyArray<{ field: string }> = [],
+  missing: ReadonlyArray<{ field: string; stayId?: string }> = [],
   propertyCode?: string,
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
   const { arrival } = stay.requested;
-  const reversedStayDates = missing.some((item) => item.field === 'stayDates');
+  const reversedStayDates = missing.some((item) => item.field === 'stayDates' && (!item.stayId || item.stayId === stay.id));
   const departure =
     stay.requested.departure ||
     (!reversedStayDates && validIsoDay(arrival) ? addDays(arrival, 1) : null);
@@ -131,11 +131,16 @@ function groupForStay(
   if (stay.rows.length === 0) return { groups: [], reason: 'missing_rooms' };
   if (stay.rows.length > 8) return { groups: [], reason: 'too_many_room_types' };
 
+  const quantityForRow = (row: (typeof stay.rows)[number]) => {
+    const recorded = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+    const hasGuestData = row.adultsPerRoom !== null || (row.childAges?.length ?? 0) > 0;
+    return recorded ?? (hasGuestData ? 1 : null);
+  };
   const groups: StaffQuoteInput['groups'] = [];
   if (stay.totalChildren != null) {
     let describedChildren = 0;
     for (const row of stay.rows) {
-      const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+      const quantity = quantityForRow(row);
       if (row.childAges === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
       describedChildren += quantity * row.childAges.length;
     }
@@ -144,17 +149,15 @@ function groupForStay(
   if (stay.totalAdults != null) {
     let describedAdults = 0;
     for (const row of stay.rows) {
-      const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+      const quantity = quantityForRow(row);
       if (row.adultsPerRoom === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
       describedAdults += quantity * row.adultsPerRoom;
     }
     if (describedAdults !== stay.totalAdults) return { groups: [], reason: 'missing_occupancy' };
   }
   for (const row of stay.rows) {
-    const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
-    const hasGuestData = row.adultsPerRoom !== null || (row.childAges?.length ?? 0) > 0;
-    const quantity = recordedQuantity ?? (hasGuestData ? 1 : null);
+    const quantity = quantityForRow(row);
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }

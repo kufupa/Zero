@@ -201,7 +201,7 @@ export const mailExtractionPayloadSchema = z.object({
   endClient: mailExtractionObjectSchema.shape.endClient,
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
-  missing: mailExtractionObjectSchema.shape.missing,
+  missing: z.array(z.object({ field: z.string(), question: z.string(), stayId: z.string().optional() })),
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
@@ -408,11 +408,12 @@ export function sanitizeExtraction(
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
   });
-  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
+  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay, index) => {
     const arrival = validIsoDate(stay.requested.arrival);
     const departure = validIsoDate(stay.requested.departure);
+    const stayId = stays[index]?.id;
     return arrival && departure && departure <= arrival
-      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
+      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.', ...(stayId ? { stayId } : {}) }]
       : [];
   });
   const missing = [
@@ -423,6 +424,7 @@ export function sanitizeExtraction(
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',
       question: cleanText(item.question) ?? '',
+      ...('stayId' in item && item.stayId ? { stayId: item.stayId } : {}),
     }))
     .filter((item) => item.question);
   const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';
