@@ -148,6 +148,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
       expect(await status(oldItem!.id)).toBe('done');
       expect(await status(currentItem!.id)).toBe('done');
+      const [latestRead] = await db.insert(mailExtraction).values({messageId,extractorVersion:'later',status:'succeeded',
+        kind:'amendment',payload:{},createdAt:at(3_000)}).returning();
+      const [laterItem] = await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,
+        kind:'amendment',status:'done',extractionId:latestRead!.id,sentAt:at(20_000),sentMessageId:reply}).returning();
+      await db.insert(workEvent).values({workItemId:laterItem!.id,actorKind:'system',type:'status.changed',
+        value:{from:'needs_you',to:'done',reason:'hotel_replied'}});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('done'); // Earlier acknowledgement still applies.
+      await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:laterItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:false});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('needs_you');
+      expect(await status(currentItem!.id)).toBe('done');
+      await setRequestHandled(db,{transportId:TRANSPORT_ID,workItemId:laterItem!.id,userId:CENTURION_USER_ID,runId,taskId:'one',handled:true});
+      await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+      expect(await status(laterItem!.id)).toBe('done');
     });
   });
 });

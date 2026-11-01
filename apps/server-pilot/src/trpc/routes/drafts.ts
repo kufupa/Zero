@@ -31,7 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { handledRequestKeys, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
@@ -1254,15 +1254,17 @@ export const draftsRouter = tRouter({
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, transportId),
           eq(workItem.threadId, input.threadId), eq(workItem.sourceMessageId, input.messageId))).limit(1) : [];
       if (input.workItemId && !item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, item?.state);
+      const states = item ? await handledRequestStates(db, { transportId, threadId: input.threadId, sourceIds: [input.messageId] }) : undefined;
+      const requestState = item ? states?.get(input.messageId) ?? {} : undefined;
+      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState);
       const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
-      const earlier = item ? outstandingRequestHistory(runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), item.state)
+      const earlier = item ? outstandingRequestHistory(runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), requestState)
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: false, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
       // A legacy run with no reservationist result cannot clear an earlier unread-file warning.
       const lastKnown = item && !summary ? runs.find(run => run.metrics?.reservationistResult != null) : undefined;
-      const priorSummary = lastKnown ? await loadResultReviewSummary(db, lastKnown.metrics?.reservationistResult, transportId, input.threadId, lastKnown.id, item?.state) : undefined;
+      const priorSummary = lastKnown ? await loadResultReviewSummary(db, lastKnown.metrics?.reservationistResult, transportId, input.threadId, lastKnown.id, requestState) : undefined;
       const earlierSources = priorSummary?.staffActions?.filter(action => action.kind === 'business_document_failure') ?? [];
       if (!summary && !earlier.length && !earlierSources.length) return null;
       const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };

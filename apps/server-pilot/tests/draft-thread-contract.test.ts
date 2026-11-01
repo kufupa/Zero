@@ -87,6 +87,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
         { id: 'old', runId: oldRun, handled: false },
       ]);
+      // A new classification creates another work item for the same email.
+      const [reclassified] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
+        sourceMessageId: parentMessageId, kind: 'quote' }).returning();
+      const current = { ...input, workItemId: reclassified!.id };
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'old', runId: oldRun, handled: false },
+      ]);
+      await drafts.setRequestHandled({ workItemId: reclassified!.id, runId: newRun, taskId: 'new', handled: false });
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, handled: false }, { id: 'old', runId: oldRun, handled: false },
+      ]);
     });
   });
 

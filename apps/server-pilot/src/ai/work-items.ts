@@ -69,7 +69,7 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
-import { hasOutstandingRequestHistory } from './reservationist-task-completion.js';
+import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1354,6 +1354,7 @@ export async function planThreadWork(
     );
   const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
   const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
+  const requestStates = await handledRequestStates(db, { transportId: input.transportId, threadId: input.threadId, sourceIds });
   const runs = sourceIds.length ? await db.select({
     id: aiWorkflowRun.id, sourceMessageId: aiWorkflowRun.triggerMessageId, metrics: aiWorkflowRun.metrics,
   }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.threadId),
@@ -1427,7 +1428,7 @@ export async function planThreadWork(
     const at = arrivedAt(source);
     const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
     const outstanding = currentKind && hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
-      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), item.state);
+      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), requestStates.get(source.id));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
     if (item.status === 'dismissed') {
