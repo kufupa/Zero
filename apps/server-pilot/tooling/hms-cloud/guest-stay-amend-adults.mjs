@@ -147,7 +147,7 @@ function previewTargetMatches(expected, snapshot) {
   return Object.values(required).every((value) => typeof value === 'string') &&
     Object.entries(required).every(([name, value]) => {
       const actual = field(snapshot, 'data', name);
-      return actual?.present === true && String(actual.value ?? '') === value;
+      return actual?.present === true && actual.value != null && String(actual.value) === value;
     });
 }
 
@@ -243,10 +243,10 @@ export function matchesLabtestAdultAmendPreview(preview, expected, adults, befor
   return Boolean(current && same(preview, current));
 }
 
-async function selectAdultOption(frame, before, requested, commit) {
+async function selectAdultOption(frame, baseline, requested, commit) {
   const input = frame.locator('input[name="adults"]:visible');
   if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
-  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange }) => {
+  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage }) => {
     const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
     const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
       Boolean((item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden'));
@@ -279,6 +279,27 @@ async function selectAdultOption(frame, before, requested, commit) {
     const target = targets[0];
     const record = form.getRecord?.();
     if (!record || typeof form.updateRecord !== 'function' || typeof record.set !== 'function') return 'ADULT_EDIT_UNVERIFIED';
+    // updateRecord copies the form into the native model. Recheck both complete
+    // preimages in this same browser turn, immediately before any mutation.
+    const equal = (a, b, ancestors = new Set()) => {
+      if (Object.is(a, b)) return true;
+      if (!a || !b || typeof a !== 'object' || typeof b !== 'object' ||
+          Array.isArray(a) !== Array.isArray(b) || ancestors.has(a)) return false;
+      const tag = Object.prototype.toString.call(a);
+      if (tag !== Object.prototype.toString.call(b) || !['[object Object]', '[object Array]'].includes(tag) ||
+          (Array.isArray(a) && a.length !== b.length)) return false;
+      const keys = Object.keys(a), otherKeys = Object.keys(b);
+      if (keys.length !== otherKeys.length || keys.some((key) => !Object.hasOwn(b, key))) return false;
+      ancestors.add(a);
+      try { return keys.every((key) => equal(a[key], b[key], ancestors)); }
+      finally { ancestors.delete(a); }
+    };
+    const nativeForm = form.getForm?.();
+    if (record.dirty !== false || Object.keys(record.modified || {}).length ||
+        typeof nativeForm?.isDirty !== 'function' || nativeForm.isDirty() ||
+        !equal(record.data, preimage.data) || !equal(nativeForm.getValues?.(), preimage.values)) {
+      return 'ADULT_PREIMAGE_UNVERIFIED';
+    }
     if (!commitChange) return true;
     component.setValue(target.record);
     component.fireEvent('select', component, target.record);
@@ -289,7 +310,8 @@ async function selectAdultOption(frame, before, requested, commit) {
     const value = component.getValue();
     const actual = value && typeof value === 'object' ? read(value, valueField) : value;
     return String(actual ?? '') === String(adults) && element.value === target.label ? true : 'ADULT_EDIT_UNVERIFIED';
-  }, { beforeAdult: before, adults: requested, commitChange: commit });
+  }, { beforeAdult: adultValue(baseline), adults: requested, commitChange: commit,
+    preimage: { data: baseline.data, values: baseline.values } });
   if (outcome !== true) throw new Error(typeof outcome === 'string' ? outcome : 'ADULT_EDIT_UNVERIFIED');
   return input;
 }
@@ -323,11 +345,12 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
       const baseline = await bounded(snapshotLabtestRecord(state.frame));
       if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
       if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
-      if (adultValue(baseline) !== String(expected.adults)) throw new Error('ADULT_PREIMAGE_UNVERIFIED');
+      if (adultValue(baseline) !== String(expected.adults) || !previewTargetMatches(expected, baseline) ||
+          !snapshotDigest(baseline)) throw new Error('ADULT_PREIMAGE_UNVERIFIED');
       if (adults === expected.adults) return { unchanged: true };
       if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
           await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
-      const control = await bounded(selectAdultOption(state.frame, expected.adults, adults, false));
+      const control = await bounded(selectAdultOption(state.frame, baseline, adults, false));
       const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
       if (await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
       return { state, frame: state.frame, baseline, control, save };
@@ -336,7 +359,7 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
     matches: () => false,
     stage: async (bounded, prepared) => {
       await bounded(prepared.control.scrollIntoViewIfNeeded().catch(() => {}));
-      await bounded(selectAdultOption(prepared.frame, expected.adults, adults, true));
+      await bounded(selectAdultOption(prepared.frame, prepared.baseline, adults, true));
       const current = await bounded(currentLabtestRecord(page, expected, {
         allowBlankNote: true, allowUnchangedBusinessParties: true,
       }));

@@ -22,10 +22,10 @@ option; equal counts return `unchanged` without staging.
 
 The adapter verifies the current origin, property, identity, Reserved status,
 dates, room, rate, note, NGI guarantee, disabled CMS sending and blank guest
-email. It binds the full clean record and adult form/model preimage to the
-staged draft. Primary agency/company links can be nonblank only when verified
-and unchanged; secondary agency, group, A/R and guarantee-card fields must be
-blank. Missing, dirty, ambiguous or unexpected fields are refused. Snapshot
+email. Before staging, it checks the native target and rechecks the full clean
+model and form preimages in the same browser turn as the adult edit. Primary
+agency/company links can be nonblank only when verified and unchanged; secondary
+agency, group, A/R and guarantee-card fields must be blank. Missing, dirty, ambiguous or unexpected fields are refused. Snapshot
 digests bind diagnostic comparisons to the target and stable preimage, excluding
 session identifiers; they are not human approval or authorization to save.
 
@@ -36,6 +36,8 @@ is `not_dispatched` with `OCCUPANCY_REPRICE_REQUIRED` and a diagnostic preview;
 other issues report refusal, invalid input or an unverified draft. A preview
 contains changed fields, native side effects, adult counts and the target. It
 also preserves absent versus blank child fields instead of assuming zero.
+A full-form update can copy unexpected values into the unsaved draft. If that
+happens, the adapter refuses the draft without rolling it back or saving it.
 The page is consumed after staging; use a fresh guarded session for further
 work, and reconcile unexpected or uncertain actions before any retry.
 
