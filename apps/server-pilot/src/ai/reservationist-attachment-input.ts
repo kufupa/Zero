@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { maskIncomingCardNumbers } from './card-mask.js';
+import { extractReservationistXlsxText, isReservationistXlsxMimeType } from './reservationist-xlsx.js';
 import type { DocumentDisclosure, DocumentSource } from './reservationist-document-facts.js';
 export type ReservationistAttachmentMetadata = {
   attachmentId: string;
@@ -37,14 +38,14 @@ export function isReservationistSignatureNoise(input:{messageText:string;current
  if(signoffAt<0)return false;
  // A current/delegated attachment dependency or a real request below the
  // signoff keeps every relevant image available to the business path.
- const dependency=/\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)?|voucher|POP|proof of payment|image|picture|photo|scan|document|logo|banner|signature|footer)\b|\b(?:see|use|read|refer|based|shown)\b[^.!?;\r\n]{0,80}\b(?:below|following|previous|prior|forwarded)\b|\b(?:use|add|include|put|place|copy|show|insert)\b[^.!?;\r\n]{0,80}\b(?:it|this|that|them|these|those)\b/i;
+ const dependency=/\b(?:attach(?:ed|ment)?|enclos(?:ed|ure)?|voucher|POP|proof of payment|image|picture|photo|screenshots?|scan|document|logo|banner|signature|footer)\b|\b(?:see|use|read|refer|based|shown)\b[^.!?;\r\n]{0,80}\b(?:below|following|previous|prior|forwarded)\b|\b(?:use|add|include|put|place|copy|show|insert)\b[^.!?;\r\n]{0,80}\b(?:it|this|that|them|these|those)\b/i;
  const currentSignoff=current.search(signoff),currentRequest=currentSignoff<0?current:current.slice(0,currentSignoff);
  const postscript=currentSignoff<0?'':current.slice(currentSignoff);
  const businessLabel=/^[\t ]*(?!(?:cid|http|https|tel|telephone|phone|mobile|cell|fax|e-?mail(?:\s+address)?|web|website|site|url|address|street|city|country|postal(?:\s+code)?|postcode|zip|office|direct|extension|ext|name|title|company|department|contact)\s*:)[\p{L}][\p{L}\p{N}&() /_-]{0,60}:\s*(?:\S|$)/imu;
  // Explicit dates below refer to the authored calendar text. Preserve every
  // other reference and any separately stated attachment dependency.
  const withoutDateReference=(text:string)=>text.replace(/\bdates\s+below\b/gi,'dates');
- if(dependency.test(withoutDateReference(authored.slice(0,signoffAt)))||dependency.test(withoutDateReference(input.currentSubject??''))||dependency.test(withoutDateReference(currentRequest))||businessLabel.test(postscript)||/\b(?:please|kindly|can you|could you|request|attached|enclosed)\b[^.!?;\r\n]{0,120}\b(?:quote|quotation|rooms?|stay|booking|reservation|invoice|voucher|payment|allocation|attachment|document|image)\b/i.test(authored.slice(signoffAt))||/\b(?:please|kindly|can you|could you|use|add|include|put|place|copy|show|insert|see|read|refer)\b[^.!?;\r\n]{0,120}\b(?:attachment|image|picture|photo|scan|document|logo|banner|signature|footer|it|this|that|them|these|those)\b/i.test(postscript))return false;
+ if(dependency.test(withoutDateReference(authored.slice(0,signoffAt)))||dependency.test(withoutDateReference(input.currentSubject??''))||dependency.test(withoutDateReference(currentRequest))||businessLabel.test(postscript)||/\b(?:please|kindly|can you|could you|request|attached|enclosed)\b[^.!?;\r\n]{0,120}\b(?:quote|quotation|rooms?|stay|booking|reservation|invoice|voucher|payment|allocation|attachment|document|image)\b/i.test(authored.slice(signoffAt))||/\b(?:please|kindly|can you|could you|use|add|include|put|place|copy|show|insert|see|read|refer|check)\b[^.!?;\r\n]{0,120}\b(?:attachment|image|picture|photo|screenshots?|scan|document|logo|banner|signature|footer|it|this|that|them|these|those)\b/i.test(postscript))return false;
  const refs=[...messageText.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)].filter(ref=>normalizeContentId(ref[1]!)===cid);
  return refs.length>0&&refs.every(ref=>ref.index!>signoffAt&&(historyAt<0||ref.index!<historyAt));
 }
@@ -164,13 +165,15 @@ export async function admitReservationistAttachment(input: {
     }catch{input.read.signal.throwIfAborted();return fail('malformed_or_unsupported_raster');}
   }
   const office=isDocxMimeType(m.mimeType);
+  const spreadsheet=isReservationistXlsxMimeType(m.mimeType);
   if(office&&!input.officeConverter)return fail('office_converter_unavailable');
-  if (!['application/pdf', 'text/plain'].includes(m.mimeType) && !office)
+  if (!['application/pdf', 'text/plain'].includes(m.mimeType) && !office && !spreadsheet)
     return fail('unsupported_business_attachment');
   const bytes = await readAuthorizedArtifactBytes({
     ...input.read,
     expectedSha256: m.sourceHash,
     allowOffice:office,
+    allowSpreadsheet:spreadsheet,
     resolveLocator: async (id) => {
       const locator = await input.read.resolveLocator(id);
       return locator &&
@@ -185,7 +188,13 @@ export async function admitReservationistAttachment(input: {
   if(!await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
   let pages: readonly string[] | null, pageCount: number, reason: string;
   let rendering:DocumentSource['rendering'];
-  if(office){
+  if(spreadsheet){
+    const extracted=await extractReservationistXlsxText({body:bytes.body,signal:input.read.signal});
+    if(extracted.reason!=='text'||!extracted.text)return fail(extracted.reason);
+    if(createHash('sha256').update(bytes.body).digest('hex')!==m.sourceHash||
+      !await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
+    reason='text';pages=[extracted.text];pageCount=1;
+  } else if(office){
     const extracted=await extractReservationistOfficeText({body:bytes.body,attachmentId:m.attachmentId,signal:input.read.signal,officeConverter:input.officeConverter!,runner:input.runner,revalidate:async()=>createHash('sha256').update(bytes.body).digest('hex')===m.sourceHash&&await input.read.revalidate!()&&JSON.stringify(m)===JSON.stringify(input.metadata)&&JSON.stringify(originalScope)===JSON.stringify(input.scope)});
     if(extracted.reason!=='text'||!extracted.pdfBody||!extracted.pages||extracted.pageCount===null)return fail(extracted.reason);
     reason=extracted.reason;pages=extracted.pages.map(maskIncomingCardNumbers);pageCount=extracted.pageCount;

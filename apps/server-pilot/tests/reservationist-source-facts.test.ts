@@ -188,7 +188,7 @@ describe('plain and HTML citation binding',()=>{
   const html='Could you please provide single and double room rates?',plan=await run(html);
   expect(plan.facts[0]).toMatchObject({id:'rate',source:{start:0,end:plain.length},value:{quotationBasis:'per_room_rate'}});
   expect(plan.tasks[0]).toMatchObject({id:'quote',source:{start:htmlStart,end:htmlStart+html.length}});
-  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow('Per-room rate option not entailed by current source');
+  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow();
  });
  it.each([
   {id:'html-room',body:'Please quote one room for one adult.',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},expected:{convention:{rule:'centurion_staff_occupancy_v1'}}},
@@ -208,6 +208,12 @@ describe('plain and HTML citation binding',()=>{
   const plan=await extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:roomQuote,view:'plain_quoted'}}],tasks:[{id:'quote',kind:'quote',factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'quoted-room',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length,quoted:{start:quotedStart,end:text.length}},{name:'html',start:htmlStart,end:htmlEnd}]}],triggerMessageId:'quoted-room',causalAt:at,admissions:[],signal:new AbortController().signal});
   expect(plan.facts[0]).toMatchObject({kind:'room',convention:{rule:'centurion_staff_occupancy_v1'}});
  });
+ it('links a shared quoted room request to the HTML renewal, but not to a different history',async()=>{
+  const plain='Please review the earlier request.',html='Please quote the earlier request.',separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length,roomQuote='Please quote one room for one adult.',history=`From: guest@example.invalid\nSubject: Original request\n\n${roomQuote}`,quotedStart=htmlEnd+2,text=`${plain}${separator}${html}\n\n${history}`,attachmentId='message:shared-history',sourceHash=createHash('sha256').update(text).digest('hex'),quoted={start:quotedStart,end:text.length};
+  const run=(shared:boolean)=>extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:roomQuote,view:'plain_quoted'}}],tasks:[{id:'quote',kind:'quote',factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:html,view:'html'}}],unresolvedAsks:[]}})} as any,messages:[{id:'shared-history',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length,quoted},{name:'html',start:htmlStart,end:htmlEnd,...(shared?{quoted}:{})}]}],triggerMessageId:'shared-history',causalAt:at,admissions:[],signal:new AbortController().signal});
+  await expect(run(true)).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
+  await expect(run(false)).rejects.toThrow('Document fact value not entailed by source span');
+ });
  it('retains a linked current quote when an earlier room request has MIME views',async()=>{
   const prior='Please quote one double room for two adults.',html=`${prior}\nKind regards`,marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=prior.length+marker.length,text=`${prior}${marker}${html}`;
   const current='Please quote the original room request.',priorHash=createHash('sha256').update(text).digest('hex'),currentHash=createHash('sha256').update(current).digest('hex');
@@ -216,12 +222,15 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('new_booking')).rejects.toThrow('Document fact value not entailed by source span');
  });
  it('retains a quote linked across differently worded MIME views, but refuses booking or negated occupancy',async()=>{
-  const plain='Please quote one double room for two adults.',marker=`\n\n${HTML_ALTERNATIVE_MARKER}`;
-  const run=async(html:string,kind:'quote'|'new_booking')=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:views';
-   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:2,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:html,view:'html'}}],tasks:[{id:'task',kind,factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'views',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'views',causalAt:at,admissions:[],signal:new AbortController().signal});};
+  const marker=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+  const run=async(html:string,kind:'quote'|'new_booking',plain='Please quote one double room for two adults.',adults=2)=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:views';
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:html,view:'html'}}],tasks:[{id:'task',kind,factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'views',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'views',causalAt:at,admissions:[],signal:new AbortController().signal});};
   await expect(run('Kindly quote one double room for two adults.','quote')).resolves.toMatchObject({facts:[{convention:{rule:'centurion_staff_occupancy_v1'}}]});
   await expect(run('Kindly quote one double room for two adults.','new_booking')).rejects.toThrow();
   await expect(run('Kindly do not quote one double room for two adults.','quote')).rejects.toThrow();
+  await expect(run('Kindly quote one double room for two adults.','quote','Please do not quote one double room for two adults.')).rejects.toThrow('Conflicting quote request across message views');
+  await expect(run('Kindly quote one single room for one adult.','quote',undefined,1)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults. Do not book us yet.')).resolves.toMatchObject({facts:[{kind:'room'}]});
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';

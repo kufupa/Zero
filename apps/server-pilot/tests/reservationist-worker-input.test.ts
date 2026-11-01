@@ -50,6 +50,18 @@ describe('reservationist worker input', () => {
     expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
+  it('shares identical quoted history between differing authored views without duplicating it', async () => {
+    const { input } = await build([row('current', 4, {
+      textBody: 'Please review the earlier request.\nFrom: guest@example.invalid\nSubject: Prior stay\n\nPlease quote one room for one adult.',
+      htmlBody: '<p>Please quote the earlier request.</p><p>From: guest@example.invalid</p><p>Subject: Prior stay</p><p>Please quote one room for one adult.</p>',
+    })]);
+    const message = input.messages[0]!, [plain, html] = message.sourceViews ?? [];
+    expect(plain?.quoted).toBeDefined();
+    expect(html?.quoted).toEqual(plain?.quoted);
+    expect(message.text.match(/Please quote one room for one adult\./g)).toHaveLength(1);
+    expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
+  });
+
   it('retains separate quoted ranges when plain and HTML authored bodies match', async () => {
     const authored = 'Please rebook the same stay as previously quoted.';
     const { input } = await build([row('current', 4, {
@@ -193,6 +205,15 @@ describe('reservationist worker input', () => {
     ], [{ id: 'logo', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
     expect(result.ignoredSignatures).toBe(0);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
+  });
+
+  it('keeps an earlier inline screenshot requested by a later message', async () => {
+    const result = await build([
+      row('prior', 1, { textBody: 'Hello\nKind regards\ncid:receipt' }),
+      row('current', 4, { textBody: 'Please check the payment screenshot and confirm the booking.' }),
+    ], [{ id: 'receipt', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'receipt', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['receipt']);
   });
 
   it('refuses missing or non-hash attachment identity before admission', async () => {
