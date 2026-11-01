@@ -12,6 +12,7 @@ contain guest data.
 | --- | --- |
 | `read` | `confirmation`; optional `guestName`, `arrivalDate` (`YYYY-MM-DD`) and `view` (`record`, the default, or `shallow`) |
 | `prepareCancellation` | Optional `requestedScope` (`whole_stay`, `specific_room`, or `unspecified`); uses the current full read |
+| `prepareFinance` | Uses the current full read; returns only Record View and Folio-card balance/deposit displays, with ledger and payment clearance left unknown |
 | `amendNote` | `expected` with `confirmation`, `guestId`, `arrival`, `departure`, `roomType`, `ratePlan`, `note` and `newNote` |
 | `amendContact` | The same saved `expected` record without `newNote`, plus either legacy `field` (`bookerName` or `bookerContact`) and synthetic `value`, or synthetic `bookerName` and/or `bookerContact` (one exact Save for the supplied fields) |
 | `openCancel` | The same `expected` record fields, without `newNote` |
@@ -34,6 +35,11 @@ and does not open the cancellation workflow or commit a cancellation. The
 projection uses the session's own copy of the read, so caller edits to the
 returned read do not alter it. Read again in a new session when fresh facts are
 needed. See [cancellation preflight](guest-stay-cancel-preflight.md).
+
+After a full `read`, `prepareFinance` returns a timestamped, privacy-reduced
+view of the Record View and Folio-card balance/deposit displays. Those surfaces
+do not establish ledger balance, payment clearance, or transaction history.
+This action does not post payment, retrieve/send a document, or alter HMS.
 
 Writes require the currently read Reserved record and delegate to the Labtest
 actions. The caller must identify the exact authorized Proof Labtest stay and
