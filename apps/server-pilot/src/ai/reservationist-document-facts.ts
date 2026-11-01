@@ -193,7 +193,7 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  const otherViews=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!);
  const other=otherViews.join('\n');
  const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
- const datePattern=new RegExp(`\\b(?:\\d{1,2}\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`,'gi');
+ const datePattern=new RegExp(`\\b(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`,'gi');
  const dateMatches=(text:string)=>[...text.matchAll(new RegExp(datePattern.source,'gi'))];
  const dateTokens=(text:string)=>dateMatches(text).map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
  const dateKey=(token:string)=>{try{const year=/\b\d{4}\b/.test(token),date=/^\d{1,2}[/-]\d{1,2}$/.test(token)?normalizedDate(token,2000):normalizedDate(year?token:`${token} 2000`);return{dayMonth:date.slice(5),year:year?date.slice(0,4):undefined};}catch{return;}};

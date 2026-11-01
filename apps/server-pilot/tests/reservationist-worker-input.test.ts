@@ -354,9 +354,9 @@ describe('reservationist worker input', () => {
     await expect(extract(`Group A:\n${groupAStay}\nGroup B:\n${groupBStay}`,
       `Group B:\n${groupBStay}\nGroup A:\n${groupAStay}`, groupAStay, '2026-12-21', '2026-12-23'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
-    await expect(extract('Please quote the corrected stay from 21 December 2026 to 23 December 2026.',
+    await expect(extract('Please quote the corrected stay from 21st December 2026 to 23rd December 2026.',
       'Please quote the amended stay from December 21, 2026 to December 23, 2026.',
-      'Please quote the corrected stay from 21 December 2026 to 23 December 2026.', '2026-12-21', '2026-12-23'))
+      'Please quote the corrected stay from 21st December 2026 to 23rd December 2026.', '2026-12-21', '2026-12-23'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
   });
 
