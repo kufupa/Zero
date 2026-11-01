@@ -3,6 +3,8 @@ import {
   validateDocumentPlan,
   guestDocumentFacts,
 } from '../src/ai/reservationist-document-facts.js';
+import { createHash } from 'node:crypto';
+import { HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 import { describe, expect, it } from 'vitest';
 const source = {
   attachmentId: 'a',
@@ -370,4 +372,34 @@ it('binds an explicit subgroup arrival within its printed overall stay range',()
 it.each(['Not 25 guests arriving on 11 October 2026','25 guests arriving on 17 October 2026','25 guests arriving on 11 October 2026\n10 guests arriving on 12 October 2026'])('rejects an excluded, out-of-range or ambiguous subgroup arrival: %s',lead=>{
  const text=lead+'\nAccommodation required from 10 to 16 October 2026',source={attachmentId:'a',sourceHash:'a'.repeat(64),page:1,quote:text,start:0,end:text.length};
  expect(()=>validateDocumentPlan({facts:[{id:'stay',kind:'dates',disclosure:'guest',source,value:{arrival:'11 October 2026',departure:'16 October 2026'}}],tasks:[{id:'q',kind:'quote',source,factIds:['stay']}],unresolvedAsks:[]},[{attachmentId:'a',sourceHash:'a'.repeat(64),pages:[text],pageCount:1,disclosure:'guest'}])).toThrow();
+});
+
+it('matches cross-view stay dates by a unique endpoint without conflating other or duplicate stays', () => {
+ const validateViews=(plain:string,html:string,citation:string)=>{
+  const separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,page=plain+separator+html,sourceHash=createHash('sha256').update(page).digest('hex'),start=plain.indexOf(citation);
+  const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:page.length}]};
+  const source={attachmentId:original.attachmentId,sourceHash,page:1,quote:citation,start,end:start+citation.length};
+  return validateDocumentPlan({facts:[{id:'stay',kind:'dates',value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest',source}],tasks:[],unresolvedAsks:[]},[original]);
+ };
+ const first='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(()=>validateViews(`${first}\nPlease quote a second room: Arrival 28 December 2026; departure 30 December 2026.`,
+  'Kindly confirm the first stay: Check-in 21 December 2026; check-out 24 December 2026.\nKindly confirm the second stay: Check-in 28 December 2026; check-out 30 December 2026.',first))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
+ const groupA='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(validateViews(`${groupA}\nGroup B: Please quote a room: Arrival 21 December 2026; departure 24 December 2026.`,
+  'Group B: Please quote a room: Check-in 21 December 2026; check-out 25 December 2026.\nGroup A: Please quote a room: Check-in 21 December 2026; check-out 23 December 2026.',groupA).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+
+ const duplicate='Please quote an overnight stay: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(validateViews(`${duplicate}\nPlease quote another overnight stay: Arrival 21 December 2026; departure 23 December 2026.`,
+  'Kindly confirm the first stay: Check-in 21 December 2026; check-out 23 December 2026.\nKindly confirm the second stay: Check-in 21 December 2026; check-out 23 December 2026.',duplicate).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+
+ expect(()=>validateViews(`${first}\nPlease quote another room: Arrival 21 December 2026; departure 25 December 2026.`,
+  'Kindly confirm one stay: Check-in 21 December 2026; check-out 24 December 2026.',first))
+  .toThrow('Explicit same-stay correction requires source clarification');
+ expect(()=>validateViews(`${first}\nPlease quote a second room: Arrival 28 December 2026; departure 30 December 2026.`,
+  'Kindly confirm one stay: Check-in 21 December 2026; check-out 23 December 2026.\nKindly confirm another stay: Check-in 21 December 2026; check-out 24 December 2026.\nKindly confirm the second stay: Check-in 28 December 2026; check-out 30 December 2026.',first))
+  .toThrow('Explicit same-stay correction requires source clarification');
 });
