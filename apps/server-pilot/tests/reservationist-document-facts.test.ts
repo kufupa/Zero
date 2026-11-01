@@ -450,6 +450,26 @@ it('does not compare duplicate pairs with an empty authored view containing only
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
+it('checks quoted stay citations against the cited group in authored alternatives', () => {
+ const plain='Please follow the quoted Group A stay.';
+ const request='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const history=`From: earlier request\n${request}`;
+ const validate=(html:string)=>{
+  const separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length;
+  const page=`${plain}${separator}${html}\n\n${history}`,historyStart=htmlEnd+2,sourceHash=createHash('sha256').update(page).digest('hex');
+  const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
+   sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:historyStart,end:page.length}},
+    {name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:historyStart,end:page.length}}]};
+  const start=page.indexOf(request),source={attachmentId:original.attachmentId,sourceHash,page:1,quote:request,start,end:start+request.length};
+  const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
+  return validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]);
+ };
+ expect(validate('Please follow the quoted Group A stay.\nGroup B: Correction: departure 24 December 2026.').facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ expect(()=>validate('Please follow the quoted Group A stay.\nGroup A: Correction: departure 24 December 2026.'))
+  .toThrow('Explicit same-stay correction requires source clarification');
+});
+
 it('keeps printed arrival and departure years in a valid cross-year range', () => {
  const ranged='Please quote the stay: 30 December 2026 to 2 January 2027.';
  expect(validateCrossViewDates(ranged,'Arrival 30 December 2026; departure 2 January 2027.',ranged,{arrival:'2026-12-30',departure:'2027-01-02'}).facts[0]!.value)
