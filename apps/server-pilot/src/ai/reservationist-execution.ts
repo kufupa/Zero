@@ -50,7 +50,7 @@ function bookingViewsConflict(task:Task,input:ReservationistRuntimeInput):boolea
  const message=input.messages.find(m=>m.id===input.trigger.id),views=message?.sourceViews,source=task.source;
  if(!message||!views||!validReservationistMessageViews(message.text,views))return false;
  const own=views.find(view=>source.start!>=view.start&&source.end!<=view.end);
- const target=source.quote?.match(/\b(?:this|that|these|those|the)\s+rooms?\b|\b(?:\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0]?.toLowerCase();
+ const target=source.quote?.match(/\b(?:this|that|these|those|the|a|an|\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0]?.toLowerCase();
  if(!own||!target)return false;
  return views.some(view=>view.name!==own.name&&[...message.text.slice(view.start,view.end).matchAll(/\b(?:do\s+not|don't|never|not)\s+(?:(?:actually|yet|ever|please)\s+)?(?:book|reserve)\b[^.!?;\n]*/gi)].some(match=>match[0].toLowerCase().includes(target)));
 }

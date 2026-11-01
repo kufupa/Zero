@@ -302,7 +302,7 @@ export async function buildReservationistBookingSuggestion(input: {
     }
   }
 
-  const nameByRoom = new Map<string, Array<{ firstName: string; lastName: string }>>();
+  const nameByRoom = new Map<string, Array<{ firstName: string; lastName: string; child: boolean }>>();
   for (const guest of guests) {
     if (!guest.roomRef) continue;
     const group = grouped.get(guest.roomRef);
@@ -311,7 +311,10 @@ export async function buildReservationistBookingSuggestion(input: {
     if (localIndex === undefined || localIndex < 1 || localIndex > group.value.quantity) continue;
     const key = `${guest.roomRef}\0${localIndex}`;
     const names = nameByRoom.get(key) ?? [];
-    if (!names.some((name) => name.firstName === guest.firstName && name.lastName === guest.lastName)) names.push({ firstName: guest.firstName, lastName: guest.lastName });
+    const existing = names.find((name) => name.firstName === guest.firstName && name.lastName === guest.lastName);
+    const child = guest.age !== undefined && guest.age < 18;
+    if (existing) existing.child ||= child;
+    else names.push({ firstName: guest.firstName, lastName: guest.lastName, child });
     nameByRoom.set(key, names);
   }
 
@@ -323,7 +326,8 @@ export async function buildReservationistBookingSuggestion(input: {
       departure: stay.departure,
       nights: null,
       rooms: physicalRooms.map((room) => {
-        const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`), name = names?.length === 1 ? names[0] : undefined;
+        const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`)?.filter(name => !name.child);
+        const name = names?.length === 1 ? { firstName: names[0]!.firstName, lastName: names[0]!.lastName } : undefined;
         return {
           adults: room.adults, childAges: [...room.childAges], roomTypeText: null,
           guestName: name ? `${name.firstName} ${name.lastName}` : null, ...name,
