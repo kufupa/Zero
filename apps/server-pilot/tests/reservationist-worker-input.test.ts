@@ -107,6 +107,33 @@ describe('reservationist worker input', () => {
     expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
+  it('keeps a shared request and an additional HTML request, without guessing across different contexts', async () => {
+    const certificate = 'Please send the tax certificate.', checkin = 'Can we check in early?';
+    const extract = async (plainPrefix = '', htmlPrefix = '') => {
+      const { input } = await build([row('current', 4, {
+        textBody: `${plainPrefix}${certificate}\nKind regards`,
+        htmlBody: `<p>${htmlPrefix}${certificate}</p><p>${checkin}</p><p>Kind regards</p>`,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const tasks = [
+        { id: 'certificate', kind: 'existing_document', factIds: [], source: { attachmentId: 'message:current', sourceHash, page: 1, quote: certificate } },
+        { id: 'checkin', kind: 'question', factIds: [], source: { attachmentId: 'message:current', sourceHash, page: 1, quote: checkin } },
+      ];
+      let calls = 0;
+      return extractReservationistPlan({ mode: 'task_first', adapter: {
+        reserveCalls: async () => {},
+        invoke: async () => ({ output: ++calls === 1
+          ? { facts: [], tasks, unresolvedAsks: [] }
+          : { facts: [], assignments: tasks.map(task => ({ taskId: task.id, factIds: [] })), unresolvedAsks: [] } }),
+      } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    const plan = await extract();
+    expect(plan.tasks.map(task => task.id)).toEqual(['certificate', 'checkin']);
+    expect(plan.tasks[0]!.source).toMatchObject({ quote: certificate, start: 0 });
+    await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
+  });
+
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Room 1: 1 adult Room 2: 2 adults',
@@ -227,10 +254,10 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
   });
 
-  it('keeps an HTML heading-labelled business image after the signoff', async () => {
+  it('keeps an HTML heading-labelled business image without colon punctuation', async () => {
     const result = await build([row('current', 4, {
       textBody: null,
-      htmlBody: '<p>Please quote one double room.</p><p>Kind regards</p>Guest<h2>Rates:</h2><img src="cid:rates"><table><tr><td><p>Room A<br>Room B</p><p>Rate</p></td></tr></table>',
+      htmlBody: '<p>Please quote one double room.</p><p>Kind regards</p>Guest<h2>Rates</h2><img src="cid:rates"><table><tr><td><p>Room A<br>Room B</p><p>Rate</p></td></tr></table>',
     })], [{ id: 'rates', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rates', disclosure: 'guest' }]);
     expect(result.ignoredSignatures).toBe(0);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
