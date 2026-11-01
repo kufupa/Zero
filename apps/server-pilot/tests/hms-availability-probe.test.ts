@@ -451,6 +451,18 @@ describe('U10 availability probe (pure)', () => {
     expect(availabilityRequestsFor({ ...PAYLOAD, stays: [inconsistent] })).toEqual([]);
   });
 
+  it('does not probe a stay when per-row quantities disagree with its room total', () => {
+    const inconsistent = { ...STAY_A, totalRooms: 30 };
+    const unknownSplit = {
+      ...STAY_A,
+      totalRooms: 30,
+      rows: STAY_A.rows.map((row) => ({ ...row, rooms: null })),
+    };
+
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [inconsistent] })).toEqual([]);
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [unknownSplit] })).toEqual([]);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,

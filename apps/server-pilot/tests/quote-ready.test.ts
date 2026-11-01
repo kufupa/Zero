@@ -399,6 +399,23 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.reason).toBe('missing_rooms');
   });
 
+  it('does not split a stay-wide room total across rows with unknown quantities', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: 30,
+        rows: [
+          { ...stay.rows[0]!, id: 'row-1', rooms: null },
+          { ...stay.rows[0]!, id: 'row-2', roomType: 'Standard Twin', rooms: null },
+        ],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
+  });
+
   it('keeps missing dates as a hard block', () => {
     const stay = payload().stays[0]!;
     const plan = build({
