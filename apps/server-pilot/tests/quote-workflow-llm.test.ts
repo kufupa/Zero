@@ -184,6 +184,22 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('rooming.pdf');
   });
 
+  it('marks XLSX prompt truncation so later rows are not treated as complete evidence', () => {
+    const prompt = buildQuoteWorkflowPrompt({
+      ...selection,
+      attachments: [{
+        id: 'rooming',
+        filename: 'rooming.xlsx',
+        bytesPresent: true,
+        text: `${'x'.repeat(20_000)}LATE_ROW_GUEST`,
+        reviewReason: 'spreadsheet text truncated',
+      }],
+    });
+
+    expect(prompt.user).toContain('[Later spreadsheet rows were omitted; review the original file.]');
+    expect(prompt.user).not.toContain('LATE_ROW_GUEST');
+  });
+
   it('keeps requested dinner boards for the server-side B&B retry', () => {
     const prompt = buildQuoteWorkflowPrompt(selection).system;
 
@@ -561,6 +577,42 @@ describe('mapLlmDecision', () => {
     ]);
     expect(JSON.stringify(mapped.groups)).not.toMatch(/price|rate"|amount/i);
     expect(mapped.ratePlan.source).toBe('party_contract');
+  });
+
+  it('carries stated stay totals separately from per-room occupancy', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 5, childrenTotal: 0 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      adults: 3,
+      adultsTotal: 5,
+      childrenTotal: 0,
+      fields: { adultsTotal: 'extracted', childrenTotal: 'extracted' },
+    });
+  });
+
+  it('treats out-of-range model stay totals as unknown', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, adultsTotal: -1, childrenTotal: 1000 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      adultsTotal: null,
+      childrenTotal: null,
+      fields: { adultsTotal: 'missing', childrenTotal: 'missing' },
+    });
   });
 
   it('defaults a one-date quote to one night and marks departure defaulted', () => {

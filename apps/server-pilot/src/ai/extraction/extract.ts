@@ -6,6 +6,7 @@ import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import { renderPdfPagesForVision, type VisionPage } from '../../mail/artifacts/read-artifact.js';
 import type {
+  QuoteAttachmentReviewReason,
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
   SyncedThreadMessage,
@@ -55,6 +56,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - Date anchoring is per stay. Precedence: a staff correction attributed to that stay; an explicit year in that stay's date evidence (the subject may supply a year only for a single stay); that stay's verified "next year" (the year after Johannesburg receipt) or "next <weekday>" resolved from the Johannesburg received date, overriding model dates; then a yearless date uses its next occurrence from receipt even if the model supplied a farther-future year. For a cross-year span such as "28 Dec - 2 Jan 2027", the year after the second date applies to the January endpoint and the December arrival is in the preceding year. For one stay with missing or unmatched evidence, check body/subject for an explicit year first. For multiple stays with missing or unmatched evidence, keep model dates rather than inferring from another stay. Never borrow another stay's year or relative phrase.
 - rows: within a stay, one row per room type as written. "Single" and "Double/Twin" are separate rows. rooms is the count of identical rooms of that type. adultsPerRoom is the adults in EACH room: "6 adults in 3 rooms" is 2, one named guest in a room is 1, and a double or twin with no headcount is 2.
 - totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
+- totalAdults and totalChildren are stay-wide totals only when stated. Preserve them separately from each row's per-room counts; use null when unstated and never infer totals from rows.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
 - agency is the organisation of the sender: the From address domain, the signature or the letterhead. A travel agency or tour operator writing for its client is the agency. endClient is the party the booking is for ("our client X", or a client or group named in the subject or body), only when it differs from the sender. A company named in the subject is the end client, not the agency, unless the sender works for it. Never swap them.
 - Hotel staff: a sender on the Mailbox address's domain, or one who signs for this hotel or its hotel group, is staff. When staff pass on an outside request for the hotel to handle (a forward, or a note above the quoted or earlier request asking colleagues to quote, book or manage it), read the mail as that outside request, not an internal handover: kind, stays, agency, endClient and contact come from the request passed on, and the staff note only adds to it. For contact, use the forwarded original sender or booker; never use the hotel staff sender or staff signature as the guest contact. If the original gives no contact, use null. The hotel and its group are never the agency. Only a staff mail that passes on no outside request is other, and so is a staff note saying the request is already handled (booked, confirmed or sent), even with the request quoted below it. A mail from outside is read by what it asks now.
@@ -314,6 +316,8 @@ export type AttachmentRead = {
   byteSize?: number;
   status: 'read' | 'not_read';
   reason?: string;
+  /** Review cue retained for readable sources with masked numbers or incomplete text. */
+  reviewReason?: QuoteAttachmentReviewReason;
   truncated?: boolean;
 };
 
@@ -331,11 +335,14 @@ export function attachmentReads(
       mimeType: attachment.mimeType,
       byteSize: attachment.byteSize,
     };
+    const reviewReason = attachment.reviewReason ??
+      (attachment.readFailure === 'ambiguous number groups' ? 'ambiguous number groups' : undefined);
+    const review = reviewReason ? { reviewReason } : {};
     const textRead = textById.get(attachment.id);
-    if (textRead) return { ...base, ...textRead };
+    if (textRead) return { ...base, ...textRead, ...review };
     const visionRead = visionById.get(attachment.id);
-    if (visionRead) return { ...base, ...visionRead };
-    if (attachment.text?.trim()) return { ...base, status: 'read' as const };
+    if (visionRead) return { ...base, ...visionRead, ...review };
+    if (attachment.text?.trim()) return { ...base, status: 'read' as const, ...review };
     if (attachment.pdf) {
       return {
         ...base,

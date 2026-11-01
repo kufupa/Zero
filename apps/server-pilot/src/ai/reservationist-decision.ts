@@ -116,11 +116,23 @@ const lunaGroupSchema = z.object({
     .default(null)
     .describe('Exact source phrase for THIS group’s arrival/departure dates, or null if not stated. Never reuse another group’s phrase.'),
   rooms: z.number().int().nullable().describe('Number of identical rooms in this group.'),
+  adultsTotal: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe('Stay-wide adult total when explicitly stated; null or omitted when unknown.'),
   adultsPerRoom: z
     .number()
     .int()
     .nullable()
     .describe("Adults in EACH room; '6 adults in 3 rooms' = 2"),
+  childrenTotal: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe('Stay-wide child total when explicitly stated; null or omitted when unknown.'),
   childAges: z.array(z.number().int()),
   board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),

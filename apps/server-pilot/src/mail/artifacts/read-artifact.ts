@@ -59,9 +59,14 @@ export type AttachmentLocator = {
 };
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 export function isDocxMimeType(mimeType: string): boolean {
   return mimeType.split(';', 1)[0]?.trim().toLowerCase() === DOCX_MIME;
+}
+
+function isXlsxMimeType(mimeType: string): boolean {
+  return mimeType.split(';', 1)[0]?.trim().toLowerCase() === XLSX_MIME;
 }
 
 /**
@@ -982,6 +987,8 @@ export type AuthorizedArtifactBytesInput = {
   allowRaster?: boolean;
   /** Explicit trusted Office acquisition; only original DOCX bytes, no conversion here. */
   allowOffice?: boolean;
+  /** Explicit trusted spreadsheet acquisition; parsing remains a separate bounded step. */
+  allowSpreadsheet?: boolean;
   /**
    * Logo check only: an octet-stream row returns its bytes so the caller can sniff the image magic. The bytes are
    * never parsed as a PDF here.
@@ -1026,7 +1033,8 @@ async function readAuthorizedArtifactBytesInternal(input: AuthorizedArtifactByte
   const raster = input.allowRaster === true &&
     ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(locator.mimeType);
   const office = input.allowOffice === true && isDocxMimeType(locator.mimeType);
-  if ((raster || office || hashOnly) && (!input.expectedLocator || !input.revalidate ||
+  const spreadsheet = input.allowSpreadsheet === true && isXlsxMimeType(locator.mimeType);
+  if ((raster || office || spreadsheet || hashOnly) && (!input.expectedLocator || !input.revalidate ||
     locator.s3Key.includes('\\') ||
     locator.s3Key.split('/').some(part => !part || part === '.' || part === '..'))) {
     return null;
@@ -1037,6 +1045,7 @@ async function readAuthorizedArtifactBytesInternal(input: AuthorizedArtifactByte
     storedPdfTypes(locator).length === 0 &&
     !raster &&
     !office &&
+    !spreadsheet &&
     !sniff &&
     !hashOnly
   ) {

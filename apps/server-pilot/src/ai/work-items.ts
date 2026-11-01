@@ -40,6 +40,7 @@ import {
   currentSourceText,
   documentFailureItems,
   hmsTodoCardFromLuna,
+  numberGroupReviewItems,
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
@@ -84,13 +85,13 @@ import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-pers
 export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
-  | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
+  | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'totalAdults' | 'totalChildren' | 'removed' }
   | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
 
 const ID = '[A-Za-z0-9_-]{1,40}';
 const PATH = new RegExp(
-  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|(removed)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}|removed))$`,
+  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|(totalAdults|totalChildren)|(removed)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}|removed))$`,
 );
 /** Row field to the extraction's key. The path names the form's word, the payload the model's. */
 const ROW_KEYS = {
@@ -105,8 +106,9 @@ const BOARDS = new Set(['room_only', 'bb', 'dbb']);
 export function parseFieldPath(path: string): FieldPath | null {
   const match = PATH.exec(path);
   if (!match) return null;
-  const [, stayId = '', dateField, stayRemoved, rowId, rowField] = match;
+  const [, stayId = '', dateField, stayTotal, stayRemoved, rowId, rowField] = match;
   if (dateField) return { stayId, rowId: null, field: dateField as 'arrival' | 'departure' };
+  if (stayTotal) return { stayId, rowId: null, field: stayTotal as 'totalAdults' | 'totalChildren' };
   if (stayRemoved) return { stayId, rowId: null, field: 'removed' };
   return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
 }
@@ -404,6 +406,9 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return isInt(value, 1, 999);
     case 'adults':
       return isInt(value, 1, 9);
+    case 'totalAdults':
+    case 'totalChildren':
+      return isInt(value, 0, 999);
     case 'roomType':
       return typeof value === 'string' && value.length > 0 && value.length <= 120;
     case 'childAges':
@@ -425,13 +430,17 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   const parsed = parseFieldPath(path);
   const stay = parsed ? payload?.stays.find((item) => item.id === parsed.stayId) : undefined;
   if (!parsed || !stay) return null;
-  if (parsed.rowId === null) return parsed.field === 'removed' ? false : stay.requested[parsed.field];
+  if (parsed.rowId === null) {
+    if (parsed.field === 'removed') return false;
+    if (parsed.field === 'totalAdults' || parsed.field === 'totalChildren') return stay[parsed.field] ?? null;
+    return stay.requested[parsed.field];
+  }
   const row = stay.rows.find((item) => item.id === parsed.rowId);
   if (!row) return null;
   return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
 }
 
-type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms'>;
+type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms' | 'totalAdults' | 'totalChildren'>;
 
 /**
  * The stays and rows the form shows: the extraction's, then any the person added (ids only in `state`), less any she
@@ -470,7 +479,15 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
       }
       return row;
     });
-    return [{ ...stay, rows: projectedRows }];
+    const totalAdultsPath = `stays[${stay.id}].totalAdults`;
+    const totalAdults = Object.hasOwn(state, totalAdultsPath)
+      ? (state[totalAdultsPath] as number | null)
+      : stay.totalAdults;
+    const totalChildrenPath = `stays[${stay.id}].totalChildren`;
+    const totalChildren = Object.hasOwn(state, totalChildrenPath)
+      ? (state[totalChildrenPath] as number | null)
+      : stay.totalChildren;
+    return [{ ...stay, totalAdults, totalChildren, rows: projectedRows }];
   });
 }
 
@@ -607,6 +624,17 @@ export function storedAnalysis(
       })),
     'text',
   );
+  const numberReviews = numberGroupReviewItems(
+    (read.attachments ?? [])
+      .filter((item) => item.status === 'read' && item.reviewReason !== undefined)
+      .map((item) => ({
+        id: item.id,
+        filename: item.filename,
+        mimeType: item.mimeType,
+        byteSize: item.byteSize,
+        reviewReason: item.reviewReason,
+      })),
+  );
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
   const stays = formStays(payload, state);
@@ -650,7 +678,9 @@ export function storedAnalysis(
         ...dates,
         dateEvidence: null,
         rooms: null,
+        ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: null,
+        ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
         childAges: [],
         board: null,
         roomPreference: null,
@@ -671,7 +701,9 @@ export function storedAnalysis(
         ...dates,
         dateEvidence: null,
         rooms,
+        ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
+        ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
@@ -727,6 +759,8 @@ export function storedAnalysis(
     const corrected: Array<[string, string]> = [
       ['arrivalDate', `${stayPath}.arrival`],
       ['departureDate', `${stayPath}.departure`],
+      ['adultsTotal', `stays[${slot.stayId}].totalAdults`],
+      ['childrenTotal', `stays[${slot.stayId}].totalChildren`],
     ];
     if (slot.rowId) {
       const rowPath = `stays[${slot.stayId}].rows[${slot.rowId}]`;
@@ -765,7 +799,7 @@ export function storedAnalysis(
       missingQuoteReplyFields: mapped.missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
-      reviewItems: [...failures, ...questionItems(mapped.missing)],
+      reviewItems: [...failures, ...numberReviews, ...questionItems(mapped.missing)],
       requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,

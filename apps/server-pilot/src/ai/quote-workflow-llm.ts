@@ -16,6 +16,7 @@ import {
   type AopQuoteRatePlan,
 } from './aop-playbook.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
+import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
 import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
@@ -31,7 +32,6 @@ import {
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
-const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
@@ -50,6 +50,7 @@ export const K2_MAPPING = [
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2.',
+  'Preserve adultsTotal and childrenTotal only when explicitly stated as stay-wide totals; never infer them from per-room counts.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
@@ -162,6 +163,8 @@ export type MappedQuoteDecision = {
     departureDate?: string;
     quantity?: number;
     adults?: number;
+    adultsTotal?: number | null;
+    childrenTotal?: number | null;
     childrenAges: number[];
     board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
@@ -252,9 +255,10 @@ export function buildQuoteWorkflowPrompt(
   const attachmentChunks: string[] = [];
   for (const attachment of selection.attachments) {
     if (attachment.text) {
-      attachmentChunks.push(
-        `--- ${attachment.filename} ---\n${maskCardNumbers(attachment.text).slice(0, ATTACHMENT_TEXT_MAX)}`,
-      );
+      const incompleteSpreadsheet = attachment.reviewReason === 'spreadsheet text truncated';
+      const notice = '\n[Later spreadsheet rows were omitted; review the original file.]';
+      const limit = QUOTE_ATTACHMENT_TEXT_MAX_CHARS - (incompleteSpreadsheet ? notice.length : 0);
+      attachmentChunks.push(`--- ${attachment.filename} ---\n${maskCardNumbers(attachment.text).slice(0, limit)}${incompleteSpreadsheet ? notice : ''}`);
     }
     // Scanned PDF bytes cannot be PAN-masked; accepted for model file input only.
     if (attachment.pdf && files.length < MAX_SCANNED_PDFS && isPdfMagic(attachment.pdf)) {
@@ -300,6 +304,12 @@ export function validIsoDate(value: string | null): string | undefined {
 
 function fieldState(value: unknown): 'extracted' | 'missing' {
   return value === null || value === undefined ? 'missing' : 'extracted';
+}
+
+function normalizeStayTotal(value: number | null | undefined): number | null | undefined {
+  return value === undefined || value === null || (Number.isInteger(value) && value >= 0 && value <= 999)
+    ? value
+    : null;
 }
 
 function hotelDefaultedQuestion(field: string): boolean {
@@ -530,6 +540,8 @@ export function mapLlmDecision(
     const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
     const boardDefaulted = group.board === null;
+    const adultsTotal = normalizeStayTotal(group.adultsTotal);
+    const childrenTotal = normalizeStayTotal(group.childrenTotal);
     const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
       group.board,
       analysis.party.kind,
@@ -540,6 +552,8 @@ export function mapLlmDecision(
       ...(departureDate ? { departureDate } : {}),
       ...(quantity !== undefined ? { quantity } : {}),
       ...(adults !== undefined ? { adults } : {}),
+      ...(adultsTotal !== undefined ? { adultsTotal } : {}),
+      ...(childrenTotal !== undefined ? { childrenTotal } : {}),
       childrenAges: group.childAges,
       board,
       ...(roomPreference ? { roomPreference } : {}),
@@ -554,6 +568,8 @@ export function mapLlmDecision(
             : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        ...(adultsTotal !== undefined ? { adultsTotal: fieldState(adultsTotal) } : {}),
+        ...(childrenTotal !== undefined ? { childrenTotal: fieldState(childrenTotal) } : {}),
         ...(quoteDefaults
           ? {
               roomPreference: roomPreferenceDefaulted

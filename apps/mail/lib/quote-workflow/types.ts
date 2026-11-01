@@ -89,6 +89,10 @@ export type StayGroupRequirement = {
   /** Explicit native room-type codes. A name is accepted only when it resolves to exactly one code. */
   roomCodes?: string[];
   adults?: number;
+  /** Stay-wide total, kept separate from per-room adults; null means unknown and zero is explicit. */
+  adultsTotal?: number | null;
+  /** Stay-wide total, kept separate from per-room counts; null means unknown and zero is explicit. */
+  childrenTotal?: number | null;
   childrenAges: number[];
   board: QuoteBoard;
   organisation?: string;
@@ -138,6 +142,8 @@ export type QuoteReviewItem = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  /** The source was read; only masked numbers or truncated content needs review. */
+  readable?: boolean;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
 };
@@ -186,7 +192,9 @@ export type LunaAnalysisWire = {
     arrival: string | null;
     departure: string | null;
     rooms: number | null;
+    adultsTotal?: number | null;
     adultsPerRoom: number | null;
+    childrenTotal?: number | null;
     childAges: number[];
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
@@ -864,7 +872,8 @@ export type StayEditAction =
   | { type: 'duplicate_row'; groupId: string; token: string }
   | { type: 'remove_row'; groupId: string }
   | { type: 'duplicate_stay'; stayId: string; token: string }
-  | { type: 'remove_stay'; stayId: string };
+  | { type: 'remove_stay'; stayId: string }
+  | { type: 'patch_stay_total'; stayId: string; field: 'adultsTotal' | 'childrenTotal'; value: number | null };
 
 export type QuoteSessionAction =
   | StayEditAction
