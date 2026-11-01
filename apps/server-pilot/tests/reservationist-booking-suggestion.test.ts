@@ -67,10 +67,11 @@ describe('reservationist booking suggestion', () => {
     const unknown = await buildReservationistBookingSuggestion(plan(
       'Please book 1 room for 2 adults from 2026-12-03 to 2026-12-05.',
     ));
-    expect(unknown?.status).toBe('needs_details');
+    expect(unknown?.status).toBe('prefill');
     expect(unknown?.facts.rooms[0]?.source).toBeDefined();
     expect(unknown?.missing).toContain('Child occupancy is unknown; confirm no children or provide every child’s age.');
-    expect(unknown?.draft).toBeUndefined();
+    expect(unknown?.draft?.rooms).toHaveLength(1);
+    expect(unknown?.draft?.rooms[0]?.request.childAges).toBeNull();
 
     const explicitZeroPlan = plan('Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05.');
     const explicitZero = await buildReservationistBookingSuggestion(explicitZeroPlan);
@@ -90,7 +91,8 @@ describe('reservationist booking suggestion', () => {
       ? { ...fact, source: { ...fact.source, quote, end: fact.source.start! + quote.length } }
       : fact);
     const result = await buildReservationistBookingSuggestion(input);
-    expect(result?.status).toBe('needs_details');
+    expect(result?.status).toBe('prefill');
+    expect(result?.draft?.rooms[0]?.request.childAges).toBeNull();
     expect(result?.missing).toContain('Child occupancy is unknown; confirm no children or provide every child’s age.');
   });
 

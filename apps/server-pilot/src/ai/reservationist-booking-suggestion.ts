@@ -32,7 +32,7 @@ export type ReservationistBookingSuggestion = {
   /** Unclassified source names for a per-request PartyPicker; never mapped to agency/company here. */
   partyNames: string[];
   facts: Record<'dates' | 'rooms' | 'guests' | 'boards' | 'parties', Array<{ source: ReservationistBookingSuggestionCitation }>>;
-  /** Missing facts block draft creation; draft.missing contains existing HMS-form questions. */
+  /** Unresolved facts; the pane may expose a partial, explicitly display-only prefill for correction. */
   missing: string[];
   draft?: BookingDraft;
   options?: ReturnType<typeof createRequestFieldOptions>;
@@ -271,7 +271,8 @@ export async function buildReservationistBookingSuggestion(input: {
     datePairs.size === 1 &&
     rooms.length > 0 &&
     !allocationConflict &&
-    rooms.every(({ value }) => value.quantity !== null && value.childAges !== null && !(value.adults === 0 && value.childAges.length === 0)) &&
+    rooms.every(({ value }) => value.quantity !== null &&
+      (value.childAges === null || !(value.adults === 0 && value.childAges.length === 0))) &&
     partyNames.length <= 1 &&
     !missing.some((item) => item.startsWith('Some stay facts'));
 
@@ -281,7 +282,13 @@ export async function buildReservationistBookingSuggestion(input: {
   const orderedGroups = [...grouped.values()].sort((a, b) =>
     a.source.start - b.source.start || a.value.roomRef.localeCompare(b.value.roomRef),
   );
-  const physicalRooms: Array<{ roomRef: string; localIndex: number; adults: number; childAges: number[]; board: QuotedBoard }> = [];
+  const physicalRooms: Array<{
+    roomRef: string;
+    localIndex: number;
+    adults: number;
+    childAges: number[] | null;
+    board: QuotedBoard;
+  }> = [];
   for (const group of orderedGroups) {
     const quantity = group.value.quantity!;
     if (!Number.isSafeInteger(quantity) || quantity < 1 || physicalRooms.length + quantity > 96) {
@@ -297,7 +304,7 @@ export async function buildReservationistBookingSuggestion(input: {
         roomRef: group.value.roomRef,
         localIndex,
         adults: group.value.adults,
-        childAges: group.value.childAges!,
+        childAges: group.value.childAges,
         board,
       });
     }
@@ -330,7 +337,8 @@ export async function buildReservationistBookingSuggestion(input: {
         const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`)?.filter(name => !name.child);
         const name = names?.length === 1 ? { firstName: names[0]!.firstName, lastName: names[0]!.lastName } : undefined;
         return {
-          adults: room.adults, childAges: [...room.childAges], roomTypeText: null,
+          // The prefill requires an array; restore unknown below before the pane sees it.
+          adults: room.adults, childAges: [...(room.childAges ?? [])], roomTypeText: null,
           guestName: name ? `${name.firstName} ${name.lastName}` : null, ...name,
         };
       }),
@@ -362,6 +370,9 @@ export async function buildReservationistBookingSuggestion(input: {
     groupId,
     roomIndex: index + 1,
     board: physicalRooms[index]?.board ?? 'unknown',
+    request: physicalRooms[index]?.childAges === null
+      ? { ...room.request, childAges: null }
+      : room.request,
   }));
   return {
     version: 1,

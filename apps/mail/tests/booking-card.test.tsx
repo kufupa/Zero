@@ -342,6 +342,46 @@ describe('booking cards', () => {
     expect(screen.getAllByRole('checkbox', { name: 'Guest opt-in' })).toHaveLength(2);
   });
 
+  it('requires staff to confirm unknown children before previewing or booking', async () => {
+    const { client, preview } = paneClient();
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.childAges = null;
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+
+    const children = screen.getByLabelText('Children') as HTMLInputElement;
+    expect(children.value).toBe('');
+    expect(screen.getByText('Confirm zero children or enter the count and every child’s age.')).toBeDefined();
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+
+    fireEvent.change(children, { target: { value: '0' } });
+    expect(children.value).toBe('0');
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('childAges');
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    expect(bookButton(0).disabled).toBe(false);
+  });
+
+  it('requires every child age after staff enters a positive count', async () => {
+    const { client, preview } = paneClient();
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.childAges = null;
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+
+    fireEvent.change(screen.getByLabelText('Children'), { target: { value: '1' } });
+    const age = screen.getByLabelText('Child age 1') as HTMLInputElement;
+    expect(age.value).toBe('');
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.change(age, { target: { value: '7' } });
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ childAges: [7] })));
+  });
+
   it('keeps guest opt-in unchecked until staff selects it and sends generic Market Segment', async () => {
     const { client, preview } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
