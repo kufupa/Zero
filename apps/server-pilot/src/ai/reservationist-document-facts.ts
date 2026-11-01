@@ -204,10 +204,13 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   if (!page) throw new Error('Cited text source page missing');
   if (!source.sourceViews) return { page, start, end };
   const view = source.sourceViews.find(candidate => start >= candidate.start && end <= candidate.end);
+  const quotedView = view ? undefined : source.sourceViews.find(candidate => candidate.quoted &&
+    start >= candidate.quoted.start && end <= candidate.quoted.end);
+  const selected = view ? { start: view.start, end: view.end } : quotedView?.quoted;
   const otherViews = source.sourceViews.filter(candidate => candidate !== view)
     .map(candidate => page.slice(candidate.start, candidate.end));
   const other = otherViews.join('\n');
-  const cited = view ? page.slice(view.start, view.end).replace(/\s+/g, ' ').toLowerCase() : '';
+  const cited = selected ? page.slice(selected.start, selected.end).replace(/\s+/g, ' ').toLowerCase() : '';
   const datePattern = new RegExp(`\\b(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`, 'gi');
   const dateMatches = (text: string) => [...text.matchAll(new RegExp(datePattern.source, 'gi'))];
   const dateTokens = (text: string) => dateMatches(text).map(match => match[0].replace(/\s+/g, ' ').toLowerCase());
@@ -304,8 +307,8 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
       sameDate(previous.arrival,pair.arrival)&&sameDate(previous.departure,pair.departure)));
   };
   const citedDates = dateTokens(fact.source.quote ?? ''), otherDates = dateTokens(other);
-  const sourcePairs = view ? pairsIn(page.slice(view.start, view.end)) : [];
-  const localStart = view ? start - view.start : start, localEnd = view ? end - view.start : end;
+  const sourcePairs = selected ? pairsIn(page.slice(selected.start, selected.end)) : [];
+  const localStart = selected ? start - selected.start : start, localEnd = selected ? end - selected.start : end;
   const overlapping = sourcePairs.filter(pair => pair.start < localEnd && pair.end > localStart);
   const valuePairs = overlapping.filter(pair => sameDate(pair.arrival, fact.value.arrival) && sameDate(pair.departure, fact.value.departure));
   const sourcePair = valuePairs.length === 1 ? valuePairs[0] : overlapping.length === 1 ? overlapping[0] : undefined;
@@ -387,7 +390,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     });
   })) throw new Error('Explicit same-stay correction requires source clarification');
   if (view) return { page: page.slice(view.start, view.end), start: start - view.start, end: end - view.start };
-  const quoted = source.sourceViews.find(candidate => candidate.quoted && start >= candidate.quoted.start && end <= candidate.quoted.end)?.quoted;
+  const quoted = quotedView?.quoted;
   if (!quoted) throw new Error('Cited text crosses message alternatives');
   return { page: page.slice(quoted.start, quoted.end), start: start - quoted.start, end: end - quoted.start };
 }
