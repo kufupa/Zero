@@ -308,6 +308,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
    };
    for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';
     try{
+     if(extracted.stayClarificationTaskIds?.includes(task.id))throw new SourceRequestClarification('Please confirm the requested stay dates and whether this request should proceed.',[task.source.attachmentId],'stay_source_conflict');
      const unsupported=unsupportedTaskFacts(task,ctx.facts,input);if(unsupported.length){if(planScopes.get(plan)!==scopeIdentity(input))throw new Error('execution_scope_invalid');throw new FactTaskMappingError(unsupported.map(f=>f.id));}
      if(planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)&&isReservationistConferenceOnlyQuote(ctx))throw new ReservationistTaskEvidenceUnavailable('conference_quote_source_unavailable',['source-backed conference package availability, rates and terms'],['conference_package']);
      const continuations=extracted.sourceContinuations?.filter(c=>c.taskId===task.id)??[];

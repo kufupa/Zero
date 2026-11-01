@@ -283,6 +283,31 @@ function filterUnverifiedXlsxFacts(output:unknown,sources:readonly DocumentSourc
  }
  return{output:plan,incomplete:[...incomplete]};
 }
+const stayConflictMessage='Conflicting stay details require staff review; other requests remain available.';
+/** Keep independent requests when a cited stay conflicts with another message view. */
+function validateWithStayConflictRecovery(candidate:unknown,sources:readonly DocumentSource[]):{plan:ValidatedDocumentPlan;taskIds:string[]}{
+ const bound=bindUniqueTextOffsets(candidate,sources);
+ try{return{plan:validateDocumentPlan(bound,sources),taskIds:[]};}catch(error){
+  if(!(error instanceof Error)||error.message!=='Explicit same-stay correction requires source clarification')throw error;
+  const parsed=documentPlanSchema.parse(bound),removed=new Set<string>(),affected=new Set<string>();
+  const factIds=new Set(parsed.facts.map(fact=>fact.id)),taskIds=new Set(parsed.tasks.map(task=>task.id));
+  if(factIds.size!==parsed.facts.length||taskIds.size!==parsed.tasks.length||parsed.tasks.some(task=>task.factIds.some(id=>!factIds.has(id))))throw error;
+  for(const fact of parsed.facts){
+   if(fact.kind!=='dates')continue;
+   const tasks=parsed.tasks.filter(task=>task.factIds.includes(fact.id));
+   if(!tasks.length)continue;
+   try{validateDocumentPlan({facts:[fact],tasks:tasks.map(task=>({...task,factIds:[fact.id]})),unresolvedAsks:[]},sources);}
+   catch(failure){if(failure instanceof Error&&failure.message==='Explicit same-stay correction requires source clarification'){
+    removed.add(fact.id);for(const task of tasks)affected.add(task.id);
+   }}
+  }
+  if(!removed.size)throw error;
+  const unresolvedAsks=[...parsed.unresolvedAsks];
+  if(unresolvedAsks.length<32&&!unresolvedAsks.includes(stayConflictMessage))unresolvedAsks.push(stayConflictMessage);
+  return{plan:validateDocumentPlan({...parsed,facts:parsed.facts.filter(fact=>!removed.has(fact.id)),
+   tasks:parsed.tasks.map(task=>({...task,factIds:task.factIds.filter(id=>!removed.has(id))})),unresolvedAsks},sources),taskIds:[...affected]};
+ }
+}
 function exactText(quote: string, value: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped(value)}(?![\\p{L}\\p{N}_-])`, 'u').test(quote);
 }
@@ -582,7 +607,7 @@ function unreadSourcesIndependentOfNoAction(input:{messages:readonly {id:string;
  });
 }
 export type ExtractionUnresolvedDiagnostic={phase:'task_selection';reason:string}|({phase:'fact_enrichment'}&import('./reservationist-runtime.js').FactRecoveryProvenance);
-export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only'; sourceViews?:readonly ReservationistMessageView[] }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
+export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only'; sourceViews?:readonly ReservationistMessageView[] }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];stayClarificationTaskIds?:string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
   input.signal.throwIfAborted();
   const causal = Date.parse(input.causalAt);
   if (!Number.isFinite(causal) || input.messages.length > 64 || input.messages.reduce((sum, m) => sum + m.text.length+(m.subject?.length??0), 0) > 1280000 || input.messages.some(m => !Number.isFinite(Date.parse(m.at)) || Date.parse(m.at) > causal || m.text.length > 40000 || m.subject!==undefined&&(typeof m.subject!=='string'||m.subject.length>4096) || m.sourceViews!==undefined&&!validReservationistMessageViews(m.text,m.sourceViews))) throw new Error('Invalid bounded causal extraction input');
@@ -590,7 +615,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
   const obligationMessage=input.messages.find(m=>m.id===input.triggerMessageId);
   const authoredEnd=obligationMessage?.text.search(/^[\t ]*(?:From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{0,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)|>|--[\t ]*(?:\r?$)|(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards[^\p{L}\p{N}\r\n]*$|regards[^\p{L}\p{N}\r\n]*$)/imu)??-1;
   if(input.requiredTaskKinds!==undefined&&(!Array.isArray(input.requiredTaskKinds)||input.requiredTaskKinds.length>32||input.requiredTaskKinds.some(kind=>!documentPlanSchema.shape.tasks.element.shape.kind.options.includes(kind as never)))||input.requiredAskSpans!==undefined&&(!Array.isArray(input.requiredAskSpans)||input.requiredAskSpans.length>32||input.requiredAskSpans.some(ask=>!obligationMessage||obligationMessage.direction!=='inbound'||obligationMessage.disclosure==='staff_only'||ask.sourceId!==`message:${obligationMessage.id}`||!Number.isSafeInteger(ask.start)||!Number.isSafeInteger(ask.end)||ask.start<0||ask.end<=ask.start||ask.end>obligationMessage.text.length||authoredEnd>=0&&ask.end>authoredEnd||obligationMessage.text.slice(ask.start,ask.end)!==ask.text)))throw new Error('extraction_obligation_binding_invalid');
-  const admitted = input.admissions.filter(a => a.status === 'admitted');
+  const admitted = input.admissions.filter(a => a.status === 'admitted'),stayClarificationTaskIds=new Set<string>();
   if(input.factEnrichmentMode!==undefined&&(input.factEnrichmentMode!=='source_batches'||input.mode!=='task_first'))throw new Error('source_batches_mode_invalid');
   if(input.messageBatching!==undefined&&(input.messageBatching!=='per_source'||input.factEnrichmentMode!=='source_batches'||input.mode!=='task_first'))throw new Error('message_batching_mode_invalid');
   if(input.factEnrichmentMode==='source_batches'&&(admitted.length>64||admitted.reduce((sum,a)=>sum+(a.bytes?.body.length??0),0)>20*1024*1024))throw new Error('source_batches_inventory_unsupported');
@@ -598,7 +623,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     if(new Set(admitted.map(a=>a.metadata.attachmentId)).size!==admitted.length||admitted.some(a=>!a.source||!a.bytes||a.metadata.attachmentId!==a.source.attachmentId||a.metadata.sourceHash!==a.source.sourceHash||a.bytes.sha256!==a.source.sourceHash||createHash('sha256').update(a.bytes.body).digest('hex')!==a.source.sourceHash))throw new Error('Invalid bounded multi-batch source inventory identity');
     if(admitted.length>64||admitted.reduce((sum,a)=>sum+a.bytes!.body.length,0)>20*1024*1024){const recovery=recoverIndependentMailQuestions(input);if(!recovery)throw new Error('Invalid bounded multi-batch source inventory');return{...recovery,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete:admitted.map(a=>({attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,reason:'attachment_total_resource_unavailable'})),manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),'attachment_total_resource_unavailable']};}
     const frozen=JSON.stringify(input.admissions.map(a=>({metadata:a.metadata,status:a.status,source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null})));
-    const plans:Array<ValidatedDocumentPlan&{sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];manualRequired?:string[];sourceReviewSelectionCompleted?:true;noActionSelectionCompleted?:true}>=[],sourceIncomplete:{attachmentId:string;sourceHash:string;reason:string}[]=[];
+    const plans:Array<ValidatedDocumentPlan&{sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];manualRequired?:string[];stayClarificationTaskIds?:string[];sourceReviewSelectionCompleted?:true;noActionSelectionCompleted?:true}>=[],sourceIncomplete:{attachmentId:string;sourceHash:string;reason:string}[]=[];
     for(let offset=0;offset<admitted.length;offset+=8){
       input.signal.throwIfAborted();
       if(frozen!==JSON.stringify(input.admissions.map(a=>({metadata:a.metadata,status:a.status,source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null}))))throw new Error('Batched source inventory changed');
@@ -618,6 +643,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       for(const task of plan.tasks){const spanKey=JSON.stringify(task.source),priorKind=spanKinds.get(spanKey);if(priorKind!==undefined&&priorKind!==task.kind)throw new Error('Conflicting batched task source');spanKinds.set(spanKey,task.kind);const prefixTask=tasks.findIndex(existing=>task.kind==='new_booking'&&existing.kind===task.kind&&(()=>{const a=existing.source.quote??'',b=task.source.quote??'',tail=a.length>b.length?a.slice(b.length):b.slice(a.length);return !/\b(?:please|kindly|also|another|additional|add|remove|cancel|book|reserve|quote|send|provide|confirm)\b/i.test(tail);})()&&existing.source.attachmentId===task.source.attachmentId&&existing.source.sourceHash===task.source.sourceHash&&existing.source.page===task.source.page&&existing.source.start!==undefined&&existing.source.start===task.source.start&&existing.source.quote!==undefined&&task.source.quote!==undefined&&(existing.source.quote.startsWith(task.source.quote)||task.source.quote.startsWith(existing.source.quote)));const key=JSON.stringify({kind:task.kind,source:task.source}),refs=task.factIds.map(id=>{const found=ids.get(id);if(!found)throw new Error('Batched task fact unbound');return found;}),existing=prefixTask>=0?prefixTask:taskKeys.get(key);
         if(existing===undefined){taskKeys.set(key,tasks.length);tasks.push({...task,id:`task-${tasks.length+1}`,factIds:refs});}
         else{tasks[existing].factIds=[...new Set([...tasks[existing].factIds,...refs])];if((task.source.end??0)>(tasks[existing].source.end??0))tasks[existing].source=structuredClone(task.source);taskKeys.set(key,existing);}
+        if(plan.stayClarificationTaskIds?.includes(task.id))stayClarificationTaskIds.add(tasks[existing??tasks.length-1]!.id);
       }
     }
     const xlsxIds=new Set(admitted.filter(a=>isReservationistXlsxMimeType(a.metadata.mimeType)).map(a=>a.metadata.attachmentId));
@@ -629,7 +655,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     for(const id of checked.incomplete){const source=admitted.find(a=>a.metadata.attachmentId===id)?.source;if(source&&!sourceIncomplete.some(item=>item.attachmentId===id&&item.reason==='spreadsheet_row_unverified'))sourceIncomplete.push({attachmentId:id,sourceHash:source.sourceHash,reason:'spreadsheet_row_unverified'});}
     if(checked.plan.facts.length>64||checked.plan.tasks.length>32||checked.plan.unresolvedAsks.length>32||checked.plan.tasks.some(t=>t.factIds.length>64))throw new Error('Merged extraction plan exceeds bounds');
     const emptySelection=!checked.plan.tasks.length&&!checked.plan.facts.length&&!checked.plan.unresolvedAsks.length&&!sourceIncomplete.length&&plans.length>0;
-    input.signal.throwIfAborted();return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...new Set([...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...plans.flatMap(plan=>plan.manualRequired??[]),...(checked.incomplete.length?['spreadsheet_row_unverified']:[]),...(sourceIncomplete.some(item=>item.reason==='attachment_batch_unavailable')?['attachment_batch_unavailable']:[])])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
+    input.signal.throwIfAborted();return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,...(stayClarificationTaskIds.size?{stayClarificationTaskIds:[...stayClarificationTaskIds]}:{}),manualRequired:[...new Set([...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...plans.flatMap(plan=>plan.manualRequired??[]),...(checked.incomplete.length?['spreadsheet_row_unverified']:[]),...(sourceIncomplete.some(item=>item.reason==='attachment_batch_unavailable')?['attachment_batch_unavailable']:[])])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
   }
   if ((admitted.length > 8&&input.factEnrichmentMode!=='source_batches') || admitted.some(a => !a.source)) throw new Error('Invalid admitted source inventory');
   const files = admitted.filter(a => a.metadata.mimeType === 'application/pdf').map(a => {
@@ -730,10 +756,11 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
           if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
           const filtered=filterUnverifiedXlsxFacts({facts:enriched.facts,tasks,unresolvedAsks:enriched.unresolvedAsks},sources,xlsxIds);
           noteSpreadsheetIncomplete(filtered.incomplete.flatMap(id=>batchOccurrences(batch).filter(source=>(representatives.get(source.attachmentId)??source.attachmentId)===id).map(source=>source.attachmentId)));
-          const validated=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources),ids=new Map<string,string>();
+          const recovered=validateWithStayConflictRecovery(filtered.output,sources),validated=recovered.plan,ids=new Map<string,string>();
+          for(const id of recovered.taskIds)stayClarificationTaskIds.add(id);
           for(const fact of validated.facts){if(fact.source.attachmentId.startsWith('message-subject:')&&fact.kind!=='reservation_reference')throw new Error('subject_fact_kind_forbidden');assertEntailed(fact,batch.sources,validated.facts,validated.tasks,xlsxIds);const{id,...identity}=fact,key=JSON.stringify(identity);let aggregate=keys.get(key);if(!aggregate){aggregate=`fact-${merged.length+1}`;keys.set(key,aggregate);merged.push({...fact,id:aggregate});}ids.set(id,aggregate);}
           for(const task of validated.tasks)for(const id of task.factIds){const aggregate=ids.get(id);if(!aggregate)throw new Error('source_batch_assignment_identity_invalid');const target=refs.get(task.id)!;if(!target.includes(aggregate))target.push(aggregate);}
-          for(const reason of validated.unresolvedAsks){if(!unresolved.includes(reason))unresolved.push(reason);unresolvedDiagnostics.push({phase:'fact_enrichment',reason,taskIds:selectedTasks.map(task=>task.id),sources:batch.sources.map(({attachmentId,sourceHash})=>({attachmentId,sourceHash}))});}
+          for(const reason of validated.unresolvedAsks){if(!unresolved.includes(reason))unresolved.push(reason);unresolvedDiagnostics.push({phase:'fact_enrichment',reason,taskIds:reason===stayConflictMessage?recovered.taskIds:selectedTasks.map(task=>task.id),sources:batch.sources.map(({attachmentId,sourceHash})=>({attachmentId,sourceHash}))});}
           if(merged.length>64||unresolved.length>32||[...refs.values()].some(a=>a.length>64))throw new Error('Merged extraction plan exceeds bounds');
           diagnostics.batches[index]!.status='completed';unchanged();
         }catch(error){
@@ -751,7 +778,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       const checked=filterXlsxStayConflicts(mergedPlan,sources,xlsxIds);noteSpreadsheetIncomplete(checked.incomplete);
       for(const task of checked.plan.tasks)assertNewBookingTask(task,sources,triggerMessageId);unchanged();
       const unavailable=sourceIncomplete.length>0;sourceIncomplete.push(...spreadsheetIncomplete.values());
-      return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(unavailable?['source_batch_unavailable']:[]),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],sourceIncomplete,sourceContinuations:boundContinuations,unresolvedDiagnostics,extractionDiagnostics:diagnostics};
+      return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(unavailable?['source_batch_unavailable']:[]),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],sourceIncomplete,sourceContinuations:boundContinuations,unresolvedDiagnostics,extractionDiagnostics:diagnostics,...(stayClarificationTaskIds.size?{stayClarificationTaskIds:[...stayClarificationTaskIds]}:{})};
     }
     try{
       const output=await invoke(FACT_ENRICHMENT_INSTRUCTIONS,responseSchema([],sources.map(s=>s.sourceHash),'facts',selectedTasks.map(task=>task.id),sources.flatMap(s=>Array.from({length:s.pageCount},(_,i)=>i+1)),[],sources.map(s=>s.attachmentId),selectedTasks),{selectedTasks,documentContinuations:boundContinuations});
@@ -762,7 +789,8 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       const tasks=selectedTasks.map(task=>({...task,factIds:enriched.assignments!.find(a=>a.taskId===task.id)!.factIds}));
       if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
       const filtered=filterUnverifiedXlsxFacts({facts:enriched.facts,tasks,unresolvedAsks:[...selected.unresolvedAsks,...(Array.isArray(enriched.unresolvedAsks)?enriched.unresolvedAsks:[])]},sources,xlsxIds);noteSpreadsheetIncomplete(filtered.incomplete);
-      plan=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources);
+      const recovered=validateWithStayConflictRecovery(filtered.output,sources);plan=recovered.plan;
+      for(const id of recovered.taskIds)stayClarificationTaskIds.add(id);
     }catch(error){
       unchanged();
       if(!/azure_luna_completion_incomplete|replay_cost_unknown|model_usage_unknown|Invalid bounded document plan|fetch failed|timeout|transport.*unavailable/i.test(error instanceof Error?error.message:''))throw error;
@@ -770,14 +798,15 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     }
   }else{
     const filtered=filterUnverifiedXlsxFacts(bindRequestCandidates(await invoke(RESERVATIONIST_EXTRACTION_INSTRUCTIONS,responseSchema(requestSpans.map(c=>c.id),sources.map(s=>s.sourceHash),'combined',[],[],[],sources.map(s=>s.attachmentId))),requestSpans),sources,xlsxIds);noteSpreadsheetIncomplete(filtered.incomplete);
-    plan=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources);
+    const recovered=validateWithStayConflictRecovery(filtered.output,sources);plan=recovered.plan;
+    for(const id of recovered.taskIds)stayClarificationTaskIds.add(id);
   }
   if(plan.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
   if (!plan.tasks.length){if(plan.facts.length||plan.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}
   for (const fact of plan.facts) assertEntailed(fact, sources,plan.facts,plan.tasks,xlsxIds);
   const checked=filterXlsxStayConflicts(plan,sources,xlsxIds);noteSpreadsheetIncomplete(checked.incomplete);
   for (const task of checked.plan.tasks) assertNewBookingTask(task,sources,triggerMessageId);
-  return { ...checked.plan, version: RESERVATIONIST_EXTRACTION_VERSION, manualRequired: [...input.admissions.filter(a => a.status === 'manual_required').map(a => a.reason),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],...(spreadsheetIncomplete.size?{sourceIncomplete:[...spreadsheetIncomplete.values()]}:{}),sourceContinuations:boundContinuations };
+  return { ...checked.plan, version: RESERVATIONIST_EXTRACTION_VERSION, manualRequired: [...input.admissions.filter(a => a.status === 'manual_required').map(a => a.reason),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],...(spreadsheetIncomplete.size?{sourceIncomplete:[...spreadsheetIncomplete.values()]}:{}),sourceContinuations:boundContinuations,...(stayClarificationTaskIds.size?{stayClarificationTaskIds:[...stayClarificationTaskIds]}:{}) };
 }
 function assertNewBookingTask(task:ValidatedDocumentPlan['tasks'][number],sources:Parameters<typeof assertEntailed>[1],triggerMessageId?:string){
     if (task.kind !== 'new_booking' || task.source.quote === undefined) return;

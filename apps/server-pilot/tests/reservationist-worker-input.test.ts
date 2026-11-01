@@ -404,17 +404,17 @@ describe('reservationist worker input', () => {
         admissions: [], signal: new AbortController().signal });
     };
     await expect(extract(23)).resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
-    await expect(extract(24)).rejects.toThrow('Explicit same-stay correction requires source clarification');
-    await expect(extract(23, 'Correction: do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
-    await expect(extract(23, 'Do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(24)).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
+    await expect(extract(23, 'Correction: do not book the stay from')).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
+    await expect(extract(23, 'Do not book the stay from')).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(23, undefined, 'Please cancel the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract(23, undefined, 'Do not book the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract(23, undefined, 'Please change the check-in time to 14:00.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract(23, undefined, 'Please change the check-out time to 11:00.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
-    await expect(extract(23, undefined, 'Please change the check-in time to 14:00 on 24 December.')).rejects.toThrow('Explicit same-stay correction requires source clarification');
-    await expect(extract(23, undefined, 'Please change the check-out time to 11:00 on 24 December.')).rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(23, undefined, 'Please change the check-in time to 14:00 on 24 December.')).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
+    await expect(extract(23, undefined, 'Please change the check-out time to 11:00 on 24 December.')).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(23, undefined, '', true)).resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
-    await expect(extract(24, undefined, '', true)).rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(24, undefined, '', true)).resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
   });
 
   it('requires clarification for same-stay date conflicts across views without blocking other stays or date formats', async () => {
@@ -435,9 +435,9 @@ describe('reservationist worker input', () => {
     };
     const stay = 'Please quote one room: Arrival 21 December; departure 23 December.';
     await expect(extract(stay, 'Please quote one room: Arrival 21 December; departure 24 December.', stay, '21 December', '23 December'))
-      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+      .resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(stay, 'Kindly quote one room: Arrival 21 December; departure 24 December.', stay, '21 December', '23 December'))
-      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+      .resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
 
     const explicit = 'Please quote one room: Arrival 21 December 2026; departure 23 December 2026.';
     await expect(extract(explicit,
@@ -450,11 +450,11 @@ describe('reservationist worker input', () => {
     await expect(extract(groupA, 'Group B:\nCorrection: change arrival to 24 December and departure to 26 December.', groupA, '21 December', '23 December'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
     await expect(extract(groupA, 'Group B: Correction: use Group B’s dates for Group A: arrival 24 December and departure 26 December.', groupA, '21 December', '23 December'))
-      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+      .resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(groupA, 'Group B:\nCorrection: change arrival to 24 December and departure to 26 December for both stays.', groupA, '21 December', '23 December'))
-      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+      .resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(groupA, `Group B:\n${groupB}\n${groupA}\nCancel the stay.`, groupA, '21 December', '23 December'))
-      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+      .resolves.toMatchObject({ facts: [], stayClarificationTaskIds: ['quote'], tasks: [{ id: 'quote', factIds: [] }] });
     await expect(extract(groupA, 'Group B: Please quote one room: Arrival 21 December; departure 24 December.', groupA, '21 December', '23 December'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
     await expect(extract(`${groupA}\n${groupB}`,
