@@ -152,13 +152,17 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
  const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
- if(isFact){
-  // Later text about the same fact may qualify or correct it, even after a period.
-  // Unrelated additional requests or details can coexist with the shared fact.
-  const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from'].includes(word)));
-  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdrawn|revised)\b/i.test(part)||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
-  if(tail[0]!==tail[1])return;
- }
+ // Compare relevant corrections or withdrawals, while retaining independent asks.
+ const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from','send'].includes(word)));
+ const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b/i;
+ const negative=/\b(?:no|not|never|without|excluding|exclude[ds]?|remove[ds]?|cancel(?:led|ed)?|no longer|do not|don['’]t)\b/i;
+ const relevant=(part:string)=>{
+  const modifying=correction.test(part)||negative.test(part),shared=(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
+  return isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)):
+   modifying&&(shared||correction.test(part)||/\b(?:it|this|that|these|those|them)\b/i.test(part));
+ };
+ const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(relevant).join(' ')));
+ if(tail[0]!==tail[1])return;
  return before[0]===before[1]&&after[0]===after[1]?hits[0]:undefined;
 }
 /** Bind original text and restore uniquely evidenced guest spelling; source bytes never change. */
@@ -171,9 +175,9 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
    const span=item?.source;if(!span||typeof span!=='object'||span.region!==undefined||typeof span.quote!=='string'||!span.quote.length||!Number.isInteger(span.page))continue;
    const source=sources.find(s=>s.attachmentId===span.attachmentId&&s.sourceHash===span.sourceHash),page=source?.pages?.[span.page-1];
    if(page===undefined)continue;
-   const views=source?.sourceViews,hits=list===candidate.facts?authoredQuoteOffsets(page,span.quote,views):undefined;
+   const views=source?.sourceViews,isFact=list===candidate.facts,hits=authoredQuoteOffsets(page,span.quote,views);
    if(hits&&views&&page.slice(views[0]!.start,hits[0]).replace(/\s+/g,' ').trim()===page.slice(views[1]!.start,hits[1]).replace(/\s+/g,' ').trim()&&
-     equivalentAuthoredOffset(page,span.quote,views,true,true)===undefined)throw new Error('Ambiguous original text span');
+     equivalentAuthoredOffset(page,span.quote,views,isFact,true)===undefined)throw new Error('Ambiguous original text span');
    if(span.start===undefined&&span.end===undefined){
     let start=page.indexOf(span.quote);
     if(start<0){
