@@ -198,6 +198,21 @@ describe('reservationist worker input', () => {
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
   });
 
+  it('does not share a fact when another message view corrects it', async () => {
+    const request = 'Please quote one room.', meal = 'Breakfast included.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${request}\n${meal}\nKind regards`,
+      htmlBody: `<p>${request}</p><p>${meal}</p><p>Correction: breakfast is not included.</p><p>Kind regards</p>`,
+    })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(meal) }],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+  });
+
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Room 1: 1 adult Room 2: 2 adults',

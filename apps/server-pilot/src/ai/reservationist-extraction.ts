@@ -136,7 +136,7 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
  return plan;
 }
 /** Matching evidence in both authored alternatives can share the original plain span. */
-function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):number|undefined{
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean):number|undefined{
  if(!views||views.length!==2)return;
  const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
  if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
@@ -145,6 +145,13 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
  const before=views.map((view,index)=>clean(page.slice(view.start,hits[index]![0])));
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]![0]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
+ if(isFact){
+  // Different later statements may qualify or correct the fact, even after a period.
+  // A separate question with no shared content words can coexist with it.
+  const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from'].includes(word)));
+  const tail=views.map((view,index)=>clean(page.slice(hits[index]![0]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>!part.trim().endsWith('?')||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
+  if(tail[0]!==tail[1])return;
+ }
  return before[0]===before[1]&&after[0]===after[1]?hits[0]![0]:undefined;
 }
 /** Bind original text and restore uniquely evidenced guest spelling; source bytes never change. */
@@ -167,7 +174,7 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
      if(!hits.length)continue;
      start=hits[0]!.index!;span.quote=page.slice(start,start+span.quote.length);
     }else if(page.indexOf(span.quote,start+1)!==-1){
-     const equivalent=equivalentAuthoredOffset(page,span.quote,source?.sourceViews);
+     const equivalent=equivalentAuthoredOffset(page,span.quote,source?.sourceViews,list===candidate.facts);
      if(equivalent===undefined)throw new Error('Ambiguous original text span');
      start=equivalent;
     }
