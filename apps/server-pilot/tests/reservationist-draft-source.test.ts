@@ -8,6 +8,9 @@ import {deriveOperationalDraftSources,operationalDraftMessages} from '../src/ai/
 import {validateReservationistMailAnswers} from '../src/ai/reservationist-mail-answer-source.js';
 const source={version:1 as const,runId:'run',generationId:'generation',transportId:'owner',propertyCode:'HRCEN',threadId:'thread',requestedByUserId:'user',triggerMessageId:'trigger',causalAt:'2026-10-05T01:00:00.000Z',resultDigest:'e'.repeat(64),messages:[{id:'trigger',at:'2026-10-05T01:00:00.000Z',direction:'inbound' as const,sourceHash:'a'.repeat(64),identityHash:'b'.repeat(64)}],attachments:[]};
 it('seals exact bounded source scope and accepts only its unchanged live contract',()=>{const receipt=sealReservationistDraftSource(source);expect(()=>assertReservationistDraftSource(receipt,source)).not.toThrow();});
+it('rejects oversized changed source bodies before rendering',()=>{
+ expect(()=>renderReservationistMessage({textBody:null,htmlBody:'x'.repeat(2_000_001)})).toThrow('worker_intake_context_limit');
+});
 it('uses trusted mailbox arrival and binds both email body alternatives',()=>{
  const row={id:'trigger',direction:'inbound',arrivedAt:new Date('2026-10-05T01:00:00.000Z'),receivedAt:new Date('2026-10-01T01:00:00.000Z'),sentAt:null,textBody:'Please quote.',htmlBody:'<p>Please quote.</p>',subject:null,fromAddress:'guest@example.invalid',toAddresses:['hotel@example.invalid'],ccAddresses:[],bccAddresses:[]};
  const original=draftSourceMessage(row),changed=draftSourceMessage({...row,htmlBody:'<p>Different dates.</p>'});
