@@ -275,8 +275,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
       pairs.push({arrival,departure,start,end,ordinal,...identity});
     };
     for (const match of text.matchAll(repeatedMonthRangePattern())) {
-      if (match[3] && match[3] !== match[6]) throw new Error('Contradictory printed stay years');
-      add(match, normalizedDate(`${match[1]} ${match[2]} ${match[6]}`), normalizedDate(`${match[4]} ${match[5]} ${match[6]}`));
+      add(match, normalizedDate(`${match[1]} ${match[2]} ${match[3] ?? match[6]}`), normalizedDate(`${match[4]} ${match[5]} ${match[6]}`));
     }
     for (const match of text.matchAll(sharedMonthRangePattern())) {
       add(match, normalizedDate(`${match[1]} ${match[3]} ${match[4]}`), normalizedDate(`${match[2]} ${match[3]} ${match[4]}`));
@@ -452,8 +451,7 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
       if(printedRanges.length!==1||ranges.length!==1)throw new Error('Ambiguous printed month stay dates');
       if(/\b(?:not|never|no|do not|don[’']t|without|cancelled|canceled|previous|old|another|other|different|excluding|excluded|if|unless|pending)\b/i.test(context))throw new Error('Excluded printed month stay dates');
       const range=ranges[0]!;
-      if(range[3]&&range[3]!==range[6])throw new Error('Contradictory printed stay years');
-      const rangeArrival=normalizedDate(`${range[1]} ${range[2]} ${range[6]}`),rangeDeparture=normalizedDate(`${range[4]} ${range[5]} ${range[6]}`);
+      const rangeArrival=normalizedDate(`${range[1]} ${range[2]} ${range[3]??range[6]}`),rangeDeparture=normalizedDate(`${range[4]} ${range[5]} ${range[6]}`);
       if(rangeArrival>=rangeDeparture)throw new Error('Invalid printed month stay dates');
       if(arrival!==rangeArrival||departure!==rangeDeparture)throw new Error('Document dates not entailed by source span');
     }
@@ -469,7 +467,7 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
     });
     if(printedRanges.length){
       const range=printedRanges[0]!;
-      dates.push({value:normalizedDate(`${range[1]} ${range[2]} ${range[6]}`),role:'arrival'},{value:normalizedDate(`${range[4]} ${range[5]} ${range[6]}`),role:'departure'});
+      dates.push({value:normalizedDate(`${range[1]} ${range[2]} ${range[3]??range[6]}`),role:'arrival'},{value:normalizedDate(`${range[4]} ${range[5]} ${range[6]}`),role:'departure'});
     }
     // Compact labeled dates share only the year explicitly printed in their own paired source span.
     const compactPattern=new RegExp(`\\b(?:in|arrival|check[ -]?in)\\s*:?\\s*(\\d{1,2})\\s*(${monthPattern})\\s+(?:out|depart(?:ure)?|check[ -]?out)\\s*:?\\s*(\\d{1,2})\\s*(${monthPattern})\\s+(\\d{4})(?![\\p{L}\\p{N}/-])`,'giu');

@@ -397,6 +397,12 @@ it.each([
  expect(()=>validateCrossViewDates(plain,html,plain)).toThrow('Explicit same-stay correction requires source clarification');
 });
 
+it('keeps printed arrival and departure years in a valid cross-year range', () => {
+ const ranged='Please quote the stay: 30 December 2026 to 2 January 2027.';
+ expect(validateCrossViewDates(ranged,'Arrival 30 December 2026; departure 2 January 2027.',ranged,{arrival:'2026-12-30',departure:'2027-01-02'}).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-30',departure:'2027-01-02'});
+});
+
 it('compares alternate printed years with the causal next occurrence', () => {
  const plain='Arrival 21 December; departure 23 December.',options={arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z'};
  expect(validateCrossViewDates(plain,'Arrival 21 December 2026; departure 23 December 2026.',plain,options).facts[0]!.value)
