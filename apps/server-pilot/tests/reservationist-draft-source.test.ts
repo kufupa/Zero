@@ -56,7 +56,7 @@ it('binds review-only cancellation preflight to the exact inbound draft source',
 afterEach(()=>{vi.unstubAllEnvs();});
 
 it('resolves draft property HRDAV only for Da Vinci transports when HMS_DAVINCI_MAKE_QUOTE is on',()=>{
- expect(reservationistDraftPropertyCode('owner')).toBe('HRCEN');
+ expect(()=>reservationistDraftPropertyCode('owner')).toThrow('This mailbox is not set up for this hotel');
  expect(reservationistDraftPropertyCode('transport-centurion')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-davinci')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-faith',{HMS_DAVINCI_MAKE_QUOTE:'true'})).toBe('HRCEN');
