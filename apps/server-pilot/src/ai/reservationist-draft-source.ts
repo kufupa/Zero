@@ -61,7 +61,7 @@ export function assertArrivalDraftSources(result:ReservationistPersistedResult,s
   if(expected.length!==1||!isDeepStrictEqual(proof,expected[0]))throw new Error('arrival_draft_source_changed');
   const receipt=expected[0]!.receipt,fact={key:`requested_arrival_time_${proof.task.id}`,label:'Customer requested arrival time',value:{requestedTime:receipt.requestedTime,authority:'customer_claim',hotelPermission:'unverified'},source:'inbound',authority:'authorized',status:'known',evidenceRef:receipt.source.sourceRef,sourceHash:receipt.source.sourceHash,scopeVerified:true,disclosure:'guest'};
   if(facts.filter(item=>isDeepStrictEqual(item,fact)).length!==1)throw new Error('arrival_draft_fact_invalid');
-  const task={id:proof.task.id,status:'complete',guestText:`We have noted your request to check in by ${receipt.requestedTime}. Staff must verify the requested arrival time.`,evidenceRefs:[receipt.source.sourceRef],disclosure:'guest',kind:'question',required:true};
+  const task={id:proof.task.id,status:'complete',guestText:`We have noted your request to check in by ${receipt.requestedTime}. Staff must verify the requested arrival time.`,evidenceRefs:[receipt.source.sourceRef],disclosure:'guest',kind:'question',required:true,requestSource:proof.task.source};
   if(result.tasks.filter(item=>isDeepStrictEqual(item,task)).length!==1)throw new Error('arrival_draft_task_invalid');
  }
 }
