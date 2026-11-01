@@ -378,6 +378,22 @@ function lunaStayKey(group: LunaAnalysis['groups'][number], index: number): stri
   return `group:${index}`;
 }
 
+function hasMultipleKnownLunaStays(analysis: LunaAnalysis): boolean {
+  if (analysis.groups.length < 2) return false;
+  const stayIds = analysis.groups.map(
+    (group) => (group as LunaAnalysis['groups'][number] & { stayId?: string }).stayId,
+  );
+  if (stayIds.some(Boolean)) {
+    return stayIds.every((stayId) => Boolean(stayId)) && new Set(stayIds).size > 1;
+  }
+  const dateRanges = analysis.groups.map((group) => {
+    const arrival = validIsoDate(group.arrival);
+    const departure = validIsoDate(group.departure);
+    return arrival && departure ? `${arrival}/${departure}` : null;
+  });
+  return dateRanges.every((range) => range !== null) && new Set(dateRanges).size > 1;
+}
+
 /** A stay-wide child total must agree with the actual per-room ages across every room row. */
 function childAgeTotalMismatches(analysis: LunaAnalysis): Set<string> {
   const stays = new Map<string, Array<LunaAnalysis['groups'][number]>>();
@@ -536,6 +552,8 @@ export function mapLlmDecision(
   const aop = aopQuoteSpineOf(analysis, options?.channel);
   const childTotalMismatches = childAgeTotalMismatches(analysis);
   const adultTotalsMismatch = adultTotalMismatches(analysis);
+  const hasMultipleKnownStays = hasMultipleKnownLunaStays(analysis);
+  const unscopedMissing = hasMultipleKnownStays ? [] : analysis.missing;
   if ((notQuote || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
     if (venueOrEventManual(analysis)) {
@@ -610,22 +628,21 @@ export function mapLlmDecision(
     const childrenTotal = normalizeStayTotal(group.childrenTotal);
     const adultTotalMismatch = adultTotalsMismatch.has(lunaStayKey(group, index));
     const canDefaultTwinAdults = quoteDefaults && (group.rooms === null || group.rooms === 1) && /\b(?:double|twin)\b/i.test(group.roomPreference ?? '');
-    const adultFieldMissing = !canDefaultTwinAdults && analysis.missing.some((item) =>
+    const adultFieldMissing = !canDefaultTwinAdults && unscopedMissing.some((item) =>
       /adult|occupancy/i.test(`${item.field} ${item.question}`) && !/total/i.test(item.field),
     );
-    const adultNeedsReview = adultTotalMismatch || adultFieldMissing;
-    const unknownAdultAllocation =
-      (group.adultsPerRoom === null && group.rooms !== null && group.rooms !== 1) || adultNeedsReview;
+    const unknownAdultAllocation = group.adultsPerRoom === null && !canDefaultTwinAdults;
+    const adultNeedsReview = adultTotalMismatch || adultFieldMissing || unknownAdultAllocation;
     const unknownChildAges =
       group.childAges === null ||
       childTotalMismatches.has(lunaStayKey(group, index)) ||
-      analysis.missing.some((item) => /child/i.test(`${item.field} ${item.question}`)) ||
+      unscopedMissing.some((item) => /child/i.test(`${item.field} ${item.question}`)) ||
       (typeof childrenTotal === 'number' && childrenTotal > 0 && childAges.length === 0);
     const hasGuestEvidence =
       group.adultsPerRoom !== null || childAges.length > 0 || group.guestNames.length > 0;
     const quantityDefaulted =
       quoteDefaults && group.rooms === null && hasValidStayDates && hasGuestEvidence;
-    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && !unknownAdultAllocation;
+    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && !adultNeedsReview;
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
     const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);
     const roomPreference = group.roomPreference?.trim() || undefined;
@@ -636,10 +653,7 @@ export function mapLlmDecision(
       group.board,
       analysis.party.kind,
     );
-    if (
-      unknownChildAges &&
-      !analysis.missing.some((item) => item.field === 'childAges')
-    ) {
+    if (unknownChildAges && (hasMultipleKnownStays || !analysis.missing.some((item) => item.field === 'childAges'))) {
       missing.push({ field: 'childAges', question: `Provide the child ages for stay ${index + 1} before running the quote.` });
     }
     if (adultNeedsReview && !missing.some((item) => item.field === 'adults')) {
@@ -723,6 +737,12 @@ export function mapLlmDecision(
     }
   };
   for (const item of analysis.missing) {
+    if (
+      hasMultipleKnownStays &&
+      (/child/i.test(item.field) || (/adult|occupancy/i.test(`${item.field} ${item.question}`) && !/total/i.test(item.field)))
+    ) {
+      continue;
+    }
     if (!hotelDefaultedQuestion(item.field) && !mappedQuoteFieldIsPresent(item.field)) missing.push(item);
   }
   if (roomsOnlyInfoNeeded(analysis)) {

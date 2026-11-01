@@ -285,8 +285,10 @@ export function buildPreparedStaffQuotePlan(input: {
   }
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
+  // `missing` is unscoped. For multiple stays, their row values and totals carry the stay-specific gaps.
+  const unscopedMissing = payload.stays.length === 1 ? payload.missing : [];
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode);
+    const groupResult = groupForStay(stay, today, unscopedMissing, input.propertyCode);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,

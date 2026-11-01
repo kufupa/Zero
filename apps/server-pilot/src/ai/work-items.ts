@@ -742,20 +742,22 @@ export function storedAnalysis(
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
-  const correctedEveryRow = (field: 'adults' | 'childAges') =>
-    order.length > 0 && order.every((slot) => {
+  const everyRowKnown = (field: 'adults' | 'childAges') =>
+    order.length > 0 && order.every((slot, index) => {
       if (!slot.rowId) return false;
-      const value = state[`stays[${slot.stayId}].rows[${slot.rowId}].${field}`];
-      return field === 'adults' ? typeof value === 'number' : Array.isArray(value);
+      const group = groups[index];
+      return field === 'adults'
+        ? typeof group?.adultsPerRoom === 'number'
+        : Array.isArray(group?.childAges);
     });
-  const adultsCorrected = correctedEveryRow('adults');
-  const childAgesCorrected = correctedEveryRow('childAges');
-  if (adultsCorrected || childAgesCorrected) {
+  const adultsResolved = everyRowKnown('adults');
+  const childAgesResolved = everyRowKnown('childAges');
+  if (adultsResolved || childAgesResolved) {
     luna.missing = luna.missing.filter((item) => {
       const field = `${item.field} ${item.question}`;
       return !(
-        (childAgesCorrected && /child/i.test(field)) ||
-        (adultsCorrected && /adult|occupancy/i.test(field) && !/total/i.test(item.field))
+        (childAgesResolved && /child/i.test(field)) ||
+        (adultsResolved && /adult|occupancy/i.test(field) && !/total/i.test(item.field))
       );
     });
   }

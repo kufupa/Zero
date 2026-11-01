@@ -146,8 +146,13 @@ describe('analyseQuoteSources', () => {
       subject: 'Quote request',
       bodyText: 'Please quote one room for two adults and one child aged 6 from 2027-11-12 to 2027-11-14.',
     });
+    const missingAgeDetail = analyseQuoteSources({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room for two adults; no child ages were provided for 2027-11-12 to 2027-11-14.',
+    });
 
     expect(analysis.groups[0]).toMatchObject({ childrenAges: [], fields: { childAges: 'missing' } });
+    expect(missingAgeDetail.groups[0]?.fields.childAges).toBe('missing');
   });
 
   it.each(['no child', 'no children', 'without children'])(

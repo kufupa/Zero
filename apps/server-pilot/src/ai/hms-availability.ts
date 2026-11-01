@@ -115,7 +115,10 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
  */
 export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[] {
   const missing = (payload as { missing?: unknown } | null | undefined)?.missing;
+  const stays = (payload as { stays?: unknown } | null | undefined)?.stays;
+  if (!Array.isArray(stays)) return [];
   if (
+    stays.length === 1 &&
     Array.isArray(missing) &&
     missing.some((item) => {
       if (!item || typeof item !== 'object') return false;
@@ -125,8 +128,6 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
   ) {
     return [];
   }
-  const stays = (payload as { stays?: unknown } | null | undefined)?.stays;
-  if (!Array.isArray(stays)) return [];
   return stays.flatMap((stay: ExtractionStay | null) => {
     const request = availabilityRequestForStay(stay);
     return request ? [request] : [];
