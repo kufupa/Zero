@@ -243,6 +243,18 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('No cancellation has been saved.')).toBeDefined();
     expect(screen.queryByRole('button', {name:/cancel reservation/i})).toBeNull();
   });
+  it('records a staff acknowledgement for the selected request without completing the other', async () => {
+    const handled = vi.fn().mockResolvedValue(undefined);
+    const task = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action' as const,
+      details:['No cancellation has been saved.'],runId:'run',workItemId:'item',handled:false};
+    const session = {...initialQuoteSession(),phase:'non_quote' as const,preparedStaffTasks:[task,
+      {...task,id:'invoice',kind:'existing_document',label:'Provide invoice',details:['Request: invoice']} ]};
+    render(<QuoteWorkflowPanel session={session} onSetPreparedTaskHandled={handled} />);
+    fireEvent.click(screen.getAllByRole('button', {name:'Mark handled'})[0]!);
+    await waitFor(() => expect(handled).toHaveBeenCalledWith(task, true));
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('No cancellation has been saved.', { selector: 'li' })).toBeDefined();
+  });
   it('shows each unanswered question on a non-quote email', () => {
     const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
       {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},

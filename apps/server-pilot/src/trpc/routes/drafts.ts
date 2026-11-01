@@ -31,6 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
+import { handledRequestKeys, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
@@ -169,10 +170,10 @@ async function verifyGeneratedAttachments(
   }
 }
 
-async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect, runId?: string) {
+async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSelect, runId?: string, workState?: unknown) {
   if (!draft.generationId) return undefined;
   const [run] = await db
-    .select({ metrics: aiWorkflowRun.metrics })
+    .select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics })
     .from(aiWorkflowRun)
     .where(
       and(
@@ -195,7 +196,10 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
     .select({ sourceRef: attachment.id, filename: attachment.filename, messageId: attachment.messageId })
     .from(attachment).innerJoin(message, eq(attachment.messageId, message.id))
     .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, draft.transportId), eq(message.threadId, draft.threadId))) : [];
-  return buildReservationistReviewSummary(result, new Date(), sources);
+  const summary = buildReservationistReviewSummary(result, new Date(), sources);
+  if (!summary || !run || workState === undefined) return summary;
+  const keys = requestCompletionKeys(result, run.id), handled = handledRequestKeys(workState);
+  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, handled: handled.has(keys.get(task.id) ?? '') })) };
 }
 
 export type ReservationistStaffAction = {
@@ -330,6 +334,8 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   const tasks = rows(result.tasks).slice(0, 32).map(task => {
     const details: string[] = [];
     const taskId = text(task.id, 512), kind = text(task.kind);
+    const request = record(task.requestSource);
+    if (typeof request.quote === 'string' && request.quote.trim()) details.push(`Request: ${text(request.quote.trim(), 256)}`);
     if (taskId) {
       for (const recovery of rows(result.readRecoveries).filter(item => item.taskId === taskId))
         if (Array.isArray(recovery.codes)) for (const code of recovery.codes.slice(0, 16)) if (typeof code === 'string') details.push(recoveryText(code));
@@ -1228,7 +1234,7 @@ export const draftsRouter = tRouter({
 
   /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
   reviewForMessage: mailboxProcedure
-    .input(z.object({ threadId: z.string(), messageId: z.string() }))
+    .input(z.object({ threadId: z.string(), messageId: z.string(), workItemId: z.string().uuid().optional() }))
     .query(async ({ input, ctx }) => {
       const db = getDb(), transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
@@ -1242,9 +1248,24 @@ export const draftsRouter = tRouter({
           eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
         .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id), desc(mailDraft.createdAt), desc(mailDraft.id)).limit(1);
       if (!match?.draft) return null;
-      return { replyToMessageId: match.draft.replyToMessageId,
-        reviewSummary: await loadDraftReviewSummary(db, match.draft, match.runId) };
+      const [item] = input.workItemId ? await db.select({ state: workItem.state }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, transportId),
+          eq(workItem.threadId, input.threadId), eq(workItem.sourceMessageId, input.messageId))).limit(1) : [];
+      if (input.workItemId && !item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      return { replyToMessageId: match.draft.replyToMessageId, runId: match.runId,
+        ...(item ? { workItemId: input.workItemId } : {}),
+        reviewSummary: await loadDraftReviewSummary(db, match.draft, match.runId, item?.state) };
     }),
+
+  /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */
+  setRequestHandled: mailboxProcedure.input(z.object({
+    workItemId: z.string().uuid(), runId: z.string().min(1).max(200), taskId: z.string().min(1).max(512), handled: z.boolean(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const result = await setRequestHandled(getDb(), { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+    if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    return { handled: input.handled };
+  }),
 
   /**
    * Bind an explicit human review of the current AI draft to one send

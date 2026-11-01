@@ -892,6 +892,7 @@ export function NavaPane({
           query: staff.drafts.reviewForMessage?.query,
           threadId: source.source.threadId,
           messageId: source.source.messageId,
+          ...(paneWorkItemId ? { workItemId: paneWorkItemId } : {}),
         });
         if (cancelled || actions.kind !== 'ready') return false;
         dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
@@ -2383,6 +2384,12 @@ export function NavaPane({
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html, staffEdited: true })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onSetPreparedTaskHandled={async (task, handled) => {
+                const mutate = staffQuoteFromTrpc(trpcClient).drafts.setRequestHandled?.mutate;
+                if (!mutate || !task.workItemId || !task.runId) throw new Error('Request review unavailable');
+                await mutate({ workItemId: task.workItemId, runId: task.runId, taskId: task.id, handled });
+                dispatchQuote({ type: 'prepared_task_handled', taskId: task.id, runId: task.runId, handled });
+              }}
               onPatchStaffHeader={(header, options) => {
                 if (options?.staffEdit) suppressAutoStaffQuoteForCurrentEmail();
                 dispatchQuote({ type: 'patch_staff_header', header });
