@@ -249,9 +249,11 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
-function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
- const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1];
- if(!page||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
+function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'};sourceViews?:readonly ReservationistMessageView[]}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=source?.pages?.[fact.source.page-1],view=source?.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end);
+ if(!originalPage||source?.sourceViews&&!view||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
+ let page=view?originalPage.slice(view.start,view.end):originalPage;
+ if(view){const local=<T extends {attachmentId:string;page:number;start?:number;end?:number}>(s:T):T|undefined=>s.attachmentId===fact.source.attachmentId&&s.page===fact.source.page&&s.start!==undefined&&s.end!==undefined&&s.start>=view.start&&s.end<=view.end?{...s,start:s.start-view.start,end:s.end-view.start}:undefined;fact={...fact,source:local(fact.source)!};facts=facts.flatMap(f=>{const source=local(f.source);return source?[{...f,source}]:[];});tasks=tasks.flatMap(t=>{const source=local(t.source);return source?[{...t,source}]:[];});}
  const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;
  const requested=fact.source.quote??'';
  // An explicit per-person single allocation has its own accommodation scope;
@@ -300,7 +302,7 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
  if(quantity===1&&(count===1||count===2||!count&&roomCounts[0]===1))return{quantity:1,adults:count||1,at:source.causalMessage.at};
  if(quantity>1&&quantity===named&&!people.length)return{quantity,adults:1,at:source.causalMessage.at};
 }
-function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachmentId: string; pages: readonly string[] | null;causalMessage?:{at:string;direction:'inbound'|'outbound'} }[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[] ) {
+function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachmentId: string; pages: readonly string[] | null;causalMessage?:{at:string;direction:'inbound'|'outbound'};sourceViews?:readonly ReservationistMessageView[] }[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[] ) {
   if (fact.verification !== 'text_verified') return;
   const quote = fact.source.quote!;
   const rows = originalSemanticRows(fact, sources);
@@ -377,7 +379,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachm
     }
     const staff=fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(fact,sources,facts,tasks):undefined;
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
-    const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&soleExplicitAdultRoom(sources.find(s=>s.attachmentId===fact.source.attachmentId)?.pages?.[fact.source.page-1]??'');
+    const roomSource=sources.find(s=>s.attachmentId===fact.source.attachmentId),roomPage=roomSource?.pages?.[fact.source.page-1]??'',roomView=roomSource?.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end),sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&(!roomSource?.sourceViews||!!roomView)&&soleExplicitAdultRoom(roomView?roomPage.slice(roomView.start,roomView.end):roomPage);
     ok = sole||rows.some(row => {
       const numbered=numberedRoomLabel(row,fact.value.roomRef);
       if(numbered&&!currentNumberedRoomRow(fact,row,sources))return false;
