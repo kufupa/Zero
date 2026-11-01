@@ -17,6 +17,7 @@ it('rejects task results with more recoveries than staff review can display',asy
 it('checks a cited HTML request only against its own authored alternative',()=>{
  const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+ expect(currentAuthoredGuestRequest(task as any,{...scoped,messages:[{...scoped.messages[0]!,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:0,end:text.length}]}]})).toBe(false);
 });
 it('does not treat a quoted refusal as part of an unpunctuated current request',()=>{
  const request='Please send the tax certificate',text=`${request}\n\nFrom: Previous guest\nDo not send the certificate.`,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:request,start:0,end:request.length}};
