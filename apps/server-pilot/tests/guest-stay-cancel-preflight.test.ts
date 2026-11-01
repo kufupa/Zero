@@ -404,7 +404,106 @@ describe('projectCancellationPreflight', () => {
       record: read1B({ grandTotal: 'not 0' }),
     });
     expect(textContainingZero.money.grandTotal.amount).toMatchObject({
-      state: 'observed', value: 'not 0',
+      state: 'ambiguous', reason: 'money_format_unverified',
+    });
+  });
+
+  it('preserves source-labeled displays when either or both money formats are unverified', () => {
+    const cases = [
+      ['R1.234,50', 'ZAR 1 234,50'],
+      ['R1.234,50', '1,234.50'],
+      ['1,234.50', 'ZAR 1 234,50'],
+    ];
+    for (const [first, second] of cases) {
+      const result = project({
+        shallow: read1A({ grandTotal: first }),
+        record: read1B({ grandTotal: second, grandTotalCurrency: 'ZAR' }),
+      });
+      expect(result.money.grandTotal.amount).toMatchObject({
+        state: 'ambiguous', reason: 'money_format_unverified',
+        sources: ['1a_stay_card', '1b_record_view'],
+        displayEvidence: [
+          { source: '1a_stay_card', value: first },
+          { source: '1b_record_view', value: second },
+        ],
+      });
+      expect(result.money.grandTotal.amount).not.toHaveProperty('value');
+      expect(result.folio.interpretation.depositCleared).toBe('not_established');
+      expect(JSON.stringify(result)).not.toContain('TEST-GUEST-NAME');
+      expect(JSON.stringify(result)).not.toContain('guest@example.invalid');
+      expect(JSON.stringify(result)).not.toContain('synthetic private note');
+    }
+
+    const recordOnly = project({ record: read1B({ balance: 'not 0' }) });
+    expect(recordOnly.money.balance.amount).toMatchObject({
+      state: 'ambiguous', reason: 'money_format_unverified',
+      displayEvidence: [{ source: '1b_record_view', value: 'not 0' }],
+    });
+
+    const recordWithoutTotal = read1B();
+    recordWithoutTotal.details.fields = recordWithoutTotal.details.fields.filter((field) => field.name !== 'grandtotal');
+    const shallowOnly = project({
+      shallow: read1A({ grandTotal: 'not 0' }), record: recordWithoutTotal,
+    });
+    expect(shallowOnly.money.grandTotal.amount).toMatchObject({
+      state: 'ambiguous', reason: 'money_format_unverified',
+      displayEvidence: [{ source: '1a_stay_card', value: 'not 0' }],
+    });
+
+    const unsupported = project({
+      shallow: read1A({ stayFields: [{ name: 'balance', value: { private: 'DO-NOT-FORWARD' } }] }),
+      record: read1B({ balance: 'not 0' }),
+    });
+    expect(unsupported.money.balance.amount).toMatchObject({
+      state: 'ambiguous', displayEvidence: [{ source: '1b_record_view', value: 'not 0' }],
+    });
+    expect(JSON.stringify(unsupported)).not.toContain('DO-NOT-FORWARD');
+  });
+
+  it('retains each 1A view and duplicate money field as separate display evidence', () => {
+    const sameUnverified = project({
+      shallow: read1A({ grandTotal: ' Not  0 ', visibleFields: [{ name: 'grandtotal', value: 'not 0' }] }),
+      record: read1B({ grandTotal: '0.00' }),
+    });
+    expect(sameUnverified.money.grandTotal.amount).toMatchObject({
+      state: 'ambiguous', reason: 'money_format_unverified',
+      displayEvidence: [
+        { source: '1a_stay_card', value: ' Not  0 ' },
+        { source: '1a_visible_form', value: 'not 0' },
+        { source: '1b_record_view', value: '0.00' },
+      ],
+    });
+
+    const disagreeingViews = project({
+      shallow: read1A({ grandTotal: 'R1.234,50', visibleFields: [{ name: 'grandtotal', value: 'ZAR 1 234,50' }] }),
+      record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: 'ZAR' }),
+    });
+    expect(disagreeingViews.money.grandTotal.amount).toMatchObject({
+      state: 'ambiguous', reason: 'money_format_not_reconciled',
+      displayEvidence: [
+        { source: '1a_stay_card', value: 'R1.234,50' },
+        { source: '1a_visible_form', value: 'ZAR 1 234,50' },
+        { source: '1b_record_view', value: '1,234.50' },
+      ],
+    });
+
+    const duplicates = project({
+      shallow: read1A({
+        grandTotal: 'R1.234,50', stayFields: [{ name: 'grandtotal', value: 'Post' }],
+        visibleFields: [{ name: 'grandtotal', value: 'display only' }],
+      }),
+      record: read1B({ grandTotal: '1,234.50', extraFields: [{ name: 'grandtotal', value: 'not 0' }] }),
+    });
+    expect(duplicates.money.grandTotal.amount).toMatchObject({
+      state: 'ambiguous', reason: 'duplicate_field',
+      sources: ['1a_stay_card', '1b_record_view', '1a_visible_form'],
+      displayEvidence: [
+        { source: '1a_stay_card', value: 'R1.234,50' },
+        { source: '1a_stay_card', value: 'Post' },
+        { source: '1a_visible_form', value: 'display only' },
+        { source: '1b_record_view', value: '1,234.50' },
+        { source: '1b_record_view', value: 'not 0' },
+      ],
     });
   });
 
@@ -421,7 +520,13 @@ describe('projectCancellationPreflight', () => {
       shallow: read1A({ grandTotal: 'R1,234.50' }),
       record: read1B({ grandTotal: '1,234.50', grandTotalCurrency: '' }),
     });
-    expect(unresolved.money.grandTotal.amount.state).toBe('ambiguous');
+    expect(unresolved.money.grandTotal.amount).toMatchObject({
+      state: 'ambiguous', reason: 'currency_not_reconciled',
+      displayEvidence: [
+        { source: '1a_stay_card', value: 'R1,234.50' },
+        { source: '1b_record_view', value: '1,234.50' },
+      ],
+    });
 
     const mismatchedCurrency = project({
       shallow: read1A({ grandTotal: 'R1,234.50' }),
@@ -472,6 +577,35 @@ describe('projectCancellationPreflight', () => {
     expect(missingCard.folio.balance).toMatchObject({
       state: 'unavailable', reason: 'folio_card_unavailable',
     });
+  });
+
+  it('does not classify Folio action text as a deposit amount', () => {
+    const shallow = read1A({ folioFields: [{ name: 'depositreceived', value: 'Post' }] });
+    const deposit = project({ shallow }).folio.depositReceived;
+    expect(deposit).toMatchObject({ state: 'ambiguous', reason: 'money_format_unverified', value: 'Post', sources: ['1a_folio_card'] });
+    const finance = projectFinanceDisplayPreflight({ confirmation: CONFIRMATION, shallow, record: read1B() });
+    expect(finance.folioCard.depositReceived).toEqual(deposit);
+    expect(finance.interpretation.depositCleared).toBe('not_established');
+
+    const shared = projectFinanceDisplayPreflight({
+      confirmation: CONFIRMATION,
+      shallow: read1A({
+        stayFields: [{ name: 'depositreceived', value: 'Post' }],
+        folioFields: [{ name: 'depositreceived', value: 'Post' }],
+      }),
+      record: read1B({ extraFields: [{ name: 'depositreceived', value: '0.00' }] }),
+    });
+    expect(shared.recordView.depositReceived.amount).toMatchObject({
+      state: 'ambiguous', reason: 'money_format_unverified',
+      displayEvidence: [
+        { source: '1a_stay_card', value: 'Post' },
+        { source: '1b_record_view', value: '0.00' },
+      ],
+    });
+    expect(shared.folioCard.depositReceived).toEqual(deposit);
+    expect(shared.interpretation.depositCleared).toBe('not_established');
+    expect(shared.interpretation.ledgerBalance).toBe('not_established');
+    expect(JSON.stringify(shared)).not.toContain('guest@example.invalid');
   });
 
   it('keeps requested scope separate and never derives policy or fee from history', () => {
