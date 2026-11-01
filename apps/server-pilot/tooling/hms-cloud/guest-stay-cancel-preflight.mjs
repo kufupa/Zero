@@ -358,14 +358,36 @@ function reconcileCancellationNumber(shallow, record) {
   };
 }
 
+// Include only the requested money field, never whole cards or record payloads.
+function moneyDisplayEvidence(shallow, record, name, cardTitle) {
+  const cardKey = cardTitle.trim().toLowerCase().replace(/\s+/g, '_');
+  const cards = Array.isArray(shallow?.details?.cards) ? shallow.details.cards : [];
+  const matchingCards = cards.filter((card) =>
+    String(card?.title ?? '').trim().toLowerCase() === cardTitle.trim().toLowerCase());
+  const cardFields = matchingCards.flatMap((card) => Array.isArray(card.fields) ? card.fields : []);
+  const visibleFields = Array.isArray(shallow?.details?.visibleFormFields) ? shallow.details.visibleFormFields : [];
+  const recordFields = Array.isArray(record?.details?.fields) ? record.details.fields : [];
+  return [
+    [cardFields, `1a_${cardKey}_card`],
+    [visibleFields, '1a_visible_form'],
+    [recordFields, '1b_record_view'],
+  ].flatMap(([fields, source]) => fields.flatMap((field) => {
+    if (field?.name !== name) return [];
+    const value = typeof field.value === 'string' ? field.value : displayString(field.value);
+    return value === null ? [] : [{ source, value }];
+  }));
+}
+
 function reconcileField(shallow, record, name, { money = false, cardTitle = 'Stay', currencyCode } = {}) {
   const first = readShallowField(shallow, name, money, cardTitle, currencyCode);
   const second = readRecordField(record, name, money);
   if (first.state === 'ambiguous' || second.state === 'ambiguous') {
+    const displayEvidence = money ? moneyDisplayEvidence(shallow, record, name, cardTitle) : [];
     return {
       state: 'ambiguous',
       reason: first.state === 'ambiguous' ? first.reason : second.reason,
-      sources: [...new Set([...first.sources, ...second.sources])],
+      sources: [...new Set([...first.sources, ...second.sources, ...displayEvidence.map(({ source }) => source)])],
+      ...(money ? { displayEvidence } : {}),
     };
   }
 
@@ -387,6 +409,7 @@ function reconcileField(shallow, record, name, { money = false, cardTitle = 'Sta
         reason: ambiguityReason(relation, money),
         values: [first.value, second.value],
         sources: [...new Set([...first.sources, ...second.sources])],
+        ...(money ? { displayEvidence: moneyDisplayEvidence(shallow, record, name, cardTitle) } : {}),
       };
     }
     const chosen = second;
