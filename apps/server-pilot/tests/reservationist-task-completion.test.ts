@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
-import { refreshThreadWork } from '../src/ai/work-items.js';
+import { ensureWorkItemForMessage, refreshThreadWork } from '../src/ai/work-items.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
@@ -267,6 +267,61 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(acknowledgement?[acknowledgement]:[])]);
       await Promise.all([setup.close(),approver.close(),acknowledger.close()]);
+    }
+  }, 15_000);
+
+  it('takes thread locks before relinking a reread during a refresh', async () => {
+    const setup = openTestDbSession(), refresher = openTestDbSession(), reader = openTestDbSession();
+    const transportId=`race-${randomUUID()}`, threadId=randomUUID(), earlierMessage=randomUUID(), messageId=randomUUID(), replyId=randomUUID();
+    const [earlierItemId, rereadItemId] = [randomUUID(), randomUUID()].sort();
+    let release: () => void = () => {};
+    let refresh: Promise<void> | undefined, reread: Promise<unknown> | undefined;
+    try {
+      const at = (offset:number) => new Date(Date.now() - 120_000 + offset);
+      await setup.db.insert(mailboxTransport).values({id:transportId,email:`${transportId}@example.invalid`,ownerHeaderValue:transportId});
+      await setup.db.insert(mailThread).values({id:threadId,transportId,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:at(30_000)});
+      await setup.db.insert(message).values([
+        {id:earlierMessage,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[],textBody:'Earlier',receivedAt:at(0)},
+        {id:messageId,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[],textBody:'Please book',receivedAt:at(10_000)},
+        {id:replyId,transportId,threadId,direction:'outbound',fromAddress:`${transportId}@example.invalid`,toAddresses:[],sentAt:at(30_000),receivedAt:at(30_000)},
+      ]);
+      const [oldRead, newRead] = await setup.db.insert(mailExtraction).values([
+        {messageId,extractorVersion:'old',status:'succeeded',kind:'other',payload:{stays:[]},createdAt:at(11_000)},
+        {messageId,extractorVersion:'new',status:'succeeded',kind:'other',payload:{stays:[]},createdAt:at(12_000)},
+      ]).returning();
+      await setup.db.insert(workItem).values([
+        {id:earlierItemId!,transportId,threadId,sourceMessageId:earlierMessage,kind:'other'},
+        {id:rereadItemId!,transportId,threadId,sourceMessageId:messageId,kind:'other',extractionId:oldRead!.id},
+      ]);
+      let acquired!: (pid:number) => void;
+      const locked = new Promise<number>(resolve => { acquired=resolve; });
+      const proceed = new Promise<void>(resolve => { release=resolve; });
+      refresh = refresher.db.transaction(async tx => {
+        const [connection] = await tx.execute(sql<{pid:number}>`select pg_backend_pid() as pid`);
+        await tx.select({id:workItem.id}).from(workItem).where(eq(workItem.id,earlierItemId!)).for('update');
+        acquired(connection!.pid);
+        await proceed;
+        await tx.select({id:workItem.id}).from(workItem).where(eq(workItem.id,rereadItemId!)).for('update');
+      });
+      const holderPid = await locked;
+      reread = reader.db.transaction(tx => ensureWorkItemForMessage(tx as unknown as typeof reader.db, {transportId,messageId}));
+      let blocked = false;
+      for (let attempt=0;attempt<100;attempt++) {
+        const [state] = await setup.db.execute(sql<{blocked:boolean}>`select exists (
+          select 1 from pg_stat_activity a where a.datname=current_database()
+            and a.wait_event_type='Lock' and ${holderPid}=any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if (state!.blocked) { blocked=true; break; }
+        await new Promise(resolve => setTimeout(resolve,20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      await Promise.all([refresh,reread]);
+      expect((await setup.db.select().from(workItem).where(eq(workItem.id,rereadItemId!)))[0]?.extractionId).toBe(newRead!.id);
+    } finally {
+      release();
+      await Promise.allSettled([...(refresh?[refresh]:[]),...(reread?[reread]:[])]);
+      await Promise.all([setup.close(),refresher.close(),reader.close()]);
     }
   }, 15_000);
 });
