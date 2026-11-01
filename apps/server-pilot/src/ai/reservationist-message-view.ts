@@ -64,9 +64,9 @@ export function combineMessageViews(primary: string, alternative: string): { tex
     if (history) quoted[history] = { start, end: text.length };
   };
   add(primaryBody?.trim() ?? '', 'plain');
-  if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
+  if ((alternativeBody?.trim() || alternativeTail?.trim()) && (comparable(primaryBody ?? '') !== comparable(alternativeBody ?? '') || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
     // One authored copy is enough when only the quoted histories differ.
-    add(primaryBody?.trim() === alternativeBody.trim() ? '' : alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
+    add(primaryBody?.trim() === alternativeBody?.trim() ? '' : alternativeBody?.trim() ?? '', 'html', HTML_ALTERNATIVE_MARKER);
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');

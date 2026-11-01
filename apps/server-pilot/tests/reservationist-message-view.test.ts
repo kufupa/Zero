@@ -19,6 +19,9 @@ describe('email message views', () => {
     expect(validReservationistMessageViews(combined.text, combined.sourceViews)).toBe(true);
     expect(combined.sourceViews?.[1]?.start).toBe(combined.sourceViews?.[1]?.end);
     expect(combineMessageViews('Quote please.', 'Quote please.')).toEqual({ text: 'Quote please.' });
+    const historyOnly = combineMessageViews('Quote please.\nFrom: first guest\nFirst.', 'From: second guest\nSecond.');
+    expect(validReservationistMessageViews(historyOnly.text, historyOnly.sourceViews)).toBe(true);
+    expect(historyOnly.text.slice(historyOnly.sourceViews![1]!.quoted!.start, historyOnly.sourceViews![1]!.quoted!.end)).toContain('Second.');
   });
 
   it('accepts the two exact MIME ranges in one source', () => {
