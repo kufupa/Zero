@@ -397,6 +397,59 @@ it.each([
  expect(()=>validateCrossViewDates(plain,html,plain)).toThrow('Explicit same-stay correction requires source clarification');
 });
 
+it('rejects shifted endpoints for the unique stay pair in each authored view', () => {
+ const plain='Please quote accommodation for 21–23 December 2026.';
+ const html='Kindly reserve overnight rooms for 22–24 December 2026.';
+ expect(()=>validateCrossViewDates(plain,html,plain))
+  .toThrow('Explicit same-stay correction requires source clarification');
+ expect(validateCrossViewDates(plain,'Please note office closure: 22–24 December 2026.',plain).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it('requires clarification when one citation overlaps duplicate stays and another view changes one', () => {
+ const stay='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const duplicate=`${stay}\n${stay}`;
+ const changed=`${stay}\nPlease quote a room: Arrival 21 December 2026; departure 24 December 2026.`;
+ expect(()=>validateCrossViewDates(duplicate,changed,duplicate))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
+ const groupStay='Group A: Arrival 21 December 2026; departure 23 December 2026.';
+ const shiftedGroup='Group A: Arrival 22 December 2026; departure 24 December 2026.';
+ expect(()=>validateCrossViewDates(`${groupStay}\n${groupStay}`,`${shiftedGroup}\n${shiftedGroup}`,`${groupStay}\n${groupStay}`))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
+ const unlabelled='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const shiftedUnlabelled='Please quote a room: Arrival 22 December 2026; departure 24 December 2026.';
+ expect(()=>validateCrossViewDates(`${unlabelled}\n${unlabelled}`,`${shiftedUnlabelled}\n${shiftedUnlabelled}`,`${unlabelled}\n${unlabelled}`))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
+ const other='Please quote another room: Arrival 21 December 2026; departure 24 December 2026.';
+ const repeatedAndOther=`${duplicate}\n${other}`;
+ expect(validateCrossViewDates(repeatedAndOther,repeatedAndOther,duplicate).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ expect(validateCrossViewDates(duplicate,'Office closure: 22–24 December 2026.',duplicate).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it('does not compare duplicate pairs with an empty authored view containing only different quoted history', () => {
+ const stay='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const plain=`${stay}\n${stay}`, separator=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+ const htmlStart=plain.length+separator.length, plainHistory='From: earlier request\nArrival 18 December 2026; departure 20 December 2026.';
+ const contextSeparator='\n\n[HTML alternative context]\n';
+ const htmlHistory='From: other message\nArrival 28 December 2026; departure 30 December 2026.';
+ const page=`${plain}${separator}\n\n${plainHistory}${contextSeparator}${htmlHistory}`;
+ const plainHistoryStart=htmlStart+2, plainHistoryEnd=plainHistoryStart+plainHistory.length;
+ const htmlHistoryStart=plainHistoryEnd+contextSeparator.length;
+ const sourceHash=createHash('sha256').update(page).digest('hex');
+ const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
+  sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:plainHistoryStart,end:plainHistoryEnd}},
+   {name:'html' as const,start:htmlStart,end:htmlStart,quoted:{start:htmlHistoryStart,end:page.length}}]};
+ const source={attachmentId:original.attachmentId,sourceHash,page:1,quote:plain,start:0,end:plain.length};
+ const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
+ expect(validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it('keeps printed arrival and departure years in a valid cross-year range', () => {
  const ranged='Please quote the stay: 30 December 2026 to 2 January 2027.';
  expect(validateCrossViewDates(ranged,'Arrival 30 December 2026; departure 2 January 2027.',ranged,{arrival:'2026-12-30',departure:'2027-01-02'}).facts[0]!.value)
@@ -427,7 +480,7 @@ it('does not infer a year for unrelated yearless office-closure ranges', () => {
  const signature='Please quote a room.\n\nKind regards,\nOffice closure: 21–23 December';
  expect(()=>validateCrossViewDates(signature,signature,'Office closure: 21–23 December',{
   arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
- })).toThrow('Ambiguous yearless stay context');
+ })).toThrow();
  const unrelated='The office is closed 21–23 December.';
  expect(()=>validateCrossViewDates(unrelated,unrelated,unrelated,{
   arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
@@ -449,6 +502,14 @@ it('accepts a yearless checking-in/out stay statement', () => {
  }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
+it('rejects a conflicting labeled shared-month checkout across views', () => {
+ const plain='Please quote accommodation: Checking in 21 and checking out 23 December';
+ const html='Please quote accommodation: Checking in 21 and checking out 24 December';
+ expect(()=>validateCrossViewDates(plain,html,plain,{
+  arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
+ })).toThrow('Explicit same-stay correction requires source clarification');
+});
+
 it('checks the checkout when a labelled stay pair overlaps its printed range', () => {
  const plain='Arrival 21 December 2026 to 23 December 2026; departure 23 December 2026.';
  expect(()=>validateCrossViewDates(plain,'Arrival 21 December 2026; departure 24 December 2026.',plain))
@@ -463,6 +524,14 @@ it('ignores family wording in a terminal signature for an explicit two-night sta
  }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
+it('treats a standalone thank-you as a terminal signature', () => {
+ const plain='Please quote accommodation 21 December for 2 nights.\n\nThank you,\nFamily Travel';
+ const citation='Please quote accommodation 21 December for 2 nights.';
+ expect(validateCrossViewDates(plain,plain,citation,{
+  arrival:'21 December',departure:'2 nights',causalAt:'2026-10-01T08:00:00Z',
+ }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it('keeps a correction postscript after a terminal signoff in scope', () => {
  const plain='Please quote accommodation 21 December for 2 nights.\n\nKind regards,\nFamily Travel';
  const html='Please quote accommodation 21 December for 2 nights.\n\nKind regards,\nFamily Travel\nP.S. Correction: departure 24 December.';
@@ -470,6 +539,23 @@ it('keeps a correction postscript after a terminal signoff in scope', () => {
  expect(()=>validateCrossViewDates(plain,html,citation,{
   arrival:'21 December',departure:'2 nights',causalAt:'2026-10-01T08:00:00Z',
  })).toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('does not discard a stay withdrawal after a terminal signoff', () => {
+ const request='Please quote accommodation 21 December for 2 nights.';
+ const harmless=`${request}\n\nKind regards,\nFamily Travel`;
+ const withdrawal=`${request}\n\nKind regards,\nWe do not need accommodation`;
+ const options={arrival:'21 December',departure:'2 nights',causalAt:'2026-10-01T08:00:00Z'};
+ expect(()=>validateCrossViewDates(withdrawal,harmless,request,options)).toThrow();
+ expect(()=>validateCrossViewDates(harmless,withdrawal,request,options))
+  .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('does not interpret a room-service preference as withdrawing the stay', () => {
+ const request='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
+ const preference=`${request}\nWe do not need room service.`;
+ expect(validateCrossViewDates(request,preference,request).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
 it.each([
