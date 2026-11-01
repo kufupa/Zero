@@ -3,6 +3,7 @@
 const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
 const MUTATION_ACTION = /^(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|create|submit|autosave|amend|post)$/i;
+const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/osresv.hdr.getcheckavailability';
 const hasWriteAction = (params) => [...params].some(([key, value]) =>
   key.toLowerCase() === 'pageaction' && MUTATION_ACTION.test(value.trim()));
 const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
@@ -35,6 +36,9 @@ export function shouldAbortReadOnlyRequest({ method, url, postData }) {
   } catch {
     return MUTATION_METHOD.test(requestMethod);
   }
+  // Guest Stay Check Availability re-rates and temporarily holds a rate on the open form;
+  // it is not a read-only availability inquiry, even though its path starts with get.
+  if (target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH) return true;
   // Cloud Guest Stay saves via OSRESV.HDR?pageaction=SAVE; the pathname alone
   // looks like an ordinary record read. The same switch can appear in a form.
   if (hasWriteAction(target.searchParams)) return true;
