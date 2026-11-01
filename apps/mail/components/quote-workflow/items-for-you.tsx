@@ -41,6 +41,8 @@ export function ItemsForYou({
                 ? item.readable
                   ? 'Needs review. Nava read this file; check its masked or omitted content.'
                   : 'Needs review. Nava did not read this file.'
+              : item.kind === 'staff_review'
+                ? 'Needs staff review. No voucher has been verified or action prepared.'
                 : 'Needs a reply. Not a price decision.'}
           </p>
           <div className="flex flex-wrap gap-1.5">

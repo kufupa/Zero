@@ -717,8 +717,11 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'non_quote') {
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && !item.readable);
     const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
-    const questions = (session.reviewItems ?? []).filter((item) => item.kind === 'question' && notTracked(item));
-    const handledQuestions = questions.filter((item) => (session.handledReviewItemIds ?? []).includes(item.id));
+    const reviewItems = (session.reviewItems ?? []).filter((item) =>
+      (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
+    const handledReviewItems = reviewItems.filter((item) => (session.handledReviewItemIds ?? []).includes(item.id));
+    const openReviewItemsForYou = openReviewItems(session).filter((item) =>
+      (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
     const amendStays = groupStays(session.groups).filter((stay) => {
       const action = stayAskAction(session, stay.id);
       return action === 'amend' || action === 'cancel';
@@ -748,8 +751,8 @@ export function QuoteWorkflowPanel({
           </Notice>
         ))}
         <ItemsForYou
-          openItems={openReviewItems(session).filter((item) => item.kind === 'question' && notTracked(item))}
-          handledItems={handledQuestions}
+          openItems={openReviewItemsForYou}
+          handledItems={handledReviewItems}
           onViewSource={onViewSource}
           onHandle={onHandleReviewItem}
           onUndo={onUndoReviewItem}

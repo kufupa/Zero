@@ -42,6 +42,7 @@ import {
 } from '../../ai/draft-evidence.js';
 import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
+import {VOUCHER_REVIEW_RECOVERY_REASON} from '../../ai/reservationist-runtime.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -209,7 +210,7 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
 
 export type ReservationistStaffAction = {
   id: string;
-  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
+  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact' | 'voucher_review';
   text: string;
   sourceRef: string;
   /** Missing only when an unread attachment has metadata identity but no verified byte hash. */
@@ -302,6 +303,21 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     }
   }
   for (const recovery of rows(result.sourceRecoveries).slice(0, 64)) {
+    if (recovery.kind === 'voucher_review') {
+      const identity = originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
+      if (recovery.disclosure !== 'staff_only' || recovery.reason !== VOUCHER_REVIEW_RECOVERY_REASON ||
+        recovery.sourceKind !== 'message' || typeof recovery.messageId !== 'string' || !identity ||
+        identity.sourceKind !== 'message' || identity.sourceRef !== `message:${recovery.messageId}` ||
+        recovery.page !== 1 || !Number.isSafeInteger(recovery.start) || !Number.isSafeInteger(recovery.end) ||
+        Number(recovery.start) < 0 || Number(recovery.end) <= Number(recovery.start) ||
+        typeof recovery.quote !== 'string' || recovery.quote.length > 4096 ||
+        Number(recovery.end) - Number(recovery.start) !== recovery.quote.length || !/\bvouchers?\b/i.test(recovery.quote)) continue;
+      const id = `voucher:${identity.sourceRef}:${identity.sourceHash}:${recovery.start}:${recovery.end}`;
+      if (!staffActions.some(action => action.id === id)) staffActions.push({id, kind: 'voucher_review', text: recovery.quote, ...identity,
+        reason: 'Check the original email and attached hotel voucher. No voucher has been verified or action prepared.',
+        blockingQuote: false, status: 'open'});
+      continue;
+    }
     if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true) continue;
     const metadataOnly = recovery.sourceIdentity === 'metadata_only' && recovery.sourceHash === undefined &&
       recovery.sourceKind === 'attachment' && typeof recovery.sourceRef === 'string' &&

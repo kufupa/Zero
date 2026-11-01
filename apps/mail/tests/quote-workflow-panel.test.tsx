@@ -295,6 +295,19 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('Spreadsheet has omitted rows.')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Edit reply/ })).toBeNull();
   });
+  it('shows a taskless voucher review on a non-quote email as staff work, not a guest reply', () => {
+    const source = {id:'voucher:mail-1:0:41',kind:'staff_review' as const,rank:'secondary' as const,
+      text:'Please review the attached hotel voucher.',sourceLabel:'This email',sourceRef:'message:mail-1',
+      sourceHash:'a'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',
+      reason:'No voucher has been verified or action prepared.',blocking:false};
+    const view = vi.fn();
+    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source]}} onViewSource={view} />);
+    expect(screen.getByText(source.text)).toBeDefined();
+    expect(screen.getByText('Needs staff review. No voucher has been verified or action prepared.')).toBeDefined();
+    expect(screen.queryByText('Needs a reply. Not a price decision.')).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:`Show in email: ${source.text}`}));
+    expect(view).toHaveBeenCalledWith(source);
+  });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);
