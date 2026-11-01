@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
@@ -499,6 +500,8 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       if (error && typeof error === 'object') error.phase = 'new_guest_stay';
       throw error;
     }
+    // Keep a page interceptor installed when a form action removes its temporary route.
+    await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
     const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
