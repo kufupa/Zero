@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
   aiDraftGeneration,
@@ -24,7 +25,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
       const oldGeneration = randomUUID(), newGeneration = randomUUID();
-      const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID();
+      const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID(), newDraft = randomUUID();
       await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
         threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
       await db.insert(message).values([parentMessageId, otherMessageId].map(id => ({
@@ -41,7 +42,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         { id: randomUUID(), transportId: TRANSPORT_ID, threadId, createdByUserId: 'user-navaai',
           status: 'active', origin: 'ai', replyToMessageId: parentMessageId, generationId: oldGeneration,
           toAddresses: ['guest@example.com'], updatedAt: new Date('2026-07-06T11:00:00Z') },
-        { id: randomUUID(), transportId: TRANSPORT_ID, threadId, createdByUserId: 'user-navaai',
+        { id: newDraft, transportId: TRANSPORT_ID, threadId, createdByUserId: 'user-navaai',
           status: 'candidate', origin: 'ai', replyToMessageId: parentMessageId, generationId: newGeneration,
           toAddresses: ['guest@example.com'], updatedAt: new Date('2026-07-06T10:20:00Z') },
       ]);
@@ -59,6 +60,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const { drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
         replyToMessageId: parentMessageId, reviewSummary: { tasks: [{ label: 'Answer question' }] },
+      });
+      await db.update(mailDraft).set({isSent:true}).where(eq(mailDraft.id,newDraft));
+      expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
+        reviewSummary: { tasks: [{id:'new',label:'Answer question'}] },
       });
       expect(await drafts.reviewForMessage({ threadId, messageId: otherMessageId })).toBeNull();
       // A newer no-action analysis produces no draft; do not resurrect the older review.

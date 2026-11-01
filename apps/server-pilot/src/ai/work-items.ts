@@ -987,7 +987,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
         id ? eq(mailExtraction.id, id) : undefined,
       ),
     )
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
   return {
@@ -1367,6 +1367,13 @@ export async function planThreadWork(
     sourceRuns.push(run);
     runsBySource.set(run.sourceMessageId, sourceRuns);
   }
+  // The pane edits the item for the latest successful classification. Older
+  // kinds for the same email must not reopen with a second copy of its tasks.
+  const reads = sourceIds.length ? await db.selectDistinctOn([mailExtraction.messageId], {
+    messageId: mailExtraction.messageId, kind: mailExtraction.kind,
+  }).from(mailExtraction).where(and(inArray(mailExtraction.messageId, sourceIds), eq(mailExtraction.status, 'succeeded')))
+    .orderBy(mailExtraction.messageId, desc(mailExtraction.createdAt), desc(mailExtraction.id)) : [];
+  const latestKindBySource = new Map(reads.map(read => [read.messageId, read.kind]));
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -1418,7 +1425,8 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const outstanding = hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+    const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
+    const outstanding = currentKind && hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), item.state);
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
