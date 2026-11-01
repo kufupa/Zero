@@ -825,7 +825,6 @@ export function NavaPane({
       dispatchQuote({ type: 'analysis_failed', message: decision.reason });
     }
     let cancelled = false;
-    let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     if (decision.kind === 'live') void bindAnalyseSelection({
       mutate: workflow.analyseSelection?.mutate,
       input: {
@@ -876,6 +875,18 @@ export function NavaPane({
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', message });
       });
+    return () => { cancelled = true; };
+    // Admission key is the selection identity. Body/subject are no longer read on the client.
+    // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
+
+  // Work-item lookup can finish after an overridden analysis; refresh task controls without re-running the model.
+  useEffect(() => {
+    if (isNonActionableMessage) return;
+    const binding = quoteSession.binding;
+    if (!binding || !quoteAdmissionKey || (binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
+    let cancelled = false;
+    let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindStaffQuoteSource({
       query: staff.workstation.staffQuoteSource?.query,
@@ -928,9 +939,7 @@ export function NavaPane({
       cancelled = true;
       if (candidateTimer) clearTimeout(candidateTimer);
     };
-    // Admission key is the selection identity. Body/subject are no longer read on the client.
-    // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage, paneWorkItemId]);
 
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);

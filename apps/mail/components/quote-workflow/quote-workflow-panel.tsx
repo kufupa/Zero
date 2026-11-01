@@ -116,7 +116,9 @@ function PreparedStaffTasks({ tasks, onSetHandled, reviewItems, onViewSource }: 
           <p className="font-medium">{task.label} · {task.handled ? 'Marked handled' : task.state === 'Ready' ? 'Review information' : task.state}</p>
           {task.details.length ? (
             <ul className="mt-2 flex list-disc flex-col gap-1 pl-4">
-              {task.details.map((detail, index) => <li key={`${index}:${detail}`}>{detail}</li>)}
+              {task.details.map((detail, index) => <li key={`${index}:${detail}`}>
+                {source && detail.startsWith('Request: ') ? `Request: ${source.text}` : detail}
+              </li>)}
             </ul>
           ) : <p className="mt-2">Details need staff review. Check the request and HMS.</p>}
           {source && onViewSource ? <button type="button" className="mt-2 mr-3 underline"
