@@ -20,6 +20,7 @@ it('does not use a verified board when alternative views disagree about meals',(
  expect(run('Please quote a room, room only.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
  expect(run('Please quote a room.','Please quote a room with breakfast.','room only')).toThrow('business_board_unavailable');
  expect(run('Please quote a room, room only.','Please quote a room without breakfast.','room only')().rooms[0].required.boardBases).toEqual(['room_only']);
+ expect(run('Please quote dinner, bed, breakfast & beverage r.','Please quote dinner, bed, breakfast & beverage r.','dinner, bed, breakfast & beverage r')().rooms[0].required.boardBases).toEqual(['dinner_bed_breakfast']);
 });
 it('preserves room requirements from either email view and flags conflicting or unsupported ones',()=>{
  const run=(plain:string,html:string,propertyCode='HRCEN')=>{const c=ctx(),separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,selectedSource={...source,sourceHash:createHash('sha256').update(text).digest('hex'),quote:html,start:htmlStart,end:text.length};
@@ -31,6 +32,7 @@ it('preserves room requirements from either email view and flags conflicting or 
  expect(run('Please quote one accessible room for one adult.',generic)).toThrow('business_room_allocation_ambiguous');
  expect(run('Please quote one standard room. No wheelchair access is needed.',generic)().rooms[0].required.roomCodes).toEqual(['STWN','STQN','SKNG']);
  expect(run('Please quote one standard room. No wheelchair access is needed.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['STKNG','STWN']);
+ expect(run('Please quote a room. No wheelchair is needed, but an accessible room is required.',generic,'HRDAV')().rooms[0].required.roomCodes).toEqual(['ACCES']);
 });
 async function organizationLookupFixture(government=false){
  const c=ctx(),name='Example Church',requestText='Please quote 1 room for 1 adult from Example Church. Standard room, dinner, bed & breakfast. Check in 11 October 2026, check out 16 October 2026.';
