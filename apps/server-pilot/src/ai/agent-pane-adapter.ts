@@ -64,15 +64,16 @@ function groupFromStayAsk(
   stay: NonNullable<ReservationistDecision['stayAsk']>,
 ): LunaAnalysis['groups'][number] {
   const rooms = stay.rooms;
+  const adultsPerRoom = rooms === 1 ? stay.adults : null;
   return {
     arrival: stay.arrivalDate,
     departure: stay.departureDate,
     dateEvidence: null,
     rooms,
     ...(stay.adultsTotal !== undefined ? { adultsTotal: stay.adultsTotal } : {}),
-    adultsPerRoom: rooms > 0 ? Math.ceil(stay.adults / rooms) : stay.adults,
+    adultsPerRoom,
     ...(stay.childrenTotal !== undefined ? { childrenTotal: stay.childrenTotal } : {}),
-    childAges: Array.from({ length: Math.max(0, stay.children) }, () => 0),
+    childAges: stay.children > 0 ? null : [],
     board: null,
     roomPreference: null,
     guestNames: [],
@@ -86,6 +87,15 @@ function confirmationTokenInSource(source: string, confirmation: string): boolea
 
 function extraMissing(decision: ReservationistDecision): LunaAnalysis['missing'] {
   const rows: LunaAnalysis['missing'] = decision.missing.map((field) => ({ field, question: field }));
+  if ((decision.stayAsk?.rooms ?? 0) > 1 && !rows.some((row) => row.field === 'adultsPerRoom')) {
+    rows.push({
+      field: 'adultsPerRoom',
+      question: 'How many adults are in each room? The stay-wide adult count cannot be split without a per-room allocation.',
+    });
+  }
+  if (decision.stayAsk && decision.stayAsk.children > 0 && !rows.some((row) => row.field === 'childAges')) {
+    rows.push({ field: 'childAges', question: 'What are the ages of the children for this stay?' });
+  }
   const todo = [decision.todoReason, decision.todoNextStep].filter(Boolean).join(' ');
   if (todo) rows.push({ field: decision.todoTarget ?? 'hms_todo', question: todo });
   return rows;

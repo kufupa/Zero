@@ -431,6 +431,16 @@ describe('one booking draft and one set of guests per stay', () => {
     expect(overlay[0]?.guestNames).toEqual(['Ada Example']);
   });
 
+  it('preserves unknown child ages through the staff overlay until ages are entered', () => {
+    const luna = { groups: [lunaRow(NOV.arrival, NOV.departure, ['Ada Example'])] } as unknown as LunaAnalysisWire;
+    const unresolved = stayGroup('stay-a', NOV.arrival, NOV.departure);
+    unresolved.fields.childAges = 'missing';
+    expect(overlayLunaGroupsFromStaff(luna, [unresolved])[0]?.childAges).toBeNull();
+
+    const corrected = { ...unresolved, childrenAges: [5], fields: { ...unresolved.fields, childAges: 'staff_corrected' as const } };
+    expect(overlayLunaGroupsFromStaff(luna, [corrected])[0]?.childAges).toEqual([5]);
+  });
+
   it('keeps the position fallback for a single stay whose dates the analysis wrote differently', () => {
     const luna = {
       groups: [lunaRow('2027-11-01', '2027-11-03', ['Mr John Smith'])],

@@ -109,11 +109,11 @@ function unpickedTwinRoomCode(roomType: string | undefined): 'STWN' | undefined 
 function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
-  missing: ReadonlyArray<{ field: string }> = [],
+  missing: ReadonlyArray<{ field: string; stayId?: string }> = [],
   propertyCode?: string,
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
   const { arrival } = stay.requested;
-  const reversedStayDates = missing.some((item) => item.field === 'stayDates');
+  const reversedStayDates = missing.some((item) => item.field === 'stayDates' && (!item.stayId || item.stayId === stay.id));
   const departure =
     stay.requested.departure ||
     (!reversedStayDates && validIsoDay(arrival) ? addDays(arrival, 1) : null);
@@ -123,21 +123,50 @@ function groupForStay(
   if (!validIsoDay(arrival) || !validIsoDay(departure) || departure <= arrival) {
     return { groups: [], reason: 'invalid_dates' };
   }
+  if (missing.some((item) => /child/i.test(item.field) || (/adult|occupancy/i.test(item.field) && !/total/i.test(item.field)))) {
+    return { groups: [], reason: 'missing_occupancy' };
+  }
   if (arrival < today) return { groups: [], reason: 'past_dates' };
   if (nightsBetween(arrival, departure) > 30) return { groups: [], reason: 'stay_too_long' };
   if (stay.rows.length === 0) return { groups: [], reason: 'missing_rooms' };
   if (stay.rows.length > 8) return { groups: [], reason: 'too_many_room_types' };
 
+  const quantityForRow = (row: (typeof stay.rows)[number]) => {
+    const recorded = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+    const hasGuestData = row.adultsPerRoom !== null || (row.childAges?.length ?? 0) > 0;
+    return recorded ?? (stay.rows.length === 1 && hasGuestData ? 1 : null);
+  };
+  if (stay.totalRooms !== null && ((stay.rows.length > 1 && stay.rows.some((row) => row.rooms === null)) ||
+    stay.rows.reduce((sum, row) => sum + (quantityForRow(row) ?? 0), 0) !== stay.totalRooms)) return { groups: [], reason: 'missing_rooms' };
   const groups: StaffQuoteInput['groups'] = [];
+  if (stay.totalChildren != null) {
+    let describedChildren = 0;
+    for (const row of stay.rows) {
+      const quantity = quantityForRow(row);
+      if (row.childAges === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
+      describedChildren += quantity * row.childAges.length;
+    }
+    if (describedChildren !== stay.totalChildren) return { groups: [], reason: 'missing_occupancy' };
+  }
+  if (stay.totalAdults != null) {
+    let describedAdults = 0;
+    for (const row of stay.rows) {
+      const quantity = quantityForRow(row);
+      if (row.adultsPerRoom === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
+      describedAdults += quantity * row.adultsPerRoom;
+    }
+    if (describedAdults !== stay.totalAdults) return { groups: [], reason: 'missing_occupancy' };
+  }
   for (const row of stay.rows) {
-    const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
-    const hasGuestData = row.adultsPerRoom !== null || row.childAges.length > 0;
-    const quantity = recordedQuantity ?? (hasGuestData ? 1 : null);
+    const quantity = quantityForRow(row);
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }
-    const adults = row.adultsPerRoom ?? 2;
+    if (row.adultsPerRoom === null || row.childAges === null) {
+      return { groups: [], reason: 'missing_occupancy' };
+    }
+    const adults = row.adultsPerRoom;
     if (
       !Number.isInteger(adults) ||
       adults < 1 ||
@@ -261,8 +290,24 @@ export function buildPreparedStaffQuotePlan(input: {
   }
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
+  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
+  const missingForStay = (stay: (typeof payload.stays)[number]) => {
+    const legacyEmptyAges =
+      stay.totalChildren == null && stay.rows.some((row) => Array.isArray(row.childAges) && row.childAges.length === 0);
+    return payload.missing.filter((item) => {
+      if (item.stayId) return item.stayId === stay.id;
+      if (payload.stays.length === 1) return true;
+      const fieldAndQuestion = `${item.field} ${item.question}`;
+      if (/child/i.test(fieldAndQuestion)) return hasChildAgeWarning && legacyEmptyAges;
+      if (/adult|occupancy/i.test(fieldAndQuestion) && !/total/i.test(item.field)) return false;
+      if (item.field === 'stayDates') {
+        return !validIsoDay(stay.requested.arrival) || !validIsoDay(stay.requested.departure);
+      }
+      return true;
+    });
+  };
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode);
+    const groupResult = groupForStay(stay, today, missingForStay(stay), input.propertyCode);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,

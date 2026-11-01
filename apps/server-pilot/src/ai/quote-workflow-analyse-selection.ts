@@ -261,7 +261,7 @@ function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnaly
       dateEvidence: null,
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
-      childAges: [...group.childrenAges],
+      childAges: group.fields.childAges === 'missing' ? null : [...group.childrenAges],
       board: group.board === 'unknown' ? null : group.board === 'dinner_bb' ? 'dbb' : group.board,
       roomPreference: null,
       guestNames: [],
@@ -477,7 +477,9 @@ export async function hmsTodoCardFromLuna(
   let prefill: BuildCreatePrefillOutput | null = null;
   // Group-sized asks (or a bad count) get no per-room prefill; the card still shows.
   const roomTotal = Array.isArray(groups) ? groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0) : 0;
-  if (isNewBooking && arrival && Number.isSafeInteger(roomTotal) && roomTotal <= MAX_PREFILL_ROOMS) {
+  const completeOccupancy =
+    Array.isArray(groups) && groups.every((group) => group.adultsPerRoom !== null && group.childAges !== null);
+  if (isNewBooking && completeOccupancy && arrival && Number.isSafeInteger(roomTotal) && roomTotal <= MAX_PREFILL_ROOMS) {
     try {
       const party = (luna as LunaAnalysis).party;
       prefill = await buildCreatePrefill({

@@ -199,6 +199,14 @@ export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWork
   const alternatives = noteAlternatives.length ? noteAlternatives : boardAlternativesIn(emailText);
   const secondaryAsks = noteAsks.length ? noteAsks : secondaryAsksIn(emailText);
   const adults = noteAdults ?? adultsIn(emailText);
+  const childTerms = /\b(?:child(?:ren)?|kids?|infants?|bab(?:y|ies))\b/i;
+  const noChildrenPhrase =
+    /\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child(?:ren)?|kids?|infants?|bab(?:y|ies))\b(?!\s+(?:ages?|aged)\b)/i;
+  const noChildrenPhrases = new RegExp(noChildrenPhrase.source, 'gi');
+  const childEvidence = childTerms.test(note) ? note : emailText;
+  const childrenMentioned = childTerms.test(childEvidence) && !(
+    noChildrenPhrase.test(childEvidence) && !childTerms.test(childEvidence.replace(noChildrenPhrases, ' '))
+  );
   const arrivalDate = noteDates.arrivalDate ?? emailDates[0];
   const departureDate = noteDates.departureDate ?? emailDates[1];
   const group: QuoteWorkflowStayGroup = {
@@ -232,6 +240,7 @@ export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWork
           : /\badult/i.test([note, emailText].join('\n'))
             ? 'extracted'
             : 'missing',
+      ...(childrenMentioned ? { childAges: 'missing' as const } : {}),
     },
   };
   return { intent: 'quote', groups: [group], secondaryAsks, alternatives, attachmentAdmissions };
