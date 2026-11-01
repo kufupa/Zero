@@ -383,6 +383,17 @@ function validateCrossViewDates(plain:string,html:string,citation:string,options
  return validateDocumentPlan({facts,tasks,unresolvedAsks:[]},[original]);
 }
 
+function validateQuotedCrossViewDates(plain:string,html:string,history:string,citation:string) {
+ const separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length;
+ const page=`${plain}${separator}${html}\n\n${history}`,historyStart=htmlEnd+2,sourceHash=createHash('sha256').update(page).digest('hex');
+ const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
+  sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:historyStart,end:page.length}},
+   {name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:historyStart,end:page.length}}]};
+ const start=page.indexOf(citation),source={attachmentId:original.attachmentId,sourceHash,page:1,quote:citation,start,end:start+citation.length};
+ const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
+ return validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]);
+}
+
 it('prefers unique endpoints when unlabelled stays are reordered between views', () => {
  const repeated='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
  expect(validateCrossViewDates(`${repeated}\nPlease quote a room: Arrival 28 December 2026; departure 30 December 2026.`,
@@ -454,20 +465,35 @@ it('checks quoted stay citations against the cited group in authored alternative
  const plain='Please follow the quoted Group A stay.';
  const request='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
  const history=`From: earlier request\n${request}`;
- const validate=(html:string)=>{
-  const separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length;
-  const page=`${plain}${separator}${html}\n\n${history}`,historyStart=htmlEnd+2,sourceHash=createHash('sha256').update(page).digest('hex');
-  const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
-   sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:historyStart,end:page.length}},
-    {name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:historyStart,end:page.length}}]};
-  const start=page.indexOf(request),source={attachmentId:original.attachmentId,sourceHash,page:1,quote:request,start,end:start+request.length};
-  const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
-  return validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]);
- };
- expect(validate('Please follow the quoted Group A stay.\nGroup B: Correction: departure 24 December 2026.').facts[0]!.value)
+ expect(validateQuotedCrossViewDates(plain,'Please follow the quoted Group A stay.\nGroup B: Correction: departure 24 December 2026.',history,request).facts[0]!.value)
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
- expect(()=>validate('Please follow the quoted Group A stay.\nGroup A: Correction: departure 24 December 2026.'))
+ expect(()=>validateQuotedCrossViewDates(plain,'Please follow the quoted Group A stay.\nGroup A: Correction: departure 24 December 2026.',history,request))
   .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('compares each authored alternative once against quoted neighboring stays', () => {
+ const first='Group A: Please quote the first room: Arrival 21 December 2026; departure 23 December 2026.';
+ const second='Group A: Please quote another room: Arrival 21 December 2026; departure 24 December 2026.';
+ const history=`From: earlier request\n${first}\n${second}`;
+ const plain='Group A: Please quote the first room: Check-in 21 December 2026; check-out 23 December 2026.\n' +
+  'Group A: Please quote another room: Check-in 21 December 2026; check-out 24 December 2026.';
+ const html='Group A: Kindly reserve the first room: Check-in 21 December 2026; check-out 23 December 2026.\n' +
+  'Group A: Kindly reserve another room: Check-in 21 December 2026; check-out 24 December 2026.';
+ expect(validateQuotedCrossViewDates(plain,html,history,first).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it('does not let quoted history suppress current stay cancellation', () => {
+ const request='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const history=`From: earlier request\n${request}\nCancel the stay.`;
+ expect(()=>validateQuotedCrossViewDates('Cancel the stay.','Cancel the stay.',history,request))
+  .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('does not treat a meal-plan change for the stay as a date correction', () => {
+ const stay='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(validateCrossViewDates(stay,`${stay}\nWe changed the meal plan for this stay to breakfast only.`,stay).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
 it('keeps printed arrival and departure years in a valid cross-year range', () => {
