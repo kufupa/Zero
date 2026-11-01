@@ -5,6 +5,7 @@ import type {BookingEvidence} from '../src/ai/reservationist-booking-packet.js';
 import {quoteDigest,resolveQuoteRevision} from '../src/quote-proposal/quote-revision.js';
 import {createHash} from 'node:crypto';
 import {extractReservationistPlan} from '../src/ai/reservationist-extraction.js';
+import {deriveDocumentRequestContinuations} from '../src/ai/reservationist-document-continuation.js';
 import {HTML_ALTERNATIVE_MARKER} from '../src/ai/reservationist-message-view.js';
 const source={attachmentId:'message:inbound',sourceHash:'a'.repeat(64),page:1,quote:'Synthetic original request',start:0,end:26};
 const fact=(id:string,kind:string,value:unknown):any=>({id,kind,value,source,disclosure:'guest',verification:'text_verified',authority:'customer_claim'});
@@ -185,6 +186,9 @@ describe('plain and HTML citation binding',()=>{
   const ask='Please review attached voucher';
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'plain'}]});
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'},{id:'html',quote:ask,view:'html'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
+  const repeated='Please review the attached voucher (the attached voucher is the corrected copy).';
+  await expect(run(repeated,`${repeated}\n\nThe rooming list is attached.`,[{id:'single',quote:'Please review the attached voucher',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'single'}]});
+  await expect(run(repeated,`${repeated}\n\nThe rooming list is attached.`,[{id:'plain',quote:'Please review the attached voucher',view:'plain'},{id:'html',quote:'Please review the attached voucher',view:'html'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   const other='Also review enclosed hotel voucher for the second guest.';
   await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'first',quote:`${ask}.`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'combined',quote:`${ask}. ${other}`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
@@ -197,4 +201,6 @@ it('deduplicates equivalent plain/HTML activations before continuing a prior inv
  const at='2026-10-01T08:00:00Z',priorText='Please send the final invoice for payment for the booking.',plain='Please see the quotation. You can book the allocated rooms',html=`${plain}\nKind regards`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length,quotedStart=htmlEnd+2,text=`${plain}${separator}${html}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,sourceViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:quotedStart,end:text.length}},{name:'html' as const,start:htmlStart,end:htmlEnd}],prior={id:'prior-invoice',at:'2026-09-30T08:00:00Z',direction:'inbound' as const,text:priorText};let calls=0;
  const plan=await extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:[{id:'invoice',kind:'existing_document',factIds:[],sourceContinuationId:'invoice-continuation-1'}],unresolvedAsks:[]}};return{output:{facts:[],assignments:[{taskId:'invoice',factIds:[]}],unresolvedAsks:[]}};}} as any,messages:[prior,{id:'current-renewal',at,direction:'inbound',text,sourceViews}],triggerMessageId:'current-renewal',causalAt:at,admissions:[],signal:new AbortController().signal});
  expect(plan.tasks).toMatchObject([{id:'invoice',kind:'existing_document',source:{attachmentId:'message:prior-invoice',quote:'send the final invoice for payment'}}]);
+ const conditionalHtml=`${plain}\n\nOnly if breakfast is included\nKind regards`,conditionalHtmlEnd=htmlStart+conditionalHtml.length,conditionalQuotedStart=conditionalHtmlEnd+2,conditionalText=`${plain}${separator}${conditionalHtml}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,conditionalViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:conditionalQuotedStart,end:conditionalText.length}},{name:'html' as const,start:htmlStart,end:conditionalHtmlEnd}];
+ expect(deriveDocumentRequestContinuations({messages:[prior,{id:'conditional-renewal',at,direction:'inbound',text:conditionalText,sourceViews:conditionalViews}],triggerMessageId:'conditional-renewal',causalAt:at})).toEqual([]);
 });
