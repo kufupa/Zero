@@ -53,7 +53,7 @@ it('keeps a number-masked workbook warning visibly readable', () => {
     sourceRef:'sheet',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'mail-1',filename:'rooms.xlsx',
     reason,readable:true,blockingQuote:false,status:'open'} as const;
   expect(mapStaffActions(readStaffActions({staffActions:[action]}))).toMatchObject([{
-    kind:'document_failure',text:'rooms.xlsx: read with some number values masked or hidden',reason,readable:true,
+    kind:'document_failure',text:'rooms.xlsx: some details need review',reason,readable:true,
   }]);
 });
 

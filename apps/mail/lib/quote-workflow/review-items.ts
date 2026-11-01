@@ -127,7 +127,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       rank,
       text:
         action.readable === true
-          ? `${sourceLabel}: read with some number values masked or hidden`
+          ? `${sourceLabel}: some details need review`
           : action.kind === 'business_document_failure' && action.filename
             ? `Could not read: ${action.filename}`
             : action.text.trim(),

@@ -200,6 +200,16 @@ it('surfaces card-masked XLSX values as readable manual review',async()=>{
  const review=buildReservationistReviewSummary({...result,version:1},new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
  expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',readable:true,text:'rooms.xlsx: Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',reason:'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.'}));
 });
+it.each(['spreadsheet_row_unverified','source_batch_2_unavailable'])('keeps masking and source review visible together: %s',async reason=>{
+ const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
+ const base={kind:'attachment_manual',sourceRef:'sheet',sourceHash:'a'.repeat(64),sourceKind:'attachment',messageId:'message',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',disclosure:'staff_only'};
+ const result={version:1,tasks:[{id:'quote',kind:'quote',status:'needs_clarification'}],readRecoveries:[{taskId:'quote',codes:['attachment_batch_unavailable']}],sourceRecoveries:[{...base,reason:'masked_card_numbers'},{...base,reason}]};
+ const review=buildReservationistReviewSummary(result,new Date(),[{sourceRef:'sheet',messageId:'message',filename:'rooms.xlsx'}]);
+ const actions=review?.staffActions?.filter(action=>action.sourceRef==='sheet')??[];
+ expect(actions).toHaveLength(1);expect(actions[0]?.reason).toContain('masked');
+ expect(actions[0]?.reason).toContain(reason==='spreadsheet_row_unverified'?'rows could not be verified':'details could not be extracted');
+ expect(actions[0]?.readable===true).toBe(reason==='spreadsheet_row_unverified');expect(actions[0]?.blockingQuote).toBe(true);
+});
 it.each(['combined','task_first','batched'] as const)('keeps an unread current attachment visible when %s finds no text task',async(mode)=>{
  const metadata={attachmentId:'sheet',messageId:'message',threadId:'thread',ownerRef:'transport',messageAt:input.clock.causalAt,mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',sizeBytes:100,sourceHash:'a'.repeat(64),disclosure:'guest' as const,inline:false};
  const admission={status:'manual_required' as const,reason:'spreadsheet_row_limit',metadata,draftReady:false as const};

@@ -322,6 +322,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
       no_embedded_text: 'Document text could not be extracted.', page_boundaries_unavailable: 'Document pages could not be identified.',
       ambiguous_number_groups: 'Some number groups may be room numbers or card details. Check the original source.',
       masked_card_numbers: 'Card-like numbers were masked in this spreadsheet; check the original before relying on those cells.',
+      spreadsheet_row_unverified: 'Some spreadsheet rows could not be verified; check the original file.',
       too_large: 'This document exceeds the reading limit.', attachment_total_resource_unavailable: 'This attachment exceeds the available reading budget.', identity_or_authorization_changed: 'The source changed or access is unavailable.',
       attachment_identity_unavailable: 'This attachment could not be checked; open the original source.',
       encrypted: 'This document is password protected.', timeout: 'Document reading timed out.',
@@ -335,14 +336,22 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
         ? identity.sourceKind === 'message' ? 'Email details could not be extracted.' : 'Attachment details could not be extracted.' : undefined);
     if (!reason) continue;
     const sourceLabel = identity.sourceKind === 'message' ? 'Email' : filename ?? 'Attachment';
-    const readable = recovery.reason === 'ambiguous_number_groups' || recovery.reason === 'masked_card_numbers';
-    staffActions.push({id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
+    const readable = recovery.reason === 'ambiguous_number_groups' || recovery.reason === 'masked_card_numbers' || recovery.reason === 'spreadsheet_row_unverified';
+    const action: ReservationistStaffAction = {id: `source:${identity.sourceRef}:${'sourceHash' in identity ? identity.sourceHash : 'metadata'}`, kind: 'business_document_failure', text: `${sourceLabel}: ${reason}`, ...identity,
       ...(typeof recovery.messageId === 'string' ? {messageId: recovery.messageId} : {}), ...(filename ? {filename} : {}), reason,
       ...(readable ? {readable: true} : {}),
       blockingQuote: rows(result.tasks).some(t => t.kind === 'quote' && ['needs_clarification', 'blocked'].includes(String(t.status)) && (
         record(t.requestSource).attachmentId === identity.sourceRef || Array.isArray(t.evidenceRefs) && t.evidenceRefs.includes(identity.sourceRef) ||
-        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_/.test(String(recovery.reason)))
-      )), status: 'open'});
+        rows(result.readRecoveries).some(r => r.taskId === t.id && Array.isArray(r.codes) && r.codes.includes('attachment_batch_unavailable') && /^source_batch_|^attachment_batch_|^fact_enrichment_|^spreadsheet_row_unverified$/.test(String(recovery.reason)))
+      )), status: 'open'};
+    const prior = staffActions.find(item => item.kind === action.kind && item.id === action.id);
+    if (!prior) staffActions.push(action);
+    else {
+      if (!prior.reason?.includes(reason)) prior.reason = [prior.reason, reason].filter(Boolean).join(' ');
+      prior.text = `${sourceLabel}: ${prior.reason}`;
+      prior.blockingQuote ||= action.blockingQuote;
+      if (!action.readable) delete prior.readable;
+    }
   }
   const tasks = rows(result.tasks).slice(0, 32).map(task => {
     const details: string[] = [];
