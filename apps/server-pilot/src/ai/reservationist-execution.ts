@@ -26,6 +26,13 @@ import {prepareReservationistExistingDocument,assertReservationistExistingDocume
 import {deriveReservationistReadFields,prepareReservationistReadTask,type ReservationistReadTaskInput,type ReservationistReadTaskDependencies,type PaymentTargetBinding,type PaymentTargetReceipt} from './reservationist-read-task.js';
 import {compareRateClaim,type RateClaim,type RateComparison} from '../quote-proposal/rate-check.js';
 type Task=ValidatedDocumentPlan['tasks'][number];
+function targetRefs(text:string):string[]{
+ const labelled=[...text.matchAll(/\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
+ const quoted=[...text.matchAll(/\b(?:quote|quotation|proposal)\s+(?:reference|ref|number|no\.?|id)\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
+ const listed=[...text.matchAll(/(?:,|\b(?:or|and)\b)\s*(?:\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*)?([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
+ return [...new Set([...labelled,...quoted,...listed].filter(ref=>/\d/.test(ref)))];
+}
+const refusesCancellation=/\b(?:do not|don['’]t|never|no longer)\b.{0,40}\b(?:cancel(?:lation)?|withdraw)\b|\b(?:cancel(?:lation)?|withdraw)\b.{0,40}\b(?:not|no longer|not needed|not required|unwanted|unnecessary)\b/i;
 type Context={attachmentAdmissions?:readonly AttachmentAdmission[];existingDocumentTarget?:{reservationRef:string|null;priorQuoteRef?:string};task:Task;facts:ValidatedDocumentPlan['facts'];input:ReservationistRuntimeInput;signal:AbortSignal;evaluateSourceAt?:()=>string};
 type OverridePacket=Awaited<ReturnType<typeof resolveApprovedOverride>>;
 export type ValidatedRateClaimFact=Extract<ValidatedDocumentFact,{kind:'rate_claim'}>;
@@ -51,22 +58,29 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  if(message.sourceViews&&!validReservationistMessageViews(message.text,message.sourceViews))return false;
  const sourceView=message.sourceViews?.find(view=>source.start!>=view.start&&source.end!<=view.end);
  if(message.sourceViews&&!sourceView)return false;
+ if(sourceView&&task.kind==='cancel_request'){
+  const requestedRefs=targetRefs(source.quote),refused=message.sourceViews!.filter(view=>view!==sourceView).some(view=>message.text.slice(view.start,view.end).split(/[.!?;]+|\b(?:but|however)\b|(?:,\s*|\band\s+|\n\s*)(?=(?:(?:please|kindly)\s+)?(?:not|no|never|without|do\s+not|don['’]t|cancel|withdraw)\b)/i).some(clause=>{
+   const refusedRefs=targetRefs(clause);return refusesCancellation.test(clause)&&(!requestedRefs.length||!refusedRefs.length||requestedRefs.some(ref=>refusedRefs.includes(ref)));
+  }));
+  if(refused)return false;
+ }
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  if(!sourceView&&history>=0&&source.end!>history)return false;
  const viewStart=sourceView?.start??0,authored=message.text.slice(viewStart,sourceView?.end??(history>=0?history:message.text.length)),start=source.start!-viewStart,end=source.end!-viewStart;
  if(sourceView&&task.kind==='existing_document'){
   const purposes=reservationistDocumentPurposes(source.quote);
-  const targetRefs=(text:string)=>[...text.matchAll(/\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*(\d{6,12}(?:-\d+)?)\b/gi)].map(match=>match[1]!);
   const requestedRefs=targetRefs(source.quote);
-  const refusesDocument=/\b(?:disregard|withdraw|cancel)\b|\b(?:not|never|don['’]t|no longer)\s+(?:(?:to\s+be|be)\s+(?:sent|attached|provided|included|forwarded|issued|resent|copied|downloaded)|(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download|need|want|require|needed|required|necessary|wanted|requested))\b|\bno\s+[^.!?;]{0,80}\b(?:needed|required|necessary|wanted|requested)\b/i;
+  const refusesDocument=/\b(?:disregard|withdraw|cancel)\b|\b(?:not|never|don['’]t|no longer)\s+(?:(?:to\s+be|be)\s+(?:sent|attached|provided|included|forwarded|issued|resent|copied|downloaded)|(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download|need|want|require|needed|required|necessary|wanted|requested))\b|\bno\s+[^.!?;]{0,80}\b(?:needed|required|necessary|wanted|requested)\b|\bno\s+[^.!?;]{0,60}\b(?:should|must|may|will|can|could)\s+be\s+(?:sent|attached|provided|included|forwarded|issued|resent|copied|downloaded)\b/i;
+  const noDocumentFragment=(clause:string)=>/^\s*no\s+[\p{L}\p{N}'’ -]{1,60}$/iu.test(clause)&&! /\b(?:is|are|was|were|has|have|had|be|been|being|sent|send|received|arrived|issued|attached|provided|will|would|can|could|should|must)\b/i.test(clause);
   const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;]+|\b(?:but|however)\b|(?:,\s*|\band\s+|\n\s*)(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)/i).flatMap(clause=>{
    const actions=clause.split(/(?:\band\s+|,\s*|\n\s*)(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download)\b)/i),groups:string[]=[];
    let pending=actions[0]!;
    for(const action of actions.slice(1)){if(reservationistDocumentPurposes(pending).length){groups.push(pending);pending=action;}else pending+=` and ${action}`;}
    return [...groups,pending];
   }).some(clause=>{
-   const refusedRefs=targetRefs(clause);
-   return refusesDocument.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))&&(!requestedRefs.length||!refusedRefs.length||requestedRefs.some(ref=>refusedRefs.includes(ref)));
+   const refusedRefs=targetRefs(clause),clausePurposes=reservationistDocumentPurposes(clause);
+   if(purposes.includes('existing_quote')&&/\b(?:quotes?|quotations?|proposals?)\b/i.test(clause)&&! /\bnew\s+(?:quotes?|quotations?|proposals?)\b/i.test(clause))clausePurposes.push('existing_quote');
+   return (refusesDocument.test(clause)||noDocumentFragment(clause))&&clausePurposes.some(purpose=>purposes.includes(purpose))&&(!requestedRefs.length||!refusedRefs.length||requestedRefs.some(ref=>refusedRefs.includes(ref)));
   }));
   if(conflict)return false;
  }
