@@ -41,7 +41,7 @@ export type ReservationistWorkerAttachment = {
 const time = (date: Date | null): number | null =>
   date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : null;
 
-/** Plain text retains paragraph and quote boundaries for source spans and masking. */
+/** Preserve plain/HTML boundaries for source spans and date/card masking. */
 function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
@@ -61,11 +61,10 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
   });
   const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
-  // HTML can split card groups across visual lines; dates stay independent.
   return maskIncomingCardNumbers(rendered);
 }
 
-/** Keep each complete authored alternative, including postscripts, before quoted history. */
+/** Keep each complete authored alternative before quoted history; deduplication can detach negations or conditions. */
 function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
   const comparable = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
   if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
@@ -89,7 +88,6 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
     if (history) quoted[history] = { start, end: text.length };
   };
   add(primaryBody?.trim() ?? '', 'plain');
-  // Keep each authored view intact: deleting a repeated line can detach a negation or condition from the next line.
   if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
     add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
@@ -102,7 +100,6 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
-/** Separate inspection view: preserve CID positions and meaningful image descriptions. */
 function signatureInspection(row: ReservationistWorkerMessage, normalized: string, inspectAlternateHtml: boolean) {
   const hasText = Boolean(row.textBody?.trim());
   const html = hasText ? row.htmlBody : normalized;
@@ -126,16 +123,11 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => { $(element).prepend('\n').append('\n'); });
   const htmlText = $.root().text();
-  // A multipart message can contain a request only in its HTML alternative.
-  // Omit an image only when every available view agrees it is signature noise.
+// Multipart requests may be HTML-only; discard images only when every view agrees they are signature noise.
   return { texts: hasText ? [normalized, htmlText] : [htmlText], describedCids, preserveAll: false };
 }
 
-/**
- * Compose the runtime's actual causal thread and admitted business files.
- * The caller owns mailbox authorization and supplies the existing attachment
- * admission edge; no PMS write or mail-send capability is introduced here.
- */
+/** Compose causal mail and admitted files; caller owns authorization/admission, with no send or PMS write. */
 export async function buildReservationistWorkerInput(options: {
   transportId: string;
   threadId: string;
@@ -183,7 +175,7 @@ export async function buildReservationistWorkerInput(options: {
   const trigger = options.messages.find((m) => m.id === triggerMessageId);
   if (!trigger || trigger.direction !== 'inbound' || trigger.disclosure !== 'guest')
     throw new Error('worker_intake_trigger_invalid');
-  // Use trusted mailbox arrival for inbound and confirmed send time for outbound.
+  // Use mailbox arrival inbound and confirmed send outbound; queued or unproven sends are not context.
   const triggerAt = time(trigger.arrivedAt);
   if (triggerAt === null || Date.parse(options.sourceAt) < triggerAt ||
       Date.parse(options.sourceAt) > Date.now()) throw new Error('worker_intake_clock_invalid');
@@ -192,14 +184,12 @@ export async function buildReservationistWorkerInput(options: {
   for (const row of options.messages) {
     if (row.id === triggerMessageId) { selected.push({ row, at: triggerAt }); continue; }
     const at = time(row.direction === 'outbound' ? row.sentAt : row.arrivedAt);
-    // Queued outbound rows and imported outbound rows without a proven send clock are not context.
     if (at === null) { if (row.direction === 'outbound') continue; throw new Error('worker_intake_clock_invalid'); }
     if (at > triggerAt) continue;
     if (at === triggerAt) throw new Error('worker_intake_order_ambiguous');
     selected.push({ row, at });
   }
-  // Bound raw inputs before HTML sanitization; the normalized limits below
-  // still govern what the model receives.
+  // Bound raw inputs before HTML sanitization; normalized limits still govern model input.
   const rawBodies = selected.flatMap(({ row }) => [row.textBody ?? '', row.htmlBody ?? '']);
   if (selected.length > 64 || rawBodies.some((body) => body.length > 2_000_000) ||
       rawBodies.reduce((sum, body) => sum + body.length, 0) > 8_000_000 ||
@@ -245,9 +235,7 @@ export async function buildReservationistWorkerInput(options: {
       ? sourceView.texts.filter((text) => [...text.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)]
         .some((reference) => normalizeContentId(reference[1]!) === cid))
       : [];
-    // An intervening causal message can make a prior footer image relevant.
-    // A plain alternative need not repeat a CID that appears in its HTML sibling.
-    // It remains part of every current-request/dependency check below.
+  // Intervening messages may make footer images relevant; plain may omit an HTML CID, which still participates in dependency checks.
     const signatureNoise = cidSourceViews.length > 0 && !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && cidSourceViews.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
       messageText: sourceText,
       currentSubject: message.subject,
@@ -282,7 +270,6 @@ export async function buildReservationistWorkerInput(options: {
         (entry.row.disclosure === 'staff_only' && metadata.disclosure !== 'staff_only'))
       throw new Error('worker_intake_attachment_disclosure_invalid');
     const metadataIdentity = JSON.stringify(metadata);
-    // Keep over-budget files visible to staff without reading or retaining their bytes.
     const admission: AttachmentAdmission = retainedBytes + metadata.sizeBytes > 20 * 1024 * 1024
       ? { status: 'manual_required', reason: 'attachment_total_resource_unavailable', metadata, draftReady: false }
       : await bounded((edge) => options.admit(metadata, edge));
