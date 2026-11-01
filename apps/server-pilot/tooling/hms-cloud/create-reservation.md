@@ -39,7 +39,9 @@ when supplied, must agree with `childAges`. Absent or null ages mean unknown,
 not zero; `[]` means known zero. Missing prepare inputs do not prevent other
 supported fields from being staged.
 
-Room and rate are native codes. Source of Business may be a native code or an
+Room and rate are native codes. Prepare accepts room codes up to 200 characters
+and rate codes up to 100. Commit accepts only uppercase letters and digits, up
+to 12 characters for either code. Source of Business may be a native code or an
 exact current description. Selection does not establish inventory, rate
 eligibility or a hold.
 
