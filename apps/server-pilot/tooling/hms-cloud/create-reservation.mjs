@@ -427,7 +427,6 @@ export async function createReservation(input, { withSession = withBookingLookup
         (!state.organization || state.organizationReadback?.outcome === 'read_back_verified') &&
         output.readback.mismatches.length === 0) output.outcome = 'saved';
     else output.issue = state.afterScreenshotFailed ? 'result_screenshot_failed' : 'save_requires_reconciliation';
-    output.warnings.push({ field: 'stay.childAges', issue: 'saved_record_exposes_age_bands_not_exact_ages' });
   } catch { output.issue = 'readback_unverified'; }
   return output;
 }

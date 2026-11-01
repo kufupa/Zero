@@ -86,3 +86,22 @@ Run different date or occupancy scenarios as separate reads with separate file
 paths. To expand a saved result, read the private snapshot and call
 `getQuoteView` with the next page or night offset. If the quantity is absent,
 the view reports the gap even when HMS shows positive stock.
+
+## Offline JSON CLI
+
+`quote-view-cli.mjs --json-stdin` projects an existing private Hotel
+Availability snapshot without opening a browser, making an HMS request, or
+writing a file. Supply one JSON object on stdin with `snapshot` and optional
+`view` keys; `view` accepts the same room, rate, row and night paging filters,
+`roomQuantity`, and `includeNightlyValueSum` as `getQuoteView`. The CLI returns
+`{ outcome, snapshotOutcome, view }` on success, or a structured error with a
+nonzero exit code. A `criteria_unavailable` snapshot remains identifiable through
+`snapshotOutcome` and the view; it is not an empty availability result.
+
+Input is limited to 32 MiB. Both stdin and stdout contain private data: the
+caller must supply and capture them through private channels. The CLI does not
+read a snapshot path, inspect its provenance, or verify it against HMS. A
+caller-supplied snapshot is an observation, not an independent correctness
+oracle. Follow both pagination cursors and keep unknown price basis, eligibility,
+restrictions and room-type combination availability separate from observed
+counts or an optional arithmetic sum.
