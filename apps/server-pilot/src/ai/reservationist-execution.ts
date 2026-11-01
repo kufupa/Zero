@@ -11,6 +11,7 @@ import type {AttachmentAdmission} from './reservationist-attachment-input.js';
 import {assertDocumentRequestContinuation} from './reservationist-document-continuation.js';
 import {extractReservationistPlan,unmatchedCurrentVoucherReviewSources} from './reservationist-extraction.js';
 import {VOUCHER_REVIEW_RECOVERY_REASON} from './reservationist-source-recovery.js';
+import {validReservationistMessageViews} from './reservationist-message-view.js';
 import type {ValidatedDocumentPlan,ValidatedDocumentFact} from './reservationist-document-facts.js';
 import type {PreparedFact} from './prepared-draft-input.js';
 import type {GeneratedDraftArtifact} from './drafts.js';
@@ -47,6 +48,7 @@ class SourceRequestClarification extends Error{constructor(readonly reply:string
 export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
+ if(message.sourceViews&&!validReservationistMessageViews(message.text,message.sourceViews))return false;
  const sourceView=message.sourceViews?.find(view=>source.start!>=view.start&&source.end!<=view.end);
  if(message.sourceViews&&!sourceView)return false;
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
