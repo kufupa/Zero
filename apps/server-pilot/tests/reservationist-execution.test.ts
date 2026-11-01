@@ -78,6 +78,8 @@ it.each([
 it.each([
  ['Do not send invoices for booking 12345678 or 87654321.','Please send the invoice for booking 87654321.',false],
  ['Do not send invoices for booking 12345678.','Please send the invoice for booking 87654321.',true],
+ ['Do not send any invoices for my stay from December 2, 2027.','Please send the invoice for booking 87654321.',false],
+ ['Do not send invoices for booking ABC123.','Please send the invoice for booking abc123.',false],
 ] as const)('compares every explicit booking reference in a document refusal: %s',(plain,html,expected)=>{
  const text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);

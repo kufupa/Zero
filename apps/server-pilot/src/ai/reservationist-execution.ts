@@ -27,10 +27,11 @@ import {deriveReservationistReadFields,prepareReservationistReadTask,type Reserv
 import {compareRateClaim,type RateClaim,type RateComparison} from '../quote-proposal/rate-check.js';
 type Task=ValidatedDocumentPlan['tasks'][number];
 function targetRefs(text:string):string[]{
- const labelled=[...text.matchAll(/\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
- const quoted=[...text.matchAll(/\b(?:quote|quotation|proposal)\s+(?:reference|ref|number|no\.?|id)\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
- const listed=[...text.matchAll(/(?:,|\b(?:or|and)\b)\s*(?:\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*)?([A-Za-z0-9_-]{3,32})\b/gi)].map(match=>match[1]!);
- return [...new Set([...labelled,...quoted,...listed].filter(ref=>/\d/.test(ref)))];
+ const labelled=[...text.matchAll(/\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)];
+ const quoted=[...text.matchAll(/\b(?:quote|quotation|proposal)\s+(?:reference|ref|number|no\.?|id)\s*[:#-]?\s*([A-Za-z0-9_-]{3,32})\b/gi)];
+ const lists=[...labelled,...quoted].flatMap(match=>[...text.slice(match.index!+match[0].length).matchAll(/(?:,|\b(?:or|and)\b)\s*([A-Za-z0-9_-]{3,32})\b/gi)].map(item=>item[1]!));
+ const isReference=(ref:string)=>/^\d{6,32}$/.test(ref)||/[A-Za-z]/.test(ref)&&/\d{3,}/.test(ref);
+ return [...new Set([...labelled,...quoted].map(match=>match[1]!).concat(lists).filter(isReference).map(ref=>ref.toUpperCase()))];
 }
 const refusesCancellation=/\b(?:do not|don['’]t|never|no longer)\b.{0,40}\b(?:cancel(?:lation)?|withdraw)\b|\b(?:cancel(?:lation)?|withdraw)\b.{0,40}\b(?:not|no longer|not needed|not required|unwanted|unnecessary)\b/i;
 type Context={attachmentAdmissions?:readonly AttachmentAdmission[];existingDocumentTarget?:{reservationRef:string|null;priorQuoteRef?:string};task:Task;facts:ValidatedDocumentPlan['facts'];input:ReservationistRuntimeInput;signal:AbortSignal;evaluateSourceAt?:()=>string};
