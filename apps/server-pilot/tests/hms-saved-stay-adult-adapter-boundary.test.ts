@@ -27,7 +27,7 @@ describe('adult amendment save-helper boundary', () => {
 
 // Evaluate the adapter's actual browser callbacks against a small Ext-like form.
 // Playwright serializes evaluate results, so snapshots must not alias the live model.
-function savedStayPage() {
+function savedStayPage({ copyAdults = false } = {}) {
   const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
   const expected = {
     confirmation: '20270000001-1', guestId: '77', arrival: '2027-01-15', departure: '2027-01-16',
@@ -75,9 +75,13 @@ function savedStayPage() {
     el: { dom: { contains: (element: unknown) => elements.includes(element as typeof elements[number]),
       querySelectorAll: () => elements } },
     getRecord: () => record,
-    // Model the combo as excluded from generic form update. The explicit native
-    // record.set in the adapter must persist the selected adult value in the draft.
-    updateRecord: vi.fn(),
+    // Copy all model-backed form values, including unchanged fields. Some native
+    // combos omit model data; exercise both that case and a combo that copies it.
+    updateRecord: vi.fn((target: typeof record) => {
+      for (const [name, value] of Object.entries(values)) {
+        if (Object.hasOwn(target.data, name) && (name !== 'adults' || copyAdults)) target.set(name, value);
+      }
+    }),
     getForm: () => ({
       getValues: () => ({ ...values }),
       isDirty: () => dirtyFields.size > 0,
@@ -96,13 +100,13 @@ function savedStayPage() {
     store: { getCount: () => options.length, getAt: (index: number) => options[index] },
     valueField: 'value', displayField: 'display', up: () => form, isDisabled: () => false,
     getValue: () => selected,
-    setValue: (option: typeof selected) => {
+    setValue: vi.fn((option: typeof selected) => {
       selected = option;
       adultInput.value = option.data.display;
       values.adults = option.data.value;
       dirtyFields.add('adults');
-    },
-    fireEvent: (event: string) => {
+    }),
+    fireEvent: vi.fn((event: string) => {
       if (event === 'select') {
         // Representative observed HMS pricing and availability invalidation.
         values.averagerate = '';
@@ -110,7 +114,7 @@ function savedStayPage() {
         record.set('ratetax', '');
         record.set('enablecheckavailability', '-1');
       }
-    },
+    }),
   };
   const components: Record<string, unknown> = {
     guestid: { up: () => form }, adults: combo,
@@ -128,6 +132,7 @@ function savedStayPage() {
     `(${callback.toString()})(...args)`, { ...browser, args },
   ));
   const save = { count: async () => 1, click: vi.fn() };
+  let onScroll = () => {};
   const frame = {
     url: () => `${origin}/record`,
     evaluate: async (callback: Function, arg: unknown) => evaluate(callback, [arg]),
@@ -135,7 +140,7 @@ function savedStayPage() {
       if (selector === 'input[name="adults"]:visible') return {
         count: async () => 1,
         evaluate: async (callback: Function, arg: unknown) => evaluate(callback, [adultInput, arg]),
-        scrollIntoViewIfNeeded: async () => {},
+        scrollIntoViewIfNeeded: async () => { onScroll(); },
       };
       if (selector === '[data-qtip="Save Record (Ctrl+S)"]:visible') return save;
       if (selector === '.x-window:visible:not(.x-menu)') return { count: async () => 0 };
@@ -160,10 +165,99 @@ function savedStayPage() {
     route: vi.fn(async (_pattern: string, handler: (route: any) => Promise<void>) => { pageRoutes.push(handler); }),
     on: vi.fn(), off: vi.fn(), waitForResponse: vi.fn(),
   };
-  return { page, frame, save, pageRoutes, expected, data, values, adultInput, form, options, record };
+  return { page, frame, save, pageRoutes, expected, data, values, adultInput, form, options, record, combo,
+    setOnScroll: (callback: () => void) => { onScroll = callback; } };
 }
 
 describe('adult amendment real callback chain', () => {
+  it.each([
+    ['arrivaldate', '01/17/2027'], ['departuredate', '01/18/2027'],
+    ['roomtype', 'STD'], ['rateplan', 'OTHER'], ['reservationnote', 'other note'],
+  ])('refuses a mismatched native %s before changing the form', async (name, value) => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage();
+    stay.data[name] = value;
+    const dataBefore = structuredClone(stay.data);
+    const valuesBefore = structuredClone(stay.values);
+
+    const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
+
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'ADULT_PREIMAGE_UNVERIFIED' });
+    expect(stay.data).toEqual(dataBefore);
+    expect(stay.values).toEqual(valuesBefore);
+    expect(stay.combo.setValue).not.toHaveBeenCalled();
+    expect(stay.combo.fireEvent).not.toHaveBeenCalled();
+    expect(stay.form.updateRecord).not.toHaveBeenCalled();
+    expect(stay.save.click).not.toHaveBeenCalled();
+    expect(stay.pageRoutes).toHaveLength(0);
+  });
+
+  it.each(['missing', 'duplicate', 'null note', 'unsupported'])('refuses a %s native preimage, including unchanged requests', async (kind) => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage();
+    if (kind === 'missing') delete stay.data.arrivaldate;
+    if (kind === 'duplicate') stay.data.ArrivalDate = stay.data.arrivaldate!;
+    if (kind === 'null note') (stay.data as Record<string, unknown>).reservationnote = null;
+    if (kind === 'unsupported') (stay.data as Record<string, unknown>).unverified = undefined;
+
+    const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 1 });
+
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'ADULT_PREIMAGE_UNVERIFIED' });
+    expect(stay.combo.setValue).not.toHaveBeenCalled();
+    expect(stay.form.updateRecord).not.toHaveBeenCalled();
+    expect(stay.save.click).not.toHaveBeenCalled();
+  });
+
+  it.each(['model', 'form'])('refuses %s preimage drift immediately before staging', async (part) => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage();
+    stay.setOnScroll(() => {
+      if (part === 'model') stay.data.childages = '[8]';
+      else stay.values.childages = '[8]';
+    });
+
+    const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
+
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'ADULT_PREIMAGE_UNVERIFIED' });
+    expect(stay.adultInput.value).toBe('1 Adult');
+    expect(stay.combo.setValue).not.toHaveBeenCalled();
+    expect(stay.combo.fireEvent).not.toHaveBeenCalled();
+    expect(stay.form.updateRecord).not.toHaveBeenCalled();
+    expect(stay.save.click).not.toHaveBeenCalled();
+  });
+
+  it('refuses unrelated changes copied by the native full-form update', async () => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage();
+    stay.data.specialinstructions = 'model value';
+    stay.values.specialinstructions = 'form value';
+
+    const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
+
+    expect(stay.form.updateRecord).toHaveBeenCalledOnce();
+    expect(stay.data.specialinstructions).toBe('form value');
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_DRAFT_CHANGED',
+      saveEligible: false, preview: null, unapprovedFields: expect.arrayContaining(['specialinstructions']) });
+    expect(stay.save.click).not.toHaveBeenCalled();
+    expect(stay.page.waitForResponse).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: 'unavailable', requested: 4, issue: 'ADULT_OPTION_UNAVAILABLE', duplicate: false },
     { name: 'duplicate', requested: 2, issue: 'ADULT_OPTION_NOT_UNIQUE', duplicate: true },
@@ -192,13 +286,13 @@ describe('adult amendment real callback chain', () => {
     expect(stay.pageRoutes).toHaveLength(0);
   });
 
-  it('stages the selected adult into the native draft and refuses Save pending repricing', async () => {
+  it.each([false, true])('copies the form and stages adults with combo model copying: %s', async (copyAdults) => {
     fixture.run.mockClear();
     const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
       '../tooling/hms-cloud/labtest-amend-save.mjs',
     );
     fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
-    const stay = savedStayPage();
+    const stay = savedStayPage({ copyAdults });
     const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
 
     expect(stay.adultInput.value).toBe('2 Adults');
@@ -210,7 +304,7 @@ describe('adult amendment real callback chain', () => {
       availabilityRepriceRequired: true, saveEligible: false, unapprovedFields: [],
       changedFields: ['adults', 'averagerate', 'enablecheckavailability', 'ratetax'],
       nativeSideEffects: expect.arrayContaining([
-        { field: 'averagerate', kind: 'pricing', beforeModel: '2060', afterModel: '2060',
+        { field: 'averagerate', kind: 'pricing', beforeModel: '2060', afterModel: '',
           beforeForm: '2,060.00', afterForm: '' },
         { field: 'enablecheckavailability', kind: 'availability', beforeModel: '0', afterModel: '-1' },
         { field: 'ratetax', kind: 'tax', beforeModel: '0', afterModel: '' },
