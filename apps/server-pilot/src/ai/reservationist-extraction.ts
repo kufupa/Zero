@@ -137,16 +137,18 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
 }
 function authoredQuoteOffsets(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):[number,number]|undefined{
  if(!views||views.length!==2)return;
- const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
- if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
- const hits=views.map(view=>[first,second].filter(start=>start>=view.start&&start+quote.length<=view.end));
- if(hits.some(viewHits=>viewHits.length!==1))return;
- return [hits[0]![0]!,hits[1]![0]!];
+ const hits=views.map(view=>{
+  const first=page.indexOf(quote,view.start),next=page.indexOf(quote,first+1);
+  return first>=view.start&&first+quote.length<=view.end&&(next<0||next+quote.length>view.end)?first:-1;
+ });
+ if(hits.some(hit=>hit<0))return;
+ return [hits[0]!,hits[1]!];
 }
 /** Matching evidence in both authored alternatives can share the original plain span. */
-function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean):number|undefined{
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean,allowHistory=false):number|undefined{
  const hits=authoredQuoteOffsets(page,quote,views);
  if(!hits||!views)return;
+ if(!allowHistory&&page.indexOf(quote,page.indexOf(quote,page.indexOf(quote)+1)+1)>=0)return;
  const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
  const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
@@ -171,7 +173,7 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
    if(page===undefined)continue;
    const views=source?.sourceViews,hits=list===candidate.facts?authoredQuoteOffsets(page,span.quote,views):undefined;
    if(hits&&views&&page.slice(views[0]!.start,hits[0]).replace(/\s+/g,' ').trim()===page.slice(views[1]!.start,hits[1]).replace(/\s+/g,' ').trim()&&
-     equivalentAuthoredOffset(page,span.quote,views,true)===undefined)throw new Error('Ambiguous original text span');
+     equivalentAuthoredOffset(page,span.quote,views,true,true)===undefined)throw new Error('Ambiguous original text span');
    if(span.start===undefined&&span.end===undefined){
     let start=page.indexOf(span.quote);
     if(start<0){

@@ -198,10 +198,10 @@ describe('reservationist worker input', () => {
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
   });
 
-  it('does not share a fact when another message view corrects it', async () => {
+  it.each([false, true])('does not share a corrected fact (quoted history: %s)', async (history) => {
     const request = 'Please quote one room.', meal = 'Breakfast included.';
     const { input } = await build([row('current', 4, {
-      textBody: `${request}\n${meal}\nKind regards`,
+      textBody: `${request}\n${meal}\nKind regards${history ? `\nFrom: guest@example.invalid\nSubject: Prior\n\n${meal}` : ''}`,
       htmlBody: `<p>${request}</p><p>${meal}</p><p>Correction: breakfast is not included.</p><p>Kind regards</p>`,
     })]);
     const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
