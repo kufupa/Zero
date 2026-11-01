@@ -155,12 +155,25 @@ describe('plain and HTML citation binding',()=>{
   const fact={id:'stay',kind:'dates',value:{arrival:'21 December',departure:'23 December'},disclosure:'guest',source:dateSource},task={id:'quote',kind:'quote',factIds:['stay'],source:taskSource};
   return extractReservationistPlan({mode,adapter:{reserveCalls:async()=>{},invoke:async(request:any)=>{schemas.push(request.responseSchema);calls++;if(mode==='task_first'&&calls===1)return{output:{facts:[],tasks:[{...task,factIds:[]}],unresolvedAsks:[]}};if(mode==='task_first')return{output:{facts:[fact],assignments:[{taskId:'quote',factIds:['stay']}],unresolvedAsks:[]}};return{output:{facts:[fact],tasks:[task],unresolvedAsks:[]}};}} as any,messages:[{id:'alternatives',at,text,direction:'inbound',sourceViews:views}],triggerMessageId:'alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
  };
- const hasViewSchema=(node:any):boolean=>Boolean(node&&typeof node==='object'&&(node.properties?.view?.enum?.join(',')==='plain,html'||Object.values(node).some(hasViewSchema)));
+ const hasViewSchema=(node:any):boolean=>Boolean(node&&typeof node==='object'&&(node.properties?.view?.enum?.join(',')==='plain,html,plain_quoted,html_quoted'||Object.values(node).some(hasViewSchema)));
  it.each(['combined','task_first'] as const)('refuses duplicate text without a view and validates only the selected alternative (%s)',async mode=>{
   await expect(extract(mode)).rejects.toThrow('Ambiguous original text span');
   const plan=await extract(mode,'html');
   expect(schemas.every(hasViewSchema)).toBe(true);
   expect(plan.tasks[0]).toMatchObject({source:{start:htmlStart,end:text.length}});
   expect(plan.facts[0]).toMatchObject({value:{arrival:'2026-12-21',departure:'2026-12-23'},source:{start:htmlStart+html.indexOf(quote),end:htmlStart+html.indexOf(quote)+quote.length}});
+ });
+ it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
+  const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
+  const alternate='Please rebook this stay using the previous quotation.';
+  const history='From: guest@example.invalid\nSubject: Original stay\n\nArrival 21 December 2026; departure 23 December 2026';
+  const request='Please rebook this stay.',dateQuote='Arrival 21 December 2026; departure 23 December 2026';
+  const marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=body.length+marker.length,htmlEnd=htmlStart+alternate.length,historyStart=htmlEnd+2,text=`${body}${marker}${alternate}\n\n${history}`;
+  const attachmentId='message:quoted-alternatives',sourceHash=createHash('sha256').update(text).digest('hex');
+  const sourceViews=[{name:'plain' as const,start:0,end:body.length,quoted:{start:historyStart,end:text.length}},{name:'html' as const,start:htmlStart,end:htmlEnd}];
+  const extract=async(view?:'plain'|'plain_quoted')=>extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'stay',kind:'dates',value:{arrival:'21 December 2026',departure:'23 December 2026'},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:dateQuote,...(view?{view}:{})}}],tasks:[{id:'quote',kind:'quote',factIds:['stay'],source:{attachmentId,sourceHash,page:1,quote:request,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'quoted-alternatives',at,direction:'inbound',text,sourceViews}],triggerMessageId:'quoted-alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
+  await expect(extract()).rejects.toThrow('Ambiguous original text span');
+  const plan=await extract('plain_quoted');
+  expect(plan.facts[0]?.source.start).toBe(historyStart+history.indexOf(dateQuote));
  });
 });
