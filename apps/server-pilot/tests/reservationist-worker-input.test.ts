@@ -67,6 +67,23 @@ describe('reservationist worker input', () => {
     await expect(extract('Do not quote one room.\nKind regards\nGuest')).rejects.toThrow();
   });
 
+  it.each(['plain', 'html'] as const)('accepts the shared room request with an unrelated HTML question (%s citation)', async (cited) => {
+    const request = 'Please quote one room.';
+    const extract = async (extra: string) => {
+      const { input } = await build([row('current', 4, { textBody: request, htmlBody: `<p>${request}</p><p>${extra}</p>` })]);
+      const message = input.messages[0]!, view = message.sourceViews!.find(item => item.name === cited)!;
+      const start = message.text.indexOf(request, view.start);
+      const source = { attachmentId: 'message:current', sourceHash: createHash('sha256').update(message.text).digest('hex'), page: 1, quote: request, start, end: start + request.length };
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['room'], source }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    expect((await extract('Can we check in early?')).facts[0]!.convention?.rule).toBe('centurion_staff_occupancy_v1');
+    await expect(extract('Correction: please quote two rooms instead.')).rejects.toThrow();
+  });
+
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
     const extractStay = (message: any, dateQuote: string, dateStart: number, taskQuote: string, taskStart: number) => {
       const sourceHash = createHash('sha256').update(message.text).digest('hex');

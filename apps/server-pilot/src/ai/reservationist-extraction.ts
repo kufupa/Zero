@@ -352,8 +352,17 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
  if(!page||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
  const view=source.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end);
  if(view){
-  // Other relevant alternatives need the full cross-view occupancy validator.
-  if(source.sourceViews!.some(v=>v!==view&&/\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|family|occupancy|accommodation|not|never|cancel)\b/i.test(page!.slice(v.start,v.end))))return;
+  // An identical authored request may be followed by an unrelated question in another view.
+  const comparable=(text:string)=>text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.replace(/\s+/g,' ').trim().toLowerCase();
+  const own=comparable(page.slice(view.start,view.end));
+  if(source.sourceViews!.some(v=>{
+   if(v===view)return false;
+   let other=comparable(page!.slice(v.start,v.end));
+   if(!other)return false;
+   const shared=own&&other.includes(own)?own:other&&own.includes(other)?other:'';
+   if(shared)other=own.replace(shared,'')+' '+other.replace(shared,'');
+   return /\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|family|occupancy|accommodation|people|persons?|pax|guests?|beds?|single|double|twin|not|never|no|without|cancel|instead|correction|amend|change|exclude|remove|disregard)\b/i.test(other);
+  }))return;
   page=' '.repeat(view.start)+page.slice(view.start,view.end);
  }
  const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;
