@@ -229,7 +229,7 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
   let otherHeading:string|undefined;
   return otherView.split(/[;.!?\n]+/).some(sentence=>{
   const heading=/^\s*(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\s*:\s*$/iu.exec(sentence);if(heading)otherHeading=(heading[1]??heading[2]!).toLowerCase();
-  const scopes=[...sentence.matchAll(/\b(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\b/giu)].map(match=>(match[1]??match[2]!).toLowerCase()),scope=scopes[0]??otherHeading,otherStay=!!sourcePair?.entity&&scope!==undefined&&scope!==sourcePair.entity&&scopes.every(entity=>entity===scope);
+  const scopes=[...sentence.matchAll(/\b(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\b/giu)].map(match=>(match[1]??match[2]!).toLowerCase()),scope=scopes[0]??otherHeading,otherStay=!!sourcePair?.entity&&scope!==undefined&&scope!==sourcePair.entity&&scopes.every(entity=>entity===scope)&&!/\b(?:all|both|every|everyone)\b/i.test(sentence);
   const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
   const negated=/\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
   const dates=dateTokens(sentence),sameDateSequence=dates.length>0&&dates.length===citedDates.length&&dates.every((date,index)=>sameDate(date,citedDates[index]!)),samePairDate=dates.length>0&&dates.every(date=>sourcePair?[sourcePair.arrival,sourcePair.departure].some(value=>sameDate(date,value)):citedDates.some(value=>sameDate(date,value))),sameDates=!negated&&(sameDateSequence||samePair&&samePairDate);
