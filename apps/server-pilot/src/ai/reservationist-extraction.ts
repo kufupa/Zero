@@ -378,6 +378,33 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
 function childRequirement(page:string):boolean{const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
  const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay|sleep|rooms?|beds?|accommodation|guests?|we|us|\d+)\b/i.test(row)||/\b(?:one|two|three|four|our|my|their|his|her|the)\s+(?:[\p{L}-]+\s+){0,3}(?:child|children|kids?|infants?)\b/iu.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
 }
+function childRequirementForRoom(page:string,fact:ValidatedDocumentFact,facts:readonly ValidatedDocumentFact[]):boolean{
+ const otherGroups=facts
+  .filter(other=>other.kind==='room'&&fact.kind==='room'&&other.id!==fact.id&&other.source.attachmentId===fact.source.attachmentId&&other.source.page===fact.source.page&&other.value.roomRef!==fact.value.roomRef)
+  .map(other=>other.kind==='room'?other.value.roomRef:'');
+ const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>!otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref)));
+ return childRequirement(scopedRows.join('\n'));
+}
+function quoteRoomQuantity(fact:ValidatedDocumentFact,task:ValidatedDocumentPlan['tasks'][number],facts:readonly ValidatedDocumentFact[]):number|undefined{
+ if(fact.kind!=='room')return;
+ const groups=new Map<string,(number|undefined)[]>();
+ for(const candidate of facts){
+  if(candidate.kind!=='room'||!task.factIds.includes(candidate.id)||candidate.source.attachmentId!==fact.source.attachmentId||candidate.source.page!==fact.source.page)continue;
+  const quantities=groups.get(candidate.value.roomRef)??[];
+  quantities.push(candidate.verification==='text_verified'?candidate.value.quantity:undefined);
+  groups.set(candidate.value.roomRef,quantities);
+ }
+ if(groups.size<2)return fact.value.quantity;
+ let total=0;
+ for(const quantities of groups.values()){
+  const distinct=new Set(quantities);
+  if(distinct.size!==1)return;
+  const quantity=distinct.values().next().value;
+  if(quantity===undefined)return;
+  total+=quantity;
+ }
+ return total;
+}
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
 function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][],page:string):{quantity:number;adults:number;at:string}|undefined{
  const source=sources.find(s=>s.attachmentId===fact.source.attachmentId);
@@ -502,7 +529,6 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
   else if (fact.kind === 'document_reference') ok = exactText(quote, fact.value) && rows.some(row=>exactText(row,fact.value)&&/\b(?:quote|quotation|proposal)\b/i.test(row)&&/\b(?:resend|send|copy|attach|provide|previous|prior|existing|original)\b/i.test(row)&&!/\b(?:new|fresh|revised)\s+(?:quote|quotation|proposal)\b/i.test(row));
   else if (fact.kind === 'room') {
     const scope=citedSourceScope(fact,sources,facts,tasks),proofFact=scope?.fact??fact,proofFacts=scope?.facts??facts,proofTasks=scope?.tasks??tasks,boundTasks=proofTasks.filter(task=>task.factIds.includes(fact.id)).concat(scope?.alternativeTasks??[]);
-    if((scope?.alternativeTasks??[]).some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
     const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
     const citedView=sourceForViews?.sourceViews?.find(view=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.start&&fact.source.end<=view.end);
     const quoteTask=citedView&&tasks.find(task=>task.kind==='quote'&&task.factIds.includes(fact.id)&&task.source.attachmentId===fact.source.attachmentId&&task.source.page===fact.source.page&&task.source.start!==undefined&&task.source.end!==undefined&&task.source.start>=citedView.start&&task.source.end<=citedView.end);
@@ -511,18 +537,16 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       const text=originalPage.slice(view.start,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       return{...quoteTask,source:{...quoteTask.source,start:view.start,end:view.start+text.length,quote:text}};
     }):[];
-    const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).concat(viewComparisons).some(task=>{
+    const requestViews=(scope?.alternativeTasks??[]).concat(viewComparisons);
+    if(requestViews.some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
+    const occupancy=fact.value,conflictingOccupancy=requestViews.some(task=>{
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
-      if(!occupancy.childAges.length&&alternative){
-        const rows=alternative.page.split(/[.!?;\r\n]+/),otherGroups=facts.filter(f=>f.kind==='room'&&f.id!==fact.id&&f.source.attachmentId===fact.source.attachmentId&&f.source.page===fact.source.page&&f.value.roomRef!==occupancy.roomRef).map(f=>f.kind==='room'?f.value.roomRef:'');
-        const relevant=rows.some(row=>labeled(row,'room|group',occupancy.roomRef))?rows.filter(row=>labeled(row,'room|group',occupancy.roomRef)||!otherGroups.some(ref=>labeled(row,'room|group',ref))).join('\n'):alternative.page;
-        if(childRequirement(relevant))return true;
-      }
+      if(!occupancy.childAges.length&&alternative&&childRequirementForRoom(alternative.page,fact,facts))return true;
       // A room count can contradict the selected view even when per-room occupancy is unclear.
       const rows=viewComparisons.includes(task)?quoted.split(/[.!?;\n]+/).filter(row=>/\b(?:quote|quotation|rates?|prices?)\b/i.test(row)&&/\brooms?\b/i.test(row)):[];
       const counts=rows.length===1?[...rows[0]!.matchAll(/\b(\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b/gi)]:[];
-      if(counts.length===1){const raw=counts[0]![1]!,quantity=/^(?:one|a|an)$/i.test(raw)?1:/^two$/i.test(raw)?2:Number(raw);if(quantity!==occupancy.quantity)return true;}
+      if(counts.length===1){const raw=counts[0]![1]!,quantity=/^(?:one|a|an)$/i.test(raw)?1:/^two$/i.test(raw)?2:Number(raw);if(quantity!==quoteRoomQuantity(fact,task,facts))return true;}
       const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||/\bMr\.?\s*(?:and|&)\s*Mrs\.?\s+[\p{L}]/iu.test(quoted)||/\b(?:\d+|one|a|an|two)\s+single\s+rooms?\b|\bsingle\s+occupancy\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
@@ -535,7 +559,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return;
     }
     const staff=scope&&fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(proofFact,sources,proofFacts,proofTasks,scope.page):undefined;
-    const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirement(originalPage.slice(view.start,view.end)));
+    const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirementForRoom(originalPage.slice(view.start,view.end),fact,facts));
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){if(viewHasChild)throw new Error('Conflicting occupancy across message views');fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
     const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&!!scope&&soleExplicitAdultRoom(scope.page);
     if(sole&&viewHasChild)throw new Error('Conflicting occupancy across message views');
