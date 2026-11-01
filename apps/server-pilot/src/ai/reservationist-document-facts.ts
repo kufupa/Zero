@@ -161,6 +161,7 @@ export function normalizeDocumentDecimal(input: string): number {
 }
 const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const monthPattern = months.map(month => `${month}|${month.slice(0, 3)}`).join('|') + '|sept';
+const labeledSharedStayPattern = () => new RegExp(`\\b(?:arrival|check[ -]?in|checking\\s+in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:and|to)\\s+(?:depart(?:ure)?|check[ -]?out|checking\\s+out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${monthPattern})(?:\\s+(\\d{4}))?(?![\\p{L}\\p{N}/-])`, 'giu');
 export function normalizedDate(input: string, yearContext?: number): string {
   const value = input.trim().replace(/\bsept\b/gi, 'sep');
   let year: number, month: number, day: number;
@@ -238,7 +239,8 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     const heading = /(?:\bgroup\s+([\p{L}\p{N}_-]+)|\broom\s+(?:#\s*)?(\d+))\s*:\s*$/iu.exec(text.slice(0, boundary).trimEnd());
     const entity = /\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase() ??
       /\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1] ?? heading?.[1]?.toLowerCase() ?? heading?.[2];
-    const scope = `${entity ?? ''}|${text.slice(boundary + 1, end).replace(new RegExp(datePattern.source, 'gi'), ' date ')
+    const scope = `${entity ?? ''}|${text.slice(boundary + 1, end).replace(labeledSharedStayPattern(), ' stay-date-pair ')
+      .replace(new RegExp(datePattern.source, 'gi'), ' date ')
       .replace(/\bcheck[ -]?in\b/gi, 'arrival').replace(/\bcheck[ -]?out\b/gi, 'departure')
       .replace(/[^\p{L}\p{N}]+/gu, ' ').toLowerCase().trim()}`;
     return { scope, ...(entity ? { entity } : {}) };
@@ -265,6 +267,18 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     }
     return pairs;
   };
+  const labeledSharedPairs = (text: string): StayPair[] => {
+    const pairs: StayPair[] = [], ordinals = new Map<string, number>();
+    for (const match of text.matchAll(labeledSharedStayPattern())) {
+      const arrival = `${match[1]} ${match[3]}${match[4] ? ` ${match[4]}` : ''}`;
+      const departure = `${match[2]} ${match[3]}${match[4] ? ` ${match[4]}` : ''}`;
+      const start = match.index!, end = start + match[0].length, identity = pairIdentity(text, start, end);
+      const ordinal = ordinals.get(identity.scope) ?? 0;
+      ordinals.set(identity.scope, ordinal + 1);
+      pairs.push({ arrival, departure, start, end, ordinal, ...identity });
+    }
+    return pairs;
+  };
   const rangePairs = (text:string):StayPair[] => {
     const pairs:StayPair[] = [], ordinals = new Map<string, number>();
     const add = (match:RegExpMatchArray,arrival:string,departure:string) => {
@@ -283,7 +297,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     return pairs;
   };
   const pairsIn = (text:string):StayPair[] => {
-    const pairs=[...stayPairs(text),...rangePairs(text)].sort((a,b)=>a.start-b.start);
+    const pairs=[...stayPairs(text),...labeledSharedPairs(text),...rangePairs(text)].sort((a,b)=>a.start-b.start);
     return pairs.filter((pair,index)=>!pairs.slice(0,index).some(previous=>
       previous.start<pair.end&&previous.end>pair.start&&
       (!previous.entity||!pair.entity||previous.entity===pair.entity)&&
@@ -298,9 +312,22 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const otherPairs = otherViews.flatMap(pairsIn);
   const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
   const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
+  const supportedStayPair = (pair: StayPair) => /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
+  const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => {
+    const compatible = (pair: StayPair) => !(candidate.entity && pair.entity && candidate.entity !== pair.entity);
+    const sameSourcePair = (pair: StayPair) => compatible(pair) &&
+      sameDate(candidate.arrival, pair.arrival) && sameDate(candidate.departure, pair.departure);
+    const conflictingCounterpart = otherPairs.some(pair => compatible(pair) &&
+      (!!candidate.entity && pair.entity === candidate.entity || pair.scope === candidate.scope ||
+        ((sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
+          (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure)))));
+    return conflictingCounterpart && valuePairs.filter(sameSourcePair).length > otherPairs.filter(sameSourcePair).length;
+  });
+  if (ambiguousCitationConflict) throw new Error('Explicit same-stay correction requires source clarification');
   const fallback = sourcePair && sourcePairs.length === 1 && otherPairs.length === 1 &&
     !(sourcePair.entity && otherPairs[0]!.entity && sourcePair.entity !== otherPairs[0]!.entity) &&
-    (sameDate(sourcePair.arrival, otherPairs[0]!.arrival) || sameDate(sourcePair.departure, otherPairs[0]!.departure))
+    ((sameDate(sourcePair.arrival, otherPairs[0]!.arrival) || sameDate(sourcePair.departure, otherPairs[0]!.departure)) ||
+      supportedStayPair(sourcePair) && supportedStayPair(otherPairs[0]!))
     ? [otherPairs[0]!] : [];
   const uniqueArrival = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.arrival, sourcePair.arrival)).length === 1;
   const uniqueDeparture = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.departure, sourcePair.departure)).length === 1;
@@ -336,7 +363,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
       const scope = scopes[0] ?? otherHeading;
       const otherStay = !!sourcePair?.entity && scope !== undefined && scope !== sourcePair.entity &&
         scopes.every(entity => entity === scope) && !/\b(?:all|both|every|everyone)\b/i.test(sentence);
-      const withdrawn = /\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
+      const withdrawn = /\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote|need)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?(?!\s+service)|stay|accommodation|nights?|dates?)\b/i.test(sentence);
       const negated = /\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
       let previousDateEnd = 0;
       const datesWithRoles = dateMatches(sentence).map(match => {
@@ -373,9 +400,9 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(source.sourceViews?.some(view=>view.quoted&&fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.quoted.start&&fact.source.end<=view.quoted.end))throw new Error('Yearless date source is quoted history');
  const {page,start,end}=citedViewSpan(fact,source);
  const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
- const signoff=/^[ \t]*(?:kind regards|best regards|warm regards|regards|sincerely|yours sincerely)[,!]?[ \t]*\r?$/im.exec(page);
+ const signoff=/^[ \t]*(?:kind regards|best regards|warm regards|regards|sincerely|yours sincerely|thank you)[,.!?]?[ \t]*\r?$/im.exec(page);
  const signoffTail=signoff?page.slice(signoff.index+signoff[0].length):'';
- const hasPostscript=/\b(?:p\.?\s*s\.?|postscript|please|kindly|quote|book|reserve|request|availability|correction|corrected|change(?:d)?|instead|amend(?:ed)?|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore|arrival|departure|check[ -]?(?:in|out)|dates?)\b/i.test(signoffTail);
+ const hasPostscript=/\b(?:p\.?\s*s\.?|postscript|please|kindly|quote|book|reserve|request|availability|correction|corrected|change(?:d)?|instead|amend(?:ed)?|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore|arrival|departure|check[ -]?(?:in|out)|dates?|need)\b/i.test(signoffTail);
  const authored=signoff&&!hasPostscript?page.slice(0,signoff.index):page;
  const before=authored.slice(0,start),after=authored.slice(end),context=before.slice(Math.max(before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'))+1)+quote+( /[;.!?]\s*$/.test(quote)?'':after.split(/[;.!?]/,1)[0]);
  if(end>authored.length)throw new Error('Yearless stay outside authored request');
@@ -431,7 +458,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(!localStaySignal&&!adjacentDateLabel)throw new Error('Ambiguous yearless stay context');
  const named=`(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}/\\d{1,2})`;
  const shared=[...quote.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*[-–]\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?![\\p{L}\\p{N}/-])`,'giu'))];
- const labeledShared=[...quote.matchAll(new RegExp(`\\b(?:arrival|check[ -]?in|checking\\s+in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:and|to)\\s+(?:depart(?:ure)?|check[ -]?out|checking\\s+out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${monthPattern})(?![\\p{L}\\p{N}/-])`,'giu'))];
+ const labeledShared=[...quote.matchAll(labeledSharedStayPattern())];
  let tokens:string[];
  if(labeledShared.length===1&&shared.length===0&&[...context.matchAll(new RegExp(named,'giu'))].length<=1)tokens=[`${labeledShared[0]![1]} ${labeledShared[0]![3]}`,`${labeledShared[0]![2]} ${labeledShared[0]![3]}`];
  else if(shared.length===1&&[...context.matchAll(new RegExp(named,'giu'))].length===1)tokens=[`${shared[0]![1]} ${shared[0]![3]}`,`${shared[0]![2]} ${shared[0]![3]}`];
