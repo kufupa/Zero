@@ -26,6 +26,7 @@ export async function runLabtestAmendSave(page, {
   timeoutMs = 20_000,
   resultFields = {},
   reportBlockedTargets = false,
+  prepareOnly = false,
   prepare,
   stage,
   matches,
@@ -34,6 +35,7 @@ export async function runLabtestAmendSave(page, {
 } = {}) {
   const result = (outcome, details = {}) => ({ outcome, ...resultFields, ...details });
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return result('input_gap', { issue: 'INVALID_TIMEOUT' });
+  if (typeof prepareOnly !== 'boolean') return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
   if (!page || typeof page.route !== 'function' || typeof page.locator !== 'function' ||
       typeof page.on !== 'function' || typeof page.off !== 'function') {
     return result('input_gap', { issue: 'PAGE_REQUIRED' });
@@ -95,7 +97,7 @@ export async function runLabtestAmendSave(page, {
       frame: prepared.frame,
       fence,
       scope,
-      isArmed: () => armed && !nativeDialog && !stopReason,
+      isArmed: () => !prepareOnly && armed && !nativeDialog && !stopReason,
       matches: (request, requestFrame) => staged !== undefined &&
         matches(request, requestFrame, prepared, staged),
       onCandidate: (request) => {
@@ -143,6 +145,11 @@ export async function runLabtestAmendSave(page, {
         ...details(),
       });
     }
+
+    // A prepare-only operation cannot dispatch even if a callback wrongly approves it.
+    if (prepareOnly) return result('not_dispatched', {
+      issue: 'PREPARE_ONLY', ...diagnostics(), ...details(),
+    });
 
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs })
       .catch(() => null);
