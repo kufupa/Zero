@@ -386,6 +386,8 @@ describe('reservationist worker input', () => {
       .rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(groupA, 'Group B:\nCorrection: change arrival to 24 December and departure to 26 December for both stays.', groupA, '21 December', '23 December'))
       .rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(groupA, `Group B:\n${groupB}\n${groupA}\nCancel the stay.`, groupA, '21 December', '23 December'))
+      .rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(groupA, 'Group B: Please quote one room: Arrival 21 December; departure 24 December.', groupA, '21 December', '23 December'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
     await expect(extract(`${groupA}\n${groupB}`,
