@@ -237,10 +237,10 @@ describe('QuoteWorkflowPanel', () => {
     const staffSourceHash='c'.repeat(64);
     const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Needs review' as const,
       details:['Request: Book a room'],handled:false,runId:'run',workItemId:'item',bookingSuggestion:{
-        version:1 as const,taskId:'book',selectedMessageId:'mail-1',staffSourceHash,source,groupId:'book_123',
+        version:1 as const,taskId:'book',status:'prefill' as const,displayOnly:true as const,saved:false as const,selectedMessageId:'mail-1',staffSourceHash,source,groupId:'book_123',
         draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01',departure:'2027-04-02',
           adults:1,childAges:[],firstName:'Alex',lastName:'Example'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
-        options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],partyNames:[],missing:[],
+        options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:{dates:[{source}],rooms:[],guests:[],boards:[],parties:[]},partyNames:[],missing:[],
       }};
     const session = {...initialQuoteSession(),phase:'non_quote' as const,
       binding:{transportId:'t1',mailboxEmail:'staff@example.invalid',storeId:'store',folderEntryId:'inbox',entryId:'e1',selectionEpoch:1,scopeEpoch:1},

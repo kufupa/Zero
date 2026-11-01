@@ -165,16 +165,20 @@ export type ReservationistStaffAction = {
 };
 
 /** A read-only preparation for staff, not a receipt for a completed HMS write. */
+type BookingSuggestionSource = { sourceRef: string; sourceHash: string; page: number; start: number; end: number };
 export type ReservationistBookingSuggestion = {
   version: 1;
   taskId: string;
+  status: 'prefill';
+  displayOnly: true;
+  saved: false;
   selectedMessageId: string;
   staffSourceHash: string;
-  source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number };
+  source: BookingSuggestionSource;
   groupId: string;
   draft: BookingDraftPayload;
   options: BookingDraftReady['options'];
-  facts: Array<{ kind: string; source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number } }>;
+  facts: Record<'dates' | 'rooms' | 'guests' | 'boards' | 'parties', Array<{ source: BookingSuggestionSource }>>;
   partyNames: string[];
   missing: string[];
 };

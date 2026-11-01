@@ -602,11 +602,17 @@ function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId
     Number(v.start) >= 0 && Number.isSafeInteger(v.end) && Number(v.end) > Number(v.start);
   const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(item => typeof item === 'string');
   if (!object(value) || value.version !== 1 || value.taskId !== taskId ||
+      value.status !== 'prefill' || value.displayOnly !== true || value.saved !== false ||
       typeof selectedMessageId !== 'string' || !selectedMessageId || !source(value.source) ||
       typeof value.staffSourceHash !== 'string' || !SOURCE_HASH.test(value.staffSourceHash) ||
       typeof value.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(value.groupId) ||
       !object(value.draft) || !object(value.options)) return undefined;
   const draft = value.draft, options = value.options;
+  const facts = value.facts;
+  const validFacts = object(facts) && ['dates', 'rooms', 'guests', 'boards', 'parties'].every(key => {
+    const entries = facts[key];
+    return Array.isArray(entries) && entries.every(fact => object(fact) && source(fact.source));
+  });
   if (!Array.isArray(draft.rooms) || !draft.rooms.length || draft.rooms.length > 96 ||
       !draft.rooms.every(room => object(room) && room.groupId === value.groupId &&
         Number.isSafeInteger(room.roomIndex) && Number(room.roomIndex) > 0 &&
@@ -623,7 +629,7 @@ function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId
         !options.cmsMessageIds.every(item => object(item) && typeof item.code === 'string' && typeof item.label === 'string'))) ||
       (options.cmsDefaults !== undefined && (!object(options.cmsDefaults) ||
         typeof options.cmsDefaults.agency !== 'string' || typeof options.cmsDefaults.guest !== 'string')) ||
-      !Array.isArray(value.facts) || !value.facts.every(fact => object(fact) && typeof fact.kind === 'string' && source(fact.source)) ||
+      !validFacts ||
       !strings(value.partyNames) || value.partyNames.length > 8 ||
       !strings(value.missing)) return undefined;
   return { ...value, selectedMessageId } as ReservationistBookingSuggestion;

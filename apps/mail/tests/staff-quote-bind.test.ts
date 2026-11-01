@@ -70,9 +70,9 @@ it('binds prepared tasks to the selected email review', async () => {
 
 it('binds a booking suggestion to its selected email and rejects malformed room identities', async () => {
   const source = {sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),page:1,start:0,end:12};
-  const suggestion = {version:1,taskId:'book',staffSourceHash:'c'.repeat(64),source,groupId:'book_123',
+  const suggestion = {version:1,taskId:'book',status:'prefill',displayOnly:true,saved:false,staffSourceHash:'c'.repeat(64),source,groupId:'book_123',
     draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
-    options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],partyNames:[],missing:[]};
+    options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:{dates:[{source}],rooms:[],guests:[],boards:[],parties:[]},partyNames:[],missing:[]};
   const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Needs review',details:[],handled:false,bookingSuggestion:suggestion};
   const envelope = {replyToMessageId:'mail-1',runId:'run',workItemId:'item',reviewSummary:{tasks:[task]}};
   const query = vi.fn().mockResolvedValue(envelope);
