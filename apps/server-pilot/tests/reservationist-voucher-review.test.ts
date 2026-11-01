@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {expect,it,vi} from 'vitest';
 import {quoteDigest} from '../src/quote-proposal/quote-revision.js';
 import {runReservationistRuntime,VOUCHER_REVIEW_RECOVERY_REASON,type RuntimeSourceRecovery} from '../src/ai/reservationist-runtime.js';
-import {hasOutstandingRequests} from '../src/ai/reservationist-task-completion.js';
+import {hasOutstandingRequests,requestCompletionKeys} from '../src/ai/reservationist-task-completion.js';
 
 const text='Please review the attached hotel voucher for our booking.';
 const at='2026-10-04T10:00:00.000Z';
@@ -16,7 +16,7 @@ it('keeps an unmatched voucher request as source-bound staff review when no task
  expect(result.readiness).toBe('needs_clarification');expect(result.noAction).toBeUndefined();expect(result.tasks).toEqual([]);expect(result.textBody).toBe('');expect(result.sourceRecoveries).toEqual([recovery]);expect(execute).not.toHaveBeenCalled();
  expect(hasOutstandingRequests({...result,version:1},'run',{})).toBe(true);
  const {buildReservationistReviewSummary}=await import('../src/trpc/routes/drafts.js');
- const review=buildReservationistReviewSummary(result,new Date(at));
+ const review=buildReservationistReviewSummary({...result,version:1},new Date(at));
  expect(review?.staffActions).toEqual([expect.objectContaining({kind:'voucher_review',text,sourceRef:'message:inbound',sourceHash,sourceKind:'message',messageId:'inbound',blockingQuote:false,status:'open',reason:expect.stringContaining('No voucher has been verified')})]);
  const {toDraftWire}=await import('../src/trpc/routes/draft-wire.js');
  const wire=toDraftWire({id:'draft',generationId:'generation',attachments:[],updatedAt:new Date(at),threadId:'thread',replyToMessageId:'inbound',toAddresses:[],ccAddresses:[],bccAddresses:[],subject:'Voucher review',textBody:'',status:'candidate',origin:'ai'} as any,false,review);
@@ -24,9 +24,15 @@ it('keeps an unmatched voucher request as source-bound staff review when no task
 });
 
 it('retains the voucher review beside an independent selected task',async()=>{
- const input=makeInput(),task={id:'question',kind:'question',required:true,source:{attachmentId:'message:inbound',sourceHash,page:1,start:0,end:text.length,quote:text}},taskResult={id:'question',status:'needs_clarification' as const,guestText:'',evidenceRefs:[],disclosure:'staff_only' as const};
- const result=await runReservationistRuntime(input,{plan:async()=>({tasks:[task],facts:[],sourceRecoveries:[recovery]}),execute:async()=>({tasks:[taskResult],artifacts:[],quoteRefs:[],packets:[],errors:[],approvedGuestClauses:{question:''}})});
- expect(result.tasks).toHaveLength(1);expect(result.sourceRecoveries).toEqual([recovery]);expect(result.readiness).toBe('needs_clarification');expect(result.textBody).toBe('');
+ const question='Is parking available?',mixedText=`${text} ${question}`,mixedHash=createHash('sha256').update(mixedText).digest('hex'),baseInput=makeInput(),input={...baseInput,messages:[{...baseInput.messages[0]!,text:mixedText}]},source={attachmentId:'message:inbound',sourceHash:mixedHash,page:1,start:text.length+1,end:mixedText.length,quote:question},mixedRecovery={...recovery,sourceHash:mixedHash},task={id:'parking',kind:'question',required:true,source},taskResult={id:'parking',status:'complete' as const,guestText:'Parking is available.',evidenceRefs:['parking-policy'],disclosure:'guest' as const};
+ const result=await runReservationistRuntime(input,{plan:async()=>({tasks:[task],facts:[],sourceRecoveries:[mixedRecovery]}),execute:async()=>({tasks:[taskResult],artifacts:[],quoteRefs:[],packets:[],errors:[],approvedGuestClauses:{parking:taskResult.guestText}}),verifyGuestClause:async()=>true});
+ expect(result.tasks).toHaveLength(1);expect(result.sourceRecoveries).toEqual([mixedRecovery]);expect(result.readiness).toBe('needs_clarification');expect(result.textBody).toContain('Parking is available.');expect(result.textBody).not.toContain('voucher');
+});
+
+it('keeps voucher work outstanding after the independent task is acknowledged',()=>{
+ const question='Is parking available?',mixedText=`${text} ${question}`,mixedHash=createHash('sha256').update(mixedText).digest('hex'),task={id:'parking',kind:'question',requestSource:{attachmentId:'message:inbound',sourceHash:mixedHash,page:1,start:text.length+1,end:mixedText.length,quote:question}},result={version:1,tasks:[task],sourceRecoveries:[{...recovery,sourceHash:mixedHash}]},key=requestCompletionKeys(result,'run').get('parking');
+ expect(key).toBeDefined();
+ expect(hasOutstandingRequests(result,'run',{reservationistHandledRequests:{[key!]:true}})).toBe(true);
 });
 
 it.each([
