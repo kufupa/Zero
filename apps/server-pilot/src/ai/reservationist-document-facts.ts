@@ -414,7 +414,12 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(/\b(?:not|never|no|without|previous|old|cancelled|canceled|unless|if|or|either)\b|\b\d{4}\b/i.test(stayContext))throw new Error('Ambiguous yearless stay context');
  // Keep signature/postscript text visible; infer a year only when the cited
  // local clause identifies a stay or an explicit quote/booking inquiry.
- if(!/\b(?:room|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext))throw new Error('Ambiguous yearless stay context');
+ const localStaySignal=/\b(?:room|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext);
+ const lineStart=page.lastIndexOf('\n',start-1)+1,lineEnd=page.indexOf('\n',end),line=page.slice(lineStart,lineEnd<0?page.length:lineEnd);
+ const previousLine=page.slice(0,lineStart).trimEnd().split(/\r?\n/).at(-1)??'';
+ const adjacentDateLabel=/^\s*(?:stay\s+)?dates?\s*:/i.test(line)&&
+  /\b(?:room|stay|accommodation|overnight|quote|book|reserve)\b/i.test(previousLine);
+ if(!localStaySignal&&!adjacentDateLabel)throw new Error('Ambiguous yearless stay context');
  const named=`(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}/\\d{1,2})`;
  const shared=[...quote.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*[-–]\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?![\\p{L}\\p{N}/-])`,'giu'))];
  const labeledShared=[...quote.matchAll(new RegExp(`\\b(?:arrival|check[ -]?in|checking\\s+in)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:and|to)\\s+(?:depart(?:ure)?|check[ -]?out|checking\\s+out)\\s*(?:is|on|:)?\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${monthPattern})(?![\\p{L}\\p{N}/-])`,'giu'))];

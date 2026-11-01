@@ -430,6 +430,14 @@ it('does not infer a year for a yearless office-closure range in a signature', (
  })).toThrow('Ambiguous yearless stay context');
 });
 
+it('allows a labelled yearless date line directly under the stay request', () => {
+ const plain='Please quote accommodation.\nDates: 21–23 December.';
+ const citation='Dates: 21–23 December.';
+ expect(validateCrossViewDates(plain,plain,citation,{
+  arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
+ }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it.each([
  ['same-date withdrawal','Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.',"Don't book the stay: Arrival 21 December 2026; departure 23 December 2026."],
  ['postscript after a standalone thank-you','Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.','Thank you.\nP.S. Correction: departure 24 December 2026.'],
