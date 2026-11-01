@@ -159,7 +159,7 @@ export function normalizeDocumentDecimal(input: string): number {
 }
 const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const monthPattern = months.map(month => `${month}|${month.slice(0, 3)}`).join('|') + '|sept';
-function normalizedDate(input: string, yearContext?: number): string {
+export function normalizedDate(input: string, yearContext?: number): string {
   const value = input.trim().replace(/\bsept\b/gi, 'sep');
   let year: number, month: number, day: number;
   let parts: RegExpMatchArray | null;
