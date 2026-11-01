@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequests, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
+import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
@@ -78,9 +79,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       await refreshThreadWork(db, {transportId:TRANSPORT_ID,threadId});
       expect((await state()).status).toBe('dismissed');
       await db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId:TRANSPORT_ID,threadId,
-        triggerMessageId:oldMessage,runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'succeeded',
+        triggerMessageId:oldMessage,runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'running',claimOwner:'worker',claimToken:'token',
         metrics:{reservationistResult:{version:1,tasks:[task('one',0),task('two',5)]}}});
-      await refreshThreadWork(db, {transportId:TRANSPORT_ID,threadId});
+      await markAiRunSucceeded({runId,claimOwner:'worker',claimToken:'token',expectedStates:['running']},db);
       expect((await state()).status).toBe('needs_you');
       await db.insert(message).values({id:reply,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:TRANSPORT_EMAIL,
         toAddresses:['guest@example.invalid'],textBody:'Acknowledged.',receivedAt:at(20_000),sentAt:at(20_000)});
