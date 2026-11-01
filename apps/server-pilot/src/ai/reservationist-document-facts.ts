@@ -241,6 +241,8 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     return !!left && !!right && left.dayMonth === right.dayMonth;
   };
   type StayPair = { arrival: string; departure: string; start: number; end: number; scope: string; ordinal: number; entity?: string };
+  const supportedStayScope = (scope:string) => !/\b(?:office|business)\s+clos(?:ure|ed)\b/i.test(scope) &&
+    /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|dates?|availability|quote|book|reserve|booking|reservation)\b/i.test(scope);
   const pairIdentity = (text:string,start:number,end:number) => {
     const before = text.slice(0, start), boundary = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf(';'));
     const context = text.slice(boundary + 1, start);
@@ -290,10 +292,13 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const rangePairs = (text:string):StayPair[] => {
     const pairs:StayPair[] = [], ordinals = new Map<string, number>();
     const add = (match:RegExpMatchArray,arrival:string,departure:string) => {
-      const yearless = !/\b\d{4}\b/.test(`${arrival} ${departure}`);
-      if (yearless ? !dateKey(arrival) || !dateKey(departure) || sameDate(arrival, departure) : arrival >= departure)
-        throw new Error('Invalid printed stay dates');
       const start = match.index!, end = start + match[0].length, identity = pairIdentity(text,start,end);
+      const yearless = !/\b\d{4}\b/.test(`${arrival} ${departure}`);
+      const invalid = yearless ? !dateKey(arrival) || !dateKey(departure) || sameDate(arrival, departure) : arrival >= departure;
+      if (invalid) {
+        if (!supportedStayScope(identity.scope)) return;
+        throw new Error('Invalid printed stay dates');
+      }
       const ordinal = ordinals.get(identity.scope) ?? 0;
       ordinals.set(identity.scope,ordinal+1);
       pairs.push({arrival,departure,start,end,ordinal,...identity});
@@ -329,8 +334,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const sourcePair = valuePairs.length === 1 ? valuePairs[0] : overlapping.length === 1 ? overlapping[0] : undefined;
   const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
   const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
-  const supportedStayPair = (pair: StayPair) => !/\b(?:office|business)\s+clos(?:ure|ed)\b/i.test(pair.scope) &&
-    /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|dates?|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
+  const supportedStayPair = (pair: StayPair) => supportedStayScope(pair.scope);
   const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => {
     const compatible = (pair: StayPair) => !(candidate.entity && pair.entity && candidate.entity !== pair.entity);
     const sameSourcePair = (pair: StayPair) => compatible(pair) &&

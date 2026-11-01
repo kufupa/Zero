@@ -548,6 +548,8 @@ it('does not let an unrelated office closure sharing one endpoint reject a stay'
  const stay='Please quote accommodation for 21–23 December 2026.';
  expect(validateCrossViewDates(stay,`${stay}\nOffice closure: 21–22 December 2026.`,stay).facts[0]!.value)
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ expect(validateCrossViewDates(stay,`${stay}\nOffice closure: 25 December to 25 December.`,stay).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
 it('compares alternate printed years with the causal next occurrence', () => {
