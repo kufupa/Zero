@@ -153,10 +153,10 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
  const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
  if(isFact){
-  // Different later statements may qualify or correct the fact, even after a period.
-  // A separate question with no shared content words can coexist with it.
+  // Later text about the same fact may qualify or correct it, even after a period.
+  // Unrelated additional requests or details can coexist with the shared fact.
   const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from'].includes(word)));
-  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>!part.trim().endsWith('?')||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
+  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdrawn|revised)\b/i.test(part)||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
   if(tail[0]!==tail[1])return;
  }
  return before[0]===before[1]&&after[0]===after[1]?hits[0]:undefined;
