@@ -349,6 +349,18 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  const history=page.search(/^(?:\s*>?\s*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
+function childRequirement(page:string):boolean{const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+ const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay|sleep|rooms?|beds?|accommodation|guests?|we|us|\d+)\b/i.test(row)||/\b(?:one|two|three|four|our|my|their|his|her|the)\s+(?:[\p{L}-]+\s+){0,3}(?:child|children|kids?|infants?)\b/iu.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
+}
+function childRequirementForRoom(page:string,fact:ValidatedDocumentFact,facts:readonly ValidatedDocumentFact[]):boolean{
+ if(fact.kind!=='room')return childRequirement(page);
+ const otherGroups=facts
+  .filter(other=>other.kind==='room'&&other.id!==fact.id&&other.source.attachmentId===fact.source.attachmentId&&other.source.page===fact.source.page&&other.value.roomRef!==fact.value.roomRef)
+  .map(other=>other.kind==='room'?other.value.roomRef:'');
+ const inThisGroup=(row:string)=>labeled(row,'room|group',fact.value.roomRef)||numberedRoomLabel(row,fact.value.roomRef);
+ const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>inThisGroup(row)||!otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref)));
+ return childRequirement(scopedRows.join('\n'));
+}
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
 function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[];causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
  const source=sources.find(s=>s.attachmentId===fact.source.attachmentId);let page=source?.pages?.[fact.source.page-1];
@@ -488,6 +500,8 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
   else if (fact.kind === 'document_reference') ok = exactText(quote, fact.value) && rows.some(row=>exactText(row,fact.value)&&/\b(?:quote|quotation|proposal)\b/i.test(row)&&/\b(?:resend|send|copy|attach|provide|previous|prior|existing|original)\b/i.test(row)&&!/\b(?:new|fresh|revised)\s+(?:quote|quotation|proposal)\b/i.test(row));
   else if (fact.kind === 'room') {
     const boundTasks=tasks.filter(task=>task.factIds.includes(fact.id));
+    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
+    if(!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&sourceForViews?.sourceViews?.some(view=>childRequirementForRoom(originalPage.slice(view.start,view.end),fact,facts)))throw new Error('Conflicting occupancy across message views');
     if(fact.value.quotationBasis==='per_room_rate'){
       const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1]??'',authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       const occupancyBody=authored.replace(/\bfamily\s+offices\b/gi,'corporate offices');
