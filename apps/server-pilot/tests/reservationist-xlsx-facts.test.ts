@@ -87,6 +87,16 @@ describe('reservationist XLSX row facts', () => {
     expect(xlsxRowEntails(fact, source)).toBe(true);
   });
 
+  it('keeps ordinary guest and company names containing heading words as data', () => {
+    const { page, source, dataRows } = sheet(
+      ['Room', 'Guest name', 'Company'],
+      [['101', 'Alex Guest', 'Family Travel'], ['102', 'Jamie Other', 'Travel Firm']],
+    );
+    expect(xlsxRowEntails(factAt(source, page, dataRows[1]!, 'guest', {
+      firstName: 'Jamie', lastName: 'Other', roomRef: '102',
+    }), source)).toBe(true);
+  });
+
   it('does not carry prior columns through an unrecognized multi-column heading', () => {
     const { page, source, dataRows } = sheet(
       ['Room', 'Adults', 'Children', 'First name', 'Last name'],

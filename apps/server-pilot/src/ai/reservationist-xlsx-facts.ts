@@ -25,7 +25,7 @@ const labels: Record<Role, readonly string[]> = {
   party: ['company', 'agency', 'organization', 'organisation'],
   reference: ['confirmation', 'confirmation number', 'reservation reference', 'reservation number'],
 };
-const columnHeadingTerms = /\b(?:accommodation|adult|adults|age|agency|arrival|board|booking|category|check[ -]?(?:in|out)|child|children|company|confirmation|date|departure|family|first|given|guest|group|last|meal|name|occupant|quantity|reference|reservation|room|surname|type)\b/i;
+const columnHeadingTerms = /^(?:(?:accommodation|adult|adults|age|agency|arrival|basis|board|booking|category|check[ -]?(?:in|out)|child|children|company|confirmation|count|date|departure|family|first|given|guest|group|index|last|meal|name|no|number|occupant|of|plan|quantity|ref|reference|reservation|room|surname|total|type)(?:[\s_-]+|$))+$/i;
 
 function parseRow(line: string): Row | undefined {
   try {
@@ -52,7 +52,7 @@ function header(row: Row): Map<Role, number> | undefined {
 
 function looksLikeUnrecognizedHeader(row: Row, columns: Map<Role, number> | undefined): boolean {
   const labelCells = row.cells.filter(cell => {
-    const value = cell.displayText.trim();
+    const value = cell.displayText.trim().replace(/[_\-#.:]+/g, ' ').trim();
     return value.length > 0 && value.length <= 64 && !/\d/.test(value) && columnHeadingTerms.test(value);
   }).length;
   if (labelCells >= 2) return true;
