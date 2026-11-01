@@ -404,7 +404,7 @@ describe('projectCancellationPreflight', () => {
       record: read1B({ grandTotal: 'not 0' }),
     });
     expect(textContainingZero.money.grandTotal.amount).toMatchObject({
-      state: 'observed', value: 'not 0',
+      state: 'ambiguous', reason: 'money_format_unverified',
     });
   });
 
@@ -472,6 +472,15 @@ describe('projectCancellationPreflight', () => {
     expect(missingCard.folio.balance).toMatchObject({
       state: 'unavailable', reason: 'folio_card_unavailable',
     });
+  });
+
+  it('does not classify Folio action text as a deposit amount', () => {
+    const shallow = read1A({ folioFields: [{ name: 'depositreceived', value: 'Post' }] });
+    const deposit = project({ shallow }).folio.depositReceived;
+    expect(deposit).toMatchObject({ state: 'ambiguous', reason: 'money_format_unverified', value: 'Post', sources: ['1a_folio_card'] });
+    const finance = projectFinanceDisplayPreflight({ confirmation: CONFIRMATION, shallow, record: read1B() });
+    expect(finance.folioCard.depositReceived).toEqual(deposit);
+    expect(finance.interpretation.depositCleared).toBe('not_established');
   });
 
   it('keeps requested scope separate and never derives policy or fee from history', () => {

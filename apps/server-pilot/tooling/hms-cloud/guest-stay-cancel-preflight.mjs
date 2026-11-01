@@ -203,6 +203,9 @@ function classified(value, source, money = false) {
     return { state: 'unavailable', reason: 'unsupported_value', sources: [source] };
   }
   if (display === '') return { state: 'blank', value: '', sources: [source] };
+  if (money && !parseMoneyDisplay(display) && !explicitZero(display)) {
+    return { state: 'ambiguous', reason: 'money_format_unverified', value: display, sources: [source] };
+  }
   return {
     state: money && explicitZero(display) ? 'observed_zero' : 'observed',
     value: display,
