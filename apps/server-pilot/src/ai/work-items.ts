@@ -854,7 +854,7 @@ export function storedAnalysis(
         const confirmationNumber = confirmationForStay(sourceStay, payload);
         return {
           ...group,
-          ...(roomTotalByStay.get(slot.stayId) != null ? { roomsTotal: roomTotalByStay.get(slot.stayId)! } : {}),
+          ...(stayId && roomTotalByStay.get(stayId) != null ? { roomsTotal: roomTotalByStay.get(stayId)! } : {}),
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
