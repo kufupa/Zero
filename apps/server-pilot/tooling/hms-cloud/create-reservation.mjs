@@ -21,6 +21,13 @@ function validate(input) {
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
   const fidelity = inspectRequest(input);
+  if (input.mode === 'commit') {
+    for (const key of ['agencyId', 'agencyName', 'arAccountId', 'arAccountName']) {
+      if (Object.hasOwn(input.parties || {}, key) && input.parties[key] != null) {
+        fidelity.unsupported.push({ field: `parties.${key}`, issue: 'not_settable_yet' });
+      }
+    }
+  }
   if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
   if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
   if (input.guaranteeType != null && input.guaranteeType !== 'NGI') {
@@ -57,7 +64,9 @@ function validate(input) {
   if (!code(room.ratePlan, 100)) missing.push('room.ratePlan');
   if (!text(input.guaranteeType)) missing.push('guaranteeType');
   if (input.sourceOfBusiness != null && !text(input.sourceOfBusiness)) missing.push('sourceOfBusiness');
-  if (input.parties?.organizationName != null && !text(input.parties.organizationName)) missing.push('parties.organizationName');
+  for (const key of ['organizationName', 'agencyName', 'arAccountName']) {
+    if (input.parties?.[key] != null && !text(input.parties[key])) missing.push(`parties.${key}`);
+  }
   if (input.note != null && (typeof input.note !== 'string' || !input.note.trim() || input.note.length > 200)) missing.push('note');
   if (input.mode === 'commit') {
     if ([room.roomType, room.ratePlan].some((value) => value && !/^[A-Z0-9]{1,12}$/.test(value))) return { outcome: 'refused', issue: 'native_code_not_supported_yet' };
@@ -72,13 +81,14 @@ const requestShape = {
   '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
   guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
   stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
-  room: ['roomType', 'ratePlan'], parties: ['agencyId', 'organizationId', 'organizationName', 'arAccountId'],
+  room: ['roomType', 'ratePlan'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
   cms: ['send', 'messageId', 'recipient'], approval: ['by', 'at'], booker: ['name', 'contact'],
 };
-const unsupportedPaths = new Set(['parties.agencyId', 'parties.arAccountId', 'booker', 'cms.messageId', 'cms.recipient',
+const unsupportedPaths = new Set(['booker', 'cms.messageId', 'cms.recipient',
   'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
 const optionalNoClear = new Set(['sourceOfBusiness', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
-  'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'cms.send']);
+  'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'parties.agencyId', 'parties.agencyName',
+  'parties.arAccountId', 'parties.arAccountName', 'cms.send']);
 
 function inspectRequest(input) {
   const unsupported = [], invalid = [];
@@ -108,9 +118,11 @@ function inspectRequest(input) {
   for (const [field, value] of [
     ['sourceOfBusiness', input.sourceOfBusiness], ['note', input.note],
     ['guest.search.lastName', input.guest?.search?.lastName], ['guest.search.firstName', input.guest?.search?.firstName],
-    ['guest.search.email', input.guest?.search?.email], ['parties.organizationName', input.parties?.organizationName],
+    ['guest.search.email', input.guest?.search?.email], ...['organizationName', 'agencyName', 'arAccountName']
+      .map((key) => [`parties.${key}`, input.parties?.[key]]),
   ]) if (value != null && typeof value !== 'string') invalid.push(field);
-  for (const [field, value] of [['guest.profileId', input.guest?.profileId], ['parties.organizationId', input.parties?.organizationId]]) {
+  for (const [field, value] of [['guest.profileId', input.guest?.profileId], ...['organizationId', 'agencyId', 'arAccountId']
+    .map((key) => [`parties.${key}`, input.parties?.[key]])]) {
     if (value != null && !(typeof value === 'string' && /^\d+$/.test(value)) &&
         !(Number.isSafeInteger(value) && value >= 0)) invalid.push(field);
   }
@@ -181,6 +193,59 @@ async function selectOrganization(runTool, parties) {
   }
   const selected = await call(runTool, 'selectOrganization', { searchId: search.searchId, nativeId: matches[0].nativeId });
   if (String(selected.nativeId) !== String(matches[0].nativeId)) stop('uncertain', 'requested_field_not_staged', { field: 'parties.organizationId' });
+  return selected;
+}
+
+// Search results are tied to this page and one current picker. Never infer a
+// caller's choice from a sole match; a supplied ID is checked against this run.
+async function prepareParty(runTool, kind, parties, propertyCode, output, missing) {
+  const specs = {
+    agency: { id: 'agencyId', name: 'agencyName', search: 'searchPrimaryBookingAgency', select: 'selectPrimaryBookingAgency', display: 'displayedAgency', form: 'ta1' },
+    organization: { id: 'organizationId', name: 'organizationName', search: 'searchOrganization', select: 'selectOrganization', display: 'displayedOrganization', form: 'company' },
+    arAccount: { id: 'arAccountId', name: 'arAccountName', search: 'searchArAccount', select: 'selectArAccount', display: 'displayedArAccount', form: 'araccountname' },
+  };
+  const spec = specs[kind], id = parties[spec.id], name = text(parties[spec.name]);
+  if (id == null && !name) return null;
+  if (!name && kind !== 'organization') {
+    if (!missing.includes(`parties.${spec.name}`)) missing.push(`parties.${spec.name}`);
+    (output.partySearches ||= {})[kind] = { outcome: 'needs_input', issue: 'name_query_required' };
+    return null;
+  }
+  const byId = kind === 'organization' && id != null;
+  const found = await call(runTool, spec.search, { query: byId ? String(id) : name,
+    ...(byId ? { options: { field: 'nativeId' } } : {}) }, ['matches', 'no_match']);
+  if (!found.searchId || !Array.isArray(found.candidates) || !found.coverage ||
+      typeof found.coverage.possiblyTruncated !== 'boolean') {
+    stop('uncertain', 'party_search_unverified', { field: `parties.${spec.name}`, detail: found });
+  }
+  const evidence = { outcome: found.outcome, query: found.query, criteria: found.criteria,
+    coverage: found.coverage, columns: found.columns, metadata: found.metadata,
+    correlation: found.correlation, candidates: found.candidates };
+  (output.partySearches ||= {})[kind] = evidence;
+  const matches = id == null ? [] : found.candidates.filter((row) => String(row.nativeId ?? '') === String(id));
+  const nameConflict = kind === 'organization' && name && matches.length === 1 && !same(matches[0].name, name);
+  if (id == null || matches.length !== 1 || !text(matches[0]?.name) || nameConflict) {
+    evidence.issue = id == null ? (found.candidates.length ? 'explicit_selection_required' :
+      found.coverage.possiblyTruncated ? 'results_incomplete' : 'no_matches') :
+      matches.length > 1 ? 'id_ambiguous' : matches.length === 1 && !text(matches[0].name) ? 'candidate_name_unverified' :
+      nameConflict ? 'id_name_conflict' : found.coverage.possiblyTruncated ? 'id_not_in_loaded_results' : 'id_not_found';
+    missing.push(`parties.${spec.id}${id == null ? '' : '.selection'}`);
+    await call(runTool, 'closeGuestStayPartyPicker', { propertyCode }, ['closed_unsaved']);
+    return null;
+  }
+  const selected = await call(runTool, spec.select, { searchId: found.searchId, nativeId: matches[0].nativeId });
+  if (String(selected.nativeId) !== String(matches[0].nativeId) || selected.searchId !== found.searchId ||
+      selected.nativeIdEvidence !== 'form_change_response' || !same(selected[spec.display], matches[0].name) ||
+      selected.selectedField?.name !== spec.form || !same(selected.selectedField.value, matches[0].name)) {
+    stop('uncertain', 'requested_field_not_staged', { field: `parties.${spec.id}` });
+  }
+  const selectionEvidenceFields = kind === 'agency'
+    ? ['agencyIataNumber', 'agencyReferenceNumberType', 'agencyReferenceEvidence']
+    : kind === 'arAccount' ? ['nativeReadback'] : [];
+  evidence.selection = { nativeId: selected.nativeId, name: selected[spec.display], nativeIdEvidence: selected.nativeIdEvidence,
+    ...Object.fromEntries(selectionEvidenceFields.filter((key) => Object.hasOwn(selected, key)).map((key) => [key, selected[key]])) };
+  output.applied[kind] = { nativeId: selected.nativeId, name: selected[spec.display] };
+  output.warnings.push({ field: `parties.${spec.id}`, issue: 'id_at_selection_only_in_form' });
   return selected;
 }
 
@@ -257,7 +322,7 @@ export async function createReservation(input, { withSession = withBookingLookup
           Object.assign(output, error.result); missing.push('guest'); await call(runTool, 'closeGuestProfilePicker', {}, ['closed_unsaved']);
         }
       }
-      if (input.parties?.organizationId != null || text(input.parties?.organizationName)) {
+      if (commit && (input.parties?.organizationId != null || text(input.parties?.organizationName))) {
         state.organization = await selectOrganization(runTool, input.parties);
         output.applied.organization = { nativeId: state.organization.nativeId, name: state.organization.displayedOrganization };
         output.warnings.push({ field: 'parties.organizationId', issue: 'id_at_selection_only_in_form' });
@@ -273,6 +338,11 @@ export async function createReservation(input, { withSession = withBookingLookup
       } else if (!commit && input.guaranteeType === 'NGI') {
         missing.push('guaranteeType.staging');
         output.warnings.push({ field: 'guaranteeType', issue: 'requires_verified_labtest_draft' });
+      }
+      if (!commit && input.parties) {
+        for (const kind of ['organization', 'agency', 'arAccount']) {
+          state[kind] = await prepareParty(runTool, kind, input.parties, propertyCode, output, missing);
+        }
       }
       if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
       const note = input.note ?? (commit ? `Proof Labtest create ${randomUUID()}` : null);
@@ -294,12 +364,16 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.guest ? [['guestid', state.guest.selected.nativeId], ['firstname', state.guest.guest.firstName], ['lastname', state.guest.guest.lastName]] : []),
         ...(state.children ? [['children', state.children.actualChildAges.length], ...Object.entries(state.children.ageBandCounts)] : []),
         ...(state.organization ? [['company', state.organization.displayedOrganization]] : []),
+        ...(state.agency ? [['ta1', state.agency.displayedAgency]] : []),
+        ...(state.arAccount ? [['araccountname', state.arAccount.displayedArAccount]] : []),
         ...(state.guarantee ? [['guaranteetype', state.guarantee.actual.display]] : []),
         ...(commit || input.cms?.send === false ? [['udfchkbox04', false]] : []),
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
-      output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}), ...(state.organization ? { organizationId: 'at_selection_only' } : {}) };
+      output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),
+        ...(state.organization ? { organizationId: 'at_selection_only' } : {}),
+        ...(state.agency ? { agencyId: 'at_selection_only' } : {}), ...(state.arAccount ? { arAccountId: 'at_selection_only' } : {}) };
       if (!commit) {
         output.outcome = checked.unsupportedFields.length ? 'unsupported' : missing.length ? 'needs_input' : 'prepared';
         if (checked.unsupportedIssue) output.issue ||= checked.unsupportedIssue;
