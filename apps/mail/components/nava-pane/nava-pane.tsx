@@ -2057,6 +2057,28 @@ export function NavaPane({
     </>
   );
 
+  const setReviewItemHandled = async (itemId: string, handled: boolean) => {
+    const item = quoteSession.reviewItems.find((row) => row.id === itemId);
+    if (item?.kind === 'staff_review') {
+      const mutate = staffQuoteFromTrpc(trpcClient).drafts.setVoucherReviewHandled?.mutate;
+      if (!mutate || !item.workItemId || !item.runId) {
+        toast.warning('Voucher review acknowledgement unavailable. Refresh the selected email.');
+        return;
+      }
+      preparedTaskGeneration.current++;
+      try {
+        await mutate({ workItemId: item.workItemId, runId: item.runId, reviewItemId: item.id, handled });
+        dispatchQuote({ type: handled ? 'handle_review_item' : 'unhandle_review_item', itemId });
+      } catch {
+        toast.warning(`Could not ${handled ? 'save' : 'undo'} the voucher review acknowledgement. Refresh and try again.`);
+      } finally {
+        preparedTaskGeneration.current++;
+      }
+      return;
+    }
+    dispatchQuote({ type: handled ? 'handle_review_item' : 'unhandle_review_item', itemId });
+  };
+
   return (
     <HmsJobNoticeProvider
       emailKey={activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null}
@@ -2393,8 +2415,8 @@ export function NavaPane({
                 dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
               }
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html, staffEdited: true })}
-              onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
-              onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
+              onHandleReviewItem={(itemId) => setReviewItemHandled(itemId, true)}
+              onUndoReviewItem={(itemId) => setReviewItemHandled(itemId, false)}
               onSetPreparedTaskHandled={async (task, handled) => {
                 const mutate = staffQuoteFromTrpc(trpcClient).drafts.setRequestHandled?.mutate;
                 if (!mutate || !task.workItemId || !task.runId) throw new Error('Request review unavailable');

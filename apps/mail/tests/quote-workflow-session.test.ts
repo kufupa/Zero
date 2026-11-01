@@ -485,6 +485,19 @@ describe('quote session', () => {
       expect(session.reviewItems).toEqual(expect.arrayContaining([expect.objectContaining({id:'unread',kind:'document_failure'})]));
   });
 
+  it('keeps a taskless source-bound voucher review visible in the staff review list', () => {
+    const start = withStaffSource(reduceQuoteSession(initialQuoteSession(), {type:'selection',binding:bind()}));
+    const voucher = {id:'voucher:message:mail-1:a:0:22',kind:'voucher_review' as const,text:'attached hotel voucher',
+      sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',
+      reason:'No voucher has been validated.',blockingQuote:false,status:'open' as const};
+    const actions = {type:'staff_actions_ready' as const,actions:[voucher]};
+    const analysis = {type:'analysis_ready' as const,analysis:{intent:'other' as const,groups:[],secondaryAsks:[],alternatives:[]}};
+    const actionsFirst = reduceQuoteSession(reduceQuoteSession(start,actions),analysis);
+    const analysisFirst = reduceQuoteSession(reduceQuoteSession(start,analysis),actions);
+    for (const session of [actionsFirst,analysisFirst])
+      expect(session.reviewItems).toContainEqual(expect.objectContaining({id:voucher.id,kind:'staff_review',sourceRef:'message:mail-1'}));
+  });
+
   it('records unsynced, missing-source, failed, and unsupported states', () => {
     const start = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     expect(reduceQuoteSession(start, { type: 'analysis_unsynced' }).phase).toBe('unsynced');

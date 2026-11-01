@@ -9,7 +9,7 @@ import {assertReservationistResultFreshForAction} from './draft-approval.js';
 import type {ModelAdapter} from './bedrock/adapter.js';
 import type {AttachmentAdmission} from './reservationist-attachment-input.js';
 import {assertDocumentRequestContinuation} from './reservationist-document-continuation.js';
-import {extractReservationistPlan} from './reservationist-extraction.js';
+import {extractReservationistPlan,RESERVATIONIST_VOUCHER_REVIEW_REASON,unmatchedCurrentVoucherReviewSources} from './reservationist-extraction.js';
 import type {ValidatedDocumentPlan,ValidatedDocumentFact} from './reservationist-document-facts.js';
 import type {PreparedFact} from './prepared-draft-input.js';
 import type {GeneratedDraftArtifact} from './drafts.js';
@@ -220,7 +220,24 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
    }
    const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!;
    const ambiguity=numberReviewAttachments();
-   const plan={tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),...(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted?{sourceRecoveries:[...options.admissions.filter(a=>a.status==='manual_required').map(a=>({kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,sourceKind:'attachment' as const,messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,signatureNoise:a.metadata.signatureNoise===true,disclosure:'staff_only' as const,provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]}})),...ambiguity],noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{})};plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
+   const voucherReviews=unmatchedCurrentVoucherReviewSources(extracted.tasks,input.messages,input.trigger.id).map(source=>({
+    kind:'voucher_review' as const,reason:RESERVATIONIST_VOUCHER_REVIEW_REASON,sourceRef:source.attachmentId,sourceHash:source.sourceHash,
+    sourceKind:'message' as const,messageId:input.trigger.id,page:source.page,start:source.start,end:source.end,quote:source.quote,disclosure:'staff_only' as const,
+   }));
+   const explicitNoAction=Boolean(extracted.noActionSelectionCompleted||extracted.sourceReviewSelectionCompleted),tasklessVoucherReview=!extracted.tasks.length&&voucherReviews.length>0;
+   const attachmentReviews=explicitNoAction||tasklessVoucherReview?[...options.admissions.filter(a=>a.status==='manual_required').map(a=>({
+    kind:'attachment_manual' as const,reason:a.reason,sourceRef:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,sourceKind:'attachment' as const,
+    messageId:a.metadata.messageId,mimeType:a.metadata.mimeType,signatureNoise:a.metadata.signatureNoise===true,disclosure:'staff_only' as const,
+    provenance:{reason:a.reason,taskIds:[],sources:[{attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash}]},
+   })),...ambiguity]:[];
+   const sourceRecoveries=[...attachmentReviews,...voucherReviews];
+   const plan={
+    tasks:extracted.tasks.map(t=>({id:t.id,kind:t.kind,required:true,source:t.source})),facts:extracted.facts,
+    factRecoveryProvenance:(extracted.unresolvedDiagnostics??[]).filter(d=>d.phase==='fact_enrichment').map(({phase: _phase,...provenance})=>provenance),
+    ...(sourceRecoveries.length?{sourceRecoveries}:{}),
+    ...(explicitNoAction&&!voucherReviews.length?{noAction:{kind:extracted.sourceReviewSelectionCompleted||ambiguity.length?'source_review' as const:'no_current_request' as const,modelSelectionCompleted:true as const,inputDigest:quoteDigest(input),triggerMessageId:input.trigger.id,sourceHash:createHash('sha256').update(triggerMessage.text).digest('hex')}}:{}),
+   };
+   plans.set(plan,extracted);planScopes.set(plan,scopeIdentity(input));return plan;
   },
   async execute(plan,input,signal,evaluation?:import('./reservationist-runtime.js').ReservationistSourceEvaluation){
    const extracted=plans.get(plan);if(!extracted)throw new Error('validated_plan_required');

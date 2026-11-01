@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
+import { RESERVATIONIST_VOUCHER_REVIEW_REASON } from './reservationist-extraction.js';
 
 const STATE_KEY = 'reservationistHandledRequests';
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -41,6 +42,26 @@ export function requestCompletionKeys(result: unknown, runId: string): Map<strin
 export function handledRequestKeys(state: unknown): Set<string> {
   const saved = object(object(state)[STATE_KEY]);
   return new Set(Object.entries(saved).filter(([key, handled]) => /^[a-f0-9]{64}$/.test(key) && handled === true).map(([key]) => key));
+}
+
+function voucherReviewCompletionEntry(raw: unknown): [string, string] | undefined {
+  const recovery = object(raw), { sourceRef, sourceHash, messageId, page, start, end, quote } = recovery;
+  if (recovery.kind !== 'voucher_review' || recovery.disclosure !== 'staff_only' ||
+      recovery.reason !== RESERVATIONIST_VOUCHER_REVIEW_REASON || recovery.sourceKind !== 'message' ||
+      typeof messageId !== 'string' || !messageId || typeof sourceRef !== 'string' || sourceRef.length > 512 || sourceRef !== `message:${messageId}` ||
+      typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash) || page !== 1 ||
+      !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || Number(start) < 0 || Number(end) <= Number(start) ||
+      typeof quote !== 'string' || quote.length !== Number(end) - Number(start) ||
+      !/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/i.test(quote)) return undefined;
+  const id = `voucher:${sourceRef}:${sourceHash}:${start}:${end}`;
+  return [id, digest(['voucher-review-v1', sourceRef, sourceHash, page, start, end])];
+}
+
+/** Taskless voucher acknowledgements bind to the exact source span, not a fabricated task ID. */
+export function voucherReviewCompletionKeys(result: unknown): Map<string, string> {
+  const value = object(result);
+  if (value.version !== 1 || !Array.isArray(value.sourceRecoveries)) return new Map();
+  return new Map(value.sourceRecoveries.map(voucherReviewCompletionEntry).filter((entry): entry is [string, string] => !!entry));
 }
 
 /** A reclassification creates a new item; acknowledgements belong to the source email. */
@@ -94,14 +115,21 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
   if (result == null) return false; // Older non-reservationist runs have no task inventory.
   const value = object(result);
   if (value.version !== 1 || !Array.isArray(value.tasks)) return true;
-  // An unread business attachment is staff work even when no ask was extracted.
-  // A person can still explicitly close the work item after reviewing it.
+  // Unread attachments remain open until reviewed. Taskless voucher checks have
+  // their own source-bound acknowledgement rather than an invented task.
   if (Array.isArray(value.sourceRecoveries) && value.sourceRecoveries.some(raw => {
     const recovery = object(raw);
-    return recovery.kind === 'attachment_manual' && recovery.disclosure === 'staff_only' && recovery.signatureNoise !== true;
+    return recovery.disclosure === 'staff_only' && recovery.kind === 'attachment_manual' && recovery.signatureNoise !== true;
+  })) return true;
+  const handled = handledRequestKeys(state);
+  const voucherRecoveries = Array.isArray(value.sourceRecoveries)
+    ? value.sourceRecoveries.map(object).filter(recovery => recovery.kind === 'voucher_review') : [];
+  if (voucherRecoveries.some(recovery => {
+    const entry = voucherReviewCompletionEntry(recovery);
+    return !entry || !handled.has(entry[1]);
   })) return true;
   if (!value.tasks.length) return false;
-  const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
+  const keys = requestCompletionKeys(result, runId);
   return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
 }
 
@@ -159,10 +187,10 @@ export function hasOutstandingRequestHistory(runs: readonly HistoryRun[], state:
     outstandingSourceRecoveries(runs).length > 0;
 }
 
-/** Staff acknowledgement only; it does not authorize a send or an HMS write. */
-export async function setRequestHandled(db: DB, input: {
-  transportId: string; workItemId: string; userId: string; runId: string; taskId: string; handled: boolean;
-}): Promise<'recorded' | 'not_found' | 'stale'> {
+type HandleInput = { transportId: string; workItemId: string; userId: string; runId: string; handled: boolean };
+type CompletionKey = (result: unknown, runId: string) => string | undefined;
+
+async function setReviewHandled(db: DB, input: HandleInput, completionKey: CompletionKey): Promise<'recorded' | 'not_found' | 'stale'> {
   return db.transaction(async tx => {
     const [identity] = await tx.select({ threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
@@ -187,7 +215,7 @@ export async function setRequestHandled(db: DB, input: {
         eq(aiWorkflowRun.triggerMessageId, item.sourceMessageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
         eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded'))).limit(1);
     if (!run) return 'stale';
-    const key = requestCompletionKeys(run.metrics?.reservationistResult, run.id).get(input.taskId);
+    const key = completionKey(run.metrics?.reservationistResult, run.id);
     if (!key) return 'stale';
     const states = await handledRequestStates(tx as unknown as DB, { transportId: input.transportId, threadId: item.threadId, sourceIds: [item.sourceMessageId] });
     const handled = handledRequestKeys(states.get(item.sourceMessageId));
@@ -206,4 +234,14 @@ export async function setRequestHandled(db: DB, input: {
       type: 'status.changed', value: { from: item.status, to: 'needs_you', reason: 'request_reopened' } });
     return 'recorded';
   });
+}
+
+/** Staff acknowledgement only; it does not authorize a send or an HMS write. */
+export function setRequestHandled(db: DB, input: HandleInput & { taskId: string }): Promise<'recorded' | 'not_found' | 'stale'> {
+  return setReviewHandled(db, input, (result, runId) => requestCompletionKeys(result, runId).get(input.taskId));
+}
+
+/** A voucher check remains separate from task inventory, but can be durably acknowledged. */
+export function setVoucherReviewHandled(db: DB, input: HandleInput & { reviewItemId: string }): Promise<'recorded' | 'not_found' | 'stale'> {
+  return setReviewHandled(db, input, result => voucherReviewCompletionKeys(result).get(input.reviewItemId));
 }
