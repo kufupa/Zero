@@ -413,9 +413,16 @@ it('requires clarification when one citation overlaps duplicate stays and anothe
  expect(()=>validateCrossViewDates(duplicate,changed,duplicate))
   .toThrow('Explicit same-stay correction requires source clarification');
 
+ const groupStay='Group A: Arrival 21 December 2026; departure 23 December 2026.';
+ const shiftedGroup='Group A: Arrival 22 December 2026; departure 24 December 2026.';
+ expect(()=>validateCrossViewDates(`${groupStay}\n${groupStay}`,`${shiftedGroup}\n${shiftedGroup}`,`${groupStay}\n${groupStay}`))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
  const other='Please quote another room: Arrival 21 December 2026; departure 24 December 2026.';
  const repeatedAndOther=`${duplicate}\n${other}`;
  expect(validateCrossViewDates(repeatedAndOther,repeatedAndOther,duplicate).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ expect(validateCrossViewDates(duplicate,'Office closure: 22–24 December 2026.',duplicate).facts[0]!.value)
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 

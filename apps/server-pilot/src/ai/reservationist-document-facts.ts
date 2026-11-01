@@ -318,8 +318,9 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     const sameSourcePair = (pair: StayPair) => compatible(pair) &&
       sameDate(candidate.arrival, pair.arrival) && sameDate(candidate.departure, pair.departure);
     const conflictingCounterpart = otherPairs.some(pair => compatible(pair) &&
-      (sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
-      (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure)));
+      (!!candidate.entity && pair.entity === candidate.entity ||
+        ((sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
+          (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure)))));
     return conflictingCounterpart && valuePairs.filter(sameSourcePair).length > otherPairs.filter(sameSourcePair).length;
   });
   if (ambiguousCitationConflict) throw new Error('Explicit same-stay correction requires source clarification');
