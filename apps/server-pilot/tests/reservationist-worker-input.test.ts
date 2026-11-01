@@ -278,6 +278,7 @@ describe('reservationist worker input', () => {
     for (const explicit of [false, true]) {
       await expect(extract('Do not include it.', explicit)).rejects.toThrow('Ambiguous original text span');
       await expect(extract('Do not select it.', explicit)).rejects.toThrow('Ambiguous original text span');
+      await expect(extract('Do not choose it.', explicit)).rejects.toThrow('Ambiguous original text span');
       await expect(extract('Can you store our luggage? Please do not leave it outside.', explicit))
         .resolves.toMatchObject({ facts: [{ id: 'meal', value: 'breakfast' }] });
     }

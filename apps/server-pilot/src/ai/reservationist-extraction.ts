@@ -166,7 +166,7 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
     /\b(?:room[\s-]*only|breakfast|dinner|meals?|board)\b/i.test(part)&&
     /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
-  const relevantReferent=referent&&/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part);
+  const relevantReferent=referent&&(!previous&&negative.test(part)||/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part));
   return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)&&!countOfOtherQuestion||modifying&&relevantReferent):
    modifying&&(shared||correction.test(part)&&!countOfOtherQuestion||relevantReferent));
  };
