@@ -1260,11 +1260,15 @@ export const draftsRouter = tRouter({
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: false, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
-      if (!summary && !earlier.length) return null;
-      const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier requests need review.', tasks: [], pricingProof: [], staffActions: [] };
+      // A legacy run with no reservationist result cannot clear an earlier unread-file warning.
+      const lastKnown = item && !summary ? runs.find(run => run.metrics?.reservationistResult != null) : undefined;
+      const priorSummary = lastKnown ? await loadResultReviewSummary(db, lastKnown.metrics?.reservationistResult, transportId, input.threadId, lastKnown.id, item?.state) : undefined;
+      const earlierSources = priorSummary?.staffActions?.filter(action => action.kind === 'business_document_failure') ?? [];
+      if (!summary && !earlier.length && !earlierSources.length) return null;
+      const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
       return { replyToMessageId: input.messageId, runId: latest.id,
         ...(item ? { workItemId: input.workItemId } : {}),
-        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier] } };
+        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier], staffActions: [...(reviewSummary.staffActions ?? []), ...earlierSources] } };
     }),
 
   /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */

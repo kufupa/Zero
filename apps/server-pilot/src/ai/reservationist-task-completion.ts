@@ -81,8 +81,10 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
 
 /** Keep earlier asks, but let the latest review replace stale file warnings. */
 export function hasOutstandingRequestHistory(runs: readonly { id: string; result: unknown }[], state: unknown): boolean {
-  const [latest, ...earlier] = runs;
-  return Boolean(latest && (hasOutstandingRequests(latest.result, latest.id, state) || outstandingRequestHistory(earlier, state).length > 0));
+  const index = runs.findIndex(run => run.result != null);
+  if (index < 0) return false;
+  const latest = runs[index]!;
+  return hasOutstandingRequests(latest.result, latest.id, state) || outstandingRequestHistory(runs.slice(index + 1), state).length > 0;
 }
 
 /** Staff acknowledgement only; it does not authorize a send or an HMS write. */

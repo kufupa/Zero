@@ -44,6 +44,7 @@ it('replaces an old unread-file warning after a later review, without losing ear
   const oldWarning = {id:'old', result:{version:1,tasks:[],sourceRecoveries:[recovery]}};
   expect(hasOutstandingRequestHistory([latest, oldWarning], {})).toBe(false);
   expect(hasOutstandingRequestHistory([oldWarning], {})).toBe(true);
+  expect(hasOutstandingRequestHistory([{id:'legacy',result:undefined}, oldWarning], {})).toBe(true);
   const oldAsk = {id:'older', result:{version:1,tasks:[task('one',0)]}};
   expect(hasOutstandingRequestHistory([latest, oldAsk], {})).toBe(true);
 });

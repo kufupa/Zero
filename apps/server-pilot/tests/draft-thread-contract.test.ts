@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aiDraftGeneration,
   aiWorkflowRun,
+  attachment,
   mailDraft,
   mailThread,
   message,
@@ -23,7 +24,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
       const oldGeneration = randomUUID(), newGeneration = randomUUID();
-      const oldRun = randomUUID(), newRun = randomUUID();
+      const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID();
       await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
         threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
       await db.insert(message).values([parentMessageId, otherMessageId].map(id => ({
@@ -31,6 +32,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'], textBody: 'Need help',
         receivedAt: new Date('2026-07-06T10:00:00Z'),
       })));
+      await db.insert(attachment).values({id:fileId,messageId:parentMessageId,filename:'document.pdf',mimeType:'application/pdf',sizeBytes:10,s3Key:'synthetic',sha256:'a'.repeat(64)});
       await db.insert(aiDraftGeneration).values([oldGeneration, newGeneration].map(id => ({
         id, transportId: TRANSPORT_ID, threadId, requestedByUserId: 'user-navaai',
         contextMessageIds: [parentMessageId], model: 'test', promptVersion: 'test',
@@ -51,7 +53,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         { id: newRun, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
           triggerMessageId: parentMessageId, generationId: newGeneration, runKind: 'candidate_draft',
           modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:10:00Z'),
-          metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'new', kind: 'question' }] } } },
+          metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'new', kind: 'question' }],
+            sourceRecoveries:[{kind:'attachment_manual',disclosure:'staff_only',sourceKind:'attachment',sourceRef:fileId,sourceHash:'a'.repeat(64),messageId:parentMessageId,reason:'no_embedded_text'}] } } },
       ]);
       const { drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
@@ -70,6 +73,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const [item] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
         sourceMessageId: parentMessageId, kind: 'other' }).returning();
       const input = { threadId, messageId: parentMessageId, workItemId: item!.id };
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.staffActions).toMatchObject([{kind:'business_document_failure',filename:'document.pdf'}]);
       expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
         { id: 'new', runId: newRun, label: 'Earlier request', handled: false },
         { id: 'old', runId: oldRun, label: 'Earlier request', handled: false },
