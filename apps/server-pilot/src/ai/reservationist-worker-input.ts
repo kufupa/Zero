@@ -45,10 +45,7 @@ const time = (date: Date | null): number | null =>
 function modelMessageText(row: ReservationistWorkerMessage, normalized: string): string {
   if (row.textBody?.trim() || !normalized.includes('<')) return maskIncomingCardNumbers(normalized);
   const $ = load(normalized, null, false);
-  $('details.quoted-toggle, blockquote').each((_, element) => {
-    $(element).prepend('\nFrom: quoted history\n');
-    $(element).children('summary').remove();
-  });
+  $('details.quoted-toggle > summary').remove();
   $('br, hr').replaceWith('\n');
   $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').prepend('\n').append('\n');
@@ -56,7 +53,14 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
     const alt = $(element).attr('alt')?.trim() ?? '';
     $(element).replaceWith($('<span>').text(/^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt));
   });
-  const rendered = $.root().text().replace(/\u00a0/g, ' ').trim();
+  const history: string[] = [];
+  $('details.quoted-toggle, blockquote').each((_, element) => {
+    if ($(element).parents('details.quoted-toggle, blockquote').length) return;
+    const quoted = $(element).text().trim();
+    if (quoted) history.push(`From: quoted history\n${quoted}`);
+    $(element).remove();
+  });
+  const rendered = [$.root().text().trim(), ...history].filter(Boolean).join('\n\n').replace(/\u00a0/g, ' ').trim();
   return maskIncomingCardNumbers(rendered);
 }
 
