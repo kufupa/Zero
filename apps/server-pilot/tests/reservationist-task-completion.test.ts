@@ -228,7 +228,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       release();
       if (held) await held.catch(() => undefined);
       if (completion) await completion.catch(() => undefined);
-      await Promise.all([setup.close(),locker.close(),finisher.close()]);
+      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
+      finally { await Promise.all([setup.close(),locker.close(),finisher.close()]); }
     }
   }, 15_000);
 
@@ -271,7 +272,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(acknowledgement?[acknowledgement]:[])]);
-      await Promise.all([setup.close(),approver.close(),acknowledger.close()]);
+      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
+      finally { await Promise.all([setup.close(),approver.close(),acknowledger.close()]); }
     }
   }, 15_000);
 
@@ -315,7 +317,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(reading?[reading]:[])]);
-      await Promise.all([setup.close(),approver.close(),reader.close()]);
+      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
+      finally { await Promise.all([setup.close(),approver.close(),reader.close()]); }
     }
   }, 15_000);
 
@@ -365,7 +368,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(importing?[importing]:[]),...(reading?[reading]:[])]);
-      await Promise.all([setup.close(),importer.close(),reader.close()]);
+      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
+      finally { await Promise.all([setup.close(),importer.close(),reader.close()]); }
     }
   }, 15_000);
 
@@ -420,7 +424,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(refresh?[refresh]:[]),...(reread?[reread]:[])]);
-      await Promise.all([setup.close(),refresher.close(),reader.close()]);
+      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
+      finally { await Promise.all([setup.close(),refresher.close(),reader.close()]); }
     }
   }, 15_000);
 });
