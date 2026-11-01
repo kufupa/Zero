@@ -305,6 +305,10 @@ describe('reservationist worker input', () => {
       `${groupA}\nGroup B: Please quote one room: Arrival 28 December; departure 30 December.`,
       groupA, '21 December', '23 December'))
       .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
+    const sameAsk = 'Group A: Please quote one room.';
+    await expect(extract(`${sameAsk}\nGroup A: Arrival 21 December; departure 23 December.`,
+      `${sameAsk}\nGroup A: Arrival 21 December; departure 24 December.`, sameAsk, '21 December', '23 December'))
+      .rejects.toThrow('Ambiguous original text span');
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
