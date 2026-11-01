@@ -184,62 +184,116 @@ export function normalizedDate(input: string, yearContext?: number): string {
     throw new Error('Invalid document date');
   return iso;
 }
-/** Offsets remain bound to the combined hashed page and one authored view. */
-function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource){
- const page=source.pages?.[fact.source.page-1],start=fact.source.start!,end=fact.source.end!;
- if(!page)throw new Error('Cited text source page missing');
- if(!source.sourceViews)return{page,start,end};
- const view=source.sourceViews.find(candidate=>start>=candidate.start&&end<=candidate.end);
- const otherViews=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!);
- const other=otherViews.join('\n');
- const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
- const datePattern=new RegExp(`\\b(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`,'gi');
- const dateMatches=(text:string)=>[...text.matchAll(new RegExp(datePattern.source,'gi'))];
- const dateTokens=(text:string)=>dateMatches(text).map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
- const dateKey=(token:string)=>{try{const year=/\b\d{4}\b/.test(token),date=/^\d{1,2}[/-]\d{1,2}$/.test(token)?normalizedDate(token,2000):normalizedDate(year?token:`${token} 2000`);return{dayMonth:date.slice(5),year:year?date.slice(0,4):undefined};}catch{return;}};
- const sameDate=(a:string,b:string)=>{const left=dateKey(a),right=dateKey(b);return!!left&&!!right&&left.dayMonth===right.dayMonth&&(!left.year||!right.year||left.year===right.year);};
- const stayPairs=(text:string)=>{
-  const pairs:{arrival:string;departure:string;start:number;end:number;scope:string;ordinal:number;entity?:string}[]=[];
-  let previousEnd=0,arrival:{date:string;labelStart:number}|undefined;
-  const ordinals=new Map<string,number>();
-  for(const match of dateMatches(text)){
-   const gap=text.slice(previousEnd,match.index!),label=[...gap.matchAll(/\b(arrival|check[ -]?in|depart(?:ure)?|check[ -]?out)\b/gi)].at(-1);
-   if(label){
-    const role=label[1]!.toLowerCase(),labelStart=previousEnd+label.index!,isArrival=/^(?:arrival|check[ -]?in)$/.test(role),isDeparture=/^(?:depart(?:ure)?|check[ -]?out)$/.test(role);
-    if(isArrival)arrival={date:match[0],labelStart};
-    else if(isDeparture&&arrival){
-     const before=text.slice(0,arrival.labelStart),boundary=Math.max(before.lastIndexOf('\n'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'),before.lastIndexOf(';'));
-     const context=text.slice(boundary+1,arrival.labelStart),heading=/(?:\bgroup\s+([\p{L}\p{N}_-]+)|\broom\s+(?:#\s*)?(\d+))\s*:\s*$/iu.exec(text.slice(0,boundary).trimEnd());
-     const entity=/\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase()??/\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1]??heading?.[1]?.toLowerCase()??heading?.[2];
-     const scope=`${entity??''}|${text.slice(boundary+1,match.index!+match[0].length).replace(new RegExp(datePattern.source,'gi'),' date ').replace(/\bcheck[ -]?in\b/gi,'arrival').replace(/\bcheck[ -]?out\b/gi,'departure').replace(/[^\p{L}\p{N}]+/gu,' ').toLowerCase().trim()}`;
-     const ordinal=ordinals.get(scope)??0;ordinals.set(scope,ordinal+1);
-     pairs.push({arrival:arrival.date,departure:match[0],start:arrival.labelStart,end:match.index!+match[0].length,scope,ordinal,...(entity?{entity}:{})});
-     arrival=undefined;
+/** Translate a combined-message citation into its authored or explicitly quoted view. */
+function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, source: DocumentSource) {
+  const page = source.pages?.[fact.source.page - 1], start = fact.source.start!, end = fact.source.end!;
+  if (!page) throw new Error('Cited text source page missing');
+  if (!source.sourceViews) return { page, start, end };
+  const view = source.sourceViews.find(candidate => start >= candidate.start && end <= candidate.end);
+  const otherViews = source.sourceViews.filter(candidate => candidate !== view)
+    .map(candidate => page.slice(candidate.start, candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!);
+  const other = otherViews.join('\n');
+  const cited = view ? page.slice(view.start, view.end).replace(/\s+/g, ' ').toLowerCase() : '';
+  const datePattern = new RegExp(`\\b(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`, 'gi');
+  const dateMatches = (text: string) => [...text.matchAll(new RegExp(datePattern.source, 'gi'))];
+  const dateTokens = (text: string) => dateMatches(text).map(match => match[0].replace(/\s+/g, ' ').toLowerCase());
+  const dateKey = (token: string) => {
+    try {
+      const year = /\b\d{4}\b/.test(token), date = /^\d{1,2}[/-]\d{1,2}$/.test(token)
+        ? normalizedDate(token, 2000) : normalizedDate(year ? token : `${token} 2000`);
+      return { dayMonth: date.slice(5), year: year ? date.slice(0, 4) : undefined };
+    } catch { return; }
+  };
+  const sameDate = (a: string, b: string) => {
+    const left = dateKey(a), right = dateKey(b);
+    return !!left && !!right && left.dayMonth === right.dayMonth && (!left.year || !right.year || left.year === right.year);
+  };
+  const stayPairs = (text: string) => {
+    const pairs: { arrival: string; departure: string; start: number; end: number; scope: string; ordinal: number; entity?: string }[] = [];
+    let previousEnd = 0, arrival: { date: string; labelStart: number } | undefined;
+    const ordinals = new Map<string, number>();
+    for (const match of dateMatches(text)) {
+      const gap = text.slice(previousEnd, match.index!), label = [...gap.matchAll(/\b(arrival|check[ -]?in|depart(?:ure)?|check[ -]?out)\b/gi)].at(-1);
+      if (label) {
+        const role = label[1]!.toLowerCase(), labelStart = previousEnd + label.index!;
+        const isArrival = /^(?:arrival|check[ -]?in)$/.test(role), isDeparture = /^(?:depart(?:ure)?|check[ -]?out)$/.test(role);
+        if (isArrival) arrival = { date: match[0], labelStart };
+        else if (isDeparture && arrival) {
+          const before = text.slice(0, arrival.labelStart);
+          const boundary = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf(';'));
+          const context = text.slice(boundary + 1, arrival.labelStart);
+          const heading = /(?:\bgroup\s+([\p{L}\p{N}_-]+)|\broom\s+(?:#\s*)?(\d+))\s*:\s*$/iu.exec(text.slice(0, boundary).trimEnd());
+          const entity = /\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase() ??
+            /\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1] ?? heading?.[1]?.toLowerCase() ?? heading?.[2];
+          const scope = `${entity ?? ''}|${text.slice(boundary + 1, match.index! + match[0].length)
+            .replace(new RegExp(datePattern.source, 'gi'), ' date ').replace(/\bcheck[ -]?in\b/gi, 'arrival')
+            .replace(/\bcheck[ -]?out\b/gi, 'departure').replace(/[^\p{L}\p{N}]+/gu, ' ').toLowerCase().trim()}`;
+          const ordinal = ordinals.get(scope) ?? 0;
+          ordinals.set(scope, ordinal + 1);
+          pairs.push({ arrival: arrival.date, departure: match[0], start: arrival.labelStart,
+            end: match.index! + match[0].length, scope, ordinal, ...(entity ? { entity } : {}) });
+          arrival = undefined;
+        }
+      }
+      previousEnd = match.index! + match[0].length;
     }
-   }
-   previousEnd=match.index!+match[0].length;
-  }
-  return pairs;
- };
- const citedDates=dateTokens(fact.source.quote??''),otherDates=dateTokens(other);
- const sourcePairs=view?stayPairs(page.slice(view.start,view.end)):[],localStart=view?start-view.start:start,localEnd=view?end-view.start:end,overlapping=sourcePairs.filter(pair=>pair.start<localEnd&&pair.end>localStart),valuePairs=overlapping.filter(pair=>sameDate(pair.arrival,fact.value.arrival)&&sameDate(pair.departure,fact.value.departure)),sourcePair=valuePairs.length===1?valuePairs[0]:overlapping.length===1?overlapping[0]:undefined,otherPairs=otherViews.flatMap(stayPairs),byScope=sourcePair?otherPairs.filter(pair=>pair.scope===sourcePair.scope&&pair.ordinal===sourcePair.ordinal):[],byEntity=sourcePair?.entity?otherPairs.filter(pair=>pair.entity===sourcePair.entity):[],fallback=sourcePair&&sourcePairs.length===1&&otherPairs.length===1&&!(sourcePair.entity&&otherPairs[0]!.entity&&sourcePair.entity!==otherPairs[0]!.entity)&&(sameDate(sourcePair.arrival,otherPairs[0]!.arrival)||sameDate(sourcePair.departure,otherPairs[0]!.departure))?[otherPairs[0]!]:[],corresponding=byScope.length?byScope:byEntity.length===1?byEntity:fallback;
- if(corresponding.some(pair=>!sameDate(sourcePair!.arrival,pair.arrival)||!sameDate(sourcePair!.departure,pair.departure)))throw new Error('Explicit same-stay correction requires source clarification');
- const samePair=corresponding.length?corresponding.every(pair=>sameDate(sourcePair!.arrival,pair.arrival)&&sameDate(sourcePair!.departure,pair.departure)):citedDates.length===2&&/\b(?:arrival|check[ -]?in)\b[\s\S]*\b(?:departure|check[ -]?out)\b/i.test(other)&&JSON.stringify(otherDates)===JSON.stringify(citedDates);
- if(otherViews.some(otherView=>{
-  let otherHeading:string|undefined;
-  return otherView.split(/[;.!?\n]+/).some(sentence=>{
-  const heading=/^\s*(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\s*:/iu.exec(sentence);if(heading)otherHeading=(heading[1]??heading[2]!).toLowerCase();
-  const scopes=[...sentence.matchAll(/\b(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\b/giu)].map(match=>(match[1]??match[2]!).toLowerCase()),scope=scopes[0]??otherHeading,otherStay=!!sourcePair?.entity&&scope!==undefined&&scope!==sourcePair.entity&&scopes.every(entity=>entity===scope)&&!/\b(?:all|both|every|everyone)\b/i.test(sentence);
-  const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
-  const negated=/\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
-  const dates=dateTokens(sentence),sameDateSequence=dates.length>0&&dates.length===citedDates.length&&dates.every((date,index)=>sameDate(date,citedDates[index]!)),samePairDate=dates.length>0&&dates.every(date=>sourcePair?[sourcePair.arrival,sourcePair.departure].some(value=>sameDate(date,value)):citedDates.some(value=>sameDate(date,value))),sameDates=!negated&&(sameDateSequence||samePair&&samePairDate);
-  const timeOnly=/\b(?:arrival|depart(?:ure)?|check[ -]?(?:in|out))\s+time\b/i.test(sentence)&&!/\bdates?\b/i.test(sentence)&&dateTokens(sentence).length===0,correction=!timeOnly&&/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
-  return !otherStay&&(withdrawn||correction)&&!sameDates&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase());
-  });
- }))throw new Error('Explicit same-stay correction requires source clarification');
- if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
- const quoted=source.sourceViews.find(view=>view.quoted&&start>=view.quoted.start&&end<=view.quoted.end)?.quoted;if(!quoted)throw new Error('Cited text crosses message alternatives');
- return{page:page.slice(quoted.start,quoted.end),start:start-quoted.start,end:end-quoted.start};
+    return pairs;
+  };
+  const citedDates = dateTokens(fact.source.quote ?? ''), otherDates = dateTokens(other);
+  const sourcePairs = view ? stayPairs(page.slice(view.start, view.end)) : [];
+  const localStart = view ? start - view.start : start, localEnd = view ? end - view.start : end;
+  const overlapping = sourcePairs.filter(pair => pair.start < localEnd && pair.end > localStart);
+  const valuePairs = overlapping.filter(pair => sameDate(pair.arrival, fact.value.arrival) && sameDate(pair.departure, fact.value.departure));
+  const sourcePair = valuePairs.length === 1 ? valuePairs[0] : overlapping.length === 1 ? overlapping[0] : undefined;
+  const otherPairs = otherViews.flatMap(stayPairs);
+  const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
+  const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
+  const fallback = sourcePair && sourcePairs.length === 1 && otherPairs.length === 1 &&
+    !(sourcePair.entity && otherPairs[0]!.entity && sourcePair.entity !== otherPairs[0]!.entity) &&
+    (sameDate(sourcePair.arrival, otherPairs[0]!.arrival) || sameDate(sourcePair.departure, otherPairs[0]!.departure))
+    ? [otherPairs[0]!] : [];
+  const uniqueArrival = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.arrival, sourcePair.arrival)).length === 1;
+  const uniqueDeparture = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.departure, sourcePair.departure)).length === 1;
+  const endpointCandidates = sourcePair ? otherPairs.filter(pair =>
+    !(sourcePair.entity && pair.entity && pair.entity !== sourcePair.entity) &&
+    (sameDate(pair.arrival, sourcePair.arrival) || sameDate(pair.departure, sourcePair.departure))) : [];
+  const byEndpoint = endpointCandidates.filter(pair =>
+    (uniqueArrival && sameDate(pair.arrival, sourcePair!.arrival)) || (uniqueDeparture && sameDate(pair.departure, sourcePair!.departure)));
+  const mapped = byScope.length ? byScope : byEntity.length === 1 ? byEntity : fallback;
+  if (!mapped.length && !byEndpoint.length && endpointCandidates.some(pair =>
+    !sameDate(sourcePair!.arrival, pair.arrival) || !sameDate(sourcePair!.departure, pair.departure)))
+    throw new Error('Explicit same-stay correction requires source clarification');
+  const corresponding = mapped.length ? mapped : byEndpoint;
+  if (corresponding.some(pair => !sameDate(sourcePair!.arrival, pair.arrival) || !sameDate(sourcePair!.departure, pair.departure)))
+    throw new Error('Explicit same-stay correction requires source clarification');
+  const samePair = corresponding.length ? corresponding.every(pair => sameDate(sourcePair!.arrival, pair.arrival) && sameDate(sourcePair!.departure, pair.departure)) :
+    citedDates.length === 2 && /\b(?:arrival|check[ -]?in)\b[\s\S]*\b(?:departure|check[ -]?out)\b/i.test(other) && JSON.stringify(otherDates) === JSON.stringify(citedDates);
+  if (otherViews.some(otherView => {
+    let otherHeading: string | undefined;
+    return otherView.split(/[;.!?\n]+/).some(sentence => {
+      const heading = /^\s*(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\s*:/iu.exec(sentence);
+      if (heading) otherHeading = (heading[1] ?? heading[2]!).toLowerCase();
+      const scopes = [...sentence.matchAll(/\b(?:group\s+([\p{L}\p{N}_-]+)|room\s+(?:#\s*)?(\d+))\b/giu)].map(match => (match[1] ?? match[2]!).toLowerCase());
+      const scope = scopes[0] ?? otherHeading;
+      const otherStay = !!sourcePair?.entity && scope !== undefined && scope !== sourcePair.entity &&
+        scopes.every(entity => entity === scope) && !/\b(?:all|both|every|everyone)\b/i.test(sentence);
+      const withdrawn = /\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
+      const negated = /\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
+      const dates = dateTokens(sentence);
+      const sameDateSequence = dates.length > 0 && dates.length === citedDates.length && dates.every((date, index) => sameDate(date, citedDates[index]!));
+      const samePairDate = dates.length > 0 && dates.every(date => sourcePair
+        ? [sourcePair.arrival, sourcePair.departure].some(value => sameDate(date, value)) : citedDates.some(value => sameDate(date, value)));
+      const sameDates = !negated && (sameDateSequence || samePair && samePairDate);
+      const timeOnly = /\b(?:arrival|depart(?:ure)?|check[ -]?(?:in|out))\s+time\b/i.test(sentence) && !/\bdates?\b/i.test(sentence) && dateTokens(sentence).length === 0;
+      const correction = !timeOnly && /\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence) &&
+        /\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
+      return !otherStay && (withdrawn || correction) && !sameDates && !cited.includes(sentence.replace(/\s+/g, ' ').trim().toLowerCase());
+    });
+  })) throw new Error('Explicit same-stay correction requires source clarification');
+  if (view) return { page: page.slice(view.start, view.end), start: start - view.start, end: end - view.start };
+  const quoted = source.sourceViews.find(candidate => candidate.quoted && start >= candidate.quoted.start && end <= candidate.quoted.end)?.quoted;
+  if (!quoted) throw new Error('Cited text crosses message alternatives');
+  return { page: page.slice(quoted.start, quoted.end), start: start - quoted.start, end: end - quoted.start };
 }
 /** The existing next-occurrence convention derives a year, never a printed yearContext. */
 function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source:DocumentSource,verification:ValidatedDocumentFact['verification']):{value:{arrival:string;departure:string};convention:NonNullable<ValidatedDocumentFact['convention']>}|undefined{
@@ -316,7 +370,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(arrival>=departure)throw new Error('Invalid stay dates');
  return{value:{arrival,departure},convention:{rule:'centurion_next_occurrence_v1',sourceAt:causal.at,timeZone:'Africa/Johannesburg',originalValue:{arrival:raw.arrival,departure:raw.departure}}};
 }
-function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, verification: ValidatedDocumentFact['verification'],source:DocumentSource) {
+function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, verification: ValidatedDocumentFact['verification'], source: DocumentSource) {
   const { yearContext } = fact.value;
   const quote = fact.source.quote;
   if (yearContext !== undefined && (verification !== 'text_verified' || !new RegExp(`(?<![\\p{L}\\p{N}_-])${yearContext}(?![\\p{L}\\p{N}_-])`, 'u').test(quote!)))
@@ -328,7 +382,7 @@ function normalizedStay(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>,
   const arrival = normalizedDate(fact.value.arrival, yearContext);
   const departure = normalizedDate(fact.value.departure, yearContext);
   if (verification === 'text_verified') {
-    const {page,start,end}=citedViewSpan(fact,source);
+    const { page, start, end } = citedViewSpan(fact, source);
     const before=page.slice(0,start),after=page.slice(end);
     const boundary=Math.max(before.lastIndexOf('\n'),before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'));
     let context=before.slice(boundary+1)+quote!+after.split(/[\n;.!?]/,1)[0];
@@ -423,7 +477,8 @@ export function validateDocumentPlan(
       !['guest', 'staff_only'].includes(source.disclosure)
     )
       throw new Error('Invalid document source');
-    if(source.sourceViews!==undefined&&(!source.attachmentId.startsWith('message:')||source.pageCount!==1||!source.pages||source.pages.length!==1||!validReservationistMessageViews(source.pages[0]!,source.sourceViews)))throw new Error('Invalid causal message views');
+    if (source.sourceViews !== undefined && (!source.attachmentId.startsWith('message:') || source.pageCount !== 1 || !source.pages || source.pages.length !== 1 || !validReservationistMessageViews(source.pages[0]!, source.sourceViews)))
+      throw new Error('Invalid causal message views');
     if (
       source.pages &&
       (source.pages.length !== source.pageCount ||
@@ -477,7 +532,7 @@ export function validateDocumentPlan(
     }
     const derived = fact.kind==='dates'?nextOccurrenceStay(fact,original,verification):undefined;
     if(derived){const tasks=parsed.data.tasks.filter(task=>task.factIds.includes(fact.id));if(!tasks.some(task=>task.kind==='quote')||tasks.some(task=>task.kind!=='quote'&&(derived.convention.rule==='centurion_explicit_nights_v1'||!(task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??'')))))throw new Error('Yearless convention requires quote task');}
-    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification,original),...(derived?{convention:derived.convention}:{}) } : fact;
+    const normalizedFact = fact.kind === 'dates' ? { ...fact, value: derived?.value??normalizedStay(fact, verification, original),...(derived?{convention:derived.convention}:{}) } : fact;
     const amountCents =
       fact.kind === 'rate_claim' || fact.kind === 'payment_claim'
         ? normalizeDocumentDecimal(fact.value.amount)
