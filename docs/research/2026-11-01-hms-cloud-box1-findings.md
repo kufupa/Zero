@@ -47,6 +47,13 @@ availability and readback proof. Folio coverage and an authorized guarded
 upload remain separate work. Private screenshots and field evidence are in
 `/tmp/hms-box2-scout-ILas7h/`.
 
+Provisional box 2 estimate: 650–900 minutes elapsed, low confidence. This adds
+100–250 minutes for amendment and repricing evidence and 50–150 for folio and
+upload discovery to the original 500-minute guess; those allowances may overlap
+work already included in the guess. The single-stay observation and an
+incomplete box 1 run do not establish a reliable speed multiplier. Approval or
+hold delays are excluded; revisit the estimate after the first amend slice.
+
 The saved-record reader captured a raw note in a live read of an existing fake
 stay. Exact padded-note comparison was exercised with test data, without making
 an additional live save just for whitespace.
