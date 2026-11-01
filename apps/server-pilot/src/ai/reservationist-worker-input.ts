@@ -116,7 +116,7 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   };
   add(primaryBody?.trim() ?? '', 'plain');
   // Keep each authored view intact: deleting a repeated line can detach a negation or condition from the next line.
-  if (alternativeBody?.trim() && comparable(primaryBody ?? '') !== comparable(alternativeBody))
+  if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
     add(alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
