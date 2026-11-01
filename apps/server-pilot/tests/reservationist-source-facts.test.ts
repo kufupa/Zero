@@ -176,4 +176,18 @@ describe('plain and HTML citation binding',()=>{
   const plan=await extract('plain_quoted');
   expect(plan.facts[0]?.source.start).toBe(historyStart+history.indexOf(dateQuote));
  });
+ it('counts equivalent plain/HTML voucher asks once without merging separate asks in one view',async()=>{
+  const at='2026-10-01T08:00:00Z',separator=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+  const run=async(plain:string,html:string,tasks:{id:string;quote:string;view:'plain'|'html'}[])=>{
+   const htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,attachmentId='message:voucher-alternatives',sourceHash=createHash('sha256').update(text).digest('hex'),sourceViews=[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:htmlStart,end:text.length}];let calls=0;
+   return extractReservationistPlan({mode:'task_first',adapter:{reserveCalls:async()=>{},invoke:async()=>{calls++;if(calls===1)return{output:{facts:[],tasks:tasks.map(task=>({id:task.id,kind:'question',factIds:[],source:{attachmentId,sourceHash,page:1,quote:task.quote,view:task.view}})),unresolvedAsks:[]}};return{output:{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}};}} as any,messages:[{id:'voucher-alternatives',at,text,direction:'inbound',sourceViews}],triggerMessageId:'voucher-alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
+  };
+  const ask='Please review attached voucher';
+  await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'plain'}]});
+  await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'},{id:'html',quote:ask,view:'html'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
+  const other='Also review enclosed hotel voucher for the second guest.';
+  await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'first',quote:`${ask}.`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
+  await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'combined',quote:`${ask}. ${other}`,view:'plain'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
+  await expect(run(`${ask}. ${other}`,`${ask}.\n\nThe rooming list is attached.`,[{id:'first',quote:`${ask}.`,view:'plain'},{id:'second',quote:other,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'first'},{id:'second'}]});
+ });
 });
