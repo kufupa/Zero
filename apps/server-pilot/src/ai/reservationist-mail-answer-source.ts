@@ -33,7 +33,7 @@ function soleAnswerInView(source:LocalEvaluationAnswerSource,text:string,view:Re
 }
 export function validateReservationistMailAnswers(sources:readonly LocalEvaluationAnswerSource[],input:ReservationistRuntimeInput){
  for(const source of sources){const message=input.messages.find(m=>m.id===source.messageId),views=message?.sourceViews,view=views?.find(v=>source.start>=v.start&&source.end<=v.end);
-  const alternativesAgree=!views||!!message&&validReservationistMessageViews(message.text,views)&&!!view&&views.every(other=>other===view?soleAnswerInView(source,message.text,other):[...message.text.slice(other.start,other.end).matchAll(/^[ \t]*([^\r\n]+?)[ \t]*$/gm)].some(match=>{
+  const alternativesAgree=!views||!!message&&validReservationistMessageViews(message.text,views)&&!!view&&views.every(other=>other===view?soleAnswerInView(source,message.text,other):[...message.text.slice(other.start,other.end).matchAll(/^[ \t]*(\S[^\r\n]*(?:\r?\n[ \t]*\S[^\r\n]*)*)[ \t]*$/gm)].some(match=>{
    const quote=match[1]!,start=other.start+match.index!+match[0].indexOf(quote),candidate={...source,quote,start,end:start+quote.length};
    return answerEntailed(candidate)&&originalAnswerRow(candidate,message.text,other)===quote.trim()&&soleAnswerInView(candidate,message.text,other);
   }));

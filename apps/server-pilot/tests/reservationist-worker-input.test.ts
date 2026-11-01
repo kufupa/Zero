@@ -107,6 +107,7 @@ describe('reservationist worker input', () => {
     const { input } = await build([
       row('imported-before', 1, { direction: 'outbound', pop3Uidl: 'before', sentAt: null }),
       row('imported-after', 5, { direction: 'outbound', pop3Uidl: 'after', sentAt: at(1) }),
+      row('returned-native-after', 1, { direction: 'outbound', pop3Uidl: 'returned', arrivedAt: at(1), createdAt: at(1), sentAt: at(5) }),
       row('outlook-sent-before', 5, { direction: 'outbound', pop3Uidl: 'synced', sourceProvenance: { canonicalContentVersion: '1' }, sentAt: at(2) }),
       row('current', 4),
     ]);
