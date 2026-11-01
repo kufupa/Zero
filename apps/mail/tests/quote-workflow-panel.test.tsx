@@ -346,6 +346,7 @@ describe('QuoteWorkflowPanel', () => {
     const done = screen.getByRole('button',{name:`Mark as done: ${source.text}`}) as HTMLButtonElement;
     fireEvent.click(done);
     fireEvent.click(done);
+    await waitFor(() => expect(onHandle).toHaveBeenCalledTimes(1));
     expect(onHandle).toHaveBeenCalledTimes(1);
     expect(done.disabled).toBe(true);
     finishHandle();
@@ -355,6 +356,7 @@ describe('QuoteWorkflowPanel', () => {
     const undo = screen.getByRole('button',{name:`Undo mark as done: ${source.text}`}) as HTMLButtonElement;
     fireEvent.click(undo);
     fireEvent.click(undo);
+    await waitFor(() => expect(onUndo).toHaveBeenCalledTimes(1));
     expect(onUndo).toHaveBeenCalledTimes(1);
     expect(undo.disabled).toBe(true);
     finishUndo();
