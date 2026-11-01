@@ -136,6 +136,8 @@ function groupForStay(
     const hasGuestData = row.adultsPerRoom !== null || (row.childAges?.length ?? 0) > 0;
     return recorded ?? (hasGuestData ? 1 : null);
   };
+  if (stay.totalRooms !== null && ((stay.rows.length > 1 && stay.rows.some((row) => row.rooms === null)) ||
+    stay.rows.reduce((sum, row) => sum + (quantityForRow(row) ?? 0), 0) !== stay.totalRooms)) return { groups: [], reason: 'missing_rooms' };
   const groups: StaffQuoteInput['groups'] = [];
   if (stay.totalChildren != null) {
     let describedChildren = 0;

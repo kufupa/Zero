@@ -542,15 +542,20 @@ export function staffQuoteGroupsFromStay(
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
   }
-  const childCountsByStay = new Map<string, { reported: Set<number>; described: number }>();
+  const childCountsByStay = new Map<string, { rooms: Set<number>; describedRooms: number; reported: Set<number>; described: number }>();
   groups.forEach((group, index) => {
     const prepared = out[index]!;
     const key = group.stayId ?? `${prepared.arrivalDate}/${prepared.departureDate}`;
-    const counts = childCountsByStay.get(key) ?? { reported: new Set<number>(), described: 0 };
+    const counts = childCountsByStay.get(key) ?? { rooms: new Set<number>(), describedRooms: 0, reported: new Set<number>(), described: 0 };
+    if (typeof group.roomsTotal === 'number') counts.rooms.add(group.roomsTotal);
+    counts.describedRooms += prepared.quantity;
     if (typeof group.childrenTotal === 'number') counts.reported.add(group.childrenTotal);
     counts.described += prepared.quantity * prepared.childrenAges.length;
     childCountsByStay.set(key, counts);
   });
+  if ([...childCountsByStay.values()].some(({ rooms, describedRooms }) =>
+    rooms.size > 1 || (rooms.size === 1 && describedRooms !== [...rooms][0])
+  )) return { error: 'Confirm the room totals and allocation for each stay before running the quote.' };
   if ([...childCountsByStay.values()].some(({ reported, described }) =>
     reported.size > 0 && (reported.size !== 1 || described !== [...reported][0])
   )) {

@@ -164,6 +164,27 @@ describe('HRDAV native room and board maps', () => {
     ]);
   });
 
+  it('blocks room quotes until per-type rows reconcile to the stated stay total', () => {
+    const rows = [
+      stay({ id: 'g1', stayId: 'stay-1', quantity: 1, roomsTotal: 30, roomPreference: 'Standard King' }),
+      stay({ id: 'g2', stayId: 'stay-1', quantity: 1, roomsTotal: 30, roomPreference: 'Standard King' }),
+    ];
+    expect(staffQuoteGroupsFromStay(rows, HRCEN_PROPERTY_CODE)).toEqual({
+      error: expect.stringMatching(/room totals and allocation/i),
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', rows)).toBeNull();
+
+    const corrected = rows.map((row) => ({
+      ...row,
+      quantity: 15,
+      fields: { quantity: 'staff_corrected' as const },
+    }));
+    expect(staffQuoteGroupsFromStay(corrected, HRCEN_PROPERTY_CODE)).toMatchObject({
+      ok: [{ quantity: 15 }, { quantity: 15 }],
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', corrected)?.rooms.map((room) => room.quantity)).toEqual([15, 15]);
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

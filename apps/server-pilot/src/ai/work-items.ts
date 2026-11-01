@@ -655,6 +655,11 @@ export function storedAnalysis(
       return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
     }),
   );
+  const roomTotalNeedsReview = new Set(stays.flatMap((stay) => {
+    if (stay.totalRooms === null) return [];
+    const counts = stay.rows.map((row) => pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms));
+    return counts.some((count) => typeof count !== 'number') || counts.reduce((sum, count) => sum + (count ?? 0), 0) !== stay.totalRooms ? [stay.id] : [];
+  }));
   const dateKeys = new Set(
     stays.map((stay) => {
       const arrival = pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival);
@@ -786,6 +791,11 @@ export function storedAnalysis(
     const slot = order[index];
     if (!slot) return;
     group.id = slot.groupId;
+    if (slot.rowId && roomTotalNeedsReview.has(slot.stayId)) {
+      const row = stays.find((stay) => stay.id === slot.stayId)?.rows.find((item) => item.id === slot.rowId);
+      group.fields.quantity = 'missing';
+      if (row && pick(`stays[${slot.stayId}].rows[${row.id}].count`, row.rooms) == null) delete group.quantity;
+    }
     if (slot.rowId && totalRoomsDefaultRowIds.has(slot.rowId)) group.fields.quantity = 'defaulted';
     const stayPath = `stays[${slot.stayId}].requested`;
     const corrected: Array<[string, string]> = [
@@ -829,6 +839,7 @@ export function storedAnalysis(
         const confirmationNumber = confirmationForStay(sourceStay, payload);
         return {
           ...group,
+          ...(sourceStay?.totalRooms != null ? { roomsTotal: sourceStay.totalRooms } : {}),
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,

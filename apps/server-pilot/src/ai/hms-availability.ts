@@ -76,6 +76,10 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
   // Every row must be complete. A group with no room count or no adults is not invented from a headcount.
   const rooms: unknown[] = [];
   const rows = stay.rows as ExtractionRow[];
+  if (stay.totalRooms != null && (
+    (rows.length > 1 && rows.some((row) => row.rooms === null)) ||
+    rows.reduce((sum, row) => sum + (row.rooms ?? 0), 0) !== stay.totalRooms
+  )) return null;
   if (stay.totalChildren != null) {
     let describedChildren = 0;
     for (const row of rows) {

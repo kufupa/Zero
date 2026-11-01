@@ -81,6 +81,7 @@ export type StayGroupRequirement = {
   arrivalDate?: string;
   departureDate?: string;
   quantity?: number;
+  roomsTotal?: number;
   roomPreference?: string;
   /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
   roomTypeCode?: RoomTypeCode;

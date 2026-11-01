@@ -1247,6 +1247,7 @@ describe('field events', () => {
       .filter((group) => group.stayId === STAY_ONE);
     expect(projected.map((group) => group.quantity)).toEqual([undefined, undefined]);
     expect(projected.map((group) => group.fields.quantity)).toEqual(['missing', 'missing']);
+    expect(projected.map((group) => group.roomsTotal)).toEqual([30, 30]);
   });
 
   it('preserves an explicit room-row count when a stay total is also present', () => {

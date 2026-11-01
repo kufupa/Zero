@@ -414,6 +414,19 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs).toEqual([]);
     expect(plan.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
+
+    const mismatched = build({
+      stays: [{
+        ...stay,
+        totalRooms: 30,
+        rows: [
+          { ...stay.rows[0]!, id: 'row-1', rooms: 1 },
+          { ...stay.rows[0]!, id: 'row-2', rooms: 1 },
+        ],
+      }],
+    });
+    expect(mismatched.inputs).toEqual([]);
+    expect(mismatched.stays).toEqual([{ stayId: 'stay-1', reason: 'missing_rooms' }]);
   });
 
   it('keeps missing dates as a hard block', () => {
