@@ -196,6 +196,9 @@ describe('plain and HTML citation binding',()=>{
   const sameSentence='Please review attached voucher for guest A and also review enclosed hotel voucher for guest B.',separateTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'review enclosed hotel voucher for guest B',view:'plain' as const}];
   await expect(run(sameSentence,sameSentence,separateTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
   await expect(run(sameSentence,sameSentence,separateTasks.slice(0,1))).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
+  const commaAlso='Please review attached voucher for guest A, also check enclosed hotel voucher for guest B.',commaTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'also check enclosed hotel voucher for guest B',view:'plain' as const}];
+  await expect(run(commaAlso,commaAlso,commaTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
+  await expect(run(commaAlso,commaAlso,commaTasks.slice(0,1))).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   const descriptiveSameRequest='Please review attached voucher for guest A (our accounts team will also check the attached voucher tomorrow).';
   await expect(run(descriptiveSameRequest,descriptiveSameRequest,[{id:'one-request',quote:'Please review attached voucher for guest A',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'one-request'}]});
   await expect(run('Please quote one room\n\nDo not use attached voucher.','No voucher is attached.',[{id:'quote',quote:'Please quote one room',view:'plain',kind:'quote'}])).resolves.toMatchObject({tasks:[{id:'quote'}]});
