@@ -115,10 +115,10 @@ describe('reservationist booking suggestion', () => {
     expect(result?.missing).toContain('Multiple party names are present; staff must resolve which party applies before preparing a booking.');
   });
 
-  it('validates HTML-alternative citations against that authored view, not a plain-text signoff', async () => {
+  it('checks an HTML booking task against its own authored view, not plain text or quoted tails', async () => {
     const request = 'Please book 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
     const rendered = renderReservationistMessage({
-      textBody: 'Best regards\nReservations\n\nFrom: Previous guest\nSubject: Older request\nPlease do not create a booking.',
+      textBody: 'Do not reply to this email\n\nFrom: Previous guest\nSubject: Older request\nPlease do not create a booking.',
       htmlBody: `${request}\n\nFrom: Earlier correspondent\nSubject: Previous request\nPlease do not create a booking.`,
     });
     const htmlView = rendered.sourceViews?.find((view) => view.name === 'html');
