@@ -148,10 +148,10 @@ describe('reservationist worker input', () => {
 
   it('keeps a shared request and an additional HTML request, without guessing across different contexts', async () => {
     const certificate = 'Please send the tax certificate.', checkin = 'Can we check in early?';
-    const extract = async (plainPrefix = '', htmlPrefix = '') => {
+    const extract = async (plainPrefix = '', htmlPrefix = '', extra = '') => {
       const { input } = await build([row('current', 4, {
         textBody: `${plainPrefix}${certificate}\nKind regards`,
-        htmlBody: `<p>${htmlPrefix}${certificate}</p><p>${checkin}</p><p>Kind regards</p>`,
+        htmlBody: `<p>${htmlPrefix}${certificate}</p><p>${checkin}</p><p>${extra}</p><p>Kind regards</p>`,
       })]);
       const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
       const tasks = [
@@ -171,16 +171,17 @@ describe('reservationist worker input', () => {
     expect(plan.tasks.map(task => task.id)).toEqual(['certificate', 'checkin']);
     expect(plan.tasks[0]!.source).toMatchObject({ quote: certificate, start: 0 });
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
+    await expect(extract('', '', 'Actually, do not send it.')).rejects.toThrow('Ambiguous original text span');
   });
 
   it('binds a shared stay fact across equivalent authored views', async () => {
     const stay = 'Please quote one room: Arrival 21 December; departure 23 December.';
     const checkin = 'Can we check in early?';
-    const extract = async (plainPrefix = '', htmlPrefix = '') => {
+    const extract = async (plainPrefix = '', htmlPrefix = '', extra = '') => {
       const at = new Date('2026-10-01T08:00:00.000Z');
       const { input } = await build([row('current', 4, {
         textBody: `${plainPrefix}${stay}\nKind regards`,
-        htmlBody: `<p>${htmlPrefix}${stay}</p><p>${checkin}</p><p>Kind regards</p>`,
+        htmlBody: `<p>${htmlPrefix}${stay}</p><p>${checkin}</p><p>${extra}</p><p>Kind regards</p>`,
         receivedAt: at, arrivedAt: at, createdAt: at,
       })]);
       const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
@@ -195,13 +196,14 @@ describe('reservationist worker input', () => {
     const plan = await extract();
     expect(plan.facts[0]!.value).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
     expect(plan.facts[0]!.source).toMatchObject({ quote: stay, start: 0 });
+    await expect(extract('', '', 'I will need a taxi.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
   });
 
-  it('does not share a fact when another message view corrects it', async () => {
+  it.each([false, true])('does not share a corrected fact (quoted history: %s)', async (history) => {
     const request = 'Please quote one room.', meal = 'Breakfast included.';
     const { input } = await build([row('current', 4, {
-      textBody: `${request}\n${meal}\nKind regards`,
+      textBody: `${request}\n${meal}\nKind regards${history ? `\nFrom: guest@example.invalid\nSubject: Prior\n\n${meal}` : ''}`,
       htmlBody: `<p>${request}</p><p>${meal}</p><p>Correction: breakfast is not included.</p><p>Kind regards</p>`,
     })]);
     const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
@@ -216,6 +218,41 @@ describe('reservationist worker input', () => {
       } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
         admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
     }
+  });
+
+  it('retains an independent question about a shared meal fact', async () => {
+    const request = 'Please quote one room.', meal = 'Breakfast included.', question = 'What time is breakfast?';
+    const { input } = await build([row('current', 4, {
+      textBody: `${request}\n${meal}\nKind regards`,
+      htmlBody: `<p>${request}</p><p>${meal}</p><p>${question}</p><p>Kind regards</p>`,
+    })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+    const plan = await extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(meal) }],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) },
+        { id: 'question', kind: 'question', factIds: [], source: source(question) }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal });
+    expect(plan.tasks.map(task => task.id)).toEqual(['quote', 'question']);
+  });
+
+  it('accepts matching corrected dates across views and rejects changed dates', async () => {
+    const plain = 'Please quote the corrected stay from 21 December 2026 to 23 December 2026.';
+    const extract = async (lastDay: number) => {
+      const { input } = await build([row('current', 4, {
+        textBody: plain, htmlBody: `<p>Please quote the amended stay from 21 December 2026 to ${lastDay} December 2026.</p>`,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = { attachmentId: 'message:current', sourceHash, page: 1, quote: plain, start: 0, end: plain.length };
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'stay', kind: 'dates', value: { arrival: '21 December 2026', departure: '23 December 2026' }, disclosure: 'guest', source }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    await expect(extract(23)).resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
+    await expect(extract(24)).rejects.toThrow('Explicit same-stay correction requires source clarification');
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
