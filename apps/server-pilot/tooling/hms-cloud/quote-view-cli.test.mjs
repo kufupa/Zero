@@ -124,3 +124,22 @@ test('row pagination and restrictions survive the offline projection', () => {
   assert.ok(nextPage.view.options[0].nights[0].reasons.includes('closed_or_restricted'));
   assert.equal(nextPage.view.coverage.page.nextOffset, null);
 });
+
+test('CLI accepts its exact input cap and promptly rejects one byte more', () => {
+  const max = 32 * 1024 * 1024;
+  const valid = Buffer.from('{"snapshot":{"outcome":"criteria_unavailable"}}');
+  const atLimit = Buffer.alloc(max, 0x20);
+  valid.copy(atLimit);
+  const accepted = spawnSync(process.execPath, [cli, '--json-stdin'], {
+    input: atLimit, encoding: 'utf8', timeout: 20000,
+  });
+  assert.equal(accepted.error, undefined);
+  assert.equal(accepted.status, 0);
+  assert.equal(JSON.parse(accepted.stdout).snapshotOutcome, 'criteria_unavailable');
+  const rejected = spawnSync(process.execPath, [cli, '--json-stdin'], {
+    input: Buffer.concat([atLimit, Buffer.from(' ')]), encoding: 'utf8', timeout: 20000,
+  });
+  assert.equal(rejected.error, undefined);
+  assert.equal(rejected.status, 1);
+  assert.deepEqual(JSON.parse(rejected.stdout), { outcome: 'input_gap', issue: 'QUOTE_INPUT_TOO_LARGE' });
+});
