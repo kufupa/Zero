@@ -28,6 +28,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID(), newDraft = randomUUID();
       const voucherQuote = 'Please review the attached hotel voucher for our booking.';
       const voucherHash = createHash('sha256').update(voucherQuote).digest('hex');
+      const voucherReviewId = `voucher:message:${parentMessageId}:${voucherHash}:0:${voucherQuote.length}`;
       await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
         threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
       await db.insert(message).values([
@@ -84,7 +85,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const input = { threadId, messageId: parentMessageId, workItemId: item!.id };
       expect((await drafts.reviewForMessage(input))?.reviewSummary?.staffActions).toMatchObject([
         {kind:'business_document_failure',filename:'document.pdf'},
-        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
+        {kind:'voucher_review',id:voucherReviewId,sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote,runId:newRun,handled:false},
       ]);
       expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
         { id: 'new', runId: newRun, label: 'Earlier request', handled: false },
@@ -112,11 +113,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       await db.insert(aiWorkflowRun).values(laterRun(40, [], [{id:parentMessageId,sourceHash:voucherHash}]));
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
         {kind:'business_document_failure',filename:'document.pdf'},
-        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
+        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote,runId:newRun,handled:false},
       ]);
       await db.insert(aiWorkflowRun).values(laterRun(50, [{attachmentId:fileId,sourceHash:'a'.repeat(64)}], [{id:parentMessageId,sourceHash:voucherHash}]));
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
-        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
+        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote,runId:newRun,handled:false},
+      ]);
+      await drafts.setVoucherReviewHandled({workItemId:reclassified!.id,runId:newRun,reviewItemId:voucherReviewId,handled:true});
+      const voucherRereadId = randomUUID();
+      await db.insert(aiWorkflowRun).values({id:voucherRereadId,idempotencyKey:voucherRereadId,transportId:TRANSPORT_ID,threadId,
+        triggerMessageId:parentMessageId,runKind:'candidate_draft',modelId:'test',promptVersion:'test',state:'succeeded',
+        createdAt:new Date('2026-07-06T10:55:00Z'),metrics:{reservationistResult:{version:1,readiness:'needs_clarification',tasks:[],
+          sourceRecoveries:[{kind:'voucher_review',reason:'voucher_request_needs_staff_review',disclosure:'staff_only',sourceKind:'message',
+            sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,messageId:parentMessageId,page:1,start:0,end:voucherQuote.length,quote:voucherQuote}]},
+          reservationistDraftSource:{messages:[{id:parentMessageId,sourceHash:voucherHash}]}}});
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
+        {kind:'voucher_review',id:voucherReviewId,runId:voucherRereadId,handled:true},
       ]);
     });
   });

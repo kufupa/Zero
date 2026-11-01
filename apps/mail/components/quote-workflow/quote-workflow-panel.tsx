@@ -719,7 +719,8 @@ export function QuoteWorkflowPanel({
     const readableWarnings = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure' && item.readable);
     const reviewItems = (session.reviewItems ?? []).filter((item) =>
       (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
-    const handledReviewItems = reviewItems.filter((item) => item.kind !== 'staff_review' && (session.handledReviewItemIds ?? []).includes(item.id));
+    const handledReviewItems = reviewItems.filter((item) => item.handled === true ||
+      (item.kind !== 'staff_review' && (session.handledReviewItemIds ?? []).includes(item.id)));
     const openReviewItemsForYou = openReviewItems(session).filter((item) =>
       (item.kind === 'question' || item.kind === 'staff_review') && notTracked(item));
     const amendStays = groupStays(session.groups).filter((stay) => {
@@ -768,10 +769,9 @@ export function QuoteWorkflowPanel({
     (item) =>
       notNoise(item) &&
       notTracked(item) &&
-      item.kind !== 'staff_review' &&
       item.kind !== 'pricing_fact' &&
       !item.blocking &&
-      (session.handledReviewItemIds ?? []).includes(item.id),
+      (item.handled === true || (item.kind !== 'staff_review' && (session.handledReviewItemIds ?? []).includes(item.id))),
   );
   const authorizedPartial =
     staffSourceReady(session) &&

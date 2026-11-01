@@ -310,6 +310,20 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(screen.getByRole('button',{name:`Show in email: ${source.text}`}));
     expect(view).toHaveBeenCalledWith(source);
   });
+  it('offers durable voucher acknowledgement only with the source run and work item', () => {
+    const source = {id:'voucher:mail-1:0:41',kind:'staff_review' as const,rank:'secondary' as const,
+      text:'Please review the attached hotel voucher.',sourceLabel:'This email',sourceRef:'message:mail-1',
+      sourceHash:'a'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',runId:'run-1',workItemId:'item-1',
+      handled:false,blocking:false};
+    const onHandle = vi.fn();
+    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source]}} onHandleReviewItem={onHandle} />);
+    fireEvent.click(screen.getByRole('button',{name:`Mark as done: ${source.text}`}));
+    expect(onHandle).toHaveBeenCalledWith(source.id);
+    cleanup();
+    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[{...source,handled:true}]}} />);
+    expect(screen.getByText(`Done: ${source.text}`)).toBeDefined();
+    expect(screen.getByRole('button',{name:`Undo mark as done: ${source.text}`})).toBeDefined();
+  });
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);

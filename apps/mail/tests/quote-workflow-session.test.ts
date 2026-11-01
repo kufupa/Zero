@@ -1911,9 +1911,11 @@ describe('quote session staff review items', () => {
     s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: questionId });
     expect(openReviewItems(s)).toEqual([]);
     expect(s.handledReviewItemIds).toEqual([questionId]);
+    expect(s.reviewItems.find((item) => item.id === questionId)?.handled).toBe(true);
     expect(canCreatePdf(s)).toBe(true);
     s = reduceQuoteSession(s, { type: 'unhandle_review_item', itemId: questionId });
     expect(openReviewItems(s).map((item) => item.id)).toEqual([questionId]);
+    expect(s.reviewItems.find((item) => item.id === questionId)?.handled).toBe(false);
   });
 
   it('clears handling on selection change and keeps it across stay edits that drop PDF', () => {

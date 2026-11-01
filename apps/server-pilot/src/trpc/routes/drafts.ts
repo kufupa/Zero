@@ -31,7 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled, setVoucherReviewHandled, voucherReviewCompletionKeys } from '../../ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
@@ -205,7 +205,10 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
   const summary = buildReservationistReviewSummary(result, new Date(), sources);
   if (!summary || !runId || workState === undefined) return summary;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
-  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
+  const voucherKeys = voucherReviewCompletionKeys(result);
+  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })),
+    staffActions: summary.staffActions?.map(action => action.kind === 'voucher_review'
+      ? { ...action, runId, handled: handled.has(voucherKeys.get(action.id) ?? '') } : action) };
 }
 
 export type ReservationistStaffAction = {
@@ -221,6 +224,8 @@ export type ReservationistStaffAction = {
   filename?: string;
   reason?: string;
   readable?: boolean;
+  handled?: boolean;
+  runId?: string;
   blockingQuote: boolean;
   status: 'open';
 };
@@ -1295,7 +1300,7 @@ export const draftsRouter = tRouter({
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
-      const oldSources = item ? outstandingSourceRecoveries(history).filter(source => source.runId !== latest.id) : [];
+      const oldSources = item ? outstandingSourceRecoveries(history, requestState).filter(source => source.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
       for (const run of runs.filter(run => oldSources.some(source => source.runId === run.id))) {
         const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
@@ -1321,6 +1326,22 @@ export const draftsRouter = tRouter({
     const result = await setRequestHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
     if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
     if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    if (input.handled) {
+      const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+      if (item?.threadId) await refreshThreadWork(db, { transportId: ctx.activeTransportId, threadId: item.threadId });
+    }
+    return { handled: input.handled };
+  }),
+
+  /** Acknowledge one source-bound voucher check without creating a guest task or authorizing a PMS write. */
+  setVoucherReviewHandled: mailboxProcedure.input(z.object({
+    workItemId: z.string().uuid(), runId: z.string().min(1).max(200), reviewItemId: z.string().min(1).max(700), handled: z.boolean(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const result = await setVoucherReviewHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+    if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this check.' });
     if (input.handled) {
       const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);

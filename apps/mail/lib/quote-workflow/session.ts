@@ -2161,6 +2161,7 @@ export function reduceQuoteSession(
       if (existing.includes(action.itemId)) return session;
       return {
         ...session,
+        reviewItems: session.reviewItems.map((row) => row.id === action.itemId ? { ...row, handled: true } : row),
         handledSourceKey: sourceKey || null,
         handledReviewItemIds: [...existing, action.itemId],
       };
@@ -2168,6 +2169,7 @@ export function reduceQuoteSession(
     case 'unhandle_review_item':
       return {
         ...session,
+        reviewItems: session.reviewItems.map((row) => row.id === action.itemId ? { ...row, handled: false } : row),
         handledReviewItemIds: session.handledReviewItemIds.filter((id) => id !== action.itemId),
       };
     case 'analysis_unsupported':

@@ -10,6 +10,12 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+function voucherReviewCompletionEntry(raw: unknown): [string, string] | undefined {
+  const recovery = object(raw);
+  const id = voucherReviewRecoveryId(raw);
+  return id ? [id, digest(['voucher-review-v1', recovery.sourceRef, recovery.sourceHash, recovery.page, recovery.start, recovery.end])] : undefined;
+}
+
 /**
  * Model task ids can change on a re-read. Carry a staff decision only when the
  * exact source span and request kind still match uniquely. Ambiguous or
@@ -37,6 +43,15 @@ export function requestCompletionKeys(result: unknown, runId: string): Map<strin
       ? candidate : digest(['run-task-v1', runId, task.id]);
     return [task.id as string, key];
   }));
+}
+
+/** Acknowledgements bind to one validated voucher citation, not a fabricated task. */
+export function voucherReviewCompletionKeys(result: unknown): Map<string, string> {
+  const value = object(result);
+  if (value.version !== 1 || !Array.isArray(value.sourceRecoveries)) return new Map();
+  return new Map(value.sourceRecoveries
+    .map(voucherReviewCompletionEntry)
+    .filter((entry): entry is [string, string] => !!entry));
 }
 
 export function handledRequestKeys(state: unknown): Set<string> {
@@ -95,23 +110,24 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
   if (result == null) return false; // Older non-reservationist runs have no task inventory.
   const value = object(result);
   if (value.version !== 1 || !Array.isArray(value.tasks)) return true;
-  // An unread business attachment or ungrouped voucher request is staff work even when no task was extracted.
-  // A person can still explicitly close the work item after reviewing it.
+  // An unread business attachment remains open until reviewed; voucher checks use source-bound acknowledgements.
   if (Array.isArray(value.sourceRecoveries) && value.sourceRecoveries.some(raw => {
     const recovery = object(raw);
-    return (recovery.kind === 'attachment_manual' && recovery.disclosure === 'staff_only' && recovery.signatureNoise !== true) ||
-      !!voucherReviewRecoveryId(recovery);
+    return recovery.kind === 'attachment_manual' && recovery.disclosure === 'staff_only' && recovery.signatureNoise !== true;
   })) return true;
+  const handled = handledRequestKeys(state);
+  if ([...voucherReviewCompletionKeys(result).values()].some(key => !handled.has(key))) return true;
   if (!value.tasks.length) return false;
-  const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
+  const keys = requestCompletionKeys(result, runId);
   return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
 }
 
 type HistoryRun = { id: string; result: unknown; source?: unknown };
 
 /** A later read can clear an attachment warning; rereading does not clear a voucher check. */
-export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
+export function outstandingSourceRecoveries(runs: readonly HistoryRun[], state?: unknown) {
   const failures = new Set<string>(), seenVouchers = new Set<string>(), successes = new Map<string, Set<string>>();
+  const handled = handledRequestKeys(state);
   const outstanding: { runId: string; sourceRef: string; kind: 'attachment_manual' | 'voucher_review'; id?: string }[] = [];
   const remember = (ref: unknown, hash: unknown) => {
     if (typeof ref !== 'string' || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) return;
@@ -127,10 +143,11 @@ export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
     if (Array.isArray(result.sourceRecoveries)) for (const raw of result.sourceRecoveries) {
       const recovery = object(raw), ref = recovery.sourceRef, hash = recovery.sourceHash;
       if (recovery.kind === 'voucher_review') {
-        const id = voucherReviewRecoveryId(recovery);
-        if (id && typeof ref === 'string' && !seenVouchers.has(id)) {
+        const entry = voucherReviewCompletionEntry(recovery);
+        if (entry && typeof ref === 'string' && !seenVouchers.has(entry[0])) {
+          const [id, key] = entry;
           seenVouchers.add(id);
-          outstanding.push({ runId: run.id, sourceRef: ref, kind: 'voucher_review', id });
+          if (!handled.has(key)) outstanding.push({ runId: run.id, sourceRef: ref, kind: 'voucher_review', id });
         }
         continue;
       }
@@ -166,13 +183,13 @@ export function hasOutstandingRequestHistory(runs: readonly HistoryRun[], state:
   if (index < 0) return false;
   const latest = runs[index]!;
   return hasOutstandingRequests(latest.result, latest.id, state) || outstandingRequestHistory(runs.slice(index + 1), state).length > 0 ||
-    outstandingSourceRecoveries(runs).length > 0;
+    outstandingSourceRecoveries(runs, state).length > 0;
 }
 
-/** Staff acknowledgement only; it does not authorize a send or an HMS write. */
-export async function setRequestHandled(db: DB, input: {
-  transportId: string; workItemId: string; userId: string; runId: string; taskId: string; handled: boolean;
-}): Promise<'recorded' | 'not_found' | 'stale'> {
+type HandleInput = { transportId: string; workItemId: string; userId: string; runId: string; handled: boolean };
+type CompletionKey = (result: unknown, runId: string) => string | undefined;
+
+async function setReviewHandled(db: DB, input: HandleInput, completionKey: CompletionKey): Promise<'recorded' | 'not_found' | 'stale'> {
   return db.transaction(async tx => {
     const [identity] = await tx.select({ threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
@@ -197,7 +214,7 @@ export async function setRequestHandled(db: DB, input: {
         eq(aiWorkflowRun.triggerMessageId, item.sourceMessageId), eq(aiWorkflowRun.runKind, 'candidate_draft'),
         eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded'))).limit(1);
     if (!run) return 'stale';
-    const key = requestCompletionKeys(run.metrics?.reservationistResult, run.id).get(input.taskId);
+    const key = completionKey(run.metrics?.reservationistResult, run.id);
     if (!key) return 'stale';
     const states = await handledRequestStates(tx as unknown as DB, { transportId: input.transportId, threadId: item.threadId, sourceIds: [item.sourceMessageId] });
     const handled = handledRequestKeys(states.get(item.sourceMessageId));
@@ -216,4 +233,14 @@ export async function setRequestHandled(db: DB, input: {
       type: 'status.changed', value: { from: item.status, to: 'needs_you', reason: 'request_reopened' } });
     return 'recorded';
   });
+}
+
+/** Staff acknowledgement only; it does not authorize a send or an HMS write. */
+export function setRequestHandled(db: DB, input: HandleInput & { taskId: string }): Promise<'recorded' | 'not_found' | 'stale'> {
+  return setReviewHandled(db, input, (result, runId) => requestCompletionKeys(result, runId).get(input.taskId));
+}
+
+/** Staff acknowledgement only; this neither verifies a voucher nor authorizes a send or HMS write. */
+export function setVoucherReviewHandled(db: DB, input: HandleInput & { reviewItemId: string }): Promise<'recorded' | 'not_found' | 'stale'> {
+  return setReviewHandled(db, input, result => voucherReviewCompletionKeys(result).get(input.reviewItemId));
 }

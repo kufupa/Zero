@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {expect,it,vi} from 'vitest';
 import {quoteDigest} from '../src/quote-proposal/quote-revision.js';
 import {runReservationistRuntime,VOUCHER_REVIEW_RECOVERY_REASON,type RuntimeSourceRecovery} from '../src/ai/reservationist-runtime.js';
-import {hasOutstandingRequestHistory,hasOutstandingRequests,outstandingSourceRecoveries,requestCompletionKeys} from '../src/ai/reservationist-task-completion.js';
+import {hasOutstandingRequestHistory,hasOutstandingRequests,outstandingSourceRecoveries,requestCompletionKeys,voucherReviewCompletionKeys} from '../src/ai/reservationist-task-completion.js';
 
 const text='Please review the attached hotel voucher for our booking.';
 const at='2026-10-04T10:00:00.000Z';
@@ -41,6 +41,24 @@ it('keeps a source-bound voucher review through a later read of the same email',
  expect(outstandingSourceRecoveries([reread,earlier])).toEqual([expected]);
  expect(hasOutstandingRequestHistory([reread,earlier],{})).toBe(true);
  expect(outstandingSourceRecoveries([{...reread,result:{version:1,tasks:[],sourceRecoveries:[recovery]}},earlier])).toEqual([{...expected,runId:'reread'}]);
+});
+
+it('acknowledges voucher citations independently and retains only unhandled cites after a reread',()=>{
+ const messageText='Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.',hash=createHash('sha256').update(messageText).digest('hex');
+ const cite=(quote:string)=>({...recovery,sourceHash:hash,start:messageText.indexOf(quote),end:messageText.indexOf(quote)+quote.length,quote});
+ const first=cite('attached hotel voucher for guest A'),second=cite('enclosed hotel voucher for guest B');
+ const result={version:1,tasks:[],sourceRecoveries:[first,second]},keys=voucherReviewCompletionKeys(result);
+ const [firstId,firstKey]=[...keys.entries()][0]!,[secondId,secondKey]=[...keys.entries()][1]!;
+ expect(firstId).not.toBe(secondId);
+ const oneDone={reservationistHandledRequests:{[firstKey]:true}};
+ expect(hasOutstandingRequests(result,'run',oneDone)).toBe(true);
+ expect(outstandingSourceRecoveries([{id:'reread',result:{version:1,tasks:[]}},{id:'old',result}],oneDone)).toEqual([
+  {runId:'old',sourceRef:'message:inbound',kind:'voucher_review',id:secondId},
+ ]);
+ const bothDone={reservationistHandledRequests:{[firstKey]:true,[secondKey]:true}};
+ expect(hasOutstandingRequests(result,'rerun',bothDone)).toBe(false);
+ expect(hasOutstandingRequestHistory([{id:'reread',result},{id:'old',result}],bothDone)).toBe(false);
+ expect(outstandingSourceRecoveries([{id:'reread',result},{id:'old',result}],bothDone)).toEqual([]);
 });
 
 it.each([

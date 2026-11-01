@@ -74,7 +74,8 @@ export function ItemsForYou({
                 Edit reply
               </button>
             ) : null}
-            {!item.blocking && item.kind !== 'pricing_fact' && item.kind !== 'staff_review' ? (
+            {!item.blocking && item.kind !== 'pricing_fact' &&
+            (item.kind !== 'staff_review' || Boolean(item.runId && item.workItemId)) ? (
               <button
                 type="button"
                 className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
@@ -90,14 +91,16 @@ export function ItemsForYou({
       {handledItems.map((item) => (
         <div key={`handled-${item.id}`} className="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
           <p className="text-[11px] text-[#64748b]">Done: {item.text}</p>
-          <button
-            type="button"
-            className="h-7 self-start rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-            aria-label={`Undo mark as done: ${item.text}`}
-            onClick={() => onUndo?.(item.id)}
-          >
-            Undo
-          </button>
+          {item.kind !== 'staff_review' || Boolean(item.runId && item.workItemId) ? (
+            <button
+              type="button"
+              className="h-7 self-start rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+              aria-label={`Undo mark as done: ${item.text}`}
+              onClick={() => onUndo?.(item.id)}
+            >
+              Undo
+            </button>
+          ) : null}
         </div>
       ))}
     </section>

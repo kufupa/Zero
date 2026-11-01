@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled, setVoucherReviewHandled, voucherReviewCompletionKeys } from '../src/ai/reservationist-task-completion.js';
 import { ensureWorkItemForMessage, refreshThreadWork } from '../src/ai/work-items.js';
 import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
@@ -87,6 +87,44 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       expect(await setRequestHandled(db, { ...input, runId: randomUUID(), handled: false })).toBe('stale');
       expect(await setRequestHandled(db, { ...input, runId: nextRunId, taskId: 'renamed', handled: false })).toBe('recorded');
       expect(await setRequestHandled(db, { ...input, transportId: 'different-mailbox' })).toBe('not_found');
+    });
+  });
+
+  it('persists acknowledgements for individual voucher citations across rereads', async () => {
+    await withSeededTestDb(async db => {
+      const threadId = randomUUID(), messageId = randomUUID(), runId = randomUUID(), rereadId = randomUUID();
+      const text = 'Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.';
+      const sourceHash = createHash('sha256').update(text).digest('hex');
+      const recovery = (quote: string) => {
+        const start = text.indexOf(quote);
+        return {kind:'voucher_review',reason:'voucher_request_needs_staff_review',disclosure:'staff_only',sourceKind:'message',
+          sourceRef:`message:${messageId}`,messageId,sourceHash,page:1,start,end:start+quote.length,quote};
+      };
+      const result = {version:1,tasks:[],sourceRecoveries:[
+        recovery('attached hotel voucher for guest A'), recovery('enclosed hotel voucher for guest B'),
+      ]};
+      const now = new Date();
+      await db.insert(mailThread).values({id:threadId,transportId:TRANSPORT_ID,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:now});
+      await db.insert(message).values({id:messageId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',
+        toAddresses:[],textBody:text,receivedAt:now});
+      const [item] = await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      const run = {transportId:TRANSPORT_ID,threadId,triggerMessageId:messageId,runKind:'candidate_draft' as const,
+        modelId:'synthetic',promptVersion:'test',state:'succeeded' as const,metrics:{reservationistResult:result}};
+      await db.insert(aiWorkflowRun).values({...run,id:runId,idempotencyKey:runId,createdAt:now});
+      const ids = [...voucherReviewCompletionKeys(result).keys()];
+      const input = {transportId:TRANSPORT_ID,workItemId:item!.id,userId:CENTURION_USER_ID,runId,handled:true};
+      expect(await setVoucherReviewHandled(db,{...input,reviewItemId:ids[0]!})).toBe('recorded');
+      expect(await setVoucherReviewHandled(db,{...input,reviewItemId:'voucher:message:other'})).toBe('stale');
+      const oneDone = (await handledRequestStates(db,{transportId:TRANSPORT_ID,threadId,sourceIds:[messageId]})).get(messageId);
+      expect(hasOutstandingRequests(result,runId,oneDone)).toBe(true);
+      expect(voucherReviewCompletionKeys(result).get(ids[0]!)).toBeDefined();
+      await db.insert(aiWorkflowRun).values({...run,id:rereadId,idempotencyKey:rereadId,createdAt:new Date(now.getTime()+1)});
+      const rereadKeys = voucherReviewCompletionKeys(result);
+      expect(rereadKeys.get(ids[0]!)).toBe(voucherReviewCompletionKeys(result).get(ids[0]!));
+      expect(await setVoucherReviewHandled(db,{...input,runId:rereadId,reviewItemId:ids[1]!})).toBe('recorded');
+      const bothDone = (await handledRequestStates(db,{transportId:TRANSPORT_ID,threadId,sourceIds:[messageId]})).get(messageId);
+      expect(hasOutstandingRequestHistory([{id:rereadId,result},{id:runId,result}],bothDone)).toBe(false);
+      expect(handledRequestKeys(bothDone)).toEqual(new Set(ids.map(id => voucherReviewCompletionKeys(result).get(id)!)));
     });
   });
 
