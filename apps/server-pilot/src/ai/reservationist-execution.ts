@@ -48,12 +48,16 @@ class SourceRequestClarification extends Error{constructor(readonly reply:string
 export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
  if(!input.authorizationScope?.ownerRef||!input.authorizationScope.threadId||!message||source.attachmentId!==`message:${message.id}`||message.direction!=='inbound'||message.disclosure==='staff_only'||message.at!==input.trigger.at||Date.parse(message.at)!==Date.parse(input.clock.causalAt)||!Number.isFinite(Date.parse(message.at))||source.page!==1||createHash('sha256').update(message.text).digest('hex')!==source.sourceHash||!Number.isSafeInteger(source.start)||!Number.isSafeInteger(source.end)||source.start!<0||source.end!<=source.start!||source.quote===undefined||message.text.slice(source.start,source.end)!==source.quote)return false;
- let text=message.text,start=source.start!,end=source.end!;
+ let text=message.text,start=source.start!,end=source.end!,viewName:'plain'|'html'|undefined;
  if(message.sourceViews){
   if(!validReservationistMessageViews(message.text,message.sourceViews))return false;
   const view=message.sourceViews.find(item=>start>=item.start&&end<=item.end);
   if(!view)return false;
-  text=message.text.slice(view.start,view.end);start-=view.start;end-=view.start;
+  text=message.text.slice(view.start,view.end);start-=view.start;end-=view.start;viewName=view.name;
+ }
+ if(task.kind==='new_booking'&&viewName){
+  const target=source.quote.match(/\b(?:this|that|these|those|the)\s+rooms?\b|\b(?:\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0];
+  if(target&&message.sourceViews!.some(view=>view.name!==viewName&&/\b(?:not|never|no|don't|do not)\b[^.!?;\n]{0,80}\b(?:book|reserve)\b[^.!?;\n]*/i.exec(message.text.slice(view.start,view.end))?.[0].toLowerCase().includes(target.toLowerCase())))return false;
  }
  const history=text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  if(history>=0&&end>history)return false;
@@ -381,6 +385,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
       if(ctx.facts.some(f=>f.kind==='room'&&f.value.quotationBasis==='per_room_rate'))guestText+=' Each quotation prices one room for the stated stay and occupancy. Final group allocation and combined availability require separate verification.';
       }
      }else if(task.kind==='acceptance'||task.kind==='new_booking'){
+      if(task.kind==='new_booking'&&task.source.attachmentId===`message:${input.trigger.id}`&&input.messages.find(m=>m.id===input.trigger.id)?.sourceViews&&!currentAuthoredGuestRequest(task,input))throw new SourceRequestClarification('Staff must resolve the booking request against the conflicting message views before preparing it.',[task.source.attachmentId],'booking_request_views_conflict');
       if(!services.resolveBookingTask)throw new Error('booking_evidence_unavailable');
       const booking=await services.resolveBookingTask(ctx);assertRevisionSourceFacts(ctx.facts,booking.evidence.revision,booking.input.rooms,booking.evidence.guestFacts);if(task.kind==='new_booking'?booking.input.kind!=='new_booking':booking.input.kind==='new_booking')throw new Error('booking_task_intent_mismatch');evidenceRefs=await checkRateClaims(ctx,booking.evidence.revision);const packet=await prepareBookingPacket({...booking.input,taskId:task.id},{resolveEvidence:async()=>booking.evidence,authorizeSource:(proof,edge)=>tool(edge,()=>booking.authorizeSource(proof,edge)),signal,deadlineAt:input.clock.deadlineAt,clock:{causalAt:input.clock.causalAt,sourceAt:input.clock.sourceAt,sourceMode:input.clock.sourceMode}});work.packets.push(packet);status=packet.status;evidenceRefs=[...new Set([...evidenceRefs,...packet.sourceRefs])];guestText=packet.status==='pending_pms_action'?'Your booking request is prepared, subject to staff completion and availability.':'Please confirm the missing booking details so staff can review your request.';
      }else if(task.kind==='change'||task.kind==='cancel_request'){

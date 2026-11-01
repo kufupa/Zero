@@ -130,5 +130,10 @@ describe('reservationist booking suggestion', () => {
     expect(result?.status).toBe('prefill');
     expect(result?.source.start).toBe(htmlView?.start);
     expect(result?.draft?.rooms).toHaveLength(1);
+
+    const conflictRequest = 'Please book this room, 1 room for 2 adults only from 2026-12-03 to 2026-12-05.';
+    const conflicting = renderReservationistMessage({ textBody: 'Do not book this room', htmlBody: conflictRequest });
+    const conflict = plan(conflicting.text, [], conflicting.sourceViews, conflictRequest);
+    expect(currentAuthoredGuestRequest(conflict.task, conflict.runtime)).toBe(false);
   });
 });
