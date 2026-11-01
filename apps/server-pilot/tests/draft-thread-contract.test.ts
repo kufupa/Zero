@@ -7,6 +7,7 @@ import {
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import {
   TEST_DB_AVAILABLE,
@@ -22,6 +23,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
       const oldGeneration = randomUUID(), newGeneration = randomUUID();
+      const oldRun = randomUUID(), newRun = randomUUID();
       await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
         threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
       await db.insert(message).values([parentMessageId, otherMessageId].map(id => ({
@@ -42,11 +44,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           toAddresses: ['guest@example.com'], updatedAt: new Date('2026-07-06T10:20:00Z') },
       ]);
       await db.insert(aiWorkflowRun).values([
-        { id: randomUUID(), idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
+        { id: oldRun, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
           triggerMessageId: parentMessageId, generationId: oldGeneration, runKind: 'candidate_draft',
           modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:00:00Z'),
           metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'old', kind: 'change' }] } } },
-        { id: randomUUID(), idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
+        { id: newRun, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID, threadId,
           triggerMessageId: parentMessageId, generationId: newGeneration, runKind: 'candidate_draft',
           modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:10:00Z'),
           metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'new', kind: 'question' }] } } },
@@ -64,6 +66,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         threadId, triggerMessageId: parentMessageId, generationId: noActionGeneration, runKind: 'candidate_draft',
         modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:30:00Z') });
       expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toBeNull();
+      // A later no-action run must not hide earlier requests on an actual staff work item.
+      const [item] = await db.insert(workItem).values({ transportId: TRANSPORT_ID, threadId,
+        sourceMessageId: parentMessageId, kind: 'other' }).returning();
+      const input = { threadId, messageId: parentMessageId, workItemId: item!.id };
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'new', runId: newRun, label: 'Earlier request', handled: false },
+        { id: 'old', runId: oldRun, label: 'Earlier request', handled: false },
+      ]);
+      await drafts.setRequestHandled({ workItemId: item!.id, runId: newRun, taskId: 'new', handled: true });
+      expect((await drafts.reviewForMessage(input))?.reviewSummary?.tasks).toMatchObject([
+        { id: 'old', runId: oldRun, handled: false },
+      ]);
     });
   });
 

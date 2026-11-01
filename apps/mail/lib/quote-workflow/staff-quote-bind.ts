@@ -595,25 +595,31 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
 /** The draft summary is display-only; the stored packet remains the action authority. */
 export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTask[] {
   if (!value || typeof value !== 'object') return [];
-  const summary = (value as { reviewSummary?: { tasks?: unknown } }).reviewSummary;
+  const envelope = value as { runId?: unknown; workItemId?: unknown; reviewSummary?: { tasks?: unknown } };
+  const summary = envelope.reviewSummary;
   if (!Array.isArray(summary?.tasks)) return [];
-  const kinds = new Set(['new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question']);
+  const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
   const tasks: ReservationistPreparedTask[] = [];
   const ids = new Set<string>();
-  for (const item of summary.tasks.slice(0, 32)) {
+  for (const item of summary.tasks) {
     if (!item || typeof item !== 'object') continue;
     const task = item as Record<string, unknown>;
-    if (typeof task.id !== 'string' || !task.id.trim() || ids.has(task.id)) continue;
+    if (typeof task.id !== 'string' || !task.id.trim()) continue;
+    const runId = typeof task.runId === 'string' ? task.runId : envelope.runId;
+    const identity = JSON.stringify([runId ?? '', task.id]);
+    if (ids.has(identity)) continue;
     if (typeof task.kind !== 'string' || !kinds.has(task.kind)) continue;
     if (typeof task.label !== 'string' || !task.label.trim()) continue;
     if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
     const allDetails = Array.isArray(task.details) ? task.details.filter((detail): detail is string => typeof detail === 'string' && !!detail.trim()) : [];
-    if (task.kind === 'question' ? allDetails.length === 0 : task.state === 'Ready') continue;
     const details = allDetails.length > 400
       ? [...allDetails.slice(0, 395), 'Some prepared details are not shown. Check the request and HMS.', ...allDetails.slice(-5)]
       : allDetails;
-    ids.add(task.id);
-    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details });
+    ids.add(identity);
+    const completion = typeof runId === 'string' && typeof envelope.workItemId === 'string' && typeof task.handled === 'boolean'
+      ? { runId, workItemId: envelope.workItemId, handled: task.handled } : {};
+    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details,
+      ...(task.earlier === true ? { earlier: true } : {}), ...completion });
   }
   return tasks;
 }
@@ -833,9 +839,10 @@ export type BoundStaffActions =
   | { kind: 'ready'; actions: ReservationistStaffAction[]; tasks?: ReservationistPreparedTask[] };
 
 export async function bindStaffActions(args: {
-  query?: (input: { threadId: string; messageId: string }) => Promise<unknown>;
+  query?: (input: { threadId: string; messageId: string; workItemId?: string }) => Promise<unknown>;
   threadId?: string;
   messageId?: string;
+  workItemId?: string;
 }): Promise<BoundStaffActions> {
   if (!args.threadId?.trim() || !args.messageId?.trim()) {
     return { kind: 'unavailable', reason: 'Actions for this email are not ready yet. Select it again.' };
@@ -844,7 +851,8 @@ export async function bindStaffActions(args: {
     return { kind: 'unavailable', reason: 'Email actions cannot be loaded from this pane yet. Refresh the pane and try again.' };
   }
   try {
-    const source = await args.query({ threadId: args.threadId, messageId: args.messageId });
+    const source = await args.query({ threadId: args.threadId, messageId: args.messageId,
+      ...(args.workItemId ? { workItemId: args.workItemId } : {}) });
     if (source == null) return { kind: 'ready', actions: [] };
     if (typeof source !== 'object' || (source as { replyToMessageId?: unknown }).replyToMessageId !== args.messageId)
       return { kind: 'unavailable', reason: 'The email review changed. Select it again.' };
@@ -1869,7 +1877,8 @@ type StaffQuoteClient = {
 type DraftsClient = {
   list?: { query: (input: { threadId: string; limit?: number }) => Promise<unknown> };
   get?: { query: (input: { id: string }) => Promise<unknown> };
-  reviewForMessage?: { query: (input: { threadId: string; messageId: string }, options?: StaffQuoteCallOptions) => Promise<unknown> };
+  reviewForMessage?: { query: (input: { threadId: string; messageId: string; workItemId?: string }, options?: StaffQuoteCallOptions) => Promise<unknown> };
+  setRequestHandled?: { mutate: (input: { workItemId: string; runId: string; taskId: string; handled: boolean }, options?: StaffQuoteCallOptions) => Promise<unknown> };
 };
 
 function staffQuoteCallOptions(
@@ -1937,8 +1946,9 @@ export function staffQuoteFromTrpc(trpc: unknown): {
     drafts: new Proxy(row.drafts ?? {}, {
       get(target, property) {
         const route = Reflect.get(target, property, target);
-        return property === 'reviewForMessage'
-          ? mailboxStaffQuoteQuery(route as DraftsClient['reviewForMessage'], mailbox) : route;
+        if (property === 'reviewForMessage') return mailboxStaffQuoteQuery(route as DraftsClient['reviewForMessage'], mailbox);
+        if (property === 'setRequestHandled') return mailboxStaffQuoteMutation(route as DraftsClient['setRequestHandled'], mailbox);
+        return route;
       },
     }),
   };

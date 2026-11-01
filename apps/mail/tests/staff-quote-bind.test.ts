@@ -68,6 +68,26 @@ it('binds prepared tasks to the selected email review', async () => {
   expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
 });
 
+it('keeps independent handled states attached to the selected work item and run', async () => {
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',runId:'run-1',workItemId:'item-1',reviewSummary:{tasks:[
+    {id:'one',kind:'question',label:'Answer question',state:'Needs review',details:['Request: Parking?'],handled:true},
+    {id:'two',kind:'existing_document',label:'Provide document',state:'Needs review',details:['Request: Invoice?'],handled:false},
+  ]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+  expect(result).toMatchObject({kind:'ready',tasks:[{id:'one',handled:true,runId:'run-1',workItemId:'item-1'},
+    {id:'two',handled:false,runId:'run-1',workItemId:'item-1'}]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1',workItemId:'item-1'});
+});
+
+it('keeps an earlier unresolved task even if a rerun reused its task id', async () => {
+  const task = {id:'same',kind:'question',label:'Review',state:'Needs review',details:['Check request'],handled:false};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',runId:'new',workItemId:'item',reviewSummary:{tasks:[
+    task, {...task,runId:'old',label:'Earlier request'},
+  ]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item'});
+  expect(result).toMatchObject({kind:'ready',tasks:[{id:'same',runId:'new'},{id:'same',runId:'old'}]});
+});
+
 it('keeps the final no-save notice when a long prepared booking is shortened', async () => {
   const details = [...Array.from({length: 410}, (_, index) => `Night ${index}`), 'No booking has been saved.'];
   const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Pending staff action',details};
