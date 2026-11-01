@@ -318,7 +318,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     const sameSourcePair = (pair: StayPair) => compatible(pair) &&
       sameDate(candidate.arrival, pair.arrival) && sameDate(candidate.departure, pair.departure);
     const conflictingCounterpart = otherPairs.some(pair => compatible(pair) &&
-      (!!candidate.entity && pair.entity === candidate.entity ||
+      (!!candidate.entity && pair.entity === candidate.entity || pair.scope === candidate.scope ||
         ((sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
           (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure)))));
     return conflictingCounterpart && valuePairs.filter(sameSourcePair).length > otherPairs.filter(sameSourcePair).length;
