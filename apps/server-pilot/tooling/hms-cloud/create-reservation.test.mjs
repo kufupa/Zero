@@ -103,6 +103,7 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
   assert.equal(withoutMetadata.outcome, 'saved');
   assert.equal(noMetadata.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
   assert.equal(result.outcome, 'saved');
+  assert.equal(result.warnings.filter(({ field, issue }) => field === 'stay.childAges' && issue === 'saved_record_exposes_age_bands_not_exact_ages').length, 1);
   assert.equal(result.approvalReady, false);
   assert.equal(result.confirmation, '123456-1');
   assert.deepEqual(result.appliedVerification, { visibleFields: true, childAges: 'at_selection_only', organizationId: 'at_selection_only' });
