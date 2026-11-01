@@ -205,6 +205,14 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('quote')).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
   await expect(run('new_booking')).rejects.toThrow('Document fact value not entailed by source span');
  });
+ it('retains a quote linked across differently worded MIME views, but refuses booking or negated occupancy',async()=>{
+  const plain='Please quote one double room for two adults.',marker=`\n\n${HTML_ALTERNATIVE_MARKER}`;
+  const run=async(html:string,kind:'quote'|'new_booking')=>{const htmlStart=plain.length+marker.length,text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:views';
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:2,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:html,view:'html'}}],tasks:[{id:'task',kind,factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'views',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'views',causalAt:at,admissions:[],signal:new AbortController().signal});};
+  await expect(run('Kindly quote one double room for two adults.','quote')).resolves.toMatchObject({facts:[{convention:{rule:'centurion_staff_occupancy_v1'}}]});
+  await expect(run('Kindly quote one double room for two adults.','new_booking')).rejects.toThrow();
+  await expect(run('Kindly do not quote one double room for two adults.','quote')).rejects.toThrow();
+ });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
   const alternate='Please rebook this stay using the previous quotation.';
@@ -252,6 +260,8 @@ it('deduplicates equivalent plain/HTML activations before continuing a prior inv
  expect(plan.tasks).toMatchObject([{id:'invoice',kind:'existing_document',source:{attachmentId:'message:prior-invoice',quote:'send the final invoice for payment'}}]);
  const conditionalPlain='Please see the quotation. You can book the rooms.',conditionalHtml=`${conditionalPlain}\n\nOnly if breakfast is included\nKind regards`,conditionalHtmlStart=conditionalPlain.length+separator.length,conditionalHtmlEnd=conditionalHtmlStart+conditionalHtml.length,conditionalQuotedStart=conditionalHtmlEnd+2,conditionalText=`${conditionalPlain}${separator}${conditionalHtml}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,conditionalViews=[{name:'plain' as const,start:0,end:conditionalPlain.length,quoted:{start:conditionalQuotedStart,end:conditionalText.length}},{name:'html' as const,start:conditionalHtmlStart,end:conditionalHtmlEnd}];
  expect(deriveDocumentRequestContinuations({messages:[prior,{id:'conditional-renewal',at,direction:'inbound',text:conditionalText,sourceViews:conditionalViews}],triggerMessageId:'conditional-renewal',causalAt:at})).toEqual([]);
+ const consumedCondition='Please see the quotation. You can book the rooms\n\nOnly if breakfast is included';
+ expect(deriveDocumentRequestContinuations({messages:[prior,{id:'consumed-condition',at,direction:'inbound',text:`${consumedCondition}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`}],triggerMessageId:'consumed-condition',causalAt:at})).toEqual([]);
  const questionHtml=`${plain}. Are you available to discuss parking?`,questionHtmlStart=plain.length+separator.length,questionHtmlEnd=questionHtmlStart+questionHtml.length,questionQuotedStart=questionHtmlEnd+2,questionText=`${plain}${separator}${questionHtml}\n\nFrom: guest@example.invalid\nSubject: Prior booking\n\n${priorText}`,questionViews=[{name:'plain' as const,start:0,end:plain.length,quoted:{start:questionQuotedStart,end:questionText.length}},{name:'html' as const,start:questionHtmlStart,end:questionHtmlEnd}];
  expect(deriveDocumentRequestContinuations({messages:[prior,{id:'question-renewal',at,direction:'inbound',text:questionText,sourceViews:questionViews}],triggerMessageId:'question-renewal',causalAt:at})).toHaveLength(1);
 });
