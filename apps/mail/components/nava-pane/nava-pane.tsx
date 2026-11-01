@@ -902,17 +902,20 @@ export function NavaPane({
       } } }).ai?.hmsCandidateState?.query;
       void (async () => {
         await refreshActions();
-        if (!candidateQuery || cancelled) return;
+        if (cancelled) return;
         let sawActive = false, idleChecks = 0;
         const watch = async () => {
-          let running = false;
+          let running = false, statusRead = false;
           try {
-            const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
-            if (cancelled) return;
-            running = Boolean(state.activeRun);
-            if (running) { sawActive = true; idleChecks = 0; }
-            else if (await refreshActions() && sawActive) return;
-          } catch { /* Retry transient status failures for a bounded period. */ }
+            if (candidateQuery) {
+              const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
+              if (cancelled) return;
+              statusRead = true;
+              running = Boolean(state.activeRun);
+              if (running) { sawActive = true; idleChecks = 0; }
+            }
+          } catch { /* Review can still be available when candidate status is not. */ }
+          if (!running && await refreshActions() && sawActive && statusRead) return;
           if (!cancelled && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
         };
         await watch();

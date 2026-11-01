@@ -506,7 +506,8 @@ describe('NavaPane', () => {
       .mockResolvedValue({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } });
     bridgeMockState.candidateStateQuery = candidate;
     bridgeMockState.reviewForMessageQuery = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(null)
-      .mockRejectedValueOnce(new Error('temporary review failure')).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+      .mockRejectedValueOnce(new Error('temporary review failure')).mockRejectedValueOnce(new Error('temporary final review failure'))
+      .mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
       tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
     } });
     render(<NavaPane bridge={fakeBridge} />);
@@ -517,6 +518,20 @@ describe('NavaPane', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.queryByText('Reservation ABC-1')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText('Reservation ABC-1')).toBeDefined();
+  });
+
+  it('refreshes prepared tasks when candidate status is unavailable', async () => {
+    vi.useFakeTimers();
+    bridgeMockState.candidateStateQuery = vi.fn().mockRejectedValue(new Error('candidate status unavailable'));
+    bridgeMockState.reviewForMessageQuery = vi.fn().mockRejectedValueOnce(new Error('temporary review failure'))
+      .mockRejectedValueOnce(new Error('temporary review failure')).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+        tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
+      } });
+    render(<NavaPane bridge={fakeBridge} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.queryByText('Reservation ABC-1')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.getByText('Reservation ABC-1')).toBeDefined();
