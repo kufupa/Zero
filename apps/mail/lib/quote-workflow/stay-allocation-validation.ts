@@ -1,9 +1,6 @@
 import type { StayGroupRequirement } from './types';
 
-export type StayTotalMismatch = 'rooms' | 'children' | 'adults';
-
-/** Check explicit stay totals against the per-row allocation before HMS availability or quote calls. */
-export function stayTotalMismatch(groups: readonly StayGroupRequirement[]): StayTotalMismatch | null {
+export function stayTotalMismatch(groups: readonly StayGroupRequirement[]): 'rooms' | 'children' | 'adults' | null {
   const stays = new Map<string, {
     rooms: Set<number>;
     children: Set<number>;
