@@ -361,7 +361,7 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
    if(!other)return false;
    const shared=own&&other.includes(own)?own:other&&own.includes(other)?other:'';
    if(shared)other=own.replace(shared,'')+' '+other.replace(shared,'');
-   return /\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|family|occupancy|accommodation|people|persons?|pax|guests?|beds?|single|double|twin|not|never|no|without|cancel|instead|correction|amend|change|exclude|remove|disregard)\b/i.test(other);
+   return /\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|kids?|infants?|minors?|students?|family|occupancy|accommodation|people|persons?|pax|guests?|beds?|single|double|twin|stay(?:ing)?|not|never|no|without|cancel|instead|correction|amend|change|exclude|remove|disregard)\b/i.test(other);
   }))return;
   page=' '.repeat(view.start)+page.slice(view.start,view.end);
  }

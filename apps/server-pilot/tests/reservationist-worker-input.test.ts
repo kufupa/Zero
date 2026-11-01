@@ -82,6 +82,7 @@ describe('reservationist worker input', () => {
     };
     expect((await extract('Can we check in early?')).facts[0]!.convention?.rule).toBe('centurion_staff_occupancy_v1');
     await expect(extract('Correction: please quote two rooms instead.')).rejects.toThrow();
+    await expect(extract('There are two kids staying.')).rejects.toThrow();
   });
 
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
