@@ -312,9 +312,16 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const otherPairs = otherViews.flatMap(pairsIn);
   const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
   const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
+  const supportedStayPair = (pair: StayPair) => /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
+  const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => otherPairs.some(pair =>
+    !(candidate.entity && pair.entity && candidate.entity !== pair.entity) &&
+    (sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
+    (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure))));
+  if (ambiguousCitationConflict) throw new Error('Explicit same-stay correction requires source clarification');
   const fallback = sourcePair && sourcePairs.length === 1 && otherPairs.length === 1 &&
     !(sourcePair.entity && otherPairs[0]!.entity && sourcePair.entity !== otherPairs[0]!.entity) &&
-    (sameDate(sourcePair.arrival, otherPairs[0]!.arrival) || sameDate(sourcePair.departure, otherPairs[0]!.departure))
+    ((sameDate(sourcePair.arrival, otherPairs[0]!.arrival) || sameDate(sourcePair.departure, otherPairs[0]!.departure)) ||
+      supportedStayPair(sourcePair) && supportedStayPair(otherPairs[0]!))
     ? [otherPairs[0]!] : [];
   const uniqueArrival = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.arrival, sourcePair.arrival)).length === 1;
   const uniqueDeparture = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.departure, sourcePair.departure)).length === 1;
@@ -350,7 +357,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
       const scope = scopes[0] ?? otherHeading;
       const otherStay = !!sourcePair?.entity && scope !== undefined && scope !== sourcePair.entity &&
         scopes.every(entity => entity === scope) && !/\b(?:all|both|every|everyone)\b/i.test(sentence);
-      const withdrawn = /\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote|need)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|accommodation|nights?|dates?)\b/i.test(sentence);
+      const withdrawn = /\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote|need)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?(?!\s+service)|stay|accommodation|nights?|dates?)\b/i.test(sentence);
       const negated = /\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
       let previousDateEnd = 0;
       const datesWithRoles = dateMatches(sentence).map(match => {
@@ -387,7 +394,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(source.sourceViews?.some(view=>view.quoted&&fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.quoted.start&&fact.source.end<=view.quoted.end))throw new Error('Yearless date source is quoted history');
  const {page,start,end}=citedViewSpan(fact,source);
  const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
- const signoff=/^[ \t]*(?:kind regards|best regards|warm regards|regards|sincerely|yours sincerely)[,!]?[ \t]*\r?$/im.exec(page);
+ const signoff=/^[ \t]*(?:kind regards|best regards|warm regards|regards|sincerely|yours sincerely|thank you)[,.!?]?[ \t]*\r?$/im.exec(page);
  const signoffTail=signoff?page.slice(signoff.index+signoff[0].length):'';
  const hasPostscript=/\b(?:p\.?\s*s\.?|postscript|please|kindly|quote|book|reserve|request|availability|correction|corrected|change(?:d)?|instead|amend(?:ed)?|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore|arrival|departure|check[ -]?(?:in|out)|dates?|need)\b/i.test(signoffTail);
  const authored=signoff&&!hasPostscript?page.slice(0,signoff.index):page;
