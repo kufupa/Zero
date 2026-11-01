@@ -58,7 +58,7 @@ export function outstandingRequestHistory(runs: readonly { id: string; result: u
       if (handled.has(key)) continue;
       const source = object(task.requestSource);
       outstanding.push({ runId: run.id, taskId, kind: typeof task.kind === 'string' ? task.kind : '',
-        quote: typeof source.quote === 'string' ? source.quote.slice(0, 256) : '' });
+        quote: typeof source.quote === 'string' ? source.quote.slice(0, 40_000) : '' });
     }
   }
   return outstanding;

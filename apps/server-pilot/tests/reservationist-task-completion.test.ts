@@ -20,6 +20,9 @@ it('carries staff completion only across an unchanged, unique source span', () =
   const ambiguous = requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-a');
   expect(ambiguous.get('one')).not.toBe(ambiguous.get('two'));
   expect(ambiguous.get('one')).not.toBe(requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-b').get('one'));
+  const quote = `${'Earlier request. '.repeat(20)}Final detail.`;
+  const long = {...task('long', 0), requestSource:{...task('long', 0).requestSource, end:quote.length, quote}};
+  expect(outstandingRequestHistory([{id:'run',result:{version:1,tasks:[long]}}], {})[0]?.quote).toBe(quote);
 });
 
 it('does not auto-close a malformed stored task inventory', () => {
