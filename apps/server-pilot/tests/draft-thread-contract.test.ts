@@ -17,10 +17,101 @@ import {
   withSeededTestDb,
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import {
+  configureInboundAttachmentIdentityReader,
+  reservationistBookingSuggestionSourcesAreCurrent,
+} from '../src/trpc/routes/drafts.js';
+import type { ReservationistDraftSource } from '../src/ai/reservationist-draft-source.js';
 
 const reachable = await probeTestDb();
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () => {
+  it('rechecks trigger attachments, including uncited content, without reading earlier messages', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID(), triggerMessageId = randomUUID(), priorMessageId = randomUUID();
+      const citedId = randomUUID(), uncitedId = randomUUID(), metadataId = randomUUID(), priorId = randomUUID();
+      const body = 'Please book one room for two adults from 2026-12-03 to 2026-12-05.';
+      const bodyHash = createHash('sha256').update(body).digest('hex');
+      const hashes = new Map([[citedId, 'a'.repeat(64)], [uncitedId, 'b'.repeat(64)]]);
+      await db.insert(mailThread).values({
+        id: threadId, transportId: TRANSPORT_ID, threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z'),
+      });
+      await db.insert(message).values([
+        { id: triggerMessageId, transportId: TRANSPORT_ID, threadId, direction: 'inbound' as const,
+          fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'], textBody: body,
+          receivedAt: new Date('2026-07-06T10:00:00Z') },
+        { id: priorMessageId, transportId: TRANSPORT_ID, threadId, direction: 'inbound' as const,
+          fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'], textBody: 'Earlier note',
+          receivedAt: new Date('2026-07-05T10:00:00Z') },
+      ]);
+      await db.insert(attachment).values([
+        { id: citedId, messageId: triggerMessageId, filename: 'rooming.pdf', mimeType: 'application/pdf',
+          sizeBytes: 12, s3Key: `attachments/${triggerMessageId}/cited.pdf` },
+        { id: uncitedId, messageId: triggerMessageId, filename: 'terms.pdf', mimeType: 'application/pdf',
+          sizeBytes: 16, s3Key: `attachments/${triggerMessageId}/uncited.pdf` },
+        { id: metadataId, messageId: triggerMessageId, filename: 'unread.bin', mimeType: 'application/octet-stream',
+          sizeBytes: 8, s3Key: `attachments/${triggerMessageId}/unread.bin` },
+        { id: priorId, messageId: priorMessageId, filename: 'earlier.pdf', mimeType: 'application/pdf',
+          sizeBytes: 9, s3Key: `attachments/${priorMessageId}/earlier.pdf` },
+      ]);
+      const descriptor = (id: string, messageId: string, s3Key: string, sizeBytes: number, sourceHash?: string) => ({
+        attachmentId: id, messageId, s3Key,
+        mimeType: id === metadataId ? 'application/octet-stream' : 'application/pdf',
+        sizeBytes, inline: false, ...(sourceHash ? { sourceHash } : {}),
+        ...(id === metadataId ? { sourceIdentity: 'metadata_only' as const, contentId: null } : {}),
+      });
+      const source = { attachments: [
+        descriptor(citedId, triggerMessageId, `attachments/${triggerMessageId}/cited.pdf`, 12, hashes.get(citedId)),
+        descriptor(uncitedId, triggerMessageId, `attachments/${triggerMessageId}/uncited.pdf`, 16,
+          hashes.get(uncitedId)),
+        descriptor(metadataId, triggerMessageId, `attachments/${triggerMessageId}/unread.bin`, 8),
+        descriptor(priorId, priorMessageId, `attachments/${priorMessageId}/earlier.pdf`, 9, 'c'.repeat(64)),
+      ] } as unknown as ReservationistDraftSource;
+      const result = { tasks: [{ kind: 'new_booking',
+        requestSource: { attachmentId: `message:${triggerMessageId}`, sourceHash: bodyHash },
+        bookingSuggestion: { version: 1, facts: {
+          dates: [{ source: { sourceRef: citedId, sourceHash: hashes.get(citedId) } }],
+          rooms: [], guests: [], boards: [], parties: [],
+        } },
+      }] };
+      const input = {
+        result, triggerMessageId, messageSourceHash: bodyHash, source, transportId: TRANSPORT_ID, threadId,
+      };
+      const reads: string[] = [];
+      configureInboundAttachmentIdentityReader(async ({ attachmentId }) => {
+        reads.push(attachmentId);
+        return { sha256: hashes.get(attachmentId) ?? '' };
+      });
+      try {
+        expect(await reservationistBookingSuggestionSourcesAreCurrent(db, input)).toBe(true);
+        expect(reads).toEqual([citedId, uncitedId]);
+        reads.length = 0;
+        configureInboundAttachmentIdentityReader(async ({ attachmentId }) => ({
+          sha256: attachmentId === citedId ? 'd'.repeat(64) : hashes.get(attachmentId) ?? '',
+        }));
+        expect(await reservationistBookingSuggestionSourcesAreCurrent(db, input)).toBe(false);
+        reads.length = 0;
+        configureInboundAttachmentIdentityReader(async ({ attachmentId }) => ({
+          sha256: attachmentId === uncitedId ? 'd'.repeat(64) : hashes.get(attachmentId) ?? '',
+        }));
+        expect(await reservationistBookingSuggestionSourcesAreCurrent(db, input)).toBe(false);
+        reads.length = 0;
+        configureInboundAttachmentIdentityReader(async ({ attachmentId }) => {
+          reads.push(attachmentId);
+          return { sha256: hashes.get(attachmentId) ?? '' };
+        });
+        await db.insert(attachment).values({ id: randomUUID(), messageId: triggerMessageId, filename: 'new.pdf',
+          mimeType: 'application/pdf', sizeBytes: 4,
+          s3Key: `attachments/${triggerMessageId}/new.pdf` });
+        expect(await reservationistBookingSuggestionSourcesAreCurrent(db, input)).toBe(false);
+        expect(reads).toHaveLength(0);
+      } finally {
+        configureInboundAttachmentIdentityReader(null);
+      }
+    });
+  });
+
   it('chooses the latest analysis for the selected email even when an older draft was edited later', async () => {
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
