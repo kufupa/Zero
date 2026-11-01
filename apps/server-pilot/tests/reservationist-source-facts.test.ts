@@ -297,6 +297,8 @@ describe('plain and HTML citation binding',()=>{
   };
   const ask='Please review attached voucher';
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'plain'}],voucherReviews:[]});
+  const parking='Is parking available for guests on the attached hotel voucher?';
+  await expect(run(parking,`${parking}\n\nIs late check-in available?`,[{id:'parking',quote:parking,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'parking'}],voucherReviews:[]});
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'},{id:'html',quote:ask,view:'html'}])).resolves.toMatchObject({tasks:[{id:'plain'},{id:'html'}],voucherReviews:expect.arrayContaining([expect.objectContaining({quote:expect.stringMatching(/voucher/i)})])});
   const repeated='Please review the attached voucher (it remains under review until signed, and the attached voucher is the corrected copy).';
   await expect(run(repeated,`${repeated}\n\nThe rooming list is attached.`,[{id:'single',quote:'Please review the attached voucher',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'single'}]});
