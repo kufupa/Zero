@@ -150,6 +150,18 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
  if(Array.isArray(plan.tasks))for(const task of plan.tasks){if(!task||!Object.hasOwn(task,'sourceCandidateId'))continue;if(Object.hasOwn(task,'source')||typeof task.sourceCandidateId!=='string')throw new Error('Invalid original request candidate');const candidate=candidates.find(c=>c.id===task.sourceCandidateId);if(!candidate)throw new Error('Unbound original request candidate');if(!candidate.allowedKinds.includes(task.kind))throw new Error('Original request candidate kind not entailed');task.source=structuredClone(candidate.source);delete task.sourceCandidateId;}
  return plan;
 }
+/** A matching task in both authored alternatives can share the original plain span. */
+function equivalentAuthoredTaskOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):number|undefined{
+ if(!views||views.length!==2)return;
+ const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
+ if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
+ const hits=views.map(view=>[first,second].filter(start=>start>=view.start&&start+quote.length<=view.end));
+ if(hits.some(viewHits=>viewHits.length!==1))return;
+ const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
+ const before=views.map((view,index)=>clean(page.slice(view.start,hits[index]![0])));
+ const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]![0]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
+ return before[0]===before[1]&&after[0]===after[1]?hits[0]![0]:undefined;
+}
 /** Bind original text and restore uniquely evidenced guest spelling; source bytes never change. */
 function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:string;sourceHash:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[]}[]):unknown{
  if(!output||typeof output!=='object'||Array.isArray(output))return output;
@@ -172,7 +184,11 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
      if(hits.length>1)throw new Error('Ambiguous original text span');
      if(!hits.length){if(range)throw new Error('Citation absent from selected source view');continue;}
      start=hits[0]!.index!;span.quote=searchPage.slice(start,start+span.quote.length);
-    }else if(searchPage.indexOf(span.quote,start+1)!==-1)throw new Error('Ambiguous original text span');
+    }else if(searchPage.indexOf(span.quote,start+1)!==-1){
+     const equivalent=!range&&list===candidate.tasks?equivalentAuthoredTaskOffset(page,span.quote,source?.sourceViews):undefined;
+     if(equivalent===undefined)throw new Error('Ambiguous original text span');
+     start=equivalent;
+    }
     start+=rangeStart;
     span.start=start;span.end=start+span.quote.length;
    }

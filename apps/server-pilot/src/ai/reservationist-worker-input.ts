@@ -141,13 +141,17 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
     return { texts: [normalized], describedCids, preserveAll: true };
   const $ = load(html, null, false);
   $('details.quoted-toggle, blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').before('\nFrom: quoted history\n');
+  const genericImageLabel = /^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i;
   $('img').each((_, element) => {
     const src = $(element).attr('src')?.trim() ?? '';
     const alt = $(element).attr('alt')?.trim() ?? '';
     const cid = /^cid:/i.test(src) ? normalizeContentId(src) : null;
-    const usefulAlt = /^(?:image\d*|logo|company logo|hotel logo|banner|signature|footer|spacer|icon)$/i.test(alt) ? '' : alt;
-    // Unknown descriptions can describe business content; only generic signature labels are disposable.
-    if (cid && usefulAlt) describedCids.add(cid);
+    const heading = $(element).prev('h1, h2, h3, h4, h5, h6').text().trim();
+    const usefulAlt = genericImageLabel.test(alt) ? '' : alt;
+    // Semantic headings immediately above an image describe it even without a trailing colon.
+    // Generic brand/signature labels remain eligible for the existing noise filter.
+    const usefulHeading = heading && !genericImageLabel.test(heading);
+    if (cid && (usefulAlt || usefulHeading)) describedCids.add(cid);
     $(element).replaceWith($('<span>').text(cid ? ` ${usefulAlt} ${src} ` : ` ${usefulAlt} `));
   });
   $('br').replaceWith('\n');
