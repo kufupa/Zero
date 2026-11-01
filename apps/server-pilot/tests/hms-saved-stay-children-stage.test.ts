@@ -169,11 +169,42 @@ describe('saved child validation request fence', () => {
 });
 
 // Exercise actual stage orchestration with synthetic native controls and layered routes.
-function fakePage(settings: { badResponse?: boolean; unexpectedRequest?: boolean; blankZero?: boolean; changedIdentity?: boolean; extraWindow?: boolean } = {}) {
+function fakePage(settings: {
+  badResponse?: boolean; unexpectedRequest?: boolean; blankZero?: boolean; changedIdentity?: boolean; extraWindow?: boolean;
+  orderedResponse?: boolean; wrongValidationTarget?: boolean; changedTargetAfterApply?: boolean;
+  mismatchedNativeCounts?: boolean; mismatchedVisibleCounts?: boolean; mismatchedModelCounts?: boolean; unexpectedSideEffect?: boolean;
+} = {}) {
   const pageRoutes: Array<(route: any) => Promise<void>> = [];
   const contextRoutes: Array<(route: any) => Promise<void>> = [];
   const ages = [8, 12]; let selected = 0; let toggle = false; let identityReads = 0; let pending: ((value: any) => void) | undefined;
-  const effects = { reads: 0, aborted: 0, writes: 0 };
+  let popupOpen = false; let applied = false;
+  const effects = { reads: 0, aborted: 0, writes: 0, popupClosed: 0, afterApplyTargetReads: 0, afterApplySnapshots: 0 };
+  const bands = () => ({ child1: ages.filter((age) => age <= 2).length,
+    child2: ages.filter((age) => age >= 3 && age <= 12).length, child3: ages.filter((age) => age >= 13).length });
+  const parentSnapshot = () => {
+    const result = structuredClone(snapshot());
+    const values = result.values as Record<string, unknown>, data = result.data as Record<string, unknown>;
+    values.averagerate = '2,830.00'; data.averagerate = '2830';
+    data.updatechildcategories = ''; data.enablecheckavailability = '0'; data.ratetax = '0';
+    if (popupOpen || applied) {
+      data.successmessages = true; data.activechildcategories = 3; result.recordDirty = true;
+    }
+    if (applied) {
+      const desired = { children: ages.length, ...bands() };
+      for (const [name, value] of Object.entries(desired)) {
+        if (values[name] !== String(value)) (result.dirtyFields as string[]).push(name);
+        values[name] = String(value);
+      }
+      values.averagerate = ''; (result.dirtyFields as string[]).push('averagerate');
+      data.childages = ages.join(','); data.updatechildcategories = true;
+      data.enablecheckavailability = '-1'; data.ratetax = '';
+      (result.modifiedFields as string[]).push('childages', 'updatechildcategories', 'enablecheckavailability', 'ratetax');
+      result.formDirty = true;
+      if (settings.mismatchedModelCounts) { data.children = String(ages.length); (result.modifiedFields as string[]).push('children'); }
+      if (settings.unexpectedSideEffect) data.unexpected = 'changed';
+    }
+    return result;
+  };
   const visit = async (req: any) => {
     const handlers = [...pageRoutes].reverse().concat([...contextRoutes].reverse());
     const next = async (i: number): Promise<void> => {
@@ -184,7 +215,10 @@ function fakePage(settings: { badResponse?: boolean; unexpectedRequest?: boolean
   };
   const input = (get: () => number) => ({ count: async () => 1, evaluate: async () => ({ visible: String(get()), native: String(get()) }) });
   const popup = {
-    count: async () => 1, waitFor: async () => {},
+    count: async () => popupOpen ? 1 : 0,
+    waitFor: async (options?: { state?: string }) => {
+      if (options?.state === 'hidden' ? popupOpen : !popupOpen) throw Error('popup state mismatch');
+    },
     locator: (selector: string) => {
       if (selector === 'a.x-btn:visible') return { filter: () => ({ count: async () => 1, click: async () => {
         const req = request({ frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails`, body: body({
@@ -193,12 +227,17 @@ function fakePage(settings: { badResponse?: boolean; unexpectedRequest?: boolean
           childCategoryCounts: { child1: 0, child2: 2, child3: 0 },
         }).toString() });
         const before = effects.writes; await visit(req);
-        if (effects.writes > before) pending?.({ request: () => req, ok: () => true, json: async () => ({
-          propertyCode: 'HRCEN', reservationStayId: '5', adultCount: 2, childCount: ages.length,
-          childAges: [...ages].sort((a, b) => a - b), updateChildCategories: true, activeChildCategories: 3,
-          confirmChildCategory: false, childCategoryCounts: { CHILD2: ages.length }, dirtyList: [], gUserID: '',
-          gFunctionName: '', gRemovePooledBean: false, gEntityName: '',
-        }) });
+        if (effects.writes > before) {
+          applied = true; popupOpen = false; effects.popupClosed++;
+          const derived = bands();
+          pending?.({ request: () => req, ok: () => true, json: async () => ({
+            propertyCode: 'HRCEN', reservationStayId: settings.wrongValidationTarget ? '6' : '5', adultCount: 2,
+            childCount: ages.length, childAges: settings.orderedResponse ? [...ages] : [...ages].sort((a, b) => a - b),
+            updateChildCategories: true, activeChildCategories: 3, confirmChildCategory: false,
+            childCategoryCounts: { CHILD1: derived.child1, CHILD2: derived.child2 - (settings.mismatchedNativeCounts ? 1 : 0),
+              CHILD3: derived.child3 }, dirtyList: [], gUserID: '', gFunctionName: '', gRemovePooledBean: false, gEntityName: '',
+          }) });
+        }
       } }) };
       if (selector === 'input[name="updatechildcategories"]') return { count: async () => 1, evaluate: async () => toggle, click: async () => { toggle = true; } };
       if (selector === 'input[name="children"]') return {
@@ -220,18 +259,26 @@ function fakePage(settings: { badResponse?: boolean; unexpectedRequest?: boolean
       } }) };
     },
   };
-  let popupOpen = false;
   const frame: any = {
     url: () => `${ORIGIN}/record`,
     evaluate: async (_fn: unknown, arg: any) => {
-      if (arg?.expected) { identityReads++; return { native: { reservationstayid: settings.changedIdentity && identityReads > 1 ? '6' : '5' }, track: 'T', partyPreimage: parties }; }
-      if (Array.isArray(arg) && arg.includes('arprofileid')) {
-        const result = structuredClone(snapshot());
-        if (popupOpen) { result.data.successmessages = true as never; result.data.activechildcategories = 3 as never; result.recordDirty = true; }
-        return result;
+      if (arg?.expected) {
+        identityReads++;
+        if (applied) effects.afterApplyTargetReads++;
+        const changed = (settings.changedIdentity && identityReads > 1) || (settings.changedTargetAfterApply && applied);
+        return { native: { reservationstayid: changed ? '6' : '5' }, track: 'T', partyPreimage: parties };
       }
-      if (Array.isArray(arg) && arg.includes('children')) return Object.fromEntries(['children', 'child1', 'child2', 'child3'].map((name) =>
-        [name, { visible: snapshot().values[name as 'children'], component: snapshot().values[name as 'children'], readOnly: true, disabled: false }]));
+      if (Array.isArray(arg) && arg.includes('arprofileid')) {
+        if (applied) effects.afterApplySnapshots++;
+        return parentSnapshot();
+      }
+      if (Array.isArray(arg) && arg.includes('children')) {
+        const values = parentSnapshot().values as Record<string, unknown>;
+        return Object.fromEntries(['children', 'child1', 'child2', 'child3'].map((name) => {
+          const value = applied && settings.mismatchedVisibleCounts && name === 'children' ? '1' : values[name];
+          return [name, { visible: value, component: value, readOnly: true, disabled: false }];
+        }));
+      }
       throw Error('unexpected evaluate');
     },
     locator: (selector: string) => {
@@ -262,6 +309,17 @@ function fakePage(settings: { badResponse?: boolean; unexpectedRequest?: boolean
     waitForResponse: () => new Promise((resolve) => { pending = resolve; }),
   };
   return { page, frame, visit, effects };
+}
+
+// Even the exact previously authorized validation must be denied after the attempt.
+async function expectQuarantined(fake: ReturnType<typeof fakePage>) {
+  await fake.visit(request({ frame: fake.frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails`, body: body({
+    propertyCode: 'HRCEN', reservationStayId: '5', adultCount: '2', childCount: '3', childAges: [8, 12, 5],
+    updateChildCategories: true, activeChildCategories: 3, confirmChildCategory: false,
+    childCategoryCounts: { child1: 0, child2: 2, child3: 0 },
+  }).toString() }));
+  await fake.visit(request({ frame: fake.frame, url: `${ORIGIN}/web/base/OSRESV.HDR?pageaction=SAVE` }));
+  expect(fake.effects).toMatchObject({ reads: 1, writes: 1, aborted: 2 });
 }
 
 describe('child staging lifecycle', () => {
@@ -299,6 +357,51 @@ describe('child staging lifecycle', () => {
     expect(fake.effects).toMatchObject({ reads: 1, writes: 1 });
     await fake.visit(request({ frame: fake.frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails` }));
     expect(fake.effects).toMatchObject({ reads: 1, writes: 1, aborted: 1 });
+  });
+  it('verifies ordered Apply against the closed popup and unsaved parent draft', async () => {
+    const fake = fakePage({ orderedResponse: true });
+    const result = await stageLabtestChildAmendment(fake.page, expected,
+      { childCount: 3, childAges: [8, 12, 5], applyToDraft: true });
+    expect(result).toMatchObject({
+      outcome: 'applied_to_unsaved_draft', nativeValidationVerified: true, nativeResponseAges: [8, 12, 5],
+      requested: { childCount: 3, childAges: [8, 12, 5] }, saved: { count: 2, ages: [8, 12] },
+      draftVisible: { children: { visible: '3', component: '3' }, child1: { visible: '0', component: '0' },
+        child2: { visible: '3', component: '3' }, child3: { visible: '0', component: '0' } },
+      draftOccupancy: { children: { form: { present: true, value: '3' }, model: { present: true, value: '2' } },
+        child2: { form: { present: true, value: '3' }, model: { present: true, value: '2' } },
+        childages: { form: { present: false }, model: { present: true, value: '8,12,5' } } },
+      ok: true, unapprovedFields: [], priceClearedFields: ['averagerate'], requiresReprice: true,
+      saveEligible: false, pricing: 'unknown', tax: 'unknown', inventory: 'unknown',
+    });
+    expect(result).toMatchObject({ changedFields: expect.arrayContaining([
+      'children', 'child2', 'childages', 'updatechildcategories', 'enablecheckavailability', 'ratetax', 'averagerate',
+    ]) });
+    expect(fake.effects).toMatchObject({ reads: 1, writes: 1, popupClosed: 1, afterApplyTargetReads: 1, afterApplySnapshots: 1 });
+    await expectQuarantined(fake);
+  });
+  it.each([
+    { label: 'validation response target', settings: { wrongValidationTarget: true }, issue: 'AGE_VALIDATION_RESPONSE_UNVERIFIED', postApplyReads: 0 },
+    { label: 'parent target after Apply', settings: { changedTargetAfterApply: true }, issue: 'DRAFT_TARGET_UNVERIFIED', postApplyReads: 1 },
+    { label: 'native category counts', settings: { mismatchedNativeCounts: true }, issue: 'DRAFT_CHILD_READBACK_UNVERIFIED', postApplyReads: 1 },
+    { label: 'visible child count', settings: { mismatchedVisibleCounts: true }, issue: 'DRAFT_CHILD_READBACK_UNVERIFIED', postApplyReads: 1 },
+    { label: 'parent model child count', settings: { mismatchedModelCounts: true }, issue: 'DRAFT_SIDE_EFFECTS_UNVERIFIED', postApplyReads: 1 },
+    { label: 'unexpected parent side effect', settings: { unexpectedSideEffect: true }, issue: 'DRAFT_SIDE_EFFECTS_UNVERIFIED', postApplyReads: 1 },
+  ])('keeps Apply uncertain for mismatched $label', async ({ settings, issue, postApplyReads }) => {
+    const fake = fakePage({ orderedResponse: true, ...settings });
+    const result = await stageLabtestChildAmendment(fake.page, expected,
+      { childCount: 3, childAges: [8, 12, 5], applyToDraft: true });
+    expect(result).toMatchObject({ outcome: 'apply_uncertain', issue,
+      saveEligible: false, pricing: 'unknown', tax: 'unknown', inventory: 'unknown' });
+    if (issue !== 'DRAFT_SIDE_EFFECTS_UNVERIFIED') expect(result).toMatchObject({ nativeResponseAges: [8, 12, 5] });
+    if ('mismatchedModelCounts' in settings) expect(result).toMatchObject({
+      nativeValidationVerified: true, ok: false, unapprovedFields: ['snapshot'],
+    });
+    if ('unexpectedSideEffect' in settings) expect(result).toMatchObject({
+      nativeValidationVerified: true, ok: false, unapprovedFields: ['unexpected'],
+    });
+    expect(fake.effects).toMatchObject({ reads: 1, writes: 1, popupClosed: 1,
+      afterApplyTargetReads: postApplyReads, afterApplySnapshots: postApplyReads });
+    await expectQuarantined(fake);
   });
   it('stages explicit zero when popup displays and reports native zero', async () => {
     const fake = fakePage();
