@@ -255,6 +255,21 @@ describe('reservationist worker input', () => {
     }
   });
 
+  it('does not use a meal fact withdrawn by pronoun in the other view', async () => {
+    const meal = 'Breakfast included.', request = 'Please quote one room.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${meal}\n${request}`,
+      htmlBody: `<p>${meal}</p><p>Do not include it.</p><p>Kindly quote one room.</p>`,
+    })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(meal) }],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+  });
+
   it('keeps a scoped meal correction from disappearing between authored views', async () => {
     const groupA = 'Group A: Please quote one room with breakfast included.';
     const groupBCorrection = "Correction: use Group B's room-only plan instead.";
