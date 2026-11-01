@@ -5,6 +5,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 
 const PROPERTY = 'HRCEN';
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+const UNAVAILABLE_MESSAGE = 'Selected criteria is not available for these dates.';
 const ROOM_CHANGE_PATHS = ['/web/base/OSRESV.HDR.roomtypechange', '/web/base/OSRESV.HDR.attributerefresh'];
 const SPECS = {
   roomType: { title: 'Room Types', grid: 'LVROOMTYPE2', code: 'roomtypecode', id: 'roomtypeid', name: 'roomtypedesc' },
@@ -30,6 +31,20 @@ async function assertWindows(page, allowed, nativeDialog) {
     titles.push(headers[0].trim());
   }
   if (new Set(titles).size !== titles.length) throw new Error('UNEXPECTED_DIALOG');
+}
+async function dismissUnavailableMessage(page, timeout = 0) {
+  const dialog = page.locator('.x-message-box:visible').filter({
+    has: page.getByText(UNAVAILABLE_MESSAGE, { exact: true }),
+  });
+  if (timeout) await dialog.first().waitFor({ state: 'visible', timeout }).catch(() => {});
+  const count = await dialog.count();
+  if (!count) return false;
+  if (count !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
+  const ok = dialog.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
+  if (await ok.count() !== 1) throw new Error('UNAVAILABLE_DIALOG_AMBIGUOUS');
+  await ok.click();
+  await dialog.waitFor({ state: 'hidden', timeout: 10000 });
+  return true;
 }
 async function formFields(page) {
   if (new URL(page.url()).origin !== HMS_ORIGIN) throw new Error('TARGET_MISMATCH');
@@ -236,23 +251,34 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const spec = SPECS[kind];
   await assertWindows(page, [], nativeDialog);
   const form = await formFields(page), formState = JSON.stringify(form);
-  const initial = page.waitForResponse((response) => {
-    const req = response.request();
-    const path = new URL(req.url()).pathname;
-    return path === (kind === 'roomType' ? '/web/base/LOVPOP' : '/web/base/BSMSLV') &&
-      allowedSearch(req, kind, new URL(page.url()).origin);
-  }, { timeout: 20000 }).catch(() => null);
+  let initial;
   if (kind === 'ratePlan') {
+    const inquiry = page.waitForResponse((response) => {
+      const request = response.request();
+      return new URL(response.url()).pathname === '/api/internalBooking/rateshop/inquiryForGrid' &&
+        allowedSearch(request, kind, new URL(page.url()).origin);
+    }, { timeout: 20000 }).catch(() => null);
     const rate = page.locator('input[name="rateplan"]:visible').first();
     await rate.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
     const shop = picker(page, 'Rate Shop');
     await shop.waitFor({ state: 'visible', timeout: 20000 });
-    await assertWindows(page, ['Rate Shop'], nativeDialog);
     const shopId = await shop.getAttribute('id'); if (!shopId) throw new Error('PICKER_UNAVAILABLE');
     searches.set(page, { kind, shopId, formState, cleanupOnly: true });
+    const response = await inquiry;
+    if (!response || response.status() !== 200) throw new Error('RATE_SHOP_INQUIRY_UNVERIFIED');
+    if (await dismissUnavailableMessage(page, 1000)) return { criteriaUnavailable: true };
+    await assertWindows(page, ['Rate Shop'], nativeDialog);
+    initial = page.waitForResponse((response) => {
+      const req = response.request();
+      return new URL(req.url()).pathname === '/web/base/BSMSLV' && allowedSearch(req, kind, new URL(page.url()).origin);
+    }, { timeout: 20000 }).catch(() => null);
     const ratePlans = shop.locator('input[name="rateplans"]:visible').first();
     await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
   } else {
+    initial = page.waitForResponse((response) => {
+      const req = response.request();
+      return new URL(req.url()).pathname === '/web/base/LOVPOP' && allowedSearch(req, kind, new URL(page.url()).origin);
+    }, { timeout: 20000 }).catch(() => null);
     const room = page.locator('input[name="roomtype"]:visible').first();
     await room.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
   }
@@ -396,6 +422,11 @@ async function search(page, kind, input = {}) {
       const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin) ||
         (kind === 'roomType' && roomFilterResetRequest(req, origin, resetMetadata)),
       () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }));
+      if (capture.result?.criteriaUnavailable) return {
+        outcome: 'criteria_unavailable', kind, issue: 'RATE_SHOP_CRITERIA_UNAVAILABLE',
+        message: UNAVAILABLE_MESSAGE, criteria: { propertyCode: PROPERTY, scope: 'guest_stay_rate_shop_catalog' },
+        cleanupRequired: true, effects: capture.effects,
+      };
       state = { kind, ...capture.result };
       effects = capture.effects;
     }

@@ -36,6 +36,13 @@ Use `offset` or inspection for more detail. Rate Shop controls are included in
 its catalog result. A `no_match` means no match in a verified complete catalog;
 otherwise an empty partial catalog is `incomplete`.
 
+If Rate Shop returns its exact informational message `Selected criteria is not
+available for these dates.`, `searchRatePlans` returns
+`criteria_unavailable` with `RATE_SHOP_CRITERIA_UNAVAILABLE`. It closes only a
+single matching message box and leaves Rate Shop in cleanup-only state; call
+`closeRoomRatePicker` to cancel and verify that session. This is not a Hotel
+Availability quote or proof that the hotel is sold out.
+
 Room results include `criteria.nativeFilters` from the native picker request.
 When HMS prefilters a reopened picker by its current room code, the tool clears
 that observed filter and verifies the new data-only response and grid. It reports
