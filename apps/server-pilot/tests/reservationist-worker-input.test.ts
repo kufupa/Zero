@@ -395,12 +395,15 @@ describe('reservationist worker input', () => {
     expect(result.input.messages[0]!.text).toMatch(/Room A\n+Room B\n+Rate/);
   });
 
-  it('keeps an inline image requested only by the HTML alternative', async () => {
+  it.each([
+    '<p>Please use the image below for rooming.</p><p>Kind regards</p><img src="cid:logo">',
+    'Please use the image from the earlier message for rooming.',
+  ])('keeps an inline image requested only by the HTML alternative: %s', async (htmlBody) => {
     const result = await build([
       row('prior', 1, { textBody: 'Hello\nKind regards\ncid:logo' }),
       row('current', 4, {
         textBody: 'Please proceed.',
-        htmlBody: '<p>Please use the image below for rooming.</p><p>Kind regards</p><img src="cid:logo">',
+        htmlBody,
       }),
     ], [{ id: 'logo', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
     expect(result.ignoredSignatures).toBe(0);
