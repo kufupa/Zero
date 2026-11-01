@@ -89,7 +89,7 @@ function canonicalCount(value) {
   return BigInt(value).toString();
 }
 
-function parseDateDisplay(value) {
+export function parseDateDisplay(value) {
   const text = value.trim();
   const iso = /^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?$/.exec(text);
   const displayed = /^(?:(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+)?(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{2}):(\d{2}))?$/i.exec(text);

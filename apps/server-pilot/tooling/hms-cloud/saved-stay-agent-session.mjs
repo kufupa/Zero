@@ -34,8 +34,9 @@ function readFailure(error, stage, shallow) {
 }
 
 /** Own a headless guarded page; calls submitted through runTool execute in order. */
-export async function withSavedStayAgentSession(operation) {
+export async function withSavedStayAgentSession(operation, { signal } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
+  signal?.throwIfAborted();
   return withCenturionStay360Page(async (page) => {
     await installReadOnlyGuard(page.context());
     let current = null, recordOpen = false, pendingCancel = null, sealed = false, nativeDialog = null;
@@ -164,7 +165,7 @@ export async function withSavedStayAgentSession(operation) {
     };
     try { return await operation({ runTool }); }
     finally { accepting = false; await tail; }
-  }, { headless: true });
+  }, { headless: true, signal });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {
