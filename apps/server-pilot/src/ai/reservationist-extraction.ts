@@ -112,6 +112,7 @@ function originalRequestCandidates(messages:readonly {id:string;text:string;dire
  for(const match of requestBody.matchAll(/\b(?:please|kindly)\s+(?:ensure|update|confirm|send|provide|copy|resend|check|review)\b[^.!?;]*[.!?;]?|\b(?:attached\s+(?:POP|proof of payment|(?:hotel\s+)?vouchers?)|tax(?:es)?|breakfast options|cancellation (?:terms|policy)|payment link|reply all|copy all)\b/gi))add(match.index!,match.index!+match[0].length);
  return candidates;
 }
+type CurrentVoucherReviewSource=Pick<ValidatedDocumentPlan['tasks'][number]['source'],'attachmentId'|'sourceHash'|'page'>&{start:number;end:number;quote:string};
 /** Lexical completeness only: original submitted-voucher request, never a fabricated task or authority. */
 function currentVoucherReviewSources(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[],triggerMessageId:string|undefined):ValidatedDocumentPlan['tasks'][number]['source'][][] {
  const m=messages.find(m=>m.id===triggerMessageId);if(!m||m.direction!=='inbound'||m.disclosure==='staff_only')return[];
@@ -121,7 +122,7 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
   for(const hit of current.matchAll(/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/gi)){
   const localStart=hit.index!,start=view.start+localStart,end=start+hit[0].length,previousBreak=[...current.slice(0,localStart).matchAll(/\r?\n[\t ]*\r?\n/g)].pop(),paragraphStart=previousBreak?previousBreak.index!+previousBreak[0].length:0,lineStart=current.lastIndexOf('\n',localStart-1)+1,lineEnd=current.indexOf('\n',localStart),line=current.slice(lineStart,lineEnd<0?current.length:lineEnd),sentenceStart=Math.max(paragraphStart,current.lastIndexOf('.',localStart-1)+1,current.lastIndexOf('!',localStart-1)+1,current.lastIndexOf('?',localStart-1)+1,current.lastIndexOf(';',localStart-1)+1),tail=current.slice(sentenceStart),sentenceTail=tail.search(/[.!?;]/),paragraphTail=tail.search(/\r?\n[\t ]*\r?\n/),endOffset=[sentenceTail,paragraphTail].filter(offset=>offset>=0).sort((a,b)=>a-b)[0]??tail.length,parent=tail.slice(0,endOffset+(endOffset===sentenceTail?1:0));
   if(/^\s*>/.test(line)||/^\s*>/m.test(parent)||/\b(?:not|never|no|don't|do not|if|unless|without|withdraw|disregard|ignore|historical|previous|whether|was|were|other property|another property)\b/i.test(parent))continue;
-  const key=parent.trim().replace(/\s+/g,' ').replace(/\b(?:the|a|an)\s+(?=(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b)/gi,'').replace(/[.!?;]+$/,'').toLowerCase(),requestIndex=[...current.slice(sentenceStart,localStart).matchAll(/(?:\b(?:please|kindly|and|but|then)\s+(?:(?:please|kindly|also)\s+)*(?:review|check|verify|confirm|look\s+at)\b|(?:^|[,;]\s*)also\s+(?:review|check|verify|confirm|look\s+at)\b)/gi)].length,requests=sentenceGroups.get(sentenceStart)??new Map<number,{key:string;sources:ValidatedDocumentPlan['tasks'][number]['source'][]}>(),group=requests.get(requestIndex)??{key,sources:[]};group.sources.push({attachmentId:`message:${m.id}`,sourceHash:createHash('sha256').update(m.text).digest('hex'),page:1,start,end,quote:hit[0]});requests.set(requestIndex,group);sentenceGroups.set(sentenceStart,requests);
+  const key=parent.trim().replace(/\s+/g,' ').replace(/\b(?:the|a|an)\s+(?=(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b)/gi,'').replace(/[.!?;]+$/,'').toLowerCase(),requestIndex=[...current.slice(sentenceStart,localStart).matchAll(/(?:\b(?:please|kindly|and|but|then)\s+(?:(?:please|kindly|also)\s+)*(?:review|check|verify|confirm|look\s+at)\b|(?:^|[,;]\s*)(?:also\s+)?(?:review|check|verify|confirm|look\s+at)\b)/gi)].length,requests=sentenceGroups.get(sentenceStart)??new Map<number,{key:string;sources:ValidatedDocumentPlan['tasks'][number]['source'][]}>(),group=requests.get(requestIndex)??{key,sources:[]};group.sources.push({attachmentId:`message:${m.id}`,sourceHash:createHash('sha256').update(m.text).digest('hex'),page:1,start,end,quote:hit[0]});requests.set(requestIndex,group);sentenceGroups.set(sentenceStart,requests);
   }
   for(const requests of sentenceGroups.values())for(const group of requests.values()){const groups=sentences.get(group.key)??[];groups.push(group.sources);sentences.set(group.key,groups);}
   byView.set(view.name,sentences);
@@ -131,13 +132,18 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  for(const key of keys){const copies=names.map(name=>byView.get(name)?.get(key)??[]),count=Math.max(...copies.map(groups=>groups.length));for(let index=0;index<count;index++){const alternatives=copies.flatMap(groups=>groups[index]??[]);out.push(alternatives);}}
  return out;
 }
-function noteCurrentVoucherReviewGrouping(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
- const covered=new Set<ValidatedDocumentPlan['tasks'][number]>();
- for(const required of currentVoucherReviewSources(messages,triggerMessageId)){
-  const matches=plan.tasks.filter(t=>!covered.has(t)&&t.kind==='question'&&required.some(source=>t.source.attachmentId===source.attachmentId&&t.source.sourceHash===source.sourceHash&&t.source.page===1&&t.source.start!==undefined&&t.source.end!==undefined&&t.source.start<=source.start!&&t.source.end>=source.end!&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(t.source.quote??'')));
-  if(matches.length!==1){const note='One or more attached voucher requests need staff review; check the original email and attachments.';if(!plan.unresolvedAsks.includes(note)&&plan.unresolvedAsks.length<32)plan.unresolvedAsks.push(note);return;}
-  covered.add(matches[0]!);
- }
+/** Missing or grouped voucher asks become source-bound staff work instead of dropping extraction. */
+export function unmatchedCurrentVoucherReviewSources(messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined,tasks:ValidatedDocumentPlan['tasks']):CurrentVoucherReviewSource[]{
+ const groups=currentVoucherReviewSources(messages,triggerMessageId),message=messages.find(m=>m.id===triggerMessageId);
+ const covers=(task:ValidatedDocumentPlan['tasks'][number],source:ValidatedDocumentPlan['tasks'][number]['source'])=>task.kind==='question'&&task.source.attachmentId===source.attachmentId&&task.source.sourceHash===source.sourceHash&&task.source.page===1&&task.source.start!==undefined&&task.source.end!==undefined&&source.start!==undefined&&source.end!==undefined&&task.source.start<=source.start&&task.source.end>=source.end&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(task.source.quote??'');
+ const matches=groups.map(group=>tasks.filter(task=>group.some(source=>covers(task,source))));
+ return groups.flatMap((group,index)=>{
+  const covered=matches[index]!;if(covered.length===1&&matches.filter(other=>other.includes(covered[0]!)).length===1)return[];
+  const source=group[0];if(!message||!source||source.start===undefined||source.end===undefined||!source.quote)return[];
+  const viewEnd=message.sourceViews?.find(view=>source.start!>=view.start&&source.end!<=view.end)?.end??message.text.length;
+  const qualifier=message.text.slice(source.end,viewEnd).match(/^[ \t]+for[ \t]+(?:(?:guest|booking|reservation|confirmation(?:[ \t]+number)?)[ \t]+|(?:mr|mrs|ms|miss)\.?[ \t]+)[\p{L}\p{N}][\p{L}\p{N}'’-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’-]*)?/iu)?.[0].replace(/[ \t]+(?:and|or|then|but)\b[\s\S]*$/iu,'')??'';
+  const end=source.end+qualifier.length;return[{attachmentId:source.attachmentId,sourceHash:source.sourceHash,page:source.page,start:source.start,end,quote:message.text.slice(source.start,end)}];
+ });
 }
 function bindRequestCandidates(output:unknown,candidates:readonly RequestCandidate[]):unknown{
  if(!output||typeof output!=='object'||Array.isArray(output))return output;const plan=structuredClone(output) as any;
@@ -459,10 +465,22 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
   else if (fact.kind === 'room') {
     const scope=citedSourceScope(fact,sources,facts,tasks),proofFact=scope?.fact??fact,proofFacts=scope?.facts??facts,proofTasks=scope?.tasks??tasks,boundTasks=proofTasks.filter(task=>task.factIds.includes(fact.id)).concat(scope?.alternativeTasks??[]);
     if((scope?.alternativeTasks??[]).some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
-    const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).some(task=>{
+    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
+    const citedView=sourceForViews?.sourceViews?.find(view=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.start&&fact.source.end<=view.end);
+    const quoteTask=citedView&&tasks.find(task=>task.kind==='quote'&&task.factIds.includes(fact.id)&&task.source.attachmentId===fact.source.attachmentId&&task.source.page===fact.source.page&&task.source.start!==undefined&&task.source.end!==undefined&&task.source.start>=citedView.start&&task.source.end<=citedView.end);
+    // Inspect other authored views even when the model cited only this one.
+    const viewComparisons:ValidatedDocumentPlan['tasks']=quoteTask?sourceForViews!.sourceViews!.filter(view=>view!==citedView).map(view=>{
+      const text=originalPage.slice(view.start,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+      return{...quoteTask,source:{...quoteTask.source,start:view.start,end:view.start+text.length,quote:text}};
+    }):[];
+    const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).concat(viewComparisons).some(task=>{
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
       if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
+      // A room count can contradict the selected view even when per-room occupancy is unclear.
+      const rows=viewComparisons.includes(task)?quoted.split(/[.!?;\n]+/).filter(row=>/\b(?:quote|quotation|rates?|prices?)\b/i.test(row)&&/\brooms?\b/i.test(row)):[];
+      const counts=rows.length===1?[...rows[0]!.matchAll(/\b(\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b/gi)]:[];
+      if(counts.length===1){const raw=counts[0]![1]!,quantity=/^(?:one|a|an)$/i.test(raw)?1:/^two$/i.test(raw)?2:Number(raw);if(quantity!==occupancy.quantity)return true;}
       const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||/\bMr\.?\s*(?:and|&)\s*Mrs\.?\s+[\p{L}]/iu.test(quoted)||/\b(?:\d+|one|a|an|two)\s+single\s+rooms?\b|\bsingle\s+occupancy\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
@@ -475,7 +493,6 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return;
     }
     const staff=scope&&fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(proofFact,sources,proofFacts,proofTasks,scope.page):undefined;
-    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
     const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirement(originalPage.slice(view.start,view.end)));
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){if(viewHasChild)throw new Error('Conflicting occupancy across message views');fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
     const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&!!scope&&soleExplicitAdultRoom(scope.page);
@@ -669,7 +686,6 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     const selected=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(selectedOutput,requestSpans),sources),sources);
     if(selected.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
     if(selected.facts.length||selected.tasks.some(task=>task.factIds.length))throw new Error('task_first_selection_contains_facts');
-    noteCurrentVoucherReviewGrouping(selected,input.messages,triggerMessageId);
     if(!selected.tasks.length){if(selected.facts.length||selected.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...selected,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}
     for(const task of selected.tasks){assertNewBookingTask(task,sources,triggerMessageId);if(task.kind==='existing_document'&&task.source.attachmentId.startsWith('message:')&&task.source.attachmentId!==`message:${triggerMessageId}`&&!boundContinuations.some(c=>c.taskId===task.id))throw new Error('historical_document_request_requires_continuation');}
     const selectedTasks=structuredClone(selected.tasks),selectedIdentity=JSON.stringify(selectedTasks);

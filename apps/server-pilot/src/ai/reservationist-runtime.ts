@@ -9,16 +9,24 @@ import type { PreparedFact } from './prepared-draft-input.js';
 import {quoteDigest} from '../quote-proposal/quote-revision.js';
 import {composeReservationistReply} from './reply-playbooks.js';
 import type { ReservationistMessageView } from './reservationist-message-view.js';
+import {VOUCHER_REVIEW_RECOVERY_REASON,voucherReviewRecoveryId} from './reservationist-source-recovery.js';
+export {VOUCHER_REVIEW_RECOVERY_REASON} from './reservationist-source-recovery.js';
 export const RESERVATIONIST_RUNTIME_VERSION='reservationist-runtime-v1';
 export const RESERVATIONIST_COPY_VERSION='reservationist-copy-v1';
 export type ReservationistRuntimeInput={version:1;requestId:string;propertyCode:string;trigger:{id:string;at:string};messages:{id:string;at:string;direction:'inbound'|'outbound';text:string;subject?:string;disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[];authorizationScope?:{ownerRef:string;threadId:string};authorizedArtifacts:unknown[];requiredTaskKinds?:string[];requiredAskSpans?:{sourceId:string;start:number;end:number;text:string}[];requiredTaskIds?:string[];requiredArtifactRefs?:string[];clock:{causalAt:string;sourceAt:string;sourceMode?:'historical'|'current_read';deadlineAt:number};capabilities:{pmsWrite:false;emailSend:false}};
 export type RuntimeTask={id:string;kind:string;required:boolean;source?:{attachmentId:string;sourceHash:string;page:number;start?:number;end?:number;quote?:string}};
 export type RuntimeTaskResult={id:string;status:'complete'|'needs_clarification'|'blocked'|'pending_pms_action';guestText:string;evidenceRefs:string[];disclosure?:'guest'|'staff_only';requestSource?:NonNullable<RuntimeTask['source']>};
 export type FactRecoveryProvenance={reason:string;taskIds:string[];sources:{attachmentId:string;sourceHash:string}[]};
-export type RuntimeSourceRecovery={kind:'unresolved_fact'|'attachment_manual';reason:string;sourceRef?:string;sourceHash?:string;sourceIdentity?:'metadata_only';sourceKind?:'message'|'attachment';messageId?:string;mimeType?:string;signatureNoise?:boolean;disclosure:'staff_only';provenance?:FactRecoveryProvenance};
+export type RuntimeSourceRecovery={kind:'unresolved_fact'|'attachment_manual'|'voucher_review';reason:string;sourceRef?:string;sourceHash?:string;sourceIdentity?:'metadata_only';sourceKind?:'message'|'attachment';messageId?:string;mimeType?:string;signatureNoise?:boolean;page?:number;start?:number;end?:number;quote?:string;disclosure:'staff_only';provenance?:FactRecoveryProvenance};
 export type RuntimeWorkResult={recipientPreparations?:import('./reservationist-recipient-preparation.js').RecipientPreparationReceipt[];currentNativeObservations?:import('./reservationist-execution.js').CurrentNativeObservationReceipt[];sourceRecoveries?:RuntimeSourceRecovery[];tasks:RuntimeTaskResult[];artifacts:{ref:string;sha256:string;sizeBytes:number;fileName:string;mimeType:string}[];requiredArtifactRefs?:string[];approvedGuestClauses?:Record<string,string>;preparedFacts?:PreparedFact[];quoteRefs:string[];packets:{saved:false;status:string;kind?:string;taskId?:string;businessRulesValidated?:boolean;cancellationReview?:unknown}[];errors:string[];quoteRevisions?:QuoteRevision[];proposalFacts?:{ref:string;facts:AuthorizedProposalFacts}[];importedOffers?:ImportedOffer[];approvedOverrides?:unknown[];rateComparisons?:ExecutionRateComparison[];readReceipts?:import('./reservationist-read-task.js').ReservationistReadReceipt[];existingDocumentReceipts?:import('./reservationist-existing-document.js').ReservationistExistingDocumentReceipt[];readRecoveries?:{taskId:string;codes:string[]}[];paymentComparisons?:import('./reservationist-execution.js').ExecutionPaymentComparison[]};
 export type RuntimePlan={sourceRecoveries?:RuntimeWorkResult['sourceRecoveries'];tasks:RuntimeTask[];facts:unknown[];factRecoveryProvenance?:FactRecoveryProvenance[];noAction?:{kind:'no_current_request'|'source_review';modelSelectionCompleted:true;inputDigest:string;triggerMessageId:string;sourceHash:string}};
 export type ReservationistSourceEvaluation={evaluateSourceAt:()=>string};
+function isCurrentVoucherReview(recovery:RuntimeSourceRecovery,input:ReservationistRuntimeInput,triggerMessage:ReservationistRuntimeInput['messages'][number]):boolean{
+ const {start,end,quote}=recovery;
+ return !!voucherReviewRecoveryId(recovery)&&recovery.sourceRef===`message:${input.trigger.id}`&&
+  recovery.messageId===input.trigger.id&&recovery.sourceHash===createHash('sha256').update(triggerMessage.text).digest('hex')&&
+  typeof start==='number'&&typeof end==='number'&&typeof quote==='string'&&triggerMessage.text.slice(start,end)===quote;
+}
 const currentExecutionInputs=new WeakMap<ReservationistRuntimeInput,{originalDigest:string;evaluation:ReservationistSourceEvaluation}>();
 /** Only a runtime-created view may advance the evaluation clock; the causal input stays unchanged. */
 export function isReservationistExecutionInput(input:ReservationistRuntimeInput,original:ReservationistRuntimeInput,evaluation:ReservationistSourceEvaluation|undefined):boolean{
@@ -51,10 +59,21 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
   const triggerMessage=input.messages.find(m=>m.id===input.trigger.id)!,proof=plan.noAction;
   if(!proof||!['no_current_request','source_review'].includes(proof.kind)||proof.modelSelectionCompleted!==true||proof.inputDigest!==clockInputDigest||proof.triggerMessageId!==input.trigger.id||proof.sourceHash!==createHash('sha256').update(triggerMessage.text).digest('hex')||!Array.isArray(input.requiredTaskKinds)||input.requiredTaskKinds.length||!Array.isArray(input.requiredAskSpans)||input.requiredAskSpans.length||input.requiredTaskIds?.length||input.requiredArtifactRefs?.length||plan.facts.length||plan.factRecoveryProvenance?.length)throw new Error('no_action_unproven');
   const sourceRecoveries=structuredClone(plan.sourceRecoveries??[]),inventory=input.authorizedArtifacts as {attachmentId?:string;sourceHash?:string}[];
-  if(sourceRecoveries.length>64||sourceRecoveries.some(r=>r.kind!=='attachment_manual'||r.disclosure!=='staff_only'||!r.reason||r.reason.length>4096||!r.sourceRef||r.provenance?.reason!==r.reason||r.provenance.taskIds.length!==0||r.provenance.sources.length!==1||r.provenance.sources[0]!.attachmentId!==r.sourceRef||!inventory.some(a=>a.attachmentId===r.sourceRef&&a.sourceHash===r.provenance!.sources[0]!.sourceHash)))throw new Error('no_action_unproven');
+  const invalidRecovery=sourceRecoveries.some(recovery=>{
+   if(recovery.kind==='voucher_review')return !isCurrentVoucherReview(recovery,input,triggerMessage);
+   return recovery.kind!=='attachment_manual'||recovery.disclosure!=='staff_only'||!recovery.reason||recovery.reason.length>4096||!recovery.sourceRef||
+    recovery.provenance?.reason!==recovery.reason||recovery.provenance.taskIds.length!==0||recovery.provenance.sources.length!==1||
+    recovery.provenance.sources[0]!.attachmentId!==recovery.sourceRef||
+    !inventory.some(a=>a.attachmentId===recovery.sourceRef&&a.sourceHash===recovery.provenance!.sources[0]!.sourceHash);
+  });
+  if(sourceRecoveries.length>64||invalidRecovery||sourceRecoveries.some(recovery=>recovery.kind==='voucher_review')&&proof.kind!=='source_review')throw new Error('no_action_unproven');
   if(proof.kind==='source_review'&&!sourceRecoveries.length)throw new Error('no_action_unproven');
   const work:RuntimeWorkResult={tasks:[],artifacts:[],quoteRefs:[],packets:[],errors:[],preparedFacts:[],sourceRecoveries,approvedGuestClauses:{}},assessment=assessReply({replyText:'',asks:[],facts:[],authorizedAttachmentRefs:[],audience:'guest'}),result={...work,version:RESERVATIONIST_RUNTIME_VERSION,copyVersion:RESERVATIONIST_COPY_VERSION,family:'quote' as const,...(proof.kind==='source_review'?{readiness:'needs_clarification' as const}:{readiness:'no_action' as const,noAction:proof}),tasks:[] as (RuntimeTaskResult&{kind:string;required:boolean})[],assessment,textBody:'',htmlBody:''};return{...result,digest:quoteDigest(result)};
  }
+ const triggerMessage=input.messages.find(message=>message.id===input.trigger.id)!;
+ const plannedVoucherReviews=(plan.sourceRecoveries??[]).filter(recovery=>recovery.kind==='voucher_review');
+ const voucherKeys=plannedVoucherReviews.map(recovery=>`${recovery.sourceRef}:${recovery.sourceHash}:${recovery.start}:${recovery.end}`);
+ if(plannedVoucherReviews.length>32||new Set(voucherKeys).size!==voucherKeys.length||plannedVoucherReviews.some(recovery=>!isCurrentVoucherReview(recovery,input,triggerMessage)))throw new Error('source_recovery_binding_invalid');
  if(plan.tasks.length>32||new Set(plan.tasks.map(t=>t.id)).size!==plan.tasks.length)throw new Error('task_plan_invalid');
  if(input.requiredAskSpans?.length){
   const used=new Set<string>();
@@ -77,6 +96,8 @@ export async function runReservationistRuntime(input:ReservationistRuntimeInput,
   evaluation.evaluateSourceAt();
  }
  const work=await deps.execute(plan,executionInput,signal,evaluation);signal.throwIfAborted();
+ if(work.sourceRecoveries?.some(recovery=>recovery.kind==='voucher_review'))throw new Error('source_recovery_binding_invalid');
+ if(plannedVoucherReviews.length)work.sourceRecoveries=[...(work.sourceRecoveries??[]),...structuredClone(plannedVoucherReviews)];
  evaluation?.evaluateSourceAt();
  const evaluatedAt=new Date(sourceEvaluatedAt);
  if(work.tasks.length!==plan.tasks.length||new Set(work.tasks.map(t=>t.id)).size!==work.tasks.length||plan.tasks.some(t=>!work.tasks.some(w=>w.id===t.id)))throw new Error('task_coverage_missing');
