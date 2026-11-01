@@ -8,7 +8,7 @@ import {
   type ReservationistAttachmentMetadata,
 } from './reservationist-attachment-input.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
-import { HTML_ALTERNATIVE_MARKER, type ReservationistMessageView } from './reservationist-message-view.js';
+import { combineMessageViews } from './reservationist-message-view.js';
 
 /** Rows must be loaded by the server for one mailbox and thread. */
 export type ReservationistWorkerMessage = {
@@ -62,43 +62,6 @@ function modelMessageText(row: ReservationistWorkerMessage, normalized: string):
   });
   const rendered = [$.root().text().trim(), ...history].filter(Boolean).join('\n\n').replace(/\u00a0/g, ' ').trim();
   return maskIncomingCardNumbers(rendered);
-}
-
-/** Keep each complete authored alternative before quoted history; deduplication can detach negations or conditions. */
-function combineMessageViews(primary: string, alternative: string): { text: string; sourceViews?: ReservationistMessageView[] } {
-  const comparable = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[ \t]*\n[ \t]*/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
-  if (!alternative || comparable(primary) === comparable(alternative)) return { text: primary };
-  const boundary = /^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu;
-  const split = (text: string) => {
-    const at = text.search(boundary);
-    return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at)];
-  };
-  const [primaryBody, primaryTail] = split(primary);
-  const [alternativeBody, alternativeTail] = split(alternative);
-  let text = '';
-  const sourceViews: ReservationistMessageView[] = [];
-  const quoted: Partial<Record<ReservationistMessageView['name'], { start: number; end: number }>> = {};
-  const add = (value: string, name?: ReservationistMessageView['name'], prefix = '', history?: ReservationistMessageView['name']) => {
-    if (!value && name !== 'html') return;
-    if (text) text += '\n\n';
-    text += prefix;
-    const start = text.length;
-    text += value;
-    if (name) sourceViews.push({ name, start, end: text.length });
-    if (history) quoted[history] = { start, end: text.length };
-  };
-  add(primaryBody?.trim() ?? '', 'plain');
-  if (alternativeBody?.trim() && (comparable(primaryBody ?? '') !== comparable(alternativeBody) || comparable(primaryTail ?? '') !== comparable(alternativeTail ?? '')))
-    // One authored copy is enough when only the quoted histories differ.
-    add(primaryBody?.trim() === alternativeBody.trim() ? '' : alternativeBody.trim(), 'html', HTML_ALTERNATIVE_MARKER);
-  if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
-  if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
-    add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
-  else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
-  const views = sourceViews.length === 2
-    ? sourceViews.map(view => ({ ...view, ...(quoted[view.name] ? { quoted: quoted[view.name] } : {}) }))
-    : undefined;
-  return { text, ...(views ? { sourceViews: views } : {}) };
 }
 
 function signatureInspection(row: ReservationistWorkerMessage, normalized: string, inspectAlternateHtml: boolean) {
