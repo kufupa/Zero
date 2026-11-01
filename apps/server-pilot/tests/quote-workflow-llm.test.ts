@@ -816,6 +816,14 @@ describe('mapLlmDecision', () => {
     expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
   });
 
+  it('reconciles a single defaulted room with its guest total', () => {
+    const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({
+      workflow: 'quote', missing: [], groups: [{ ...group, rooms: null, adultsPerRoom: 2, adultsTotal: 2 }],
+    })));
+    expect(mapped.groups[0]).toMatchObject({ quantity: 1, adults: 2, fields: { adults: 'extracted' } });
+    expect(mapped.missingQuoteReplyFields).not.toContain('Number of guests per room for stay 1');
+  });
+
   it('marks a stay-wide adult total that disagrees with its per-room rows as incomplete', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(analysis({

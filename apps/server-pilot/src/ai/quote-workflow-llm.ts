@@ -435,11 +435,11 @@ function stayTotalMismatches(
     const total = totals[0]!;
     const perRoom = rows.map((group) => totalField === 'adultsTotal' ? group.adultsPerRoom! : group.childAges!.length);
     if (totalField === 'childrenTotal' && total === 0 && perRoom.every((count) => count === 0)) continue;
-    if (rows.some((group) => group.rooms === null)) {
+    if (rows.some((group) => group.rooms === null) && !(defaultOneNight && rows.length === 1)) {
       mismatches.add(key);
       continue;
     }
-    const described = rows.reduce((sum, group, index) => sum + group.rooms! * perRoom[index]!, 0);
+    const described = rows.reduce((sum, group, index) => sum + (group.rooms ?? 1) * perRoom[index]!, 0);
     if (described !== total) mismatches.add(key);
   }
   return mismatches;
