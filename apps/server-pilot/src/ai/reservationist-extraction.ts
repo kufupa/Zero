@@ -343,9 +343,15 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
-function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
- const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1];
+function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[];causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId);let page=source?.pages?.[fact.source.page-1];
  if(!page||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
+ const view=source.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end);
+ if(view){
+  // Other relevant alternatives need the full cross-view occupancy validator.
+  if(source.sourceViews!.some(v=>v!==view&&/\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|family|occupancy|accommodation|not|never|cancel)\b/i.test(page!.slice(v.start,v.end))))return;
+  page=' '.repeat(view.start)+page.slice(view.start,view.end);
+ }
  const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;
  const requested=fact.source.quote??'';
  // An explicit per-person single allocation has its own accommodation scope;
