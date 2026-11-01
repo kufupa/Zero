@@ -97,17 +97,21 @@ describe('reservationist worker input', () => {
     await expect(extract('There are two kids staying.')).rejects.toThrow();
   });
 
-  it('does not quote a numbered adult-only room when the alternate adds a child', async () => {
+  it('distinguishes an added child from a pool-age question for a numbered room', async () => {
     const request = 'Please quote one room.', room = 'Room 1: 1 adult.';
+    const extract = async (extra: string) => {
     const { input } = await build([row('current', 4, { textBody: `${request}\n${room}`,
-      htmlBody: `<p>${request}</p><p>${room}</p><p>We also have a child aged 5.</p>` })]);
+      htmlBody: `<p>${request}</p><p>${room}</p><p>${extra}</p>` })]);
     const message = input.messages[0]!, hash = createHash('sha256').update(message.text).digest('hex');
     const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash: hash, page: 1, quote });
-    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+    return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
       facts: [{ id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source: source(room) }],
       tasks: [{ id: 'quote', kind: 'quote', factIds: ['room'], source: source(request) }], unresolvedAsks: [],
     } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
-      admissions: [], signal: new AbortController().signal })).rejects.toThrow();
+      admissions: [], signal: new AbortController().signal });
+    };
+    await expect(extract('We also have a child aged 5.')).rejects.toThrow();
+    await expect(extract('Is the pool open to children under 12?')).resolves.toMatchObject({ facts: [{ id: 'room' }] });
   });
 
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
@@ -304,6 +308,8 @@ describe('reservationist worker input', () => {
       await expect(extract('Do not select it.', explicit)).rejects.toThrow('Ambiguous original text span');
       await expect(extract('Do not choose it.', explicit)).rejects.toThrow('Ambiguous original text span');
       await expect(extract('Breakfast is excluded and starts at 07:00.', explicit)).rejects.toThrow('Ambiguous original text span');
+      await expect(extract('We will stay on a room-only basis.', explicit)).rejects.toThrow('Ambiguous original text span');
+      await expect(extract('Do you have a room-only option?', explicit)).resolves.toMatchObject({ facts: [{ id: 'meal', value: 'breakfast' }] });
       await expect(extract('Breakfast starts at 07:00.', explicit))
         .resolves.toMatchObject({ facts: [{ id: 'meal', value: 'breakfast' }] });
       await expect(extract('Correction: the shuttle leaves at 08:00.', explicit))
