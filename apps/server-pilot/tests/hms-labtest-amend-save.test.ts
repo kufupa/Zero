@@ -7,6 +7,12 @@ function deferred() {
   return { promise, resolve };
 }
 
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function mockPage(delayContextRoute = false) {
   const pageRoutes: Array<(route: any) => Promise<void>> = [];
   const contextRoutes: Array<(route: any) => Promise<void>> = [];
@@ -47,6 +53,52 @@ describe('shared Labtest amendment save lifecycle', () => {
 
     expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_DRAFT_CHANGED' });
     expect(save.click).not.toHaveBeenCalled();
+  });
+
+  it('reports uncertain when another save request is blocked after the approved dispatch', async () => {
+    const routes = mockPage();
+    const response = deferredValue<any>();
+    routes.page.waitForResponse.mockReturnValue(response.promise);
+    routes.page.waitForTimeout.mockResolvedValue(undefined);
+    const frame = { locator: () => ({ count: async () => 0 }) };
+    const saveRequest = {
+      url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
+      method: () => 'POST', postData: () => 'approved=true', frame: () => frame,
+    };
+
+    const visitRoutes = async (request: any) => {
+      const visitPageRoute = async (index: number): Promise<void> => {
+        const route = {
+          request: () => request,
+          fallback: async () => {
+            if (index > 0) return visitPageRoute(index - 1);
+            await routes.contextRoutes[0]!({
+              request: () => request, abort: vi.fn(), fallback: vi.fn(), continue: vi.fn(),
+            });
+          },
+          abort: vi.fn(),
+        };
+        await routes.pageRoutes[index]!(route);
+      };
+      await visitPageRoute(routes.pageRoutes.length - 1);
+    };
+    const save = {
+      click: vi.fn(async () => {
+        await visitRoutes(saveRequest);
+        await visitRoutes({ ...saveRequest, frame: () => frame });
+        response.resolve({ request: () => saveRequest, status: () => 200 });
+      }),
+    };
+
+    const result = await runLabtestAmendSave(routes.page as never, {
+      prepare: async () => ({ frame, save }),
+      stage: async () => ({ draft: true }),
+      matches: () => true,
+      validate: async () => true,
+    });
+
+    expect(save.click).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ outcome: 'uncertain', httpStatus: 200, blockedRequestsAfterDispatch: 1 });
   });
 
   it('quarantines a route chain that finishes installing after timeout and refuses page reuse', async () => {
