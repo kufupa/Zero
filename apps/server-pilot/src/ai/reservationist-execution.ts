@@ -22,7 +22,7 @@ import {deriveAuthorizedExtraLines,type AuthorizedProposalFacts} from '../quote-
 import {prepareBookingPacket,type BookingInput,type BookingEvidence,type BookingSourceProof} from './reservationist-booking-packet.js';
 import {prepareReservationistPendingAction,prepareReservationistChannelBookingSync,type ReservationistPendingActionInput,type ReservationistPendingActionEvidence} from './reservationist-pending-action.js';
 import {assertRevisionSourceFacts,assertSourceOfferFactAttestation,ReservationistSourceFactError,type SourceOfferFactAttestation} from './reservationist-source-facts.js';
-import {prepareReservationistExistingDocument,assertReservationistExistingDocumentTargets,reservationistDocumentRequestCount,deriveReservationistDocumentPurpose,type ReservationistExistingDocumentCapture,type ReservationistExistingDocumentBinding,type ReservationistExistingDocumentGrant,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
+import {prepareReservationistExistingDocument,assertReservationistExistingDocumentTargets,reservationistDocumentRequestCount,reservationistDocumentPurposes,deriveReservationistDocumentPurpose,type ReservationistExistingDocumentCapture,type ReservationistExistingDocumentBinding,type ReservationistExistingDocumentGrant,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
 import {deriveReservationistReadFields,prepareReservationistReadTask,type ReservationistReadTaskInput,type ReservationistReadTaskDependencies,type PaymentTargetBinding,type PaymentTargetReceipt} from './reservationist-read-task.js';
 import {compareRateClaim,type RateClaim,type RateComparison} from '../quote-proposal/rate-check.js';
 type Task=ValidatedDocumentPlan['tasks'][number];
@@ -54,6 +54,11 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  const history=message.text.search(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im);
  if(!sourceView&&history>=0&&source.end!>history)return false;
  const viewStart=sourceView?.start??0,authored=message.text.slice(viewStart,sourceView?.end??(history>=0?history:message.text.length)),start=source.start!-viewStart,end=source.end!-viewStart;
+ if(sourceView&&task.kind==='existing_document'){
+  const purposes=reservationistDocumentPurposes(source.quote);
+  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b/i).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
+  if(conflict)return false;
+ }
  const prefix=authored.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(authored.slice(end)),next=authored.slice(end).search(/[.!?;](?=\s|$)/),sentence=authored.slice(sentenceStart,terminalBoundary?end:next<0?authored.length:end+next);
  return !(/^\s*>/m.test(authored.slice(0,end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
 }
