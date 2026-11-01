@@ -4,6 +4,7 @@ const fixtures = vi.hoisted(() => ({
   events: [] as string[],
   context: {},
   guardContexts: [] as unknown[],
+  recordCalls: [] as unknown[],
   selection: {
     outcome: 'selected_unsaved', nativeId: '90210', searchId: 'org-search-1',
     displayedOrganization: 'Synthetic Company', profileProofToken: 'profile-proof-1',
@@ -34,8 +35,9 @@ vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({
   readRecordViewFromStay360: async () => { fixtures.events.push('record-view'); },
 }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
-  currentLabtestRecord: async () => {
+  currentLabtestRecord: async (_page: unknown, expected: unknown, options: unknown) => {
     fixtures.events.push('labtest-record');
+    fixtures.recordCalls.push({ expected, options });
     return { partyPreimage: { companyid: '90210', company: 'Synthetic Company' } };
   },
 }));
@@ -56,7 +58,11 @@ vi.mock('../tooling/hms-cloud/lookup.mjs', () => {
 import { runBookingLookupTool } from '../tooling/hms-cloud/booking-lookup-session.mjs';
 
 describe('organization readback fresh-context guard', () => {
-  beforeEach(() => { fixtures.events.length = 0; fixtures.guardContexts.length = 0; });
+  beforeEach(() => {
+    fixtures.events.length = 0;
+    fixtures.guardContexts.length = 0;
+    fixtures.recordCalls.length = 0;
+  });
 
   it('installs the read-only fence before searching the saved confirmation', async () => {
     const page = {};
@@ -78,5 +84,13 @@ describe('organization readback fresh-context guard', () => {
     } });
     expect(fixtures.guardContexts).toEqual([fixtures.context]);
     expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
+    expect(fixtures.recordCalls).toEqual([{
+      expected: {
+        confirmation: '1234567-1', guestId: '45678', arrival: '2027-01-25', departure: '2027-01-27',
+        roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
+      },
+      options: { allowUnchangedBusinessParties: true,
+        expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' } },
+    }]);
   });
 });
