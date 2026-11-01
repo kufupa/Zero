@@ -499,6 +499,29 @@ it('compares alternate printed years with the causal next occurrence', () => {
   .toThrow('Explicit same-stay correction requires source clarification');
 });
 
+it('matches repeated neighboring stay pairs by their full multiset', () => {
+ const first='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const repeated='Please quote another room: Arrival 21 December 2026; departure 24 December 2026.';
+ const body=`${first}\n${repeated}\n${repeated}`;
+ expect(validateCrossViewDates(body,body,first).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it('does not infer a year for a yearless office-closure range in a signature', () => {
+ const signature='Please quote a room.\n\nKind regards,\nOffice closure: 21–23 December';
+ expect(()=>validateCrossViewDates(signature,signature,'Office closure: 21–23 December',{
+  arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
+ })).toThrow('Ambiguous yearless stay context');
+});
+
+it('allows a labelled yearless date line directly under the stay request', () => {
+ const plain='Please quote accommodation.\nDates: 21–23 December.';
+ const citation='Dates: 21–23 December.';
+ expect(validateCrossViewDates(plain,plain,citation,{
+  arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z',
+ }).facts[0]!.value).toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it.each([
  ['same-date withdrawal','Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.',"Don't book the stay: Arrival 21 December 2026; departure 23 December 2026."],
  ['postscript after a standalone thank-you','Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.','Thank you.\nP.S. Correction: departure 24 December 2026.'],
