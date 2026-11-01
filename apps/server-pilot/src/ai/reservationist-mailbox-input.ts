@@ -69,7 +69,7 @@ export async function loadReservationistMailboxInput(options: {
       .from(message).where(and(eq(message.threadId, binding.threadId), eq(message.transportId, binding.transportId),
         or(and(eq(message.direction, 'inbound'), sql`${MESSAGE_ARRIVED_AT} <= ${triggerAt.toISOString()}::timestamp`),
           and(eq(message.direction, 'outbound'), or(
-            and(isNotNull(message.pop3Uidl), not(OUTLOOK_SYNCED), sql`${MESSAGE_ARRIVED_AT} <= ${triggerAt.toISOString()}::timestamp`),
+            and(isNotNull(message.pop3Uidl), not(OUTLOOK_SYNCED), sql`${MESSAGE_ARRIVED_AT} <= ${triggerAt.toISOString()}::timestamp`, or(isNull(message.sentAt), lte(message.sentAt, triggerAt))),
             and(or(isNull(message.pop3Uidl), OUTLOOK_SYNCED), isNotNull(message.sentAt), lte(message.sentAt, triggerAt)))))))
       .orderBy(asc(MESSAGE_ARRIVED_AT), asc(message.id)).limit(65);
     if (rows.length > 64 || !rows.some((row) => row.id === trigger.id)) throw new Error('mailbox_input_context_unavailable');

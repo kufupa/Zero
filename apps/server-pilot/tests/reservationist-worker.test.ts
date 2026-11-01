@@ -39,6 +39,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           {id:previousReplyId,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Earlier synthetic reply, synced late.',receivedAt:new Date(at.getTime()+20_000),sentAt:new Date(previousAt.getTime()+30_000)},
           {id:previousPop3Id,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Earlier imported reply.',pop3Uidl:'earlier-pop3',receivedAt:previousAt,sentAt:null,createdAt:new Date(previousAt.getTime()+10_000)},
           {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Later imported reply with backdated header.',pop3Uidl:'later-pop3',receivedAt:previousAt,sentAt:previousAt,createdAt:new Date(at.getTime()+20_000)},
+          {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Imported reply with future sent time.',pop3Uidl:'future-sent-pop3',receivedAt:previousAt,sentAt:new Date(at.getTime()+20_000),createdAt:new Date(previousAt.getTime()+10_000)},
         ]);
         let dismissedItemId:string|undefined;
         if(mode==='question'||mode==='source_review'){
@@ -104,7 +105,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           expect(generation?.outcome).toBe('needs_clarification');
           expect(drafts).toHaveLength(1);expect(drafts[0]?.textBody).toBe('');
           const review=buildReservationistReviewSummary(saved?.metrics?.reservationistResult,new Date(),[{sourceRef:fileId,messageId:currentId,filename:'rooms.xlsx'}]);
-          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:mode==='source_review'?'rooms.xlsx: This attachment format could not be read.':'rooms.xlsx: This attachment could not be checked; open the original source.'}));
+          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',kind:'business_document_failure',status:'open',reason:expect.stringMatching(/could not be (?:read|checked)/i)}));
           if(mode==='missing_file')expect(saved?.metrics?.reservationistDraftSource?.attachments).toEqual([expect.objectContaining({attachmentId:fileId,sourceIdentity:'metadata_only'})]);
         }else if(mode==='installed'){
           expect(drafts).toHaveLength(1);
@@ -114,6 +115,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           expect(modelPrompts[0]).toContain('Earlier synthetic reply, synced late.');
           expect(modelPrompts[0]).toContain('Earlier imported reply.');
           expect(modelPrompts[0]).not.toContain('Later imported reply with backdated header.');
+          expect(modelPrompts[0]).not.toContain('Imported reply with future sent time.');
           expect(drafts[0]?.textBody).toContain('We have noted your request to check in by 3:00pm.');
           expect(saved?.metrics?.reservationistResult?.tasks).toEqual(expect.arrayContaining([
             expect.objectContaining({id:'arrival',status:'complete'}),
