@@ -50,6 +50,21 @@ describe('reservationist worker input', () => {
     expect(validReservationistMessageViews(message.text, message.sourceViews)).toBe(true);
   });
 
+  it('retains separate quoted ranges when plain and HTML authored bodies match', async () => {
+    const authored = 'Please rebook the same stay as previously quoted.';
+    const { input } = await build([row('current', 4, {
+      textBody: `${authored}\nFrom: plain@example.invalid\nSubject: Prior stay\n\nArrival 21 December 2026; departure 23 December 2026`,
+      htmlBody: `<p>${authored}</p><blockquote><p>From: html@example.invalid</p><p>Subject: Alternate prior stay</p><p>Arrival 22 December 2026; departure 24 December 2026</p></blockquote>`,
+    })]);
+    const message = input.messages[0]!, views = message.sourceViews ?? [];
+    expect(views).toHaveLength(2);
+    expect(views.map(view => message.text.slice(view.start, view.end))).toEqual([authored, authored]);
+    expect(views.map(view => message.text.slice(view.quoted!.start, view.quoted!.end))).toEqual(expect.arrayContaining([
+      expect.stringContaining('Arrival 21 December 2026'), expect.stringContaining('Arrival 22 December 2026'),
+    ]));
+    expect(validReservationistMessageViews(message.text, views)).toBe(true);
+  });
+
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Room 1: 1 adult Room 2: 2 adults',

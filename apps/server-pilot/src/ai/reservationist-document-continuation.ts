@@ -36,16 +36,15 @@ export function deriveDocumentRequestContinuations(input:{messages:readonly Mess
  const found:DocumentRequestContinuation[]=[];
  for(const message of input.messages){
   if(message.id===trigger.id||message.direction!=='inbound'||message.disclosure==='staff_only'||!Number.isFinite(Date.parse(message.at))||Date.parse(message.at)>=causal)continue;
-  const cut=history(message.text),authored=cut<0?message.text:message.text.slice(0,cut);
-  const requests=[...authored.matchAll(/\bsend\s+(?:the\s+)?(?:final\s+)?invoice(?:\s+for\s+payment)?[.]?/gi)];
+  const cut=history(message.text),authored=cut<0?message.text:message.text.slice(0,cut),requestViews=message.sourceViews?.map(view=>({text:message.text.slice(view.start,view.end),offset:view.start}))??[{text:authored,offset:0}],copies=requestViews.flatMap((view,viewIndex)=>[...view.text.matchAll(/\bsend\s+(?:the\s+)?(?:final\s+)?invoice(?:\s+for\s+payment)?[.]?/gi)].map((match,index)=>({quote:match[0],parent:paragraph(view.text,match.index!),start:view.offset+match.index!,viewIndex,index}))),requests=copies.filter((request,index)=>!copies.slice(0,index).some(previous=>previous.viewIndex!==request.viewIndex&&previous.index===request.index&&previous.quote===request.quote&&previous.parent===request.parent));
   if(requests.length!==1||blocked(authored))continue;
   const currentProperties=namedProperties(current),priorProperties=namedProperties(authored);if(currentProperties.length&&(!priorProperties.length||currentProperties.some(p=>!priorProperties.includes(p))))continue;
-  const request=requests[0]!,quote=request[0],parent=paragraph(authored,request.index!);if(!affirmative(parent)||!quoted.includes(parent)||!(/\b(?:book|booking|reservation|accommodation)\b/i.test(parent)))continue;
-  const scopeParagraphs=authored.split(/\n\s*\n/).map(p=>p.trim()).filter(p=>p!==parent&&/\b(?:request|booking|reservation|accommodation)\b/i.test(p)&&/\b(?:event|group|stay|booking|reservation)\b/i.test(p));
+  const request=requests[0]!,quote=request.quote,parent=request.parent;if(!affirmative(parent)||!quoted.includes(parent)||!(/\b(?:book|booking|reservation|accommodation)\b/i.test(parent)))continue;
+  const scopeParagraphs=[...new Set(requestViews.flatMap(view=>view.text.split(/\n\s*\n/).map(p=>p.trim())))].filter(p=>p!==parent&&/\b(?:request|booking|reservation|accommodation)\b/i.test(p)&&/\b(?:event|group|stay|booking|reservation)\b/i.test(p));
   if(scopeParagraphs.length&&!scopeParagraphs.some(p=>quoted.includes(p)))continue;
-  if(input.messages.some(m=>m.id!==trigger.id&&Date.parse(m.at)>Date.parse(message.at)&&Date.parse(m.at)<=causal&&blocked(authoredText(m.text))))continue;if(authored.slice(Math.max(0,request.index!-150),request.index!).split('\n').at(-1)?.trim().startsWith('>'))continue;
+  if(input.messages.some(m=>m.id!==trigger.id&&Date.parse(m.at)>Date.parse(message.at)&&Date.parse(m.at)<=causal&&blocked(authoredText(m.text))))continue;if(authored.slice(Math.max(0,request.start-150),request.start).split('\n').at(-1)?.trim().startsWith('>'))continue;
   if(quoted.indexOf(quote)<0)continue;
-  found.push({id:`invoice-continuation-${found.length+1}`,kind:'invoice_continuation',priorRequestSource:span(message,quote,request.index!),currentActivationSource:span(trigger,activationQuote,activationStart),closure:'unverified'});
+  found.push({id:`invoice-continuation-${found.length+1}`,kind:'invoice_continuation',priorRequestSource:span(message,quote,request.start),currentActivationSource:span(trigger,activationQuote,activationStart),closure:'unverified'});
  }
  return found.length===1?found:[];
 }
