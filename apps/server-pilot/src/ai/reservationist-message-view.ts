@@ -1,5 +1,6 @@
 export type ReservationistMessageView = { name: 'plain' | 'html'; start: number; end: number; quoted?: { start: number; end: number } };
 export const HTML_ALTERNATIVE_MARKER = '[HTML alternative of the same message]\n';
+const HTML_CONTEXT_SEPARATOR = '\n\n[HTML alternative context]\n';
 const QUOTED_HISTORY = /^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu;
 
 /** View offsets address one combined, hashed message; they never grant a different source. */
@@ -17,13 +18,14 @@ export function validReservationistMessageViews(text: string, views: unknown): v
   };
   if (!validQuoted(plain.quoted) || !validQuoted(html.quoted)) return false;
   const plainHistory = plain.quoted, htmlHistory = html.quoted;
+  if (plainHistory && text.slice(plainHistory.start, plainHistory.end).includes(HTML_CONTEXT_SEPARATOR)) return false;
   if (plainHistory && htmlHistory && plainHistory.start === htmlHistory.start && plainHistory.end === htmlHistory.end)
     return text.slice(html.end, plainHistory.start) === '\n\n' && plainHistory.end === text.length;
   if (plainHistory && htmlHistory)
     return text.slice(html.end, plainHistory.start) === '\n\n' &&
-      text.slice(plainHistory.end, htmlHistory.start) === '\n\n[HTML alternative context]\n' && htmlHistory.end === text.length;
+      text.slice(plainHistory.end, htmlHistory.start) === HTML_CONTEXT_SEPARATOR && htmlHistory.end === text.length;
   if (plainHistory) return text.slice(html.end, plainHistory.start) === '\n\n' && plainHistory.end === text.length;
-  if (htmlHistory) return text.slice(html.end, htmlHistory.start) === '\n\n[HTML alternative context]\n' && htmlHistory.end === text.length;
+  if (htmlHistory) return text.slice(html.end, htmlHistory.start) === HTML_CONTEXT_SEPARATOR && htmlHistory.end === text.length;
   return true;
 }
 

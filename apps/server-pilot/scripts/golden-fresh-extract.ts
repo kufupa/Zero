@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { eq, sql } from 'drizzle-orm';
 import { classifyMailSource, type MailSourceKind } from '../src/ai/mail-source.js';
+import { inboundPropertyCodeForTransport } from '../src/ai/extraction/inbound-run.js';
 import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import { EXTRACTION_DEADLINE_MS, extractInboundMail } from '../src/ai/extraction/extract.js';
 import type { MailExtractionPayload, MailKind } from '../src/ai/extraction/schema.js';
@@ -287,6 +288,7 @@ async function runOne(
       messageId: trigger.id,
       from: trigger.fromAddress,
       mailbox: trigger.mailbox,
+      propertyCode: inboundPropertyCodeForTransport(trigger.transportId),
       signal: controller.signal,
       deadlineMs: EXTRACTION_DEADLINE_MS,
     });

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { AMBIGUOUS_NUMBER_GROUPS } from '../src/ai/card-mask.js';
+import { currentAuthoredGuestRequest } from '../src/ai/reservationist-execution.js';
 import { buildReservationistWorkerInput, type ReservationistWorkerMessage } from '../src/ai/reservationist-worker-input.js';
 import { validReservationistMessageViews, HTML_ALTERNATIVE_MARKER } from '../src/ai/reservationist-message-view.js';
 
@@ -23,6 +25,16 @@ const build = (messages: Build['messages'], attachments: Build['attachments'] = 
   });
 
 describe('reservationist worker input', () => {
+  it('keeps an HTML reply written after a quoted block in the authored request', async () => {
+    const { input } = await build([row('current', 4, { textBody: null,
+      htmlBody: '<blockquote><p>Earlier message</p></blockquote><p>Please send the tax certificate.</p><blockquote><p>Older context</p></blockquote>' })]);
+    const message = input.messages[0]!, quote = 'Please send the tax certificate.', start = message.text.indexOf(quote);
+    expect(start).toBeLessThan(message.text.indexOf('From: quoted history'));
+    expect(message.text).toContain('Earlier message');
+    expect(message.text).toContain('Older context');
+    const task = {id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:current',sourceHash:createHash('sha256').update(message.text).digest('hex'),page:1,quote,start,end:start+quote.length}};
+    expect(currentAuthoredGuestRequest(task as any,input)).toBe(true);
+  });
   it('masks the subject and retains plain and HTML source views', async () => {
     const { input } = await build([row('current', 4, {
       textBody: 'Please quote. Card 4111 1111 1111 1111',
@@ -217,6 +229,15 @@ describe('reservationist worker input', () => {
     ], [{ id: 'logo', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'logo', disclosure: 'guest' }]);
     expect(result.ignoredSignatures).toBe(0);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['logo']);
+  });
+
+  it('keeps an earlier inline screenshot requested by a later message', async () => {
+    const result = await build([
+      row('prior', 1, { textBody: 'Hello\nKind regards\ncid:receipt' }),
+      row('current', 4, { textBody: 'Please check the payment screenshot and confirm the booking.' }),
+    ], [{ id: 'receipt', messageId: 'prior', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'receipt', disclosure: 'guest' }]);
+    expect(result.ignoredSignatures).toBe(0);
+    expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['receipt']);
   });
 
   it('refuses missing or non-hash attachment identity before admission', async () => {
