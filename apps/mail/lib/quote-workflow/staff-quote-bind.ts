@@ -12,6 +12,7 @@ import type {
   QuoteOffer,
   QuoteRunScreenshotResult,
   RateOption,
+  ReservationistBookingSuggestion,
   ReservationistPreparedTask,
   ReservationistStaffAction,
   StaffQuoteAllocation,
@@ -593,10 +594,52 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
   return actions;
 }
 
+/** Accept a task-derived prefill only for the email whose review was requested. */
+function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId: unknown): ReservationistBookingSuggestion | undefined {
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const source = (v: unknown) => object(v) && typeof v.sourceRef === 'string' && !!v.sourceRef &&
+    typeof v.sourceHash === 'string' && SOURCE_HASH.test(v.sourceHash) &&
+    Number.isSafeInteger(v.page) && Number(v.page) > 0 && Number.isSafeInteger(v.start) &&
+    Number(v.start) >= 0 && Number.isSafeInteger(v.end) && Number(v.end) > Number(v.start);
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(item => typeof item === 'string');
+  if (!object(value) || value.version !== 1 || value.taskId !== taskId ||
+      value.status !== 'prefill' || value.displayOnly !== true || value.saved !== false ||
+      typeof selectedMessageId !== 'string' || !selectedMessageId || !source(value.source) ||
+      typeof value.staffSourceHash !== 'string' || !SOURCE_HASH.test(value.staffSourceHash) ||
+      typeof value.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(value.groupId) ||
+      !object(value.draft) || !object(value.options)) return undefined;
+  const draft = value.draft, options = value.options;
+  const facts = value.facts;
+  const validFacts = object(facts) && ['dates', 'rooms', 'guests', 'boards', 'parties'].every(key => {
+    const entries = facts[key];
+    return Array.isArray(entries) && entries.every(fact => object(fact) && source(fact.source));
+  });
+  if (!Array.isArray(draft.rooms) || !draft.rooms.length || draft.rooms.length > 96 ||
+      !draft.rooms.every(room => object(room) && room.groupId === value.groupId &&
+        Number.isSafeInteger(room.roomIndex) && Number(room.roomIndex) > 0 &&
+        object(room.request) && strings(room.schemaErrors) &&
+        (room.board === undefined || ['room_only', 'bb', 'dinner_bb', 'unknown'].includes(String(room.board)))) ||
+      new Set(draft.rooms.map(room => room.roomIndex)).size !== draft.rooms.length ||
+      !Array.isArray(draft.rateCheck) || draft.rateCheck.length !== 0 ||
+      !Array.isArray(draft.missing) || !draft.missing.every(item => object(item) && typeof item.field === 'string' && typeof item.question === 'string') ||
+      !strings(draft.flags) || !strings(options.track) || !strings(options.sourceOfBusiness) ||
+      !strings(options.guaranteeType) || !strings(options.roomType) ||
+      (options.requiredCreateFields !== undefined && !strings(options.requiredCreateFields)) ||
+      (options.ratePlans !== undefined && !strings(options.ratePlans)) ||
+      (options.cmsMessageIds !== undefined && (!Array.isArray(options.cmsMessageIds) ||
+        !options.cmsMessageIds.every(item => object(item) && typeof item.code === 'string' && typeof item.label === 'string'))) ||
+      (options.cmsDefaults !== undefined && (!object(options.cmsDefaults) ||
+        typeof options.cmsDefaults.agency !== 'string' || typeof options.cmsDefaults.guest !== 'string')) ||
+      !validFacts ||
+      !strings(value.partyNames) || value.partyNames.length > 8 ||
+      !strings(value.missing)) return undefined;
+  return { ...value, selectedMessageId } as ReservationistBookingSuggestion;
+}
+
 /** The draft summary is display-only; the stored packet remains the action authority. */
 export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTask[] {
   if (!value || typeof value !== 'object') return [];
-  const envelope = value as { runId?: unknown; workItemId?: unknown; reviewSummary?: { tasks?: unknown } };
+  const envelope = value as { runId?: unknown; workItemId?: unknown; replyToMessageId?: unknown; reviewSummary?: { tasks?: unknown } };
   const summary = envelope.reviewSummary;
   if (!Array.isArray(summary?.tasks)) return [];
   const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
@@ -619,8 +662,11 @@ export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTa
     ids.add(identity);
     const completion = typeof runId === 'string' && typeof envelope.workItemId === 'string' && typeof task.handled === 'boolean'
       ? { runId, workItemId: envelope.workItemId, handled: task.handled } : {};
+    const bookingSuggestion = task.kind === 'new_booking' && task.earlier !== true
+      ? readBookingSuggestion(task.bookingSuggestion, task.id, envelope.replyToMessageId) : undefined;
     tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details,
-      ...(task.earlier === true ? { earlier: true } : {}), ...completion });
+      ...(task.earlier === true ? { earlier: true } : {}), ...completion,
+      ...(bookingSuggestion ? { bookingSuggestion } : {}) });
   }
   return tasks;
 }

@@ -342,6 +342,46 @@ describe('booking cards', () => {
     expect(screen.getAllByRole('checkbox', { name: 'Guest opt-in' })).toHaveLength(2);
   });
 
+  it('requires staff to confirm unknown children before previewing or booking', async () => {
+    const { client, preview } = paneClient();
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.childAges = null;
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+
+    const children = screen.getByLabelText('Children') as HTMLInputElement;
+    expect(children.value).toBe('');
+    expect(screen.getByText('Confirm zero children or enter the count and every child’s age.')).toBeDefined();
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+
+    fireEvent.change(children, { target: { value: '0' } });
+    expect(children.value).toBe('0');
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('childAges');
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    expect(bookButton(0).disabled).toBe(false);
+  });
+
+  it('requires every child age after staff enters a positive count', async () => {
+    const { client, preview } = paneClient();
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.childAges = null;
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+
+    fireEvent.change(screen.getByLabelText('Children'), { target: { value: '1' } });
+    const age = screen.getByLabelText('Child age 1') as HTMLInputElement;
+    expect(age.value).toBe('');
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.change(age, { target: { value: '7' } });
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ childAges: [7] })));
+  });
+
   it('keeps guest opt-in unchecked until staff selects it and sends generic Market Segment', async () => {
     const { client, preview } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
@@ -1050,6 +1090,51 @@ function previewButton(index: number): HTMLButtonElement {
 function bookButton(index: number): HTMLButtonElement {
   return screen.getAllByRole('button', { name: 'Create provisional booking' })[index] as HTMLButtonElement;
 }
+
+function preparedBookingSession(draft: BookingDraftReady): QuoteSession {
+  const source = { sourceRef: 'message:mail-1', sourceHash: STAFF_HASH, page: 1, start: 0, end: 12 };
+  const task = { id: 'book', kind: 'new_booking', label: 'Prepare booking', state: 'Needs review' as const,
+    details: ['Request: Book a room'], handled: false, runId: 'run', workItemId: 'item', bookingSuggestion: {
+      version: 1 as const, taskId: 'book', status: 'prefill' as const, displayOnly: true as const, saved: false as const,
+      selectedMessageId: 'mail-1', staffSourceHash: STAFF_HASH, source, groupId: 'g1', draft: draft.draft, options: draft.options,
+      facts: { dates: [], rooms: [], guests: [], boards: [], parties: [] }, partyNames: ['Acme Travel'], missing: [],
+    } };
+  return { ...initialQuoteSession(), phase: 'non_quote', binding: {
+    transportId: 't1', mailboxEmail: 'staff@example.invalid', storeId: 'store', folderEntryId: 'inbox', entryId: 'e1', selectionEpoch: 1, scopeEpoch: 1,
+  }, staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH }, preparedStaffTasks: [task] };
+}
+
+describe('prepared booking party controls', () => {
+  it.each(['booked', 'uncertain'] as const)('keeps the %s result visible and the party fixed during and after saving', async outcome => {
+    const pending = deferred<PaneStayResult>();
+    const { client } = paneClient({ commit: vi.fn(() => pending.promise) });
+    const session = preparedBookingSession(previewableDraft());
+    const view = render(<QuoteBookingHost session={session} paneSave={client} workItemId="item" />);
+    const party = screen.getByLabelText('Party for this booking');
+    fireEvent.change(party, { target: { value: 'none' } });
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(party).toHaveProperty('disabled', true));
+    view.rerender(<QuoteBookingHost session={{ ...session, preparedStaffTasks: session.preparedStaffTasks!.map(task => ({ ...task, handled: true })) }} paneSave={client} workItemId="item" />);
+    fireEvent.change(party, { target: { value: 'company' } });
+    expect(party).toHaveProperty('value', 'none');
+    await act(async () => pending.resolve(outcome === 'booked' ? COMMIT_OK : { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON }));
+    expect(await screen.findByText(outcome === 'booked' ? /Booked in HMS – confirmation 98765-1/ : 'Check HMS')).toBeDefined();
+    expect(party).toHaveProperty('disabled', true);
+  });
+
+  it('clears company lookup results when staff switch to agency', async () => {
+    const find = vi.fn(async () => ({ outcome: 'resolved' as const, results: [{ kind: 'company' as const, nativeId: 'C1', name: 'Acme Old' }], truncated: false, best: null, searchedFor: 'Acme Travel' }));
+    render(<QuoteBookingHost session={preparedBookingSession(previewableDraft())} workItemId="item" findParty={find} />);
+    const party = screen.getByLabelText('Party for this booking');
+    fireEvent.change(party, { target: { value: 'company' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    expect(await screen.findByRole('button', { name: 'Acme Old' })).toBeDefined();
+    fireEvent.change(party, { target: { value: 'agency' } });
+    expect(screen.queryByRole('button', { name: 'Acme Old' })).toBeNull();
+  });
+});
 
 
 describe('HRDAV booking fields and CMS', () => {

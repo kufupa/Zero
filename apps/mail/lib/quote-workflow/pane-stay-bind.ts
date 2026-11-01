@@ -336,6 +336,7 @@ export function paneStayInputForRoom(
   const bookingAgency = party(choice.bookingAgency);
   const organization = party(choice.organization);
   const childAges = Array.isArray(request.childAges) ? request.childAges : [];
+  if (request.childAges === null) missing.push('children (confirm zero or enter every age)');
   if (childAges.length > 16 || childAges.some((age) =>
     typeof age !== 'number' || !Number.isInteger(age) || age < 0 || age > 17
   )) missing.push('child ages (0–17)');

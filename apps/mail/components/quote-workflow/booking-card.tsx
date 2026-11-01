@@ -748,7 +748,7 @@ function roomRequestFor(
     adults: choice?.adults ?? group?.adults ?? room.request.adults,
     childAges: choice?.childAges
       ? choice.childAges.map((age) => age.trim() === '' ? Number.NaN : Number(age))
-      : group?.childrenAges ?? room.request.childAges,
+      : room.request.childAges === null ? null : group?.childrenAges ?? room.request.childAges,
   };
 }
 
@@ -780,6 +780,7 @@ function generatedNoteForChoice(
   const quoted = session?.groups.find((item) => item.id === room.groupId);
   if (!session || !quoted || quoted.roomCodes?.length !== 1 || !quoted.rateCode) return null;
   const request = roomRequestFor(room, group, choice);
+  if (request.childAges === null) return null;
   const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
   const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan));
   if (
@@ -868,6 +869,7 @@ export function BookingCards({
   propertyCode,
   confirmation,
   onSaveDefault,
+  onCommitLockChange,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -898,6 +900,8 @@ export function BookingCards({
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Keep linked parties fixed while a save is running or its outcome needs an HMS check. */
+  onCommitLockChange?: (locked: boolean) => void;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -977,6 +981,10 @@ export function BookingCards({
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  const lockParty = stayBooking || Object.values(saves).some(({ commit }) =>
+    commit?.status === 'running' || commit?.status === 'booked' ||
+    (commit?.status === 'refused' && commit.statusChip === 'check'));
+  useEffect(() => { onCommitLockChange?.(lockParty); }, [lockParty, onCommitLockChange]);
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
@@ -1385,6 +1393,7 @@ export function BookingCards({
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
     if (savedOutcomeBlocksRoom(roomKey)) return false;
+    onCommitLockChange?.(true);
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
@@ -1593,8 +1602,12 @@ export function BookingCards({
           ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
           ...(choice.ratePlan === undefined && selectedRate ? [selectedRate] : []),
         ].filter(Boolean))];
-        const ages = choice.childAges ?? (Array.isArray(group?.childrenAges ?? request.childAges)
-          ? (group?.childrenAges ?? request.childAges as number[]).map(String) : []);
+        const unknownChildOccupancy = request.childAges === null && choice.childAges === undefined;
+        const ages = choice.childAges ?? (
+          request.childAges !== null && Array.isArray(group?.childrenAges ?? request.childAges)
+            ? (group?.childrenAges ?? request.childAges as number[]).map(String)
+            : []
+        );
         const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
         const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
@@ -1668,7 +1681,7 @@ export function BookingCards({
             <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
               Children
               <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
-                value={ages.length} onChange={(event) => {
+                value={unknownChildOccupancy ? '' : ages.length} onChange={(event) => {
                   if (event.target.value.trim() === '') return;
                   const count = Number(event.target.value);
                   if (Number.isInteger(count) && count >= 0 && count <= 16) {
@@ -1676,6 +1689,11 @@ export function BookingCards({
                   }
                 }} />
             </label>
+            {unknownChildOccupancy ? (
+              <p className="text-[11px] text-[#64748b]">
+                Confirm zero children or enter the count and every child’s age.
+              </p>
+            ) : null}
             {CHILD_AGE_FIELDS.slice(0, ages.length).map((field, index) => (
               <label key={field} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Child age {index + 1}

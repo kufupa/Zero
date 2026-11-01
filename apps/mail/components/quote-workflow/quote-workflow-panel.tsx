@@ -687,12 +687,26 @@ export function QuoteWorkflowPanel({
         return item ? [item.id] : [];
       }) : []);
   const notTracked = (item: QuoteReviewItem) => !trackedReviewIds.has(item.id);
+  // Keep this as the first child across phases so in-flight saves and edits survive.
+  const bookingHost = <QuoteBookingHost
+    session={session}
+    paneSave={paneSave}
+    contact={contact}
+    workItemId={workItemId}
+    savedStays={savedStays}
+    screenshot={screenshot ?? paneSave?.screenshot}
+    propertyCode={paneConfig?.propertyCode ?? null}
+    findParty={findParty}
+    partyIndex={partyIndex}
+    partyJobTransport={partyJobTransport}
+  />;
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
   if (session.phase === 'unsynced') {
     return (
       <div className="flex flex-col gap-3">
+        <div hidden>{bookingHost}</div>
         <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>
         {shuttleDraft}
         {replyContent ? <div className="flex flex-col gap-2.5">{replyContent}</div> : null}
@@ -702,6 +716,7 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'unsupported') {
     return (
       <div className="flex flex-col gap-3">
+        <div className="contents">{bookingHost}</div>
         <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
         <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
         {shuttleDraft}
@@ -725,6 +740,7 @@ export function QuoteWorkflowPanel({
     });
     return (
       <div className="flex flex-col gap-3">
+        <div className="contents">{bookingHost}</div>
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
@@ -1069,6 +1085,7 @@ export function QuoteWorkflowPanel({
 
   return (
     <div className="flex flex-col gap-3.5">
+      <div className="contents">{bookingHost}</div>
       {TELL_NAVA_ENABLED ? (
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
       ) : null}
@@ -1628,15 +1645,6 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      <QuoteBookingHost
-        session={session}
-        paneSave={paneSave}
-        contact={contact}
-        workItemId={workItemId}
-        savedStays={savedStays}
-        screenshot={screenshot ?? paneSave?.screenshot}
-        propertyCode={paneConfig?.propertyCode ?? null}
-      />
     </div>
   );
 }
