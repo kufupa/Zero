@@ -238,6 +238,27 @@ describe('reservationist worker input', () => {
     }
   });
 
+  it('keeps a scoped meal correction from disappearing between authored views', async () => {
+    const groupA = 'Group A: Please quote one room with breakfast included.';
+    const groupBCorrection = "Correction: use Group B's room-only plan instead.";
+    const extract = async (plainHasCorrection: boolean, includeGroupB: boolean) => {
+      const { input } = await build([row('current', 4, {
+        textBody: plainHasCorrection ? `${groupA}\n${groupBCorrection}` : groupA,
+        htmlBody: `<p>${groupA}</p><p>${groupBCorrection}</p>`,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+      const facts: any[] = [{ id: 'group-a-board', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(groupA) }];
+      if (includeGroupB) facts.push({ id: 'group-b-board', kind: 'board', value: { board: 'room-only', roomRef: 'B' }, disclosure: 'guest', source: source(groupBCorrection) });
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts, tasks: [{ id: 'quote', kind: 'quote', factIds: facts.map(fact => fact.id), source: source(groupA) }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    await expect(extract(false, false)).rejects.toThrow('Ambiguous original text span');
+    await expect(extract(true, true)).resolves.toMatchObject({ facts: [{ id: 'group-a-board' }, { id: 'group-b-board' }] });
+  });
+
   it('retains an independent question about a shared meal fact', async () => {
     const request = 'Please quote one room.', meal = 'Breakfast included.', question = 'What time is breakfast?';
     const { input } = await build([row('current', 4, {
