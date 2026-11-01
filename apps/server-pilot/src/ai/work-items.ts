@@ -1310,8 +1310,23 @@ export async function planThreadWork(
   // Stored origin 'person' means human-written, 'system_notice' means automated. A missing extraction or origin counts
   // as human-written, as listWorkItems reads it.
   const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
-  // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
-  // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
+  const threadItems = and(
+    eq(workItem.transportId, input.transportId),
+    eq(workItem.threadId, input.threadId),
+    inArray(workItem.status, ['needs_you', 'done', 'dismissed']),
+    ne(workItem.kind, 'spam'),
+  );
+  let lockedIds: string[] | undefined;
+  if (opts.lock) {
+    // Use a separate statement: SELECT FOR UPDATE can wait for a reply, while
+    // its correlated event subqueries still use the snapshot from before that wait.
+    const locked = await db.select({ id: workItem.id }).from(workItem)
+      .where(threadItems).orderBy(workItem.id).for('update');
+    lockedIds = locked.map(item => item.id);
+    if (!lockedIds.length) return [];
+  }
+  // Read events and mail after taking the locks. Restrict the locked plan to
+  // those same rows; a newly admitted item gets its own subsequent refresh.
   const itemQuery = db
     .select({
       id: workItem.id,
@@ -1344,15 +1359,8 @@ export async function planThreadWork(
     })
     .from(workItem)
     .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        eq(workItem.threadId, input.threadId),
-        inArray(workItem.status, ['needs_you', 'done', 'dismissed']),
-        ne(workItem.kind, 'spam'),
-      ),
-    );
-  const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
+    .where(and(threadItems, lockedIds ? inArray(workItem.id, lockedIds) : undefined));
+  const items = await itemQuery;
   const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
   const requestStates = await handledRequestStates(db, { transportId: input.transportId, threadId: input.threadId, sourceIds });
   const runs = sourceIds.length ? await db.select({
