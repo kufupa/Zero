@@ -3,12 +3,14 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, attachment, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
 import type { DraftModelRouteConfig } from '../src/ai/draft-route-factory.js';
 import { RESERVATIONIST_RUNTIME_VERSION } from '../src/ai/reservationist-runtime.js';
 import { runReservationistWorkerCandidate } from '../src/ai/reservationist-worker.js';
+import { refreshThreadWork } from '../src/ai/work-items.js';
 import { createReservationistDependencies } from '../src/ai/reservationist-execution.js';
 import { createInstalledReservationistProvider } from '../src/ai/reservationist-installed-provider.js';
 import { buildReservationistReviewSummary } from '../src/trpc/routes/drafts.js';
@@ -38,6 +40,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           {id:previousPop3Id,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Earlier imported reply.',pop3Uidl:'earlier-pop3',receivedAt:previousAt,sentAt:null,createdAt:new Date(previousAt.getTime()+10_000)},
           {id:randomUUID(),transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:'centurion@legacyhotels.co.za',toAddresses:['guest@example.invalid'],textBody:'Later imported reply with backdated header.',pop3Uidl:'later-pop3',receivedAt:previousAt,sentAt:previousAt,createdAt:new Date(at.getTime()+20_000)},
         ]);
+        let dismissedItemId:string|undefined;
+        if(mode==='question'||mode==='source_review'){
+          const newerId=randomUUID();
+          await db.insert(message).values({id:newerId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:['centurion@legacyhotels.co.za'],textBody:'A later request.',receivedAt:new Date(at.getTime()+10_000)});
+          const [older]=await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:currentId,kind:'other'}).returning();
+          dismissedItemId=older!.id;
+          await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:newerId,kind:'quote'});
+          await refreshThreadWork(db,{transportId:TRANSPORT_ID,threadId});
+          expect((await db.select().from(workItem).where(eq(workItem.id,dismissedItemId)))[0]?.status).toBe('dismissed');
+        }
         if(mode==='source_review'||mode==='missing_file'){
           const key='attachments/'+currentId+'/rooms.xlsx',mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
           if(mode==='source_review')await s3.putObject({key,body,contentType:mimeType});
@@ -79,6 +91,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
         };
         const result=await runReservationistWorkerCandidate({db,run:run!,fence:{runId,claimOwner:'worker',claimToken:'token',deadlineAt},route,replyTo:'guest@example.invalid',subject:'Re: Booking',signal:new AbortController().signal,s3});
         expect(result.state).toBe('succeeded');
+        if(dismissedItemId)expect((await db.select().from(workItem).where(eq(workItem.id,dismissedItemId)))[0]?.status).toBe('needs_you');
         const [saved]=await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id,runId));
         const [generation]=await db.select().from(aiDraftGeneration).where(eq(aiDraftGeneration.id,generationId));
         const drafts=await db.select().from(mailDraft).where(eq(mailDraft.generationId,generationId));
