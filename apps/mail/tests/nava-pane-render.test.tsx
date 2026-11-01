@@ -1856,6 +1856,29 @@ describe('NavaPane', () => {
     await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(calls + 1));
   });
 
+  it('loads request controls when a work item arrives after a saved treat-as choice', async () => {
+    sessionStorage.setItem('nava.treat-as:transport-1::<quote-request@example.invalid>', 'quote');
+    bridgeMockState.storedWork = STORED_READY;
+    let release = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>(resolve => { release = resolve; });
+    const review = vi.fn(async (input: unknown) => {
+      const workItemId = (input as {workItemId?: string}).workItemId;
+      return {replyToMessageId:'mail-1',runId:'run',...(workItemId ? {workItemId} : {}),reviewSummary:{tasks:[{
+        id:'question',kind:'question',label:'Answer question',state:'Needs review',details:['Request: Parking?'],handled:false,
+      }]}};
+    });
+    bridgeMockState.reviewForMessageQuery = review;
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    await waitFor(() => expect(review).toHaveBeenCalled());
+    const analysisCalls = bridgeMockState.analyseCalls;
+    await act(async () => release());
+    await waitFor(() => expect(review.mock.calls.some(([input]) =>
+      (input as {workItemId?: string}).workItemId === 'wi-1')).toBe(true));
+    expect(bridgeMockState.analyseCalls).toBe(analysisCalls);
+    expect(await screen.findByRole('button', {name:'Mark handled'})).toBeDefined();
+  });
+
   it('stored: what she types while the stored read loads is laid over it and logged, so it is there on reopen', async () => {
     bridgeMockState.storedWork = STORED_READY;
     let release = () => {};

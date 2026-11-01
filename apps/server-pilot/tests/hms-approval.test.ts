@@ -45,6 +45,10 @@ const STALE_RUN_MS = 60 * MINUTE;
 
 const FORM = { stays: { s1: { arrival: '2027-03-01', rooms: 2 } } };
 const EDITED_FORM = { stays: { s1: { arrival: '2027-03-02', rooms: 2 } } };
+it('keeps an HMS approval stable when a staff request is marked handled', () => {
+  expect(formDigest({ ...FORM, reservationistHandledRequests: { ['a'.repeat(64)]: true } })).toBe(formDigest(FORM));
+  expect(formDigest(EDITED_FORM)).not.toBe(formDigest(FORM));
+});
 const HMS_BEFORE = { booking: 'L-1', arrival: '2027-03-01', rooms: 2 };
 const HMS_CHANGED = { booking: 'L-1', arrival: '2027-03-02', rooms: 2 };
 const PNG_BYTES = Buffer.concat([
