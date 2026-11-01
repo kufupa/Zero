@@ -17,6 +17,13 @@ test('read-only guard blocks the observed Cloud save action in query or form bod
   assert.equal(shouldAbortReadOnlyRequest({ method: 'POST', url: `${url}?pageaction=LIST` }), false);
 });
 
+test('generic read-only guard blocks Guest Stay Check Availability on GET and POST', () => {
+  const url = `${origin}/web/base/OSRESV.HDR.getcheckavailability`;
+  for (const method of ['GET', 'POST']) {
+    assert.equal(shouldAbortReadOnlyRequest({ method, url }), true);
+  }
+});
+
 test('availability inquiry recognition requires POST, the exact path, and the same origin', () => {
   for (const path of [oldPath, cloudPath]) {
     assert.equal(isAvailabilityReadRequest({ method: 'POST', url: `${origin}${path}` }, origin), true);

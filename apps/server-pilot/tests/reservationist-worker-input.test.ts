@@ -261,8 +261,50 @@ describe('reservationist worker input', () => {
     await expect(extract(23, 'Do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, undefined, 'Please cancel the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract(23, undefined, 'Do not book the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
+    await expect(extract(23, undefined, 'Please change the check-in time to 14:00.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
+    await expect(extract(23, undefined, 'Please change the check-out time to 11:00.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
+    await expect(extract(23, undefined, 'Please change the check-in time to 14:00 on 24 December.')).rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(23, undefined, 'Please change the check-out time to 11:00 on 24 December.')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, undefined, '', true)).resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
     await expect(extract(24, undefined, '', true)).rejects.toThrow('Explicit same-stay correction requires source clarification');
+  });
+
+  it('requires clarification for same-stay date conflicts across views without blocking other stays or date formats', async () => {
+    const extract = async (plain: string, html: string, citation: string, arrival: string, departure: string) => {
+      const { input } = await build([row('current', 4, {
+        textBody: plain,
+        htmlBody: html.split('\n').map(line => `<p>${line}</p>`).join(''),
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const start = message.text.indexOf(citation), source = {
+        attachmentId: 'message:current', sourceHash, page: 1, quote: citation, start, end: start + citation.length,
+      };
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'stay', kind: 'dates', value: { arrival, departure }, disclosure: 'guest', source }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    const stay = 'Please quote one room: Arrival 21 December; departure 23 December.';
+    await expect(extract(stay, 'Please quote one room: Arrival 21 December; departure 24 December.', stay, '21 December', '23 December'))
+      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(stay, 'Kindly quote one room: Arrival 21 December; departure 24 December.', stay, '21 December', '23 December'))
+      .rejects.toThrow('Explicit same-stay correction requires source clarification');
+
+    const explicit = 'Please quote one room: Arrival 21 December 2026; departure 23 December 2026.';
+    await expect(extract(explicit,
+      'Please quote one room: Check-in 21/12/2026; check-out 23/12/2026.\nConference event 27-29 December 2026.',
+      explicit, '21 December 2026', '23 December 2026'))
+      .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
+
+    const groupA = 'Group A: Please quote one room: Arrival 21 December; departure 23 December.';
+    const groupB = 'Group B: Please quote one room: Arrival 24 December; departure 26 December.';
+    await expect(extract(groupA, 'Group B: Please quote one room: Arrival 21 December; departure 24 December.', groupA, '21 December', '23 December'))
+      .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
+    await expect(extract(`${groupA}\n${groupB}`,
+      `${groupA}\nGroup B: Please quote one room: Arrival 28 December; departure 30 December.`,
+      groupA, '21 December', '23 December'))
+      .resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
@@ -369,7 +411,7 @@ describe('reservationist worker input', () => {
 
   it('keeps colon-captioned business images after signoff', async () => {
     const image = { id: 'offer', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'offer', disclosure: 'guest' as const };
-    for (const caption of ['Quote:', 'Rooming list:']) {
+    for (const caption of ['Quote:', 'Rooming list:', 'Rooming list', 'Rates']) {
       const result = await build([row('current', 4, { textBody: `Please quote one room.\nKind regards\n${caption}\ncid:offer` })], [image]);
       expect(result.ignoredSignatures).toBe(0);
       expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
