@@ -234,16 +234,17 @@ function FailedRatesNoticeTrigger({
 describe('QuoteWorkflowPanel', () => {
   it('opens a source-bound booking prefill on a non-quote request and hides it when the email changes', () => {
     const hash='a'.repeat(64), source={sourceRef:'message:mail-1',sourceHash:hash,page:1,start:0,end:12};
+    const staffSourceHash='c'.repeat(64);
     const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Needs review' as const,
       details:['Request: Book a room'],handled:false,runId:'run',workItemId:'item',bookingSuggestion:{
-        version:1 as const,taskId:'book',selectedMessageId:'mail-1',source,groupId:'book_123',
+        version:1 as const,taskId:'book',selectedMessageId:'mail-1',staffSourceHash,source,groupId:'book_123',
         draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01',departure:'2027-04-02',
           adults:1,childAges:[],firstName:'Alex',lastName:'Example'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
         options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],partyNames:[],missing:[],
       }};
     const session = {...initialQuoteSession(),phase:'non_quote' as const,
       binding:{transportId:'t1',mailboxEmail:'staff@example.invalid',storeId:'store',folderEntryId:'inbox',entryId:'e1',selectionEpoch:1,scopeEpoch:1},
-      staffSource:{messageId:'mail-1',threadId:'thread',sourceHash:hash},preparedStaffTasks:[task]};
+      staffSource:{messageId:'mail-1',threadId:'thread',sourceHash:staffSourceHash},preparedStaffTasks:[task]};
     const view = render(<QuoteWorkflowPanel session={session} workItemId="item" />);
     expect(screen.getByRole('button',{name:'Hide booking from request'})).toBeDefined();
     expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Alex');

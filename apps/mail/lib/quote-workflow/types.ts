@@ -169,6 +169,7 @@ export type ReservationistBookingSuggestion = {
   version: 1;
   taskId: string;
   selectedMessageId: string;
+  staffSourceHash: string;
   source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number };
   groupId: string;
   draft: BookingDraftPayload;

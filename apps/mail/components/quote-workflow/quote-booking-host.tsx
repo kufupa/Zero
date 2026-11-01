@@ -105,14 +105,14 @@ export function QuoteBookingHost({
         task.workItemId !== workItemId || !session.binding || !session.staffSource ||
         suggestion.selectedMessageId !== session.staffSource.messageId ||
         suggestion.source.sourceRef !== `message:${suggestion.selectedMessageId}` ||
-        suggestion.source.sourceHash !== session.staffSource.sourceHash) return [];
+        suggestion.staffSourceHash !== session.staffSource.sourceHash) return [];
     const draft: BookingDraftReady = {
       draft: suggestion.draft, options: suggestion.options,
       messageId: suggestion.selectedMessageId, selectionEpoch: session.binding.selectionEpoch,
       inputRevision: session.inputRevision, revisionRef: 'unquoted',
     };
     // A changed source prefill must invalidate old form edits and preview receipts.
-    const key = `${requestKey}:${suggestion.groupId}:${JSON.stringify([suggestion.draft, suggestion.options, suggestion.partyNames])}`;
+    const key = `${requestKey}:${suggestion.groupId}:${suggestion.staffSourceHash}:${JSON.stringify([suggestion.draft, suggestion.options, suggestion.partyNames])}`;
     return [{ task, suggestion, draft, key, open: expanded[key] ?? (shownDrafts.length === 0) }];
   });
   const coveredStayIds = new Set(

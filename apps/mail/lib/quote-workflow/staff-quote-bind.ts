@@ -603,6 +603,7 @@ function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId
   const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(item => typeof item === 'string');
   if (!object(value) || value.version !== 1 || value.taskId !== taskId ||
       typeof selectedMessageId !== 'string' || !selectedMessageId || !source(value.source) ||
+      typeof value.staffSourceHash !== 'string' || !SOURCE_HASH.test(value.staffSourceHash) ||
       typeof value.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(value.groupId) ||
       !object(value.draft) || !object(value.options)) return undefined;
   const draft = value.draft, options = value.options;
