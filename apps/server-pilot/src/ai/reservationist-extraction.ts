@@ -174,6 +174,7 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const explicitScopes=(text:string)=>new Set([...text.matchAll(/\bgroup\s+([\p{L}\p{N}_-]+)\b|\broom\s+(?:#\s*)?(\d+)\b/giu)].map(match=>match[1]?`group:${match[1].toLowerCase()}`:`room:${match[2]}`)),quoteScopes=explicitScopes(quote);
  const relevant=(part:string,previous:string|undefined)=>{
   const modifying=correction.test(part)||negative.test(part),shared=(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
+  const timeDetail=!modifying&&/^\s*[\p{L}]+\s+(?:starts?|ends?|is\s+served|served|opens?|closes?)\s+(?:at|from|until)\s+\d{1,2}:\d{2}\s*[.!]?\s*$/iu.test(part);
   const countOfOtherQuestion=/\b(?:make|set|increase|reduce)\s+(?:it|this|that|them)\s+(?:to\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.test(part)&&previous?.trim().endsWith('?')&&/\b(?:arrange|book|reserve|order|organi[sz]e|schedule|add|request)\s+(?:us\s+)?(?:a|an|one|two|\d+)\s+\w+/i.test(previous)&&!(previous.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
   const referent=/\b(?:it|this|that|these|those|them)\b/i.test(part.replace(/\b(?:is|was|will|would|can|could|should|might)\s+it(?:\s+be)?\s+(?:possible|feasible)\b/gi,''));
   const partScopes=explicitScopes(part);
@@ -182,7 +183,7 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
     /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
   const relevantReferent=referent&&(!previous&&negative.test(part)||/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part));
-  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)&&!countOfOtherQuestion||modifying&&relevantReferent):
+  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared&&!timeDetail||correction.test(part)&&!countOfOtherQuestion||modifying&&relevantReferent):
    modifying&&(shared||correction.test(part)&&!countOfOtherQuestion||relevantReferent));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter((part,i,parts)=>relevant(part,parts[i-1])).join(' ')));
