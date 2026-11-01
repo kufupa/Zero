@@ -186,7 +186,7 @@ describe('plain and HTML citation binding',()=>{
   const ask='Please review attached voucher';
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'}])).resolves.toMatchObject({tasks:[{id:'plain'}]});
   await expect(run(ask,`${ask}.\n\nThe rooming list is attached.`,[{id:'plain',quote:ask,view:'plain'},{id:'html',quote:ask,view:'html'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
-  const repeated='Please review the attached voucher (the attached voucher is still under review as the corrected copy).';
+  const repeated='Please review the attached voucher (it remains under review until signed, and the attached voucher is the corrected copy).';
   await expect(run(repeated,`${repeated}\n\nThe rooming list is attached.`,[{id:'single',quote:'Please review the attached voucher',view:'plain'}])).resolves.toMatchObject({tasks:[{id:'single'}]});
   await expect(run(repeated,`${repeated}\n\nThe rooming list is attached.`,[{id:'plain',quote:'Please review the attached voucher',view:'plain'},{id:'html',quote:'Please review the attached voucher',view:'html'}])).rejects.toThrow('current_voucher_review_task_omitted_or_ambiguous');
   const other='Also review enclosed hotel voucher for the second guest.';
