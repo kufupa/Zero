@@ -114,7 +114,8 @@ export function queryHmsGuestMemory(memory, { propertyCode, ...input } = {}, opt
     const matched = entries.filter(item => matchedObservationIds.has(item.observationId));
     const values = Object.fromEntries(FIELDS.filter(field => field !== 'profileId').map(field => [field,
       [...new Set(entries.flatMap(item => item.fields[field].values).filter(Boolean))]]));
-    const evidence = entries.slice(0, evidenceLimit).map(item => ({
+    const evidence = [...matched, ...entries.filter(item => !matchedObservationIds.has(item.observationId))]
+      .slice(0, evidenceLimit).map(item => ({
       observationId: item.observationId, fingerprint: item.fingerprint, confirmationNumber: item.confirmationNumber,
       sourceOfBusiness: item.sourceOfBusiness, snapshot: item.snapshot, provenance: item.provenance,
       historicalIdentity: item.historicalIdentity, fields: item.fields,

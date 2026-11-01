@@ -118,3 +118,18 @@ test('candidate limit is explicit and conflicting-field matches remain uncertain
   const all = query(memory, { email: 'shared@fiction.invalid' });
   assert.ok(all.candidates.find(item => item.profileId === '103').conflictingFields.includes('lastName'));
 });
+
+
+test('bounded evidence retains the observations that actually matched', () => {
+  const observations = Array.from({ length: 11 }, (_, index) => result(
+    `fiction-${index + 1}`, '101', 'Fiction', 'One',
+    index === 10 ? 'match@fiction.invalid' : 'other@fiction.invalid',
+  ));
+  const found = query(build(observations), { email: 'match@fiction.invalid' }, { evidenceLimit: 2 });
+  const candidate = found.candidates[0];
+  assert.equal(candidate.support.matchedObservationCount, 1);
+  assert.equal(candidate.evidence[0].confirmationNumber, 'fiction-11');
+  assert.equal(candidate.evidence[0].matchedQuery, true);
+  assert.equal(candidate.evidence[1].matchedQuery, false);
+  assert.equal(candidate.evidenceTruncated, true);
+});
