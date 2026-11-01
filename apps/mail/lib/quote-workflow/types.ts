@@ -117,6 +117,7 @@ export type RowPriceChoice =
 export type QuoteReviewItemKind =
   | 'pricing_fact'
   | 'document_failure'
+  | 'staff_review'
   | 'question'
   | 'analysis_failure'
   | 'signature_noise';
@@ -151,7 +152,7 @@ export type QuoteReviewItem = {
 /** U1 drafts/toDraftWire staffActions. Copied from the published handoff; not imported from the sibling tree. */
 export type ReservationistStaffAction = {
   id: string;
-  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact';
+  kind: 'unanswered_question' | 'business_document_failure' | 'pricing_fact' | 'voucher_review';
   text: string;
   sourceRef: string;
   sourceHash?: string;

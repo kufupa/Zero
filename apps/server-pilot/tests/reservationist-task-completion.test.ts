@@ -43,6 +43,12 @@ it('keeps an unread business attachment open even when no request could be extra
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,signatureNoise:true}]}, 'run', {})).toBe(false);
 });
 
+it('keeps a source-bound voucher staff review open when no task was selected', () => {
+  const recovery = {kind:'voucher_review',disclosure:'staff_only',sourceKind:'message',sourceRef:'message:one',messageId:'one',sourceHash:'a'.repeat(64)};
+  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[recovery]}, 'run', {})).toBe(true);
+  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,sourceRef:'message:other'}]}, 'run', {})).toBe(false);
+});
+
 it('clears an old unread-file warning only after reviewing that file, without losing earlier requests', () => {
   const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', sourceHash:'a'.repeat(64), reason:'too_large'};
   const latest = {id:'new', result:{version:1,tasks:[]}, source:{attachments:[{attachmentId:'sheet',sourceHash:'a'.repeat(64)}]}};

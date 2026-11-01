@@ -556,7 +556,7 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
     if (!row || typeof row !== 'object') continue;
     const action = row as Record<string, unknown>;
     if (action.status !== 'open') continue;
-    if (action.kind !== 'unanswered_question' && action.kind !== 'business_document_failure' && action.kind !== 'pricing_fact') {
+    if (action.kind !== 'unanswered_question' && action.kind !== 'business_document_failure' && action.kind !== 'pricing_fact' && action.kind !== 'voucher_review') {
       continue;
     }
     if (typeof action.id !== 'string' || !action.id.trim()) continue;
@@ -567,6 +567,8 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
       typeof action.messageId === 'string' && !!action.messageId.trim();
     if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
     if (!metadataOnly && (typeof action.sourceHash !== 'string' || !SOURCE_HASH.test(action.sourceHash))) continue;
+    if (action.kind === 'voucher_review' && (action.sourceKind !== 'message' || typeof action.messageId !== 'string' ||
+        action.sourceRef !== `message:${action.messageId}`)) continue;
     if (typeof action.blockingQuote !== 'boolean') continue;
     actions.push({
       id: action.id,

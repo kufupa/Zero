@@ -1764,7 +1764,7 @@ export function reduceQuoteSession(
         const reviewItems = projectQuoteReviewItems(action.analysis, [], [], [
           ...session.staffActions, ...(action.analysis.staffActions ?? []),
         ]).filter(
-          (item) => item.kind === 'document_failure' || item.kind === 'question',
+          (item) => item.kind === 'document_failure' || item.kind === 'question' || item.kind === 'staff_review',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
         const stays = groupStays(groups);

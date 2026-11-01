@@ -59,7 +59,7 @@ export function documentFailureIdentity(document: Pick<QuoteDocumentFailure, 'so
 
 export function reviewItemSourceIdentity(item: QuoteReviewItem): string {
   // Separate asks can cite the same email or attachment; their task IDs identify the actual requests.
-  if (item.kind === 'question' || item.kind === 'pricing_fact') return item.id;
+  if (item.kind === 'question' || item.kind === 'pricing_fact' || item.kind === 'staff_review') return item.id;
   if (item.sourceHash && item.sourceRef) return `${item.kind}:${item.sourceHash}:${item.sourceRef}`;
   if (item.sourceRef) return `${item.kind}:${item.sourceRef}:${item.filename ?? item.text}`;
   if (item.kind === 'document_failure' && item.filename) {
@@ -106,6 +106,7 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       action.kind === 'business_document_failure' && action.sourceKind === 'attachment' && !!action.messageId;
     if (action.sourceIdentity === 'metadata_only' && !metadataOnly) continue;
     if (!metadataOnly && (!action.sourceHash || !SOURCE_HASH.test(action.sourceHash))) continue;
+    if (action.kind === 'voucher_review' && (action.sourceKind !== 'message' || !action.messageId || action.sourceRef !== `message:${action.messageId}`)) continue;
     if (typeof action.text !== 'string' || !action.text.trim()) continue;
     if (typeof action.sourceRef !== 'string' || !action.sourceRef.trim()) continue;
     const sourceLabel =
@@ -119,6 +120,8 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
         ? 'pricing_fact'
         : action.kind === 'business_document_failure'
           ? 'document_failure'
+          : action.kind === 'voucher_review'
+            ? 'staff_review'
           : 'question';
     const rank = kind === 'pricing_fact' ? 'pricing' : kind === 'document_failure' ? 'unread_source' : 'secondary';
     items.push({

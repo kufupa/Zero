@@ -157,8 +157,8 @@ export function createInstalledReservationistProvider(
           assertMasked(input);
           const plan = await factory.dependencies.plan(input, signal);
           await fresh(input);
-          if (visualRecoveries.length && plan.noAction) {
-            plan.noAction = { ...plan.noAction, kind: 'source_review' };
+          if (visualRecoveries.length && (plan.noAction || plan.sourceRecoveries?.some(recovery => recovery.kind === 'voucher_review'))) {
+            if (plan.noAction) plan.noAction = { ...plan.noAction, kind: 'source_review' };
             plan.sourceRecoveries = addVisualWarnings(plan.sourceRecoveries);
           }
           return plan;

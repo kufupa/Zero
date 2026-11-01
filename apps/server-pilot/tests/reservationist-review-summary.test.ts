@@ -1,5 +1,6 @@
 import {expect,it} from 'vitest';
 import * as drafts from '../src/trpc/routes/drafts.js';
+import {RESERVATIONIST_VOUCHER_REVIEW_REASON} from '../src/ai/reservationist-extraction.js';
 import {quoteDigest} from '../src/quote-proposal/quote-revision.js';
 const now=new Date('2026-10-04T10:00:00Z');
 const summary=(result:any)=>(drafts as any).buildReservationistReviewSummary({version:1,readiness:'needs_clarification',...result},now);
@@ -164,6 +165,15 @@ it('lists the exact unanswered request while a completed quote remains ready',()
  expect(review.staffActions).toEqual([{id:`request:shuttle:message:inbound:0:${question.end}:${question.sourceHash}`,kind:'unanswered_question',text:question.quote,sourceRef:'message:inbound',sourceHash:question.sourceHash,sourceKind:'message',messageId:'inbound',blockingQuote:false,status:'open'}]);
  expect(review.tasks[0].state).toBe('Ready');
  expect(summary({tasks:[{id:'shuttle',kind:'question',status:'complete',requestSource:question}]}).staffActions).toEqual([]);
+});
+
+it('projects an exact voucher source as staff review even with no selected tasks',()=>{
+ const text='Please review the attached hotel voucher.',quote='attached hotel voucher',start=text.indexOf(quote),recovery={kind:'voucher_review',reason:RESERVATIONIST_VOUCHER_REVIEW_REASON,
+  sourceRef:'message:inbound',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'inbound',page:1,start,end:start+quote.length,quote,disclosure:'staff_only'};
+ const review=summary({tasks:[],sourceRecoveries:[recovery]});
+ expect(review.staffActions).toEqual([{id:`voucher:message:inbound:${'a'.repeat(64)}:${start}:${start+quote.length}`,kind:'voucher_review',text:quote,
+  sourceRef:'message:inbound',sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'inbound',reason:'Check the attached hotel voucher against the original email; no voucher has been validated or action prepared.',blockingQuote:false,status:'open'}]);
+ expect(drafts.buildReservationistReviewSummary({version:1,readiness:'needs_clarification',tasks:[],sourceRecoveries:[{...recovery,sourceRef:'message:other'}]},now)!.staffActions).toEqual([]);
 });
 
 it('retains known scope and reports the task-bound missing checkout rather than a generic warning',()=>{

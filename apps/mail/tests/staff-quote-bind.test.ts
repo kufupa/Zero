@@ -61,6 +61,14 @@ it('does not use a review for another message', async () => {
   expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
 });
 
+it('keeps a source-bound voucher review distinct from an unanswered question',()=>{
+  const action={id:'voucher:message:mail-1:a:0:22',kind:'voucher_review',text:'attached hotel voucher',sourceRef:'message:mail-1',
+    sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',reason:'No voucher has been validated.',blockingQuote:false,status:'open'};
+  const parsed=readStaffActions({staffActions:[action,{...action,id:'wrong-source',sourceRef:'message:mail-2'}]});
+  expect(parsed).toHaveLength(1);
+  expect(mapStaffActions(parsed)).toMatchObject([{kind:'staff_review',text:'attached hotel voucher',sourceRef:'message:mail-1',messageId:'mail-1'}]);
+});
+
 it('binds prepared tasks to the selected email review', async () => {
   const newest = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action',details:['Fee is unknown.','No cancellation has been saved.']};
   const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:[newest]}});
