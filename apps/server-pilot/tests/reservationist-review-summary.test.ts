@@ -1,6 +1,7 @@
 import {expect,it} from 'vitest';
 import * as drafts from '../src/trpc/routes/drafts.js';
 import {quoteDigest} from '../src/quote-proposal/quote-revision.js';
+import {reservationistBookingSuggestionGroupId} from '../src/ai/reservationist-booking-suggestion.js';
 const now=new Date('2026-10-04T10:00:00Z');
 const summary=(result:any)=>(drafts as any).buildReservationistReviewSummary({version:1,readiness:'needs_clarification',...result},now);
 const requestSource=(quote:string,attachmentId='message:inbound')=>({attachmentId,sourceHash:'a'.repeat(64),page:1,start:0,end:quote.length,quote});
@@ -13,6 +14,17 @@ it('shows a new booking with source-observed per-room guests, dates and exact ag
  expect(result.tasks[0].label).toBe('Prepare new booking');
  const detail=result.tasks[0].details.join('\n');
  expect(detail).toContain('Room 1');expect(detail).toContain('Alex Example');expect(detail).toContain('Room 2');expect(detail).toContain('Morgan Sample');expect(detail).toContain('2026-10-12 to 2026-10-14');expect(detail).toContain('2026-10-13: ZAR 162.00');expect(detail).toContain('ZAR 524.00');expect(detail).toContain('Observed 2026-10-04T09:00:00Z');expect(detail).toContain('No booking has been saved');
+});
+it('projects only a request-source-bound booking suggestion for the selected message',()=>{
+ const request=requestSource('Please book a room.');
+ const source={sourceRef:request.attachmentId,sourceHash:request.sourceHash,page:request.page,start:request.start,end:request.end};
+ const bookingSuggestion={version:1,taskId:'book',status:'needs_details',displayOnly:true,saved:false,groupId:reservationistBookingSuggestionGroupId(source),source,facts:{},missing:['Child occupancy is unknown.']};
+ const raw={version:1,readiness:'needs_clarification',tasks:[{id:'book',kind:'new_booking',status:'needs_clarification',requestSource:request,bookingSuggestion}]};
+ const selected=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound');
+ expect(selected.tasks[0].bookingSuggestion).toEqual(bookingSuggestion);
+ expect(selected.tasks[0].details).toContain('Child occupancy is unknown.');
+ const otherMessage=(drafts as any).buildReservationistReviewSummary(raw,now,[],'other');
+ expect(otherMessage.tasks[0].bookingSuggestion).toBeUndefined();
 });
 it('keeps accepted quote wording separate from new booking',()=>{
  const result=summary({tasks:[{id:'book',kind:'acceptance',status:'pending_pms_action'}],packets:[{...booking,kind:'accepted_quote'}]});

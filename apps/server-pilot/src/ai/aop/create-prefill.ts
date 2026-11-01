@@ -38,6 +38,8 @@ export const buildCreatePrefillInputSchema = z.object({
   billingReference: z.string().nullable(),
   paidBy: z.enum(['agency', 'guest', 'company']).nullable(),
   partyKind: z.enum(['agency', 'organization', 'government']).nullable().optional(),
+  /** Suppress direct-individual defaults when source names a party but its native kind is unresolved. */
+  partyContextUnresolved: z.boolean().optional(),
   defaults: z.object({
     track: z.string().nullable(),
     sourceOfBusiness: z.string().nullable(),
@@ -166,6 +168,7 @@ export async function buildCreatePrefill(
   if (!departure) missing.push({ field: 'departure', question: 'Departure date for this booking?' });
 
   const partySet = Boolean(
+    parsed.partyContextUnresolved === true ||
     trimmed(parsed.agencyName) ||
       trimmed(parsed.organizationName) ||
       parsed.partyKind === 'agency' ||

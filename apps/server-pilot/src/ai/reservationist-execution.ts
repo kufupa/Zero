@@ -11,6 +11,8 @@ import {assertDocumentRequestContinuation} from './reservationist-document-conti
 import {extractReservationistPlan} from './reservationist-extraction.js';
 import type {ValidatedDocumentPlan,ValidatedDocumentFact} from './reservationist-document-facts.js';
 import type {PreparedFact} from './prepared-draft-input.js';
+import {buildReservationistBookingSuggestion} from './reservationist-booking-suggestion.js';
+import type {ReservationistBookingSuggestion} from './reservationist-booking-suggestion.js';
 import type {GeneratedDraftArtifact} from './drafts.js';
 import type {RuntimePlan,RuntimeWorkResult,ReservationistRuntimeInput,runReservationistRuntime} from './reservationist-runtime.js';
 import {quoteDigest,resolveQuoteRevision,type QuoteRevision,type QuoteSourceRecord,type ImportedOffer,resolveApprovedOverride} from '../quote-proposal/quote-revision.js';
@@ -260,7 +262,11 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
       }
     return evidenceRefs;
    };
-   for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';
+   for(const task of extracted.tasks){signal.throwIfAborted();const ctx={task,facts:extracted.facts.filter(f=>task.factIds.includes(f.id)),attachmentAdmissions:options.admissions,input,signal,...(evaluation?{evaluateSourceAt:evaluation.evaluateSourceAt}:{})};const targetContextFacts=ctx.facts.filter(f=>['reservation_reference','guest','dates'].includes(f.kind));let status:RuntimeWorkResult['tasks'][number]['status']='complete',guestText='',evidenceRefs:string[]=[],disclosure:'guest'|'staff_only'='guest';let bookingSuggestion:ReservationistBookingSuggestion|undefined;
+    if(task.kind==='new_booking'&&planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)){
+     try{bookingSuggestion=await buildReservationistBookingSuggestion({task,facts:ctx.facts,runtime:input,attachmentAdmissions:options.admissions})??undefined;}
+     catch{bookingSuggestion=undefined;}
+    }
     try{
      const unsupported=unsupportedTaskFacts(task,ctx.facts,input);if(unsupported.length){if(planScopes.get(plan)!==scopeIdentity(input))throw new Error('execution_scope_invalid');throw new FactTaskMappingError(unsupported.map(f=>f.id));}
      if(planScopes.get(plan)===scopeIdentity(input)&&currentAuthoredGuestRequest(task,input)&&isReservationistConferenceOnlyQuote(ctx))throw new ReservationistTaskEvidenceUnavailable('conference_quote_source_unavailable',['source-backed conference package availability, rates and terms'],['conference_package']);
@@ -484,7 +490,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
      }else{
      const unavailable=/unavailable|manual_source_review|missing/i.test(reason);status=unavailable?'needs_clarification':'blocked';if(!unavailable)work.errors.push(`${task.id}:authority_or_integrity_failure`);
      guestText=task.kind==='quote'?'Please confirm the stay details so we can prepare a verified quotation.':(task.kind==='acceptance'||task.kind==='new_booking')?'Please confirm the booking details and accepted offer so staff can review your request.':task.kind==='existing_document'?'Please confirm which existing document you need.':'Please confirm the details of this request so staff can verify the answer.';evidenceRefs=[];}}
-    work.tasks.push({id:task.id,status,guestText,evidenceRefs,disclosure});work.approvedGuestClauses![task.id]=guestText;clauses.set(task.id,guestText);
+    work.tasks.push({id:task.id,status,guestText,evidenceRefs,disclosure,...(bookingSuggestion?{bookingSuggestion}:{})});work.approvedGuestClauses![task.id]=guestText;clauses.set(task.id,guestText);
    }
    return work;
   },
