@@ -20,7 +20,7 @@ export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availabilit
 const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
 function missing(code:string,fields:string[]):never{throw new ReservationistTaskEvidenceUnavailable(code,fields);}
 function requestsAccessibleRoom(text:string):boolean{
- return text.split(/[.!?;\r\n]+|,\s*(?=(?:is|are|does|do|can|could|will|would)\b)/i).some(row=>/\b(?:accessible|wheelchair)\b/i.test(row)&&(/\b(?:rooms?|bedrooms?|suites?|accommodation)\b/i.test(row)||/\b(?:required|needed|need|require)\b/i.test(row)&&!/\b(?:restaurant|lobby|bar|pool|gym|parking|event|conference|meeting)\b/i.test(row)));
+ return text.split(/[.!?;\r\n]+|,\s*(?=(?:is|are|does|do|can|could|will|would)\b)/i).some((row,i,rows)=>/\b(?:accessible|wheelchair)\b/i.test(row)&&(/\b(?:rooms?|bedrooms?|suites?|accommodation)\b/i.test(row)||!/\b(?:restaurant|lobby|bar|pool|gym|parking|event|conference|meeting)\b/i.test(row)&&(/\b(?:required|needed|need|require)\b/i.test(row)||i>0&&/\b(?:rooms?|bedrooms?|suites?|accommodation)\b/i.test(rows[i-1]!)&&/^\s*(?:it|they|this|that|these|those)\b/i.test(row))));
 }
 function hrdavRequestedRoomCodes(text:string):string[]|undefined{
  if(/\bjunior\s+suite\b/i.test(text))return['JNRSUI'];

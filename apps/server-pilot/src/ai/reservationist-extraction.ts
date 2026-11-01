@@ -331,10 +331,8 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  const history=page.search(/^(?:\s*>?\s*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
-function childRequirement(page:string):boolean{
- const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
- const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'');
- return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
+function childRequirement(page:string):boolean{const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+ const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'').split(/[.!?;\r\n]+/).filter(row=>!/^\s*(?:is|are|does|do|can|could|will|would)\b/i.test(row)||!/\b(?:pool|restaurant|lobby|bar|gym|parking|shuttle|transport|breakfast|dinner|meals?|conference|meeting|event)\b/i.test(row)||/\b(?:book|booking|reserve|reservation|stay|sleep|rooms?|beds?|accommodation|guests?|\d+)\b/i.test(row)||/\b(?:one|two|three|four|our|my)\s+(?:child|children|kids?|infants?)\b/i.test(row)).join(' ');return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
 function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][],page:string):{quantity:number;adults:number;at:string}|undefined{
@@ -365,7 +363,7 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
  const historyStart=authored.length,pageRequests=page.slice(historyStart),currentQuotes=tasks.filter(task=>task.kind==='quote'&&task.source.attachmentId===fact.source.attachmentId&&task.source.end!==undefined&&task.source.end<=authored.length);
  const activated=historyStart<page.length&&fact.source.start!==undefined&&fact.source.start>=historyStart&&currentQuotes.length===1&&/\b(?:please|kindly|can you|could you|request)\b[\s\S]*\b(?:quote|quotation)\b/i.test(body)&&!/\b(?:not|no|never|without|different|another|new|change|amend|ignore|disregard|cancel|if|unless)\b/i.test(body)&&[...pageRequests.matchAll(/\b(?:quote|quotation)\b/gi)].length===1&&/\b(?:please|kindly|request|send|provide)\b[\s\S]*\b(?:quote|quotation)\b/i.test(originalRequest)&&/\b(?:one|1|a|an)\s+(?:(?:single|standard|double|twin)\s+)?(?:bed)?room\b/i.test(requested);
  if(activated)body=originalRequest;
- if(fact.source.end===undefined||!activated&&fact.source.end>body.length||/\b(?:child|children|minor|infant|kids?|students?|family|group|not|never|no|without|either|or|another|additional|multiple|cancel)\b/i.test(body))return;
+ if(fact.source.end===undefined||!activated&&fact.source.end>body.length||childRequirement(body)||/\b(?:group|not|never|no|without|either|or|another|additional|multiple|cancel)\b/i.test(body))return;
  if(!requested||!body.includes(requested))return;
  // An explicitly counted two-person accommodation request may cite its verified guest
  // list elsewhere in this one authored scope; the count alone proves no ages.

@@ -240,6 +240,7 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Kindly quote one room for two adults.','quote','Please quote one room for Mr and Mrs Example.',2)).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults and one child.')).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
+  await expect(run('Kindly quote one double room for two adults. Is your pool open to children?','quote')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults. Do not book us yet.')).resolves.toMatchObject({facts:[{kind:'room'}]});
  });
  it('compares only established occupancy across alternatives and retains verified guest names',async()=>{
@@ -257,6 +258,8 @@ describe('plain and HTML citation binding',()=>{
    return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source}],tasks:[{id:'quote',kind:'quote',factIds:['room'],source}],unresolvedAsks:[]}})} as any,messages:[{id:'child-alternative',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'child-alternative',causalAt:at,admissions:[],signal:new AbortController().signal});};
   await expect(run('Please quote one room for one adult and one child.')).rejects.toThrow('Conflicting occupancy across message views');
   await expect(run('Please quote one room for one adult and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
+  await expect(run('Please quote one room for one adult. Is your pool open to children?')).resolves.toMatchObject({facts:[{kind:'room'}]});
+  await expect(run('Please quote one room for one adult. We have two children and hope to use the pool.')).rejects.toThrow('Conflicting occupancy across message views');
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
