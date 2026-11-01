@@ -1918,6 +1918,37 @@ describe('quote session staff review items', () => {
     expect(s.reviewItems.find((item) => item.id === questionId)?.handled).toBe(false);
   });
 
+  it('keeps voucher acknowledgement and undo through stay edits', () => {
+    const voucherId = `voucher:message:mail-1:${'ab'.repeat(32)}:0:12`;
+    let s = analysisReady({
+      ...quoteAnalysis,
+      staffActions: [{
+        id: voucherId,
+        kind: 'voucher_review',
+        text: 'Review the attached voucher.',
+        sourceRef: 'message:mail-1',
+        sourceHash: 'ab'.repeat(32),
+        sourceKind: 'message',
+        messageId: 'mail-1',
+        runId: 'run-1',
+        workItemId: 'work-1',
+        blockingQuote: false,
+        status: 'open',
+      }],
+    });
+    expect(s.reviewItems.find((item) => item.id === voucherId)?.kind).toBe('staff_review');
+    s = reduceQuoteSession(s, { type: 'handle_review_item', itemId: voucherId });
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    expect(s.staffActions.find((item) => item.id === voucherId)?.handled).toBe(true);
+    expect(s.reviewItems.find((item) => item.id === voucherId)?.handled).toBe(true);
+    expect(openReviewItems(s).some((item) => item.id === voucherId)).toBe(false);
+    s = reduceQuoteSession(s, { type: 'unhandle_review_item', itemId: voucherId });
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 1 } });
+    expect(s.staffActions.find((item) => item.id === voucherId)?.handled).toBe(false);
+    expect(s.reviewItems.find((item) => item.id === voucherId)?.handled).toBe(false);
+    expect(openReviewItems(s).some((item) => item.id === voucherId)).toBe(true);
+  });
+
   it('clears handling on selection change and keeps it across stay edits that drop PDF', () => {
     let s = analysisReady();
     const questionId = s.reviewItems.find((item) => item.kind === 'question')!.id;
