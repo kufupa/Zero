@@ -242,10 +242,10 @@ describe('reservationist worker input', () => {
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['offer']);
   });
 
-  it('keeps an HTML heading-labelled business image after the signoff', async () => {
+  it('keeps an HTML heading-labelled business image without colon punctuation', async () => {
     const result = await build([row('current', 4, {
       textBody: null,
-      htmlBody: '<p>Please quote one double room.</p><p>Kind regards</p>Guest<h2>Rates:</h2><img src="cid:rates"><table><tr><td><p>Room A<br>Room B</p><p>Rate</p></td></tr></table>',
+      htmlBody: '<p>Please quote one double room.</p><p>Kind regards</p>Guest<h2>Rates</h2><img src="cid:rates"><table><tr><td><p>Room A<br>Room B</p><p>Rate</p></td></tr></table>',
     })], [{ id: 'rates', messageId: 'current', mimeType: 'image/png', sizeBytes: 1, sha256: 'a'.repeat(64), isInline: true, contentId: 'rates', disclosure: 'guest' }]);
     expect(result.ignoredSignatures).toBe(0);
     expect(result.admissions.map((admission) => admission.metadata.attachmentId)).toEqual(['rates']);
