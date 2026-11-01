@@ -275,6 +275,50 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     }
   }, 15_000);
 
+  it('allows an HMS approval while a spam read waits for the same work item', async () => {
+    const setup = openTestDbSession(), approver = openTestDbSession(), reader = openTestDbSession();
+    const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID();
+    let release: () => void = () => {};
+    let approval: ReturnType<typeof approveHmsWrite> | undefined, reading: ReturnType<typeof runInboundExtraction> | undefined;
+    try {
+      __resetInboundExtractionCapForTests();
+      const now=new Date(), mailbox=`${transportId}@example.invalid`;
+      await setup.db.insert(mailboxTransport).values({id:transportId,email:mailbox,ownerHeaderValue:transportId});
+      await setup.db.insert(mailThread).values({id:threadId,transportId,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:now});
+      await setup.db.insert(message).values({id:messageId,transportId,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[mailbox],textBody:SPAM_TEXT,receivedAt:now});
+      const [item]=await setup.db.insert(workItem).values({transportId,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      const [connection]=await approver.db.execute(sql<{pid:number}>`select pg_backend_pid() as pid`);
+      let acquired!: () => void;
+      const locked=new Promise<void>(resolve => { acquired=resolve; });
+      const proceed=new Promise<void>(resolve => { release=resolve; });
+      approval=approveHmsWrite({db:approver.db,transportId,actorUserId:'staff',workItemId:item!.id,
+        rereadHmsState:async()=>{acquired();await proceed;return {confirmation:'synthetic'};}});
+      await locked;
+      reading=runInboundExtraction({transportId,triggerMessageId:messageId,promptVersion:EXTRACTION_VERSION},{
+        db:reader.db,env:{INBOUND_EXTRACTION:'on',INBOUND_TRIAGE_CLASSIFIER:'off',AI_WRITE_GATE_ENABLED:'true'},
+        adapter:fakeModel(() => SPAM_OUTPUT).adapter,loadSelection:async () => selectionFor(SPAM_TEXT),
+      });
+      let blocked=false;
+      for(let attempt=0;attempt<100;attempt++){
+        const [state]=await setup.db.execute(sql<{blocked:boolean}>`select exists (
+          select 1 from pg_stat_activity a where a.datname=current_database()
+            and a.wait_event_type='Lock' and ${connection!.pid}=any(pg_blocking_pids(a.pid))
+        ) as blocked`);
+        if(state!.blocked){blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      expect(blocked).toBe(true);
+      release();
+      const [grant,result]=await Promise.all([approval,reading]);
+      expect(grant.runId).toBeTruthy();
+      expect(result).toBe('stored');
+    } finally {
+      release();
+      await Promise.allSettled([...(approval?[approval]:[]),...(reading?[reading]:[])]);
+      await Promise.all([setup.close(),approver.close(),reader.close()]);
+    }
+  }, 15_000);
+
   it('lets a concurrent reply finish before deciding whether the read is spam', async () => {
     const setup = openTestDbSession(), importer = openTestDbSession(), reader = openTestDbSession();
     const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID();

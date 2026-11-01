@@ -386,10 +386,11 @@ async function writeSpamDecision(
   kind: string,
 ): Promise<void> {
   // Reply import takes the thread lock before its work-item locks. Take the same
-  // order and re-read the spam guards after any concurrent import commits.
+  // order and re-read the spam guards after any concurrent import commits. A
+  // non-key lock still allows an approval holding an item to insert its run.
   const [thread] = await db.select({ id: mailThread.id }).from(mailThread)
     .where(and(eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId)))
-    .limit(1).for('update');
+    .limit(1).for('no key update');
   if (!thread) return;
   const [latest] = await db
     .select({ id: message.id })
