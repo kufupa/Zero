@@ -655,8 +655,7 @@ export function mapLlmDecision(
       group.childAges === null ||
       childTotalMismatches.has(lunaStayKey(group, index, quoteDefaults)) ||
       unscopedMissing.some((item) => /child/i.test(`${item.field} ${item.question}`)) ||
-      legacyEmptyChildAgesNeedReview ||
-      (typeof childrenTotal === 'number' && childrenTotal > 0 && childAges.length === 0);
+      legacyEmptyChildAgesNeedReview;
     const hasGuestEvidence =
       group.adultsPerRoom !== null || childAges.length > 0 || group.guestNames.length > 0;
     const quantityDefaulted =
