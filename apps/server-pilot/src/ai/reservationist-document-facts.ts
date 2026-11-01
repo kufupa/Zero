@@ -193,7 +193,7 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  const otherViews=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!);
  const other=otherViews.join('\n');
  const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
- const datePattern=/\b(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/gi;
+ const datePattern=new RegExp(`\\b(?:\\d{1,2}\\s+(?:${monthPattern})(?:\\s+\\d{4})?|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b`,'gi');
  const dateMatches=(text:string)=>[...text.matchAll(new RegExp(datePattern.source,'gi'))];
  const dateTokens=(text:string)=>dateMatches(text).map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
  const dateKey=(token:string)=>{try{const year=/\b\d{4}\b/.test(token),date=/^\d{1,2}[/-]\d{1,2}$/.test(token)?normalizedDate(token,2000):normalizedDate(year?token:`${token} 2000`);return{dayMonth:date.slice(5),year:year?date.slice(0,4):undefined};}catch{return;}};
@@ -209,8 +209,9 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
     if(isArrival)arrival={date:match[0],labelStart};
     else if(isDeparture&&arrival){
      const before=text.slice(0,arrival.labelStart),boundary=Math.max(before.lastIndexOf('\n'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'),before.lastIndexOf(';'));
-     const context=text.slice(boundary+1,arrival.labelStart),scope=text.slice(boundary+1,match.index!+match[0].length).replace(new RegExp(datePattern.source,'gi'),' date ').replace(/\bcheck[ -]?in\b/gi,'arrival').replace(/\bcheck[ -]?out\b/gi,'departure').replace(/[^\p{L}\p{N}]+/gu,' ').toLowerCase().trim();
-     const entity=/\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase()??/\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1];
+     const context=text.slice(boundary+1,arrival.labelStart),heading=/(?:\bgroup\s+([\p{L}\p{N}_-]+)|\broom\s+(?:#\s*)?(\d+))\s*:\s*$/iu.exec(text.slice(0,boundary).trimEnd());
+     const entity=/\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase()??/\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1]??heading?.[1]?.toLowerCase()??heading?.[2];
+     const scope=`${entity??''}|${text.slice(boundary+1,match.index!+match[0].length).replace(new RegExp(datePattern.source,'gi'),' date ').replace(/\bcheck[ -]?in\b/gi,'arrival').replace(/\bcheck[ -]?out\b/gi,'departure').replace(/[^\p{L}\p{N}]+/gu,' ').toLowerCase().trim()}`;
      const ordinal=ordinals.get(scope)??0;ordinals.set(scope,ordinal+1);
      pairs.push({arrival:arrival.date,departure:match[0],start:arrival.labelStart,end:match.index!+match[0].length,scope,ordinal,...(entity?{entity}:{})});
      arrival=undefined;
