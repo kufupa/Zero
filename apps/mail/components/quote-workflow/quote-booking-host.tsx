@@ -6,7 +6,7 @@ import type { PartyFinder, PartyIndexSearcher } from '@/lib/quote-workflow/party
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import type { BookingDraftReady, QuoteSession, ReservationistBookingSuggestion, StaffQuoteParties } from '@/lib/quote-workflow/types';
 import { paneFieldClass } from '@/components/nava-pane/pane-ui';
-import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
+import { appliedSavedStayIds, BOARD_LABELS, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 import { PartyPicker } from './party-picker';
@@ -40,6 +40,8 @@ function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId,
   const stay = draft.draft.rooms[0]?.request;
   return <>
     {stay?.arrival && stay.departure ? <p className="text-xs">Stay: {String(stay.arrival)} – {String(stay.departure)}</p> : null}
+    {draft.draft.rooms.map(room => room.board && BOARD_LABELS[room.board] ?
+      <p key={`${room.groupId}:${room.roomIndex}`} className="text-xs">Room {room.roomIndex} meal plan: {BOARD_LABELS[room.board]}</p> : null)}
     {multipleParties ? <p className="text-xs">Multiple parties were mentioned. Check which applies in HMS before booking.</p> :
     suggestion.partyNames.length ? <>
       <label className="flex flex-col gap-1 text-xs">Company or agency mentioned: {suggestion.partyNames[0]}

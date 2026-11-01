@@ -238,7 +238,7 @@ describe('QuoteWorkflowPanel', () => {
     const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Needs review' as const,
       details:['Request: Book a room'],handled:false,runId:'run',workItemId:'item',bookingSuggestion:{
         version:1 as const,taskId:'book',status:'prefill' as const,displayOnly:true as const,saved:false as const,selectedMessageId:'mail-1',staffSourceHash,source,groupId:'book_123',
-        draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01',departure:'2027-04-02',
+        draft:{rooms:[{groupId:'book_123',roomIndex:1,board:'bb' as const,request:{arrival:'2027-04-01',departure:'2027-04-02',
           adults:1,childAges:[],firstName:'Alex',lastName:'Example'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
         options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:{dates:[{source}],rooms:[],guests:[],boards:[],parties:[]},partyNames:[],missing:[],
       }};
@@ -249,9 +249,16 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByRole('button',{name:'Hide booking from request'})).toBeDefined();
     expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Alex');
     expect(screen.getByText('Stay: 2027-04-01 – 2027-04-02')).toBeDefined();
+    expect(screen.getByText('Room 1 meal plan: Bed & breakfast')).toBeDefined();
     fireEvent.change(screen.getByLabelText('First name'),{target:{value:'Taylor'}});
     fireEvent.click(screen.getByRole('button',{name:'Hide booking from request'}));
     fireEvent.click(screen.getByRole('button',{name:'Review booking from request'}));
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Taylor');
+    view.rerender(<QuoteWorkflowPanel session={{...session,phase:'analysing'}} workItemId="item" />);
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Taylor');
+    view.rerender(<QuoteWorkflowPanel session={{...session,phase:'unsynced'}} workItemId="item" />);
+    expect(screen.queryByRole('button',{name:'Hide booking from request'})).toBeNull();
+    view.rerender(<QuoteWorkflowPanel session={session} workItemId="item" />);
     expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Taylor');
     view.rerender(<QuoteWorkflowPanel session={{...session,staffSource:{...session.staffSource,sourceHash:'b'.repeat(64)}}} workItemId="item" />);
     expect(screen.queryByRole('button',{name:/booking from request/})).toBeNull();
