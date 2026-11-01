@@ -7,6 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
+import {validReservationistMessageViews} from './reservationist-message-view.js';
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
@@ -39,7 +40,11 @@ function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
  }
  return boards[key];
 }
-function authored(ctx:Context){const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId);return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??ctx.task.source.quote??'';}
+function authored(ctx:Context){
+ const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId),span=ctx.task.source;
+ if(m?.sourceViews){if(!validReservationistMessageViews(m.text,m.sourceViews)||span.start===undefined||span.end===undefined)return'';const view=m.sourceViews.find(v=>span.start!>=v.start&&span.end!<=v.end);return view?m.text.slice(view.start,view.end):'';}
+ return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??span.quote??'';
+}
 /** Original authored event scope only; this predicate grants no price or party authority. */
 export function isReservationistConferenceOnlyQuote(ctx:Context):boolean{
  const requestText=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
@@ -64,9 +69,9 @@ function sourceLeavesBoardUnspecified(ctx:Context):boolean{
   const item=raw as {attachmentId?:string;sourceHash?:string},admission=admissions.find(a=>a.metadata.attachmentId===item?.attachmentId&&a.metadata.sourceHash===item?.sourceHash),m=admission?.metadata,owner=m&&ctx.input.messages.find(message=>message.id===m.messageId);
   return !m||!owner||admission.status!=='ignored_signature'||admission.reason!=='signature_noise'||m.ownerRef!==ctx.input.authorizationScope?.ownerRef||m.threadId!==ctx.input.authorizationScope?.threadId||m.messageAt!==owner.at||Date.parse(m.messageAt)>Date.parse(ctx.input.clock.causalAt)||!isReservationistSignatureNoise({messageText:owner.text,currentRequestText:message.text,attachment:{id:m.attachmentId,messageId:m.messageId,isInline:m.inline===true,contentId:m.contentId??null,mimeType:m.mimeType},attachments:descriptors});
  }))return false;
- const text=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
-  const requirements=text.replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b/gi,'').replace(/\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'');
- return !/\b(?:breakfast|dinner|lunch|meals?|board|DBB|BB|RO)\b|\bB\s*&\s*B\b|\broom\s+only\b/i.test(requirements);
+ if(message.sourceViews&&(!validReservationistMessageViews(message.text,message.sourceViews)||!authored(ctx)))return false;
+ const texts=message.sourceViews?.map(view=>message.text.slice(view.start,view.end))??[authored(ctx)];
+ return texts.every(value=>{const text=value.split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!,requirements=text.replace(/\b(?:breakfast|board|meal)\s+(?:options?|alternatives?)\b/gi,'').replace(/\b(?:options?|alternatives?)\s+(?:for|of)\s+(?:breakfast|board|meal)\b/gi,'');return !/\b(?:breakfast|dinner|lunch|meals?|board|DBB|BB|RO)\b|\bB\s*&\s*B\b|\broom\s+only\b/i.test(requirements);});
 }
 /** Facts determine native search scope; customer class never changes the requested task. */
 export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest{
