@@ -79,6 +79,12 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
   return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
 }
 
+/** Keep earlier asks, but let the latest review replace stale file warnings. */
+export function hasOutstandingRequestHistory(runs: readonly { id: string; result: unknown }[], state: unknown): boolean {
+  const [latest, ...earlier] = runs;
+  return Boolean(latest && (hasOutstandingRequests(latest.result, latest.id, state) || outstandingRequestHistory(earlier, state).length > 0));
+}
+
 /** Staff acknowledgement only; it does not authorize a send or an HMS write. */
 export async function setRequestHandled(db: DB, input: {
   transportId: string; workItemId: string; userId: string; runId: string; taskId: string; handled: boolean;

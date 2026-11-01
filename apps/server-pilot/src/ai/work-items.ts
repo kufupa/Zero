@@ -69,7 +69,7 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
-import { hasOutstandingRequests } from './reservationist-task-completion.js';
+import { hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1418,8 +1418,8 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const outstanding = (runsBySource.get(source.id) ?? [])
-      .some(run => hasOutstandingRequests(run.metrics?.reservationistResult, run.id, item.state));
+    const outstanding = hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult })), item.state);
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
     if (item.status === 'dismissed') {

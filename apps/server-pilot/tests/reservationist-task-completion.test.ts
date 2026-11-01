@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { handledRequestKeys, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
+import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
@@ -36,6 +36,16 @@ it('keeps an unread business attachment open even when no request could be extra
   const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', reason:'too_large'};
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[recovery]}, 'run', {})).toBe(true);
   expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,signatureNoise:true}]}, 'run', {})).toBe(false);
+});
+
+it('replaces an old unread-file warning after a later review, without losing earlier requests', () => {
+  const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', reason:'too_large'};
+  const latest = {id:'new', result:{version:1,tasks:[]}};
+  const oldWarning = {id:'old', result:{version:1,tasks:[],sourceRecoveries:[recovery]}};
+  expect(hasOutstandingRequestHistory([latest, oldWarning], {})).toBe(false);
+  expect(hasOutstandingRequestHistory([oldWarning], {})).toBe(true);
+  const oldAsk = {id:'older', result:{version:1,tasks:[task('one',0)]}};
+  expect(hasOutstandingRequestHistory([latest, oldAsk], {})).toBe(true);
 });
 
 const reachable = await probeTestDb();
