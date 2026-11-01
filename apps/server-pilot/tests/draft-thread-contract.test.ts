@@ -55,7 +55,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const resultDigest = draftSourceHash(result);
       const savedSource = sealReservationistDraftSource({ version: 1, runId, generationId, transportId: TRANSPORT_ID,
         propertyCode: 'HRCEN', threadId, requestedByUserId: 'user-navaai', triggerMessageId: messageId,
-        causalAt: at.toISOString(), resultDigest, messages: [savedMessage], attachments: [{
+        causalAt: savedMessage.at, resultDigest, messages: [savedMessage], attachments: [{
           attachmentId: fileId, messageId, s3Key, mimeType: 'application/pdf', sizeBytes: 12, sourceHash: fileHash, inline: false,
         }] });
       await db.insert(aiWorkflowRun).values({ id: runId, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID,
