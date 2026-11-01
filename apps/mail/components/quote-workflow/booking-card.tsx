@@ -868,6 +868,7 @@ export function BookingCards({
   propertyCode,
   confirmation,
   onSaveDefault,
+  onCommitLockChange,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -898,6 +899,8 @@ export function BookingCards({
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Keep linked parties fixed while a save is running or its outcome needs an HMS check. */
+  onCommitLockChange?: (locked: boolean) => void;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -977,6 +980,10 @@ export function BookingCards({
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  const lockParty = stayBooking || Object.values(saves).some(({ commit }) =>
+    commit?.status === 'running' || commit?.status === 'booked' ||
+    (commit?.status === 'refused' && commit.statusChip === 'check'));
+  useEffect(() => { onCommitLockChange?.(lockParty); }, [lockParty, onCommitLockChange]);
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
@@ -1385,6 +1392,7 @@ export function BookingCards({
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
     if (savedOutcomeBlocksRoom(roomKey)) return false;
+    onCommitLockChange?.(true);
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));

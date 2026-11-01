@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useCallback, useRef, useState } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
@@ -29,6 +29,10 @@ function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId,
 }) {
   const [kind, setKind] = useState<'' | 'agency' | 'company' | 'none'>(suggestion.partyNames.length ? '' : 'none');
   const [parties, setParties] = useState<StaffQuoteParties>({});
+  const [partyLocked, setPartyLocked] = useState(false);
+  const partyLockedRef = useRef(false), kindRef = useRef(kind);
+  kindRef.current = kind;
+  const setPartyLock = useCallback((locked: boolean) => { partyLockedRef.current = locked; setPartyLocked(locked); }, []);
   const selected = kind === 'agency' || kind === 'company' ? parties[kind] : undefined;
   const multipleParties = suggestion.partyNames.length > 1;
   const ready = !multipleParties && (kind === 'none' || Boolean(selected?.nativeId));
@@ -38,7 +42,8 @@ function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId,
     {multipleParties ? <p className="text-xs">Multiple parties were mentioned. Check which applies in HMS before booking.</p> :
     suggestion.partyNames.length ? <>
       <label className="flex flex-col gap-1 text-xs">Company or agency mentioned: {suggestion.partyNames[0]}
-        <select aria-label="Party for this booking" className={paneFieldClass} value={kind} onChange={event => {
+        <select aria-label="Party for this booking" className={paneFieldClass} value={kind} disabled={partyLocked} onChange={event => {
+          if (partyLockedRef.current) return;
           setKind(event.target.value as typeof kind); setParties({});
         }}>
           <option value="">Choose how this party applies</option>
@@ -47,18 +52,19 @@ function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId,
           <option value="none">No linked agency or company</option>
         </select>
       </label>
-      {kind === 'agency' || kind === 'company' ? findParty ? <PartyPicker
+      {kind === 'agency' || kind === 'company' ? findParty ? <fieldset disabled={partyLocked}><PartyPicker key={kind}
         name={suggestion.partyNames[0]!} kind={kind} parties={parties} find={findParty}
         indexSearch={partyIndex} jobTransport={partyJobTransport} threadId={threadId}
         sourceMessageId={suggestion.selectedMessageId} propertyCode={propertyCode}
-        onPick={party => { if (party.kind === kind) setParties(current => ({ ...current, [kind]: party })); }}
-        onClear={cleared => setParties(current => ({ ...current, [cleared]: undefined }))} />
+        onPick={party => { if (!partyLockedRef.current && party.kind === kindRef.current) setParties(current => ({ ...current, [party.kind]: party })); }}
+        onClear={cleared => { if (!partyLockedRef.current && cleared === kindRef.current) setParties(current => ({ ...current, [cleared]: undefined })); }} />
+      </fieldset>
         : <p className="text-xs">HMS party lookup is unavailable; check the party in HMS.</p> : null}
     </> : null}
     {kind === 'company' && selected ? <p className="text-xs">Check the company in HMS; this booking card is copy-only.</p> : null}
     {ready ? <BookingCards key={`${kind}:${selected?.nativeId ?? ''}`} draft={draft} groups={[]} paneSave={kind === 'company' ? null : paneSave} contact={contact}
       workItemId={workItemId} savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot}
-      propertyCode={propertyCode} parties={parties} onSaveDefault={onSaveDefault ?? saveConfirmationDefault} /> :
+      propertyCode={propertyCode} parties={parties} onSaveDefault={onSaveDefault ?? saveConfirmationDefault} onCommitLockChange={setPartyLock} /> :
       appliedSavedStayIds(draft, [], savedStays).map(id => <SavedStayReceipt key={id} saved={savedStays![id]!}
         screenshot={screenshot ?? paneSave?.screenshot} />)}
   </>;
