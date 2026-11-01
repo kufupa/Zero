@@ -87,7 +87,7 @@ function confirmationTokenInSource(source: string, confirmation: string): boolea
 
 function extraMissing(decision: ReservationistDecision): LunaAnalysis['missing'] {
   const rows: LunaAnalysis['missing'] = decision.missing.map((field) => ({ field, question: field }));
-  if (decision.stayAsk?.rooms > 1 && !rows.some((row) => row.field === 'adultsPerRoom')) {
+  if ((decision.stayAsk?.rooms ?? 0) > 1 && !rows.some((row) => row.field === 'adultsPerRoom')) {
     rows.push({
       field: 'adultsPerRoom',
       question: 'How many adults are in each room? The stay-wide adult count cannot be split without a per-room allocation.',

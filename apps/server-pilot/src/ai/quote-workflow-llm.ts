@@ -619,7 +619,7 @@ export function mapLlmDecision(
       group.childAges === null ||
       childTotalMismatches.has(lunaStayKey(group, index)) ||
       analysis.missing.some((item) => /child/i.test(`${item.field} ${item.question}`)) ||
-      (childrenTotal !== undefined && childrenTotal > 0 && childAges.length === 0);
+      (typeof childrenTotal === 'number' && childrenTotal > 0 && childAges.length === 0);
     const hasGuestEvidence =
       group.adultsPerRoom !== null || childAges.length > 0 || group.guestNames.length > 0;
     const quantityDefaulted =

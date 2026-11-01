@@ -1087,7 +1087,7 @@ export const workstationRouter = router({
       if (
         !group?.arrival ||
         groups.length !== 1 ||
-        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
+        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1 || r.childAges === null)
       ) {
         return unavailable;
       }
