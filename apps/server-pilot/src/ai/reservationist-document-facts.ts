@@ -282,7 +282,13 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     }
     return pairs;
   };
-  const pairsIn = (text:string):StayPair[] => [...stayPairs(text),...rangePairs(text)].sort((a,b)=>a.start-b.start);
+  const pairsIn = (text:string):StayPair[] => {
+    const pairs=[...stayPairs(text),...rangePairs(text)].sort((a,b)=>a.start-b.start);
+    return pairs.filter((pair,index)=>!pairs.slice(0,index).some(previous=>
+      previous.start<pair.end&&previous.end>pair.start&&
+      (!previous.entity||!pair.entity||previous.entity===pair.entity)&&
+      sameDate(previous.arrival,pair.arrival)&&sameDate(previous.departure,pair.departure)));
+  };
   const citedDates = dateTokens(fact.source.quote ?? ''), otherDates = dateTokens(other);
   const sourcePairs = view ? pairsIn(page.slice(view.start, view.end)) : [];
   const localStart = view ? start - view.start : start, localEnd = view ? end - view.start : end;
@@ -367,7 +373,10 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(source.sourceViews?.some(view=>view.quoted&&fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.quoted.start&&fact.source.end<=view.quoted.end))throw new Error('Yearless date source is quoted history');
  const {page,start,end}=citedViewSpan(fact,source);
  const history=page.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
- const authored=page;
+ const signoff=/^[ \t]*(?:kind regards|best regards|warm regards|regards|sincerely|yours sincerely)[,!]?[ \t]*\r?$/im.exec(page);
+ const signoffTail=signoff?page.slice(signoff.index+signoff[0].length):'';
+ const hasPostscript=/\b(?:p\.?\s*s\.?|postscript|please|kindly|quote|book|reserve|request|availability|correction|corrected|change(?:d)?|instead|amend(?:ed)?|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore|arrival|departure|check[ -]?(?:in|out)|dates?)\b/i.test(signoffTail);
+ const authored=signoff&&!hasPostscript?page.slice(0,signoff.index):page;
  const before=authored.slice(0,start),after=authored.slice(end),context=before.slice(Math.max(before.lastIndexOf(';'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'))+1)+quote+( /[;.!?]\s*$/.test(quote)?'':after.split(/[;.!?]/,1)[0]);
  if(end>authored.length)throw new Error('Yearless stay outside authored request');
  if(history>=0&&end>history||/^\s*>/m.test(quote))throw new Error('Ambiguous yearless stay context');
@@ -414,7 +423,7 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(/\b(?:not|never|no|without|previous|old|cancelled|canceled|unless|if|or|either)\b|\b\d{4}\b/i.test(stayContext))throw new Error('Ambiguous yearless stay context');
  // Keep signature/postscript text visible; infer a year only when the cited
  // local clause identifies a stay or an explicit quote/booking inquiry.
- const localStaySignal=/\b(?:room|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext);
+ const localStaySignal=/\b(?:room|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext);
  const lineStart=page.lastIndexOf('\n',start-1)+1,lineEnd=page.indexOf('\n',end),line=page.slice(lineStart,lineEnd<0?page.length:lineEnd);
  const previousLine=page.slice(0,lineStart).trimEnd().split(/\r?\n/).at(-1)??'';
  const adjacentDateLabel=/^\s*(?:stay\s+)?dates?\s*:/i.test(line)&&
