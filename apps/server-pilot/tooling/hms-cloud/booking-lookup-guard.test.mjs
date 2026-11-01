@@ -30,21 +30,25 @@ test('the page fence survives action-route removal and passes only one approved 
     const page = await context.newPage();
     await page.goto(`${origin}/ready`);
     const fence = await installPageRequestFence(page, [savePath]);
-    const entered = deferred(), release = deferred();
-    const temporary = async (route) => {
-      if (route.request().url().includes('pageaction=SAVE')) { entered.resolve(); await release.promise; }
-      await route.fallback();
-    };
-    await page.route('**/*', temporary);
-    const send = (body) => page.evaluate(async ({ path, body }) => {
+    const send = (body, path = savePath) => page.evaluate(async ({ path, body }) => {
       try { return (await fetch(`${path}?pageaction=SAVE`, { method: 'POST', body })).status; }
       catch { return 'blocked'; }
-    }, { path: savePath, body });
-    const pending = send('pageaction=SAVE');
-    await bounded(entered.promise);
-    await bounded(page.unroute('**/*', temporary));
-    release.resolve();
-    assert.equal(await bounded(pending), 'blocked');
+    }, { path, body });
+    // The header path is denied by the fence; another write path must still
+    // reach and be denied by the shared context guard after route removal.
+    for (const path of [savePath, '/delete']) {
+      const entered = deferred(), release = deferred();
+      const temporary = async (route) => {
+        if (route.request().url().includes('pageaction=SAVE')) { entered.resolve(); await release.promise; }
+        await route.fallback();
+      };
+      await page.route('**/*', temporary);
+      const pending = send('pageaction=SAVE', path);
+      await bounded(entered.promise);
+      await bounded(page.unroute('**/*', temporary));
+      release.resolve();
+      assert.equal(await bounded(pending), 'blocked');
+    }
     assert.equal(received.filter(({ url }) => url.includes('pageaction=SAVE')).length, 0);
     assert.equal(await page.evaluate(async () => (await fetch('/ordinary-read')).status), 200);
 
