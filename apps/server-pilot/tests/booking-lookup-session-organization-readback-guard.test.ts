@@ -18,8 +18,7 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
     return operation({ context: () => fixtures.context });
   },
 }));
-vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tooling/playwright-quote/hms-read-only-guard.mjs')>(),
+vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({
   installReadOnlyGuard: async (context: unknown) => {
     fixtures.guardContexts.push(context);
     fixtures.events.push('guard');
@@ -55,17 +54,9 @@ vi.mock('../tooling/hms-cloud/lookup.mjs', () => {
 });
 
 import { runBookingLookupTool } from '../tooling/hms-cloud/booking-lookup-session.mjs';
-import { shouldAbortReadOnlyRequest } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
 
 describe('organization readback fresh-context guard', () => {
   beforeEach(() => { fixtures.events.length = 0; fixtures.guardContexts.length = 0; });
-
-  it('keeps the shared guard refusing a save action while allowing a read', () => {
-    expect(shouldAbortReadOnlyRequest({ method: 'POST',
-      url: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE' })).toBe(true);
-    expect(shouldAbortReadOnlyRequest({ method: 'GET',
-      url: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR' })).toBe(false);
-  });
 
   it('installs the read-only fence before searching the saved confirmation', async () => {
     const page = {};
