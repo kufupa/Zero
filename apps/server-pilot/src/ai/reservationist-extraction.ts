@@ -472,7 +472,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
     const citedView=sourceForViews?.sourceViews?.find(view=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.start&&fact.source.end<=view.end);
     const quoteTask=citedView&&tasks.find(task=>task.kind==='quote'&&task.factIds.includes(fact.id)&&task.source.attachmentId===fact.source.attachmentId&&task.source.page===fact.source.page&&task.source.start!==undefined&&task.source.end!==undefined&&task.source.start>=citedView.start&&task.source.end<=citedView.end);
     // Inspect other authored views even when the model cited only this one.
-    const viewComparisons=quoteTask?sourceForViews!.sourceViews!.filter(view=>view!==citedView).map(view=>{
+    const viewComparisons:ValidatedDocumentPlan['tasks']=quoteTask?sourceForViews!.sourceViews!.filter(view=>view!==citedView).map(view=>{
       const text=originalPage.slice(view.start,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
       return{...quoteTask,source:{...quoteTask.source,start:view.start,end:view.start+text.length,quote:text}};
     }):[];
