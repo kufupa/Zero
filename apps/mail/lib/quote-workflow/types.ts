@@ -81,6 +81,7 @@ export type StayGroupRequirement = {
   arrivalDate?: string;
   departureDate?: string;
   quantity?: number;
+  roomsTotal?: number;
   roomPreference?: string;
   /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
   roomTypeCode?: RoomTypeCode;
@@ -209,7 +210,7 @@ export type LunaAnalysisWire = {
     adultsTotal?: number | null;
     adultsPerRoom: number | null;
     childrenTotal?: number | null;
-    childAges: number[];
+    childAges: number[] | null;
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];

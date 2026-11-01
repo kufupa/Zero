@@ -112,6 +112,24 @@ const quoteAnalysis: QuoteAnalysis = {
 };
 
 describe('quote session', () => {
+  it('marks explicitly entered child ages as staff-corrected so an unknown-age guard can clear', () => {
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, fields: { ...quoteAnalysis.groups[0]!.fields, childAges: 'missing' } }],
+    };
+    const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
+    const corrected = reduceQuoteSession(ready, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { childrenAges: [5] },
+    });
+
+    expect(corrected.groups[0]).toMatchObject({
+      childrenAges: [5],
+      fields: { childAges: 'staff_corrected' },
+    });
+  });
+
   it.each([
     ['adultsTotal', 5],
     ['childrenTotal', 0],

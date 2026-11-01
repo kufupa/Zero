@@ -40,6 +40,7 @@ import {
   staffStayExtrasFor,
 } from './types';
 import { knownRoomCode, matchConfiguredRoomType, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
+import { stayTotalMismatch } from './stay-allocation-validation';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -511,7 +512,10 @@ export function staffQuoteGroupsFromStay(
     if (group.board === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.board === 'dinner_bb')) {
       return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
-    if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
+    if (group.fields.childAges === 'missing') {
+      return { error: 'Confirm the child ages before running the quote.' };
+    }
+    if (typeof group.quantity !== 'number' || typeof group.adults !== 'number' || group.fields.adults === 'missing') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
@@ -539,6 +543,10 @@ export function staffQuoteGroupsFromStay(
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
   }
+  const mismatch = stayTotalMismatch(groups);
+  if (mismatch === 'rooms') return { error: 'Confirm the room totals and allocation for each stay before running the quote.' };
+  if (mismatch === 'children') return { error: 'Confirm the child count and ages for each room before running the quote.' };
+  if (mismatch === 'adults') return { error: 'Confirm the adult count and room allocation before running the quote.' };
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {
     return { error: 'Each date range needs its own quote. Run them one at a time.' };
