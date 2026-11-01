@@ -42,7 +42,7 @@ import {
 } from '../../ai/draft-evidence.js';
 import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
-import {VOUCHER_REVIEW_RECOVERY_REASON} from '../../ai/reservationist-runtime.js';
+import {voucherReviewRecoveryId} from '../../ai/reservationist-source-recovery.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -304,16 +304,13 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   }
   for (const recovery of rows(result.sourceRecoveries).slice(0, 64)) {
     if (recovery.kind === 'voucher_review') {
+      const id = voucherReviewRecoveryId(recovery);
       const identity = originalSource({attachmentId: recovery.sourceRef, sourceHash: recovery.sourceHash});
-      if (recovery.disclosure !== 'staff_only' || recovery.reason !== VOUCHER_REVIEW_RECOVERY_REASON ||
-        recovery.sourceKind !== 'message' || typeof recovery.messageId !== 'string' || !identity ||
+      const quote = typeof recovery.quote === 'string' ? recovery.quote : undefined;
+      if (!id || !quote || !identity ||
         identity.sourceKind !== 'message' || identity.sourceRef !== `message:${recovery.messageId}` ||
-        recovery.page !== 1 || !Number.isSafeInteger(recovery.start) || !Number.isSafeInteger(recovery.end) ||
-        Number(recovery.start) < 0 || Number(recovery.end) <= Number(recovery.start) ||
-        typeof recovery.quote !== 'string' || recovery.quote.length > 4096 ||
-        Number(recovery.end) - Number(recovery.start) !== recovery.quote.length || !/\bvouchers?\b/i.test(recovery.quote)) continue;
-      const id = `voucher:${identity.sourceRef}:${identity.sourceHash}:${recovery.start}:${recovery.end}`;
-      if (!staffActions.some(action => action.id === id)) staffActions.push({id, kind: 'voucher_review', text: recovery.quote, ...identity,
+        identity.messageId !== recovery.messageId) continue;
+      if (!staffActions.some(action => action.id === id)) staffActions.push({id, kind: 'voucher_review', text: quote, ...identity,
         reason: 'Check the original email and attached hotel voucher. No voucher has been verified or action prepared.',
         blockingQuote: false, status: 'open'});
       continue;
@@ -1298,18 +1295,22 @@ export const draftsRouter = tRouter({
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
-      const oldFiles = item ? outstandingSourceRecoveries(history).filter(file => file.runId !== latest.id) : [];
+      const oldSources = item ? outstandingSourceRecoveries(history).filter(source => source.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
-      for (const run of runs.filter(run => oldFiles.some(file => file.runId === run.id))) {
+      for (const run of runs.filter(run => oldSources.some(source => source.runId === run.id))) {
         const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
-        earlierSources.push(...(prior?.staffActions ?? []).filter(action => action.kind === 'business_document_failure' &&
-          oldFiles.some(file => file.runId === run.id && file.sourceRef === action.sourceRef)));
+        earlierSources.push(...(prior?.staffActions ?? []).filter(action => oldSources.some(source =>
+          source.runId === run.id && (source.kind === 'voucher_review'
+            ? action.kind === 'voucher_review' && source.id === action.id
+            : action.kind === 'business_document_failure' && source.sourceRef === action.sourceRef))));
       }
       if (!summary && !earlier.length && !earlierSources.length) return null;
       const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
+      const currentActions = reviewSummary.staffActions ?? [], currentActionIds = new Set(currentActions.map(action => action.id));
       return { replyToMessageId: input.messageId, runId: latest.id,
         ...(item ? { workItemId: input.workItemId } : {}),
-        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier], staffActions: [...(reviewSummary.staffActions ?? []), ...earlierSources] } };
+        reviewSummary: { ...reviewSummary, tasks: [...reviewSummary.tasks, ...earlier],
+          staffActions: [...currentActions, ...earlierSources.filter(action => !currentActionIds.has(action.id))] } };
     }),
 
   /** Record a staff acknowledgement of one prepared request, without authorizing a write or a send. */

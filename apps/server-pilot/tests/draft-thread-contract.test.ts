@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
@@ -26,13 +26,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       const threadId = randomUUID(), parentMessageId = randomUUID(), otherMessageId = randomUUID();
       const oldGeneration = randomUUID(), newGeneration = randomUUID();
       const oldRun = randomUUID(), newRun = randomUUID(), fileId = randomUUID(), newDraft = randomUUID();
+      const voucherQuote = 'Please review the attached hotel voucher for our booking.';
+      const voucherHash = createHash('sha256').update(voucherQuote).digest('hex');
       await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
         threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: new Date('2026-07-06T10:00:00Z') });
-      await db.insert(message).values([parentMessageId, otherMessageId].map(id => ({
-        id, transportId: TRANSPORT_ID, threadId, direction: 'inbound' as const,
-        fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'], textBody: 'Need help',
-        receivedAt: new Date('2026-07-06T10:00:00Z'),
-      })));
+      await db.insert(message).values([
+        {id:parentMessageId,transportId:TRANSPORT_ID,threadId,direction:'inbound' as const,fromAddress:'guest@example.com',toAddresses:['nava@example.com'],textBody:voucherQuote,receivedAt:new Date('2026-07-06T10:00:00Z')},
+        {id:otherMessageId,transportId:TRANSPORT_ID,threadId,direction:'inbound' as const,fromAddress:'guest@example.com',toAddresses:['nava@example.com'],textBody:'Need help',receivedAt:new Date('2026-07-06T10:00:00Z')},
+      ]);
       await db.insert(attachment).values({id:fileId,messageId:parentMessageId,filename:'document.pdf',mimeType:'application/pdf',sizeBytes:10,s3Key:'synthetic',sha256:'a'.repeat(64)});
       await db.insert(aiDraftGeneration).values([oldGeneration, newGeneration].map(id => ({
         id, transportId: TRANSPORT_ID, threadId, requestedByUserId: 'user-navaai',
@@ -55,7 +56,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           triggerMessageId: parentMessageId, generationId: newGeneration, runKind: 'candidate_draft',
           modelId: 'test', promptVersion: 'test', state: 'succeeded', createdAt: new Date('2026-07-06T10:10:00Z'),
           metrics: { reservationistResult: { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'new', kind: 'question' }],
-            sourceRecoveries:[{kind:'attachment_manual',disclosure:'staff_only',sourceKind:'attachment',sourceRef:fileId,sourceHash:'a'.repeat(64),messageId:parentMessageId,reason:'no_embedded_text'}] } } },
+            sourceRecoveries:[
+              {kind:'attachment_manual',disclosure:'staff_only',sourceKind:'attachment',sourceRef:fileId,sourceHash:'a'.repeat(64),messageId:parentMessageId,reason:'no_embedded_text'},
+              {kind:'voucher_review',reason:'voucher_request_needs_staff_review',disclosure:'staff_only',sourceKind:'message',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,messageId:parentMessageId,page:1,start:0,end:voucherQuote.length,quote:voucherQuote},
+            ] }, reservationistDraftSource:{messages:[{id:parentMessageId,sourceHash:voucherHash}] } } },
       ]);
       const { drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       expect(await drafts.reviewForMessage({ threadId, messageId: parentMessageId })).toMatchObject({
@@ -98,16 +102,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.tasks).toMatchObject([
         { id: 'new', runId: newRun, handled: false }, { id: 'old', runId: oldRun, handled: false },
       ]);
-      const laterRun = (minutes: number, attachments: unknown[]) => ({ id: randomUUID(), idempotencyKey: randomUUID(),
+      const laterRun = (minutes: number, attachments: unknown[], messages: unknown[] = []) => ({ id: randomUUID(), idempotencyKey: randomUUID(),
         transportId: TRANSPORT_ID, threadId, triggerMessageId: parentMessageId, runKind: 'candidate_draft' as const,
         modelId: 'test', promptVersion: 'test', state: 'succeeded' as const, createdAt: new Date(`2026-07-06T10:${minutes}:00Z`),
-        metrics: { reservationistResult: {version:1,readiness:'no_action',tasks:[]}, reservationistDraftSource: {attachments} } });
-      await db.insert(aiWorkflowRun).values(laterRun(40, []));
+        metrics: { reservationistResult: {version:1,readiness:'no_action',tasks:[]}, reservationistDraftSource: {attachments,messages} } });
+      await db.insert(aiWorkflowRun).values(laterRun(40, [], [{id:parentMessageId,sourceHash:voucherHash}]));
       expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
         {kind:'business_document_failure',filename:'document.pdf'},
+        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
       ]);
-      await db.insert(aiWorkflowRun).values(laterRun(50, [{attachmentId:fileId,sourceHash:'a'.repeat(64)}]));
-      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toEqual([]);
+      await db.insert(aiWorkflowRun).values(laterRun(50, [{attachmentId:fileId,sourceHash:'a'.repeat(64)}], [{id:parentMessageId,sourceHash:voucherHash}]));
+      expect((await drafts.reviewForMessage(current))?.reviewSummary?.staffActions).toMatchObject([
+        {kind:'voucher_review',sourceRef:`message:${parentMessageId}`,sourceHash:voucherHash,text:voucherQuote},
+      ]);
     });
   });
 

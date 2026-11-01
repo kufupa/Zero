@@ -8,6 +8,8 @@ import type { ExecutionRateComparison } from './reservationist-execution.js';
 import type { PreparedFact } from './prepared-draft-input.js';
 import {quoteDigest} from '../quote-proposal/quote-revision.js';
 import {composeReservationistReply} from './reply-playbooks.js';
+import {VOUCHER_REVIEW_RECOVERY_REASON,voucherReviewRecoveryId} from './reservationist-source-recovery.js';
+export {VOUCHER_REVIEW_RECOVERY_REASON} from './reservationist-source-recovery.js';
 export const RESERVATIONIST_RUNTIME_VERSION='reservationist-runtime-v1';
 export const RESERVATIONIST_COPY_VERSION='reservationist-copy-v1';
 export type ReservationistRuntimeInput={version:1;requestId:string;propertyCode:string;trigger:{id:string;at:string};messages:{id:string;at:string;direction:'inbound'|'outbound';text:string;subject?:string;disclosure?:'guest'|'staff_only'}[];authorizationScope?:{ownerRef:string;threadId:string};authorizedArtifacts:unknown[];requiredTaskKinds?:string[];requiredAskSpans?:{sourceId:string;start:number;end:number;text:string}[];requiredTaskIds?:string[];requiredArtifactRefs?:string[];clock:{causalAt:string;sourceAt:string;sourceMode?:'historical'|'current_read';deadlineAt:number};capabilities:{pmsWrite:false;emailSend:false}};
@@ -18,15 +20,11 @@ export type RuntimeSourceRecovery={kind:'unresolved_fact'|'attachment_manual'|'v
 export type RuntimeWorkResult={recipientPreparations?:import('./reservationist-recipient-preparation.js').RecipientPreparationReceipt[];currentNativeObservations?:import('./reservationist-execution.js').CurrentNativeObservationReceipt[];sourceRecoveries?:RuntimeSourceRecovery[];tasks:RuntimeTaskResult[];artifacts:{ref:string;sha256:string;sizeBytes:number;fileName:string;mimeType:string}[];requiredArtifactRefs?:string[];approvedGuestClauses?:Record<string,string>;preparedFacts?:PreparedFact[];quoteRefs:string[];packets:{saved:false;status:string;kind?:string;taskId?:string;businessRulesValidated?:boolean;cancellationReview?:unknown}[];errors:string[];quoteRevisions?:QuoteRevision[];proposalFacts?:{ref:string;facts:AuthorizedProposalFacts}[];importedOffers?:ImportedOffer[];approvedOverrides?:unknown[];rateComparisons?:ExecutionRateComparison[];readReceipts?:import('./reservationist-read-task.js').ReservationistReadReceipt[];existingDocumentReceipts?:import('./reservationist-existing-document.js').ReservationistExistingDocumentReceipt[];readRecoveries?:{taskId:string;codes:string[]}[];paymentComparisons?:import('./reservationist-execution.js').ExecutionPaymentComparison[]};
 export type RuntimePlan={sourceRecoveries?:RuntimeWorkResult['sourceRecoveries'];tasks:RuntimeTask[];facts:unknown[];factRecoveryProvenance?:FactRecoveryProvenance[];noAction?:{kind:'no_current_request'|'source_review';modelSelectionCompleted:true;inputDigest:string;triggerMessageId:string;sourceHash:string}};
 export type ReservationistSourceEvaluation={evaluateSourceAt:()=>string};
-export const VOUCHER_REVIEW_RECOVERY_REASON='voucher_request_needs_staff_review';
 function isCurrentVoucherReview(recovery:RuntimeSourceRecovery,input:ReservationistRuntimeInput,triggerMessage:ReservationistRuntimeInput['messages'][number]):boolean{
  const {start,end,quote}=recovery;
- return recovery.kind==='voucher_review'&&recovery.reason===VOUCHER_REVIEW_RECOVERY_REASON&&recovery.disclosure==='staff_only'&&
-  recovery.sourceRef===`message:${input.trigger.id}`&&recovery.sourceHash===createHash('sha256').update(triggerMessage.text).digest('hex')&&
-  recovery.sourceKind==='message'&&recovery.messageId===input.trigger.id&&recovery.page===1&&
-  typeof start==='number'&&Number.isSafeInteger(start)&&typeof end==='number'&&Number.isSafeInteger(end)&&
-  typeof quote==='string'&&quote.length<=4096&&start>=0&&end>start&&end-start===quote.length&&
-  triggerMessage.text.slice(start,end)===quote&&/\bvouchers?\b/i.test(quote);
+ return !!voucherReviewRecoveryId(recovery)&&recovery.sourceRef===`message:${input.trigger.id}`&&
+  recovery.messageId===input.trigger.id&&recovery.sourceHash===createHash('sha256').update(triggerMessage.text).digest('hex')&&
+  typeof start==='number'&&typeof end==='number'&&typeof quote==='string'&&triggerMessage.text.slice(start,end)===quote;
 }
 const currentExecutionInputs=new WeakMap<ReservationistRuntimeInput,{originalDigest:string;evaluation:ReservationistSourceEvaluation}>();
 /** Only a runtime-created view may advance the evaluation clock; the causal input stays unchanged. */

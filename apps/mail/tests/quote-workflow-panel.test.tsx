@@ -301,10 +301,12 @@ describe('QuoteWorkflowPanel', () => {
       sourceHash:'a'.repeat(64),sourceKind:'message' as const,messageId:'mail-1',
       reason:'No voucher has been verified or action prepared.',blocking:false};
     const view = vi.fn();
-    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source]}} onViewSource={view} />);
+    render(<QuoteWorkflowPanel session={{...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[source],handledReviewItemIds:[source.id]}} onViewSource={view} />);
     expect(screen.getByText(source.text)).toBeDefined();
     expect(screen.getByText('Needs staff review. No voucher has been verified or action prepared.')).toBeDefined();
     expect(screen.queryByText('Needs a reply. Not a price decision.')).toBeNull();
+    expect(screen.queryByRole('button',{name:`Mark as done: ${source.text}`})).toBeNull();
+    expect(screen.queryByText(`Done: ${source.text}`)).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:`Show in email: ${source.text}`}));
     expect(view).toHaveBeenCalledWith(source);
   });

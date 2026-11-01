@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
+import { voucherReviewRecoveryId } from './reservationist-source-recovery.js';
 
 const STATE_KEY = 'reservationistHandledRequests';
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -99,7 +100,7 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
   if (Array.isArray(value.sourceRecoveries) && value.sourceRecoveries.some(raw => {
     const recovery = object(raw);
     return (recovery.kind === 'attachment_manual' && recovery.disclosure === 'staff_only' && recovery.signatureNoise !== true) ||
-      recovery.kind === 'voucher_review' && recovery.disclosure === 'staff_only';
+      !!voucherReviewRecoveryId(recovery);
   })) return true;
   if (!value.tasks.length) return false;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
@@ -108,10 +109,10 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
 
 type HistoryRun = { id: string; result: unknown; source?: unknown };
 
-/** Only a later review of the same source can clear an unread-source warning. */
+/** A later read can clear an attachment warning; rereading does not clear a voucher check. */
 export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
-  const failures = new Set<string>(), successes = new Map<string, Set<string>>();
-  const outstanding: { runId: string; sourceRef: string }[] = [];
+  const failures = new Set<string>(), seenVouchers = new Set<string>(), successes = new Map<string, Set<string>>();
+  const outstanding: { runId: string; sourceRef: string; kind: 'attachment_manual' | 'voucher_review'; id?: string }[] = [];
   const remember = (ref: unknown, hash: unknown) => {
     if (typeof ref !== 'string' || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) return;
     const hashes = successes.get(ref) ?? new Set<string>();
@@ -125,6 +126,14 @@ export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
     const emails = Array.isArray(source.messages) ? source.messages.map(object) : [];
     if (Array.isArray(result.sourceRecoveries)) for (const raw of result.sourceRecoveries) {
       const recovery = object(raw), ref = recovery.sourceRef, hash = recovery.sourceHash;
+      if (recovery.kind === 'voucher_review') {
+        const id = voucherReviewRecoveryId(recovery);
+        if (id && typeof ref === 'string' && !seenVouchers.has(id)) {
+          seenVouchers.add(id);
+          outstanding.push({ runId: run.id, sourceRef: ref, kind: 'voucher_review', id });
+        }
+        continue;
+      }
       if (recovery.kind !== 'attachment_manual' || recovery.disclosure !== 'staff_only' || recovery.signatureNoise === true ||
           typeof ref !== 'string' || !ref) continue;
       const laterHashes = successes.get(ref);
@@ -134,7 +143,7 @@ export function outstandingSourceRecoveries(runs: readonly HistoryRun[]) {
       const failureKey = JSON.stringify([ref, typeof hash === 'string' ? hash : null]);
       const reviewed = laterHashes && (typeof identity === 'string' ? laterHashes.has(identity) : !subject && typeof hash !== 'string');
       if (!failures.has(failureKey) && !reviewed)
-        outstanding.push({ runId: run.id, sourceRef: ref });
+        outstanding.push({ runId: run.id, sourceRef: ref, kind: 'attachment_manual' });
       failures.add(failureKey);
     }
     if (Array.isArray(source.attachments)) for (const raw of source.attachments) {

@@ -195,6 +195,7 @@ export function openReviewItems(session: {
   const handled = new Set(session.handledReviewItemIds ?? []);
   return (session.reviewItems ?? []).filter((item) => {
     if (!notNoise(item)) return false;
+    if (item.kind === 'staff_review') return true;
     if (item.kind === 'pricing_fact' || item.blocking) return true;
     return !handled.has(item.id);
   });
