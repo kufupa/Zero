@@ -179,6 +179,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     });
   });
 
+  // Multi-session races need committed append-only events; use a disposable DB and unique fixtures.
   it('serializes a completed analysis with a reply already closing its work item', async () => {
     const setup = openTestDbSession(), locker = openTestDbSession(), finisher = openTestDbSession();
     const transportId=`race-${randomUUID()}`, threadId=randomUUID(), messageId=randomUUID(), replyId=randomUUID(), runId=randomUUID();
@@ -228,8 +229,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       release();
       if (held) await held.catch(() => undefined);
       if (completion) await completion.catch(() => undefined);
-      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
-      finally { await Promise.all([setup.close(),locker.close(),finisher.close()]); }
+      await Promise.all([setup.close(),locker.close(),finisher.close()]);
     }
   }, 15_000);
 
@@ -272,8 +272,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(acknowledgement?[acknowledgement]:[])]);
-      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
-      finally { await Promise.all([setup.close(),approver.close(),acknowledger.close()]); }
+      await Promise.all([setup.close(),approver.close(),acknowledger.close()]);
     }
   }, 15_000);
 
@@ -317,8 +316,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(approval?[approval]:[]),...(reading?[reading]:[])]);
-      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
-      finally { await Promise.all([setup.close(),approver.close(),reader.close()]); }
+      await Promise.all([setup.close(),approver.close(),reader.close()]);
     }
   }, 15_000);
 
@@ -368,8 +366,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(importing?[importing]:[]),...(reading?[reading]:[])]);
-      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
-      finally { await Promise.all([setup.close(),importer.close(),reader.close()]); }
+      await Promise.all([setup.close(),importer.close(),reader.close()]);
     }
   }, 15_000);
 
@@ -424,8 +421,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
     } finally {
       release();
       await Promise.allSettled([...(refresh?[refresh]:[]),...(reread?[reread]:[])]);
-      try { await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id,transportId)); }
-      finally { await Promise.all([setup.close(),refresher.close(),reader.close()]); }
+      await Promise.all([setup.close(),refresher.close(),reader.close()]);
     }
   }, 15_000);
 });
