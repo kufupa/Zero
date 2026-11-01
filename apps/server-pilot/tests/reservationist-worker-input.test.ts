@@ -172,6 +172,7 @@ describe('reservationist worker input', () => {
     expect(plan.tasks[0]!.source).toMatchObject({ quote: certificate, start: 0 });
     await expect(extract('Guest A: ', 'Guest B: ')).rejects.toThrow('Ambiguous original text span');
     await expect(extract('', '', 'Actually, do not send it.')).rejects.toThrow('Ambiguous original text span');
+    await expect(extract('', '', 'I do not want you to send it.')).rejects.toThrow('Ambiguous original text span');
     await expect(extract('', '', 'If not, is it possible to leave our luggage?')).resolves.toMatchObject({ tasks: [{ id: 'certificate' }, { id: 'checkin' }] });
   });
 
@@ -240,9 +241,9 @@ describe('reservationist worker input', () => {
 
   it('accepts matching corrected dates across views and rejects changed dates', async () => {
     const plain = 'Please quote the corrected stay from 21 December 2026 to 23 December 2026.';
-    const extract = async (lastDay: number, prefix = 'Please quote the amended stay from') => {
+    const extract = async (lastDay: number, prefix = 'Please quote the amended stay from', extra = '') => {
       const { input } = await build([row('current', 4, {
-        textBody: plain, htmlBody: `<p>${prefix} 21 December 2026 to ${lastDay} December 2026.</p>`,
+        textBody: plain, htmlBody: `<p>${prefix} 21 December 2026 to ${lastDay} December 2026.</p><p>${extra}</p>`,
       })]);
       const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
       const source = { attachmentId: 'message:current', sourceHash, page: 1, quote: plain, start: 0, end: plain.length };
@@ -256,6 +257,7 @@ describe('reservationist worker input', () => {
     await expect(extract(24)).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, 'Correction: do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, 'Do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
+    await expect(extract(23, undefined, 'Please cancel the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
