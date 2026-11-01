@@ -11,6 +11,7 @@ import { amendLabtestNote } from './guest-stay-amend.mjs';
 import { amendLabtestBookerContact, amendLabtestContact } from './guest-stay-amend-contact.mjs';
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs';
+import { projectFinanceDisplayPreflight } from './guest-stay-finance-preflight.mjs';
 
 const RETRYABLE_LOOKUPS = new Set([
   'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND', 'CONFIRMATION_HINT_MISMATCH',
@@ -55,7 +56,7 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
         return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
       }
       const { tool } = request;
-      if (!['read', 'prepareCancellation', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel'].includes(tool)) {
+      if (!['read', 'prepareCancellation', 'prepareFinance', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
@@ -97,6 +98,16 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
         if (!current) return { outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED' };
         const result = projectCancellationPreflight({ confirmation: current.confirmation,
           requestedScope: request.requestedScope, shallow: current.shallow, record: current.record });
+        return result.outcome === 'prepared_for_human_review' ? { ...result, observedAt: current.observedAt } : result;
+      }
+
+      if (tool === 'prepareFinance') {
+        if (!current) return { outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED' };
+        const result = projectFinanceDisplayPreflight({
+          confirmation: current.confirmation,
+          shallow: current.shallow,
+          record: current.record,
+        });
         return result.outcome === 'prepared_for_human_review' ? { ...result, observedAt: current.observedAt } : result;
       }
 
@@ -175,7 +186,7 @@ const writeLine = (value) => new Promise((done, fail) => {
 export async function runSavedStayAgentSessionCli(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
     process.stdout.write('Usage: node saved-stay-agent-session.mjs --jsonl\n' +
-      'Tools: read, prepareCancellation, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
+      'Tools: read, prepareCancellation, prepareFinance, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
     return;
   }
   if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');
