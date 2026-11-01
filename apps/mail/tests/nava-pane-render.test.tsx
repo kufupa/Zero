@@ -501,10 +501,12 @@ describe('NavaPane', () => {
   it('shows prepared tasks when the background candidate completes', async () => {
     vi.useFakeTimers();
     const candidate = vi.fn().mockResolvedValueOnce({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } })
+      .mockRejectedValueOnce(new Error('temporary status failure'))
       .mockResolvedValueOnce({ activeRun: { state: 'running' } })
       .mockResolvedValue({ activeRun: null, visibleCandidate: { replyToMessageId: 'mail-1' } });
     bridgeMockState.candidateStateQuery = candidate;
-    bridgeMockState.reviewForMessageQuery = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
+    bridgeMockState.reviewForMessageQuery = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('temporary review failure')).mockResolvedValue({ replyToMessageId: 'mail-1', reviewSummary: {
       tasks: [{ id: 'cancel-1', kind: 'cancel_request', label: 'Cancellation', state: 'Pending staff action', details: ['Reservation ABC-1'] }],
     } });
     render(<NavaPane bridge={fakeBridge} />);
@@ -513,6 +515,8 @@ describe('NavaPane', () => {
     expect(candidate).toHaveBeenCalledWith({ threadId: 'thread-1' }, { context: { activeTransportId: 'transport-1' } });
     expect(screen.queryByText('Reservation ABC-1')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText('Reservation ABC-1')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(screen.queryByText('Reservation ABC-1')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(screen.getByText('Reservation ABC-1')).toBeDefined();

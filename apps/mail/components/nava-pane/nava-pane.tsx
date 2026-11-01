@@ -893,8 +893,9 @@ export function NavaPane({
           threadId: source.source.threadId,
           messageId: source.source.messageId,
         });
-        if (!cancelled && actions.kind === 'ready')
-          dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
+        if (cancelled || actions.kind !== 'ready') return false;
+        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
+        return true;
       };
       const candidateQuery = (trpcClient as unknown as { ai?: { hmsCandidateState?: {
         query?: (input: { threadId: string }, options?: ReturnType<typeof inMailbox>) => Promise<{ activeRun?: unknown }>;
@@ -904,14 +905,15 @@ export function NavaPane({
         if (!candidateQuery || cancelled) return;
         let sawActive = false, idleChecks = 0;
         const watch = async () => {
+          let running = false;
           try {
             const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
             if (cancelled) return;
-            if (state.activeRun) sawActive = true;
-            else { await refreshActions(); if (sawActive) return; }
-            if (cancelled) return;
-            if (state.activeRun || ++idleChecks < 12) candidateTimer = setTimeout(() => void watch(), 5000);
-          } catch { /* Candidate assistance may be unavailable for this mailbox. */ }
+            running = Boolean(state.activeRun);
+            if (running) { sawActive = true; idleChecks = 0; }
+            else if (await refreshActions() && sawActive) return;
+          } catch { /* Retry transient status failures for a bounded period. */ }
+          if (!cancelled && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
         };
         await watch();
       })();
