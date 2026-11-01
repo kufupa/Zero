@@ -28,6 +28,12 @@ it('does not auto-close a malformed stored task inventory', () => {
   expect(hasOutstandingRequests({ version: 2, tasks: [] }, 'run', {})).toBe(true);
 });
 
+it('keeps an unread business attachment open even when no request could be extracted', () => {
+  const recovery = {kind:'attachment_manual', disclosure:'staff_only', sourceRef:'sheet', reason:'too_large'};
+  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[recovery]}, 'run', {})).toBe(true);
+  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,signatureNoise:true}]}, 'run', {})).toBe(false);
+});
+
 const reachable = await probeTestDb();
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', () => {
   it('persists one acknowledgement, survives a rerun and refuses a stale or other-mailbox update', async () => {
