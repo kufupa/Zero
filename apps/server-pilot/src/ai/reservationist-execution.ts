@@ -70,8 +70,10 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  if(sourceView&&task.kind==='existing_document'){
   const purposes=reservationistDocumentPurposes(source.quote);
   const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b|(?:,\s*|\band\s+)(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)/i).flatMap(clause=>{
-   const actions=clause.split(/\band\s+(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend)\b)/i);
-   return actions.length>1&&reservationistDocumentPurposes(actions[0]!).length?actions:[clause];
+   const actions=clause.split(/\band\s+(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download)\b)/i),groups:string[]=[];
+   let pending=actions[0]!;
+   for(const action of actions.slice(1)){if(reservationistDocumentPurposes(pending).length){groups.push(pending);pending=action;}else pending+=` and ${action}`;}
+   return [...groups,pending];
   }).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
   if(conflict)return false;
  }
