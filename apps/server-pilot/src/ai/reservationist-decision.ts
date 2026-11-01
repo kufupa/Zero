@@ -155,7 +155,7 @@ const lunaGroupSchema = z.object({
   childAges: z
     .array(z.number().int())
     .nullable()
-    .describe('Actual age of each child, [] when none, or null when child ages are unknown.'),
+    .describe('Actual ages, [] only for an affirmed no-children/zero-children request, or null when child presence, count or ages are unknown.'),
   board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),

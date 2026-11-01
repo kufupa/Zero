@@ -51,7 +51,7 @@ export const K2_MAPPING = [
   'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room, never a stay total divided by rooms. If only a stay-wide total is known for multiple rooms, set adultsPerRoom=null; do not divide, round, or copy the total into each room.',
   'Preserve adultsTotal and childrenTotal only when explicitly stated as stay-wide totals; never infer them from per-room counts.',
-  'childAges contains real stated ages only. Use [] when the request has no children; use null when children are requested but their ages are not stated. Never invent age 0.',
+  'childAges contains real stated ages only. Use [] only for an affirmed no-children/zero-children request; use null when child presence, count, or ages are unknown. Never invent age 0.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
@@ -659,7 +659,7 @@ export function mapLlmDecision(
     const hasGuestEvidence =
       group.adultsPerRoom !== null || childAges.length > 0 || group.guestNames.length > 0;
     const quantityDefaulted =
-      quoteDefaults && group.rooms === null && hasValidStayDates && hasGuestEvidence;
+      quoteDefaults && analysis.groups.length === 1 && group.rooms === null && hasValidStayDates && hasGuestEvidence;
     const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null && !adultNeedsReview;
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
     const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);

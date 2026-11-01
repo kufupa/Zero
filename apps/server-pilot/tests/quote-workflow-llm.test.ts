@@ -994,6 +994,30 @@ describe('mapLlmDecision', () => {
     ]);
   });
 
+  it('does not assume one room for every row when a multi-row stay omits quantities', () => {
+    const source = group;
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [
+          { ...source, rooms: null },
+          { ...source, rooms: null, roomPreference: 'STD SGL' },
+        ],
+      })),
+    );
+
+    expect(mapped.groups.map((row) => row.quantity)).toEqual([undefined, undefined]);
+    expect(mapped.groups.map((row) => row.fields.quantity)).toEqual(['missing', 'missing']);
+  });
+
+  it('keeps a single unspecified room default for one complete guest row', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'quote', groups: [{ ...group, rooms: null }] })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ quantity: 1, fields: { quantity: 'defaulted' } });
+  });
+
   it('does not apply quote room or occupancy defaults to create_booking', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

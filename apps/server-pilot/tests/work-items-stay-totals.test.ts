@@ -82,6 +82,19 @@ describe('staff stay-total correction projection', () => {
     expect(corrected.missingQuoteReplyFields).toEqual([]);
   });
 
+  it('keeps unknown room counts unset across multiple rows when no total is stated', () => {
+    const source = payload();
+    source.stays[0]!.totalRooms = null;
+    source.stays[0]!.rows = [
+      { id: 'row_1', roomType: 'Standard King', rooms: null, adultsPerRoom: 2, childAges: [], board: null },
+      { id: 'row_2', roomType: 'Standard Twin', rooms: null, adultsPerRoom: 2, childAges: [], board: null },
+    ];
+
+    const projected = storedAnalysis({ kind: 'quote', payload: source, attachments: [] }, {}).analysis.groups;
+    expect(projected.map((group) => group.quantity)).toEqual([undefined, undefined]);
+    expect(projected.map((group) => group.fields.quantity)).toEqual(['missing', 'missing']);
+  });
+
   it('rechecks the mismatch marker after staff corrects the stay-wide adult total', () => {
     const source = payload();
     source.stays[0]!.rows = [
