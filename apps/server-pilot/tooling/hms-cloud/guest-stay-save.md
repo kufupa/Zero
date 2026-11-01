@@ -1,5 +1,9 @@
 # Save a fake HRCEN Labtest stay
 
+Owner authorization applies to fake Labtest writes only. This standalone
+interface does not authenticate staff approval and does not authorize writes
+for real guests.
+
 `searchLabtestPreimage` and `saveNewLabtestStay` operate on one caller-owned,
 authenticated page. Install the shared read-only guard and serialize page
 actions. Search before opening a new Guest Stay; a clear result provides a

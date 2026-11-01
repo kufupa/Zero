@@ -20,17 +20,30 @@ function validate(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'needs_input', issue: 'invalid_input' };
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
-  if (input.cms?.send === true && input.mode === 'commit') return { outcome: 'unsupported', issue: 'sending_not_supported' };
-  if (input.cms?.send != null && typeof input.cms.send !== 'boolean') return { outcome: 'needs_input', issue: 'cms_send_invalid' };
-  if (input.mode === 'commit' && input.guaranteeType != null && input.guaranteeType !== 'NGI') {
-    return { outcome: 'refused', issue: 'guarantee_not_supported_yet' };
+  const fidelity = inspectRequest(input);
+  if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
+  if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
+  if (input.guaranteeType != null && input.guaranteeType !== 'NGI') {
+    fidelity.unsupported.push({ field: 'guaranteeType', issue: 'guarantee_not_supported_yet' });
+  }
+  if (fidelity.invalid.length) return { outcome: 'needs_input', issue: 'invalid_field_type', invalidFields: fidelity.invalid, unsupportedFields: fidelity.unsupported };
+  const unsupportedIssue = !fidelity.unsupported.length ? null : input.cms?.send === true ? 'sending_not_supported' :
+    input.guaranteeType != null && input.guaranteeType !== 'NGI' ? 'guarantee_not_supported_yet' : 'requested_fields_not_supported';
+  if (unsupportedIssue && input.mode === 'commit') {
+    return { outcome: unsupportedIssue === 'guarantee_not_supported_yet' ? 'refused' : 'unsupported',
+      issue: unsupportedIssue, unsupportedFields: fidelity.unsupported };
   }
   if (input.mode === 'commit' && input.guest?.search &&
       (!same(input.guest.search.lastName, 'Labtest') || (input.guest.search.firstName && !same(input.guest.search.firstName, 'Proof')))) {
     return { outcome: 'refused', issue: 'real_guest_write_disabled' };
   }
   const stay = input.stay || {}, room = input.room || {}, guest = input.guest || {}, missing = [];
-  if (guest.profileId != null && guest.search != null) return { outcome: 'needs_input', issue: 'guest_identity_conflict' };
+  if (stay.childCount != null && Array.isArray(stay.childAges) && stay.childCount !== stay.childAges.length) {
+    return { outcome: 'needs_input', issue: 'child_count_conflict', missing: ['stay.childCount'],
+      ...(fidelity.unsupported.length ? { unsupportedFields: fidelity.unsupported } : {}) };
+  }
+  if (guest.profileId != null && guest.search != null) return { outcome: 'needs_input', issue: 'guest_identity_conflict',
+    ...(fidelity.unsupported.length ? { unsupportedFields: fidelity.unsupported } : {}) };
   if (!(guest.profileId != null && /^\d+$/.test(String(guest.profileId))) && !text(guest.search?.lastName)) missing.push('guest');
   for (const field of ['firstName', 'email']) if (guest.search?.[field] != null && !text(guest.search[field])) missing.push(`guest.search.${field}`);
   if (!date(stay.arrival)) missing.push('stay.arrival');
@@ -44,39 +57,64 @@ function validate(input) {
   if (!code(room.ratePlan, 100)) missing.push('room.ratePlan');
   if (!text(input.guaranteeType)) missing.push('guaranteeType');
   if (input.sourceOfBusiness != null && !text(input.sourceOfBusiness)) missing.push('sourceOfBusiness');
+  if (input.parties?.organizationName != null && !text(input.parties.organizationName)) missing.push('parties.organizationName');
   if (input.note != null && (typeof input.note !== 'string' || !input.note.trim() || input.note.length > 200)) missing.push('note');
   if (input.mode === 'commit') {
     if ([room.roomType, room.ratePlan].some((value) => value && !/^[A-Z0-9]{1,12}$/.test(value))) return { outcome: 'refused', issue: 'native_code_not_supported_yet' };
-    if (!text(input.approval?.by) || !text(input.approval?.at) || Number.isNaN(Date.parse(input.approval.at))) missing.push('approval');
     if (date(stay.arrival) && stay.arrival < '2027-01-01') return { outcome: 'refused', issue: 'labtest_arrival_required' };
   }
-  return { missing };
+  return { missing, unsupportedFields: fidelity.unsupported, unsupportedIssue };
 }
 
-function warnings(input) {
-  const result = [];
+// Only these request keys are understood by this wrapper. Presence is significant:
+// an explicit null is not the same request as an omitted optional field.
+const requestShape = {
+  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
+  guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
+  stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
+  room: ['roomType', 'ratePlan'], parties: ['agencyId', 'organizationId', 'organizationName', 'arAccountId'],
+  cms: ['send', 'messageId', 'recipient'], approval: ['by', 'at'], booker: ['name', 'contact'],
+};
+const unsupportedPaths = new Set(['parties.agencyId', 'parties.arAccountId', 'booker', 'cms.messageId', 'cms.recipient',
+  'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
+const optionalNoClear = new Set(['sourceOfBusiness', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
+  'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'cms.send']);
+
+function inspectRequest(input) {
+  const unsupported = [], invalid = [];
+  const addUnsupported = (field) => unsupported.push({ field, issue: 'not_settable_yet' });
+  const unknown = (value, path) => {
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
+      for (const [key, child] of Object.entries(value)) unknown(child, `${path}.${key}`);
+    } else addUnsupported(path);
+  };
+  const visit = (object, path) => {
+    for (const [key, value] of Object.entries(object)) {
+      const field = path ? `${path}.${key}` : key;
+      if (!requestShape[path].includes(key)) { unknown(value, field); continue; }
+      if (unsupportedPaths.has(field)) addUnsupported(field);
+      if (value === undefined) { invalid.push(field); continue; }
+      if (value === null && optionalNoClear.has(field)) { addUnsupported(field); continue; }
+      if (Object.hasOwn(requestShape, field)) {
+        if (value === null) {
+          if (['parties', 'cms'].includes(field)) addUnsupported(field);
+          else if (!['approval', 'booker'].includes(field)) invalid.push(field);
+        } else if (typeof value !== 'object' || Array.isArray(value)) invalid.push(field);
+        else visit(value, field);
+      }
+    }
+  };
+  visit(input, '');
   for (const [field, value] of [
-    ['parties.agencyId', input.parties?.agencyId], ['parties.arAccountId', input.parties?.arAccountId],
-    ['booker', input.booker], ['cms.messageId', input.cms?.messageId], ['cms.recipient', input.cms?.recipient],
-    ['billingReference', input.billingReference], ['price', input.price], ['track', input.track],
-    ['marketSegment', input.marketSegment], ['guestoptin4', input.guestoptin4],
-    ['confirmationRecipient', input.confirmationRecipient],
-    ...(input.mode === 'prepare' && input.cms?.send != null ? [['cms.send', input.cms.send]] : []),
-    ...(input.mode === 'prepare' ? [['guaranteeType', input.guaranteeType]] : []),
-  ]) if (value !== undefined && value !== null) result.push({ field, issue: 'not_settable_yet' });
-  for (const [object, prefix, allowed] of [
-    [input, '', ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']],
-    [input.parties, 'parties.', ['agencyId', 'organizationId', 'organizationName', 'arAccountId']],
-    [input.cms, 'cms.', ['send', 'messageId', 'recipient']],
-    [input.guest, 'guest.', ['profileId', 'search']], [input.guest?.search, 'guest.search.', ['lastName', 'firstName', 'email']],
-    [input.stay, 'stay.', ['arrival', 'departure', 'adults', 'childAges', 'childCount']], [input.room, 'room.', ['roomType', 'ratePlan']],
-  ]) for (const key of Object.keys(object || {})) {
-    if (!allowed.includes(key)) result.push({ field: `${prefix}${key}`, issue: 'not_settable_yet' });
+    ['sourceOfBusiness', input.sourceOfBusiness], ['note', input.note],
+    ['guest.search.lastName', input.guest?.search?.lastName], ['guest.search.firstName', input.guest?.search?.firstName],
+    ['guest.search.email', input.guest?.search?.email], ['parties.organizationName', input.parties?.organizationName],
+  ]) if (value != null && typeof value !== 'string') invalid.push(field);
+  for (const [field, value] of [['guest.profileId', input.guest?.profileId], ['parties.organizationId', input.parties?.organizationId]]) {
+    if (value != null && !(typeof value === 'string' && /^\d+$/.test(value)) &&
+        !(Number.isSafeInteger(value) && value >= 0)) invalid.push(field);
   }
-  for (const key of ['messageId', 'recipient']) if (input.cms && Object.hasOwn(input.cms, key) && input.cms[key] === null) {
-    result.push({ field: `cms.${key}`, issue: 'not_settable_yet' });
-  }
-  return result;
+  return { unsupported, invalid };
 }
 
 async function call(runTool, tool, args = {}, accepted = ['updated_unsaved', 'unchanged_unsaved', 'selected_unsaved', 'ok']) {
@@ -112,6 +150,7 @@ async function selectGuest(runTool, guest, commit) {
   const chosen = matches[0];
   if (commit && (chosen.firstName !== 'Proof' || chosen.lastName !== 'Labtest')) stop('refused', 'real_guest_write_disabled');
   const selected = await call(runTool, 'selectGuestProfile', { searchId: found.searchId, nativeId: chosen.nativeId });
+  if (selected.nativeId !== chosen.nativeId) stop('uncertain', 'requested_field_not_staged', { field: 'guest' });
   return { selected, guest: candidate(chosen) };
 }
 
@@ -126,7 +165,9 @@ async function selectSource(runTool, requested) {
   if (search.coverage?.possiblyTruncated || matches.length !== 1) {
     stop('needs_input', 'source_not_unique', { sourceCandidates: candidates.map(({ nativeCode, description }) => ({ nativeCode, description })) });
   }
-  return call(runTool, 'selectGuestStaySourceBusiness', { searchId: search.searchId, nativeCode: matches[0].nativeCode });
+  const selected = await call(runTool, 'selectGuestStaySourceBusiness', { searchId: search.searchId, nativeCode: matches[0].nativeCode });
+  if (selected.nativeCode !== matches[0].nativeCode) stop('uncertain', 'requested_field_not_staged', { field: 'sourceOfBusiness' });
+  return selected;
 }
 
 async function selectOrganization(runTool, parties) {
@@ -138,7 +179,9 @@ async function selectOrganization(runTool, parties) {
   if (matches.length !== 1 || (!byId && search.coverage?.possiblyTruncated)) {
     stop('needs_input', 'organization_not_unique', { organizationCandidates: (search.candidates || []).map(({ nativeId, name, city, country }) => ({ nativeId, name, city, country })) });
   }
-  return call(runTool, 'selectOrganization', { searchId: search.searchId, nativeId: matches[0].nativeId });
+  const selected = await call(runTool, 'selectOrganization', { searchId: search.searchId, nativeId: matches[0].nativeId });
+  if (String(selected.nativeId) !== String(matches[0].nativeId)) stop('uncertain', 'requested_field_not_staged', { field: 'parties.organizationId' });
+  return selected;
 }
 
 function formValue(fields, name) {
@@ -146,12 +189,14 @@ function formValue(fields, name) {
   return matches.length === 1 ? matches[0].value : null;
 }
 
-/** Prepare a new draft, or save one verified Proof Labtest stay and read it in a fresh session. */
+/** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession, census } = {}) {
   const checked = validate(input);
-  if (checked.outcome) return checked;
+  if (checked.outcome) return { ...checked, approvalReady: false };
   const commit = input.mode === 'commit', missing = checked.missing;
-  const output = { outcome: 'needs_input', applied: {}, appliedVerification: { visibleFields: false }, warnings: warnings(input), suggestedCmsMessageId: '03', missing };
+  const output = { outcome: 'needs_input', approvalReady: false, applied: {}, appliedVerification: { visibleFields: false },
+    warnings: [], suggestedCmsMessageId: '03', missing,
+    ...(checked.unsupportedFields.length ? { unsupportedFields: checked.unsupportedFields } : {}) };
   if (commit && missing.length) return output;
   const stay = input.stay || {}, room = input.room || {}, state = {};
   if (commit) output.screenshots = {};
@@ -164,16 +209,23 @@ export async function createReservation(input, { withSession = withBookingLookup
       for (const [key, field] of [['arrival', 'arrivalDate'], ['departure', 'departureDate']]) {
         if (date(stay[key])) {
           const result = await call(runTool, 'setGuestStayDate', { propertyCode, field, date: stay[key] });
+          if (result.actual !== stay[key]) stop('uncertain', 'requested_field_not_staged', { field: `stay.${key}` });
           output.applied[key] = result.displayed;
         }
       }
       if (Number.isInteger(stay.adults) && stay.adults > 0) {
         state.adult = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'adults', value: stay.adults });
+        if (!same(state.adult.actual?.value, stay.adults)) stop('uncertain', 'requested_field_not_staged', { field: 'stay.adults' });
         output.applied.adults = state.adult.actual.display;
       }
       if (Array.isArray(stay.childAges) && stay.childAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17)) {
         state.children = await call(runTool, 'setGuestStayChildAges', { propertyCode, childAges: stay.childAges });
+        if (JSON.stringify(state.children.requestedChildAges) !== JSON.stringify(stay.childAges) ||
+            JSON.stringify(state.children.actualChildAges) !== JSON.stringify(stay.childAges)) {
+          stop('uncertain', 'requested_field_not_staged', { field: 'stay.childAges' });
+        }
         output.applied.childAges = state.children.actualChildAges;
+        output.warnings.push({ field: 'stay.childAges', issue: 'saved_record_exposes_age_bands_not_exact_ages' });
       }
       if (code(room.roomType, 200)) {
         const found = await call(runTool, 'searchRoomTypes', { query: room.roomType, limit: 100 }, ['matches', 'no_match', 'incomplete']);
@@ -181,6 +233,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         const matches = inspected.candidates || [];
         if (matches.length !== 1 || !found.coverage?.complete) stop('needs_input', 'room_type_not_unique', { roomCandidates: found.candidates, coverage: found.coverage });
         const selected = await call(runTool, 'selectRoomType', { searchId: found.searchId, code: room.roomType });
+        if (selected.selectedField?.value !== room.roomType) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomType' });
         output.applied.roomType = selected.selectedField.value;
       }
       if (code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
@@ -188,11 +241,15 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (selected.outcome === 'criteria_unavailable') {
           if (commit) stop('needs_input', selected.issue || 'rate_criteria_unavailable', { detail: selected });
           missing.push('room.ratePlanCriteria'); output.ratePlanIssue = selected;
-        } else output.applied.ratePlan = selected.code;
+        } else {
+          if (selected.code !== room.ratePlan) stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
+          output.applied.ratePlan = selected.code;
+        }
       }
       if (text(input.sourceOfBusiness)) {
         state.source = await selectSource(runTool, input.sourceOfBusiness);
         output.applied.sourceOfBusiness = state.source.selectedField.value;
+        output.warnings.push({ field: 'sourceOfBusiness', issue: 'native_code_not_exposed_on_form_or_saved_record' });
       }
       if (!commit && (input.guest?.profileId != null || text(input.guest?.search?.lastName))) {
         try { state.guest = await selectGuest(runTool, input.guest, false); } catch (error) {
@@ -203,12 +260,25 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (input.parties?.organizationId != null || text(input.parties?.organizationName)) {
         state.organization = await selectOrganization(runTool, input.parties);
         output.applied.organization = { nativeId: state.organization.nativeId, name: state.organization.displayedOrganization };
+        output.warnings.push({ field: 'parties.organizationId', issue: 'id_at_selection_only_in_form' });
       }
-      if (commit) state.guarantee = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'guaranteeType', value: input.guaranteeType });
+      // Guarantee changes are guarded by the form tool and only supported for
+      // a verified fake draft. Other prepares retain their useful staged fields.
+      const labtestDraft = state.guest?.guest.firstName === 'Proof' && state.guest?.guest.lastName === 'Labtest' &&
+        date(stay.arrival) && stay.arrival >= '2027-01-01' && date(stay.departure) && stay.arrival < stay.departure;
+      if (input.guaranteeType === 'NGI' && (commit || labtestDraft)) {
+        state.guarantee = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'guaranteeType', value: input.guaranteeType });
+        if (state.guarantee.actual?.value !== input.guaranteeType) stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
+        output.applied.guaranteeType = state.guarantee.actual.display;
+      } else if (!commit && input.guaranteeType === 'NGI') {
+        missing.push('guaranteeType.staging');
+        output.warnings.push({ field: 'guaranteeType', issue: 'requires_verified_labtest_draft' });
+      }
       if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
       const note = input.note ?? (commit ? `Proof Labtest create ${randomUUID()}` : null);
       if (note != null && typeof note === 'string' && note.trim() && note.length <= 200) {
         const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'reservationNote', value: note });
+        if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });
         output.applied.note = result.actual;
       }
       const form = await call(runTool, 'readGuestStayForm', { propertyCode });
@@ -224,12 +294,17 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.guest ? [['guestid', state.guest.selected.nativeId], ['firstname', state.guest.guest.firstName], ['lastname', state.guest.guest.lastName]] : []),
         ...(state.children ? [['children', state.children.actualChildAges.length], ...Object.entries(state.children.ageBandCounts)] : []),
         ...(state.organization ? [['company', state.organization.displayedOrganization]] : []),
-        ...(commit ? [['guaranteetype', state.guarantee.actual.display], ['udfchkbox04', false]] : []),
+        ...(state.guarantee ? [['guaranteetype', state.guarantee.actual.display]] : []),
+        ...(commit || input.cms?.send === false ? [['udfchkbox04', false]] : []),
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}), ...(state.organization ? { organizationId: 'at_selection_only' } : {}) };
-      if (!commit) { output.outcome = missing.length ? 'needs_input' : 'prepared'; return; }
+      if (!commit) {
+        output.outcome = checked.unsupportedFields.length ? 'unsupported' : missing.length ? 'needs_input' : 'prepared';
+        if (checked.unsupportedIssue) output.issue ||= checked.unsupportedIssue;
+        return;
+      }
       output.applied.guaranteeType = formValue(form.fields, 'guaranteetype');
       state.dir = join('/tmp', `hms-cloud-create-${randomUUID()}`); await mkdir(state.dir, { mode: 0o700 });
       await chmod(state.dir, 0o700);

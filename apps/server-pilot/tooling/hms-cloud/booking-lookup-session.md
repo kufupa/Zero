@@ -78,6 +78,9 @@ uncertain outcomes.
 
 ### Opt-in Labtest save session
 
+The standing owner authorization covers fake Labtest writes, not real-guest
+writes. This session does not authenticate staff approval.
+
 For a new fake HRCEN Proof Labtest stay in 2027 or later, start the session with
 `--jsonl --labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD`. Before
 opening the blank form, it searches the same page for matching fake stays. The
