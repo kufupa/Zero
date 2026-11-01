@@ -1068,13 +1068,15 @@ describe('prepared booking party controls', () => {
   it.each(['booked', 'uncertain'] as const)('keeps the %s result visible and the party fixed during and after saving', async outcome => {
     const pending = deferred<PaneStayResult>();
     const { client } = paneClient({ commit: vi.fn(() => pending.promise) });
-    render(<QuoteBookingHost session={preparedBookingSession(previewableDraft())} paneSave={client} workItemId="item" />);
+    const session = preparedBookingSession(previewableDraft());
+    const view = render(<QuoteBookingHost session={session} paneSave={client} workItemId="item" />);
     const party = screen.getByLabelText('Party for this booking');
     fireEvent.change(party, { target: { value: 'none' } });
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     fireEvent.click(bookButton(0));
     await waitFor(() => expect(party).toHaveProperty('disabled', true));
+    view.rerender(<QuoteBookingHost session={{ ...session, preparedStaffTasks: session.preparedStaffTasks!.map(task => ({ ...task, handled: true })) }} paneSave={client} workItemId="item" />);
     fireEvent.change(party, { target: { value: 'company' } });
     expect(party).toHaveProperty('value', 'none');
     await act(async () => pending.resolve(outcome === 'booked' ? COMMIT_OK : { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON }));

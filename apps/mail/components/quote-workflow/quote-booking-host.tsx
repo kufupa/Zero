@@ -12,7 +12,7 @@ import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 import { PartyPicker } from './party-picker';
 
 function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId, savedStays, screenshot, propertyCode,
-  onSaveDefault, findParty, partyIndex, partyJobTransport, threadId }: {
+  onSaveDefault, findParty, partyIndex, partyJobTransport, threadId, onCommitLockChange }: {
   suggestion: ReservationistBookingSuggestion;
   draft: BookingDraftReady;
   paneSave?: PaneStayClient | null;
@@ -26,13 +26,14 @@ function PreparedBookingForm({ suggestion, draft, paneSave, contact, workItemId,
   partyIndex?: PartyIndexSearcher | null;
   partyJobTransport?: HmsJobTransport | null;
   threadId?: string | null;
+  onCommitLockChange?: (locked: boolean) => void;
 }) {
   const [kind, setKind] = useState<'' | 'agency' | 'company' | 'none'>(suggestion.partyNames.length ? '' : 'none');
   const [parties, setParties] = useState<StaffQuoteParties>({});
   const [partyLocked, setPartyLocked] = useState(false);
   const partyLockedRef = useRef(false), kindRef = useRef(kind);
   kindRef.current = kind;
-  const setPartyLock = useCallback((locked: boolean) => { partyLockedRef.current = locked; setPartyLocked(locked); }, []);
+  const setPartyLock = useCallback((locked: boolean) => { partyLockedRef.current = locked; setPartyLocked(locked); onCommitLockChange?.(locked); }, [onCommitLockChange]);
   const selected = kind === 'agency' || kind === 'company' ? parties[kind] : undefined;
   const multipleParties = suggestion.partyNames.length > 1;
   const ready = !multipleParties && (kind === 'none' || Boolean(selected?.nativeId));
@@ -109,9 +110,13 @@ export function QuoteBookingHost({
 
   const shownDrafts = requestedQuoteKeys(session.groups).filter((key) => session.bookingDrafts[key]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [bookingLocked, setBookingLocked] = useState<Record<string, boolean>>({});
+  const setBookingLock = useCallback((key: string, locked: boolean) => {
+    setBookingLocked(current => Boolean(current[key]) === locked ? current : { ...current, [key]: locked });
+  }, []);
   const prepared = (session.preparedStaffTasks ?? []).flatMap(task => {
     const suggestion = task.bookingSuggestion;
-    if (!suggestion || task.earlier || task.handled || !task.runId || !workItemId ||
+    if (!suggestion || task.earlier || !task.runId || !workItemId ||
         task.workItemId !== workItemId || !session.binding || !session.staffSource ||
         suggestion.selectedMessageId !== session.staffSource.messageId ||
         suggestion.source.sourceRef !== `message:${suggestion.selectedMessageId}` ||
@@ -122,7 +127,8 @@ export function QuoteBookingHost({
       inputRevision: session.inputRevision, revisionRef: 'unquoted',
     };
     // A changed source prefill must invalidate old form edits and preview receipts.
-    const key = `${requestKey}:${suggestion.groupId}:${suggestion.staffSourceHash}:${JSON.stringify([suggestion.draft, suggestion.options, suggestion.partyNames])}`;
+    const key = `${requestKey}:${task.runId}:${task.id}:${suggestion.groupId}:${suggestion.staffSourceHash}:${JSON.stringify([suggestion.draft, suggestion.options, suggestion.partyNames])}`;
+    if (task.handled && !bookingLocked[key]) return [];
     return [{ task, suggestion, draft, key, open: expanded[key] ?? (shownDrafts.length === 0) }];
   });
   const coveredStayIds = new Set(
@@ -173,7 +179,7 @@ export function QuoteBookingHost({
             <PreparedBookingForm suggestion={suggestion} draft={draft} paneSave={paneSave} contact={contact} workItemId={workItemId}
               savedStays={savedStays} screenshot={screenshot} propertyCode={propertyCode} onSaveDefault={onSaveDefault}
               findParty={findParty} partyIndex={partyIndex} partyJobTransport={partyJobTransport}
-              threadId={session.staffSource?.threadId} />
+              threadId={session.staffSource?.threadId} onCommitLockChange={locked => setBookingLock(key, locked)} />
           </div>
         </div>
       ))}
