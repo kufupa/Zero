@@ -56,16 +56,22 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  const viewStart=sourceView?.start??0,authored=message.text.slice(viewStart,sourceView?.end??(history>=0?history:message.text.length)),start=source.start!-viewStart,end=source.end!-viewStart;
  if(sourceView&&task.kind==='existing_document'){
   const purposes=reservationistDocumentPurposes(source.quote);
-  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b|(?:,\s*|\band\s+)(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)/i).flatMap(clause=>{
-   const actions=clause.split(/\band\s+(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download)\b)/i),groups:string[]=[];
+  const targetRefs=(text:string)=>[...text.matchAll(/\b(?:reservation|booking|confirmation)(?:\s+(?:number|no\.?|reference|ref\.?))?\s*[:#-]?\s*(\d{6,12}(?:-\d+)?)\b/gi)].map(match=>match[1]!);
+  const requestedRefs=targetRefs(source.quote);
+  const refusesDocument=/\b(?:disregard|withdraw|cancel)\b|\b(?:not|never|don['’]t|no longer)\s+(?:(?:to\s+be|be)\s+(?:sent|attached|provided|included|forwarded|issued|resent|copied|downloaded)|(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download|need|want|require|needed|required|necessary|wanted|requested))\b|\bno\s+[^.!?;]{0,80}\b(?:needed|required|necessary|wanted|requested)\b/i;
+  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;]+|\b(?:but|however)\b|(?:,\s*|\band\s+|\n\s*)(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)/i).flatMap(clause=>{
+   const actions=clause.split(/(?:\band\s+|,\s*|\n\s*)(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend|copy|download)\b)/i),groups:string[]=[];
    let pending=actions[0]!;
    for(const action of actions.slice(1)){if(reservationistDocumentPurposes(pending).length){groups.push(pending);pending=action;}else pending+=` and ${action}`;}
    return [...groups,pending];
-  }).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
+  }).some(clause=>{
+   const refusedRefs=targetRefs(clause);
+   return refusesDocument.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))&&(!requestedRefs.length||!refusedRefs.length||requestedRefs.some(ref=>refusedRefs.includes(ref)));
+  }));
   if(conflict)return false;
  }
  const prefix=authored.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(authored.slice(end)),next=authored.slice(end).search(/[.!?;](?=\s|$)/),sentence=authored.slice(sentenceStart,terminalBoundary?end:next<0?authored.length:end+next);
- return !(/^\s*>/m.test(authored.slice(0,end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
+ return !(/^\s*>/m.test(authored.slice(0,end))||/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(sentence.replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/\bwithout\s+delay\b/ig,'promptly').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'')));
 }
 function appendRequestedAmendment(task:Task,input:ReservationistRuntimeInput,reply:string):string{
  if(task.kind!=='change'||!currentAuthoredGuestRequest(task,input))return reply;

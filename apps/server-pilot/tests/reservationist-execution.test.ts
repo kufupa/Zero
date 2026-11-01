@@ -15,8 +15,17 @@ it('checks a cited HTML request only against its own authored alternative',()=>{
 it.each([
  ['Do not send the tax certificate',false],
  ['The tax certificate is not required',false],
+ ['The tax certificate is no longer required',false],
+ ['The tax certificate has not arrived',true],
+ ['We have not received the tax certificate',true],
+ ['The tax certificate has not yet been sent',true],
+ ['The tax certificate was not sent',true],
+ ['The tax certificate should not be sent',false],
  ['Do not send the invoice or tax certificate',false],
  ['Do not send the invoice',true],
+ ['No invoice is required, please send the tax certificate',true],
+ ['No invoice is required\nPlease send the tax certificate',true],
+ ['Do not send\nthe tax certificate',false],
  ['We do not have the tax certificate',true],
  ['Please send the tax certificate but not the invoice',true],
  ['Please send the tax certificate, not the invoice',true],
@@ -29,6 +38,18 @@ it.each([
 ] as const)('compares the same document request across alternatives: %s',(plain,expected)=>{
  const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not send the invoice for reservation 12345678.',true],
+ ['Do not send the invoice for reservation 87654321.',false],
+ ['Do not send the invoice.',false],
+] as const)('scopes an invoice refusal to its cited reservation: %s',(plain,expected)=>{
+ const html='Please send the invoice for reservation 87654321.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it('keeps an urgent document request with “without delay”',()=>{
+ const text='Please send the tax certificate without delay.',hash=createHash('sha256').update(text).digest('hex'),task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:text,start:0,end:text.length}};
+ expect(currentAuthoredGuestRequest(task as any,{...input,messages:[{...input.messages[0],text}]})).toBe(true);
 });
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
