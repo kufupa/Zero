@@ -76,9 +76,11 @@ export const DAVINCI_HOTEL_RULES = `Property: Da Vinci Hotel and Suites (HMS pro
   'property or partner (another Legacy hotel, events/conference team, accounts)',
 )}`;
 
-/** Quote prompts pick hotel identity from the HMS property. Unknown codes stay HRCEN. */
+/** Undefined preserves the legacy HRCEN default; null or unknown codes get only generic rules. */
 export function hotelRulesForProperty(propertyCode?: string | null): string {
-  return propertyCode === 'HRDAV' ? DAVINCI_HOTEL_RULES : CENTURION_HOTEL_RULES;
+  if (propertyCode === undefined || propertyCode === 'HRCEN') return CENTURION_HOTEL_RULES;
+  if (propertyCode === 'HRDAV') return DAVINCI_HOTEL_RULES;
+  return HOTEL_OPERATING_RULES;
 }
 
 export const reservationistDecisionSchema = z.object({
