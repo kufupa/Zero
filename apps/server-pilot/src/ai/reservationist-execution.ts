@@ -56,7 +56,10 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  const viewStart=sourceView?.start??0,authored=message.text.slice(viewStart,sourceView?.end??(history>=0?history:message.text.length)),start=source.start!-viewStart,end=source.end!-viewStart;
  if(sourceView&&task.kind==='existing_document'){
   const purposes=reservationistDocumentPurposes(source.quote);
-  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b|,\s*(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)|\band\s+(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend)\b)/i).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
+  const conflict=message.sourceViews!.some(view=>view!==sourceView&&message.text.slice(view.start,view.end).split(/[.!?;\n]+|\b(?:but|however)\b|(?:,\s*|\band\s+)(?=(?:not|no|never|without|do\s+not|don['’]t|disregard|withdraw|cancel)\b)/i).flatMap(clause=>{
+   const actions=clause.split(/\band\s+(?=(?:please\s+)?(?:send|attach|provide|include|forward|issue|resend)\b)/i);
+   return actions.length>1&&reservationistDocumentPurposes(actions[0]!).length?actions:[clause];
+  }).some(clause=>/\b(?:no(?![.\s:#-]*\d)|not|never|without|don['’]t|disregard|withdraw|cancel)\b(?!\s+(?:have|had|got|received)\b)/i.test(clause)&&reservationistDocumentPurposes(clause).some(purpose=>purposes.includes(purpose))));
   if(conflict)return false;
  }
  const prefix=authored.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(authored.slice(end)),next=authored.slice(end).search(/[.!?;](?=\s|$)/),sentence=authored.slice(sentenceStart,terminalBoundary?end:next<0?authored.length:end+next);
