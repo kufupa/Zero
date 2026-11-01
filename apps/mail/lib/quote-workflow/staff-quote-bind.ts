@@ -510,7 +510,10 @@ export function staffQuoteGroupsFromStay(
     if (group.board === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.board === 'dinner_bb')) {
       return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
-    if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
+    if (group.fields.childAges === 'missing') {
+      return { error: 'Confirm the child ages before running the quote.' };
+    }
+    if (typeof group.quantity !== 'number' || typeof group.adults !== 'number' || group.fields.adults === 'missing') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
@@ -537,6 +540,34 @@ export function staffQuoteGroupsFromStay(
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
+  }
+  const childCountsByStay = new Map<string, { reported: Set<number>; described: number }>();
+  groups.forEach((group, index) => {
+    const prepared = out[index]!;
+    const key = group.stayId ?? `${prepared.arrivalDate}/${prepared.departureDate}`;
+    const counts = childCountsByStay.get(key) ?? { reported: new Set<number>(), described: 0 };
+    if (typeof group.childrenTotal === 'number') counts.reported.add(group.childrenTotal);
+    counts.described += prepared.quantity * prepared.childrenAges.length;
+    childCountsByStay.set(key, counts);
+  });
+  if ([...childCountsByStay.values()].some(({ reported, described }) =>
+    reported.size > 0 && (reported.size !== 1 || described !== [...reported][0])
+  )) {
+    return { error: 'Confirm the child count and ages for each room before running the quote.' };
+  }
+  const adultCountsByStay = new Map<string, { reported: Set<number>; described: number }>();
+  groups.forEach((group, index) => {
+    const prepared = out[index]!;
+    const key = group.stayId ?? `${prepared.arrivalDate}/${prepared.departureDate}`;
+    const counts = adultCountsByStay.get(key) ?? { reported: new Set<number>(), described: 0 };
+    if (typeof group.adultsTotal === 'number') counts.reported.add(group.adultsTotal);
+    counts.described += prepared.quantity * prepared.adults;
+    adultCountsByStay.set(key, counts);
+  });
+  if ([...adultCountsByStay.values()].some(({ reported, described }) =>
+    reported.size > 0 && (reported.size !== 1 || described !== [...reported][0])
+  )) {
+    return { error: 'Confirm the adult count and room allocation before running the quote.' };
   }
   const dates = new Set(out.map((group) => `${group.arrivalDate}/${group.departureDate}`));
   if (dates.size !== 1) {

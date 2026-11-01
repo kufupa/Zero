@@ -12,6 +12,7 @@ import {
   type StaffQuoteJobQuery,
 } from '../lib/quote-workflow/staff-quote-bind';
 import { mapStaffActions } from '../lib/quote-workflow/review-items';
+import { paneStayAvailabilityRequestFor } from '../lib/quote-workflow/pane-stay-bind';
 import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
@@ -62,6 +63,69 @@ it('does not use a review for another message', async () => {
 });
 
 describe('HRDAV native room and board maps', () => {
+  it('refuses a quote when child ages are marked unknown', () => {
+    expect(
+      staffQuoteGroupsFromStay(
+        [stay({ childrenAges: [], fields: { childAges: 'missing' } })],
+        HRCEN_PROPERTY_CODE,
+      ),
+    ).toEqual({ error: expect.stringMatching(/child ages.*confirm/i) });
+  });
+
+  it('does not build a pane availability read from child ages marked unknown', () => {
+    expect(
+      paneStayAvailabilityRequestFor('thread-1', [
+        stay({ childrenAges: [], fields: { childAges: 'missing' } }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('allows a quote after staff supplies the missing ages', () => {
+    expect(
+      staffQuoteGroupsFromStay(
+        [stay({ childrenAges: [5], fields: { childAges: 'staff_corrected' } })],
+        HRCEN_PROPERTY_CODE,
+      ),
+    ).toMatchObject({ ok: [{ childrenAges: [5] }] });
+  });
+
+  it('refuses a multi-room quote when stated stay-wide children do not match per-room ages', () => {
+    expect(
+      staffQuoteGroupsFromStay(
+        [stay({ quantity: 2, childrenTotal: 3, childrenAges: [7] })],
+        HRCEN_PROPERTY_CODE,
+      ),
+    ).toEqual({ error: expect.stringMatching(/child count and ages/i) });
+    expect(
+      paneStayAvailabilityRequestFor('thread-1', [
+        stay({ quantity: 2, childrenTotal: 3, childrenAges: [7] }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('refuses adult rows that do not reconcile to the explicit stay total', () => {
+    const row = stay({ quantity: 2, adults: 2, adultsTotal: 5, roomPreference: 'Standard King' });
+    expect(staffQuoteGroupsFromStay([row], HRCEN_PROPERTY_CODE)).toEqual({
+      error: expect.stringMatching(/adult count and room allocation/i),
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', [row])).toBeNull();
+  });
+
+  it('allows staff-corrected adult allocations when all room rows match the stay total', () => {
+    const rows = [
+      stay({ id: 'g1', stayId: 'stay-1', quantity: 1, adults: 2, adultsTotal: 5, roomPreference: 'Standard King', fields: { adults: 'staff_corrected' } }),
+      stay({ id: 'g2', stayId: 'stay-1', quantity: 1, adults: 3, adultsTotal: 5, roomPreference: 'Standard King', fields: { adults: 'staff_corrected' } }),
+    ];
+
+    expect(staffQuoteGroupsFromStay(rows, HRCEN_PROPERTY_CODE)).toMatchObject({
+      ok: [{ quantity: 1, adults: 2 }, { quantity: 1, adults: 3 }],
+    });
+    expect(paneStayAvailabilityRequestFor('thread-1', rows)?.rooms).toEqual([
+      { roomType: 'Standard King', quantity: 1, adults: 2, childAges: [] },
+      { roomType: 'Standard King', quantity: 1, adults: 3, childAges: [] },
+    ]);
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

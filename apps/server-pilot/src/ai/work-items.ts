@@ -681,7 +681,7 @@ export function storedAnalysis(
         ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: null,
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
-        childAges: [],
+        childAges: null,
         board: null,
         roomPreference: null,
         guestNames,
@@ -704,7 +704,7 @@ export function storedAnalysis(
         ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
+        childAges: pick<number[] | null>(at('childAges'), row.childAges),
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,
@@ -742,6 +742,23 @@ export function storedAnalysis(
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
+  const correctedEveryRow = (field: 'adults' | 'childAges') =>
+    order.length > 0 && order.every((slot) => {
+      if (!slot.rowId) return false;
+      const value = state[`stays[${slot.stayId}].rows[${slot.rowId}].${field}`];
+      return field === 'adults' ? typeof value === 'number' : Array.isArray(value);
+    });
+  const adultsCorrected = correctedEveryRow('adults');
+  const childAgesCorrected = correctedEveryRow('childAges');
+  if (adultsCorrected || childAgesCorrected) {
+    luna.missing = luna.missing.filter((item) => {
+      const field = `${item.field} ${item.question}`;
+      return !(
+        (childAgesCorrected && /child/i.test(field)) ||
+        (adultsCorrected && /adult|occupancy/i.test(field) && !/total/i.test(item.field))
+      );
+    });
+  }
   const mapped = mapLlmDecision(luna, {
     channel: aopQuoteChannelFromSender({
       fromAddress: read.fromAddress,
@@ -767,15 +784,22 @@ export function storedAnalysis(
       corrected.push(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
+        ['childAges', `${rowPath}.childAges`],
         ['board', `${rowPath}.board`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.
       if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
     }
     for (const [key, path] of corrected) {
-      if (Object.hasOwn(state, path)) group.fields[key] = 'staff_corrected';
+      if (!Object.hasOwn(state, path) || (key === 'childAges' && !Array.isArray(state[path])) || (key === 'adults' && typeof state[path] !== 'number')) continue;
+      group.fields[key] = 'staff_corrected';
     }
   });
+  const childAgesUnresolved = mapped.groups.some((group) => group.fields.childAges === 'missing');
+  const mappedMissing = mapped.missing.filter((item) => childAgesUnresolved || !/child/i.test(item.field));
+  const missingQuoteReplyFields = mapped.missingQuoteReplyFields.filter(
+    (field) => childAgesUnresolved || !/child/i.test(field),
+  );
   const refs: Record<string, GroupRef> = Object.fromEntries(
     order.map((slot) => [slot.groupId, { stayId: slot.stayId, rowId: slot.rowId }]),
   );
@@ -796,10 +820,10 @@ export function storedAnalysis(
           ...(confirmationNumber ? { confirmationNumber } : {}),
         };
       }),
-      missingQuoteReplyFields: mapped.missingQuoteReplyFields,
+      missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
-      reviewItems: [...failures, ...numberReviews, ...questionItems(mapped.missing)],
+      reviewItems: [...failures, ...numberReviews, ...questionItems(mappedMissing)],
       requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,

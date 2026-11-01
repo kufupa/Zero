@@ -120,7 +120,10 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .describe('Adults in EACH room, not in total.'),
-          childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
+          childAges: z
+            .array(z.number().int())
+            .nullable()
+            .describe('Actual age of each child in these rooms; null when child count or ages are unknown, [] when no children are requested.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
       ),
@@ -150,7 +153,7 @@ export type ExtractionRow = {
   roomType: string | null;
   rooms: number | null;
   adultsPerRoom: number | null;
-  childAges: number[];
+  childAges: number[] | null;
   board: ExtractionBoard | null;
 };
 export type ExtractionGuest = {
@@ -377,9 +380,9 @@ export function sanitizeExtraction(
         roomType: cleanText(row.roomType),
         rooms: countOf(row.rooms, 1, 999),
         adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
-        childAges: row.childAges
-          .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
-          .slice(0, 9),
+        childAges: row.childAges === null
+          ? null
+          : row.childAges.filter((age) => Number.isInteger(age) && age >= 0 && age <= 17).slice(0, 9),
         board: row.board,
       })),
       ...(guests !== undefined ? { guests } : {}),

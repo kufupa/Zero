@@ -75,13 +75,34 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
   if (!Array.isArray(stay?.rows) || stay.rows.length === 0) return null;
   // Every row must be complete. A group with no room count or no adults is not invented from a headcount.
   const rooms: unknown[] = [];
-  for (const row of stay.rows as ExtractionRow[]) {
-    if (!row || !row.roomType || row.rooms === null || row.adultsPerRoom === null) return null;
+  const rows = stay.rows as ExtractionRow[];
+  if (stay.totalChildren != null) {
+    let describedChildren = 0;
+    for (const row of rows) {
+      if (!row) return null;
+      const quantity = row.rooms ?? (rows.length === 1 ? stay.totalRooms : null);
+      if (row.childAges == null || quantity === null) return null;
+      describedChildren += quantity * row.childAges.length;
+    }
+    if (describedChildren !== stay.totalChildren) return null;
+  }
+  if (stay.totalAdults != null) {
+    let describedAdults = 0;
+    for (const row of rows) {
+      if (!row) return null;
+      const quantity = row.rooms ?? (rows.length === 1 ? stay.totalRooms : null);
+      if (row.adultsPerRoom === null || quantity === null) return null;
+      describedAdults += quantity * row.adultsPerRoom;
+    }
+    if (describedAdults !== stay.totalAdults) return null;
+  }
+  for (const row of rows) {
+    if (!row || !row.roomType || row.rooms === null || row.adultsPerRoom === null || row.childAges == null) return null;
     rooms.push({
       roomType: row.roomType,
       quantity: row.rooms,
       adults: row.adultsPerRoom,
-      childAges: row.childAges ?? [],
+      childAges: row.childAges,
     });
   }
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival, departure, rooms });
@@ -93,6 +114,17 @@ function availabilityRequestForStay(stay: ExtractionStay | null | undefined): Av
  * no dates, or a shape the quote tool would refuse yields no request.
  */
 export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[] {
+  const missing = (payload as { missing?: unknown } | null | undefined)?.missing;
+  if (
+    Array.isArray(missing) &&
+    missing.some((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const field = String((item as { field?: unknown }).field ?? '');
+      return /child/i.test(field) || (/adult|occupancy/i.test(field) && !/total/i.test(field));
+    })
+  ) {
+    return [];
+  }
   const stays = (payload as { stays?: unknown } | null | undefined)?.stays;
   if (!Array.isArray(stays)) return [];
   return stays.flatMap((stay: ExtractionStay | null) => {

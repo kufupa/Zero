@@ -380,6 +380,31 @@ describe('U10 availability probe (pure)', () => {
     ]);
   });
 
+  it('does not turn unavailable child ages into a zero-child availability request', () => {
+    const stayWithUnknownChildren = {
+      ...STAY_A,
+      totalChildren: 1,
+      rows: [{ ...STAY_A.rows[0]!, childAges: null }],
+    };
+
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [stayWithUnknownChildren] })).toEqual([]);
+    expect(
+      availabilityRequestsFor({ ...PAYLOAD, missing: [{ field: 'childAges', question: 'Confirm child ages.' }] }),
+    ).toEqual([]);
+    expect(
+      availabilityRequestsFor({ ...PAYLOAD, missing: [{ field: 'adultsPerRoom', question: 'Confirm adults.' }] }),
+    ).toEqual([]);
+  });
+
+  it('does not probe when per-room adults disagree with the explicit stay total', () => {
+    const inconsistent = {
+      ...STAY_A,
+      totalAdults: 5,
+      rows: [{ ...STAY_A.rows[0]!, rooms: 2, adultsPerRoom: 2 }],
+    };
+    expect(availabilityRequestsFor({ ...PAYLOAD, stays: [inconsistent] })).toEqual([]);
+  });
+
   it('gives no probe for bad dates, a stay over 30 nights, or a room with no type, and never throws on them', () => {
     const stay = (requested: { arrival: string | null; departure: string | null }, rows = STAY_A.rows) => ({
       ...STAY_A,

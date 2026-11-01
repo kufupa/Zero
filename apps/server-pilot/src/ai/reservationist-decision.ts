@@ -64,8 +64,8 @@ const HOTEL_OPERATING_RULES = `Johannesburg timezone.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel.
 ${MOVE_CATALOG_RULES}
 - Venue hire, boardroom, conference or delegate packages (DDR), and events: forward_to_partner (events team), no tools. A rooms-only group is quote at any size, 10+ rooms included.
-- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room.
-- In stayAsk, adults and children drive the search and may use defaults; adultsTotal and childrenTotal are explicit stay-wide counts only, never inferred from rooms, occupancy, names or ages.
+- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A stay-wide adult count across multiple rooms does not prove the number in each room, even when it divides evenly.
+- In stayAsk, adults and children drive the search and may use defaults; adultsTotal and childrenTotal are explicit stay-wide counts only, never inferred from rooms, occupancy, names or ages. Do not divide or round a stay-wide adult count into adults per room.
 - Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
@@ -145,14 +145,17 @@ const lunaGroupSchema = z.object({
     .number()
     .int()
     .nullable()
-    .describe("Adults in EACH room; '6 adults in 3 rooms' = 2"),
+    .describe('Adults in EACH room; null when only a stay-wide total is known across multiple rooms.'),
   childrenTotal: z
     .number()
     .int()
     .nullable()
     .optional()
     .describe('Stay-wide child total when explicitly stated; null or omitted when unknown.'),
-  childAges: z.array(z.number().int()),
+  childAges: z
+    .array(z.number().int())
+    .nullable()
+    .describe('Actual age of each child, [] when none, or null when child ages are unknown.'),
   board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),

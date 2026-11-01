@@ -584,7 +584,7 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           workflow: 'quote',
-          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 5, childrenTotal: 0 }],
+          groups: [{ ...group, adultsPerRoom: 3, adultsTotal: 6, childrenTotal: 0 }],
         }),
       ),
     );
@@ -592,7 +592,7 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups[0]).toMatchObject({
       quantity: 2,
       adults: 3,
-      adultsTotal: 5,
+      adultsTotal: 6,
       childrenTotal: 0,
       fields: { adultsTotal: 'extracted', childrenTotal: 'extracted' },
     });
@@ -715,6 +715,84 @@ describe('mapLlmDecision', () => {
     });
     expect(mapped.missing).toEqual([]);
     expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
+  it('does not turn an explicit multi-room adult total into an even split or a two-adult default', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 2, adultsPerRoom: null, adultsTotal: 5 }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      adultsTotal: 5,
+      fields: { adults: 'missing' },
+    });
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+  });
+
+  it('marks a stay-wide adult total that disagrees with its per-room rows as incomplete', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, adultsPerRoom: 2, adultsTotal: 5 }],
+      })),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({ fields: { adults: 'missing' } });
+    expect(mapped.missingQuoteReplyFields).toContain('Number of guests per room for stay 1');
+    expect(mapped.missing).toContainEqual(expect.objectContaining({ field: 'adults' }));
+  });
+
+  it('keeps unknown child ages visibly incomplete instead of treating them as no children', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 1, adultsPerRoom: 2, childrenTotal: 1, childAges: null }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      childrenAges: [],
+      fields: { childAges: 'missing' },
+    });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 1');
+  });
+
+  it('reconciles a stay-wide child total against every room in the stay', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: 2, adultsPerRoom: 2, childrenTotal: 3, childAges: [7] }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 2,
+      childrenTotal: 3,
+      childrenAges: [7],
+      fields: { childAges: 'missing' },
+    });
+    expect(mapped.missingQuoteReplyFields).toContain('Child ages for stay 1');
+  });
+
+  it('does not treat a null stay-wide total as an explicit occupancy mismatch', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(analysis({
+        workflow: 'quote',
+        groups: [{ ...group, childrenTotal: null, childAges: [] }],
+      })),
+    );
+    expect(mapped.groups[0]?.fields).not.toHaveProperty('childAges');
   });
 
   it('marks an unresolved quote room type as a defaulted any-type choice', () => {

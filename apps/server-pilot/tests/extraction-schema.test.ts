@@ -75,6 +75,25 @@ describe('mail extraction contract', () => {
     expect(legacyPayload.stays[0]!.totalChildren).toBeUndefined();
   });
 
+  it('preserves an explicit unknown-child-ages marker instead of normalizing it to no children', () => {
+    const output = {
+      ...AE1_OUTPUT,
+      stays: AE1_OUTPUT.stays.map((stay, stayIndex) =>
+        stayIndex === 0
+          ? { ...stay, rows: stay.rows.map((row, rowIndex) => rowIndex === 0 ? { ...row, childAges: null } : row) }
+          : stay,
+      ),
+    };
+    const parsed = mailExtractionSchema.parse(output);
+    const { payload } = sanitizeExtraction(parsed, {
+      messageId: 'msg-unknown-child-ages',
+      sourceText: AE1_TEXT,
+    });
+
+    expect(payload.stays[0]?.rows[0]?.childAges).toBeNull();
+    expect(mailExtractionPayloadSchema.parse(payload).stays[0]?.rows[0]?.childAges).toBeNull();
+  });
+
   it('parses an older stored payload without origin', () => {
     const parsed = mailExtractionSchema.safeParse(AE1_OUTPUT);
     expect(parsed.success).toBe(true);
@@ -117,6 +136,10 @@ describe('mail extraction contract', () => {
     expect(EXTRACTION_RULES).toContain(
       'A voucher-only delivery or confirmation with no new booking request remains voucher_pop; a voucher alone is not proof of payment.',
     );
+  });
+
+  it('instructs extraction to keep unknown child ages distinct from an empty child list', () => {
+    expect(EXTRACTION_RULES).toContain('Use null when child count or ages are unknown; use [] only when no children are requested.');
   });
 });
 

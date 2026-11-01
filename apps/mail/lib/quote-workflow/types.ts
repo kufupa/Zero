@@ -195,7 +195,7 @@ export type LunaAnalysisWire = {
     adultsTotal?: number | null;
     adultsPerRoom: number | null;
     childrenTotal?: number | null;
-    childAges: number[];
+    childAges: number[] | null;
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];

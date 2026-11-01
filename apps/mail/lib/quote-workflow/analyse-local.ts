@@ -60,6 +60,9 @@ export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {
   const alternatives: string[] = [];
   if (/\broom[- ]?only|\bRO\b/i.test(admittedText)) alternatives.push('RO');
   if (/\bB&B\b|\bbed and breakfast|\bBB\b/i.test(admittedText)) alternatives.push('BB');
+  const childrenMentioned =
+    /\b(?:children?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText) &&
+    !/\b(?:no|without|zero|0)\s+(?:children?|kids?|infants?|bab(?:y|ies))\b/i.test(admittedText);
   const secondaryAsks = [...admittedText.matchAll(/[^.?\n]*\b(parking|shuttle|airport)\b[^.?\n]*[?]?/gi)]
     .map((match) => match[0].replace(/\s+/g, ' ').trim())
     .filter((clause) => clause.length >= 8 && (/[?]/.test(clause) || /^(is |are |can |could |please |how |what )/i.test(clause)));
@@ -77,6 +80,7 @@ export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {
       arrivalDate: arrivalDate ? 'extracted' : 'missing',
       departureDate: departureDate ? 'extracted' : 'missing',
       adults: /\badult/i.test(admittedText) ? 'extracted' : 'missing',
+      ...(childrenMentioned ? { childAges: 'missing' as const } : {}),
     },
   };
   return { intent: 'quote', groups: [group], secondaryAsks, alternatives };

@@ -305,7 +305,7 @@ export function scoreFields(expected: GoldenRow['expected'], actual: GoldenField
   return { fields, flags, correct: fields.filter((f) => f.status === 'correct').length, scored: fields.length };
 }
 
-type Occupancy = { rooms: number | null; adultsPerRoom: number | null; children: number };
+type Occupancy = { rooms: number | null; adultsPerRoom: number | null; children: number | null };
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
 /** Totals over the rows of one stay. Adults are total adults; a lone row with no room count is the stay's total rooms, else one. */
@@ -318,7 +318,7 @@ function occupancyOf(rows: Occupancy[], totalRooms: number | null = null): Pick<
     adults: adultsKnown
       ? sum(rows.map((r) => (r.rooms ?? (rows.length === 1 ? totalRooms : null) ?? 1) * r.adultsPerRoom!))
       : null,
-    children: sum(rows.map((r) => r.children)),
+    children: rows.every((r) => r.children !== null) ? sum(rows.map((r) => r.children!)) : null,
   };
 }
 
@@ -338,7 +338,11 @@ export function paneFields(analysis: LunaAnalysis | null): GoldenFields {
     workflow: analysis?.workflow ?? null,
     arrivalDate: (amendment ? amendment.requestedArrival : first?.arrivalDate) ?? null,
     departureDate: (amendment ? amendment.requestedDeparture : first?.departureDate) ?? null,
-    ...occupancyOf(stay.map((g) => ({ rooms: g.quantity ?? null, adultsPerRoom: g.adults ?? null, children: g.childrenAges.length }))),
+    ...occupancyOf(stay.map((g) => ({
+      rooms: g.quantity ?? null,
+      adultsPerRoom: g.adults ?? null,
+      children: g.fields.childAges === 'missing' ? null : g.childrenAges.length,
+    }))),
     bookedArrivalDate: amendment?.arrival ?? null,
     bookedDepartureDate: amendment?.departure ?? null,
     stays: (requested ? 1 : new Set(groups.map((g) => `${g.arrivalDate}|${g.departureDate}`)).size) || null,
@@ -355,7 +359,11 @@ export function extractFields(extraction: GoldenExtraction | null): GoldenFields
     arrivalDate: stay?.requested.arrival ?? null,
     departureDate: stay?.requested.departure ?? null,
     ...occupancyOf(
-      (stay?.rows ?? []).map((r) => ({ rooms: r.rooms, adultsPerRoom: r.adultsPerRoom, children: r.childAges.length })),
+      (stay?.rows ?? []).map((r) => ({
+        rooms: r.rooms,
+        adultsPerRoom: r.adultsPerRoom,
+        children: r.childAges === null ? null : r.childAges.length,
+      })),
       stay?.totalRooms ?? null,
     ),
     bookedArrivalDate: stay?.booked?.arrival ?? null,

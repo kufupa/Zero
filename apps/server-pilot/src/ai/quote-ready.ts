@@ -123,13 +123,37 @@ function groupForStay(
   if (!validIsoDay(arrival) || !validIsoDay(departure) || departure <= arrival) {
     return { groups: [], reason: 'invalid_dates' };
   }
+  if (missing.some((item) => /child/i.test(item.field) || (/adult|occupancy/i.test(item.field) && !/total/i.test(item.field)))) {
+    return { groups: [], reason: 'missing_occupancy' };
+  }
   if (arrival < today) return { groups: [], reason: 'past_dates' };
   if (nightsBetween(arrival, departure) > 30) return { groups: [], reason: 'stay_too_long' };
   if (stay.rows.length === 0) return { groups: [], reason: 'missing_rooms' };
   if (stay.rows.length > 8) return { groups: [], reason: 'too_many_room_types' };
 
   const groups: StaffQuoteInput['groups'] = [];
+  if (stay.totalChildren != null) {
+    let describedChildren = 0;
+    for (const row of stay.rows) {
+      const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+      if (row.childAges === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
+      describedChildren += quantity * row.childAges.length;
+    }
+    if (describedChildren !== stay.totalChildren) return { groups: [], reason: 'missing_occupancy' };
+  }
+  if (stay.totalAdults != null) {
+    let describedAdults = 0;
+    for (const row of stay.rows) {
+      const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+      if (row.adultsPerRoom === null || quantity === null) return { groups: [], reason: 'missing_occupancy' };
+      describedAdults += quantity * row.adultsPerRoom;
+    }
+    if (describedAdults !== stay.totalAdults) return { groups: [], reason: 'missing_occupancy' };
+  }
   for (const row of stay.rows) {
+    if (row.adultsPerRoom === null || row.childAges === null) {
+      return { groups: [], reason: 'missing_occupancy' };
+    }
     const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
     const hasGuestData = row.adultsPerRoom !== null || row.childAges.length > 0;
@@ -137,7 +161,7 @@ function groupForStay(
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }
-    const adults = row.adultsPerRoom ?? 2;
+    const adults = row.adultsPerRoom;
     if (
       !Number.isInteger(adults) ||
       adults < 1 ||

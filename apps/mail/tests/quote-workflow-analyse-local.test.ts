@@ -31,4 +31,22 @@ describe('analyseLocalEmail', () => {
     expect(analysis.groups[0]?.arrivalDate).toBeUndefined();
     expect(analysis.groups[0]?.fields.arrivalDate).toBe('missing');
   });
+
+  it('keeps child occupancy unresolved in the regex fallback when ages are not reliably extracted', () => {
+    const analysis = analyseLocalEmail({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room for two adults and one child from 2026-11-12 to 2026-11-14.',
+    });
+
+    expect(analysis.groups[0]?.fields.childAges).toBe('missing');
+  });
+
+  it('does not flag an explicit no-children request as missing ages', () => {
+    const analysis = analyseLocalEmail({
+      subject: 'Quote request',
+      bodyText: 'Please quote one room, no children, from 2026-11-12 to 2026-11-14.',
+    });
+
+    expect(analysis.groups[0]?.fields.childAges).toBeUndefined();
+  });
 });

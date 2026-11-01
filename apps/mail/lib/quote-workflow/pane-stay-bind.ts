@@ -157,12 +157,30 @@ export function paneStayAvailabilityRequestFor(
       row.arrivalDate !== arrival ||
       row.departureDate !== departure ||
       !roomPreference?.trim() ||
+      row.fields.adults === 'missing' ||
+      row.fields.childAges === 'missing' ||
       typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1 ||
       typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 ||
       !Array.isArray(childrenAges)
     ) return null;
     rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });
   }
+  const totals = new Map<string, { children: Set<number>; adults: Set<number>; describedChildren: number; describedAdults: number }>();
+  rows.forEach((row, index) => {
+    const key = row.stayId ?? `${arrival}/${departure}`;
+    const counts = totals.get(key) ?? { children: new Set<number>(), adults: new Set<number>(), describedChildren: 0, describedAdults: 0 };
+    const room = rooms[index]!;
+    if (typeof row.childrenTotal === 'number') counts.children.add(row.childrenTotal);
+    if (typeof row.adultsTotal === 'number') counts.adults.add(row.adultsTotal);
+    counts.describedChildren += room.quantity * room.childAges.length;
+    counts.describedAdults += room.quantity * room.adults;
+    totals.set(key, counts);
+  });
+  if ([...totals.values()].some((counts) =>
+    counts.children.size > 1 || counts.adults.size > 1 ||
+    (counts.children.size === 1 && counts.describedChildren !== [...counts.children][0]) ||
+    (counts.adults.size === 1 && counts.describedAdults !== [...counts.adults][0]),
+  )) return null;
 
   return { threadId, kind: 'availability', arrival, departure, rooms };
 }

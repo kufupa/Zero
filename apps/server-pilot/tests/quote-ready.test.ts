@@ -226,14 +226,69 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual(['STWN']);
   });
 
-  it('defaults missing occupancy to two adults per room', () => {
+  it('does not default unknown per-room adults to two', () => {
     const stay = payload().stays[0]!;
     const plan = build({
       stays: [{ ...stay, rows: [{ ...stay.rows[0]!, adultsPerRoom: null }] }],
     });
 
-    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 2, adults: 2 });
-    expect(plan.reason).toBeNull();
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('does not interpret unknown child ages as zero children', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, rows: [{ ...stay.rows[0]!, childAges: null }] }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('refuses legacy empty ages when the extraction separately says child ages are missing', () => {
+    const plan = build({
+      missing: [{ field: 'childAges', question: 'Confirm the children’s ages.' }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('does not allocate an explicit stay-wide adult total evenly across rooms', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalAdults: 5,
+        rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: null }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('refuses a per-room adult allocation that disagrees with the explicit stay total', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalAdults: 5,
+        rows: [{ ...stay.rows[0]!, rooms: 2, adultsPerRoom: 2 }],
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
+  });
+
+  it('keeps stored missing adult occupancy from becoming a defaulted quote', () => {
+    const plan = build({
+      missing: [{ field: 'adultsPerRoom', question: 'Confirm adults per room.' }],
+    });
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_occupancy');
   });
 
   it('defaults a missing room count to one when dates and a guest row exist', () => {
