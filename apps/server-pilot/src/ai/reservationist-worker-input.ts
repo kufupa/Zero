@@ -123,7 +123,7 @@ function signatureInspection(row: ReservationistWorkerMessage, normalized: strin
   $('td, th').append('\t');
   $('p, div, li, tr, h1, h2, h3, h4, h5, h6').each((_, element) => { $(element).prepend('\n').append('\n'); });
   const htmlText = $.root().text();
-// Multipart requests may be HTML-only; discard images only when every view agrees they are signature noise.
+  // Multipart requests may be HTML-only; discard images only when every view agrees they are signature noise.
   return { texts: hasText ? [normalized, htmlText] : [htmlText], describedCids, preserveAll: false };
 }
 
@@ -235,7 +235,7 @@ export async function buildReservationistWorkerInput(options: {
       ? sourceView.texts.filter((text) => [...text.matchAll(/\bcid:([^\s[\]<>"')]+)/gi)]
         .some((reference) => normalizeContentId(reference[1]!) === cid))
       : [];
-  // Intervening messages may make footer images relevant; plain may omit an HTML CID, which still participates in dependency checks.
+    // Intervening messages may make footer images relevant; plain may omit an HTML CID, which still participates in dependency checks.
     const signatureNoise = cidSourceViews.length > 0 && !preserveAllImages && !(cid && sourceView.describedCids.has(cid)) && cidSourceViews.every((sourceText) => messages.every((message) => signatureViews.get(message.id)!.texts.every((requestText) => isReservationistSignatureNoise({
       messageText: sourceText,
       currentSubject: message.subject,
