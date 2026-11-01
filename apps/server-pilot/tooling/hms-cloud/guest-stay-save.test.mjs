@@ -146,28 +146,34 @@ test('rejects create-body drift, omissions, duplicates, extras, and unsupported 
   assert.equal(matchesFullCreateBody(createSaveBody(unsupported), unsupported), false);
 });
 
-test('diagnoses a rejected body with bounded safe field names only', () => {
-  const formData = { ...createModelData(), reservationnote: 'original synthetic note' };
+test('diagnoses a rejected body without exposing unrecognized or unverified names', () => {
+  const unsafeExpected = 'guest email@example.invalid';
+  const formData = { ...createModelData(), reservationnote: 'original synthetic note',
+    [unsafeExpected]: 'expected synthetic value' };
   const body = createSaveBody(formData);
-  const unsafeField = 'guest email@example.invalid';
+  const unsafeExtra = 'billing detail@example.invalid';
   const longField = 'x'.repeat(65);
   body.set('reservationnote', 'different synthetic value');
   body.delete('sourceofbusinessdesc');
   body.set('unlistedfield', 'unreported value');
-  body.set(unsafeField, 'private fake value');
+  body.set(unsafeExpected, 'private expected value');
+  body.set(unsafeExtra, 'private fake value');
   body.set(longField, 'private fake value');
   body.append('adults', '3');
   body.set('SYSTEM_FUNCTION_NAME', 'WRONG');
   let diagnostic;
 
   assert.equal(matchesFullCreateBody(body, formData, (value) => { diagnostic = value; }), false);
-  assert.deepEqual(diagnostic.fields, [
-    'SYSTEM_FUNCTION_NAME', 'adults', 'reservationnote', 'sourceofbusinessdesc', 'unlistedfield',
-  ]);
-  assert.equal(diagnostic.unsafeNameCount, 2);
-  assert.equal(JSON.stringify(diagnostic).includes(unsafeField), false);
+  assert.deepEqual(diagnostic.fields, ['SYSTEM_FUNCTION_NAME']);
+  assert.equal(diagnostic.unexpectedNameCount, 3);
+  assert.equal(diagnostic.unsafeExpectedNameCount, 1);
+  assert.equal(diagnostic.unverifiedExpectedNameCount, 3);
+  assert.equal(JSON.stringify(diagnostic).includes(unsafeExpected), false);
+  assert.equal(JSON.stringify(diagnostic).includes(unsafeExtra), false);
   assert.equal(JSON.stringify(diagnostic).includes(longField), false);
+  assert.equal(JSON.stringify(diagnostic).includes('unlistedfield'), false);
   assert.equal(JSON.stringify(diagnostic).includes('different synthetic value'), false);
+  assert.equal(JSON.stringify(diagnostic).includes('private expected value'), false);
   assert.equal(JSON.stringify(diagnostic).includes('private fake value'), false);
 });
 

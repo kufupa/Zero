@@ -323,6 +323,13 @@ function fullCreateBodyMismatchFields(body, formData) {
   const fields = Object.keys(formData);
   const controls = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' };
   const expectedKeys = [...fields, ...Object.keys(controls)], expected = new Set(expectedKeys), keys = [...body.keys()];
+  const verifiedModelSchema = matchesCreateModelFieldSchema(formData);
+  // Extra POST keys can carry private data; report only fixed controls or names in the locked model schema.
+  const safeFieldName = (key) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key);
+  const reportableExpected = new Set([
+    ...Object.keys(controls),
+    ...(verifiedModelSchema ? fields.filter(safeFieldName) : []),
+  ]);
   const mismatches = new Set(expectedKeys.filter((key, index) => expectedKeys.indexOf(key) !== index));
   for (const key of expected) {
     const values = body.getAll(key);
@@ -341,11 +348,18 @@ function fullCreateBodyMismatchFields(body, formData) {
       : body.get(key) !== String(value ?? '')) mismatches.add(key);
   }
   for (const key of keys) if (!expected.has(key)) mismatches.add(key);
-  const safeNames = [...mismatches].filter((key) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key)).sort();
-  const unsafeNameCount = mismatches.size - safeNames.length;
+  const safeNames = [...mismatches].filter((key) => expected.has(key) && reportableExpected.has(key)).sort();
+  const unexpectedNameCount = new Set(keys.filter((key) => !expected.has(key))).size;
+  const unsafeExpectedNameCount = [...mismatches].filter((key) => expected.has(key) && !safeFieldName(key)).length;
+  const unverifiedExpectedNameCount = !verifiedModelSchema
+    ? [...mismatches].filter((key) => fields.includes(key) && safeFieldName(key)).length
+    : 0;
   return { fields: safeNames.slice(0, 24), ...(safeNames.length > 24 ? { truncated: true } : {}),
-    ...(unsafeNameCount ? { unsafeNameCount } : {}),
-    ...(!safeNames.length && !unsafeNameCount ? { unclassified: true } : {}) };
+    ...(unexpectedNameCount ? { unexpectedNameCount } : {}),
+    ...(unsafeExpectedNameCount ? { unsafeExpectedNameCount } : {}),
+    ...(unverifiedExpectedNameCount ? { unverifiedExpectedNameCount } : {}),
+    ...(!safeNames.length && !unexpectedNameCount && !unsafeExpectedNameCount && !unverifiedExpectedNameCount
+      ? { unclassified: true } : {}) };
 }
 
 export function guestStaySaveOutcome({
