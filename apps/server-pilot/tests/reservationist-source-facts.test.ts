@@ -165,6 +165,46 @@ describe('plain and HTML citation binding',()=>{
   expect(plan.tasks[0]).toMatchObject({source:{start:htmlStart,end:text.length}});
   expect(plan.facts[0]).toMatchObject({value:{arrival:'2026-12-21',departure:'2026-12-23'},source:{start:htmlStart+html.indexOf(quote),end:htmlStart+html.indexOf(quote)+quote.length}});
  });
+ const extractHtmlFact=async(id:string,body:string,kind:string,value:any)=>{
+  const plain=`${body}\nKind regards\nGuest`,html=`${plain}\nExtra line`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,attachmentId=`message:${id}`,sourceHash=createHash('sha256').update(text).digest('hex'),source={attachmentId,sourceHash,page:1,quote:body,view:'html'};
+  const plan=await extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'fact',kind,value,disclosure:'guest',source}],tasks:[{id:'quote',kind:'quote',factIds:['fact'],source}],unresolvedAsks:[]}})} as any,messages:[{id,at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:id,causalAt:at,admissions:[],signal:new AbortController().signal});return{plan,htmlStart};
+ };
+ it('keeps a linked per-room rate task across wording-different authored alternatives and rejects a conflicting one',async()=>{
+  const at='2026-10-01T08:00:00Z',plain='Please provide single and double occupancy rates.',separator='\n\n'+HTML_ALTERNATIVE_MARKER,htmlStart=plain.length+separator.length;
+  const run=async(taskQuote:string)=>{
+   const text=plain+separator+taskQuote,attachmentId='message:cross-view-rate',sourceHash=createHash('sha256').update(text).digest('hex');
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'rate',kind:'room',value:{roomRef:'1',quantity:1,quotationBasis:'per_room_rate',adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],tasks:[{id:'quote',kind:'quote',factIds:['rate'],source:{attachmentId,sourceHash,page:1,quote:taskQuote,view:'html'}}],unresolvedAsks:[]}})} as any,messages:[{id:'cross-view-rate',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'cross-view-rate',causalAt:at,admissions:[],signal:new AbortController().signal});
+  };
+  const html='Could you please provide single and double room rates?',plan=await run(html);
+  expect(plan.facts[0]).toMatchObject({id:'rate',source:{start:0,end:plain.length},value:{quotationBasis:'per_room_rate'}});
+  expect(plan.tasks[0]).toMatchObject({id:'quote',source:{start:htmlStart,end:htmlStart+html.length}});
+  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow('Per-room rate option not entailed by current source');
+ });
+ it.each([
+  {id:'html-room',body:'Please quote one room for one adult.',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},expected:{convention:{rule:'centurion_staff_occupancy_v1'}}},
+  {id:'html-rate',body:'Please provide single and double occupancy rates.',kind:'room',value:{roomRef:'1',quantity:1,quotationBasis:'per_room_rate',adults:1,childAges:[]},expected:{value:{quotationBasis:'per_room_rate'}}},
+  {id:'html-guest',body:'Please quote one single room for Mr Alex Example.',kind:'guest',value:{firstName:'Alex',lastName:'Example',roomRef:'1',roomIndex:1},expected:{value:{firstName:'Alex',lastName:'Example',roomRef:'1',roomIndex:1}}},
+ ])('scopes $id proof to the cited HTML alternative',async scenario=>{const {plan,htmlStart}=await extractHtmlFact(scenario.id,scenario.body,scenario.kind,scenario.value);expect(plan.facts[0]).toMatchObject(scenario.expected);expect(plan.facts[0]?.source.start).toBe(htmlStart);});
+ it('uses an alternate guest citation only when its exact quote repeats in the selected view',async()=>{
+  const quote='Please quote for Mr Alex Example.',run=async(htmlQuote:string)=>{
+   const plain=`${quote}\nKind regards\nGuest`,html=`${htmlQuote}\nKind regards\nGuest\nExtra line`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`,attachmentId='message:cross-view-guest',sourceHash=createHash('sha256').update(text).digest('hex');
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'guest',kind:'guest',value:{firstName:'Alex',lastName:'Example'},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote,view:'plain'}},{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:htmlQuote,view:'html'}}],tasks:[{id:'quote',kind:'quote',factIds:['room','guest'],source:{attachmentId,sourceHash,page:1,quote:htmlQuote,view:'html'}}],unresolvedAsks:[]}})} as any,messages:[{id:'cross-view-guest',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'cross-view-guest',causalAt:at,admissions:[],signal:new AbortController().signal});
+  };
+  await expect(run(quote)).resolves.toMatchObject({facts:[{id:'guest'},{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
+  await expect(run('Please quote for Mr Morgan Sample.')).rejects.toThrow('Document fact value not entailed by source span');
+ });
+ it('keeps an explicitly activated room request in its selected quoted range',async()=>{
+  const plain='Please send a quotation for the earlier room request.',html=`${plain}\nKind regards`,separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length,roomQuote='Please quote one room for one adult.',history=`From: guest@example.invalid\nSubject: Original request\n\n${roomQuote}`,quotedStart=htmlEnd+2,text=`${plain}${separator}${html}\n\n${history}`,attachmentId='message:quoted-room',sourceHash=createHash('sha256').update(text).digest('hex');
+  const plan=await extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source:{attachmentId,sourceHash,page:1,quote:roomQuote,view:'plain_quoted'}}],tasks:[{id:'quote',kind:'quote',factIds:['room'],source:{attachmentId,sourceHash,page:1,quote:plain,view:'plain'}}],unresolvedAsks:[]}})} as any,messages:[{id:'quoted-room',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length,quoted:{start:quotedStart,end:text.length}},{name:'html',start:htmlStart,end:htmlEnd}]}],triggerMessageId:'quoted-room',causalAt:at,admissions:[],signal:new AbortController().signal});
+  expect(plan.facts[0]).toMatchObject({kind:'room',convention:{rule:'centurion_staff_occupancy_v1'}});
+ });
+ it('retains a linked current quote when an earlier room request has MIME views',async()=>{
+  const prior='Please quote one double room for two adults.',html=`${prior}\nKind regards`,marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=prior.length+marker.length,text=`${prior}${marker}${html}`;
+  const current='Please quote the original room request.',priorHash=createHash('sha256').update(text).digest('hex'),currentHash=createHash('sha256').update(current).digest('hex');
+  const run=async(kind:'quote'|'new_booking')=>extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:2,childAges:[]},disclosure:'guest',source:{attachmentId:'message:prior-room',sourceHash:priorHash,page:1,quote:prior,view:'plain'}}],tasks:[{id:'task',kind,factIds:['room'],source:{attachmentId:'message:current-quote',sourceHash:currentHash,page:1,quote:current}}],unresolvedAsks:[]}})} as any,messages:[{id:'prior-room',at:'2026-09-30T08:00:00Z',direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:prior.length},{name:'html',start:htmlStart,end:text.length}]},{id:'current-quote',at,direction:'inbound',text:current}],triggerMessageId:'current-quote',causalAt:at,admissions:[],signal:new AbortController().signal});
+  await expect(run('quote')).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
+  await expect(run('new_booking')).rejects.toThrow('Document fact value not entailed by source span');
+ });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
   const alternate='Please rebook this stay using the previous quotation.';

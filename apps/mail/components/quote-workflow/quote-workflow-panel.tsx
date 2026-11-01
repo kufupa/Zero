@@ -91,7 +91,7 @@ import {
 const TELL_NAVA_ENABLED = false;
 
 function linkedRequestItem(task: ReservationistPreparedTask, items: QuoteReviewItem[] = []) {
-  if (!task.workItemId || !task.runId || typeof task.handled !== 'boolean') return undefined;
+  if (task.earlier || !task.workItemId || !task.runId || typeof task.handled !== 'boolean') return undefined;
   return items.find(item => item.kind === 'question' && item.sourceRef &&
     item.id.startsWith(`request:${task.id}:${item.sourceRef}:`));
 }
@@ -112,7 +112,7 @@ function PreparedStaffTasks({ tasks, onSetHandled, reviewItems, onViewSource }: 
       {tasks.map((task) => {
         const source = linkedRequestItem(task, reviewItems);
         return (
-        <div key={task.id} className="rounded-md border p-3 text-sm">
+        <div key={`${task.runId ?? ''}:${task.id}`} className="rounded-md border p-3 text-sm">
           <p className="font-medium">{task.label} · {task.handled ? 'Marked handled' : task.state === 'Ready' ? 'Review information' : task.state}</p>
           {task.details.length ? (
             <ul className="mt-2 flex list-disc flex-col gap-1 pl-4">

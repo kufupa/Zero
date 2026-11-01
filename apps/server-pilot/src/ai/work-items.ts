@@ -69,6 +69,7 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
+import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -986,7 +987,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
         id ? eq(mailExtraction.id, id) : undefined,
       ),
     )
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
   return {
@@ -1022,33 +1023,43 @@ export async function ensureWorkItemForMessage(
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
-  const latest = await succeededRead(db, input.messageId);
-  if (!msg || !latest || latest.kind === 'spam') return null;
-  const item = await ensureWorkItem(db, {
-    transportId: input.transportId,
-    threadId: msg.threadId,
-    messageId: input.messageId,
-    kind: latest.kind,
-    extractionId: latest.id,
+  if (!msg) return null;
+  return db.transaction(async tx => {
+    const transaction = tx as unknown as DB;
+    // A reread can relink or restore one item before refreshing the whole thread.
+    // Take thread items in the same order as the refresh before touching any one,
+    // including dismissed items that the reread may restore.
+    await tx.select({ id: workItem.id }).from(workItem)
+      .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, msg.threadId)))
+      .orderBy(workItem.id).for('update');
+    const latest = await succeededRead(transaction, input.messageId);
+    if (!latest || latest.kind === 'spam') return null;
+    const item = await ensureWorkItem(transaction, {
+      transportId: input.transportId,
+      threadId: msg.threadId,
+      messageId: input.messageId,
+      kind: latest.kind,
+      extractionId: latest.id,
+    });
+    const current =
+      item.status === 'dismissed'
+        ? await restoreSupersededItem(transaction, { workItemId: item.id, status: 'needs_you', latestId: latest.id })
+        : item;
+    await dismissSupersededItems(transaction, {
+      transportId: input.transportId,
+      threadId: msg.threadId,
+      messageId: input.messageId,
+      latest,
+    });
+    // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
+    if (msg.threadId) await refreshThreadWork(transaction, { transportId: input.transportId, threadId: msg.threadId });
+    const [fresh] = await tx
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+      .from(workItem)
+      .where(eq(workItem.id, current.id))
+      .limit(1);
+    return fresh ?? current;
   });
-  const current =
-    item.status === 'dismissed'
-      ? await restoreSupersededItem(db, { workItemId: item.id, status: 'needs_you', latestId: latest.id })
-      : item;
-  await dismissSupersededItems(db, {
-    transportId: input.transportId,
-    threadId: msg.threadId,
-    messageId: input.messageId,
-    latest,
-  });
-  // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
-  if (msg.threadId) await refreshThreadWork(db, { transportId: input.transportId, threadId: msg.threadId });
-  const [fresh] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
-    .from(workItem)
-    .where(eq(workItem.id, current.id))
-    .limit(1);
-  return fresh ?? current;
 }
 
 /** The reason on a system dismissal of an item a kind-changing re-read replaced. */
@@ -1058,6 +1069,7 @@ const SUPERSEDED_BY_THREAD = 'superseded_by_thread';
 /** The reasons on the thread's system status changes (refreshThreadWork). */
 const HOTEL_REPLIED = 'hotel_replied';
 const NEW_INBOUND = 'new_inbound';
+const REQUESTS_OUTSTANDING = 'requests_outstanding';
 const STAFF_SENT_OTHER = 'staff_sent_other';
 
 /**
@@ -1255,7 +1267,7 @@ export function personTouchSql(alias: string): SQL {
 export type ThreadWorkChange =
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof HOTEL_REPLIED; sentAt: Date; sentMessageId: string }
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof STAFF_SENT_OTHER }
-  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND; previousSentMessageId: string | null }
+  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND | typeof REQUESTS_OUTSTANDING; previousSentMessageId: string | null; from?: 'dismissed' }
   | { workItemId: string; kind: MailKind; to: 'dismissed'; reason: typeof SUPERSEDED_BY_THREAD; supersededBy: string }
   | { workItemId: string; kind: MailKind; repoint: { sentAt: Date; sentMessageId: string } };
 
@@ -1308,8 +1320,23 @@ export async function planThreadWork(
   // Stored origin 'person' means human-written, 'system_notice' means automated. A missing extraction or origin counts
   // as human-written, as listWorkItems reads it.
   const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
-  // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
-  // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
+  const threadItems = and(
+    eq(workItem.transportId, input.transportId),
+    eq(workItem.threadId, input.threadId),
+    inArray(workItem.status, ['needs_you', 'done', 'dismissed']),
+    ne(workItem.kind, 'spam'),
+  );
+  let lockedIds: string[] | undefined;
+  if (opts.lock) {
+    // Use a separate statement: SELECT FOR UPDATE can wait for a reply, while
+    // its correlated event subqueries still use the snapshot from before that wait.
+    const locked = await db.select({ id: workItem.id }).from(workItem)
+      .where(threadItems).orderBy(workItem.id).for('update');
+    lockedIds = locked.map(item => item.id);
+    if (!lockedIds.length) return [];
+  }
+  // Read events and mail after taking the locks. Restrict the locked plan to
+  // those same rows; a newly admitted item gets its own subsequent refresh.
   const itemQuery = db
     .select({
       id: workItem.id,
@@ -1329,6 +1356,12 @@ export async function planThreadWork(
         order by we.at desc, we.id desc
         limit 1
       )`,
+      lastStatusActor: sql<string | null>`(select we.actor_kind from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id and we.type = 'status.changed'
+        order by we.at desc, we.id desc limit 1)`,
+      lastStatusReason: sql<string | null>`(select we.value->>'reason' from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id and we.type = 'status.changed'
+        order by we.at desc, we.id desc limit 1)`,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
@@ -1336,15 +1369,30 @@ export async function planThreadWork(
     })
     .from(workItem)
     .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        eq(workItem.threadId, input.threadId),
-        inArray(workItem.status, ['needs_you', 'done']),
-        ne(workItem.kind, 'spam'),
-      ),
-    );
-  const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
+    .where(and(threadItems, lockedIds ? inArray(workItem.id, lockedIds) : undefined));
+  const items = await itemQuery;
+  const sourceIds = [...new Set(items.flatMap(item => item.sourceMessageId ? [item.sourceMessageId] : []))];
+  const requestStates = await handledRequestStates(db, { transportId: input.transportId, threadId: input.threadId, sourceIds });
+  const runs = sourceIds.length ? await db.select({
+    id: aiWorkflowRun.id, sourceMessageId: aiWorkflowRun.triggerMessageId, metrics: aiWorkflowRun.metrics,
+  }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.threadId),
+    inArray(aiWorkflowRun.triggerMessageId, sourceIds), eq(aiWorkflowRun.runKind, 'candidate_draft'),
+    eq(aiWorkflowRun.executorLane, 'default'), eq(aiWorkflowRun.state, 'succeeded')))
+    .orderBy(aiWorkflowRun.triggerMessageId, desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)) : [];
+  const runsBySource = new Map<string, typeof runs>();
+  for (const run of runs) {
+    if (!run.sourceMessageId) continue;
+    const sourceRuns = runsBySource.get(run.sourceMessageId) ?? [];
+    sourceRuns.push(run);
+    runsBySource.set(run.sourceMessageId, sourceRuns);
+  }
+  // The pane edits the item for the latest successful classification. Older
+  // kinds for the same email must not reopen with a second copy of its tasks.
+  const reads = sourceIds.length ? await db.selectDistinctOn([mailExtraction.messageId], {
+    messageId: mailExtraction.messageId, kind: mailExtraction.kind,
+  }).from(mailExtraction).where(and(inArray(mailExtraction.messageId, sourceIds), eq(mailExtraction.status, 'succeeded')))
+    .orderBy(mailExtraction.messageId, desc(mailExtraction.createdAt), desc(mailExtraction.id)) : [];
+  const latestKindBySource = new Map(reads.map(read => [read.messageId, read.kind]));
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -1396,14 +1444,29 @@ export async function planThreadWork(
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
-    const untouched = !item.touched && Object.keys(item.state ?? {}).length === 0;
+    const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
+    const outstanding = currentKind && hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
+    const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
+    if (item.status === 'dismissed') {
+      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
     const replyChange: ThreadWorkChange | undefined =
-      lastHotel && answered && !item.hmsOpen
+      lastHotel && answered && !item.hmsOpen && !outstanding
         ? {
             workItemId: item.id,
             kind,
@@ -1523,7 +1586,7 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
     await enqueueReplyCheckForItem(tx, change.workItemId, change.repoint.sentMessageId);
     return;
   }
-  const from = change.to === 'needs_you' ? 'done' : 'needs_you';
+  const from = change.to === 'needs_you' ? change.from ?? 'done' : 'needs_you';
   const link =
     change.to === 'done' && change.reason === HOTEL_REPLIED
       ? { sentAt: change.sentAt, sentMessageId: change.sentMessageId, followUpDueAt: null }
@@ -1572,13 +1635,15 @@ async function enqueueReplyCheckForItem(tx: WorkTx, workItemId: string, replyMes
  * Applies planThreadWork for one thread: the reply link (C2), the same-thread collapse (C3) and the staff-sent other rule.
  * A hotel reply only closes an item after its latest hms_write has review.ok. The plan is read again under the item row
  * locks, the same lock a field save or a dismissal takes, so nothing a person touched after the first read is changed.
- * Takes the lock only when there is something to change. Returns the changes made.
+ * Normally takes the lock only when there is something to change. A newly completed
+ * analysis must lock even on a no-op to serialize with an in-flight reply refresh.
  */
 export async function refreshThreadWork(
   db: DB,
   input: { transportId: string; threadId: string },
+  opts: { lockEvenIfUnchanged?: boolean } = {},
 ): Promise<ThreadWorkChange[]> {
-  if (!(await planThreadWork(db, input)).length) return [];
+  if (!opts.lockEvenIfUnchanged && !(await planThreadWork(db, input)).length) return [];
   return db.transaction(async (tx) => {
     const changes = await planThreadWork(tx, input, { lock: true });
     for (const change of changes) await applyThreadWorkChange(tx, change);
