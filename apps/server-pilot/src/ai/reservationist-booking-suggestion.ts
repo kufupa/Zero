@@ -205,7 +205,8 @@ function requestScope(task: Task, source: ReservationistBookingSuggestionCitatio
 function explicitStayLabels(text: string): string[] {
   const labels = new Set<string>();
   const generic = new Set([
-    'a', 'an', 'the', 'this', 'that', 'my', 'our', 'your', 'same', 'current', 'new', 'old',
+    'a', 'an', 'the', 'this', 'that', 'my', 'our', 'your', 'same', 'current', 'new', 'old', 'and', 'or', 'of', 'as',
+    'booking', 'reservation', 'confirmation',
     'from', 'to', 'for', 'with', 'is', 'was', 'will', 'room', 'rooms', 'date', 'dates',
     'details', 'request', 'please', 'one', 'two',
   ]);
@@ -218,6 +219,21 @@ function explicitStayLabels(text: string): string[] {
   for (const match of text.matchAll(/\b(?:reference|ref\.?|confirmation)\s*[:#]\s*([\p{L}\p{N}][\p{L}\p{N}_-]{0,39})/giu))
     labels.add(`reference:${match[1]!.toLowerCase()}`);
   return [...labels];
+}
+
+function hasMultipleStayLabels(text: string): boolean {
+  const valuesByKind = new Map<string, Set<string>>();
+  for (const label of explicitStayLabels(text)) {
+    const separator = label.indexOf(':');
+    const kind = label.slice(0, separator);
+    const value = label.slice(separator + 1);
+    const family = kind === 'group' || kind === 'stay' ? 'stay' : kind;
+    const values = valuesByKind.get(family) ?? new Set<string>();
+    values.add(value);
+    valuesByKind.set(family, values);
+    if (values.size > 1) return true;
+  }
+  return false;
 }
 
 function factSourceContext(
@@ -323,6 +339,8 @@ export async function buildReservationistBookingSuggestion(input: {
       requestScopesByLabel.set(label, owners);
     }
   }
+  if (hasMultipleStayLabels(task.source.quote ?? ''))
+    missing.push('This request names multiple groups or booking references; staff must separate them before preparing a booking.');
   const ambiguousTaskFacts = requestScopes.length > 1 && validFacts.some(({ fact }) =>
     !factBelongsToBookingRequest(fact, targetScope, requestScopes, requestScopesByLabel, runtime, input.attachmentAdmissions));
   if (ambiguousTaskFacts) missing.push('Some cited stay facts cannot be uniquely linked to this booking request; check each cited source before preparing a booking.');

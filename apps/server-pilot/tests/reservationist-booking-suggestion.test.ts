@@ -171,6 +171,24 @@ describe('reservationist booking suggestion', () => {
     expect(unaffected?.status).toBe('prefill');
   });
 
+  it('holds a broad one-task request with multiple same-kind stay labels, not one group and its reference', async () => {
+    const groupBody = 'Please book Group A, 1 room for 2 adults only from 2026-12-03 to 2026-12-05 and Group B, 1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
+    const groupInput = plan(groupBody);
+    const groupDateB = currentFact(groupBody, 'group-date-b', 'dates', { arrival: '2027-01-10', departure: '2027-01-12' }, '2027-01-10 to 2027-01-12');
+    const groupRoomB = currentFact(groupBody, 'group-room-b', 'room', { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, 'Group B, 1 room for 2 adults only');
+    const groupResult = await buildReservationistBookingSuggestion({ task: groupInput.task, facts: [groupDateB, groupRoomB],
+      runtime: groupInput.runtime, attachmentAdmissions: [] });
+    expect(groupResult?.status).toBe('needs_details');
+    expect(groupResult?.missing).toContain('This request names multiple groups or booking references; staff must separate them before preparing a booking.');
+
+    const stayBody = 'Please book Stay A, 1 room for 2 adults only from 2026-12-03 to 2026-12-05 and Stay B, 1 room for 2 adults only from 2027-01-10 to 2027-01-12.';
+    const stayInput = plan(stayBody);
+    expect((await buildReservationistBookingSuggestion(stayInput))?.status).toBe('needs_details');
+
+    const referenceInput = plan('Please book Group A as one group booking with confirmation reference ABC123 and 1 room for 2 adults only from 2026-12-03 to 2026-12-05.');
+    expect((await buildReservationistBookingSuggestion(referenceInput))?.status).toBe('prefill');
+  });
+
   it('accepts current attachment facts linked by a unique explicit group label', async () => {
     const requestA = 'Please book Group A using the attached rooming list.';
     const requestB = 'Please book Group B using the attached rooming list.';
