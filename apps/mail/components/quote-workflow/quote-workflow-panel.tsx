@@ -687,6 +687,15 @@ export function QuoteWorkflowPanel({
         return item ? [item.id] : [];
       }) : []);
   const notTracked = (item: QuoteReviewItem) => !trackedReviewIds.has(item.id);
+  const bookingHost = <QuoteBookingHost
+    session={session}
+    paneSave={paneSave}
+    contact={contact}
+    workItemId={workItemId}
+    savedStays={savedStays}
+    screenshot={screenshot ?? paneSave?.screenshot}
+    propertyCode={paneConfig?.propertyCode ?? null}
+  />;
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
@@ -704,6 +713,7 @@ export function QuoteWorkflowPanel({
       <div className="flex flex-col gap-3">
         <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
         <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
+        {bookingHost}
         {shuttleDraft}
       </div>
     );
@@ -730,6 +740,7 @@ export function QuoteWorkflowPanel({
         ) : null}
         {shuttleDraft}
         <PreparedStaffTasks tasks={session.preparedStaffTasks} onSetHandled={onSetPreparedTaskHandled} reviewItems={session.reviewItems} onViewSource={onViewSource} />
+        {bookingHost}
         {amendStays.map((stay) => (
           <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
@@ -1626,15 +1637,7 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      <QuoteBookingHost
-        session={session}
-        paneSave={paneSave}
-        contact={contact}
-        workItemId={workItemId}
-        savedStays={savedStays}
-        screenshot={screenshot ?? paneSave?.screenshot}
-        propertyCode={paneConfig?.propertyCode ?? null}
-      />
+      {bookingHost}
     </div>
   );
 }

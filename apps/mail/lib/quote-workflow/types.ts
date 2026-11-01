@@ -165,6 +165,18 @@ export type ReservationistStaffAction = {
 };
 
 /** A read-only preparation for staff, not a receipt for a completed HMS write. */
+export type ReservationistBookingSuggestion = {
+  version: 1;
+  taskId: string;
+  selectedMessageId: string;
+  source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number };
+  groupId: string;
+  draft: BookingDraftPayload;
+  options: BookingDraftReady['options'];
+  facts: Array<{ kind: string; source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number } }>;
+  missing: string[];
+};
+
 export type ReservationistPreparedTask = {
   id: string;
   kind: string;
@@ -175,6 +187,7 @@ export type ReservationistPreparedTask = {
   earlier?: boolean;
   runId?: string;
   workItemId?: string;
+  bookingSuggestion?: ReservationistBookingSuggestion;
 };
 
 /** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
