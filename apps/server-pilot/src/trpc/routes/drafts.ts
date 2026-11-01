@@ -1422,7 +1422,10 @@ export const draftsRouter = tRouter({
           const {digest: _digest, ...sourcePayload} = savedSource;
           assertReservationistDraftSource(savedSource, sourcePayload);
           const liveMessage = draftSourceMessage(selectedMessage);
-          if (savedMessage.sourceHash === liveMessage.sourceHash && savedMessage.identityHash === liveMessage.identityHash && savedMessage.at === liveMessage.at && savedMessage.direction === liveMessage.direction && liveMessage.direction === 'inbound') {
+          if (savedMessage.sourceHash === liveMessage.sourceHash && savedMessage.identityHash === liveMessage.identityHash && savedMessage.at === liveMessage.at && savedMessage.direction === liveMessage.direction && liveMessage.direction === 'inbound' && await reservationistBookingSuggestionSourcesAreCurrent(db, {
+            result: latest.metrics?.reservationistResult, triggerMessageId: input.messageId,
+            messageSourceHash: liveMessage.sourceHash, source: savedSource, transportId, threadId: input.threadId,
+          })) {
             selectedMessageSourceHash = liveMessage.sourceHash;
             staffSourceHash = staffQuoteSourceHash(selectedMessage);
           }

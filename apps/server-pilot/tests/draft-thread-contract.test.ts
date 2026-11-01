@@ -21,11 +21,61 @@ import {
   configureInboundAttachmentIdentityReader,
   reservationistBookingSuggestionSourcesAreCurrent,
 } from '../src/trpc/routes/drafts.js';
-import type { ReservationistDraftSource } from '../src/ai/reservationist-draft-source.js';
+import { draftSourceHash, draftSourceMessage, sealReservationistDraftSource, type ReservationistDraftSource } from '../src/ai/reservationist-draft-source.js';
+import { reservationistBookingSuggestionGroupId } from '../src/ai/reservationist-booking-suggestion.js';
 
 const reachable = await probeTestDb();
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () => {
+  it('shows a booking suggestion only while the trigger attachments still match', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID(), messageId = randomUUID(), fileId = randomUUID();
+      const runId = randomUUID(), generationId = randomUUID(), at = new Date('2026-07-06T10:00:00Z');
+      const body = 'Please book the rooms in the attached list.';
+      const fileHash = 'a'.repeat(64), s3Key = `attachments/${messageId}/rooms.pdf`;
+      await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`, subject: 'Booking', latestMessageAt: at });
+      const [row] = await db.insert(message).values({ id: messageId, transportId: TRANSPORT_ID, threadId,
+        direction: 'inbound', fromAddress: 'guest@example.com', toAddresses: ['nava@example.com'],
+        textBody: body, receivedAt: at }).returning();
+      await db.insert(attachment).values({ id: fileId, messageId, filename: 'rooms.pdf',
+        mimeType: 'application/pdf', sizeBytes: 12, s3Key });
+      const savedMessage = draftSourceMessage(row!);
+      const requestSource = { attachmentId: `message:${messageId}`, sourceHash: savedMessage.sourceHash,
+        page: 1, start: 0, end: body.length, quote: body };
+      const source = { sourceRef: requestSource.attachmentId, sourceHash: requestSource.sourceHash,
+        page: 1, start: 0, end: body.length };
+      const result = { version: 1, readiness: 'needs_clarification', tasks: [{ id: 'book', kind: 'new_booking',
+        status: 'needs_clarification', requestSource, bookingSuggestion: { version: 1, taskId: 'book',
+          status: 'needs_details', displayOnly: true, saved: false,
+          groupId: reservationistBookingSuggestionGroupId(source), source, partyNames: [],
+          facts: { dates: [{ source: { sourceRef: fileId, sourceHash: fileHash } }],
+            rooms: [], guests: [], boards: [], parties: [] }, missing: ['Check the room list.'] },
+      }] };
+      const resultDigest = draftSourceHash(result);
+      const savedSource = sealReservationistDraftSource({ version: 1, runId, generationId, transportId: TRANSPORT_ID,
+        propertyCode: 'HRCEN', threadId, requestedByUserId: 'user-navaai', triggerMessageId: messageId,
+        causalAt: at.toISOString(), resultDigest, messages: [savedMessage], attachments: [{
+          attachmentId: fileId, messageId, s3Key, mimeType: 'application/pdf', sizeBytes: 12, sourceHash: fileHash, inline: false,
+        }] });
+      await db.insert(aiWorkflowRun).values({ id: runId, idempotencyKey: randomUUID(), transportId: TRANSPORT_ID,
+        threadId, triggerMessageId: messageId, runKind: 'candidate_draft', modelId: 'test', promptVersion: 'test',
+        state: 'succeeded', metrics: { reservationistResult: result, reservationistDraftSource: savedSource, resultDigest } });
+      const { drafts } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
+      try {
+        configureInboundAttachmentIdentityReader(async () => ({ sha256: fileHash }));
+        const current = await drafts.reviewForMessage({ threadId, messageId });
+        expect(current?.reviewSummary?.tasks).toMatchObject([{ bookingSuggestion: { taskId: 'book' } }]);
+        configureInboundAttachmentIdentityReader(async () => ({ sha256: 'b'.repeat(64) }));
+        const stale = await drafts.reviewForMessage({ threadId, messageId });
+        expect(stale?.reviewSummary?.tasks).toHaveLength(1);
+        expect(stale?.reviewSummary?.tasks[0]).not.toHaveProperty('bookingSuggestion');
+      } finally {
+        configureInboundAttachmentIdentityReader(null);
+      }
+    });
+  });
+
   it('rechecks trigger attachments, including uncited content, without reading earlier messages', async () => {
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID(), triggerMessageId = randomUUID(), priorMessageId = randomUUID();
