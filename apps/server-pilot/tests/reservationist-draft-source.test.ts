@@ -60,8 +60,9 @@ it('resolves draft property HRDAV only for Da Vinci transports when HMS_DAVINCI_
  expect(reservationistDraftPropertyCode('transport-centurion')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-davinci')).toBe('HRCEN');
  expect(reservationistDraftPropertyCode('transport-faith',{HMS_DAVINCI_MAKE_QUOTE:'true'})).toBe('HRCEN');
- expect(reservationistDraftPropertyCode('transport-davinci',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
- expect(reservationistDraftPropertyCode('transport-kmgidi',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
+ const davinciQuoteEnv={HMS_DAVINCI_MAKE_QUOTE:'on',RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV:'/synthetic/hrdav-quote.json'};
+ expect(reservationistDraftPropertyCode('transport-davinci',davinciQuoteEnv)).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-kmgidi',davinciQuoteEnv)).toBe('HRDAV');
  expect(reservationistDraftPropertyCode('transport-centurion',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRCEN');
  expect(()=>sealReservationistDraftSource({...source,transportId:'transport-davinci',propertyCode:'HRDAV'})).not.toThrow();
 });
