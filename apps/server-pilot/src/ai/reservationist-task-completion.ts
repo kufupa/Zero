@@ -167,10 +167,11 @@ export async function setRequestHandled(db: DB, input: {
     const [identity] = await tx.select({ threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
     if (!identity?.threadId || !identity.sourceMessageId) return 'not_found';
-    // Serialize acknowledgement and undo across different classifications of one email.
+    // Serialize acknowledgement and undo across classifications without blocking
+    // the foreign-key check when an HMS approval inserts a run for this message.
     const [source] = await tx.select({ id: message.id }).from(message)
       .where(and(eq(message.id, identity.sourceMessageId), eq(message.transportId, input.transportId), eq(message.threadId, identity.threadId)))
-      .limit(1).for('update');
+      .limit(1).for('no key update');
     if (!source) return 'not_found';
     const [item] = await tx.select({ id: workItem.id, threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state, status: workItem.status })
       .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1).for('update');
