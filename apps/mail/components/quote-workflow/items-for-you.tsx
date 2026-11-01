@@ -74,7 +74,8 @@ export function ItemsForYou({
                 Edit reply
               </button>
             ) : null}
-            {!item.blocking && item.kind !== 'pricing_fact' ? (
+            {!item.blocking && item.kind !== 'pricing_fact' &&
+            (item.kind !== 'staff_review' || Boolean(item.runId && item.workItemId)) ? (
               <button
                 type="button"
                 className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"

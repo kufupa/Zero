@@ -271,6 +271,17 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(screen.getByRole('button', {name:'Show in email'}));
     expect(view).toHaveBeenCalledWith(source);
   });
+  it('shows a persisted taskless voucher acknowledgement as done after reload', () => {
+    const voucher={id:'voucher:message:mail-1:hash:0:22',kind:'staff_review' as const,rank:'secondary' as const,
+      text:'Please review attached hotel voucher',sourceLabel:'This email',sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),
+      sourceKind:'message' as const,messageId:'mail-1',blocking:false,handled:true,runId:'run-1',workItemId:'item-1'};
+    const undo=vi.fn(),session={...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[voucher]};
+    render(<QuoteWorkflowPanel session={session} onUndoReviewItem={undo} />);
+    expect(screen.getByText(`Done: ${voucher.text}`)).toBeDefined();
+    expect(screen.queryByRole('button',{name:`Mark as done: ${voucher.text}`})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:`Undo mark as done: ${voucher.text}`}));
+    expect(undo).toHaveBeenCalledWith(voucher.id);
+  });
   it('does not replace an earlier request with a current request sharing its task id', () => {
     const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
       text:'Current question?',sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};

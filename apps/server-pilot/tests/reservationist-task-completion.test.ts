@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { handledRequestKeys, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled, setVoucherReviewHandled, voucherReviewCompletionKeys } from '../src/ai/reservationist-task-completion.js';
 import { ensureWorkItemForMessage, refreshThreadWork } from '../src/ai/work-items.js';
 import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
@@ -44,9 +44,12 @@ it('keeps an unread business attachment open even when no request could be extra
 });
 
 it('keeps a source-bound voucher staff review open when no task was selected', () => {
-  const recovery = {kind:'voucher_review',disclosure:'staff_only',sourceKind:'message',sourceRef:'message:one',messageId:'one',sourceHash:'a'.repeat(64)};
-  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[recovery]}, 'run', {})).toBe(true);
-  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,sourceRef:'message:other'}]}, 'run', {})).toBe(false);
+  const quote='Please check the attached hotel voucher';
+  const recovery={kind:'voucher_review',disclosure:'staff_only',reason:'current_voucher_request_requires_staff_review',sourceKind:'message',sourceRef:'message:one',messageId:'one',sourceHash:'a'.repeat(64),page:1,start:4,end:4+quote.length,quote};
+  const result={version:1,tasks:[],sourceRecoveries:[recovery]}, key=voucherReviewCompletionKeys(result).get(`voucher:${recovery.sourceRef}:${recovery.sourceHash}:${recovery.start}:${recovery.end}`)!;
+  expect(hasOutstandingRequests(result, 'run', {})).toBe(true);
+  expect(hasOutstandingRequests(result, 'run', {reservationistHandledRequests:{[key]:true}})).toBe(false);
+  expect(hasOutstandingRequests({version:1,tasks:[],sourceRecoveries:[{...recovery,sourceRef:'message:other'}]}, 'run', {})).toBe(true);
 });
 
 it('clears an old unread-file warning only after reviewing that file, without losing earlier requests', () => {
@@ -69,6 +72,28 @@ it('clears an old unread-file warning only after reviewing that file, without lo
 
 const reachable = await probeTestDb();
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', () => {
+  it('persists a taskless voucher acknowledgement against its exact source recovery', async () => {
+    await withSeededTestDb(async db => {
+      const threadId=randomUUID(),messageId=randomUUID(),runId=randomUUID(),now=new Date();
+      const quote='Please check the attached hotel voucher';
+      const recovery={kind:'voucher_review',disclosure:'staff_only',reason:'current_voucher_request_requires_staff_review',sourceKind:'message',
+        sourceRef:`message:${messageId}`,messageId,sourceHash:'a'.repeat(64),page:1,start:4,end:4+quote.length,quote};
+      const result={version:1,tasks:[],sourceRecoveries:[recovery]};
+      await db.insert(mailThread).values({id:threadId,transportId:TRANSPORT_ID,threadRootId:`<${threadId}@example.invalid>`,latestMessageAt:now});
+      await db.insert(message).values({id:messageId,transportId:TRANSPORT_ID,threadId,direction:'inbound',fromAddress:'guest@example.invalid',toAddresses:[],textBody:quote,receivedAt:now});
+      const [item]=await db.insert(workItem).values({transportId:TRANSPORT_ID,threadId,sourceMessageId:messageId,kind:'other'}).returning();
+      await db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId:TRANSPORT_ID,threadId,triggerMessageId:messageId,
+        runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'succeeded',metrics:{reservationistResult:result}});
+      const itemId=`voucher:${recovery.sourceRef}:${recovery.sourceHash}:${recovery.start}:${recovery.end}`;
+      const input={transportId:TRANSPORT_ID,workItemId:item!.id,userId:CENTURION_USER_ID,runId,reviewItemId:itemId,handled:true};
+      expect(await setVoucherReviewHandled(db,input)).toBe('recorded');
+      const states=await handledRequestStates(db,{transportId:TRANSPORT_ID,threadId,sourceIds:[messageId]});
+      expect(hasOutstandingRequests(result,runId,states.get(messageId))).toBe(false);
+      expect((await db.select().from(workEvent).where(eq(workEvent.workItemId,item!.id))).map(row=>row.type)).toEqual(['request.handled']);
+      expect(await setVoucherReviewHandled(db,{...input,reviewItemId:`${itemId}:other`})).toBe('stale');
+    });
+  });
+
   it('persists one acknowledgement, survives a rerun and refuses a stale or other-mailbox update', async () => {
     await withSeededTestDb(async db => {
       const threadId = randomUUID(), messageId = randomUUID(), runId = randomUUID(), nextRunId = randomUUID();

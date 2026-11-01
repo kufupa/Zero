@@ -548,7 +548,8 @@ export function staffQuoteGroupsFromStay(
 
 export function readStaffActions(value: unknown): ReservationistStaffAction[] {
   if (!value || typeof value !== 'object') return [];
-  const summary = (value as { reviewSummary?: { staffActions?: unknown } }).reviewSummary;
+  const envelope = value as { runId?: unknown; workItemId?: unknown; reviewSummary?: { staffActions?: unknown } };
+  const summary = envelope.reviewSummary;
   const raw = summary?.staffActions ?? (value as { staffActions?: unknown }).staffActions;
   if (!Array.isArray(raw)) return [];
   const actions: ReservationistStaffAction[] = [];
@@ -590,6 +591,9 @@ export function readStaffActions(value: unknown): ReservationistStaffAction[] {
         : {}),
       ...(typeof action.reason === 'string' && action.reason.trim() ? { reason: action.reason } : {}),
       ...(action.kind === 'business_document_failure' && action.readable === true ? { readable: true } : {}),
+      ...(typeof action.handled === 'boolean' ? { handled: action.handled } : {}),
+      ...(typeof envelope.runId === 'string' && envelope.runId ? { runId: envelope.runId } : {}),
+      ...(typeof envelope.workItemId === 'string' && envelope.workItemId ? { workItemId: envelope.workItemId } : {}),
     });
   }
   return actions;
@@ -1882,6 +1886,7 @@ type DraftsClient = {
   get?: { query: (input: { id: string }) => Promise<unknown> };
   reviewForMessage?: { query: (input: { threadId: string; messageId: string; workItemId?: string }, options?: StaffQuoteCallOptions) => Promise<unknown> };
   setRequestHandled?: { mutate: (input: { workItemId: string; runId: string; taskId: string; handled: boolean }, options?: StaffQuoteCallOptions) => Promise<unknown> };
+  setVoucherReviewHandled?: { mutate: (input: { workItemId: string; runId: string; reviewItemId: string; handled: boolean }, options?: StaffQuoteCallOptions) => Promise<unknown> };
 };
 
 function staffQuoteCallOptions(
@@ -1951,6 +1956,7 @@ export function staffQuoteFromTrpc(trpc: unknown): {
         const route = Reflect.get(target, property, target);
         if (property === 'reviewForMessage') return mailboxStaffQuoteQuery(route as DraftsClient['reviewForMessage'], mailbox);
         if (property === 'setRequestHandled') return mailboxStaffQuoteMutation(route as DraftsClient['setRequestHandled'], mailbox);
+        if (property === 'setVoucherReviewHandled') return mailboxStaffQuoteMutation(route as DraftsClient['setVoucherReviewHandled'], mailbox);
         return route;
       },
     }),

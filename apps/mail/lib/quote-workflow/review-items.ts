@@ -141,6 +141,9 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       messageId: action.messageId,
       filename: action.filename,
       reason: action.reason,
+      handled: action.handled,
+      runId: action.runId,
+      workItemId: action.workItemId,
       ...(action.readable === true ? {readable: true} : {}),
       blocking: action.blockingQuote,
     });
@@ -199,6 +202,6 @@ export function openReviewItems(session: {
   return (session.reviewItems ?? []).filter((item) => {
     if (!notNoise(item)) return false;
     if (item.kind === 'pricing_fact' || item.blocking) return true;
-    return !handled.has(item.id);
+    return item.handled !== true && !handled.has(item.id);
   });
 }

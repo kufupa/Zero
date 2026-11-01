@@ -11,7 +11,7 @@ import {
   type ExecuteStaffQuoteInput,
   type StaffQuoteJobQuery,
 } from '../lib/quote-workflow/staff-quote-bind';
-import { mapStaffActions } from '../lib/quote-workflow/review-items';
+import { mapStaffActions, openReviewItems } from '../lib/quote-workflow/review-items';
 import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
@@ -74,9 +74,11 @@ it('does not use a review for another message', async () => {
 it('keeps a source-bound voucher review distinct from an unanswered question',()=>{
   const action={id:'voucher:message:mail-1:a:0:22',kind:'voucher_review',text:'attached hotel voucher',sourceRef:'message:mail-1',
     sourceHash:'a'.repeat(64),sourceKind:'message',messageId:'mail-1',reason:'No voucher has been validated.',blockingQuote:false,status:'open'};
-  const parsed=readStaffActions({staffActions:[action,{...action,id:'wrong-source',sourceRef:'message:mail-2'}]});
+  const parsed=readStaffActions({runId:'run-1',workItemId:'item-1',reviewSummary:{staffActions:[{...action,handled:true},{...action,id:'wrong-source',sourceRef:'message:mail-2'}]}});
   expect(parsed).toHaveLength(1);
-  expect(mapStaffActions(parsed)).toMatchObject([{kind:'staff_review',text:'attached hotel voucher',sourceRef:'message:mail-1',messageId:'mail-1'}]);
+  const items=mapStaffActions(parsed);
+  expect(items).toMatchObject([{kind:'staff_review',text:'attached hotel voucher',sourceRef:'message:mail-1',messageId:'mail-1',handled:true,runId:'run-1',workItemId:'item-1'}]);
+  expect(openReviewItems({reviewItems:items})).toEqual([]);
 });
 
 it('binds prepared tasks to the selected email review', async () => {
