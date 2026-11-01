@@ -44,8 +44,10 @@ export function handledRequestKeys(state: unknown): Set<string> {
 }
 
 export function hasOutstandingRequests(result: unknown, runId: string, state: unknown): boolean {
+  if (result == null) return false; // Older non-reservationist runs have no task inventory.
   const value = object(result);
-  if (value.version !== 1 || !Array.isArray(value.tasks) || !value.tasks.length) return false;
+  if (value.version !== 1 || !Array.isArray(value.tasks)) return true;
+  if (!value.tasks.length) return false;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
   return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { handledRequestKeys, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
+import { handledRequestKeys, hasOutstandingRequests, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
@@ -20,6 +20,12 @@ it('carries staff completion only across an unchanged, unique source span', () =
   const ambiguous = requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-a');
   expect(ambiguous.get('one')).not.toBe(ambiguous.get('two'));
   expect(ambiguous.get('one')).not.toBe(requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-b').get('one'));
+});
+
+it('does not auto-close a malformed stored task inventory', () => {
+  expect(hasOutstandingRequests(undefined, 'run', {})).toBe(false);
+  expect(hasOutstandingRequests({ version: 1, tasks: null }, 'run', {})).toBe(true);
+  expect(hasOutstandingRequests({ version: 2, tasks: [] }, 'run', {})).toBe(true);
 });
 
 const reachable = await probeTestDb();
