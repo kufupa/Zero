@@ -25,7 +25,15 @@ export function ItemsForYou({
     if (!action || inFlight.current.has(itemId)) return;
     inFlight.current.add(itemId);
     setPendingItems(new Set(inFlight.current));
-    void Promise.resolve().then(() => action(itemId)).catch(() => undefined).finally(() => {
+    let result: void | Promise<void>;
+    try {
+      result = action(itemId);
+    } catch (error) {
+      inFlight.current.delete(itemId);
+      setPendingItems(new Set(inFlight.current));
+      throw error;
+    }
+    void Promise.resolve(result).catch(() => undefined).finally(() => {
       inFlight.current.delete(itemId);
       setPendingItems(new Set(inFlight.current));
     });
