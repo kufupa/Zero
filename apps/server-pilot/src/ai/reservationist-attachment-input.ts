@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { maskIncomingCardNumbers } from './card-mask.js';
+import { extractReservationistXlsxText, isReservationistXlsxMimeType } from './reservationist-xlsx.js';
 import type { DocumentDisclosure, DocumentSource } from './reservationist-document-facts.js';
 export type ReservationistAttachmentMetadata = {
   attachmentId: string;
@@ -164,13 +165,15 @@ export async function admitReservationistAttachment(input: {
     }catch{input.read.signal.throwIfAborted();return fail('malformed_or_unsupported_raster');}
   }
   const office=isDocxMimeType(m.mimeType);
+  const spreadsheet=isReservationistXlsxMimeType(m.mimeType);
   if(office&&!input.officeConverter)return fail('office_converter_unavailable');
-  if (!['application/pdf', 'text/plain'].includes(m.mimeType) && !office)
+  if (!['application/pdf', 'text/plain'].includes(m.mimeType) && !office && !spreadsheet)
     return fail('unsupported_business_attachment');
   const bytes = await readAuthorizedArtifactBytes({
     ...input.read,
     expectedSha256: m.sourceHash,
     allowOffice:office,
+    allowSpreadsheet:spreadsheet,
     resolveLocator: async (id) => {
       const locator = await input.read.resolveLocator(id);
       return locator &&
@@ -185,7 +188,13 @@ export async function admitReservationistAttachment(input: {
   if(!await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
   let pages: readonly string[] | null, pageCount: number, reason: string;
   let rendering:DocumentSource['rendering'];
-  if(office){
+  if(spreadsheet){
+    const extracted=await extractReservationistXlsxText({body:bytes.body,signal:input.read.signal});
+    if(extracted.reason!=='text'||!extracted.text)return fail(extracted.reason);
+    if(createHash('sha256').update(bytes.body).digest('hex')!==m.sourceHash||
+      !await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
+    reason='text';pages=[extracted.text];pageCount=1;
+  } else if(office){
     const extracted=await extractReservationistOfficeText({body:bytes.body,attachmentId:m.attachmentId,signal:input.read.signal,officeConverter:input.officeConverter!,runner:input.runner,revalidate:async()=>createHash('sha256').update(bytes.body).digest('hex')===m.sourceHash&&await input.read.revalidate!()&&JSON.stringify(m)===JSON.stringify(input.metadata)&&JSON.stringify(originalScope)===JSON.stringify(input.scope)});
     if(extracted.reason!=='text'||!extracted.pdfBody||!extracted.pages||extracted.pageCount===null)return fail(extracted.reason);
     reason=extracted.reason;pages=extracted.pages.map(maskIncomingCardNumbers);pageCount=extracted.pageCount;
