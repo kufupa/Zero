@@ -1,12 +1,17 @@
 import {createHash} from 'node:crypto';
 import type {ModelInvokeResult} from '../src/ai/bedrock/adapter.js';
 import {describe,it,expect,vi} from 'vitest';
-import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
+import {createReservationistDependencies,currentAuthoredGuestRequest,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
 import {runReservationistRuntime} from '../src/ai/reservationist-runtime.js';
 import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 const input={version:1 as const,requestId:'test',authorizationScope:{ownerRef:'transport',threadId:'thread'},propertyCode:'HRCEN',trigger:{id:'message',at:'2026-10-04T10:00:00Z'},messages:[{id:'message',at:'2026-10-04T10:00:00Z',direction:'inbound' as const,text:'Please quote and answer the parking question.'}],authorizedArtifacts:[],clock:{causalAt:'2026-10-04T10:00:00Z',sourceAt:'2026-10-04T09:00:00Z',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+it('checks a cited HTML request only against its own authored alternative',()=>{
+ const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+ expect(currentAuthoredGuestRequest(task as any,{...scoped,messages:[{...scoped.messages[0]!,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:0,end:text.length}]}]})).toBe(false);
+});
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
