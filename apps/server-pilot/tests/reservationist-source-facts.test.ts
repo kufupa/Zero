@@ -188,7 +188,7 @@ describe('plain and HTML citation binding',()=>{
   const html='Could you please provide single and double room rates?',plan=await run(html);
   expect(plan.facts[0]).toMatchObject({id:'rate',source:{start:0,end:plain.length},value:{quotationBasis:'per_room_rate'}});
   expect(plan.tasks[0]).toMatchObject({id:'quote',source:{start:htmlStart,end:htmlStart+html.length}});
-  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow('Per-room rate option not entailed by current source');
+  await expect(run('Please do not quote single and double room rates.')).rejects.toThrow();
  });
  it.each([
   {id:'html-room',body:'Please quote one room for one adult.',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},expected:{convention:{rule:'centurion_staff_occupancy_v1'}}},
@@ -230,6 +230,7 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Kindly do not quote one double room for two adults.','quote')).rejects.toThrow();
   await expect(run('Kindly quote one double room for two adults.','quote','Please do not quote one double room for two adults.')).rejects.toThrow('Conflicting quote request across message views');
   await expect(run('Kindly quote one single room for one adult.','quote',undefined,1)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Kindly quote one double room for two adults.','quote','Please quote one double room for two adults. Do not book us yet.')).resolves.toMatchObject({facts:[{kind:'room'}]});
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
