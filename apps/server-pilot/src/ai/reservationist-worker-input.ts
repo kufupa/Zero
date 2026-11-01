@@ -74,11 +74,14 @@ export function renderReservationistMessage(row: Pick<ReservationistWorkerMessag
     ? modelMessageText({ textBody: null, htmlBody: row.htmlBody }, normalizeMessageText({ textBody: null, htmlBody: row.htmlBody })) : '');
 }
 
-/** POP3's sentAt is copied from the email Date header; use its observed arrival instead. */
+/** A POP3 Date header cannot move an observed message earlier, including returned native replies. */
 export function reservationistMessageAt(row: { direction: string; arrivedAt?: Date | null; createdAt?: Date | null; receivedAt: Date | null; sentAt: Date | null; pop3Uidl?: string | null; sourceProvenance?: Record<string, unknown> | null }) {
   const importedPop3 = row.pop3Uidl != null && row.sourceProvenance?.canonicalContentVersion == null;
-  if (row.direction === 'outbound')
-    return importedPop3 ? row.arrivedAt ?? row.createdAt ?? null : row.sentAt;
+  if (row.direction === 'outbound') {
+    if (!importedPop3) return row.sentAt;
+    const observed = row.arrivedAt ?? row.createdAt ?? null;
+    return observed && row.sentAt && row.sentAt.getTime() > observed.getTime() ? row.sentAt : observed;
+  }
   return row.arrivedAt ?? row.createdAt ?? row.receivedAt ?? null;
 }
 
