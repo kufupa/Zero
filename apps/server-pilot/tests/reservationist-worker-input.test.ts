@@ -50,6 +50,23 @@ describe('reservationist worker input', () => {
     expect(input.capabilities).toEqual({ pmsWrite: false, emailSend: false });
   });
 
+  it('uses the cited HTML view for an unambiguous single-room convention', async () => {
+    const request = 'Please quote one room: Arrival 21 December; departure 23 December.';
+    const extract = async (plain: string) => {
+      const { input } = await build([row('current', 4, { textBody: plain, htmlBody: `<p>${request}</p>` })]);
+      const message = input.messages[0]!, start = message.text.indexOf(request);
+      const source = { attachmentId: 'message:current', sourceHash: createHash('sha256').update(message.text).digest('hex'), page: 1, quote: request, start, end: start + request.length };
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['room'], source }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    const plan = await extract('Please review my booking.\nKind regards\nGuest');
+    expect(plan.facts[0]!.convention?.rule).toBe('centurion_staff_occupancy_v1');
+    await expect(extract('Do not quote one room.\nKind regards\nGuest')).rejects.toThrow();
+  });
+
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
     const extractStay = (message: any, dateQuote: string, dateStart: number, taskQuote: string, taskStart: number) => {
       const sourceHash = createHash('sha256').update(message.text).digest('hex');
@@ -220,6 +237,29 @@ describe('reservationist worker input', () => {
       } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
         admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
     }
+  });
+
+  it('keeps a scoped meal correction from disappearing between authored views', async () => {
+    const groupA = 'Group A: Please quote one room with breakfast included.';
+    const groupBCorrection = "Correction: use Group B's room-only plan instead.";
+    const extract = async (plainHasCorrection: boolean, includeGroupB: boolean, correction = groupBCorrection, groupBBoard = 'room-only') => {
+      const { input } = await build([row('current', 4, {
+        textBody: plainHasCorrection ? `${groupA}\n${correction}` : groupA,
+        htmlBody: `<p>${groupA}</p><p>${correction}</p>`,
+      })]);
+      const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+      const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+      const facts: any[] = [{ id: 'group-a-board', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(groupA) }];
+      if (includeGroupB) facts.push({ id: 'group-b-board', kind: 'board', value: { board: groupBBoard, roomRef: 'B' }, disclosure: 'guest', source: source(correction) });
+      return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts, tasks: [{ id: 'quote', kind: 'quote', factIds: facts.map(fact => fact.id), source: source(groupA) }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal });
+    };
+    await expect(extract(false, false)).rejects.toThrow('Ambiguous original text span');
+    await expect(extract(false, false, 'Correction: Group B is room-only.')).resolves.toMatchObject({ facts: [{ id: 'group-a-board' }] });
+    await expect(extract(true, true, "Correction: use Group B's room only plan instead.", 'room only'))
+      .resolves.toMatchObject({ facts: [{ id: 'group-a-board' }, { id: 'group-b-board' }] });
   });
 
   it('retains an independent question about a shared meal fact', async () => {
