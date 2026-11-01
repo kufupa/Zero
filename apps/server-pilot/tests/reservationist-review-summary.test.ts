@@ -27,7 +27,7 @@ it('projects only a request-source-bound booking suggestion for the selected mes
  expect(selected.tasks[0].details).toContain('Child occupancy is unknown.');
  const otherMessage=(drafts as any).buildReservationistReviewSummary(raw,now,[],'other',request.sourceHash,staffSourceHash);
  expect(otherMessage.tasks[0].bookingSuggestion).toBeUndefined();
- const sourceMismatch=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound','a'.repeat(64),staffSourceHash);
+ const sourceMismatch=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound','b'.repeat(64),staffSourceHash);
  expect(sourceMismatch.tasks[0].bookingSuggestion).toBeUndefined();
  const noCurrentStaffHash=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound',request.sourceHash);
  expect(noCurrentStaffHash.tasks[0].bookingSuggestion).toBeUndefined();
