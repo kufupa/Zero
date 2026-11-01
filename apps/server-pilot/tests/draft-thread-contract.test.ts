@@ -97,6 +97,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         }));
         expect(await reservationistBookingSuggestionSourcesAreCurrent(db, input)).toBe(false);
         reads.length = 0;
+        configureInboundAttachmentIdentityReader(async ({ attachmentId }) => {
+          reads.push(attachmentId);
+          return { sha256: hashes.get(attachmentId) ?? '' };
+        });
         await db.insert(attachment).values({ id: randomUUID(), messageId: triggerMessageId, filename: 'new.pdf',
           mimeType: 'application/pdf', sizeBytes: 4,
           s3Key: `attachments/${triggerMessageId}/new.pdf` });
