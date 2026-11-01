@@ -41,7 +41,7 @@ function targetRefs(text:string):string[]{
  });
  return [...new Set(refs.map(ref=>ref.toUpperCase()))];
 }
-const refusesCancellation=/\b(?:do not|don['’]t|never|no longer)\b.{0,40}\b(?:cancel(?:lation)?|withdraw)\b|\b(?:cancel(?:lation)?|withdraw)\b.{0,40}\b(?:(?:not|no longer)\s+(?:needed|required|necessary|wanted)|unwanted|unnecessary)\b/i;
+const refusesCancellation=/\b(?:do not|don['’]t|never|no longer)\b.{0,40}\b(?:cancel(?:lation)?|withdraw)\b|\b(?:cancel(?:lation)?|withdraw)\b.{0,40}\b(?:not(?!\s+(?:yet\s+)?(?:been\s+)?(?:processed|completed)\b)|no longer|unwanted|unnecessary)\b/i;
 type Context={attachmentAdmissions?:readonly AttachmentAdmission[];existingDocumentTarget?:{reservationRef:string|null;priorQuoteRef?:string};task:Task;facts:ValidatedDocumentPlan['facts'];input:ReservationistRuntimeInput;signal:AbortSignal;evaluateSourceAt?:()=>string};
 type OverridePacket=Awaited<ReturnType<typeof resolveApprovedOverride>>;
 export type ValidatedRateClaimFact=Extract<ValidatedDocumentFact,{kind:'rate_claim'}>;

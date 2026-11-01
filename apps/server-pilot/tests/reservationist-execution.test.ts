@@ -65,6 +65,8 @@ it.each([
  ['Cancellation has not yet been processed for reservation 12345678.',true],
  ['Cancellation is not required for reservation 12345678.',false],
  ['Cancellation is no longer needed for reservation 12345678.',false],
+ ['Cancellation is not going ahead for reservation 12345678.',false],
+ ['Cancellation has not yet been processed and is not going ahead for reservation 12345678.',false],
 ] as const)('compares a cancellation request with the opposite authored view: %s',(html,expected)=>{
  const plain='Please cancel reservation 12345678.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+'\n\n[HTML alternative of the same message]\n'.length,end:text.length}]}]};
  expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
