@@ -1884,6 +1884,11 @@ export function reduceQuoteSession(
         extras,
         action.actions,
       );
+      // A background refresh replaces staff actions, not warnings for the current quote.
+      const existingTexts = new Set(reviewItems.map((item) => item.text));
+      reviewItems.push(...session.reviewItems.filter((item) =>
+        item.sourceLabel === 'Quote extras' && !existingTexts.has(item.text),
+      ));
       const sourceKey = reviewSourceKey({ ...session, staffActions: action.actions });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
       return {

@@ -609,8 +609,9 @@ export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTa
     if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
     const allDetails = Array.isArray(task.details) ? task.details.filter((detail): detail is string => typeof detail === 'string' && !!detail.trim()) : [];
     if (task.kind === 'question' ? allDetails.length === 0 : task.state === 'Ready') continue;
-    const details = allDetails.slice(0, 400);
-    if (allDetails.length > details.length) details.push('Some prepared details are not shown. Check the request and HMS.');
+    const details = allDetails.length > 400
+      ? [...allDetails.slice(0, 395), 'Some prepared details are not shown. Check the request and HMS.', ...allDetails.slice(-5)]
+      : allDetails;
     ids.add(task.id);
     tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details });
   }

@@ -68,6 +68,17 @@ it('binds prepared tasks to the selected email review', async () => {
   expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
 });
 
+it('keeps the final no-save notice when a long prepared booking is shortened', async () => {
+  const details = [...Array.from({length: 410}, (_, index) => `Night ${index}`), 'No booking has been saved.'];
+  const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Pending staff action',details};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{tasks:[task]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1'});
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.tasks?.[0]?.details).toContain('No booking has been saved.');
+  expect(result.tasks?.[0]?.details).toContain('Some prepared details are not shown. Check the request and HMS.');
+});
+
 describe('HRDAV native room and board maps', () => {
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
