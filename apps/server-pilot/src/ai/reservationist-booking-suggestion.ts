@@ -24,6 +24,8 @@ export type ReservationistBookingSuggestion = {
   status: 'prefill' | 'needs_details';
   displayOnly: true;
   saved: false;
+  /** Mail-form hash added only by the current-message review route after source verification. */
+  staffSourceHash?: string;
   /** Stable per request source; safe for the pane's `_roomIndex` save id. */
   groupId: string;
   source: ReservationistBookingSuggestionCitation;
@@ -57,18 +59,6 @@ export type ReservationistBookingSuggestion = {
       source: ReservationistBookingSuggestionCitation;
     }>;
     parties: Array<{ name: string; source: ReservationistBookingSuggestionCitation }>;
-    rateClaims: Array<{
-      amount: string;
-      currency: 'ZAR';
-      basis: string;
-      source: ReservationistBookingSuggestionCitation;
-    }>;
-    paymentClaims: Array<{
-      amount: string;
-      currency: 'ZAR';
-      status: 'claimed_paid' | 'requested' | 'pending';
-      source: ReservationistBookingSuggestionCitation;
-    }>;
   };
   /** Missing facts block draft creation; draft.missing contains existing HMS-form questions. */
   missing: string[];
@@ -260,12 +250,6 @@ export async function buildReservationistBookingSuggestion(input: {
   const parties = validFacts.flatMap(({ fact, source }) => fact.kind === 'party'
     ? [{ name: fact.value, source }]
     : []);
-  const rateClaims = validFacts.flatMap(({ fact, source }) => fact.kind === 'rate_claim'
-    ? [{ amount: fact.value.amount, currency: fact.value.currency, basis: fact.value.basis, source }]
-    : []);
-  const paymentClaims = validFacts.flatMap(({ fact, source }) => fact.kind === 'payment_claim'
-    ? [{ amount: fact.value.amount, currency: fact.value.currency, status: fact.value.status, source }]
-    : []);
   const partyNames = [...new Map(parties.map((party) => [party.name.trim().toLowerCase(), party.name.trim()])).values()];
 
   const datePairs = new Map(dates.map((date) => [`${date.arrival}\0${date.departure}`, date]));
@@ -299,8 +283,6 @@ export async function buildReservationistBookingSuggestion(input: {
     guests,
     boards,
     parties,
-    rateClaims,
-    paymentClaims,
   };
   const groupId = reservationistBookingSuggestionGroupId(request);
   const canPrefill =

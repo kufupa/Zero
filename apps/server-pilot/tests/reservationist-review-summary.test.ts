@@ -18,13 +18,19 @@ it('shows a new booking with source-observed per-room guests, dates and exact ag
 it('projects only a request-source-bound booking suggestion for the selected message',()=>{
  const request=requestSource('Please book a room.');
  const source={sourceRef:request.attachmentId,sourceHash:request.sourceHash,page:request.page,start:request.start,end:request.end};
- const bookingSuggestion={version:1,taskId:'book',status:'needs_details',displayOnly:true,saved:false,groupId:reservationistBookingSuggestionGroupId(source),source,facts:{},missing:['Child occupancy is unknown.']};
+ const bookingSuggestion={version:1,taskId:'book',status:'needs_details',displayOnly:true,saved:false,groupId:reservationistBookingSuggestionGroupId(source),source,partyNames:[],facts:{},missing:['Child occupancy is unknown.']};
  const raw={version:1,readiness:'needs_clarification',tasks:[{id:'book',kind:'new_booking',status:'needs_clarification',requestSource:request,bookingSuggestion}]};
- const selected=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound');
- expect(selected.tasks[0].bookingSuggestion).toEqual(bookingSuggestion);
+ const staffSourceHash='c'.repeat(64);
+ const selected=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound',request.sourceHash,staffSourceHash);
+ expect(selected.tasks[0].bookingSuggestion).toEqual({...bookingSuggestion,staffSourceHash});
+ expect(selected.tasks[0].bookingSuggestion.source.sourceHash).toBe(request.sourceHash);
  expect(selected.tasks[0].details).toContain('Child occupancy is unknown.');
- const otherMessage=(drafts as any).buildReservationistReviewSummary(raw,now,[],'other');
+ const otherMessage=(drafts as any).buildReservationistReviewSummary(raw,now,[],'other',request.sourceHash,staffSourceHash);
  expect(otherMessage.tasks[0].bookingSuggestion).toBeUndefined();
+ const sourceMismatch=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound','a'.repeat(64),staffSourceHash);
+ expect(sourceMismatch.tasks[0].bookingSuggestion).toBeUndefined();
+ const noCurrentStaffHash=(drafts as any).buildReservationistReviewSummary(raw,now,[],'inbound',request.sourceHash);
+ expect(noCurrentStaffHash.tasks[0].bookingSuggestion).toBeUndefined();
 });
 it('keeps accepted quote wording separate from new booking',()=>{
  const result=summary({tasks:[{id:'book',kind:'acceptance',status:'pending_pms_action'}],packets:[{...booking,kind:'accepted_quote'}]});

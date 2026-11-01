@@ -43,6 +43,7 @@ import {
 import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,assertReservationistDraftSource,draftSourceMessage,type ReservationistDraftSource} from '../../ai/reservationist-draft-source.js';
 import {isReservationistCancellationReviewPacket} from '../../ai/reservationist-pending-action.js';
 import {reservationistBookingSuggestionGroupId, type ReservationistBookingSuggestionCitation} from '../../ai/reservationist-booking-suggestion.js';
+import {staffQuoteSourceHash} from '../../ai/staff-quote-workflow.js';
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
@@ -191,10 +192,10 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
     .orderBy(desc(aiWorkflowRun.createdAt))
     .limit(1);
   const result = run?.metrics?.reservationistResult;
-  return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState, draft.replyToMessageId);
+  return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
 }
 
-async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown, selectedMessageId?: string) {
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown, selectedMessageId?: string, selectedMessageSourceHash?: string, staffSourceHash?: string) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
   const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
@@ -204,7 +205,7 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
     .select({ sourceRef: attachment.id, filename: attachment.filename, messageId: attachment.messageId })
     .from(attachment).innerJoin(message, eq(attachment.messageId, message.id))
     .where(and(inArray(attachment.id, attachmentIds), eq(message.transportId, transportId), eq(message.threadId, threadId))) : [];
-  const summary = buildReservationistReviewSummary(result, new Date(), sources, selectedMessageId);
+  const summary = buildReservationistReviewSummary(result, new Date(), sources, selectedMessageId, selectedMessageSourceHash, staffSourceHash);
   if (!summary || !runId || workState === undefined) return summary;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
   return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
@@ -227,7 +228,7 @@ export type ReservationistStaffAction = {
 };
 
 /** Read-only human review DTO; stored task/packet bindings remain the authority boundary. */
-export function buildReservationistReviewSummary(raw: unknown, now = new Date(), attachmentSources: readonly {sourceRef:string;filename:string;messageId:string}[] = [], selectedMessageId?: string) {
+export function buildReservationistReviewSummary(raw: unknown, now = new Date(), attachmentSources: readonly {sourceRef:string;filename:string;messageId:string}[] = [], selectedMessageId?: string, selectedMessageSourceHash?: string, staffSourceHash?: string) {
   const record = (value: unknown): Record<string, unknown> =>
     value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
@@ -284,13 +285,15 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     return { sourceRef, sourceHash, sourceKind: messageId ? 'message' as const : 'attachment' as const, ...(messageId ? {messageId} : {}) };
   };
   const currentBookingSuggestion = (task: Record<string, unknown>, taskId: string) => {
-    if (!selectedMessageId || task.kind !== 'new_booking') return undefined;
+    if (!selectedMessageId || !selectedMessageSourceHash || !staffSourceHash || task.kind !== 'new_booking') return undefined;
     const suggestion = record(task.bookingSuggestion), requestSource = record(task.requestSource), source = record(suggestion.source);
     if (
       suggestion.version !== 1 || suggestion.taskId !== taskId || suggestion.displayOnly !== true || suggestion.saved !== false ||
       (suggestion.status !== 'prefill' && suggestion.status !== 'needs_details') ||
+      !Array.isArray(suggestion.partyNames) || suggestion.partyNames.some(name => typeof name !== 'string' || !name.trim()) ||
       requestSource.attachmentId !== `message:${selectedMessageId}` ||
       typeof requestSource.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(requestSource.sourceHash) ||
+      requestSource.sourceHash !== selectedMessageSourceHash || !/^[a-f0-9]{64}$/.test(staffSourceHash) ||
       !Number.isSafeInteger(requestSource.page) || !Number.isSafeInteger(requestSource.start) || !Number.isSafeInteger(requestSource.end) ||
       source.sourceRef !== requestSource.attachmentId || source.sourceHash !== requestSource.sourceHash ||
       source.page !== requestSource.page || source.start !== requestSource.start || source.end !== requestSource.end
@@ -304,7 +307,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
     };
     const expectedGroupId = reservationistBookingSuggestionGroupId(citation);
     if (suggestion.groupId !== expectedGroupId || !/^[A-Za-z0-9_-]{1,32}$/.test(expectedGroupId)) return undefined;
-    return suggestion;
+    return { ...suggestion, staffSourceHash };
   };
   for (const task of rows(result.tasks).slice(0, 32)) {
     if (!['needs_clarification', 'blocked'].includes(String(task.status))) continue;
@@ -1287,7 +1290,24 @@ export const draftsRouter = tRouter({
       const states = item ? await handledRequestStates(db, { transportId, threadId: input.threadId, sourceIds: [input.messageId] }) : undefined;
       const requestState = item ? states?.get(input.messageId) ?? {} : undefined;
       const history = runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource }));
-      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState, input.messageId);
+      const [selectedMessage] = await db.select({...getTableColumns(message),arrivedAt:MESSAGE_ARRIVED_AT}).from(message)
+        .where(and(eq(message.id,input.messageId),eq(message.transportId,transportId),eq(message.threadId,input.threadId))).limit(1);
+      let selectedMessageSourceHash: string | undefined, staffSourceHash: string | undefined;
+      const metrics = latest.metrics as (typeof latest.metrics & {reservationistDraftSource?:ReservationistDraftSource & {digest?:string};resultDigest?:string}) | null;
+      const savedSource = metrics?.reservationistDraftSource;
+      const savedMessage = savedSource?.messages.find(item => item.id === input.messageId);
+      if (selectedMessage && savedSource && savedMessage && savedSource.triggerMessageId === input.messageId && savedSource.resultDigest === metrics?.resultDigest) {
+        try {
+          const {digest: _digest, ...sourcePayload} = savedSource;
+          assertReservationistDraftSource(savedSource, sourcePayload);
+          const liveMessage = draftSourceMessage(selectedMessage);
+          if (savedMessage.sourceHash === liveMessage.sourceHash && savedMessage.identityHash === liveMessage.identityHash && savedMessage.at === liveMessage.at && savedMessage.direction === liveMessage.direction && liveMessage.direction === 'inbound') {
+            selectedMessageSourceHash = liveMessage.sourceHash;
+            staffSourceHash = staffQuoteSourceHash(selectedMessage);
+          }
+        } catch { /* stale or malformed source suppresses the display-only card */ }
+      }
+      const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState, input.messageId, selectedMessageSourceHash, staffSourceHash);
       const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
       const earlier = item ? requestHistory(history, requestState)
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
