@@ -108,12 +108,13 @@ export async function takeStayPreview(
 export function createWorkItemPreviewPersist(db: DB, transportId: string, ttlMs: number) {
   return {
     record: async (input: { workItemId: string; stayId: string; digest: string; now: number }) => {
-      await recordStayPreview(db, {
+      const saved = await recordStayPreview(db, {
         transportId,
         workItemId: input.workItemId,
         stayId: input.stayId,
         record: { digest: input.digest, status: 'previewed', expiresAt: input.now + ttlMs },
       });
+      if (saved.status !== 'recorded') throw new Error('pane_save_preview_persist_unavailable');
     },
     take: async (input: { workItemId: string; stayId: string; digest: string; now: number }) =>
       takeStayPreview(db, { transportId, ...input }),

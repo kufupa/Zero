@@ -24,7 +24,7 @@ export const PANE_PREVIEW_FAILED_COPY =
   'Nava could not finish the preview in HMS. Nothing was saved. Press Preview in HMS again.';
 
 export const PANE_COMMIT_UNREACHABLE_COPY =
-  'Nava lost contact with HMS while booking, so it is not clear whether HMS saved it. Check HMS for this guest before booking again.';
+  'Nava lost contact with HMS while booking. This booking may have been saved and is unconfirmed.';
 
 const REFUSAL_COPY: Record<string, string> = {
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
@@ -39,6 +39,14 @@ const REFUSAL_COPY: Record<string, string> = {
     "Nava couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
   pane_save_parent_not_booked:
     "The first room of this booking isn't confirmed in HMS yet, so Nava didn't add this room. Check HMS, then try again.",
+  pane_save_dependency_unconfirmed:
+    'An earlier booking is unconfirmed, so Nava did not save this room.',
+  pane_save_identity_required:
+    "Nava couldn't connect this booking to the request, so nothing was saved. Reopen the request and try again.",
+  pane_save_work_item_unavailable:
+    "Nava couldn't check the saved booking state, so nothing was saved. Reopen the request and try again.",
+  pane_save_preflight_unavailable:
+    "Nava couldn't check the booking, so nothing was saved. Preview again later.",
   pane_save_parent_invalid: "Nava couldn't tell which booking to add this room to. Nothing was saved.",
   refused_parent_not_found:
     "Nava couldn't open the first room's booking in HMS, so it didn't add this room. Check HMS, then try again.",
@@ -57,6 +65,8 @@ const REFUSAL_COPY: Record<string, string> = {
     'HMS is busy with another quote or lookup. Nothing was saved. Try again in a minute.',
   refused_save_blank_required:
     'HMS still has a blank required field. Nothing was saved. Fill in every field, then preview again.',
+  refused_save:
+    "Nava couldn't check for an existing booking in HMS. Nothing was saved. Preview again later.",
 };
 
 const REFUSED_FALLBACK = 'Nava stopped before saving anything. Check HMS, then book by hand.';
@@ -66,11 +76,11 @@ export const PANE_SAVE_UNCONFIRMED_REASON = 'pane_save_unconfirmed';
 
 export type PaneStayGuest = Pick<PaneStayInput, 'firstName' | 'lastName' | 'arrival' | 'departure'>;
 
-// HMS may already hold the booking, so this never reads as a plain failure. Staff check HMS first.
+// HMS may already hold the booking, so this never reads as a plain failure.
 export function paneUnconfirmedMessage(stay?: PaneStayGuest): string {
   const guest = stay ? `${stay.firstName} ${stay.lastName}` : 'this guest';
   const dates = stay ? `${stay.arrival} – ${stay.departure}` : 'these dates';
-  return `HMS may have saved this booking. Check HMS for ${guest} ${dates} before trying again.`;
+  return `HMS may have saved this booking for ${guest} ${dates}, but Nava could not verify it.`;
 }
 
 export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGuest): string {
@@ -116,6 +126,7 @@ export type PaneStayResult = {
   cmsReason?: string;
   outcome?: string;
   confirmationNumber?: string;
+  clickedSave?: boolean;
   previewDigest?: string | null;
   runId?: string;
   screenshots?: string[];
@@ -420,8 +431,8 @@ export type CommitOutcome =
   | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean; cmsMismatch?: boolean }
   | { ok: false; message: string; runId?: string; screenshots: string[] };
 
-export const PANE_SAVE_UNVERIFIED_COPY = 'Saved — check in Infor';
-export const PANE_CMS_MISMATCH_COPY = 'Booked, but HMS confirmation settings did not match — check CMS in HMS';
+export const PANE_SAVE_UNVERIFIED_COPY = 'Booking not verified in HMS.';
+export const PANE_CMS_MISMATCH_COPY = 'HMS confirmation settings did not match. Booking is unverified.';
 
 export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): CommitOutcome {
   const screenshots = result.screenshots ?? [];

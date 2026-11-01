@@ -246,7 +246,7 @@ describe('pane stay save guards', () => {
     };
     await expect(
       runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner() }),
-    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy', clickedSave: false });
   });
 
   it('refuses refused_lock_busy in commit when the duplicate check cannot get the lock in time', async () => {
@@ -254,7 +254,7 @@ describe('pane stay save guards', () => {
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'busy';
     await expect(
       runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
-    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy', clickedSave: false });
   });
 
   it('refuses adults 0 before any write lock or spawn', async () => {
@@ -1501,7 +1501,7 @@ describe('pane stay preview persist', () => {
     expect(spawned).toEqual(['preview', 'commit', 'preview']);
   });
 
-  it('same-process commit with work-item ids still uses the in-memory preview grant', async () => {
+  it('does not use an unbound in-memory preview for a work-item commit', async () => {
     enableSave();
     paneStaySaveLoaders.previewPersist = {
       record: () => undefined,
@@ -1524,6 +1524,63 @@ describe('pane stay preview persist', () => {
         stayId: 's_1',
         previewDigest: preview.previewDigest as string,
       }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+  });
+
+  it('does not fall back to an unbound preview when durable storage is unavailable', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(runPaneStay({
+      mode: 'commit', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      previewDigest: preview.previewDigest as string,
+    })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+  });
+
+  it('does not report a ready work-item preview if its grant cannot be stored', async () => {
+    enableSave();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-failed-preview-'));
+    await writeFile(join(runDir, 'filled.png'), 'synthetic screenshot');
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed', clickedSave: false, confirmationNumber: '', runId: randomUUID(), runDir,
+    });
+    paneStaySaveLoaders.previewPersist = { record: () => { throw new Error('unavailable'); }, take: () => false };
+    try {
+      const result = await runPaneStay({
+        mode: 'preview', stay: labStay, owner: freshOwner(), workItemId: randomUUID(), stayId: 's_1',
+      });
+      expect(result).toMatchObject({ status: 'refused', reason: 'pane_save_work_item_unavailable', clickedSave: false });
+      expect(result.previewDigest).toBeUndefined();
+      await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      warning.mockRestore();
+    }
+  });
+
+  it('does not transfer a preview grant to another work item or stay', async () => {
+    enableSave();
+    const grants = new Map<string, string>();
+    const key = (workItemId: string, stayId: string) => `${workItemId}:${stayId}`;
+    paneStaySaveLoaders.previewPersist = {
+      record: ({ workItemId, stayId, digest }) => { grants.set(key(workItemId, stayId), digest); },
+      take: ({ workItemId, stayId, digest }) => {
+        const grant = grants.get(key(workItemId, stayId));
+        grants.delete(key(workItemId, stayId));
+        return grant === digest;
+      },
+    };
+    const owner = freshOwner();
+    const workItemId = randomUUID();
+    const stayId = 's_1';
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    const previewDigest = preview.previewDigest as string;
+    for (const ids of [{ workItemId: randomUUID(), stayId }, { workItemId, stayId: 's_2' }]) {
+      await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, ...ids, previewDigest }))
+        .resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+    }
+    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, workItemId, stayId, previewDigest }))
+      .resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
   });
 });

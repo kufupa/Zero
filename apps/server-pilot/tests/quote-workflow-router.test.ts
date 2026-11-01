@@ -29,7 +29,7 @@ vi.mock('../src/ai/work-events.js', async (importOriginal) => {
 
 const enqueueHmsRead = vi.fn();
 
-function mailboxCaller() {
+function mailboxCaller(transportId = 'transport-1') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -38,7 +38,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: transportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -1642,11 +1642,11 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
     ).resolves.toMatchObject({
       status: 'refused',
-      reason: 'pane_save_flag_off',
+      reason: 'pane_save_identity_required',
     });
   });
 
-  it('commit refuses when the OSRESS guest-date reader is parked', async () => {
+  it('commit without a work item is refused before any HMS access', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.osressGuestDatesSearch = null;
     paneStaySaveLoaders.spawn = async () => {
@@ -1656,7 +1656,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
     ).resolves.toMatchObject({
       status: 'refused',
-      reason: 'osress_reader_parked',
+      reason: 'pane_save_identity_required',
     });
   });
 
@@ -1675,16 +1675,16 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       bookerName: 'Ann Booker',
       bookerEmail: 'ann@example.invalid',
     };
-    await expect(mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
+    await expect(mailboxCaller('transport-centurion').quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
       status: 'ok',
       outcome: 'previewed',
     });
     expect(seen[0]).toMatchObject(extras);
     await expect(
-      mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, reservationNote: 'x'.repeat(2001) }),
+      mailboxCaller('transport-centurion').quoteWorkflow.previewStay({ ...paneStay, reservationNote: 'x'.repeat(2001) }),
     ).rejects.toThrow();
     await expect(
-      mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, bookerName: 'b'.repeat(51) }),
+      mailboxCaller('transport-centurion').quoteWorkflow.previewStay({ ...paneStay, bookerName: 'b'.repeat(51) }),
     ).rejects.toThrow();
   });
 
@@ -1699,7 +1699,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     ).rejects.toThrow();
   });
 
-  it('previewStay returns previewDigest and commitStay commits only with it, once', async () => {
+  it('a preview alone does not authorize a commit without a work item', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'clear';
@@ -1707,16 +1707,16 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       input.paneCommit
         ? { outcome: 'committed', clickedSave: true, confirmationNumber: '46184891-1' }
         : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
-    const preview = await mailboxCaller().quoteWorkflow.previewStay(paneStay);
+    const preview = await mailboxCaller('transport-centurion').quoteWorkflow.previewStay(paneStay);
     expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
     const previewDigest = preview.previewDigest as string;
     expect(previewDigest).toMatch(/^[0-9a-f]{64}$/);
     await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+      mailboxCaller('transport-centurion').quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_identity_required' });
     await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
-    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+      mailboxCaller('transport-centurion').quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_identity_required' });
   });
 });
 

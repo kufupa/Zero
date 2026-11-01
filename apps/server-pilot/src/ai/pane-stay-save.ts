@@ -443,9 +443,12 @@ async function recordBoundPreview(input: {
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<void> {
-  recordPanePreview(input.owner, input.digest, input.now);
   const persist = boundPreviewPersist(input);
-  if (!persist || !input.workItemId || !input.stayId) return;
+  if (!input.workItemId || !input.stayId) {
+    recordPanePreview(input.owner, input.digest, input.now);
+    return;
+  }
+  if (!persist) throw new Error('pane_save_preview_persist_unavailable');
   await persist.record({
     workItemId: input.workItemId,
     stayId: input.stayId,
@@ -463,19 +466,16 @@ async function takeBoundPreview(input: {
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<boolean> {
   const persist = boundPreviewPersist(input);
-  if (persist && input.workItemId && input.stayId) {
-    const taken = await persist.take({
+  if (input.workItemId && input.stayId) {
+    if (!persist) return false;
+    return persist.take({
       workItemId: input.workItemId,
       stayId: input.stayId,
       digest: input.digest,
       now: input.now,
     });
-    if (taken) {
-      takePanePreview(input.owner, input.digest, input.now);
-      return true;
-    }
   }
-  // Preview today may omit work-item ids (memory only). Commit still sends them; honour the same-process grant.
+  // The standalone proof runner has no work-item identity; pane commits require the durable bound grant.
   return takePanePreview(input.owner, input.digest, input.now);
 }
 
@@ -565,9 +565,16 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   const target = input.target;
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-stay-${runId}`);
-  await mkdir(dir, { mode: 0o700 });
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
+  let created = false;
+  try {
+    await mkdir(dir, { mode: 0o700 });
+    created = true;
+    await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
+  } catch {
+    if (created) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { outcome: 'refused_preflight_unavailable', clickedSave: false, confirmationNumber: '' };
+  }
   const args = [
     input.parentConfirmation ? ADD_ROOM_STAY : CREATE_LAB_STAY,
     '--request',
@@ -579,22 +586,43 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
-  let stdout: string;
+  let stdout = '';
+  let failure: unknown;
+  let failed = false;
   try {
     ({ stdout } = await execFileAsync('node', args, {
       timeout: 20 * 60_000,
       env: paneStayCreateSpawnEnv(target),
     }));
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
-    await rm(requestPath, { force: true });
+    await rm(requestPath, { force: true }).catch(() => console.warn('pane_stay_request_cleanup_failed'));
   }
+  // If the runner did not leave a complete result, assume Save might have fired.
+  let clickedSave = input.paneCommit;
+  let preSaveSearchRefused = false;
+  let knownConfirmation = '';
   let cmsReason: 'saved_cms_mismatch' | undefined;
   let cmsMismatches: PaneStayResult['cmsMismatches'];
   try {
     const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
       cmsReason?: unknown;
+      clickedSave?: unknown;
+      confirmationNumber?: unknown;
+      outcome?: unknown;
+      refusalReason?: unknown;
       proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
     };
+    if (typeof result.clickedSave === 'boolean') clickedSave = result.clickedSave;
+    if (typeof result.confirmationNumber === 'string') knownConfirmation = result.confirmationNumber.trim();
+    // These create-runner outcomes are emitted before Save; other failures may occur during a click.
+    if (!input.parentConfirmation && result.outcome === 'refused_save_blank_required' && result.clickedSave === undefined) {
+      clickedSave = false;
+    }
+    preSaveSearchRefused = !input.parentConfirmation && result.outcome === 'refused_save' &&
+      result.refusalReason === 'proof_pre_save_search_unavailable' && result.clickedSave === false && !knownConfirmation;
     if (result.cmsReason === 'saved_cms_mismatch') {
       cmsReason = result.cmsReason;
       cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
@@ -602,12 +630,16 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   } catch {
     // The result file may not exist when a runner exits before it creates the file.
   }
+  if (failed && !preSaveSearchRefused && !(input.paneCommit && knownConfirmation)) throw failure;
   const line = stdout.trim().split('\n').at(-1) ?? '';
-  const [outcome = '', confirmationNumber = ''] = line.split(/\s+/);
-  const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
+  const [printedOutcome = '', printedConfirmation = ''] = line.split(/\s+/);
+  const outcome = failed ? preSaveSearchRefused ? 'refused_save' : 'save_unconfirmed' : printedOutcome;
+  const confirmationNumber = failed ? knownConfirmation : printedConfirmation || knownConfirmation;
+  if (input.paneCommit && confirmationNumber) clickedSave = true;
+  const screenshots = (await readdir(dir).catch(() => [])).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
-    clickedSave: Boolean(input.paneCommit),
+    clickedSave,
     ...(cmsReason ? { cmsReason, cmsMismatches } : {}),
     confirmationNumber,
     runId,
@@ -654,6 +686,8 @@ export function paneStayPropertyRefusal(
 // Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
 // Commit: needs the previewDigest of a successful preview of this same stay (same owner, within 10 minutes,
 // once). The duplicate reader stays fail-closed: while it is parked, commit refuses.
+const paneStayNotSaved = (reason: string): PaneStayResult => ({ status: 'refused', reason, clickedSave: false });
+
 export async function runPaneStay(input: {
   mode: PaneStayMode;
   stay: PaneStay;
@@ -671,46 +705,48 @@ export async function runPaneStay(input: {
   const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
   const modeRefusal = paneStayModeRefusal(mode, input.stay);
   if (modeRefusal) {
-    return { status: 'refused', reason: modeRefusal };
+    return paneStayNotSaved(modeRefusal);
   }
   const resolved = paneStayCreateTarget({
     transportId: input.transportId ?? paneStayTransportIdFromOwner(input.owner),
     propertyCode: input.stay.propertyCode,
   });
   if (!resolved.ok) {
-    return { status: 'refused', reason: resolved.reason };
+    return paneStayNotSaved(resolved.reason);
   }
   const target = resolved.target;
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
       assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
     } catch (error) {
-      return { status: 'refused', reason: (error as Error).message };
+      return paneStayNotSaved((error as Error).message);
     }
   }
-  const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
+  let bookRefusal: string | null;
+  try { bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode)); }
+  catch { return paneStayNotSaved('pane_save_preflight_unavailable'); }
   if (bookRefusal) {
-    return { status: 'refused', reason: bookRefusal };
+    return paneStayNotSaved(bookRefusal);
   }
   const parent = input.parentConfirmation?.trim() || undefined;
   if (parent && !PARENT_CONFIRMATION.test(parent)) {
-    return { status: 'refused', reason: 'pane_save_parent_invalid' };
+    return paneStayNotSaved('pane_save_parent_invalid');
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
     if (!paneStaySaveLoaders.osressGuestDatesSearch) {
-      return { status: 'refused', reason: 'osress_reader_parked' };
+      return paneStayNotSaved('osress_reader_parked');
     }
     if (input.previewDigest === undefined) {
-      return { status: 'refused', reason: 'pane_save_preview_required' };
+      return paneStayNotSaved('pane_save_preview_required');
     }
     if (input.previewDigest !== digest) {
-      return { status: 'refused', reason: 'pane_save_digest_mismatch' };
+      return paneStayNotSaved('pane_save_digest_mismatch');
     }
   }
   const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) {
-    return { status: 'refused', reason: 'pane_save_lock_unavailable' };
+    return paneStayNotSaved('pane_save_lock_unavailable');
   }
   const reader = input.mode === 'commit' ? paneStaySaveLoaders.osressGuestDatesSearch : null;
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
@@ -718,6 +754,7 @@ export async function runPaneStay(input: {
   // and the save. The reader takes no lock of its own: a second acquisition would wait on this one.
   type Gate = { refusal: string } | { spawned: PaneStaySpawnResult };
   let gate: Gate;
+  const spawnState: { started: boolean; completed?: PaneStaySpawnResult } = { started: false };
   try {
     gate = await lock.withLock(async (): Promise<Gate> => {
       if (reader) {
@@ -732,7 +769,7 @@ export async function runPaneStay(input: {
         // Adding a room to this guest's own booking finds that booking on the same dates; that is the parent.
         if (status === 'duplicate' && !parent) return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
+        // Work-item grants stay bound to that item and stay; standalone proofs use their in-memory grant.
         if (
           !(await takeBoundPreview({
             owner: input.owner,
@@ -746,6 +783,7 @@ export async function runPaneStay(input: {
           return { refusal: 'pane_save_preview_required' };
         }
       }
+      spawnState.started = true;
       return {
         spawned: await spawn({
           stay: input.stay,
@@ -753,20 +791,39 @@ export async function runPaneStay(input: {
           paneCommit: input.mode === 'commit',
           target,
           ...(parent ? { parentConfirmation: parent } : {}),
-        }),
+        }).then((result) => { spawnState.completed = result; return result; }),
       };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
-    if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
-    warnPaneStaySpawnFailed('save', error);
-    throw error;
+    if (!spawnState.started) {
+      if (isPropertyReadLockDeadline(error)) return paneStayNotSaved('refused_lock_busy');
+      console.warn('stay_save_preflight_failed');
+      return paneStayNotSaved('pane_save_preflight_unavailable');
+    }
+    if (input.mode === 'commit' && spawnState.completed) {
+      // A failed lock release cannot verify a number, but a completed pre-save refusal is still definite.
+      gate = { spawned: spawnState.completed.confirmationNumber ? { ...spawnState.completed, outcome: 'save_unconfirmed', clickedSave: true } : spawnState.completed };
+    } else {
+      warnPaneStaySpawnFailed('save', error);
+      throw error;
+    }
   }
-  if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
+  if ('refusal' in gate) return paneStayNotSaved(gate.refusal);
   const spawned = gate.spawned;
-  if (/^refused/i.test(spawned.outcome)) {
-    return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
+  const refusedAfterSave = input.mode === 'commit' && /^refused/i.test(spawned.outcome) && spawned.clickedSave;
+  if (/^refused/i.test(spawned.outcome) && !refusedAfterSave) {
+    if (spawned.runId && spawned.runDir) registerPaneRun({ runId: spawned.runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
+    return {
+      status: 'refused',
+      reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique'
+        : spawned.outcome === 'refused_preflight_unavailable' ? 'pane_save_preflight_unavailable' : spawned.outcome,
+      clickedSave: spawned.clickedSave,
+      ...(spawned.confirmationNumber ? { confirmationNumber: spawned.confirmationNumber } : {}),
+      ...(spawned.runId ? { runId: spawned.runId } : {}),
+      ...(spawned.screenshots ? { screenshots: spawned.screenshots } : {}),
+    };
   }
-  if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
+  if (input.mode === 'commit' && (UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome) || refusedAfterSave)) {
     // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
     if (spawned.runId && spawned.runDir) {
       registerPaneRun({
@@ -787,6 +844,7 @@ export async function runPaneStay(input: {
     return {
       status: 'refused',
       reason: PANE_SAVE_UNCONFIRMED,
+      ...(spawned.confirmationNumber ? { confirmationNumber: spawned.confirmationNumber } : {}),
       runId: spawned.runId,
       screenshots: spawned.screenshots ?? [],
       ...(shots ? { shots } : {}),
@@ -803,12 +861,13 @@ export async function runPaneStay(input: {
         stayId: input.stayId,
         previewPersist: input.previewPersist,
       });
-    } catch (error) {
+    } catch {
       console.warn('stay_preview_persist_failed', {
         stayId: input.stayId,
         workItemId: input.workItemId,
-        error,
       });
+      if (spawned.runDir) await rm(spawned.runDir, { recursive: true, force: true }).catch(() => console.warn('pane_stay_run_cleanup_failed'));
+      return paneStayNotSaved('pane_save_work_item_unavailable');
     }
   }
   if (spawned.runId && spawned.runDir) {

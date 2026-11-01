@@ -40,12 +40,10 @@ import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import {
-  loadStayCommit,
-  recordStayCommit,
   stayCommitFromPaneResult,
-  stayCommitGuard,
   workItemIdForMail,
 } from '../../ai/work-items.js';
+import { claimPaneStayCommit, finishPaneStayCommit } from '../../ai/pane-stay-commit-guard.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
@@ -333,58 +331,61 @@ export const quoteWorkflowRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
+      if (!workItemId || !stayId) return { status: 'refused' as const, reason: 'pane_save_identity_required' };
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      const previewPersist =
-        workItemId && stayId
-          ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
-          : undefined;
-      let parentConfirmation: string | undefined;
-      if (parentStayId) {
-        const parent =
-          workItemId && stayId && parentStayId !== stayId
-            ? await loadStayCommit(getDb(), { transportId: ctx.activeTransportId, workItemId, stayId: parentStayId })
-            : undefined;
-        if (!parent?.confirmationNumber || parent.status !== 'booked') {
-          return { status: 'refused' as const, reason: 'pane_save_parent_not_booked' };
-        }
-        parentConfirmation = parent.confirmationNumber;
+      const scope = { transportId: ctx.activeTransportId, workItemId, stayId, parentStayId };
+      let db: ReturnType<typeof getDb>;
+      let claim: Awaited<ReturnType<typeof claimPaneStayCommit>>;
+      try {
+        db = getDb();
+        claim = await claimPaneStayCommit(db, scope);
+      } catch {
+        return { status: 'refused' as const, reason: 'pane_save_work_item_unavailable' };
       }
-      if (workItemId && stayId) {
-        const existing = await loadStayCommit(getDb(), {
-          transportId: ctx.activeTransportId,
-          workItemId,
-          stayId,
+      if (claim.status === 'refused') return claim;
+
+      let result: PaneStayResult;
+      try {
+        result = await runPaneStay({
+          mode: 'commit', stay, previewDigest, owner, workItemId, stayId,
+          previewPersist: createWorkItemPreviewPersist(db, ctx.activeTransportId, PANE_PREVIEW_TTL_MS),
+          ...(claim.parentConfirmation ? { parentConfirmation: claim.parentConfirmation } : {}),
         });
-        const guard = stayCommitGuard(existing);
-        if (guard.action === 'refuse') {
-          return { status: 'refused' as const, reason: guard.reason };
+      } catch {
+        // A crashed runner might have reached HMS; its already-persisted claim remains unknown.
+        return { status: 'refused' as const, reason: 'pane_save_unconfirmed' };
+      }
+
+      const definitelyNotSaved = result.status === 'refused' && result.clickedSave === false;
+      if (!definitelyNotSaved) {
+        if (result.status === 'refused' && result.confirmationNumber) {
+          result = { ...result, status: 'ok', outcome: 'committed_unverified' };
+        } else if (result.status === 'refused') {
+          result = { ...result, reason: 'pane_save_unconfirmed' };
+        } else if (result.outcome !== 'committed' || !result.confirmationNumber) {
+          result = { ...result, outcome: 'committed_unverified' };
         }
       }
-      const result = await runPaneStay({
-        mode: 'commit',
-        stay,
-        previewDigest,
-        owner,
-        workItemId,
-        stayId,
-        previewPersist,
-        ...(parentConfirmation ? { parentConfirmation } : {}),
-      });
-      if (workItemId && stayId) {
-        const record = stayCommitFromPaneResult(result);
-        if (record) {
+      const record = definitelyNotSaved ? null : stayCommitFromPaneResult(result);
+      try {
+        if ((record || definitelyNotSaved) && await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record })) return result;
+      } catch {
+        // No exception text: database errors can contain connection details.
+        console.warn('stay_commit_persist_failed', { stayId, workItemId, runId: result.runId, confirmationNumber: result.confirmationNumber });
+      }
+      // Keep any known number visible, but never claim a durable verified result when persistence failed.
+      if (result.status === 'ok') {
+        const unverified = { ...result, outcome: 'committed_unverified' as const };
+        const fallback = stayCommitFromPaneResult(unverified);
+        if (fallback?.confirmationNumber) {
           try {
-            await recordStayCommit(getDb(), {
-              transportId: ctx.activeTransportId,
-              workItemId,
-              stayId,
-              record,
-            });
-          } catch (error) {
-            console.warn('stay_commit_persist_failed', { stayId, workItemId, error });
+            await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record: fallback });
+          } catch {
+            // The original unknown claim still prevents another save.
           }
         }
+        return unverified;
       }
-      return result;
+      return { ...result, reason: 'pane_save_unconfirmed' };
     }),
 });

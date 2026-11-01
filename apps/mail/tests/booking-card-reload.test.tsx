@@ -221,7 +221,7 @@ describe('booking card reload', () => {
     session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
 
     const assertNoRetry = () => {
-      expect(screen.getAllByText(/check HMS/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/unconfirmed/i).length).toBeGreaterThan(0);
       expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Book this stay' })).toBeNull();
@@ -246,11 +246,11 @@ describe('booking card reload', () => {
       s_aaaa1111_1: { confirmationNumber: '98765-1', status: 'unknown', screenshotRef: null,
         cmsReason: 'saved_cms_mismatch' },
     }} />);
-    expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(screen.getByText('HMS confirmation settings did not match. Booking is unverified.')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     view.rerender(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
-    expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(screen.getByText('HMS confirmation settings did not match. Booking is unverified.')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 
@@ -265,7 +265,7 @@ describe('booking card reload', () => {
       },
     };
     const draft = bookedDraft();
-    const warning = 'Booked, but HMS confirmation settings did not match — check CMS in HMS';
+    const warning = 'HMS confirmation settings did not match. Booking is unverified.';
     const direct = render(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={savedStays} />);
     expect(screen.getByText(warning)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();

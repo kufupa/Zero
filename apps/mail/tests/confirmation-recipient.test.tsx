@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ConfirmationSourcesBridge,
   ConfirmationSourcesProvider,
@@ -40,6 +40,12 @@ vi.mock('@/providers/query-provider', () => ({
     },
   }),
 }));
+
+let workItemSequence = 0;
+let testWorkItemId = '';
+beforeEach(() => {
+  testWorkItemId = `00000000-0000-4000-8000-${String(++workItemSequence).padStart(12, '0')}`;
+});
 
 afterEach(() => {
   cleanup();
@@ -166,7 +172,7 @@ function renderHost(
     <ConfirmationSourcesProvider value={sources}>
       <QuoteBookingHost
         session={session()}
-        paneSave={api.client}
+        paneSave={api.client} workItemId={testWorkItemId}
         contact={contact}
         onSaveDefault={onSaveDefault}
       />
@@ -224,7 +230,7 @@ describe('confirmation recipient', () => {
       <ConfirmationSourcesProvider value={{ userEmail: STAFF, setting: { mode: 'client' } }}>
         <QuoteBookingHost
           session={session()}
-          paneSave={missingClient.client}
+          paneSave={missingClient.client} workItemId={testWorkItemId}
           contact={{ ...contact, email: null }}
         />
       </ConfirmationSourcesProvider>,
@@ -295,7 +301,7 @@ describe('confirmation recipient', () => {
     const api = pane();
     render(
       <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost session={session()} paneSave={api.client} workItemId={testWorkItemId} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -328,7 +334,7 @@ describe('confirmation recipient', () => {
     settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
     const held = render(
       <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost session={session()} paneSave={api.client} workItemId={testWorkItemId} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -345,7 +351,7 @@ describe('confirmation recipient', () => {
     });
     held.rerender(
       <ConfirmationSourcesBridge userId="user-b" mailbox="box-b@example.invalid" userEmail="other@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost session={session()} paneSave={api.client} workItemId={testWorkItemId} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     release();
@@ -366,7 +372,7 @@ describe('confirmation recipient', () => {
     const api = pane();
     const view = render(
       <ConfirmationSourcesBridge userEmail="first@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost session={session()} paneSave={api.client} workItemId={testWorkItemId} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -374,7 +380,7 @@ describe('confirmation recipient', () => {
     });
     view.rerender(
       <ConfirmationSourcesBridge userEmail="second@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost session={session()} paneSave={api.client} workItemId={testWorkItemId} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {

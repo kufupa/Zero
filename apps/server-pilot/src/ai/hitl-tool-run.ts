@@ -588,10 +588,18 @@ export function classifyStayPreview(value: PaneStayResult): ToolRunFields {
 }
 
 /**
- * A stay commit. A confirmation number means the booking exists (booked). A save that could not be confirmed is
- * unconfirmed, so staff check HMS before pressing Book again. Anything else refused.
+ * A verified stay commit is booked. Keep a known number on an unverified result without labeling it booked.
  */
 export function classifyStayCommit(value: PaneStayResult, previewDigest: string): ToolRunFields {
+  if (value.outcome === 'committed_unverified') {
+    return {
+      status: 'unconfirmed',
+      errorCode: 'pane_save_unconfirmed',
+      inputDigest: previewDigest,
+      confirmationNo: identifierOrNull(value.confirmationNumber),
+      result: { outcome: 'committed_unverified' },
+    };
+  }
   if (value.reason === 'pane_save_unconfirmed') {
     return { status: 'unconfirmed', errorCode: 'pane_save_unconfirmed', inputDigest: previewDigest };
   }
