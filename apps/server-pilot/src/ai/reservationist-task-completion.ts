@@ -68,6 +68,12 @@ export function hasOutstandingRequests(result: unknown, runId: string, state: un
   if (result == null) return false; // Older non-reservationist runs have no task inventory.
   const value = object(result);
   if (value.version !== 1 || !Array.isArray(value.tasks)) return true;
+  // An unread business attachment is staff work even when no ask was extracted.
+  // A person can still explicitly close the work item after reviewing it.
+  if (Array.isArray(value.sourceRecoveries) && value.sourceRecoveries.some(raw => {
+    const recovery = object(raw);
+    return recovery.kind === 'attachment_manual' && recovery.disclosure === 'staff_only' && recovery.signatureNoise !== true;
+  })) return true;
   if (!value.tasks.length) return false;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(state);
   return keys.size !== value.tasks.length || [...keys.values()].some(key => !handled.has(key));
