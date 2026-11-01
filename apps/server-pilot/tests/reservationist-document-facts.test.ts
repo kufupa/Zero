@@ -526,6 +526,30 @@ it('keeps printed arrival and departure years in a valid cross-year range', () =
   .toMatchObject({arrival:'2026-12-30',departure:'2027-01-02'});
 });
 
+it('rejects conflicting yearless ranges before resolving the next stay occurrence',()=>{
+ const plain='Please quote accommodation 21–23 December.',html='Please quote accommodation 21–24 December.';
+ const options={arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z'};
+ expect(()=>validateCrossViewDates(plain,html,plain,options))
+  .toThrow('Explicit same-stay correction requires source clarification');
+ expect(validateCrossViewDates(plain,plain,plain,options).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ const dateLabel='Please quote accommodation.\nDates: 21–23 December.';
+ expect(()=>validateCrossViewDates(dateLabel,'Please quote accommodation.\nDates: 21–24 December.',dateLabel,options))
+  .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('accepts plural rooms with a source-bound yearless date range',()=>{
+ const request='We need rooms 21–23 December.';
+ expect(validateCrossViewDates(request,request,request,{arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z'}).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it('does not let an unrelated office closure sharing one endpoint reject a stay',()=>{
+ const stay='Please quote accommodation for 21–23 December 2026.';
+ expect(validateCrossViewDates(stay,`${stay}\nOffice closure: 21–22 December 2026.`,stay).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
 it('compares alternate printed years with the causal next occurrence', () => {
  const plain='Arrival 21 December; departure 23 December.',options={arrival:'21 December',departure:'23 December',causalAt:'2026-10-01T08:00:00Z'};
  expect(validateCrossViewDates(plain,'Arrival 21 December 2026; departure 23 December 2026.',plain,options).facts[0]!.value)

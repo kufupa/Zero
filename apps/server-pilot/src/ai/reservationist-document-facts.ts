@@ -187,6 +187,8 @@ export function normalizedDate(input: string, yearContext?: number): string {
 }
 const repeatedMonthRangePattern = () => new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:\\s+(\\d{4}))?\\s+(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})\\s+(\\d{4})(?![\\p{L}\\p{N}/-])`, 'giu');
 const sharedMonthRangePattern = () => new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:[-–]|to)\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})\\s+(\\d{4})(?![\\p{L}\\p{N}/-])`, 'giu');
+const yearlessRepeatedMonthRangePattern = () => new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})\\s+(?:to|[-–])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?!\\s+\\d{4})(?![\\p{L}\\p{N}/-])`, 'giu');
+const yearlessSharedMonthRangePattern = () => new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:[-–]|to)\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?!\\s+\\d{4})(?![\\p{L}\\p{N}/-])`, 'giu');
 function inferYearlessStayDates(arrivalRaw:string,departureRaw:string,causalAt:string) {
   const localDay = new Date(Date.parse(causalAt) + 2 * 3600000).toISOString().slice(0, 10);
   const year = Number(localDay.slice(0, 4));
@@ -288,7 +290,9 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const rangePairs = (text:string):StayPair[] => {
     const pairs:StayPair[] = [], ordinals = new Map<string, number>();
     const add = (match:RegExpMatchArray,arrival:string,departure:string) => {
-      if (arrival >= departure) throw new Error('Invalid printed stay dates');
+      const yearless = !/\b\d{4}\b/.test(`${arrival} ${departure}`);
+      if (yearless ? !dateKey(arrival) || !dateKey(departure) || sameDate(arrival, departure) : arrival >= departure)
+        throw new Error('Invalid printed stay dates');
       const start = match.index!, end = start + match[0].length, identity = pairIdentity(text,start,end);
       const ordinal = ordinals.get(identity.scope) ?? 0;
       ordinals.set(identity.scope,ordinal+1);
@@ -299,6 +303,12 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
     }
     for (const match of text.matchAll(sharedMonthRangePattern())) {
       add(match, normalizedDate(`${match[1]} ${match[3]} ${match[4]}`), normalizedDate(`${match[2]} ${match[3]} ${match[4]}`));
+    }
+    for (const match of text.matchAll(yearlessRepeatedMonthRangePattern())) {
+      add(match, `${match[1]} ${match[2]}`, `${match[3]} ${match[4]}`);
+    }
+    for (const match of text.matchAll(yearlessSharedMonthRangePattern())) {
+      add(match, `${match[1]} ${match[3]}`, `${match[2]} ${match[3]}`);
     }
     return pairs;
   };
@@ -319,7 +329,8 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const sourcePair = valuePairs.length === 1 ? valuePairs[0] : overlapping.length === 1 ? overlapping[0] : undefined;
   const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
   const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
-  const supportedStayPair = (pair: StayPair) => /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
+  const supportedStayPair = (pair: StayPair) => !/\b(?:office|business)\s+clos(?:ure|ed)\b/i.test(pair.scope) &&
+    /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|dates?|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
   const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => {
     const compatible = (pair: StayPair) => !(candidate.entity && pair.entity && candidate.entity !== pair.entity);
     const sameSourcePair = (pair: StayPair) => compatible(pair) &&
@@ -343,7 +354,7 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const uniqueArrival = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.arrival, sourcePair.arrival)).length === 1;
   const uniqueDeparture = !!sourcePair && sourcePairs.filter(pair => sameDate(pair.departure, sourcePair.departure)).length === 1;
   const endpointCandidates = sourcePair ? otherPairViews.flatMap(pairs => pairs.filter(pair =>
-    !(sourcePair.entity && pair.entity && pair.entity !== sourcePair.entity) &&
+    supportedStayPair(pair) && !(sourcePair.entity && pair.entity && pair.entity !== sourcePair.entity) &&
     (sameDayMonth(pair.arrival, sourcePair.arrival) || sameDayMonth(pair.departure, sourcePair.departure)))
     .map(pair => ({ pair, pairs }))) : [];
   const byEndpoint = endpointCandidates.map(({ pair }) => pair).filter(pair =>
@@ -465,11 +476,11 @@ function nextOccurrenceStay(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,s
  if(/\b(?:not|never|no|without|previous|old|cancelled|canceled|unless|if|or|either)\b|\b\d{4}\b/i.test(stayContext))throw new Error('Ambiguous yearless stay context');
  // Keep signature/postscript text visible; infer a year only when the cited
  // local clause identifies a stay or an explicit quote/booking inquiry.
- const localStaySignal=/\b(?:room|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext);
+ const localStaySignal=/\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve)\b/i.test(stayContext);
  const lineStart=page.lastIndexOf('\n',start-1)+1,lineEnd=page.indexOf('\n',end),line=page.slice(lineStart,lineEnd<0?page.length:lineEnd);
  const previousLine=page.slice(0,lineStart).trimEnd().split(/\r?\n/).at(-1)??'';
  const adjacentDateLabel=/^\s*(?:stay\s+)?dates?\s*:/i.test(line)&&
-  /\b(?:room|stay|accommodation|overnight|quote|book|reserve)\b/i.test(previousLine);
+  /\b(?:rooms?|stay|accommodation|overnight|quote|book|reserve)\b/i.test(previousLine);
  if(!localStaySignal&&!adjacentDateLabel)throw new Error('Ambiguous yearless stay context');
  const named=`(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${monthPattern})|(?:${monthPattern})\\s+\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}/\\d{1,2})`;
  const shared=[...quote.matchAll(new RegExp(`(?<![\\p{L}\\p{N}/-])(\\d{1,2})(?:st|nd|rd|th)?\\s*[-–]\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?![\\p{L}\\p{N}/-])`,'giu'))];
