@@ -381,6 +381,18 @@ it('matches cross-view stay dates by a unique endpoint without conflating other 
   const source={attachmentId:original.attachmentId,sourceHash,page:1,quote:citation,start,end:start+citation.length};
   return validateDocumentPlan({facts:[{id:'stay',kind:'dates',value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest',source}],tasks:[],unresolvedAsks:[]},[original]);
  };
+ const repeated='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(validateViews(`${repeated}\nPlease quote a room: Arrival 28 December 2026; departure 30 December 2026.`,
+  'Please quote a room: Check-in 28 December 2026; check-out 30 December 2026.\nPlease quote a room: Check-in 21 December 2026; check-out 23 December 2026.',repeated).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+
+ const labeled='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(()=>validateViews(labeled,'Please quote the stay: 21–24 December 2026.',labeled))
+  .toThrow('Explicit same-stay correction requires source clarification');
+ const ranged='Please quote the stay: 21–23 December 2026.';
+ expect(()=>validateViews(ranged,'Please quote the stay: Check-in 21 December 2026; check-out 24 December 2026.',ranged))
+  .toThrow('Explicit same-stay correction requires source clarification');
+
  const first='Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
  expect(()=>validateViews(`${first}\nPlease quote a second room: Arrival 28 December 2026; departure 30 December 2026.`,
   'Kindly confirm the first stay: Check-in 21 December 2026; check-out 24 December 2026.\nKindly confirm the second stay: Check-in 28 December 2026; check-out 30 December 2026.',first))
