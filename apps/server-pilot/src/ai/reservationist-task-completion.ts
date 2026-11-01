@@ -66,10 +66,10 @@ export async function handledRequestStates(db: DB, input: { transportId: string;
   return states;
 }
 
-/** Newest first: retain a previously identified ask until staff acknowledge it. */
-export function outstandingRequestHistory(runs: readonly { id: string; result: unknown }[], state: unknown) {
+/** Newest first: retain earlier asks and their staff acknowledgement. */
+export function requestHistory(runs: readonly { id: string; result: unknown }[], state: unknown) {
   const handled = handledRequestKeys(state), seen = new Set<string>();
-  const outstanding: { runId: string; taskId: string; kind: string; quote: string }[] = [];
+  const requests: { runId: string; taskId: string; kind: string; quote: string; handled: boolean }[] = [];
   for (const run of runs) {
     const value = object(run.result), keys = requestCompletionKeys(run.result, run.id);
     if (!Array.isArray(value.tasks)) continue;
@@ -78,13 +78,16 @@ export function outstandingRequestHistory(runs: readonly { id: string; result: u
       const key = keys.get(taskId);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      if (handled.has(key)) continue;
       const source = object(task.requestSource);
-      outstanding.push({ runId: run.id, taskId, kind: typeof task.kind === 'string' ? task.kind : '',
+      requests.push({ runId: run.id, taskId, kind: typeof task.kind === 'string' ? task.kind : '', handled: handled.has(key),
         quote: typeof source.quote === 'string' ? source.quote.slice(0, 40_000) : '' });
     }
   }
-  return outstanding;
+  return requests;
+}
+
+export function outstandingRequestHistory(runs: readonly { id: string; result: unknown }[], state: unknown) {
+  return requestHistory(runs, state).filter(task => !task.handled);
 }
 
 export function hasOutstandingRequests(result: unknown, runId: string, state: unknown): boolean {

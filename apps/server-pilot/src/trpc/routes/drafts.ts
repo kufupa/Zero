@@ -31,7 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { handledRequestKeys, handledRequestStates, outstandingRequestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
@@ -1259,9 +1259,9 @@ export const draftsRouter = tRouter({
       const history = runs.map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource }));
       const summary = await loadResultReviewSummary(db, latest.metrics?.reservationistResult, transportId, input.threadId, latest.id, requestState);
       const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
-      const earlier = item ? outstandingRequestHistory(history, requestState)
+      const earlier = item ? requestHistory(history, requestState)
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
-          kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: false, earlier: true,
+          kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
       const oldFiles = item ? outstandingSourceRecoveries(history).filter(file => file.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
