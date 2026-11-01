@@ -104,7 +104,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('reservationist worker candida
           expect(generation?.outcome).toBe('needs_clarification');
           expect(drafts).toHaveLength(1);expect(drafts[0]?.textBody).toBe('');
           const review=buildReservationistReviewSummary(saved?.metrics?.reservationistResult,new Date(),[{sourceRef:fileId,messageId:currentId,filename:'rooms.xlsx'}]);
-          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',text:mode==='source_review'?'rooms.xlsx: This attachment format could not be read.':'rooms.xlsx: This attachment could not be checked; open the original source.'}));
+          expect(review?.staffActions).toContainEqual(expect.objectContaining({filename:'rooms.xlsx',kind:'business_document_failure',status:'open',reason:expect.stringMatching(/could not be (?:read|checked)/i)}));
           if(mode==='missing_file')expect(saved?.metrics?.reservationistDraftSource?.attachments).toEqual([expect.objectContaining({attachmentId:fileId,sourceIdentity:'metadata_only'})]);
         }else if(mode==='installed'){
           expect(drafts).toHaveLength(1);
