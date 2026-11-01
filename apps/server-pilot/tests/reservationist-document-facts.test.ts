@@ -383,12 +383,15 @@ function validateCrossViewDates(plain:string,html:string,citation:string,options
  return validateDocumentPlan({facts,tasks,unresolvedAsks:[]},[original]);
 }
 
-function validateQuotedCrossViewDates(plain:string,html:string,history:string,citation:string) {
+function validateQuotedCrossViewDates(plain:string,html:string,history:string,citation:string,htmlHistory=history) {
  const separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,htmlEnd=htmlStart+html.length;
- const page=`${plain}${separator}${html}\n\n${history}`,historyStart=htmlEnd+2,sourceHash=createHash('sha256').update(page).digest('hex');
+ const historyStart=htmlEnd+2,historyEnd=historyStart+history.length,contextSeparator='\n\n[HTML alternative context]\n';
+ const htmlHistoryStart=htmlHistory===history?historyStart:historyEnd+contextSeparator.length;
+ const page=`${plain}${separator}${html}\n\n${history}${htmlHistory===history?'':`${contextSeparator}${htmlHistory}`}`;
+ const sourceHash=createHash('sha256').update(page).digest('hex');
  const original={attachmentId:'message:current',sourceHash,disclosure:'guest' as const,pages:[page],pageCount:1,
-  sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:historyStart,end:page.length}},
-   {name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:historyStart,end:page.length}}]};
+  sourceViews:[{name:'plain' as const,start:0,end:plain.length,quoted:{start:historyStart,end:historyEnd}},
+   {name:'html' as const,start:htmlStart,end:htmlEnd,quoted:{start:htmlHistoryStart,end:page.length}}]};
  const start=page.indexOf(citation),source={attachmentId:original.attachmentId,sourceHash,page:1,quote:citation,start,end:start+citation.length};
  const facts=[{id:'stay',kind:'dates' as const,value:{arrival:'2026-12-21',departure:'2026-12-23'},disclosure:'guest' as const,source}];
  return validateDocumentPlan({facts,tasks:[],unresolvedAsks:[]},[original]);
@@ -486,13 +489,34 @@ it('compares each authored alternative once against quoted neighboring stays', (
 it('does not let quoted history suppress current stay cancellation', () => {
  const request='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
  const history=`From: earlier request\n${request}\nCancel the stay.`;
- expect(()=>validateQuotedCrossViewDates('Cancel the stay.','Cancel the stay.',history,request))
+ expect(()=>validateQuotedCrossViewDates('Cancel the stay.','Cancel the stay.\nPlease confirm receipt.',history,request))
+  .toThrow('Explicit same-stay correction requires source clarification');
+});
+
+it('rejects conflicting date pairs in corresponding quoted histories', () => {
+ const plainStay='Group A: Please quote a room: Arrival 21 December 2026; departure 23 December 2026.';
+ const htmlStay='Group A: Please quote a room: Arrival 21 December 2026; departure 24 December 2026.';
+ expect(()=>validateQuotedCrossViewDates('Please follow the quoted Group A stay.','',
+  `From: earlier request\n${plainStay}`,plainStay,`From: earlier request\n${htmlStay}`))
   .toThrow('Explicit same-stay correction requires source clarification');
 });
 
 it('does not treat a meal-plan change for the stay as a date correction', () => {
  const stay='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
  expect(validateCrossViewDates(stay,`${stay}\nWe changed the meal plan for this stay to breakfast only.`,stay).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+});
+
+it.each(['No change to the stay dates.','Please do not change the stay dates.'])
+ ('does not treat unchanged dates as a correction: %s',note=>{
+  const stay='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
+  expect(validateCrossViewDates(stay,`${stay}\n${note}`,stay).facts[0]!.value)
+   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
+ });
+
+it('does not treat plural check-in and check-out times as changed dates',()=>{
+ const stay='Please quote the stay: Arrival 21 December 2026; departure 23 December 2026.';
+ expect(validateCrossViewDates(stay,`${stay}\nCorrection: check-in and check-out times are 14:00 and 11:00.`,stay).facts[0]!.value)
   .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
