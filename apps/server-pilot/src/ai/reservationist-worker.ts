@@ -10,7 +10,6 @@ import { sealReservationistDraftSource } from './reservationist-draft-source.js'
 import { loadReservationistMailboxInput } from './reservationist-mailbox-input.js';
 import { RESERVATIONIST_RUNTIME_VERSION, runReservationistRuntime, type RuntimePlan } from './reservationist-runtime.js';
 import { markAiRunSucceeded, type AiRunFence, type AiWorkflowRun } from './run-ledger.js';
-import { refreshThreadWork } from './work-items.js';
 
 /** The ordinary worker may use this path only with a matching installed release. */
 export async function runReservationistWorkerCandidate(options: {
@@ -92,7 +91,6 @@ export async function runReservationistWorkerCandidate(options: {
           reservationistDraftSource: sealReservationistDraftSource({ ...source, resultDigest }) },
       }, tx as unknown as DB);
       if (!marked) throw new Error('reservationist_claim_stale');
-      await refreshThreadWork(tx as unknown as DB, { transportId: run.transportId, threadId: run.threadId });
     });
     return { runId: run.id, state: 'succeeded' as const };
   }
@@ -119,7 +117,6 @@ export async function runReservationistWorkerCandidate(options: {
       metrics: { ...commonMetrics, draftId: draft.id },
     }, tx as unknown as DB);
     if (!marked) throw new Error('reservationist_claim_stale');
-    await refreshThreadWork(tx as unknown as DB, { transportId: run.transportId, threadId: run.threadId });
   });
   return { runId: run.id, state: 'succeeded' as const };
 }
