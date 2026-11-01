@@ -331,6 +331,11 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  const history=page.search(/^(?:\s*>?\s*(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
+function childRequirement(page:string):boolean{
+ const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+ const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'');
+ return /\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope);
+}
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
 function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][],page:string):{quantity:number;adults:number;at:string}|undefined{
  const source=sources.find(s=>s.attachmentId===fact.source.attachmentId);
@@ -459,9 +464,7 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
     const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).some(task=>{
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
-      const authored=alternative?.page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]?.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]??'';
-      const childScope=authored.replace(/\b(?:no|without|zero|0)\s+(?:any\s+)?(?:child|children|minor|infant|kids?|students?)\b/gi,'');
-      if(!occupancy.childAges.length&&/\b(?:child|children|minor|infant|kids?|students?|family)\b/i.test(childScope))return true;
+      if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
       const roomsExplicit=/\b(?:\d+|one|two|a|an)\s+(?:(?:single|double|twin|standard|executive|deluxe)\s+)?(?:bed)?rooms?\b|\b\d+\s+(?:pax|people|persons?)\b[^\n;.!?]{0,40}\bsingle\b/i.test(quoted),adultsExplicit=/\b(?:\d+|one|two)\s+(?:people|persons?|adults?|officials?)\b/i.test(quoted)||alternative?.facts.some(f=>f.kind==='guest');
       return observed&&(roomsExplicit&&observed.quantity!==occupancy.quantity||adultsExplicit&&observed.adults!==occupancy.adults);
     });
@@ -474,8 +477,11 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return;
     }
     const staff=scope&&fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(proofFact,sources,proofFacts,proofTasks,scope.page):undefined;
-    if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
+    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
+    const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirement(originalPage.slice(view.start,view.end)));
+    if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){if(viewHasChild)throw new Error('Conflicting occupancy across message views');fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
     const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&!!scope&&soleExplicitAdultRoom(scope.page);
+    if(sole&&viewHasChild)throw new Error('Conflicting occupancy across message views');
     ok = sole||rows.some(row => {
       const numbered=numberedRoomLabel(row,fact.value.roomRef);
       if(numbered&&!currentNumberedRoomRow(fact,row,sources))return false;

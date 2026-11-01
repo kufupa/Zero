@@ -248,6 +248,13 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Please quote one room for Mr Alex Example and Ms Taylor Sample.','Kindly quote one room for Mr Alex Example and Ms Taylor Sample.',true,true)).resolves.toMatchObject({facts:retained});
   await expect(run('Please quote one room.','Kindly quote one room for two adults.',false)).resolves.toMatchObject({facts:[{id:'room',convention:{rule:'centurion_staff_occupancy_v1'}}]});
  });
+ it('checks the other authored view for a child even when both citations select plain text',async()=>{
+  const plain='Please quote one room for one adult.',marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+marker.length;
+  const run=(html:string)=>{const text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:child-alternative',source={attachmentId,sourceHash,page:1,quote:plain,view:'plain'};
+   return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'room',kind:'room',value:{roomRef:'1',quantity:1,adults:1,childAges:[]},disclosure:'guest',source}],tasks:[{id:'quote',kind:'quote',factIds:['room'],source}],unresolvedAsks:[]}})} as any,messages:[{id:'child-alternative',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'child-alternative',causalAt:at,admissions:[],signal:new AbortController().signal});};
+  await expect(run('Please quote one room for one adult and one child.')).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Please quote one room for one adult and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
+ });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
   const alternate='Please rebook this stay using the previous quotation.';
