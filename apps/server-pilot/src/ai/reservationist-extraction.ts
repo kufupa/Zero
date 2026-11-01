@@ -171,11 +171,13 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
  const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from','send'].includes(word)));
  const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b/i;
  const negative=/\b(?:no|not|never|without|excluding|exclude[ds]?|remove[ds]?|cancel(?:led|ed)?|no longer|do not|don['’]t)\b/i;
+ const explicitScopes=(text:string)=>new Set([...text.matchAll(/\bgroup\s+([\p{L}\p{N}_-]+)\b|\broom\s+(?:#\s*)?(\d+)\b/giu)].map(match=>match[1]?`group:${match[1].toLowerCase()}`:`room:${match[2]}`)),quoteScopes=explicitScopes(quote);
  const relevant=(part:string)=>{
   const modifying=correction.test(part)||negative.test(part),shared=(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
   const referent=/\b(?:it|this|that|these|those|them)\b/i.test(part.replace(/\b(?:is|was|will|would|can|could|should|might)\s+it(?:\s+be)?\s+(?:possible|feasible)\b/gi,''));
-  return isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)):
-   modifying&&(shared||correction.test(part)||referent);
+  const partScopes=explicitScopes(part),otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope));
+  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)):
+   modifying&&(shared||correction.test(part)||referent));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(relevant).join(' ')));
  if(tail[0]!==tail[1])return;
