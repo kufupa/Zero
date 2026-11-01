@@ -9,6 +9,7 @@ import {
 import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { orderThreadContext } from '../src/ai/quote-workflow-synced-selection.js';
+import { inboundPropertyCodeForTransport } from '../src/ai/extraction/inbound-run.js';
 import { AE1_OUTPUT, selectionFor } from './fixtures/inbound-extraction.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -37,6 +38,29 @@ const ACTION_OUTPUT = {
   actionEvidence: 'Please advise availability and rates.',
   actionConfidence: 'high',
 };
+
+describe('property-scoped inbound extraction', () => {
+  it('uses the resolved hotel rules and a neutral fallback', () => {
+    const selection = selectionFor('Please quote two adults for next month.');
+    const centurion = buildInboundPrompt(selection, undefined, undefined, { propertyCode: 'HRCEN' }).system;
+    const davinci = buildInboundPrompt(selection, undefined, undefined, { propertyCode: 'HRDAV' }).system;
+    const unknown = buildInboundPrompt(selection, undefined, undefined, { propertyCode: null }).system;
+
+    expect(centurion).toContain('Property: Centurion Hotel');
+    expect(centurion).toContain('property or partner (Da Vinci, events/conference team');
+    expect(davinci).toContain('Property: Da Vinci Hotel');
+    expect(davinci).not.toContain('Property: Centurion Hotel');
+    expect(davinci).toContain('property or partner (another Legacy hotel');
+    expect(unknown).not.toContain('Property: Centurion Hotel');
+    expect(unknown).not.toContain('Property: Da Vinci Hotel');
+    expect(unknown).not.toContain('Da Vinci');
+    expect(unknown).toContain('property or partner (another hotel, events/conference team, accounts)');
+    expect(buildInboundPrompt(selection).system).toContain('Property: Centurion Hotel');
+    expect(inboundPropertyCodeForTransport('transport-faith')).toBe('HRDAV');
+    expect(inboundPropertyCodeForTransport('transport-centurion')).toBe('HRCEN');
+    expect(inboundPropertyCodeForTransport('transport-nava')).toBeNull();
+  });
+});
 
 describe('generic action-classifier prompt', () => {
   it('uses the target and thread state, applies document precedence, and excludes OTA before classify', () => {

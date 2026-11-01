@@ -27,7 +27,8 @@ import {
 import { lunaCallBudget } from '../bedrock/luna.js';
 import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
-import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import { hotelRulesForProperty } from '../reservationist-decision.js';
+import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import {
   extractionPromptMaxChars,
   extractionReasoningEffort,
@@ -76,7 +77,9 @@ import {
 
 /** Hash of the rules, the prompt text and both output schemas. A change here means a new read for every mail. */
 export const EXTRACTION_VERSION = `extract-${createHash('sha256')
-  .update(CENTURION_HOTEL_RULES)
+  .update(
+    [hotelRulesForProperty('HRCEN'), hotelRulesForProperty('HRDAV'), hotelRulesForProperty(null)].join('\n'),
+  )
   .update('\n')
   .update(EXTRACTION_RULES)
   .update('\n')
@@ -107,6 +110,11 @@ const DEFER_MS = 5 * 60 * 1000;
 
 export function inboundExtractionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.INBOUND_EXTRACTION === 'on';
+}
+
+export function inboundPropertyCodeForTransport(transportId: string): string | null {
+  const resolved = resolvePropertyTransport(transportId);
+  return resolved.kind === 'property' ? resolved.property.propertyCode : null;
 }
 
 /** Model calls per rolling hour, extraction and translation both counted. Unset or invalid means 60. */
@@ -313,6 +321,7 @@ export async function runInboundExtraction(
     messageId: run.triggerMessageId,
     from: trigger.fromAddress,
     mailbox: trigger.mailbox,
+    propertyCode: inboundPropertyCodeForTransport(run.transportId),
     signal: deps.signal,
     deadlineMs:
       deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,
