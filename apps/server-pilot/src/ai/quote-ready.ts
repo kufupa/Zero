@@ -151,15 +151,15 @@ function groupForStay(
     if (describedAdults !== stay.totalAdults) return { groups: [], reason: 'missing_occupancy' };
   }
   for (const row of stay.rows) {
-    if (row.adultsPerRoom === null || row.childAges === null) {
-      return { groups: [], reason: 'missing_occupancy' };
-    }
     const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
     // Only a real guest signal (before defaults) justifies assuming one room.
-    const hasGuestData = row.adultsPerRoom !== null || row.childAges.length > 0;
+    const hasGuestData = row.adultsPerRoom !== null || (row.childAges?.length ?? 0) > 0;
     const quantity = recordedQuantity ?? (hasGuestData ? 1 : null);
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
+    }
+    if (row.adultsPerRoom === null || row.childAges === null) {
+      return { groups: [], reason: 'missing_occupancy' };
     }
     const adults = row.adultsPerRoom;
     if (

@@ -560,7 +560,7 @@ describe('quote-ready eval-47 summary replay', () => {
 
     expect(rows).toHaveLength(summary.totalRows);
     expect(summary.totalRows).toBe(47);
-    expect(prefillable).toBe(40);
+    expect(prefillable).toBe(33);
     expect(prefillable).toBeGreaterThanOrEqual(30);
     expect(prefillable).toBeLessThanOrEqual(44);
     console.log(`prefillable ${prefillable}/${summary.totalRows}`);

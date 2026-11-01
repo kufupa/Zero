@@ -609,7 +609,8 @@ export function mapLlmDecision(
     const adultsTotal = normalizeStayTotal(group.adultsTotal);
     const childrenTotal = normalizeStayTotal(group.childrenTotal);
     const adultTotalMismatch = adultTotalsMismatch.has(lunaStayKey(group, index));
-    const adultFieldMissing = analysis.missing.some((item) =>
+    const canDefaultTwinAdults = quoteDefaults && (group.rooms === null || group.rooms === 1) && /\b(?:double|twin)\b/i.test(group.roomPreference ?? '');
+    const adultFieldMissing = !canDefaultTwinAdults && analysis.missing.some((item) =>
       /adult|occupancy/i.test(`${item.field} ${item.question}`) && !/total/i.test(item.field),
     );
     const adultNeedsReview = adultTotalMismatch || adultFieldMissing;
