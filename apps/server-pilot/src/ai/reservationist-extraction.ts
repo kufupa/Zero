@@ -135,24 +135,29 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
  if(Array.isArray(plan.tasks))for(const task of plan.tasks){if(!task||!Object.hasOwn(task,'sourceCandidateId'))continue;if(Object.hasOwn(task,'source')||typeof task.sourceCandidateId!=='string')throw new Error('Invalid original request candidate');const candidate=candidates.find(c=>c.id===task.sourceCandidateId);if(!candidate)throw new Error('Unbound original request candidate');if(!candidate.allowedKinds.includes(task.kind))throw new Error('Original request candidate kind not entailed');task.source=structuredClone(candidate.source);delete task.sourceCandidateId;}
  return plan;
 }
-/** Matching evidence in both authored alternatives can share the original plain span. */
-function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean):number|undefined{
+function authoredQuoteOffsets(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):[number,number]|undefined{
  if(!views||views.length!==2)return;
  const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
  if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
  const hits=views.map(view=>[first,second].filter(start=>start>=view.start&&start+quote.length<=view.end));
  if(hits.some(viewHits=>viewHits.length!==1))return;
+ return [hits[0]![0]!,hits[1]![0]!];
+}
+/** Matching evidence in both authored alternatives can share the original plain span. */
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean):number|undefined{
+ const hits=authoredQuoteOffsets(page,quote,views);
+ if(!hits||!views)return;
  const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
- const before=views.map((view,index)=>clean(page.slice(view.start,hits[index]![0])));
- const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]![0]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
+ const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
+ const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
  if(isFact){
   // Different later statements may qualify or correct the fact, even after a period.
   // A separate question with no shared content words can coexist with it.
   const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from'].includes(word)));
-  const tail=views.map((view,index)=>clean(page.slice(hits[index]![0]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>!part.trim().endsWith('?')||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
+  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter(part=>!part.trim().endsWith('?')||(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word))).join(' ')));
   if(tail[0]!==tail[1])return;
  }
- return before[0]===before[1]&&after[0]===after[1]?hits[0]![0]:undefined;
+ return before[0]===before[1]&&after[0]===after[1]?hits[0]:undefined;
 }
 /** Bind original text and restore uniquely evidenced guest spelling; source bytes never change. */
 function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:string;sourceHash:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[]}[]):unknown{
@@ -164,6 +169,9 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
    const span=item?.source;if(!span||typeof span!=='object'||span.region!==undefined||typeof span.quote!=='string'||!span.quote.length||!Number.isInteger(span.page))continue;
    const source=sources.find(s=>s.attachmentId===span.attachmentId&&s.sourceHash===span.sourceHash),page=source?.pages?.[span.page-1];
    if(page===undefined)continue;
+   const views=source?.sourceViews,hits=list===candidate.facts?authoredQuoteOffsets(page,span.quote,views):undefined;
+   if(hits&&views&&page.slice(views[0]!.start,hits[0]).replace(/\s+/g,' ').trim()===page.slice(views[1]!.start,hits[1]).replace(/\s+/g,' ').trim()&&
+     equivalentAuthoredOffset(page,span.quote,views,true)===undefined)throw new Error('Ambiguous original text span');
    if(span.start===undefined&&span.end===undefined){
     let start=page.indexOf(span.quote);
     if(start<0){

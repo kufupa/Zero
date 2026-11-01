@@ -206,11 +206,15 @@ describe('reservationist worker input', () => {
     })]);
     const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
     const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
-    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
-      facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest', source: source(meal) }],
-      tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
-    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
-      admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+    for (const explicit of [false, true]) {
+      const start = message.text.indexOf(meal);
+      await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+        facts: [{ id: 'meal', kind: 'board', value: 'breakfast', disclosure: 'guest',
+          source: { ...source(meal), ...(explicit ? { start, end: start + meal.length } : {}) } }],
+        tasks: [{ id: 'quote', kind: 'quote', factIds: ['meal'], source: source(request) }], unresolvedAsks: [],
+      } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+        admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+    }
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
