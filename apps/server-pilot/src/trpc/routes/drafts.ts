@@ -31,7 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled } from '../../ai/reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled, setVoucherReviewHandled, voucherReviewCompletionKeys } from '../../ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
@@ -192,10 +192,10 @@ async function loadDraftReviewSummary(db: DB, draft: typeof mailDraft.$inferSele
   return loadResultReviewSummary(db, result, draft.transportId, draft.threadId, run?.id, workState);
 }
 
-async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown) {
+async function loadResultReviewSummary(db: DB, result: unknown, transportId: string, threadId: string | null, runId?: string, workState?: unknown, includeAttachmentMetadata = true) {
   const recoveries = result && typeof result === 'object'
     ? (result as { sourceRecoveries?: { sourceKind?: string; sourceRef?: string }[] }).sourceRecoveries : undefined;
-  const attachmentIds = Array.isArray(recoveries) ? [...new Set(recoveries
+  const attachmentIds = includeAttachmentMetadata && Array.isArray(recoveries) ? [...new Set(recoveries
     .filter(item => item?.sourceKind === 'attachment' && typeof item.sourceRef === 'string')
     .map(item => item.sourceRef!))].slice(0, 64) : [];
   const sources = attachmentIds.length && threadId ? await db
@@ -205,7 +205,10 @@ async function loadResultReviewSummary(db: DB, result: unknown, transportId: str
   const summary = buildReservationistReviewSummary(result, new Date(), sources);
   if (!summary || !runId || workState === undefined) return summary;
   const keys = requestCompletionKeys(result, runId), handled = handledRequestKeys(workState);
-  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })) };
+  const voucherKeys = voucherReviewCompletionKeys(result);
+  return { ...summary, tasks: summary.tasks.map(task => ({ ...task, runId, handled: handled.has(keys.get(task.id) ?? '') })),
+    staffActions: summary.staffActions?.map(action => action.kind === 'voucher_review'
+      ? { ...action, runId, handled: handled.has(voucherKeys.get(action.id) ?? '') } : action) };
 }
 
 export type ReservationistStaffAction = {
@@ -221,6 +224,8 @@ export type ReservationistStaffAction = {
   filename?: string;
   reason?: string;
   readable?: boolean;
+  handled?: boolean;
+  runId?: string;
   blockingQuote: boolean;
   status: 'open';
 };
@@ -1295,14 +1300,25 @@ export const draftsRouter = tRouter({
         .filter(task => task.runId !== latest.id).map(task => ({ id: task.taskId, runId: task.runId,
           kind: kinds.has(task.kind) ? task.kind : 'question', label: 'Earlier request', state: 'Needs review', handled: task.handled, earlier: true,
           details: [task.quote ? `Earlier review: ${task.quote}` : 'An earlier review identified a request. Check the original email.'] })) : [];
-      const oldSources = item ? outstandingSourceRecoveries(history).filter(source => source.runId !== latest.id) : [];
+      const oldSources = item ? outstandingSourceRecoveries(history, requestState).filter(source => source.runId !== latest.id) : [];
       const earlierSources: ReservationistStaffAction[] = [];
-      for (const run of runs.filter(run => oldSources.some(source => source.runId === run.id))) {
-        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState);
-        earlierSources.push(...(prior?.staffActions ?? []).filter(action => oldSources.some(source =>
-          source.runId === run.id && (source.kind === 'voucher_review'
-            ? action.kind === 'voucher_review' && source.id === action.id
-            : action.kind === 'business_document_failure' && source.sourceRef === action.sourceRef))));
+      const earlierSourceIds = new Set<string>();
+      const oldSourceRunIds = new Set(oldSources.map(source => source.runId));
+      const attachmentRunIds = new Set(oldSources.filter(source => source.kind === 'attachment_manual').map(source => source.runId));
+      if (item) for (const run of runs) {
+        if (run.id === latest.id) continue;
+        const voucherIds = voucherReviewCompletionKeys(run.metrics?.reservationistResult);
+        if (!oldSourceRunIds.has(run.id) && !voucherIds.size) continue;
+        const prior = await loadResultReviewSummary(db, run.metrics?.reservationistResult, transportId, input.threadId, run.id, requestState, attachmentRunIds.has(run.id));
+        for (const action of prior?.staffActions ?? []) {
+          const voucher = action.kind === 'voucher_review' && voucherIds.has(action.id);
+          const attachment = action.kind === 'business_document_failure' && oldSources.some(source =>
+            source.runId === run.id && source.kind === 'attachment_manual' && source.sourceRef === action.sourceRef);
+          if ((voucher || attachment) && !earlierSourceIds.has(action.id)) {
+            earlierSourceIds.add(action.id);
+            earlierSources.push(action);
+          }
+        }
       }
       if (!summary && !earlier.length && !earlierSources.length) return null;
       const reviewSummary = summary ?? { readinessLabel: 'Needs review', reason: 'Earlier review needs attention.', tasks: [], pricingProof: [], staffActions: [] };
@@ -1321,6 +1337,22 @@ export const draftsRouter = tRouter({
     const result = await setRequestHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
     if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
     if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this request.' });
+    if (input.handled) {
+      const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
+        .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+      if (item?.threadId) await refreshThreadWork(db, { transportId: ctx.activeTransportId, threadId: item.threadId });
+    }
+    return { handled: input.handled };
+  }),
+
+  /** Acknowledge one source-bound voucher check without creating a guest task or authorizing a PMS write. */
+  setVoucherReviewHandled: mailboxProcedure.input(z.object({
+    workItemId: z.string().uuid(), runId: z.string().min(1).max(200), reviewItemId: z.string().min(1).max(700), handled: z.boolean(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const result = await setVoucherReviewHandled(db, { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+    if (result === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email review changed. Refresh before updating this check.' });
     if (input.handled) {
       const [item] = await db.select({ threadId: workItem.threadId }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.activeTransportId))).limit(1);
