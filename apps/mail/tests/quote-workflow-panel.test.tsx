@@ -256,7 +256,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('No cancellation has been saved.', { selector: 'li' })).toBeDefined();
   });
   it('shows one persistent control for a prepared question and keeps its source link', () => {
-    const question = `Parking? ${'Please confirm. '.repeat(20)}`;
+    const question = `Parking? ${'Please confirm. '.repeat(20)}`.trim();
     const source = {id:'request:one:message:mail-1:0:8:hash',kind:'question' as const,rank:'secondary' as const,
       text:question,sourceLabel:'This email',sourceRef:'message:mail-1',blocking:false};
     const task = {id:'one',kind:'question',label:'Answer question',state:'Needs review' as const,
