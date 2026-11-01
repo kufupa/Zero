@@ -706,7 +706,7 @@ export function QuoteWorkflowPanel({
   if (session.phase === 'unsynced') {
     return (
       <div className="flex flex-col gap-3">
-        <div className="hidden">{bookingHost}</div>
+        <div hidden>{bookingHost}</div>
         <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>
         {shuttleDraft}
         {replyContent ? <div className="flex flex-col gap-2.5">{replyContent}</div> : null}
