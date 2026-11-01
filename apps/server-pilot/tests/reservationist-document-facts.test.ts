@@ -412,6 +412,11 @@ it('requires clarification when one citation overlaps duplicate stays and anothe
  const changed=`${stay}\nPlease quote a room: Arrival 21 December 2026; departure 24 December 2026.`;
  expect(()=>validateCrossViewDates(duplicate,changed,duplicate))
   .toThrow('Explicit same-stay correction requires source clarification');
+
+ const other='Please quote another room: Arrival 21 December 2026; departure 24 December 2026.';
+ const repeatedAndOther=`${duplicate}\n${other}`;
+ expect(validateCrossViewDates(repeatedAndOther,repeatedAndOther,duplicate).facts[0]!.value)
+  .toMatchObject({arrival:'2026-12-21',departure:'2026-12-23'});
 });
 
 it('keeps printed arrival and departure years in a valid cross-year range', () => {

@@ -313,10 +313,12 @@ function citedViewSpan(fact: Extract<DocumentFactCandidate, { kind: 'dates' }>, 
   const byScope = sourcePair ? otherPairs.filter(pair => pair.scope === sourcePair.scope && pair.ordinal === sourcePair.ordinal) : [];
   const byEntity = sourcePair?.entity ? otherPairs.filter(pair => pair.entity === sourcePair.entity) : [];
   const supportedStayPair = (pair: StayPair) => /\b(?:rooms?|stay|accommodation|overnight|arrival|depart(?:ure)?|check[ -]?(?:in|out)|checking\s+(?:in|out)|availability|quote|book|reserve|booking|reservation)\b/i.test(pair.scope);
-  const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => otherPairs.some(pair =>
-    !(candidate.entity && pair.entity && candidate.entity !== pair.entity) &&
-    (sameDayMonth(candidate.arrival, pair.arrival) || sameDayMonth(candidate.departure, pair.departure)) &&
-    (!sameDate(candidate.arrival, pair.arrival) || !sameDate(candidate.departure, pair.departure))));
+  const ambiguousCitationConflict = !sourcePair && overlapping.length > 1 && valuePairs.some(candidate => {
+    const compatible = (pair: StayPair) => !(candidate.entity && pair.entity && candidate.entity !== pair.entity);
+    const sameSourcePair = (pair: StayPair) => compatible(pair) &&
+      sameDate(candidate.arrival, pair.arrival) && sameDate(candidate.departure, pair.departure);
+    return valuePairs.filter(sameSourcePair).length > otherPairs.filter(sameSourcePair).length;
+  });
   if (ambiguousCitationConflict) throw new Error('Explicit same-stay correction requires source clarification');
   const fallback = sourcePair && sourcePairs.length === 1 && otherPairs.length === 1 &&
     !(sourcePair.entity && otherPairs[0]!.entity && sourcePair.entity !== otherPairs[0]!.entity) &&
