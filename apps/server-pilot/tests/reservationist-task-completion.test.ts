@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { handledRequestKeys, hasOutstandingRequests, outstandingRequestHistory, requestCompletionKeys, setRequestHandled } from '../src/ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
+import { markAiRunSucceeded } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
@@ -20,6 +21,9 @@ it('carries staff completion only across an unchanged, unique source span', () =
   const ambiguous = requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-a');
   expect(ambiguous.get('one')).not.toBe(ambiguous.get('two'));
   expect(ambiguous.get('one')).not.toBe(requestCompletionKeys({ version: 1, tasks: [task('one', 0), task('two', 0)] }, 'run-b').get('one'));
+  const quote = `${'Earlier request. '.repeat(20)}Final detail.`;
+  const long = {...task('long', 0), requestSource:{...task('long', 0).requestSource, end:quote.length, quote}};
+  expect(outstandingRequestHistory([{id:'run',result:{version:1,tasks:[long]}}], {})[0]?.quote).toBe(quote);
 });
 
 it('does not auto-close a malformed stored task inventory', () => {
@@ -78,9 +82,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff request completion', ()
       await refreshThreadWork(db, {transportId:TRANSPORT_ID,threadId});
       expect((await state()).status).toBe('dismissed');
       await db.insert(aiWorkflowRun).values({id:runId,idempotencyKey:runId,transportId:TRANSPORT_ID,threadId,
-        triggerMessageId:oldMessage,runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'succeeded',
+        triggerMessageId:oldMessage,runKind:'candidate_draft',modelId:'synthetic',promptVersion:'test',state:'running',claimOwner:'worker',claimToken:'token',
         createdAt:at(21_000),metrics:{reservationistResult:{version:1,tasks:[task('one',0),task('two',5)]}}});
-      await refreshThreadWork(db, {transportId:TRANSPORT_ID,threadId});
+      await markAiRunSucceeded({runId,claimOwner:'worker',claimToken:'token',expectedStates:['running']},db);
       expect((await state()).status).toBe('needs_you');
       await db.insert(message).values({id:reply,transportId:TRANSPORT_ID,threadId,direction:'outbound',fromAddress:TRANSPORT_EMAIL,
         toAddresses:['guest@example.invalid'],textBody:'Acknowledged.',receivedAt:at(20_000),sentAt:at(20_000)});
