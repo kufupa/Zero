@@ -8,7 +8,15 @@ const fixtures = vi.hoisted(() => {
     searchResults: { displayed: 1, total: 1, complete: true },
     details: {
       confirmationInHeader: confirmation,
-      cards: [{ title: 'Stay', fields: [{ name: 'status', value: 'Reserved' }] }],
+      cards: [
+        { title: 'Stay', fields: [{ name: 'status', value: 'Reserved' }] },
+        { title: 'Folio', fields: [
+          { name: 'foliobalance', value: 'R1,234.50' },
+          { name: 'depositreceived', value: 'R0.00' },
+          { name: 'depositamount', value: 'R500.00' },
+          { name: 'depositduedate', value: 'Tue 02-Feb-2027' },
+        ] },
+      ],
       visibleFormFields: [],
     },
   };
@@ -21,6 +29,13 @@ const fixtures = vi.hoisted(() => {
         { name: 'arrivaldate', value: '2027-02-03' },
         { name: 'departuredate', value: '2027-02-05' },
         { name: 'nights', value: '2' },
+        { name: 'balance', value: '0.00' },
+        { name: 'balancecurr', value: 'ZAR' },
+        { name: 'depositreceived', value: '125.00' },
+        { name: 'depositreceivedcurrency', value: 'ZAR' },
+        { name: 'udfchar02', value: '300.00' },
+        { name: 'udfdate02', value: '2027-02-01' },
+        { name: 'firstname', value: 'TEST-GUEST-NAME', section: 'Guest' },
       ],
     },
   };
@@ -69,6 +84,9 @@ describe('saved-stay cancellation preparation', () => {
       expect(await runTool({ tool: 'prepareCancellation' })).toMatchObject({
         outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED',
       });
+      expect(await runTool({ tool: 'prepareFinance' })).toMatchObject({
+        outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED',
+      });
       const read = await runTool({ tool: 'read', confirmation: fixtures.confirmation });
       expect(read.outcome).toBe('ok');
       read.record.details.fields[0].value = 'Cancelled';
@@ -82,6 +100,38 @@ describe('saved-stay cancellation preparation', () => {
         action: { actor: 'human', cancellationStarted: false, commitAvailable: false },
       });
       expect(Number.isFinite(Date.parse(result.observedAt))).toBe(true);
+      expect(fixtures.openCancel).not.toHaveBeenCalled();
+      expect(fixtures.confirmCancel).not.toHaveBeenCalled();
+    });
+  });
+
+  it('prepares a privacy-reduced display-only finance view from the exact current read', async () => {
+    await withSavedStayAgentSession(async ({ runTool }) => {
+      await runTool({ tool: 'read', confirmation: fixtures.confirmation });
+      const result = await runTool({ tool: 'prepareFinance' });
+      expect(result).toMatchObject({
+        outcome: 'prepared_for_human_review',
+        target: { confirmation: fixtures.confirmation, verified: true },
+        recordView: {
+          basis: 'stay360_display_only_not_ledger',
+          balance: { amount: { state: 'observed_zero', value: '0.00' }, currency: { value: 'ZAR' } },
+          depositReceived: { amount: { state: 'observed', value: '125.00' } },
+          depositDue: { amount: { state: 'observed', value: '300.00' } },
+        },
+        folioCard: {
+          basis: '1a_folio_card_display_only',
+          balance: { state: 'observed', value: 'R1,234.50' },
+          depositReceived: { state: 'observed_zero', value: 'R0.00' },
+        },
+        interpretation: {
+          ledgerBalance: 'not_established',
+          depositCleared: 'not_established',
+          depositDue: 'not_verified',
+          transactionHistory: 'not_read',
+        },
+      });
+      expect(Number.isFinite(Date.parse(result.observedAt))).toBe(true);
+      expect(JSON.stringify(result)).not.toContain('TEST-GUEST-NAME');
       expect(fixtures.openCancel).not.toHaveBeenCalled();
       expect(fixtures.confirmCancel).not.toHaveBeenCalled();
     });

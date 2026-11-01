@@ -114,10 +114,11 @@ export function hmsStateDigest(hmsState: unknown): string {
   return sha256Hex(canonicalJson(JSON.parse(JSON.stringify(hmsState ?? null))));
 }
 
-/** The form the person saw: stored state without the snapshot key the reader writes. */
+/** The form the person saw, excluding read snapshots and staff request acknowledgements. */
 function formOf(state: Record<string, unknown>): Record<string, unknown> {
   const form: Record<string, unknown> = { ...state };
   delete form[HMS_SNAPSHOT_KEY];
+  delete form.reservationistHandledRequests;
   return form;
 }
 
