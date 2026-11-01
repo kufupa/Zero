@@ -241,12 +241,14 @@ describe('reservationist worker input', () => {
 
   it('accepts matching corrected dates across views and rejects changed dates', async () => {
     const plain = 'Please quote the corrected stay from 21 December 2026 to 23 December 2026.';
-    const extract = async (lastDay: number, prefix = 'Please quote the amended stay from', extra = '') => {
+    const extract = async (lastDay: number, prefix = 'Please quote the amended stay from', extra = '', split = false) => {
+      const cited = split ? 'Please quote the corrected stay: Arrival 21 December 2026; departure 23 December 2026.' : plain;
+      const alternative = split ? `Please quote the amended stay: Arrival 21 December 2026; departure ${lastDay} December 2026.` : `${prefix} 21 December 2026 to ${lastDay} December 2026.`;
       const { input } = await build([row('current', 4, {
-        textBody: plain, htmlBody: `<p>${prefix} 21 December 2026 to ${lastDay} December 2026.</p><p>${extra}</p>`,
+        textBody: cited, htmlBody: `<p>${alternative}</p><p>${extra}</p>`,
       })]);
       const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
-      const source = { attachmentId: 'message:current', sourceHash, page: 1, quote: plain, start: 0, end: plain.length };
+      const source = { attachmentId: 'message:current', sourceHash, page: 1, quote: cited, start: 0, end: cited.length };
       return extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
         facts: [{ id: 'stay', kind: 'dates', value: { arrival: '21 December 2026', departure: '23 December 2026' }, disclosure: 'guest', source }],
         tasks: [{ id: 'quote', kind: 'quote', factIds: ['stay'], source }], unresolvedAsks: [],
@@ -259,6 +261,8 @@ describe('reservationist worker input', () => {
     await expect(extract(23, 'Do not book the stay from')).rejects.toThrow('Explicit same-stay correction requires source clarification');
     await expect(extract(23, undefined, 'Please cancel the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
     await expect(extract(23, undefined, 'Do not book the airport transfer on arrival.')).resolves.toMatchObject({ facts: [{ id: 'stay' }] });
+    await expect(extract(23, undefined, '', true)).resolves.toMatchObject({ facts: [{ id: 'stay', value: { arrival: '2026-12-21', departure: '2026-12-23' } }] });
+    await expect(extract(24, undefined, '', true)).rejects.toThrow('Explicit same-stay correction requires source clarification');
   });
 
   it('keeps HTML room rows when the plain alternative flattens them', async () => {
