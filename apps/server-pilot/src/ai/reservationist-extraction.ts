@@ -170,8 +170,9 @@ function equivalentAuthoredOffset(page:string,quote:string,views:readonly Reserv
    const incompatibleBoard=isFact&&!part.trim().endsWith('?')&&((meal.test(quote)&&roomOnly.test(part))||(roomOnly.test(quote)&&meal.test(part)))&&/\b(?:stay|book|reserve|need|want|require|prefer|choose|include|included|basis|plan)\b/i.test(part);
   const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
   const relevantReferent=referent&&(!previous&&negative.test(part)||/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part));
+  const awaitingApproval=/\b(?:do not|don['’]t|never)\s+proceed\s+(?:until|unless|before)\s+(?:i|we)\s+(?:approve|confirm|authori[sz]e)\b/i.test(part);
    return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(incompatibleBoard||shared&&!timeDetail||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||modifying&&relevantReferent):
-   modifying&&(shared||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||relevantReferent));
+   modifying&&(shared||correction.test(part)&&!countOfOtherQuestion&&!timeDetail||relevantReferent||awaitingApproval));
  };
  const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter((part,i,parts)=>relevant(part,parts[i-1])).join(' ')));
  if(tail[0]!==tail[1])return;
@@ -360,7 +361,13 @@ function childRequirementForRoom(page:string,fact:ValidatedDocumentFact,facts:re
   .filter(other=>other.kind==='room'&&other.id!==fact.id&&other.source.attachmentId===fact.source.attachmentId&&other.source.page===fact.source.page&&other.value.roomRef!==fact.value.roomRef)
   .map(other=>other.kind==='room'?other.value.roomRef:'');
  const inThisGroup=(row:string)=>labeled(row,'room|group',fact.value.roomRef)||numberedRoomLabel(row,fact.value.roomRef);
- const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>inThisGroup(row)||!otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref)));
+ let otherGroupHasChild=false;
+ const scopedRows=page.split(/[.!?;\r\n]+/).filter(row=>{
+  if(inThisGroup(row)){otherGroupHasChild=false;return true;}
+  if(otherGroups.some(ref=>labeled(row,'room|group',ref)||numberedRoomLabel(row,ref))){otherGroupHasChild=childRequirement(row);return false;}
+  // A definite follow-up to the other room's already-mentioned child does not add a child here.
+  return !(otherGroupHasChild&&/^\s*(?:the|that|their)\s+(?:child|children|infant|kids?|minor)\b/i.test(row));
+ });
  return childRequirement(scopedRows.join('\n'));
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */

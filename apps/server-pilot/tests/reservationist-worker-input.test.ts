@@ -114,6 +114,35 @@ describe('reservationist worker input', () => {
     await expect(extract('Is the pool open to children under 12?')).resolves.toMatchObject({ facts: [{ id: 'room' }] });
   });
 
+  it('keeps a child follow-up with the room that mentioned the child', async () => {
+    const request = 'Please quote two rooms.', first = 'Room 1: 1 adult.', second = 'Room 2: 2 adults and child aged 5.';
+    const body = `${request}\n${first}\n${second}\nThe child will need a cot.`;
+    const { input } = await build([row('current', 4, { textBody: body, htmlBody: `<p>${body.replaceAll('\n', '</p><p>')}</p><p>Can we park onsite?</p>` })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    const source = (quote: string) => ({ attachmentId: 'message:current', sourceHash, page: 1, quote });
+    const plan = await extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [
+        { id: 'first', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 1, childAges: [] }, disclosure: 'guest', source: source(first) },
+        { id: 'second', kind: 'room', value: { roomRef: '2', quantity: 1, adults: 2, childAges: [5] }, disclosure: 'guest', source: source(second) },
+      ],
+      tasks: [{ id: 'quote', kind: 'quote', factIds: ['first', 'second'], source: source(request) }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal });
+    expect(plan.facts.map(fact => fact.id)).toEqual(['first', 'second']);
+  });
+
+  it('does not discard an approval condition in the other authored view', async () => {
+    const request = 'Please cancel reservation 12345678.';
+    const { input } = await build([row('current', 4, { textBody: request,
+      htmlBody: `<p>${request}</p><p>Do not proceed until I approve.</p>` })]);
+    const message = input.messages[0]!, sourceHash = createHash('sha256').update(message.text).digest('hex');
+    await expect(extractReservationistPlan({ adapter: { invoke: async () => ({ output: {
+      facts: [], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: [],
+        source: { attachmentId: 'message:current', sourceHash, page: 1, quote: request } }], unresolvedAsks: [],
+    } }) } as any, messages: input.messages, triggerMessageId: 'current', causalAt: input.clock.causalAt,
+      admissions: [], signal: new AbortController().signal })).rejects.toThrow('Ambiguous original text span');
+  });
+
   it('derives a yearless stay from the cited HTML view after a plain signoff, but not quoted history', async () => {
     const extractStay = (message: any, dateQuote: string, dateStart: number, taskQuote: string, taskStart: number) => {
       const sourceHash = createHash('sha256').update(message.text).digest('hex');
