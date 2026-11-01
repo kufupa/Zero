@@ -424,7 +424,7 @@ export function sanitizeExtraction(
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',
       question: cleanText(item.question) ?? '',
-      ...('stayId' in item && item.stayId ? { stayId: item.stayId } : {}),
+      ...('stayId' in item && typeof item.stayId === 'string' && item.stayId ? { stayId: item.stayId } : {}),
     }))
     .filter((item) => item.question);
   const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';
