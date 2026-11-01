@@ -9,6 +9,7 @@ import {
 } from './booking-draft.js';
 import type { ValidatedDocumentFact, ValidatedDocumentPlan } from './reservationist-document-facts.js';
 import { validReservationistMessageViews } from './reservationist-message-view.js';
+import { boards as rateBoards, norm as normRate } from './rate-options.js';
 import type { ReservationistRuntimeInput } from './reservationist-runtime.js';
 export type ReservationistBookingSuggestionCitation = {
   sourceRef: string;
@@ -45,11 +46,9 @@ type CitationSource = {
   end?: number;
   quote?: string;
 };
-
 function hashText(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
-
 function citation(source: CitationSource): ReservationistBookingSuggestionCitation | null {
   if (
     !source.attachmentId ||
@@ -144,7 +143,7 @@ function noChildrenExplicitlyKnown(
   room: Extract<ValidatedDocumentFact, { kind: 'room' }>,
 ): boolean {
   if (/\b(?:adults?\s+only|only\s+adults?)\b/i.test(quote)) return true;
-  const zeroChild = /\b(?:no|without|zero|0)\s+(?:children|kids?|infants?|minors?)\b|\b(?:children|kids?)\s*[:=]\s*0\b/i;
+  const zeroChild = /\b(?:no|without|zero|0)\s+(?:children|kids?|minors?)\b|\b(?:children|kids?)\s*[:=]\s*0\b/i;
   if (zeroChild.test(quote) && !/\b(?:under|over|aged?|age|younger|older)\b/i.test(quote)) return true;
   // Existing extraction semantics support this one narrowly explicit adult-only case.
   return room.value.quantity === 1 && room.value.adults === 1 && room.value.childAges.length === 0 &&
@@ -154,11 +153,8 @@ function noChildrenExplicitlyKnown(
 }
 
 function boardValue(value: string): QuotedBoard {
-  const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
-  if (normalized === 'room_only' || normalized === 'room only') return 'room_only';
-  if (['bb', 'breakfast', 'bed & breakfast', 'bed and breakfast'].includes(normalized)) return 'bb';
-  if (['dbb', 'dinner bed & breakfast', 'dinner bed and breakfast', 'dinner, bed & breakfast', 'dinner, bed and breakfast'].includes(normalized)) return 'dinner_bb';
-  return 'unknown';
+  const board = rateBoards[normRate(value)];
+  return board === 'breakfast' ? 'bb' : board === 'dinner_bed_breakfast' ? 'dinner_bb' : board ?? 'unknown';
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -245,6 +241,7 @@ export async function buildReservationistBookingSuggestion(input: {
     const previous = grouped.get(room.value.roomRef);
     if (!previous) grouped.set(room.value.roomRef, room);
     else if (
+      previous.source.sourceRef !== room.source.sourceRef || previous.source.page !== room.source.page ||
       previous.value.quantity !== room.value.quantity ||
       previous.value.adults !== room.value.adults ||
       JSON.stringify(previous.value.childAges) !== JSON.stringify(room.value.childAges)
@@ -265,6 +262,10 @@ export async function buildReservationistBookingSuggestion(input: {
     parties: parties.map(({ source }) => ({ source })),
   };
   const groupId = reservationistBookingSuggestionGroupId(request);
+  const needsDetails = (details = missing): ReservationistBookingSuggestion => ({
+    version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
+    groupId, source: request, partyNames, facts: sourceFacts, missing: uniqueStrings(details),
+  });
   const canPrefill =
     datePairs.size === 1 &&
     rooms.length > 0 &&
@@ -273,20 +274,7 @@ export async function buildReservationistBookingSuggestion(input: {
     partyNames.length <= 1 &&
     !missing.some((item) => item.startsWith('Some stay facts'));
 
-  if (!canPrefill) {
-    return {
-      version: 1,
-      taskId: task.id,
-      status: 'needs_details',
-      displayOnly: true,
-      saved: false,
-      groupId,
-      source: request,
-      partyNames,
-      facts: sourceFacts,
-      missing: uniqueStrings(missing),
-    };
-  }
+  if (!canPrefill) return needsDetails();
 
   const stay = datePairs.values().next().value as (typeof dates)[number];
   const orderedGroups = [...grouped.values()].sort((a, b) =>
@@ -297,14 +285,12 @@ export async function buildReservationistBookingSuggestion(input: {
     const quantity = group.value.quantity!;
     if (!Number.isSafeInteger(quantity) || quantity < 1 || physicalRooms.length + quantity > 96) {
       missing.push('Room quantity exceeds the supported preparation limit.');
-      return {
-        version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-        groupId, source: request, partyNames, facts: sourceFacts, missing: uniqueStrings(missing),
-      };
+      return needsDetails();
     }
     const groupBoards = boards.filter((board) => board.roomRef === group.value.roomRef || board.roomRef === undefined);
-    const boardCodes = new Set(groupBoards.map((board) => boardValue(board.board)).filter((board) => board !== 'unknown'));
+    const boardCodes = new Set(groupBoards.map((board) => boardValue(board.board)));
     const board: QuotedBoard = boardCodes.size === 1 ? [...boardCodes][0]! : 'unknown';
+    if (groupBoards.length && (boardCodes.size > 1 || boardCodes.has('unknown'))) missing.push('Meal preferences conflict or are unsupported; staff must check the requested board.');
     for (let localIndex = 1; localIndex <= quantity; localIndex++) {
       physicalRooms.push({
         roomRef: group.value.roomRef,
@@ -316,7 +302,7 @@ export async function buildReservationistBookingSuggestion(input: {
     }
   }
 
-  const nameByRoom = new Map<string, string[]>();
+  const nameByRoom = new Map<string, Array<{ firstName: string; lastName: string }>>();
   for (const guest of guests) {
     if (!guest.roomRef) continue;
     const group = grouped.get(guest.roomRef);
@@ -325,8 +311,7 @@ export async function buildReservationistBookingSuggestion(input: {
     if (localIndex === undefined || localIndex < 1 || localIndex > group.value.quantity) continue;
     const key = `${guest.roomRef}\0${localIndex}`;
     const names = nameByRoom.get(key) ?? [];
-    const fullName = `${guest.firstName} ${guest.lastName}`;
-    if (!names.includes(fullName)) names.push(fullName);
+    if (!names.some((name) => name.firstName === guest.firstName && name.lastName === guest.lastName)) names.push({ firstName: guest.firstName, lastName: guest.lastName });
     nameByRoom.set(key, names);
   }
 
@@ -337,14 +322,13 @@ export async function buildReservationistBookingSuggestion(input: {
       arrival: stay.arrival,
       departure: stay.departure,
       nights: null,
-      rooms: physicalRooms.map((room) => ({
-        adults: room.adults,
-        childAges: [...room.childAges],
-        roomTypeText: null,
-        guestName: nameByRoom.get(`${room.roomRef}\0${room.localIndex}`)?.length === 1
-          ? nameByRoom.get(`${room.roomRef}\0${room.localIndex}`)![0]!
-          : null,
-      })),
+      rooms: physicalRooms.map((room) => {
+        const names = nameByRoom.get(`${room.roomRef}\0${room.localIndex}`), name = names?.length === 1 ? names[0] : undefined;
+        return {
+          adults: room.adults, childAges: [...room.childAges], roomTypeText: null,
+          guestName: name ? `${name.firstName} ${name.lastName}` : null, ...name,
+        };
+      }),
       boardText: boards.length === 1 ? boards[0]!.board : null,
       rateText: null,
       agencyName: null,
@@ -359,19 +343,9 @@ export async function buildReservationistBookingSuggestion(input: {
       propertyCode: runtime.propertyCode,
     });
     options = createRequestFieldOptions(runtime.propertyCode);
+    if (!prefill.requests.length) throw new Error('empty_booking_prefill');
   } catch {
-    return {
-      version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-      groupId, source: request, partyNames, facts: sourceFacts,
-      missing: uniqueStrings([...missing, 'The current property form could not prepare a booking draft.']),
-    };
-  }
-  if (!prefill.requests.length) {
-    return {
-      version: 1, taskId: task.id, status: 'needs_details', displayOnly: true, saved: false,
-      groupId, source: request, partyNames, facts: sourceFacts,
-      missing: uniqueStrings([...missing, 'The current property form could not prepare a booking draft.']),
-    };
+    return needsDetails([...missing, 'The current property form could not prepare a booking draft.']);
   }
   const draft = bookingDraftFromPrefill({
     requests: prefill.requests,
