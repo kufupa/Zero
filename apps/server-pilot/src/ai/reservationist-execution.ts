@@ -52,7 +52,7 @@ function bookingViewsConflict(task:Task,input:ReservationistRuntimeInput):boolea
  const own=views.find(view=>source.start!>=view.start&&source.end!<=view.end);
  const target=source.quote?.match(/\b(?:this|that|these|those|the|a|an|\d+|one|two)\s+(?:(?:single|double|twin|standard)\s+)?rooms?\b/i)?.[0]?.toLowerCase();
  if(!own||!target)return false;
- return views.some(view=>view.name!==own.name&&[...message.text.slice(view.start,view.end).matchAll(/\b(?:do\s+not|don't|never|not)\s+(?:(?:actually|yet|ever|please)\s+)?(?:book|reserve)\b[^.!?;\n]*/gi)].some(match=>match[0].toLowerCase().includes(target)));
+ return views.some(view=>view.name!==own.name&&[...message.text.slice(view.start,view.end).matchAll(/\b(?:do\s+not|don't|never|not)\s+(?:(?:actually|yet|ever|please)\s+)?(?:book|reserve)\b[^.!?;\n]*|\b(?:book|reserve)\b[^.!?;\n]{0,200}\bnot\s+yet(?=\s*(?:[.!?;]|$))/gi)].some(match=>match[0].toLowerCase().includes(target)));
 }
 export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntimeInput):boolean{
  const source=task.source,message=input.messages.find(m=>m.id===input.trigger.id);
@@ -71,7 +71,7 @@ export function currentAuthoredGuestRequest(task:Task,input:ReservationistRuntim
  const prefix=text.slice(0,start),sentenceStart=Math.max(0,...[...prefix.matchAll(/[.!?;](?=\s|$)/g)].map(m=>m.index!+1)),terminalBoundary=/[.!?;]$/.test(source.quote)&&/^(?:\s|$)/.test(text.slice(end)),next=text.slice(end).search(/[.!?;](?=\s|$)/),sentence=text.slice(sentenceStart,terminalBoundary?end:next<0?text.length:end+next);
  if(/^\s*>/m.test(text.slice(0,end)))return false;
  const cleaned=sentence.replace(/\b(?:no|without)\s+(?:children|child|kids?|infants?|minors?)\b/gi,'').replace(/\bif you could kindly please (?=send\b)/ig,'').replace(/^[ \t]*(?:reference|reservation|booking)[ \t]+no\.[ \t]*:[ \t]*[A-Za-z0-9_-]+[ \t]*$/gim,'');
- if(task.kind==='new_booking')return !/\b(?:unless|whether|if|disregard|withdraw)\b|\b(?:do\s+not|don't|never|not)\s+(?:(?:actually|yet|ever|please)\s+)?(?:book|reserve|confirm)\b|\b(?:booking|reservation)\s+(?:is\s+)?(?:not|no longer)\s+(?:needed|required|wanted|requested)\b/i.test(cleaned);
+ if(task.kind==='new_booking')return !/\b(?:unless|whether|if|disregard|withdraw)\b|\b(?:do\s+not|don't|never|not)\s+(?:(?:actually|yet|ever|please)\s+)?(?:book|reserve|confirm)\b|\b(?:booking|reservation)\s+(?:is\s+)?(?:not|no longer)\s+(?:needed|required|wanted|requested)\b|\b(?:book|reserve|confirm)\b[^.!?;\n]{0,200}\bnot\s+yet(?=\s*(?:[.!?;]|$))/i.test(cleaned);
  return !/\b(?:not|no|never|unless|without|whether|if|don't|do not|disregard|withdraw|another|other|different)\b/i.test(cleaned);
 }
 function appendRequestedAmendment(task:Task,input:ReservationistRuntimeInput,reply:string):string{

@@ -90,10 +90,11 @@ function authoredEnd(
     offset = view.start;
     text = text.slice(view.start, view.end);
   }
-  const boundaries = [
-    text.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im),
-    text.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu),
-  ].filter((position) => position >= 0);
+  const history = text.search(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:|Begin forwarded message:|Forwarded message:)|-{2,}\s*(?:Original Message|Forwarded message))/im);
+  const signoff = text.search(/^[\t ]*(?:(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu);
+  const postscript = signoff < 0 ? -1 : text.slice(signoff).search(/^[\t ]*p[\t ]*\.?[\t ]*s[\t ]*\.?(?=[\s:]|$)/im);
+  const inPostscript = postscript >= 0 && span?.start !== undefined && span.start - offset >= signoff + postscript;
+  const boundaries = [history, inPostscript ? -1 : signoff].filter((position) => position >= 0);
   return offset + (boundaries.length ? Math.min(...boundaries) : text.length);
 }
 
