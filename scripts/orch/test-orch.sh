@@ -8,8 +8,10 @@ if [[ ${0##*/} == fake-gh ]]; then
     'pr view') printf '%s\t%s\t%s\n' '0123456789abcdef0123456789abcdef01234567' owner repo ;;
     'pr merge') exit 0 ;;
     'api graphql')
-      if [[ ${FAKE_GH_SCENARIO:-success} == threads ]]; then
-        printf '%s\n' '{"data":{"repository":{"pullRequest":{"headRefOid":"0123456789abcdef0123456789abcdef01234567","reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"},"body":"P1: issue"}],"pageInfo":{"hasNextPage":false}}}],"pageInfo":{"hasNextPage":false}}}}}}'
+      if [[ ${FAKE_GH_SCENARIO:-success} == threads* ]]; then
+        login='greptile-apps'
+        [[ ${FAKE_GH_SCENARIO:-} != threads-legacy ]] || login='greptile-apps[bot]'
+        printf '{"data":{"repository":{"pullRequest":{"headRefOid":"0123456789abcdef0123456789abcdef01234567","reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"%s"},"body":"P1: issue"}],"pageInfo":{"hasNextPage":false}}}],"pageInfo":{"hasNextPage":false}}}}}}\n' "$login"
       else
         printf '%s\n' '{"data":{"repository":{"pullRequest":{"headRefOid":"0123456789abcdef0123456789abcdef01234567","reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"},"body":"P1: resolved"}],"pageInfo":{"hasNextPage":false}}}],"pageInfo":{"hasNextPage":false}}}}}}'
       fi ;;
@@ -57,7 +59,7 @@ bash "$script_dir/test-orch.sh" --help >/dev/null
 out=$(run_gate 0 success "$gate_root")
 [[ $out == PASS* ]] || { printf 'FAIL: expected pass verdict: %s\n' "$out" >&2; exit 1; }
 grep -Fxq "pr merge 123 --squash --match-head-commit $sha" "$FAKE_GH_LOG"
-for scenario in pending threads over-limit; do
+for scenario in pending threads threads-legacy over-limit; do
   : >"$FAKE_GH_LOG"
   out=$(run_gate 1 "$scenario" "$gate_root")
   [[ $out == BLOCKED* ]] && ! grep -q '^pr merge ' "$FAKE_GH_LOG"

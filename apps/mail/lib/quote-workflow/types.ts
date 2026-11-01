@@ -172,6 +172,7 @@ export type ReservationistPreparedTask = {
   state: 'Ready' | 'Pending staff action' | 'Needs review';
   details: string[];
   handled?: boolean;
+  earlier?: boolean;
   runId?: string;
   workItemId?: string;
 };

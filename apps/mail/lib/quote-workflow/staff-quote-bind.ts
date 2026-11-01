@@ -601,10 +601,13 @@ export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTa
   const kinds = new Set(['quote', 'new_booking', 'acceptance', 'change', 'cancel_request', 'booking', 'channel_booking_sync', 'question', 'existing_document']);
   const tasks: ReservationistPreparedTask[] = [];
   const ids = new Set<string>();
-  for (const item of summary.tasks.slice(0, 32)) {
+  for (const item of summary.tasks) {
     if (!item || typeof item !== 'object') continue;
     const task = item as Record<string, unknown>;
-    if (typeof task.id !== 'string' || !task.id.trim() || ids.has(task.id)) continue;
+    if (typeof task.id !== 'string' || !task.id.trim()) continue;
+    const runId = typeof task.runId === 'string' ? task.runId : envelope.runId;
+    const identity = JSON.stringify([runId ?? '', task.id]);
+    if (ids.has(identity)) continue;
     if (typeof task.kind !== 'string' || !kinds.has(task.kind)) continue;
     if (typeof task.label !== 'string' || !task.label.trim()) continue;
     if (task.state !== 'Ready' && task.state !== 'Pending staff action' && task.state !== 'Needs review') continue;
@@ -612,10 +615,11 @@ export function readPreparedStaffTasks(value: unknown): ReservationistPreparedTa
     const details = allDetails.length > 400
       ? [...allDetails.slice(0, 395), 'Some prepared details are not shown. Check the request and HMS.', ...allDetails.slice(-5)]
       : allDetails;
-    ids.add(task.id);
-    const completion = typeof envelope.runId === 'string' && typeof envelope.workItemId === 'string' && typeof task.handled === 'boolean'
-      ? { runId: envelope.runId, workItemId: envelope.workItemId, handled: task.handled } : {};
-    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details, ...completion });
+    ids.add(identity);
+    const completion = typeof runId === 'string' && typeof envelope.workItemId === 'string' && typeof task.handled === 'boolean'
+      ? { runId, workItemId: envelope.workItemId, handled: task.handled } : {};
+    tasks.push({ id: task.id, kind: task.kind, label: task.label, state: task.state, details,
+      ...(task.earlier === true ? { earlier: true } : {}), ...completion });
   }
   return tasks;
 }
