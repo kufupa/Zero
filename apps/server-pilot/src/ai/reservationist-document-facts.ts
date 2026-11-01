@@ -190,16 +190,45 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  if(!page)throw new Error('Cited text source page missing');
  if(!source.sourceViews)return{page,start,end};
  const view=source.sourceViews.find(candidate=>start>=candidate.start&&end<=candidate.end);
- const other=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!).join('\n');
+ const otherViews=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!);
+ const other=otherViews.join('\n');
  const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
- const dateTokens=(text:string)=>[...text.matchAll(/\b(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/gi)].map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
+ const datePattern=/\b(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/gi;
+ const dateMatches=(text:string)=>[...text.matchAll(new RegExp(datePattern.source,'gi'))];
+ const dateTokens=(text:string)=>dateMatches(text).map(match=>match[0].replace(/\s+/g,' ').toLowerCase());
+ const dateKey=(token:string)=>{try{const year=/\b\d{4}\b/.test(token),date=/^\d{1,2}[/-]\d{1,2}$/.test(token)?normalizedDate(token,2000):normalizedDate(year?token:`${token} 2000`);return{dayMonth:date.slice(5),year:year?date.slice(0,4):undefined};}catch{return;}};
+ const sameDate=(a:string,b:string)=>{const left=dateKey(a),right=dateKey(b);return!!left&&!!right&&left.dayMonth===right.dayMonth&&(!left.year||!right.year||left.year===right.year);};
+ const stayPairs=(text:string)=>{
+  const pairs:{arrival:string;departure:string;start:number;end:number;scope:string;ordinal:number;entity?:string}[]=[];
+  let previousEnd=0,arrival:{date:string;labelStart:number}|undefined;
+  const ordinals=new Map<string,number>();
+  for(const match of dateMatches(text)){
+   const gap=text.slice(previousEnd,match.index!),label=[...gap.matchAll(/\b(arrival|check[ -]?in|depart(?:ure)?|check[ -]?out)\b/gi)].at(-1);
+   if(label){
+    const role=label[1]!.toLowerCase(),labelStart=previousEnd+label.index!,isArrival=/^(?:arrival|check[ -]?in)$/.test(role),isDeparture=/^(?:depart(?:ure)?|check[ -]?out)$/.test(role);
+    if(isArrival)arrival={date:match[0],labelStart};
+    else if(isDeparture&&arrival){
+     const before=text.slice(0,arrival.labelStart),boundary=Math.max(before.lastIndexOf('\n'),before.lastIndexOf('.'),before.lastIndexOf('!'),before.lastIndexOf('?'),before.lastIndexOf(';'));
+     const context=text.slice(boundary+1,arrival.labelStart),scope=text.slice(boundary+1,match.index!+match[0].length).replace(new RegExp(datePattern.source,'gi'),' date ').replace(/\bcheck[ -]?in\b/gi,'arrival').replace(/\bcheck[ -]?out\b/gi,'departure').replace(/[^\p{L}\p{N}]+/gu,' ').toLowerCase().trim();
+     const entity=/\bgroup\s+([\p{L}\p{N}_-]+)\b/iu.exec(context)?.[1]?.toLowerCase()??/\broom\s+(?:#\s*)?(\d+)\b/i.exec(context)?.[1];
+     const ordinal=ordinals.get(scope)??0;ordinals.set(scope,ordinal+1);
+     pairs.push({arrival:arrival.date,departure:match[0],start:arrival.labelStart,end:match.index!+match[0].length,scope,ordinal,...(entity?{entity}:{})});
+     arrival=undefined;
+    }
+   }
+   previousEnd=match.index!+match[0].length;
+  }
+  return pairs;
+ };
  const citedDates=dateTokens(fact.source.quote??''),otherDates=dateTokens(other);
- const samePair=citedDates.length===2&&/\b(?:arrival|check[ -]?in)\b[\s\S]*\b(?:departure|check[ -]?out)\b/i.test(other)&&JSON.stringify(otherDates)===JSON.stringify(citedDates);
+ const sourcePairs=view?stayPairs(page.slice(view.start,view.end)):[],localStart=view?start-view.start:start,localEnd=view?end-view.start:end,overlapping=sourcePairs.filter(pair=>pair.start<localEnd&&pair.end>localStart),valuePairs=overlapping.filter(pair=>sameDate(pair.arrival,fact.value.arrival)&&sameDate(pair.departure,fact.value.departure)),sourcePair=valuePairs.length===1?valuePairs[0]:overlapping.length===1?overlapping[0]:undefined,otherPairs=otherViews.flatMap(stayPairs),byScope=sourcePair?otherPairs.filter(pair=>pair.scope===sourcePair.scope&&pair.ordinal===sourcePair.ordinal):[],byEntity=sourcePair?.entity?otherPairs.filter(pair=>pair.entity===sourcePair.entity):[],fallback=sourcePair&&sourcePairs.length===1&&otherPairs.length===1&&!(sourcePair.entity&&otherPairs[0]!.entity&&sourcePair.entity!==otherPairs[0]!.entity)&&(sameDate(sourcePair.arrival,otherPairs[0]!.arrival)||sameDate(sourcePair.departure,otherPairs[0]!.departure))?[otherPairs[0]!]:[],corresponding=byScope.length?byScope:byEntity.length===1?byEntity:fallback;
+ if(corresponding.some(pair=>!sameDate(sourcePair!.arrival,pair.arrival)||!sameDate(sourcePair!.departure,pair.departure)))throw new Error('Explicit same-stay correction requires source clarification');
+ const samePair=corresponding.length?corresponding.every(pair=>sameDate(sourcePair!.arrival,pair.arrival)&&sameDate(sourcePair!.departure,pair.departure)):citedDates.length===2&&/\b(?:arrival|check[ -]?in)\b[\s\S]*\b(?:departure|check[ -]?out)\b/i.test(other)&&JSON.stringify(otherDates)===JSON.stringify(citedDates);
  if(other.split(/[;.!?\n]+/).some(sentence=>{
   const withdrawn=/\b(?:(?:do not|don['’]t|never|no longer)\s+(?:book|reserve|quote)|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\s+(?:(?:the|our|my|this|that|these|a)\s+)*(?:booking|reservation|rooms?|stay|nights?|dates?)\b/i.test(sentence);
   const negated=/\b(?:not|never|no longer|without|cancel(?:led|ed)?|withdraw(?:n)?|disregard|ignore)\b/i.test(sentence);
-  const dates=dateTokens(sentence),sameDates=!negated&&(dates.length>=2&&JSON.stringify(dates)===JSON.stringify(citedDates)||dates.length>0&&samePair);
-  const correction=/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
+  const dates=dateTokens(sentence),sameDateSequence=dates.length>0&&dates.length===citedDates.length&&dates.every((date,index)=>sameDate(date,citedDates[index]!)),samePairDate=dates.length>0&&dates.every(date=>sourcePair?[sourcePair.arrival,sourcePair.departure].some(value=>sameDate(date,value)):citedDates.some(value=>sameDate(date,value))),sameDates=!negated&&(sameDateSequence||samePair&&samePairDate);
+  const timeOnly=/\b(?:arrival|depart(?:ure)?|check[ -]?(?:in|out))\s+time\b/i.test(sentence)&&!/\bdates?\b/i.test(sentence)&&dateTokens(sentence).length===0,correction=!timeOnly&&/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence);
   return (withdrawn||correction)&&!sameDates&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase());
  }))throw new Error('Explicit same-stay correction requires source clarification');
  if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
