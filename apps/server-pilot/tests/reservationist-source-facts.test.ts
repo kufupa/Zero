@@ -5,6 +5,7 @@ import type {BookingEvidence} from '../src/ai/reservationist-booking-packet.js';
 import {quoteDigest,resolveQuoteRevision} from '../src/quote-proposal/quote-revision.js';
 import {createHash} from 'node:crypto';
 import {extractReservationistPlan} from '../src/ai/reservationist-extraction.js';
+import {HTML_ALTERNATIVE_MARKER} from '../src/ai/reservationist-message-view.js';
 const source={attachmentId:'message:inbound',sourceHash:'a'.repeat(64),page:1,quote:'Synthetic original request',start:0,end:26};
 const fact=(id:string,kind:string,value:unknown):any=>({id,kind,value,source,disclosure:'guest',verification:'text_verified',authority:'customer_claim'});
 const assertRevision=(facts:any[],revision:any,rooms?:any[],guestFacts?:BookingEvidence['guestFacts'])=>(sourceFacts as any).assertRevisionSourceFacts(facts,revision,rooms,guestFacts);
@@ -139,3 +140,27 @@ it('allows causal quotation addressee without asserting a native organization as
 it('does not let a matching quotation addressee mask conflicting native party context',async()=>{const revision=structuredClone(await syntheticRevision(['100.00'],'Room Only R','STQN'));revision.groups[0].context={organization:{name:'Different Company',nativeId:'2'}};expect(()=>sourceFacts.assertRevisionSourceFacts([fact('party','party','Requested Department')],revision,undefined,[],{company:'Requested Department',agency:''})).toThrow('party');});
 
 it.each(['breakfast and\ndinner','BED \t & \n BREAKFAST'])('compares a source-verified scalar meal label across original whitespace: %s',label=>{const board=label.startsWith('breakfast')?'dinner_bed_breakfast':'breakfast',revision:any={groups:[{id:'1',board}]},source=fact('board','board',label),before=structuredClone(source);expect(()=>assertRevision([source],revision)).not.toThrow();expect(source).toEqual(before);expect(()=>assertRevision([source],{groups:[{id:'1',board:'room_only'}]}as any)).toThrow('mismatch');});
+
+describe('plain and HTML citation binding',()=>{
+ const plain='Do not use: Please quote one room: Arrival 21 December; departure 23 December';
+ const html='Please quote one room: Arrival 21 December; departure 23 December';
+ const quote='Arrival 21 December; departure 23 December';
+ const at='2026-10-01T08:00:00Z',separator=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+separator.length,text=`${plain}${separator}${html}`;
+ const attachmentId='message:alternatives',sourceHash=createHash('sha256').update(text).digest('hex');
+ const views=[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:htmlStart,end:text.length}];
+ const schemas:any[]=[];
+ const extract=async(mode:'combined'|'task_first',view?:'plain'|'html')=>{
+  let calls=0;
+  const dateSource={attachmentId,sourceHash,page:1,quote,...(view?{view}:{})},taskSource={attachmentId,sourceHash,page:1,quote:html,...(view?{view}:{})};
+  const fact={id:'stay',kind:'dates',value:{arrival:'21 December',departure:'23 December'},disclosure:'guest',source:dateSource},task={id:'quote',kind:'quote',factIds:['stay'],source:taskSource};
+  return extractReservationistPlan({mode,adapter:{reserveCalls:async()=>{},invoke:async(request:any)=>{schemas.push(request.responseSchema);calls++;if(mode==='task_first'&&calls===1)return{output:{facts:[],tasks:[{...task,factIds:[]}],unresolvedAsks:[]}};if(mode==='task_first')return{output:{facts:[fact],assignments:[{taskId:'quote',factIds:['stay']}],unresolvedAsks:[]}};return{output:{facts:[fact],tasks:[task],unresolvedAsks:[]}};}} as any,messages:[{id:'alternatives',at,text,direction:'inbound',sourceViews:views}],triggerMessageId:'alternatives',causalAt:at,admissions:[],signal:new AbortController().signal});
+ };
+ const hasViewSchema=(node:any):boolean=>Boolean(node&&typeof node==='object'&&(node.properties?.view?.enum?.join(',')==='plain,html'||Object.values(node).some(hasViewSchema)));
+ it.each(['combined','task_first'] as const)('refuses duplicate text without a view and validates only the selected alternative (%s)',async mode=>{
+  await expect(extract(mode)).rejects.toThrow('Ambiguous original text span');
+  const plan=await extract(mode,'html');
+  expect(schemas.every(hasViewSchema)).toBe(true);
+  expect(plan.tasks[0]).toMatchObject({source:{start:htmlStart,end:text.length}});
+  expect(plan.facts[0]).toMatchObject({value:{arrival:'2026-12-21',departure:'2026-12-23'},source:{start:htmlStart+html.indexOf(quote),end:htmlStart+html.indexOf(quote)+quote.length}});
+ });
+});
