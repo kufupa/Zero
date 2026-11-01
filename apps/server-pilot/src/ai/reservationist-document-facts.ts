@@ -190,7 +190,8 @@ function citedViewSpan(fact:Extract<DocumentFactCandidate,{kind:'dates'}>,source
  if(!page)throw new Error('Cited text source page missing');if(!source.sourceViews)return{page,start,end};
  const view=source.sourceViews.find(view=>start>=view.start&&end<=view.end);
  const other=source.sourceViews.filter(candidate=>candidate!==view).map(candidate=>page.slice(candidate.start,candidate.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!).join('\n');
- if(other.split(/[;.!?\n]+/).some(sentence=>/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence)))throw new Error('Explicit same-stay correction requires source clarification');
+ const cited=view?page.slice(view.start,view.end).replace(/\s+/g,' ').toLowerCase():'';
+ if(other.split(/[;.!?\n]+/).some(sentence=>/\b(?:correction|corrected|change(?:d)?|instead|amend(?:ed)?)\b/i.test(sentence)&&/\b(?:checkout|check[ -]?out|depart(?:ure)?|arrival|check[ -]?in|dates?|nights?|stay)\b/i.test(sentence)&&!cited.includes(sentence.replace(/\s+/g,' ').trim().toLowerCase())))throw new Error('Explicit same-stay correction requires source clarification');
  if(view)return{page:page.slice(view.start,view.end),start:start-view.start,end:end-view.start};
  const quoted=source.sourceViews.find(view=>view.quoted&&start>=view.quoted.start&&end<=view.quoted.end)?.quoted;if(!quoted)throw new Error('Cited text crosses message alternatives');
  return{page:page.slice(quoted.start,quoted.end),start:start-quoted.start,end:end-quoted.start};

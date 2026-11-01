@@ -274,6 +274,9 @@ describe('explicit document calendars', () => {
     expect(() => check(plain, `${plain} Correction: checkout is 24 December.`, value)).toThrow('Explicit same-stay correction');
     const explicit = 'Please quote one room: arrival 21 December 2026; departure 23 December 2026.';
     expect(() => check(explicit, `${explicit} Corrected checkout is 24 December 2026.`, { arrival: '21 December 2026', departure: '23 December 2026' })).toThrow('Explicit same-stay correction');
+    const amendment = 'Please change my stay to 21 December 2026 to 23 December 2026.';
+    expect(check(amendment, `${amendment}\nKind regards\nGuest`, { arrival: '21 December 2026', departure: '23 December 2026' })).toMatchObject({ arrival: '2026-12-21', departure: '2026-12-23' });
+    expect(() => check(amendment, 'Please change my stay to 21 December 2026 to 24 December 2026.', { arrival: '21 December 2026', departure: '23 December 2026' })).toThrow('Explicit same-stay correction');
   });
   it('verifies dates renewed from one quoted alternative without spanning quoted alternatives', () => {
     const plain = 'Please rebook the same stay as previously quoted.';

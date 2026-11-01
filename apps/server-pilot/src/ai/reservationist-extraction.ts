@@ -459,7 +459,15 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
   else if (fact.kind === 'room') {
     const scope=citedSourceScope(fact,sources,facts,tasks),proofFact=scope?.fact??fact,proofFacts=scope?.facts??facts,proofTasks=scope?.tasks??tasks,boundTasks=proofTasks.filter(task=>task.factIds.includes(fact.id)).concat(scope?.alternativeTasks??[]);
     if((scope?.alternativeTasks??[]).some(task=>task.kind==='quote'&&/\b(?:not|never|don't|no\s+longer)\s+(?:to\s+)?(?:quote|(?:send|provide|prepare|issue)\s+(?:(?:me|us)\s+)?(?:(?:a|the)\s+)?(?:quote|quotation|rates?|prices?))\b/i.test(task.source.quote??'')))throw new Error('Conflicting quote request across message views');
-    const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).some(task=>{
+    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
+    const citedView=sourceForViews?.sourceViews?.find(view=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=view.start&&fact.source.end<=view.end);
+    const quoteTask=citedView&&tasks.find(task=>task.kind==='quote'&&task.factIds.includes(fact.id)&&task.source.attachmentId===fact.source.attachmentId&&task.source.page===fact.source.page&&task.source.start!==undefined&&task.source.end!==undefined&&task.source.start>=citedView.start&&task.source.end<=citedView.end);
+    // Inspect other authored views even when the model cited only this one.
+    const viewComparisons=quoteTask?sourceForViews!.sourceViews!.filter(view=>view!==citedView).map(view=>{
+      const text=originalPage.slice(view.start,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!;
+      return{...quoteTask,source:{...quoteTask.source,start:view.start,end:view.start+text.length,quote:text}};
+    }):[];
+    const occupancy=fact.value,conflictingOccupancy=(scope?.alternativeTasks??[]).concat(viewComparisons).some(task=>{
       if(task.kind!=='quote')return false;const alternative=citedSourceScope({...fact,source:task.source},sources,facts,[task]);
       const observed=alternative&&staffOccupancy(alternative.fact,sources,alternative.facts,alternative.tasks,alternative.page),quoted=task.source.quote??'';
       if(!occupancy.childAges.length&&alternative&&childRequirement(alternative.page))return true;
@@ -475,7 +483,6 @@ function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentS
       return;
     }
     const staff=scope&&fact.value.roomRef==='1'&&!fact.value.childAges.length&&boundTasks.some(task=>task.kind==='quote')&&boundTasks.every(task=>task.kind==='quote'||task.kind==='question'&&/\b(?:room|breakfast)\s+options?\b/i.test(task.source.quote??'')&&!/\b(?:tax(?:es)?|VAT|levy|cancel(?:lation)?|payment|deposit|transfer|shuttle)\b/i.test(task.source.quote??''))?staffOccupancy(proofFact,sources,proofFacts,proofTasks,scope.page):undefined;
-    const sourceForViews=sources.find(s=>s.attachmentId===fact.source.attachmentId),originalPage=sourceForViews?.pages?.[fact.source.page-1]??'';
     const viewHasChild=!fact.value.childAges.length&&sourceForViews?.sourceViews?.some(view=>childRequirement(originalPage.slice(view.start,view.end)));
     if(staff&&fact.value.quantity===staff.quantity&&fact.value.adults===staff.adults){if(viewHasChild)throw new Error('Conflicting occupancy across message views');fact.convention={rule:'centurion_staff_occupancy_v1',sourceAt:staff.at,timeZone:'Africa/Johannesburg'};return;}
     const sole=/\b(?:1|one)\s+(?:(?:single|standard|executive|deluxe)\s+)?room\b/i.test(quote)&&fact.value.roomRef==='1'&&fact.value.quantity===1&&fact.value.adults===1&&!fact.value.childAges.length&&!!scope&&soleExplicitAdultRoom(scope.page);
