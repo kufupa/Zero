@@ -72,7 +72,7 @@ it('binds a booking suggestion to its selected email and rejects malformed room 
   const source = {sourceRef:'message:mail-1',sourceHash:'a'.repeat(64),page:1,start:0,end:12};
   const suggestion = {version:1,taskId:'book',source,groupId:'book_123',
     draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
-    options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],missing:[]};
+    options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],partyNames:[],missing:[]};
   const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Needs review',details:[],handled:false,bookingSuggestion:suggestion};
   const envelope = {replyToMessageId:'mail-1',runId:'run',workItemId:'item',reviewSummary:{tasks:[task]}};
   const query = vi.fn().mockResolvedValue(envelope);
@@ -82,6 +82,9 @@ it('binds a booking suggestion to its selected email and rejects malformed room 
     draft:{...suggestion.draft,rooms:[{...suggestion.draft.rooms[0],groupId:'other'}]}}}]}});
   const malformed = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item'});
   expect(malformed.kind === 'ready' && malformed.tasks?.[0]?.bookingSuggestion).toBeUndefined();
+  query.mockResolvedValue({...envelope,reviewSummary:{tasks:[{...task,bookingSuggestion:{...suggestion,partyNames:undefined}}]}});
+  const withoutPartyContext = await bindStaffActions({query,threadId:'thread',messageId:'mail-1',workItemId:'item'});
+  expect(withoutPartyContext.kind === 'ready' && withoutPartyContext.tasks?.[0]?.bookingSuggestion).toBeUndefined();
 });
 
 it('keeps independent handled states attached to the selected work item and run', async () => {

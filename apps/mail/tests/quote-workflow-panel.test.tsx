@@ -239,7 +239,7 @@ describe('QuoteWorkflowPanel', () => {
         version:1 as const,taskId:'book',selectedMessageId:'mail-1',source,groupId:'book_123',
         draft:{rooms:[{groupId:'book_123',roomIndex:1,request:{arrival:'2027-04-01',departure:'2027-04-02',
           adults:1,childAges:[],firstName:'Alex',lastName:'Example'},schemaErrors:[]}],rateCheck:[],missing:[],flags:[]},
-        options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],missing:[],
+        options:{track:[],sourceOfBusiness:[],guaranteeType:[],roomType:[]},facts:[{kind:'dates',source}],partyNames:[],missing:[],
       }};
     const session = {...initialQuoteSession(),phase:'non_quote' as const,
       binding:{transportId:'t1',mailboxEmail:'staff@example.invalid',storeId:'store',folderEntryId:'inbox',entryId:'e1',selectionEpoch:1,scopeEpoch:1},
@@ -249,6 +249,14 @@ describe('QuoteWorkflowPanel', () => {
     expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Alex');
     view.rerender(<QuoteWorkflowPanel session={{...session,staffSource:{...session.staffSource,sourceHash:'b'.repeat(64)}}} workItemId="item" />);
     expect(screen.queryByRole('button',{name:/booking from request/})).toBeNull();
+    const withParty = {...session,preparedStaffTasks:[{...task,bookingSuggestion:{...task.bookingSuggestion,partyNames:['Acme Travel']}}]};
+    view.rerender(<QuoteWorkflowPanel session={withParty} workItemId="item" savedStays={{
+      book_123_1:{confirmationNumber:'12345-1',status:'booked',screenshotRef:null},
+    }} />);
+    expect(screen.queryByLabelText('First name')).toBeNull();
+    expect(screen.getByText('Booked in HMS – confirmation 12345-1')).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Party for this booking'),{target:{value:'none'}});
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Alex');
   });
   it.each(['non_quote', 'requirements'] as const)('shows prepared cancellation details in %s without claiming it was saved', (phase) => {
     const session = {...initialQuoteSession(),phase,preparedStaffTasks:[{

@@ -695,6 +695,9 @@ export function QuoteWorkflowPanel({
     savedStays={savedStays}
     screenshot={screenshot ?? paneSave?.screenshot}
     propertyCode={paneConfig?.propertyCode ?? null}
+    findParty={findParty}
+    partyIndex={partyIndex}
+    partyJobTransport={partyJobTransport}
   />;
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;

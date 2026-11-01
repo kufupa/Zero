@@ -1,11 +1,64 @@
 import { Fragment, useState } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
+import type { PartyFinder, PartyIndexSearcher } from '@/lib/quote-workflow/party-lookup';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
-import type { BookingDraftReady, QuoteSession } from '@/lib/quote-workflow/types';
+import type { BookingDraftReady, QuoteSession, ReservationistBookingSuggestion, StaffQuoteParties } from '@/lib/quote-workflow/types';
+import { paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
+import { PartyPicker } from './party-picker';
+
+function PreparedBookingForm({ suggestion, draft, paneSave, workItemId, savedStays, screenshot, propertyCode,
+  onSaveDefault, findParty, partyIndex, partyJobTransport, threadId }: {
+  suggestion: ReservationistBookingSuggestion;
+  draft: BookingDraftReady;
+  paneSave?: PaneStayClient | null;
+  workItemId?: string;
+  savedStays?: Record<string, SavedStayCommit>;
+  screenshot?: PaneStayClient['screenshot'] | null;
+  propertyCode?: string | null;
+  onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  findParty?: PartyFinder | null;
+  partyIndex?: PartyIndexSearcher | null;
+  partyJobTransport?: HmsJobTransport | null;
+  threadId?: string | null;
+}) {
+  const [kind, setKind] = useState<'' | 'agency' | 'company' | 'none'>(suggestion.partyNames.length ? '' : 'none');
+  const [parties, setParties] = useState<StaffQuoteParties>({});
+  const selected = kind === 'agency' || kind === 'company' ? parties[kind] : undefined;
+  const multipleParties = suggestion.partyNames.length > 1;
+  const ready = !multipleParties && (kind === 'none' || Boolean(selected?.nativeId));
+  return <>
+    {multipleParties ? <p className="text-xs">Multiple parties were mentioned. Check which applies in HMS before booking.</p> :
+    suggestion.partyNames.length ? <>
+      <label className="flex flex-col gap-1 text-xs">Company or agency mentioned: {suggestion.partyNames[0]}
+        <select aria-label="Party for this booking" className={paneFieldClass} value={kind} onChange={event => {
+          setKind(event.target.value as typeof kind); setParties({});
+        }}>
+          <option value="">Choose how this party applies</option>
+          <option value="agency">Booking agency</option>
+          <option value="company">Company</option>
+          <option value="none">No linked agency or company</option>
+        </select>
+      </label>
+      {kind === 'agency' || kind === 'company' ? findParty ? <PartyPicker
+        name={suggestion.partyNames[0]!} kind={kind} parties={parties} find={findParty}
+        indexSearch={partyIndex} jobTransport={partyJobTransport} threadId={threadId}
+        sourceMessageId={suggestion.selectedMessageId} propertyCode={propertyCode}
+        onPick={party => { if (party.kind === kind) setParties(current => ({ ...current, [kind]: party })); }}
+        onClear={cleared => setParties(current => ({ ...current, [cleared]: undefined }))} />
+        : <p className="text-xs">HMS party lookup is unavailable; check the party in HMS.</p> : null}
+    </> : null}
+    {ready ? <BookingCards key={`${kind}:${selected?.nativeId ?? ''}`} draft={draft} groups={[]} paneSave={paneSave}
+      workItemId={workItemId} savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot}
+      propertyCode={propertyCode} parties={parties} onSaveDefault={onSaveDefault ?? saveConfirmationDefault} /> :
+      appliedSavedStayIds(draft, [], savedStays).map(id => <SavedStayReceipt key={id} saved={savedStays![id]!}
+        screenshot={screenshot ?? paneSave?.screenshot} />)}
+  </>;
+}
 
 export function QuoteBookingHost({
   session,
@@ -16,6 +69,9 @@ export function QuoteBookingHost({
   screenshot,
   propertyCode,
   onSaveDefault,
+  findParty,
+  partyIndex,
+  partyJobTransport,
 }: {
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
@@ -26,6 +82,9 @@ export function QuoteBookingHost({
   screenshot?: PaneStayClient['screenshot'] | null;
   propertyCode?: string | null;
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  findParty?: PartyFinder | null;
+  partyIndex?: PartyIndexSearcher | null;
+  partyJobTransport?: HmsJobTransport | null;
 }) {
   const confirmation = useConfirmationSources();
   const requestKey = JSON.stringify([
@@ -45,15 +104,15 @@ export function QuoteBookingHost({
     if (!suggestion || task.earlier || task.handled || !task.runId || !workItemId ||
         task.workItemId !== workItemId || !session.binding || !session.staffSource ||
         suggestion.selectedMessageId !== session.staffSource.messageId ||
-        (suggestion.source.sourceRef === `message:${suggestion.selectedMessageId}` &&
-          suggestion.source.sourceHash !== session.staffSource.sourceHash)) return [];
+        suggestion.source.sourceRef !== `message:${suggestion.selectedMessageId}` ||
+        suggestion.source.sourceHash !== session.staffSource.sourceHash) return [];
     const draft: BookingDraftReady = {
       draft: suggestion.draft, options: suggestion.options,
       messageId: suggestion.selectedMessageId, selectionEpoch: session.binding.selectionEpoch,
       inputRevision: session.inputRevision, revisionRef: 'unquoted',
     };
     // A changed source prefill must invalidate old form edits and preview receipts.
-    const key = `${requestKey}:${suggestion.groupId}:${JSON.stringify([suggestion.draft, suggestion.options])}`;
+    const key = `${requestKey}:${suggestion.groupId}:${JSON.stringify([suggestion.draft, suggestion.options, suggestion.partyNames])}`;
     return [{ task, suggestion, draft, key, open: expanded[key] ?? (shownDrafts.length === 0) }];
   });
   const coveredStayIds = new Set(
@@ -101,10 +160,10 @@ export function QuoteBookingHost({
           {open ? <>
             <p className="text-xs text-muted-foreground">Check the request and current HMS availability before booking.</p>
             {suggestion.missing.map((missing, index) => <p key={`${index}:${missing}`} className="text-xs">{missing}</p>)}
-            <BookingCards draft={draft} groups={[]} paneSave={paneSave} workItemId={workItemId}
-              savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot}
-              propertyCode={propertyCode} confirmation={confirmation}
-              onSaveDefault={onSaveDefault ?? saveConfirmationDefault} />
+            <PreparedBookingForm suggestion={suggestion} draft={draft} paneSave={paneSave} workItemId={workItemId}
+              savedStays={savedStays} screenshot={screenshot} propertyCode={propertyCode} onSaveDefault={onSaveDefault}
+              findParty={findParty} partyIndex={partyIndex} partyJobTransport={partyJobTransport}
+              threadId={session.staffSource?.threadId} />
           </> : null}
         </div>
       ))}

@@ -600,7 +600,7 @@ function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId
     typeof v.sourceHash === 'string' && SOURCE_HASH.test(v.sourceHash) &&
     Number.isSafeInteger(v.page) && Number(v.page) > 0 && Number.isSafeInteger(v.start) &&
     Number(v.start) >= 0 && Number.isSafeInteger(v.end) && Number(v.end) > Number(v.start);
-  const strings = (v: unknown) => Array.isArray(v) && v.every(item => typeof item === 'string');
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(item => typeof item === 'string');
   if (!object(value) || value.version !== 1 || value.taskId !== taskId ||
       typeof selectedMessageId !== 'string' || !selectedMessageId || !source(value.source) ||
       typeof value.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(value.groupId) ||
@@ -623,6 +623,7 @@ function readBookingSuggestion(value: unknown, taskId: string, selectedMessageId
       (options.cmsDefaults !== undefined && (!object(options.cmsDefaults) ||
         typeof options.cmsDefaults.agency !== 'string' || typeof options.cmsDefaults.guest !== 'string')) ||
       !Array.isArray(value.facts) || !value.facts.every(fact => object(fact) && typeof fact.kind === 'string' && source(fact.source)) ||
+      !strings(value.partyNames) || value.partyNames.length > 8 ||
       !strings(value.missing)) return undefined;
   return { ...value, selectedMessageId } as ReservationistBookingSuggestion;
 }

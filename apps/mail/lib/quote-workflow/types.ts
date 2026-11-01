@@ -174,6 +174,7 @@ export type ReservationistBookingSuggestion = {
   draft: BookingDraftPayload;
   options: BookingDraftReady['options'];
   facts: Array<{ kind: string; source: { sourceRef: string; sourceHash: string; page: number; start: number; end: number } }>;
+  partyNames: string[];
   missing: string[];
 };
 
