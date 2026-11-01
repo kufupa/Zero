@@ -135,8 +135,8 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
  if(Array.isArray(plan.tasks))for(const task of plan.tasks){if(!task||!Object.hasOwn(task,'sourceCandidateId'))continue;if(Object.hasOwn(task,'source')||typeof task.sourceCandidateId!=='string')throw new Error('Invalid original request candidate');const candidate=candidates.find(c=>c.id===task.sourceCandidateId);if(!candidate)throw new Error('Unbound original request candidate');if(!candidate.allowedKinds.includes(task.kind))throw new Error('Original request candidate kind not entailed');task.source=structuredClone(candidate.source);delete task.sourceCandidateId;}
  return plan;
 }
-/** A matching task in both authored alternatives can share the original plain span. */
-function equivalentAuthoredTaskOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):number|undefined{
+/** Matching evidence in both authored alternatives can share the original plain span. */
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):number|undefined{
  if(!views||views.length!==2)return;
  const first=page.indexOf(quote),second=page.indexOf(quote,first+1);
  if(first<0||second<0||page.indexOf(quote,second+1)>=0)return;
@@ -167,7 +167,7 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
      if(!hits.length)continue;
      start=hits[0]!.index!;span.quote=page.slice(start,start+span.quote.length);
     }else if(page.indexOf(span.quote,start+1)!==-1){
-     const equivalent=list===candidate.tasks?equivalentAuthoredTaskOffset(page,span.quote,source?.sourceViews):undefined;
+     const equivalent=equivalentAuthoredOffset(page,span.quote,source?.sourceViews);
      if(equivalent===undefined)throw new Error('Ambiguous original text span');
      start=equivalent;
     }
