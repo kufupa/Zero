@@ -113,6 +113,7 @@ import {
   quoteStrategyStayRevision,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
 import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
@@ -823,6 +824,7 @@ export function NavaPane({
       dispatchQuote({ type: 'analysis_failed', message: decision.reason });
     }
     let cancelled = false;
+    let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     if (decision.kind === 'live') void bindAnalyseSelection({
       mutate: workflow.analyseSelection?.mutate,
       input: {
@@ -885,17 +887,43 @@ export function NavaPane({
       }
       if (source.kind !== 'ready') return;
       dispatchQuote({ type: 'staff_source_ready', source: source.source });
-      void bindStaffActions({
-        query: staff.drafts.reviewForMessage?.query,
-        threadId: source.source.threadId,
-        messageId: source.source.messageId,
-      }).then((actions) => {
-        if (cancelled || actions.kind !== 'ready') return;
-        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
-      });
+      const refreshActions = async () => {
+        const actions = await bindStaffActions({
+          query: staff.drafts.reviewForMessage?.query,
+          threadId: source.source.threadId,
+          messageId: source.source.messageId,
+        });
+        if (cancelled || actions.kind !== 'ready') return false;
+        dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
+        return true;
+      };
+      const candidateQuery = (trpcClient as unknown as { ai?: { hmsCandidateState?: {
+        query?: (input: { threadId: string }, options?: ReturnType<typeof inMailbox>) => Promise<{ activeRun?: unknown }>;
+      } } }).ai?.hmsCandidateState?.query;
+      void (async () => {
+        await refreshActions();
+        if (cancelled) return;
+        let sawActive = false, idleChecks = 0;
+        const watch = async () => {
+          let running = false, statusRead = false;
+          try {
+            if (candidateQuery) {
+              const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
+              if (cancelled) return;
+              statusRead = true;
+              running = Boolean(state.activeRun);
+              if (running) { sawActive = true; idleChecks = 0; }
+            }
+          } catch { /* Review can still be available when candidate status is not. */ }
+          if (!running && await refreshActions() && sawActive && statusRead) return;
+          if (!cancelled && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
+        };
+        await watch();
+      })();
     });
     return () => {
       cancelled = true;
+      if (candidateTimer) clearTimeout(candidateTimer);
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).

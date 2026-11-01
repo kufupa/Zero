@@ -232,6 +232,17 @@ function FailedRatesNoticeTrigger({
 }
 
 describe('QuoteWorkflowPanel', () => {
+  it.each(['non_quote', 'requirements'] as const)('shows prepared cancellation details in %s without claiming it was saved', (phase) => {
+    const session = {...initialQuoteSession(),phase,preparedStaffTasks:[{
+      id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action' as const,
+      details:['Reservation ABC123','Cancellation fee is unknown before commitment.','No cancellation has been saved.'],
+    }]};
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Reservation ABC123')).toBeDefined();
+    expect(screen.getByText('Cancellation fee is unknown before commitment.')).toBeDefined();
+    expect(screen.getByText('No cancellation has been saved.')).toBeDefined();
+    expect(screen.queryByRole('button', {name:/cancel reservation/i})).toBeNull();
+  });
   it('shows each unanswered question on a non-quote email', () => {
     const session = {...initialQuoteSession(),phase:'non_quote' as const,reviewItems:[
       {id:'one',kind:'question' as const,rank:'secondary' as const,text:'Is parking available?',sourceLabel:'This email',blocking:false},
