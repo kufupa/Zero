@@ -298,6 +298,9 @@ describe('plain and HTML citation binding',()=>{
   const commaAlso='Please review attached voucher for guest A, also check enclosed hotel voucher for guest B.',commaTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'also check enclosed hotel voucher for guest B',view:'plain' as const}];
   await expect(run(commaAlso,commaAlso,commaTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
   await expect(run(commaAlso,commaAlso,commaTasks.slice(0,1))).resolves.toMatchObject({tasks:[{id:'guest-a'}],unresolvedAsks:expect.arrayContaining([groupingWarning])});
+  const commaBare='Please review attached voucher for guest A, check enclosed hotel voucher for guest B.',bareTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'check enclosed hotel voucher for guest B',view:'plain' as const}];
+  await expect(run(commaBare,commaBare,bareTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
+  await expect(run(commaBare,commaBare,bareTasks.slice(0,1))).resolves.toMatchObject({tasks:[{id:'guest-a'}],unresolvedAsks:expect.arrayContaining([groupingWarning])});
   const lookAt='Please review attached voucher for guest A and also look at enclosed hotel voucher for guest B.',lookAtTasks=[{id:'guest-a',quote:'Please review attached voucher for guest A',view:'plain' as const},{id:'guest-b',quote:'also look at enclosed hotel voucher for guest B',view:'plain' as const}];
   await expect(run(lookAt,lookAt,lookAtTasks)).resolves.toMatchObject({tasks:[{id:'guest-a'},{id:'guest-b'}]});
   await expect(run(lookAt,lookAt,lookAtTasks.slice(0,1))).resolves.toMatchObject({tasks:[{id:'guest-a'}],unresolvedAsks:expect.arrayContaining([groupingWarning])});
