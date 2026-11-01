@@ -146,6 +146,31 @@ test('rejects create-body drift, omissions, duplicates, extras, and unsupported 
   assert.equal(matchesFullCreateBody(createSaveBody(unsupported), unsupported), false);
 });
 
+test('diagnoses a rejected body with bounded safe field names only', () => {
+  const formData = { ...createModelData(), reservationnote: 'original synthetic note' };
+  const body = createSaveBody(formData);
+  const unsafeField = 'guest email@example.invalid';
+  const longField = 'x'.repeat(65);
+  body.set('reservationnote', 'different synthetic value');
+  body.delete('sourceofbusinessdesc');
+  body.set('unlistedfield', 'unreported value');
+  body.set(unsafeField, 'private fake value');
+  body.set(longField, 'private fake value');
+  body.append('adults', '3');
+  body.set('SYSTEM_FUNCTION_NAME', 'WRONG');
+  let diagnostic;
+
+  assert.equal(matchesFullCreateBody(body, formData, (value) => { diagnostic = value; }), false);
+  assert.deepEqual(diagnostic.fields, [
+    'SYSTEM_FUNCTION_NAME', 'adults', 'reservationnote', 'sourceofbusinessdesc', 'unlistedfield',
+  ]);
+  assert.equal(diagnostic.unsafeNameCount, 2);
+  assert.equal(JSON.stringify(diagnostic).includes(unsafeField), false);
+  assert.equal(JSON.stringify(diagnostic).includes(longField), false);
+  assert.equal(JSON.stringify(diagnostic).includes('different synthetic value'), false);
+  assert.equal(JSON.stringify(diagnostic).includes('private fake value'), false);
+});
+
 test('matches exact zero, one and multiple-child form payloads', () => {
   for (const [adults, ages] of [[1, []], [2, [8]], [3, [0, 12, 17]]]) {
     const bands = { child1: 0, child2: 0, child3: 0 };

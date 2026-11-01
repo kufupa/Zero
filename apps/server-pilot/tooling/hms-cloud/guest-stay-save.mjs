@@ -293,14 +293,20 @@ async function draft(page, expected) {
   }, { origin: ORIGIN, expected, blankPartyFields, childBands: CHILD_BANDS });
 }
 
-export function matchesFullCreateBody(body, formData) {
-  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return false;
+export function matchesFullCreateBody(body, formData, onMismatch) {
+  const reject = () => {
+    if (typeof onMismatch === 'function') {
+      try { onMismatch(fullCreateBodyMismatchFields(body, formData)); } catch { /* Diagnostics never change the guard result. */ }
+    }
+    return false;
+  };
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return reject();
   const fields = Object.keys(formData);
   const controls = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' };
   const expectedKeys = [...fields, ...Object.keys(controls)], expected = new Set(expectedKeys), keys = [...body.keys()];
   if (expected.size !== expectedKeys.length || keys.length !== expected.size || new Set(keys).size !== keys.length ||
-      keys.some((key) => !expected.has(key))) return false;
-  return Object.entries(controls).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value) &&
+      keys.some((key) => !expected.has(key))) return reject();
+  const matched = Object.entries(controls).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value) &&
     fields.every((key) => {
       let value = formData[key];
       if (key === 'sessionID' && value && typeof value === 'object' && Object.keys(value).length === 1 &&
@@ -310,6 +316,36 @@ export function matchesFullCreateBody(body, formData) {
         ? numericZero(value) && numericZero(body.get(key))
         : body.get(key) === String(value ?? ''));
     });
+  return matched || reject();
+}
+
+function fullCreateBodyMismatchFields(body, formData) {
+  const fields = Object.keys(formData);
+  const controls = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' };
+  const expectedKeys = [...fields, ...Object.keys(controls)], expected = new Set(expectedKeys), keys = [...body.keys()];
+  const mismatches = new Set(expectedKeys.filter((key, index) => expectedKeys.indexOf(key) !== index));
+  for (const key of expected) {
+    const values = body.getAll(key);
+    if (values.length !== 1) mismatches.add(key);
+    if (Object.hasOwn(controls, key) && body.get(key) !== controls[key]) mismatches.add(key);
+    if (!fields.includes(key) || values.length !== 1) continue;
+    let value = formData[key];
+    if (key === 'sessionID' && value && typeof value === 'object' && Object.keys(value).length === 1 &&
+        typeof value.sessionID === 'string') value = value.sessionID;
+    else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) {
+      mismatches.add(key);
+      continue;
+    }
+    if (key === 'revenuevalue'
+      ? !numericZero(value) || !numericZero(body.get(key))
+      : body.get(key) !== String(value ?? '')) mismatches.add(key);
+  }
+  for (const key of keys) if (!expected.has(key)) mismatches.add(key);
+  const safeNames = [...mismatches].filter((key) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key)).sort();
+  const unsafeNameCount = mismatches.size - safeNames.length;
+  return { fields: safeNames.slice(0, 24), ...(safeNames.length > 24 ? { truncated: true } : {}),
+    ...(unsafeNameCount ? { unsafeNameCount } : {}),
+    ...(!safeNames.length && !unsafeNameCount ? { unclassified: true } : {}) };
 }
 
 export function guestStaySaveOutcome({
@@ -321,7 +357,7 @@ export function guestStaySaveOutcome({
   return possiblyDispatched ? 'uncertain' : 'not_dispatched';
 }
 
-function matchesSave(page, request, expected) {
+function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
     const proof = expected.createFieldProof;
@@ -347,17 +383,18 @@ function matchesSave(page, request, expected) {
     };
     const profileControls = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
       'reqguestprofilelookup', 'linkedprofileflag'];
-    return request.method() === 'POST' && request.frame() === page.mainFrame() && url.origin === ORIGIN &&
+    const matchesRequest = request.method() === 'POST' && request.frame() === page.mainFrame() && url.origin === ORIGIN &&
       url.pathname === SAVE_PATH && !url.hash && [...url.searchParams].length === 1 && url.searchParams.get('pageaction') === 'SAVE' &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
       isVerifiedLabtestProfileCurrent(page, { nativeId: expected.guestId, session: expected.session, token: expected.profileToken }) &&
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
-        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
-      (!expected.strictCreateProof || matchesFullCreateBody(body, expected.formData)) &&
-      profileControls.every((key) => {
-        const matches = keys.filter((name) => name.toLowerCase() === key);
-        return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
-      });
+        keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
+    if (!matchesRequest) return false;
+    if (expected.strictCreateProof && !matchesFullCreateBody(body, expected.formData, onFullCreateBodyMismatch)) return false;
+    return profileControls.every((key) => {
+      const matches = keys.filter((name) => name.toLowerCase() === key);
+      return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
+    });
   } catch { return false; }
 }
 
@@ -384,8 +421,9 @@ export async function saveNewLabtestStay(page, {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
-  let authorizedRequest, scope, fence, routeChain, signalStop;
+  let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest;
   const observedBlocked = new WeakSet();
+  const createBodyMismatches = new WeakMap();
   const stopped = new Promise((resolve) => { signalStop = resolve; });
   const stop = (issue) => {
     stopReason ||= issue;
@@ -429,7 +467,9 @@ export async function saveNewLabtestStay(page, {
       fence,
       scope,
       isArmed: () => armed && !nativeDialog,
-      matches: (request) => matchesSave(page, request, expected),
+      matches: (request) => matchesSave(page, request, expected, (diagnostic) => {
+        createBodyMismatches.set(request, diagnostic);
+      }),
       onCandidate: (request) => {
         authorizedRequest = request;
         requestSeen = true;
@@ -446,6 +486,10 @@ export async function saveNewLabtestStay(page, {
         if (observedBlocked.has(request)) return;
         observedBlocked.add(request);
         blocked += 1;
+        const fullCreateBodyMismatch = createBodyMismatches.get(request);
+        if (!blockedRequest && fullCreateBodyMismatch) {
+          blockedRequest = { method: 'POST', path: 'reservation_save', matcher: 'full_create_body', fullCreateBodyMismatch };
+        }
         try {
           if (/send|email|mail/i.test(new URL(request.url()).pathname)) sendRequests += 1;
         } catch { /* Do not expose or retry malformed request targets. */ }
@@ -490,7 +534,7 @@ export async function saveNewLabtestStay(page, {
       hasConfirmation: Boolean(requestSeen && snapshot.confirmation), nativeDialog, dialogs: dialogs.length, blockedAfterDispatch }),
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
-      browserSendRequests: sendRequests, nativeDialog, dialogs };
+      browserSendRequests: sendRequests, nativeDialog, dialogs, ...(blockedRequest ? { blockedRequest } : {}) };
   } catch (error) {
     armed = false;
     if (possiblyDispatched) fence?.quarantine();
@@ -499,7 +543,7 @@ export async function saveNewLabtestStay(page, {
       ...(draftCheck ? { draftCheck } : {}),
       requestSeen, httpStatus: response?.status() || null, blockedRequests: blocked,
       blockedRequestsAfterDispatch: Math.max(0, blocked - blockedAtDispatch),
-      browserSendRequests: sendRequests, nativeDialog };
+      browserSendRequests: sendRequests, nativeDialog, ...(blockedRequest ? { blockedRequest } : {}) };
   } finally {
     clearTimeout(timer);
     armed = false;
