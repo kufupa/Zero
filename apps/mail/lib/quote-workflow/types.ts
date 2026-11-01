@@ -142,7 +142,7 @@ export type QuoteReviewItem = {
   messageId?: string;
   filename?: string;
   reason?: string;
-  /** The source was read; only masked numbers or truncated content needs review. */
+  /** The source was read, but some values or rows still need review. */
   readable?: boolean;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
@@ -160,6 +160,7 @@ export type ReservationistStaffAction = {
   messageId?: string;
   filename?: string;
   reason?: string;
+  readable?: boolean;
   blockingQuote: boolean;
   status: 'open';
 };

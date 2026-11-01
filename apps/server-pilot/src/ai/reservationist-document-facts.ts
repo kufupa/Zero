@@ -161,7 +161,7 @@ export function normalizeDocumentDecimal(input: string): number {
 }
 const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const monthPattern = months.map(month => `${month}|${month.slice(0, 3)}`).join('|') + '|sept';
-function normalizedDate(input: string, yearContext?: number): string {
+export function normalizedDate(input: string, yearContext?: number): string {
   const value = input.trim().replace(/\bsept\b/gi, 'sep');
   let year: number, month: number, day: number;
   let parts: RegExpMatchArray | null;
@@ -445,7 +445,13 @@ export function validateDocumentPlan(
   });
   for (const fact of facts) {
     if (fact.kind !== 'guest' || fact.value.roomIndex === undefined || fact.value.roomRef === undefined) continue;
-    const quantities = facts.filter((f): f is Extract<ValidatedDocumentFact, { kind: 'room' }> => f.kind === 'room' && f.value.roomRef === fact.value.roomRef && f.value.quantity !== undefined);
+    const page = bySource.get(fact.source.attachmentId)?.pages?.[fact.source.page - 1];
+    const quantities = facts.filter((f): f is Extract<ValidatedDocumentFact, { kind: 'room' }> =>
+      f.kind === 'room' && f.value.roomRef === fact.value.roomRef && f.value.quantity !== undefined &&
+      f.source.attachmentId === fact.source.attachmentId && f.source.page === fact.source.page &&
+      page !== undefined && fact.source.start !== undefined && f.source.start !== undefined &&
+      !page.slice(Math.min(fact.source.start, f.source.start), Math.max(fact.source.start, f.source.start)).includes('\n') &&
+      (!parsed.data.tasks.length || parsed.data.tasks.some(task => task.factIds.includes(fact.id) && task.factIds.includes(f.id))));
     if (quantities.some(room => fact.value.roomIndex! > room.value.quantity!)) throw new Error('Guest room index exceeds explicit room quantity');
   }
   const taskIds = new Set<string>();

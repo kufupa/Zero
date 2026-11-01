@@ -6,7 +6,10 @@ import {zodToJsonSchema} from 'zod-to-json-schema';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { validReservationistMessageViews, type ReservationistMessageView } from './reservationist-message-view.js';
 import {validateReservationistRaster,type AttachmentAdmission} from './reservationist-attachment-input.js';
-import { documentPlanSchema, normalizeDocumentDecimal, validateDocumentPlan, type ValidatedDocumentPlan, type ValidatedDocumentFact } from './reservationist-document-facts.js';
+import {isReservationistXlsxMimeType} from './reservationist-xlsx.js';
+import {xlsxRowContext,xlsxRowEntails} from './reservationist-xlsx-facts.js';
+import {boards,norm} from './rate-options.js';
+import { documentPlanSchema, normalizedDate, normalizeDocumentDecimal, validateDocumentPlan, type DocumentSource, type ValidatedDocumentPlan, type ValidatedDocumentFact } from './reservationist-document-facts.js';
 export const RESERVATIONIST_EXTRACTION_VERSION = 'reservationist-extraction-v83-distinct-voucher-requests';
 const STAFF_QUOTE_CONVENTIONS = 'When the current quote explicitly renews exactly one original quoted customer accommodation request, that original request supplies its independently printed stay, meal and named-adult facts. In that uniquely activated request, one bedroom for one source-verified named Mr/Mrs/Ms/Miss adult supports quantity:1, adults:1 and childAges:[] with local roomRef:"1"; do not ask for adult occupancy or hypothetical children absent any child evidence. This explicit renewal is the sole exception to the quoted-history restriction for staff occupancy conventions; never infer child absence from a child or family request. Preserve the exact original quoted bedroom/name span and printed years, never invent guest physical assignments. Different, ambiguous, withdrawn or conflicting requests and staff offers remain context. Staff quote conventions take precedence over the generic missing-room-ID and printed-year restrictions when their original source conditions hold. Do not use the mere absence of a printed year or room/group ID as unresolved when the source-bound convention applies. A sole source-verified named adult in a hotel quotation supports 1 room for 1 adult, even without an independently counted room noun; retain the exact original request/name span and never invent physical guest assignments. For quote tasks only, apply existing Centurion staff conventions to unambiguous authored inbound email accommodation requests: one independently source-verified named adult or a/one room/bedroom means 1 adult in 1 room; two named adults, an explicit Mr and Mrs shared-surname pair or explicit two people without a different room count means 2 adults in 1 room; N independently verified named adults in exactly N rooms means single occupancy per room; an explicitly counted single-room request supports that quantity with 1 adult per room. An explicit N pax/people/persons accommodation request quoted single supports N rooms of single occupancy in that original accommodation scope; unrelated event attendance counts and dates do not supply overnight room facts. Use local allocation roomRef:"1", explicit convention quantity/adults and childAges:[], never native IDs or guest ages. Quote pricing does not require unprinted guest given names, profile IDs or physical create assignments: do not add unresolved asks for these booking-only fields to a quote task. An explicit Mr and Mrs shared-surname pair supports adult occupancy without inventing given names. Keep guests unassigned unless a physical room association is independently explicit; never assign N names to room indices by list order. These conventions do not apply to children, students, ambiguous counts, named groups, contradictions, negation, unactivated quoted history or attachments. For an affirmative yearless paired stay in an authored inbound email quote request, return the unchanged printed day-month tokens without yearContext or invented ISO year. For a single dated accommodation request with an explicit printed number of nights in the same original span, return arrival as the printed day-month token and departure as the exact printed night-duration token. The server alone derives checkout and the causal next-occurrence year with convention provenance; never calculate or print a model checkout date. This quote-only convention requires original accommodation, date and duration evidence; missing duration, contradictory checkout/date, children, event-only, negated or quoted requests remain unresolved. A compact original day-month token may be represented as day plus the same printed month in arrival while the source quote stays unchanged. The server derives each next occurrence from that original causal email timestamp in Africa/Johannesburg and records convention provenance; it never uses the runtime clock. Both endpoints and their labels or shared range must be in the exact original source span. A paired arrival/check-in day and departure/check-out day may share a final printed month in that same span; preserve those original day/month tokens and never borrow a shuttle or event date. When one final printed month applies to both labeled endpoints in that exact original span, repeat that printed month in both date values as day plus month; omit yearContext and invented years when no year is printed. Do not return a day alone or add connecting words such as of to a date value. The source quote stays unchanged and must include both endpoint labels or the shared range and its printed month. Printed years remain binding; missing month, conflicting ranges and excluded or quoted stays remain unresolved.';
 const MONETARY_TOKEN_INSTRUCTIONS = 'For embedded rate_claim and payment_claim, ZAR or R must precede the amount. A single ordinary ASCII space may group thousands; nonbreaking/thin grouping spaces and suffix currency tokens are unsupported. Never rewrite these unsupported original tokens into canonical money facts. Omit their monetary facts, preserve the current requested task and record its unresolved monetary context.';
@@ -179,6 +182,71 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
  }
  return candidate;
 }
+/** Do not assign a workbook room or guest to another row's conflicting stay. */
+function filterXlsxStayConflicts(plan:ValidatedDocumentPlan,sources:readonly DocumentSource[],xlsxIds:ReadonlySet<string>):{plan:ValidatedDocumentPlan;incomplete:string[]}{
+ const facts=new Map(plan.facts.map(fact=>[fact.id,fact])),incomplete=new Set<string>();
+ const before=new Set(plan.tasks.flatMap(task=>task.factIds));
+ const sameBoard=(a:string,b:string)=>{const left=norm(a),right=norm(b);return left===right||!!boards[left]&&boards[left]===boards[right];};
+ const tasks=plan.tasks.map(task=>{
+  if(!['quote','new_booking','acceptance'].includes(task.kind))return task;
+  const assigned=task.factIds.map(id=>facts.get(id)).filter((fact):fact is ValidatedDocumentFact=>!!fact);
+  const dates=assigned.filter((fact):fact is Extract<ValidatedDocumentFact,{kind:'dates'}>=>fact.kind==='dates');
+  const boardsForTask=assigned.filter((fact):fact is Extract<ValidatedDocumentFact,{kind:'board'}>=>fact.kind==='board');
+  const bad=new Set<string>();
+  for(const fact of assigned){
+   if((fact.kind!=='room'&&fact.kind!=='guest')||!xlsxIds.has(fact.source.attachmentId))continue;
+   const context=xlsxRowContext(fact,sources.find(source=>source.attachmentId===fact.source.attachmentId));
+   let conflict=!context;
+   if(context)for(const date of dates){
+    try{
+     if(context.arrival&&normalizedDate(context.arrival)!==date.value.arrival||context.departure&&normalizedDate(context.departure)!==date.value.departure||
+       xlsxIds.has(date.source.attachmentId)&&(!context.arrival||!context.departure))conflict=true;
+    }catch{conflict=true;}
+   }
+   if(context&&fact.kind==='room'){
+    const related=boardsForTask.filter(board=>typeof board.value==='string'||board.value.roomRef===fact.value.roomRef);
+    if(context.board&&(!related.length||related.some(board=>!sameBoard(context.board!,typeof board.value==='string'?board.value:board.value.board)))||
+      !context.board&&related.some(board=>xlsxIds.has(board.source.attachmentId)))conflict=true;
+   }
+   if(conflict){bad.add(fact.id);incomplete.add(fact.source.attachmentId);}
+  }
+  return bad.size?{...task,factIds:task.factIds.filter(id=>!bad.has(id))}:task;
+ });
+ if(!incomplete.size)return{plan,incomplete:[]};
+ const after=new Set(tasks.flatMap(task=>task.factIds));
+ const unresolvedAsks=[...plan.unresolvedAsks];
+ if(unresolvedAsks.length<32&&!unresolvedAsks.includes('A spreadsheet row needs staff review; other requests remain available.'))unresolvedAsks.push('A spreadsheet row needs staff review; other requests remain available.');
+ return{plan:{...plan,tasks,facts:plan.facts.filter(fact=>!before.has(fact.id)||after.has(fact.id)),unresolvedAsks},incomplete:[...incomplete]};
+}
+/** Keep independently valid asks and facts if a spreadsheet row cannot be verified. */
+function filterUnverifiedXlsxFacts(output:unknown,sources:readonly DocumentSource[],xlsxIds:ReadonlySet<string>):{output:unknown;incomplete:string[]}{
+ if(!output||typeof output!=='object'||Array.isArray(output))return{output,incomplete:[]};
+ const plan=structuredClone(output) as {facts?:any[];tasks?:any[];unresolvedAsks?:unknown[]};
+ if(!Array.isArray(plan.facts)||!Array.isArray(plan.tasks)||!Array.isArray(plan.unresolvedAsks))return{output,incomplete:[]};
+ const removed=new Set<string>(),incomplete=new Set<string>();
+ plan.facts=plan.facts.filter(fact=>{
+  const id=fact?.source?.attachmentId;
+  if(typeof id!=='string'||!xlsxIds.has(id)||typeof fact.id!=='string')return true;
+  try{
+   const bound=bindUniqueTextOffsets({facts:[fact],tasks:[]},sources) as {facts:unknown[]};
+   const validated=validateDocumentPlan({facts:bound.facts,tasks:[],unresolvedAsks:[]},sources).facts[0]!;
+   const source=sources.find(source=>source.attachmentId===id);
+   if(!xlsxRowEntails(validated,source)){
+    if(validated.kind!=='guest'||validated.value.roomIndex===undefined)throw new Error('spreadsheet_row_unverified');
+    const value={...validated.value};delete value.roomIndex;
+    if(!xlsxRowEntails({...validated,value},source))throw new Error('spreadsheet_row_unverified');
+    delete (bound.facts[0] as {value:{roomIndex?:number}}).value.roomIndex;incomplete.add(id);
+   }
+   Object.assign(fact,bound.facts[0]);return true;
+  }catch{removed.add(fact.id);incomplete.add(id);return false;}
+ });
+ if(removed.size||incomplete.size){
+  plan.facts=plan.facts.filter(fact=>!removed.has(fact.id));
+  for(const task of plan.tasks)if(Array.isArray(task?.factIds))task.factIds=task.factIds.filter((id:unknown)=>!removed.has(String(id)));
+  if(plan.unresolvedAsks.length<32)plan.unresolvedAsks.push('A spreadsheet row needs staff review; other requests remain available.');
+ }
+ return{output:plan,incomplete:[...incomplete]};
+}
 function exactText(quote: string, value: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped(value)}(?![\\p{L}\\p{N}_-])`, 'u').test(quote);
 }
@@ -308,8 +376,12 @@ function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentI
  if(quantity===1&&(count===1||count===2||!count&&roomCounts[0]===1))return{quantity:1,adults:count||1,at:source.causalMessage.at};
  if(quantity>1&&quantity===named&&!people.length)return{quantity,adults:1,at:source.causalMessage.at};
 }
-function assertEntailed(fact: ValidatedDocumentFact, sources: readonly { attachmentId: string; pages: readonly string[] | null;causalMessage?:{at:string;direction:'inbound'|'outbound'};sourceViews?:readonly ReservationistMessageView[] }[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[] ) {
+function assertEntailed(fact: ValidatedDocumentFact, sources: readonly DocumentSource[],facts:readonly ValidatedDocumentFact[]=[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]=[],xlsxIds:ReadonlySet<string>=new Set() ) {
   if (fact.verification !== 'text_verified') return;
+  if(xlsxIds.has(fact.source.attachmentId)){
+    if(!xlsxRowEntails(fact,sources.find(source=>source.attachmentId===fact.source.attachmentId)))throw new Error('Document fact value not entailed by spreadsheet row');
+    return;
+  }
   const quote = fact.source.quote!;
   const rows = originalSemanticRows(fact, sources);
   const contains = (value: string) => quote.toLowerCase().includes(value.toLowerCase());
@@ -462,7 +534,8 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
   if(admitted.length>8&&input.factEnrichmentMode!=='source_batches'){
     if(new Set(admitted.map(a=>a.metadata.attachmentId)).size!==admitted.length||admitted.some(a=>!a.source||!a.bytes||a.metadata.attachmentId!==a.source.attachmentId||a.metadata.sourceHash!==a.source.sourceHash||a.bytes.sha256!==a.source.sourceHash||createHash('sha256').update(a.bytes.body).digest('hex')!==a.source.sourceHash))throw new Error('Invalid bounded multi-batch source inventory identity');
     if(admitted.length>64||admitted.reduce((sum,a)=>sum+a.bytes!.body.length,0)>20*1024*1024){const recovery=recoverIndependentMailQuestions(input);if(!recovery)throw new Error('Invalid bounded multi-batch source inventory');return{...recovery,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete:admitted.map(a=>({attachmentId:a.metadata.attachmentId,sourceHash:a.metadata.sourceHash,reason:'attachment_total_resource_unavailable'})),manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),'attachment_total_resource_unavailable']};}
-    const frozen=JSON.stringify(input.admissions.map(a=>({metadata:a.metadata,status:a.status,source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null}))),plans=[],sourceIncomplete:{attachmentId:string;sourceHash:string;reason:string}[]=[];
+    const frozen=JSON.stringify(input.admissions.map(a=>({metadata:a.metadata,status:a.status,source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null})));
+    const plans:Array<ValidatedDocumentPlan&{sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];manualRequired?:string[];sourceReviewSelectionCompleted?:true;noActionSelectionCompleted?:true}>=[],sourceIncomplete:{attachmentId:string;sourceHash:string;reason:string}[]=[];
     for(let offset=0;offset<admitted.length;offset+=8){
       input.signal.throwIfAborted();
       if(frozen!==JSON.stringify(input.admissions.map(a=>({metadata:a.metadata,status:a.status,source:a.source,hash:a.bytes?createHash('sha256').update(a.bytes.body).digest('hex'):null}))))throw new Error('Batched source inventory changed');
@@ -484,10 +557,16 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
         else{tasks[existing].factIds=[...new Set([...tasks[existing].factIds,...refs])];if((task.source.end??0)>(tasks[existing].source.end??0))tasks[existing].source=structuredClone(task.source);taskKeys.set(key,existing);}
       }
     }
+    const xlsxIds=new Set(admitted.filter(a=>isReservationistXlsxMimeType(a.metadata.mimeType)).map(a=>a.metadata.attachmentId));
+    for(const recovery of plans.flatMap(plan=>plan.sourceIncomplete??[])){
+      if(!sourceIncomplete.some(item=>item.attachmentId===recovery.attachmentId&&item.sourceHash===recovery.sourceHash&&item.reason===recovery.reason))sourceIncomplete.push(recovery);
+    }
     const unresolvedAsks=[...new Set(plans.flatMap(plan=>plan.unresolvedAsks))];
-    if(facts.length>64||tasks.length>32||unresolvedAsks.length>32||tasks.some(t=>t.factIds.length>64))throw new Error('Merged extraction plan exceeds bounds');
-    const emptySelection=!tasks.length&&!facts.length&&!unresolvedAsks.length&&!sourceIncomplete.length&&plans.length>0;
-    input.signal.throwIfAborted();return{facts,tasks,unresolvedAsks,draftReady:false,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(sourceIncomplete.length?['attachment_batch_unavailable']:[])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
+    const checked=filterXlsxStayConflicts({facts,tasks,unresolvedAsks,draftReady:false},admitted.flatMap(a=>a.source?[a.source]:[]),xlsxIds);
+    for(const id of checked.incomplete){const source=admitted.find(a=>a.metadata.attachmentId===id)?.source;if(source&&!sourceIncomplete.some(item=>item.attachmentId===id&&item.reason==='spreadsheet_row_unverified'))sourceIncomplete.push({attachmentId:id,sourceHash:source.sourceHash,reason:'spreadsheet_row_unverified'});}
+    if(checked.plan.facts.length>64||checked.plan.tasks.length>32||checked.plan.unresolvedAsks.length>32||checked.plan.tasks.some(t=>t.factIds.length>64))throw new Error('Merged extraction plan exceeds bounds');
+    const emptySelection=!checked.plan.tasks.length&&!checked.plan.facts.length&&!checked.plan.unresolvedAsks.length&&!sourceIncomplete.length&&plans.length>0;
+    input.signal.throwIfAborted();return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...new Set([...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...plans.flatMap(plan=>plan.manualRequired??[]),...(checked.incomplete.length?['spreadsheet_row_unverified']:[]),...(sourceIncomplete.some(item=>item.reason==='attachment_batch_unavailable')?['attachment_batch_unavailable']:[])])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
   }
   if ((admitted.length > 8&&input.factEnrichmentMode!=='source_batches') || admitted.some(a => !a.source)) throw new Error('Invalid admitted source inventory');
   const files = admitted.filter(a => a.metadata.mimeType === 'application/pdf').map(a => {
@@ -506,6 +585,9 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
   });
   const subjectSources=input.messages.filter(message=>message.id===(input.triggerMessageId??input.messages.at(-1)?.id)&&message.direction==='inbound'&&message.at===input.causalAt&&message.disclosure!=='staff_only'&&typeof message.subject==='string'&&message.subject.length>0&&isReservationistSubjectSourceEligible(message.subject)).map(message=>({attachmentId:`message-subject:${message.id}`,sourceHash:createHash('sha256').update(message.subject!).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.subject!],pageCount:1}));
   const sources = [...admitted.map(a => a.source!),...messageSources,...subjectSources];
+  const xlsxIds=new Set(admitted.filter(a=>isReservationistXlsxMimeType(a.metadata.mimeType)).map(a=>a.metadata.attachmentId));
+  const spreadsheetIncomplete=new Map<string,{attachmentId:string;sourceHash:string;reason:string}>();
+  const noteSpreadsheetIncomplete=(ids:readonly string[])=>{for(const id of ids){const source=sources.find(s=>s.attachmentId===id);if(source)spreadsheetIncomplete.set(id,{attachmentId:id,sourceHash:source.sourceHash,reason:'spreadsheet_row_unverified'});}};
   const triggerMessageId=input.triggerMessageId??input.messages.at(-1)?.id;
   if(triggerMessageId!==undefined&&!input.messages.some(message=>message.id===triggerMessageId))throw new Error('Extraction trigger not in causal input');
   const messageMetadata=input.messages.map(({text: _text,subject: _subject,...message})=>({...message,sourceRef:`message:${message.id}`,...(subjectSources.some(s=>s.attachmentId===`message-subject:${message.id}`)?{subjectSourceRef:`message-subject:${message.id}`}:{})}));
@@ -532,7 +614,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       body.manualDescriptors=manual.map(({metadata,reason})=>({attachmentId:metadata.attachmentId,sourceHash:metadata.sourceHash,disclosure:metadata.disclosure,status:'manual_required',reason}));
       body.documentContinuations=(extra.documentContinuations as DocumentRequestContinuation[]).map(({taskId})=>({taskId,closure:'unverified'}));
     }
-    const response=await input.adapter.invoke({modelId:'gpt-6-luna',systemPrompt:`${systemPrompt} ${factProjection?FACT_SUBJECT_CONTEXT_INSTRUCTIONS:SUBJECT_CONTEXT_INSTRUCTIONS} ${factProjection?FACT_SOURCE_IDENTITY_INSTRUCTIONS:SOURCE_IDENTITY_INSTRUCTIONS}`,userPrompt:JSON.stringify(body),files:media.files,images:media.images,responseSchema,signal:input.signal,deadlineAt:input.deadlineAt});unchanged();return response.output;
+    const response=await input.adapter.invoke({modelId:'gpt-6-luna',systemPrompt:`${systemPrompt} ${factProjection?FACT_SUBJECT_CONTEXT_INSTRUCTIONS:SUBJECT_CONTEXT_INSTRUCTIONS} ${factProjection?FACT_SOURCE_IDENTITY_INSTRUCTIONS:SOURCE_IDENTITY_INSTRUCTIONS} ${xlsxIds.size?'For a spreadsheet fact cite the exact single row JSON containing every claimed cell; column headers come from an earlier row of the same sheet. Do not combine rows, guess missing children or infer missing cells. Record uncertain rows as unresolved.':''}`,userPrompt:JSON.stringify(body),files:media.files,images:media.images,responseSchema,signal:input.signal,deadlineAt:input.deadlineAt});unchanged();return response.output;
   };
   let plan:ValidatedDocumentPlan;const continuations=input.mode==='task_first'?deriveDocumentRequestContinuations({...input,triggerMessageId}):[],boundContinuations:DocumentRequestContinuation[]=[];
   if(input.mode==='task_first'){
@@ -587,8 +669,10 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
           if(enriched.facts.some((f:any)=>!batch.sources.some(s=>s.attachmentId===f?.source?.attachmentId&&s.sourceHash===f?.source?.sourceHash)))throw new Error('source_batch_fact_identity_invalid');
           const tasks=selectedTasks.map(t=>({...t,factIds:enriched.assignments.find(a=>a.taskId===t.id)!.factIds}));
           if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
-          const validated=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:enriched.unresolvedAsks},sources),sources),ids=new Map<string,string>();
-          for(const fact of validated.facts){if(fact.source.attachmentId.startsWith('message-subject:')&&fact.kind!=='reservation_reference')throw new Error('subject_fact_kind_forbidden');assertEntailed(fact,batch.sources,validated.facts,validated.tasks);const{id,...identity}=fact,key=JSON.stringify(identity);let aggregate=keys.get(key);if(!aggregate){aggregate=`fact-${merged.length+1}`;keys.set(key,aggregate);merged.push({...fact,id:aggregate});}ids.set(id,aggregate);}
+          const filtered=filterUnverifiedXlsxFacts({facts:enriched.facts,tasks,unresolvedAsks:enriched.unresolvedAsks},sources,xlsxIds);
+          noteSpreadsheetIncomplete(filtered.incomplete.flatMap(id=>batchOccurrences(batch).filter(source=>(representatives.get(source.attachmentId)??source.attachmentId)===id).map(source=>source.attachmentId)));
+          const validated=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources),ids=new Map<string,string>();
+          for(const fact of validated.facts){if(fact.source.attachmentId.startsWith('message-subject:')&&fact.kind!=='reservation_reference')throw new Error('subject_fact_kind_forbidden');assertEntailed(fact,batch.sources,validated.facts,validated.tasks,xlsxIds);const{id,...identity}=fact,key=JSON.stringify(identity);let aggregate=keys.get(key);if(!aggregate){aggregate=`fact-${merged.length+1}`;keys.set(key,aggregate);merged.push({...fact,id:aggregate});}ids.set(id,aggregate);}
           for(const task of validated.tasks)for(const id of task.factIds){const aggregate=ids.get(id);if(!aggregate)throw new Error('source_batch_assignment_identity_invalid');const target=refs.get(task.id)!;if(!target.includes(aggregate))target.push(aggregate);}
           for(const reason of validated.unresolvedAsks){if(!unresolved.includes(reason))unresolved.push(reason);unresolvedDiagnostics.push({phase:'fact_enrichment',reason,taskIds:selectedTasks.map(task=>task.id),sources:batch.sources.map(({attachmentId,sourceHash})=>({attachmentId,sourceHash}))});}
           if(merged.length>64||unresolved.length>32||[...refs.values()].some(a=>a.length>64))throw new Error('Merged extraction plan exceeds bounds');
@@ -603,10 +687,12 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       }
       const wireFacts=merged.map(({id,kind,value,disclosure,source,convention})=>({id,kind,value:convention?.originalValue??value,disclosure,source}));
       const mergedPlan=validateDocumentPlan({facts:wireFacts,tasks:selectedTasks.map(t=>({...t,factIds:refs.get(t.id)!})),unresolvedAsks:unresolved},sources);
-      for(const fact of mergedPlan.facts)assertEntailed(fact,sources,mergedPlan.facts,mergedPlan.tasks);
+      for(const fact of mergedPlan.facts)assertEntailed(fact,sources,mergedPlan.facts,mergedPlan.tasks,xlsxIds);
       if(JSON.stringify(mergedPlan.facts)!==JSON.stringify(merged))throw new Error('source_batch_normalized_identity_changed');
-      for(const task of mergedPlan.tasks)assertNewBookingTask(task,sources,triggerMessageId);unchanged();
-      return{...mergedPlan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(sourceIncomplete.length?['source_batch_unavailable']:[])],sourceIncomplete,sourceContinuations:boundContinuations,unresolvedDiagnostics,extractionDiagnostics:diagnostics};
+      const checked=filterXlsxStayConflicts(mergedPlan,sources,xlsxIds);noteSpreadsheetIncomplete(checked.incomplete);
+      for(const task of checked.plan.tasks)assertNewBookingTask(task,sources,triggerMessageId);unchanged();
+      const unavailable=sourceIncomplete.length>0;sourceIncomplete.push(...spreadsheetIncomplete.values());
+      return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...(unavailable?['source_batch_unavailable']:[]),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],sourceIncomplete,sourceContinuations:boundContinuations,unresolvedDiagnostics,extractionDiagnostics:diagnostics};
     }
     try{
       const output=await invoke(FACT_ENRICHMENT_INSTRUCTIONS,responseSchema([],sources.map(s=>s.sourceHash),'facts',selectedTasks.map(task=>task.id),sources.flatMap(s=>Array.from({length:s.pageCount},(_,i)=>i+1)),[],sources.map(s=>s.attachmentId),selectedTasks),{selectedTasks,documentContinuations:boundContinuations});
@@ -616,20 +702,23 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       if(JSON.stringify(selectedTasks)!==selectedIdentity)throw new Error('Selected task source identity changed');
       const tasks=selectedTasks.map(task=>({...task,factIds:enriched.assignments!.find(a=>a.taskId===task.id)!.factIds}));
       if(tasks.some(t=>boundContinuations.some(c=>c.taskId===t.id)&&t.factIds.length))throw new Error('document_continuation_facts_forbidden');
-      plan=validateDocumentPlan(bindUniqueTextOffsets({facts:enriched.facts,tasks,unresolvedAsks:[...selected.unresolvedAsks,...(Array.isArray(enriched.unresolvedAsks)?enriched.unresolvedAsks:[])]},sources),sources);
+      const filtered=filterUnverifiedXlsxFacts({facts:enriched.facts,tasks,unresolvedAsks:[...selected.unresolvedAsks,...(Array.isArray(enriched.unresolvedAsks)?enriched.unresolvedAsks:[])]},sources,xlsxIds);noteSpreadsheetIncomplete(filtered.incomplete);
+      plan=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources);
     }catch(error){
       unchanged();
       if(!/azure_luna_completion_incomplete|replay_cost_unknown|model_usage_unknown|Invalid bounded document plan|fetch failed|timeout|transport.*unavailable/i.test(error instanceof Error?error.message:''))throw error;
       return{...selected,unresolvedAsks:[...selected.unresolvedAsks,'Source fact extraction unavailable; selected requests require independent source review'].slice(0,32),version:RESERVATIONIST_EXTRACTION_VERSION,sourceContinuations:boundContinuations,sourceIncomplete:sources.map(source=>({attachmentId:source.attachmentId,sourceHash:source.sourceHash,reason:'fact_enrichment_unavailable'})),manualRequired:[...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),'fact_enrichment_unavailable']};
     }
   }else{
-    plan=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(await invoke(RESERVATIONIST_EXTRACTION_INSTRUCTIONS,responseSchema(requestSpans.map(c=>c.id),sources.map(s=>s.sourceHash),'combined',[],[],[],sources.map(s=>s.attachmentId))),requestSpans),sources),sources);
+    const filtered=filterUnverifiedXlsxFacts(bindRequestCandidates(await invoke(RESERVATIONIST_EXTRACTION_INSTRUCTIONS,responseSchema(requestSpans.map(c=>c.id),sources.map(s=>s.sourceHash),'combined',[],[],[],sources.map(s=>s.attachmentId))),requestSpans),sources,xlsxIds);noteSpreadsheetIncomplete(filtered.incomplete);
+    plan=validateDocumentPlan(bindUniqueTextOffsets(filtered.output,sources),sources);
   }
   if(plan.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
   if (!plan.tasks.length){if(plan.facts.length||plan.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...plan,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}
-  for (const fact of plan.facts) assertEntailed(fact, sources,plan.facts,plan.tasks);
-  for (const task of plan.tasks) assertNewBookingTask(task,sources,triggerMessageId);
-  return { ...plan, version: RESERVATIONIST_EXTRACTION_VERSION, manualRequired: input.admissions.filter(a => a.status === 'manual_required').map(a => a.reason),sourceContinuations:boundContinuations };
+  for (const fact of plan.facts) assertEntailed(fact, sources,plan.facts,plan.tasks,xlsxIds);
+  const checked=filterXlsxStayConflicts(plan,sources,xlsxIds);noteSpreadsheetIncomplete(checked.incomplete);
+  for (const task of checked.plan.tasks) assertNewBookingTask(task,sources,triggerMessageId);
+  return { ...checked.plan, version: RESERVATIONIST_EXTRACTION_VERSION, manualRequired: [...input.admissions.filter(a => a.status === 'manual_required').map(a => a.reason),...(spreadsheetIncomplete.size?['spreadsheet_row_unverified']:[])],...(spreadsheetIncomplete.size?{sourceIncomplete:[...spreadsheetIncomplete.values()]}:{}),sourceContinuations:boundContinuations };
 }
 function assertNewBookingTask(task:ValidatedDocumentPlan['tasks'][number],sources:Parameters<typeof assertEntailed>[1],triggerMessageId?:string){
     if (task.kind !== 'new_booking' || task.source.quote === undefined) return;
