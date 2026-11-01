@@ -138,6 +138,9 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       messageId: action.messageId,
       filename: action.filename,
       reason: action.reason,
+      handled: action.handled,
+      runId: action.runId,
+      workItemId: action.workItemId,
       ...(action.readable === true ? {readable: true} : {}),
       blocking: action.blockingQuote,
     });
@@ -195,7 +198,8 @@ export function openReviewItems(session: {
   const handled = new Set(session.handledReviewItemIds ?? []);
   return (session.reviewItems ?? []).filter((item) => {
     if (!notNoise(item)) return false;
-    if (item.kind === 'staff_review') return true;
+    // Voucher reviews close only when the server returns the durable, source-bound acknowledgement.
+    if (item.kind === 'staff_review') return item.handled !== true;
     if (item.kind === 'pricing_fact' || item.blocking) return true;
     return !handled.has(item.id);
   });

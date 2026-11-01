@@ -146,6 +146,9 @@ export type QuoteReviewItem = {
   reason?: string;
   /** The source was read, but some values or rows still need review. */
   readable?: boolean;
+  handled?: boolean;
+  runId?: string;
+  workItemId?: string;
   blocking: boolean;
   positivelyIdentifiedNoise?: boolean;
 };
@@ -163,6 +166,9 @@ export type ReservationistStaffAction = {
   filename?: string;
   reason?: string;
   readable?: boolean;
+  handled?: boolean;
+  runId?: string;
+  workItemId?: string;
   blockingQuote: boolean;
   status: 'open';
 };
