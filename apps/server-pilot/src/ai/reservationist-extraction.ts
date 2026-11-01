@@ -112,7 +112,7 @@ function originalRequestCandidates(messages:readonly {id:string;text:string;dire
  for(const match of requestBody.matchAll(/\b(?:please|kindly)\s+(?:ensure|update|confirm|send|provide|copy|resend|check|review)\b[^.!?;]*[.!?;]?|\b(?:attached\s+(?:POP|proof of payment|(?:hotel\s+)?vouchers?)|tax(?:es)?|breakfast options|cancellation (?:terms|policy)|payment link|reply all|copy all)\b/gi))add(match.index!,match.index!+match[0].length);
  return candidates;
 }
-type CurrentVoucherReviewSource={source:Pick<ValidatedDocumentPlan['tasks'][number]['source'],'attachmentId'|'sourceHash'|'page'>&{start:number;end:number;quote:string}};
+type CurrentVoucherReviewSource=Pick<ValidatedDocumentPlan['tasks'][number]['source'],'attachmentId'|'sourceHash'|'page'>&{start:number;end:number;quote:string};
 /** Lexical completeness only: original submitted-voucher request, never a fabricated task or authority. */
 function currentVoucherReviewSources(messages:readonly {id:string;text:string;direction?:'inbound'|'outbound';disclosure?:'guest'|'staff_only';sourceViews?:ReservationistMessageView[]}[],triggerMessageId:string|undefined):ValidatedDocumentPlan['tasks'][number]['source'][][] {
  const m=messages.find(m=>m.id===triggerMessageId);if(!m||m.direction!=='inbound'||m.disclosure==='staff_only')return[];
@@ -133,7 +133,7 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  return out;
 }
 /** Missing or grouped voucher asks become source-bound staff work instead of dropping extraction. */
-export function unmatchedCurrentVoucherReviewSources(messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined,tasks:ValidatedDocumentPlan['tasks']):CurrentVoucherReviewSource['source'][]{
+export function unmatchedCurrentVoucherReviewSources(messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined,tasks:ValidatedDocumentPlan['tasks']):CurrentVoucherReviewSource[]{
  const groups=currentVoucherReviewSources(messages,triggerMessageId),message=messages.find(m=>m.id===triggerMessageId);
  const covers=(task:ValidatedDocumentPlan['tasks'][number],source:ValidatedDocumentPlan['tasks'][number]['source'])=>task.kind==='question'&&task.source.attachmentId===source.attachmentId&&task.source.sourceHash===source.sourceHash&&task.source.page===1&&task.source.start!==undefined&&task.source.end!==undefined&&source.start!==undefined&&source.end!==undefined&&task.source.start<=source.start&&task.source.end>=source.end&&!/\b(?:pro\s*forma|invoice|payment\s+link|copy\s+all|reply\s+all)\b/i.test(task.source.quote??'');
  const matches=groups.map(group=>tasks.filter(task=>group.some(source=>covers(task,source))));
@@ -144,9 +144,6 @@ export function unmatchedCurrentVoucherReviewSources(messages:Parameters<typeof 
   const qualifier=message.text.slice(source.end,viewEnd).match(/^[ \t]+for[ \t]+(?:(?:guest|booking|reservation|confirmation(?:[ \t]+number)?)[ \t]+|(?:mr|mrs|ms|miss)\.?[ \t]+)[\p{L}\p{N}][\p{L}\p{N}'’-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’-]*)?/iu)?.[0].replace(/[ \t]+(?:and|or|then|but)\b[\s\S]*$/iu,'')??'';
   const end=source.end+qualifier.length;return[{attachmentId:source.attachmentId,sourceHash:source.sourceHash,page:source.page,start:source.start,end,quote:message.text.slice(source.start,end)}];
  });
-}
-function noteCurrentVoucherReviewGrouping(plan:ValidatedDocumentPlan,messages:Parameters<typeof currentVoucherReviewSources>[0],triggerMessageId:string|undefined){
- if(plan.tasks.length&&unmatchedCurrentVoucherReviewSources(messages,triggerMessageId,plan.tasks).length){const note='One or more attached voucher requests need staff review; check the original email and attachments.';if(!plan.unresolvedAsks.includes(note)&&plan.unresolvedAsks.length<32)plan.unresolvedAsks.push(note);}
 }
 function bindRequestCandidates(output:unknown,candidates:readonly RequestCandidate[]):unknown{
  if(!output||typeof output!=='object'||Array.isArray(output))return output;const plan=structuredClone(output) as any;
@@ -689,7 +686,6 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     const selected=validateDocumentPlan(bindUniqueTextOffsets(bindRequestCandidates(selectedOutput,requestSpans),sources),sources);
     if(selected.tasks.some(task=>task.source.attachmentId.startsWith('message-subject:')))throw new Error('subject_cannot_be_task_source');
     if(selected.facts.length||selected.tasks.some(task=>task.factIds.length))throw new Error('task_first_selection_contains_facts');
-    noteCurrentVoucherReviewGrouping(selected,input.messages,triggerMessageId);
     if(!selected.tasks.length){if(selected.facts.length||selected.unresolvedAsks.length||boundContinuations.length)throw new Error('No typed tasks; explicit no-response adjudication required');return{...selected,version:RESERVATIONIST_EXTRACTION_VERSION,manualRequired:input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),sourceContinuations:[],...(unreadSourcesIndependentOfNoAction(input,triggerMessageId)?{noActionSelectionCompleted:true as const}:{sourceReviewSelectionCompleted:true as const})};}
     for(const task of selected.tasks){assertNewBookingTask(task,sources,triggerMessageId);if(task.kind==='existing_document'&&task.source.attachmentId.startsWith('message:')&&task.source.attachmentId!==`message:${triggerMessageId}`&&!boundContinuations.some(c=>c.taskId===task.id))throw new Error('historical_document_request_requires_continuation');}
     const selectedTasks=structuredClone(selected.tasks),selectedIdentity=JSON.stringify(selectedTasks);
