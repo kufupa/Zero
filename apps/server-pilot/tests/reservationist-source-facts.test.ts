@@ -260,6 +260,8 @@ describe('plain and HTML citation binding',()=>{
   await expect(run('Please quote one room for one adult and no children.')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Please quote one room for one adult. Is your pool open to children?')).resolves.toMatchObject({facts:[{kind:'room'}]});
   await expect(run('Please quote one room for one adult. We have two children and hope to use the pool.')).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Please quote one room for one adult. Can our young children use the pool?')).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run('Please quote one room for one adult. Can we bring children to the pool?')).rejects.toThrow('Conflicting occupancy across message views');
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';
