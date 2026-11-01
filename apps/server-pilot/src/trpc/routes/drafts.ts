@@ -93,6 +93,91 @@ export function configureInboundAttachmentIdentityReader(
 ): void {
   inboundAttachmentIdentityReader = reader;
 }
+
+/** Check the trigger's attachment set and content identities before showing its booking suggestion. */
+export async function reservationistBookingSuggestionSourcesAreCurrent(db: DB, input: {
+  result: unknown;
+  triggerMessageId: string;
+  messageSourceHash: string;
+  source: ReservationistDraftSource;
+  transportId: string;
+  threadId: string;
+}): Promise<boolean> {
+  const object = (value: unknown): Record<string, unknown> =>
+    value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const result = object(input.result), tasks = Array.isArray(result.tasks) ? result.tasks : [];
+  if (tasks.length > 32) return false;
+  const citations = new Map<string, string>();
+  let hasCurrentSuggestion = false;
+  for (const rawTask of tasks) {
+    const task = object(rawTask), request = object(task.requestSource), suggestion = object(task.bookingSuggestion);
+    if (task.kind !== 'new_booking' || request.attachmentId !== `message:${input.triggerMessageId}` ||
+        request.sourceHash !== input.messageSourceHash || suggestion.version !== 1) continue;
+    hasCurrentSuggestion = true;
+    const facts = object(suggestion.facts);
+    for (const kind of ['dates', 'rooms', 'guests', 'boards', 'parties']) {
+      const values = facts[kind];
+      if (!Array.isArray(values) || values.length > 64) return false;
+      for (const rawFact of values) {
+        const citation = object(object(rawFact).source);
+        const sourceRef = citation.sourceRef, sourceHash = citation.sourceHash;
+        if (typeof sourceRef !== 'string' || !sourceRef || sourceRef.length > 512 ||
+            typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) return false;
+        if (sourceRef.startsWith('message:')) {
+          if (sourceRef !== `message:${input.triggerMessageId}` ||
+              sourceHash !== input.messageSourceHash) return false;
+          continue;
+        }
+        const previous = citations.get(sourceRef);
+        if (previous && previous !== sourceHash) return false;
+        citations.set(sourceRef, sourceHash);
+      }
+    }
+  }
+  if (!hasCurrentSuggestion) return true;
+
+  const saved = input.source.attachments.filter(item => item.messageId === input.triggerMessageId);
+  const savedById = new Map(saved.map(item => [item.attachmentId, item]));
+  if (saved.length > 256 || savedById.size !== saved.length) return false;
+  const live = await db.select({
+    id: attachment.id, messageId: attachment.messageId, s3Key: attachment.s3Key,
+    mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes,
+    contentId: attachment.contentId, isInline: attachment.isInline,
+  }).from(attachment).innerJoin(message, eq(attachment.messageId, message.id)).where(and(
+    eq(attachment.messageId, input.triggerMessageId),
+    eq(message.transportId, input.transportId), eq(message.threadId, input.threadId),
+  )).limit(257);
+  if (live.length > 256 || live.length !== saved.length) return false;
+  const liveById = new Map(live.map(item => [item.id, item]));
+  if (liveById.size !== savedById.size) return false;
+  for (const item of live) {
+    const original = savedById.get(item.id);
+    if (!original || original.messageId !== item.messageId || original.s3Key !== item.s3Key ||
+        original.mimeType !== item.mimeType || original.sizeBytes !== item.sizeBytes ||
+        original.inline !== item.isInline ||
+        (original.contentId !== undefined && original.contentId !== item.contentId)) return false;
+  }
+
+  if (saved.some(item => !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0) ||
+      saved.reduce((sum, item) => sum + (item.sourceHash ? item.sizeBytes : 0), 0) > 20 * 1024 * 1024) return false;
+  for (const original of saved) {
+    if (citations.has(original.attachmentId) &&
+        original.sourceHash !== citations.get(original.attachmentId)) return false;
+    if (original.sourceIdentity || !original.sourceHash) continue; // Non-content identities cannot substantiate facts.
+    const item = liveById.get(original.attachmentId);
+    if (!item || !inboundAttachmentIdentityReader) return false;
+    try {
+      const current = await inboundAttachmentIdentityReader({
+        attachmentId: original.attachmentId, transportId: input.transportId, threadId: input.threadId,
+        expectedS3Key: item.s3Key, expectedSize: item.sizeBytes,
+      });
+      if (current?.sha256 !== original.sourceHash) return false;
+    } catch { return false; }
+  }
+  if ([...citations.keys()].some(id => !savedById.has(id))) return false;
+  return true;
+}
+
 let generatedArtifactStorage: DraftArtifactStorage | null = null;
 /** Composition root supplies approved storage; tests supply local-only storage. */
 export function configureDraftArtifactStorage(storage: DraftArtifactStorage | null): void {
