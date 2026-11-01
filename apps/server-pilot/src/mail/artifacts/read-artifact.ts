@@ -975,7 +975,7 @@ export async function readAuthorizedArtifact(input: {
  * bounded S3 checks with `readAuthorizedArtifact`; it never accepts an S3 key
  * from a caller and never returns a URL or model-facing body.
  */
-export async function readAuthorizedArtifactBytes(input: {
+export type AuthorizedArtifactBytesInput = {
   attachmentId: string;
   authorizedAttachmentIds: ReadonlySet<string>;
   s3: S3Storage;
@@ -996,7 +996,24 @@ export async function readAuthorizedArtifactBytes(input: {
   allowSniff?: boolean;
   /** Revalidate current DB grant/source immediately before object bytes. */
   revalidate?: () => Promise<boolean>;
-}): Promise<AuthorizedArtifactBytes | null> {
+};
+
+export async function readAuthorizedArtifactBytes(input: AuthorizedArtifactBytesInput): Promise<AuthorizedArtifactBytes | null> {
+  return readAuthorizedArtifactBytesInternal(input, false);
+}
+
+/** Hash an otherwise unsupported business file without exposing its bytes for parsing or model input. */
+export async function hashAuthorizedArtifactBytes(input: AuthorizedArtifactBytesInput & {
+  expectedLocator: AttachmentLocator;
+  revalidate: () => Promise<boolean>;
+}): Promise<string | null> {
+  const bytes = await readAuthorizedArtifactBytesInternal(input, true);
+  if (!bytes) return null;
+  try { return await input.revalidate() ? bytes.sha256 : null; }
+  catch { input.signal.throwIfAborted(); return null; }
+}
+
+async function readAuthorizedArtifactBytesInternal(input: AuthorizedArtifactBytesInput, hashOnly: boolean): Promise<AuthorizedArtifactBytes | null> {
   if (input.signal.aborted) {
     throw Object.assign(new Error('aborted'), { name: 'AbortError' });
   }
@@ -1017,7 +1034,7 @@ export async function readAuthorizedArtifactBytes(input: {
     ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(locator.mimeType);
   const office = input.allowOffice === true && isDocxMimeType(locator.mimeType);
   const spreadsheet = input.allowSpreadsheet === true && isXlsxMimeType(locator.mimeType);
-  if ((raster || office || spreadsheet) && (!input.expectedLocator || !input.revalidate ||
+  if ((raster || office || spreadsheet || hashOnly) && (!input.expectedLocator || !input.revalidate ||
     locator.s3Key.includes('\\') ||
     locator.s3Key.split('/').some(part => !part || part === '.' || part === '..'))) {
     return null;
@@ -1029,7 +1046,8 @@ export async function readAuthorizedArtifactBytes(input: {
     !raster &&
     !office &&
     !spreadsheet &&
-    !sniff
+    !sniff &&
+    !hashOnly
   ) {
     return null;
   }

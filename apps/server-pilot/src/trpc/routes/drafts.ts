@@ -46,7 +46,7 @@ import {VOUCHER_REVIEW_RECOVERY_REASON} from '../../ai/reservationist-runtime.js
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
+import { hashAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
@@ -83,7 +83,7 @@ type InboundAttachmentIdentityReader = (input: {
   expectedSize: number;
 }) => Promise<{ sha256: string } | null>;
 let inboundAttachmentIdentityReader: InboundAttachmentIdentityReader | null = null;
-/** Compose with existing readAuthorizedArtifactBytes and fresh DB grant checks. */
+/** Compose with fresh DB grant checks and a bounded identity-only read. */
 export function configureInboundAttachmentIdentityReader(
   reader: InboundAttachmentIdentityReader | null,
 ): void {
@@ -504,6 +504,7 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
           s3Key: attachment.s3Key,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
+          sha256: attachment.sha256,
         })
         .from(attachment)
         .innerJoin(message, eq(attachment.messageId, message.id))
@@ -524,7 +525,7 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
       initial.sizeBytes !== input.expectedSize
     )
       return null;
-    const bytes = await readAuthorizedArtifactBytes({
+    const sha256 = await hashAuthorizedArtifactBytes({
       attachmentId: input.attachmentId,
       authorizedAttachmentIds: new Set([input.attachmentId]),
       s3: storage,
@@ -538,11 +539,12 @@ export function initializeDraftArtifactServices(storage: S3Storage = getS3Storag
           current.s3Key === initial.s3Key &&
           current.sizeBytes === initial.sizeBytes &&
           current.mimeType === initial.mimeType &&
-          current.messageId === initial.messageId
+          current.messageId === initial.messageId &&
+          current.sha256 === initial.sha256
         );
       },
     });
-    return bytes ? { sha256: bytes.sha256 } : null;
+    return sha256 ? { sha256 } : null;
   });
 }
 
