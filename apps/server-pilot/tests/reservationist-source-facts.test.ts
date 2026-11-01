@@ -270,9 +270,9 @@ describe('plain and HTML citation binding',()=>{
   const a='Group A: quantity 1, 1 adult, 0 children',b='Group B: quantity 1, 2 adults, 1 child age 7',plain=`Please quote accommodation.\n${a}\n${b}`,marker=`\n\n${HTML_ALTERNATIVE_MARKER}`,htmlStart=plain.length+marker.length;
   const run=(html:string)=>{const text=`${plain}${marker}${html}`,sourceHash=createHash('sha256').update(text).digest('hex'),attachmentId='message:groups',source=(quote:string)=>({attachmentId,sourceHash,page:1,quote,view:'plain'});
    return extractReservationistPlan({adapter:{invoke:async()=>({output:{facts:[{id:'a',kind:'room',value:{roomRef:'A',quantity:1,adults:1,childAges:[]},disclosure:'guest',source:source(a)},{id:'b',kind:'room',value:{roomRef:'B',quantity:1,adults:2,childAges:[7]},disclosure:'guest',source:source(b)}],tasks:[{id:'quote',kind:'quote',factIds:['a','b'],source:source(plain)}],unresolvedAsks:[]}})} as any,messages:[{id:'groups',at,direction:'inbound',text,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:htmlStart,end:text.length}]}],triggerMessageId:'groups',causalAt:at,admissions:[],signal:new AbortController().signal});};
-  await expect(run(`Please quote accommodation.\n${a}\n${b}\nKind regards`)).resolves.toMatchObject({facts:[{id:'a'},{id:'b'}]});
-  await expect(run(`Please quote accommodation.\nGroup A: quantity 1, 1 adult, 1 child age 8\n${b}`)).rejects.toThrow('Conflicting occupancy across message views');
-  await expect(run(`Please quote accommodation.\n${a}\n${b}\nWe also have another child.`)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run(`Kindly quote accommodation.\n${a}\n${b}\nKind regards`)).resolves.toMatchObject({facts:[{id:'a'},{id:'b'}]});
+  await expect(run(`Kindly quote accommodation.\nGroup A: quantity 1, 1 adult, 1 child age 8\n${b}`)).rejects.toThrow('Conflicting occupancy across message views');
+  await expect(run(`Kindly quote accommodation.\n${a}\n${b}\nWe also have another child.`)).rejects.toThrow('Conflicting occupancy across message views');
  });
  it('binds quoted history through a distinct range, not an identical authored copy',async()=>{
   const body='Please rebook this stay. Do not use the old dates: Arrival 21 December 2026; departure 23 December 2026';

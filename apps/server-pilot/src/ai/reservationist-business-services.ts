@@ -52,7 +52,7 @@ function authored(ctx:Context){
 export function isReservationistConferenceOnlyQuote(ctx:Context):boolean{
  const requestText=authored(ctx).split(/^[\t ]*(?:(?:kind|warm|best)\s+regards|regards)[^\p{L}\p{N}\r\n]*$/imu)[0]!;
  const event=(text:string)=>text.split(/[.!?;\r\n]+/).some(row=>/\b(?:conference|conferencing|meeting|event)\b/i.test(row)&&!/\b(?:not|no|never|without|cancel|cancelled|canceled)\b/i.test(row));
- const accommodation=(text:string)=>/\b(?:accommodation|overnight|bedrooms?|guest[ -]?rooms?|single|double|twin|check[ -]?(?:in|out))\b|\b\d+\s+(?:(?:standard|deluxe)\s+)?rooms?\b/i.test(text);
+ const accommodation=(text:string)=>/\b(?:accommodation|overnight|bedrooms?|guest[ -]?rooms?|single|double|twin|check[ -]?(?:in|out))\b|\b(?:\d+|one|two|three|four|a|an)\s+(?:(?:standard|deluxe|executive)\s+)?rooms?\b/i.test(text);
  const taskText=ctx.task.source.quote??'';
  return ctx.task.kind==='quote'&&((event(taskText)&&!accommodation(taskText))||(event(requestText)&&!accommodation(requestText)));
 }
