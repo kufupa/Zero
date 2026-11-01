@@ -25,8 +25,9 @@ function harness(options = {}) {
   const runTool = async (request) => {
     calls.push(request);
     switch (request.tool) {
-      case 'searchGuestProfiles': return { outcome: 'matches', searchId: 'g', candidates: [profile],
-        coverage: { loaded: 1, possiblyTruncated: false }, correlation: { verifiedFields: ['firstname', 'lastname'] } };
+      case 'searchGuestProfiles': return { outcome: 'matches', searchId: 'g', candidates: options.profiles || [profile],
+        coverage: { loaded: (options.profiles || [profile]).length, possiblyTruncated: false }, correlation: { verifiedFields: ['firstname', 'lastname'] } };
+      case 'closeGuestProfilePicker': return options.close || { outcome: 'closed_unsaved' };
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
       case 'selectGuestStayDropdown': return { outcome: 'updated_unsaved', field: request.field, requested: request.value,
@@ -146,8 +147,10 @@ test('incomplete or unsafe inputs preserve evidence and never save', async () =>
   assert.equal(blocked.outcome, 'needs_input');
   assert.deepEqual(blocked.preimage, preimage);
 
-  const lookup = (candidates) => async (operation) => operation({ runTool: async () => ({ outcome: 'matches', searchId: 'g', candidates,
-    coverage: { loaded: candidates.length, possiblyTruncated: false }, correlation: { verifiedFields: ['firstname', 'lastname'] } }) });
+  const lookup = (candidates) => async (operation) => operation({ runTool: async ({ tool }) => tool === 'closeGuestProfilePicker'
+    ? { outcome: 'closed_unsaved' } : tool === 'readGuestStayForm' ? { outcome: 'ok', fields: [] }
+      : { outcome: 'matches', searchId: 'g', candidates, coverage: { loaded: candidates.length, possiblyTruncated: false },
+        correlation: { verifiedFields: ['firstname', 'lastname'] } } });
   const prepare = { mode: 'prepare', propertyCode: 'HRCEN', guest: { search: { lastName: 'Example' } } };
   const ambiguous = await createReservation(prepare, { withSession: lookup([{ ...profile, lastName: 'Example' }, { ...profile, nativeId: '124', lastName: 'Example' }]) });
   assert.equal(ambiguous.issue, 'guest_ambiguous');
@@ -156,6 +159,21 @@ test('incomplete or unsafe inputs preserve evidence and never save', async () =>
     { withSession: lookup([{ ...profile, lastName: 'Example' }]) });
   assert.equal(email.issue, 'guest_email_unverified');
   assert.deepEqual(email.guestCorrelation.verifiedFields, ['firstname', 'lastname']);
+
+  const unresolved = harness({ profiles: [profile, { ...profile, nativeId: '124' }] });
+  const continued = await createReservation({ ...input, mode: 'prepare', guest: { search: { lastName: 'Labtest' } } }, unresolved.options);
+  assert.equal(continued.issue, 'guest_ambiguous');
+  assert.ok(continued.missing.includes('guest'));
+  assert.deepEqual(continued.guestCandidates.map((item) => item.nativeId), ['123', '124']);
+  assert.equal(continued.applied.note, 'Synthetic proof');
+  assert.equal(continued.applied.organization.nativeId, '41');
+  assert.equal(continued.appliedVerification.visibleFields, true);
+  assert.ok(unresolved.calls.some((call) => call.tool === 'closeGuestProfilePicker'));
+  assert.equal(unresolved.calls.filter((call) => call.tool === 'saveNewLabtestStay').length, 0);
+  const stuck = harness({ profiles: [], close: { outcome: 'close_uncertain' } });
+  const closed = await createReservation({ ...input, mode: 'prepare' }, stuck.options);
+  assert.equal(closed.outcome, 'uncertain');
+  assert.equal(stuck.calls.filter((call) => call.tool === 'setGuestStayText').length, 0);
 
   const partial = harness({ rateUnavailable: true });
   const prepared = await createReservation({ ...input, mode: 'prepare', room: { ...input.room, ratePlan: 'BAR-1' } }, partial.options);

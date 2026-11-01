@@ -195,7 +195,10 @@ export async function createReservation(input, { withSession = withBookingLookup
         output.applied.sourceOfBusiness = state.source.selectedField.value;
       }
       if (!commit && (input.guest?.profileId != null || text(input.guest?.search?.lastName))) {
-        state.guest = await selectGuest(runTool, input.guest, false);
+        try { state.guest = await selectGuest(runTool, input.guest, false); } catch (error) {
+          if (!['guest_ambiguous', 'guest_not_found', 'guest_email_unverified'].includes(error.result?.issue)) throw error;
+          Object.assign(output, error.result); missing.push('guest'); await call(runTool, 'closeGuestProfilePicker', {}, ['closed_unsaved']);
+        }
       }
       if (input.parties?.organizationId != null || text(input.parties?.organizationName)) {
         state.organization = await selectOrganization(runTool, input.parties);
