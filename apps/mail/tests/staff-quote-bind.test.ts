@@ -61,6 +61,24 @@ it('does not use a review for another message', async () => {
   expect((await bindStaffActions({query,threadId:'thread-1',messageId:'mail-1'})).kind).toBe('unavailable');
 });
 
+it('binds prepared tasks to the selected email review', async () => {
+  const newest = {id:'cancel',kind:'cancel_request',label:'Review cancellation',state:'Pending staff action',details:['Fee is unknown.','No cancellation has been saved.']};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{staffActions:[],tasks:[newest]}});
+  expect(await bindStaffActions({query,threadId:'thread',messageId:'mail-1'})).toEqual({kind:'ready',actions:[],tasks:[newest]});
+  expect(query).toHaveBeenCalledWith({threadId:'thread',messageId:'mail-1'});
+});
+
+it('keeps the final no-save notice when a long prepared booking is shortened', async () => {
+  const details = [...Array.from({length: 410}, (_, index) => `Night ${index}`), 'No booking has been saved.'];
+  const task = {id:'book',kind:'new_booking',label:'Prepare booking',state:'Pending staff action',details};
+  const query = vi.fn().mockResolvedValue({replyToMessageId:'mail-1',reviewSummary:{tasks:[task]}});
+  const result = await bindStaffActions({query,threadId:'thread',messageId:'mail-1'});
+  expect(result.kind).toBe('ready');
+  if (result.kind !== 'ready') return;
+  expect(result.tasks?.[0]?.details).toContain('No booking has been saved.');
+  expect(result.tasks?.[0]?.details).toContain('Some prepared details are not shown. Check the request and HMS.');
+});
+
 describe('HRDAV native room and board maps', () => {
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({

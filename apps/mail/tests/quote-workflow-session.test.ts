@@ -31,6 +31,7 @@ import {
   removedStayFor,
   rowRoomCode,
   stayKeyForGroup,
+  draftStayGroup,
   stayIdOf,
   stayTotals,
   amendmentOf,
@@ -111,6 +112,33 @@ const quoteAnalysis: QuoteAnalysis = {
 };
 
 describe('quote session', () => {
+  it.each([
+    ['adultsTotal', 5],
+    ['childrenTotal', 0],
+  ] as const)('keeps a first %s edit on the blank stay while the email read finishes', (field, value) => {
+    const reading = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_started' });
+    const edited = reduceQuoteSession(reading, {
+      type: 'patch_stay_total',
+      stayId: stayIdOf(draftStayGroup()),
+      field,
+      value,
+    });
+
+    expect(edited.groups).toHaveLength(1);
+    expect(edited.groups[0]).toMatchObject({
+      id: 'draft-stay',
+      [field]: value,
+      fields: { [field]: 'staff_corrected' },
+    });
+
+    const landed = reduceQuoteSession(edited, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(landed.groups).toHaveLength(1);
+    expect(landed.groups[0]).toMatchObject({
+      [field]: value,
+      fields: { [field]: 'staff_corrected' },
+    });
+  });
+
   it('clears authorised artifacts when the same message is rebound to a new staff scope', () => {
     const session = { ...initialQuoteSession(), binding: bind(), pdf: { fileName: 'old.pdf', bytesBase64: 'JVBERi0=' }, reviewedReplyHtml: '<p>Old staff reply</p>' };
     const changed = reduceQuoteSession(session, { type: 'selection', binding: bind({ scopeEpoch: 2 }) });
@@ -3105,6 +3133,9 @@ describe('quote session staff review items', () => {
         'Other charge R300.00 has no label — add a label or answer in the reply',
       ],
     });
+    expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
+    expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
+    s = reduceQuoteSession(s, { type: 'staff_actions_ready', actions: [] });
     expect(s.reviewItems.some((item) => /Shuttle requested/i.test(item.text))).toBe(true);
     expect(s.reviewItems.some((item) => /Other charge R300\.00 has no label/.test(item.text))).toBe(true);
     s = reduceQuoteSession(s, {

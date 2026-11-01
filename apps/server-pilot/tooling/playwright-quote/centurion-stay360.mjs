@@ -93,11 +93,12 @@ async function openCenturionStay360(page) {
   await stay360.click();
 }
 
-export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch } = {}) {
+export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal } = {}) {
   let browser;
   let context;
   let page;
   let phase = 'credentials';
+  let abortClose;
 
   const closeResources = async () => {
     const ownedContext = context;
@@ -108,27 +109,38 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     browser = undefined;
     if (ownedBrowser) await ownedBrowser.close().catch(() => {});
   };
+  const onAbort = () => { abortClose ??= closeResources(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
+    signal?.throwIfAborted();
     const secret = readCenturionSecret();
+    signal?.throwIfAborted();
 
     phase = 'browser_launch';
     await beforeLaunch?.();
+    signal?.throwIfAborted();
     browser = await launchCenturionChromium(headless);
+    signal?.throwIfAborted();
 
     phase = 'browser_context';
     context = await browser.newContext({ viewport });
+    signal?.throwIfAborted();
 
     page = await context.newPage();
+    signal?.throwIfAborted();
 
     phase = 'login';
     await login(page, secret, {});
+    signal?.throwIfAborted();
 
     phase = 'stay_360';
     await openCenturionStay360(page);
+    signal?.throwIfAborted();
 
     phase = 'operation';
     await installStay360NotesHandler(page);
+    signal?.throwIfAborted();
     return await operation(page);
   } catch (error) {
     const failure = (page && notesHandlerFailure(page)) || error;
@@ -137,6 +149,8 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     }
     throw failure;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
+    await abortClose;
     await closeResources();
   }
 }

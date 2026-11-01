@@ -41,6 +41,7 @@ import type {
   QuoteStayAction,
   StayGroupRequirement,
   QuotePaneConfig,
+  ReservationistPreparedTask,
 } from '@/lib/quote-workflow/types';
 import {
   Field,
@@ -88,6 +89,26 @@ import {
 } from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
+
+function PreparedStaffTasks({ tasks }: { tasks?: ReservationistPreparedTask[] }) {
+  if (!tasks?.length) return null;
+  return (
+    <section aria-label="Prepared requests" className="flex flex-col gap-2">
+      <p className="text-sm font-semibold">Prepared requests</p>
+      <p className="text-xs text-muted-foreground">These details were prepared earlier. Check the current HMS record before acting.</p>
+      {tasks.map((task) => (
+        <div key={task.id} className="rounded-md border p-3 text-sm">
+          <p className="font-medium">{task.label} · {task.state === 'Ready' ? 'Review information' : task.state}</p>
+          {task.details.length ? (
+            <ul className="mt-2 flex list-disc flex-col gap-1 pl-4">
+              {task.details.map((detail, index) => <li key={`${index}:${detail}`}>{detail}</li>)}
+            </ul>
+          ) : <p className="mt-2">Details need staff review. Check the request and HMS.</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
 
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
@@ -647,6 +668,7 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+        <PreparedStaffTasks tasks={session.preparedStaffTasks} />
         {shuttleDraft}
       </div>
     );
@@ -672,6 +694,7 @@ export function QuoteWorkflowPanel({
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
         {shuttleDraft}
+        <PreparedStaffTasks tasks={session.preparedStaffTasks} />
         {amendStays.map((stay) => (
           <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
@@ -1014,6 +1037,7 @@ export function QuoteWorkflowPanel({
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
       {shuttleDraft}
+      <PreparedStaffTasks tasks={session.preparedStaffTasks} />
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}

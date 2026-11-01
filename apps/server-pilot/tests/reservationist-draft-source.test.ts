@@ -1,6 +1,6 @@
 import {afterEach,expect,it,vi} from 'vitest';
-import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,assertMetadataSourceRecoveries,draftSourceMessage,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
-import {prepareReservationistChannelBookingSync} from '../src/ai/reservationist-pending-action.js';
+import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,assertCancellationPacketDraftSource,assertMetadataSourceRecoveries,draftSourceMessage,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
+import {prepareReservationistChannelBookingSync,prepareReservationistPendingAction} from '../src/ai/reservationist-pending-action.js';
 import {validateDocumentPlan} from '../src/ai/reservationist-document-facts.js';
 import {createHash} from 'node:crypto';
 import {renderReservationistMessage} from '../src/ai/reservationist-worker-input.js';
@@ -74,6 +74,12 @@ it('binds a genuine canonical channel receipt to the exact original draft source
  const packet=prepareReservationistChannelBookingSync({taskId:'sync',requestId:'trigger',propertyCode:'HRCEN',ownerRef:'owner',threadId:'thread',taskSource:span('Please ensure you UPDATE your system.'),facts,sources:[document],clock:{causalAt:at,sourceAt:at,sourceMode:'current_read'}}),bound={...source,messages:[{...source.messages[0]!,sourceHash}]};
  expect(packet.status).toBe('pending_pms_action');expect(()=>assertChannelPacketDraftSource(packet,bound,new Date(at))).not.toThrow();
  for(const changed of [{...bound,propertyCode:'FOREIGN'},{...bound,transportId:'foreign'},{...bound,threadId:'foreign'},{...bound,triggerMessageId:'foreign'},{...bound,causalAt:'2026-10-05T01:01:00.000Z'},{...bound,messages:[{...bound.messages[0]!,sourceHash:'c'.repeat(64)}]}])expect(()=>assertChannelPacketDraftSource(packet,changed,new Date(at))).toThrow();
+});
+it('binds review-only cancellation preflight to the exact inbound draft source',async()=>{
+ const at=source.causalAt,review={outcome:'prepared_for_human_review' as const,roomScope:{state:'unresolved' as const,complete:false as const},policy:{state:'unknown' as const},fee:{state:'unknown_precommit' as const,amount:null,currency:null},action:{actor:'human' as const,cancellationStarted:false as const,commitAvailable:false as const}},input={kind:'cancel_request' as const,taskId:'cancel',requestId:source.triggerMessageId,ownerRef:source.transportId,threadId:source.threadId,propertyCode:source.propertyCode,reservationRef:'ABC123',clock:{causalAt:at,sourceAt:at,sourceMode:'current_read' as const}},evidence={...input,authorizationId:'synthetic-auth',resolvedConfirmation:'ABC123',sourceRef:'hms-record:synthetic',sourceHash:'c'.repeat(64),observedAt:at,expiresAt:'2026-10-05T02:00:00.000Z',maxSourceAgeMs:3600000,current:{arrivalDate:'2026-10-12',departureDate:'2026-10-14'},requestSource:{taskId:input.taskId,sourceRef:`message:${source.triggerMessageId}`,sourceHash:source.messages[0]!.sourceHash,observedAt:at},cancellationReview:review};
+ const packet=await prepareReservationistPendingAction(input,{signal:new AbortController().signal,resolveEvidence:async()=>evidence,authorizeSource:async()=>true});
+ expect(packet.status).toBe('pending_pms_action');expect(packet.businessRulesValidated).toBe(false);expect(()=>assertCancellationPacketDraftSource(packet,source)).not.toThrow();
+ expect(()=>assertCancellationPacketDraftSource(packet,{...source,transportId:'foreign'})).toThrow();
 });
 
 afterEach(()=>{vi.unstubAllEnvs();});

@@ -48,6 +48,33 @@ describe('mail extraction contract', () => {
     expect(sanitized.payload).toHaveProperty('origin', null);
   });
 
+  it('normalizes omitted model totals to null, preserves zero, and accepts legacy totals as absent', () => {
+    const parsed = mailExtractionSchema.parse({
+      ...AE1_OUTPUT,
+      stays: [
+        { ...AE1_OUTPUT.stays[0]!, totalRooms: null, totalAdults: 5, totalChildren: 0, rows: [] },
+        AE1_OUTPUT.stays[1]!,
+      ],
+    });
+    const { payload } = sanitizeExtraction(parsed, {
+      messageId: 'msg-stay-totals',
+      sourceText: 'Five adults for the stay; no children.',
+    });
+
+    expect(payload.stays[0]).toMatchObject({ totalAdults: 5, totalChildren: 0 });
+    expect(payload.stays[1]).toMatchObject({ totalAdults: null, totalChildren: null });
+
+    const legacyStays = payload.stays.map((stay) => {
+      const legacy = { ...stay };
+      delete legacy.totalAdults;
+      delete legacy.totalChildren;
+      return legacy;
+    });
+    const legacyPayload = mailExtractionPayloadSchema.parse({ ...payload, stays: legacyStays });
+    expect(legacyPayload.stays[0]!.totalAdults).toBeUndefined();
+    expect(legacyPayload.stays[0]!.totalChildren).toBeUndefined();
+  });
+
   it('parses an older stored payload without origin', () => {
     const parsed = mailExtractionSchema.safeParse(AE1_OUTPUT);
     expect(parsed.success).toBe(true);
