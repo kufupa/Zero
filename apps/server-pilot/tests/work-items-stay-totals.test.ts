@@ -119,4 +119,27 @@ describe('staff stay-total correction projection', () => {
     expect(corrected.groups[0]).toMatchObject({ childrenAges: [7], fields: { childAges: 'staff_corrected' } });
     expect(corrected.missingQuoteReplyFields).not.toContain('Child ages for stay 1');
   });
+
+  it('scopes a legacy empty-age warning to other stays after staff confirms none for one stay', () => {
+    const source = payload();
+    delete source.stays[0]!.totalChildren;
+    const secondStay = {
+      ...source.stays[0]!,
+      id: 'stay_2',
+      requested: { arrival: '2027-11-26', departure: '2027-11-28' },
+      rows: source.stays[0]!.rows.map((row) => ({ ...row, id: 'row_2' })),
+    };
+    source.stays.push(secondStay);
+    source.missing = [{ field: 'childAges', question: 'Confirm the children’s ages.' }];
+
+    const analysis = storedAnalysis(
+      { kind: 'quote', payload: source, attachments: [] },
+      { [`stays[${STAY}].rows[${ROW}].childAges`]: [] },
+    ).analysis;
+
+    expect(analysis.groups[0]?.fields.childAges).toBe('staff_corrected');
+    expect(analysis.groups[1]?.fields.childAges).toBe('missing');
+    expect(analysis.missingQuoteReplyFields).not.toContain('Child ages for stay 1');
+    expect(analysis.missingQuoteReplyFields).toContain('Child ages for stay 2');
+  });
 });

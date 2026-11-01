@@ -637,6 +637,7 @@ export function storedAnalysis(
   );
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
+  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
   const stays = formStays(payload, state);
   const totalRoomsDefaultRowIds = new Set(
     stays.flatMap((stay) => {
@@ -697,6 +698,14 @@ export function storedAnalysis(
       const rowNames = guestNames.slice(guestAt, guestAt + take);
       guestAt += take;
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
+      const childAgesPath = at('childAges');
+      const childAges = pick<number[] | null>(childAgesPath, row.childAges);
+      const totalChildrenPath = `stays[${stay.id}].totalChildren`;
+      const totalChildren = Object.hasOwn(state, totalChildrenPath) ? state[totalChildrenPath] : sourceStay?.totalChildren;
+      const unresolvedLegacyEmptyAges = Boolean(
+        hasChildAgeWarning && sourceStay && sourceStay.totalChildren === undefined &&
+        typeof totalChildren !== 'number' && childAges?.length === 0 && !Object.hasOwn(state, childAgesPath),
+      );
       groups.push({
         ...dates,
         dateEvidence: null,
@@ -704,7 +713,7 @@ export function storedAnalysis(
         ...(stay.totalAdults !== undefined ? { adultsTotal: stay.totalAdults } : {}),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges),
+        childAges: unresolvedLegacyEmptyAges ? null : childAges,
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,
@@ -751,17 +760,10 @@ export function storedAnalysis(
         : Array.isArray(group?.childAges);
     });
   const adultsResolved = everyRowKnown('adults');
-  const hasChildAgeWarning = payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`));
-  const legacyEmptyAgesNeedConfirmation = hasChildAgeWarning && stays.some((stay) => {
-    const sourceStay = payload.stays.find((item) => item.id === stay.id);
-    const totalPath = `stays[${stay.id}].totalChildren`;
-    const totalChildren = Object.hasOwn(state, totalPath) ? state[totalPath] : sourceStay?.totalChildren;
-    if (typeof totalChildren === 'number') return false;
-    return stay.rows.some((row) =>
-      row.childAges?.length === 0 && !Object.hasOwn(state, `stays[${stay.id}].rows[${row.id}].childAges`),
-    );
-  });
-  const childAgesResolved = everyRowKnown('childAges') && !legacyEmptyAgesNeedConfirmation;
+  const childAgesResolved = everyRowKnown('childAges');
+  if (stays.length > 1) {
+    luna.missing = luna.missing.filter((item) => !/child/i.test(`${item.field} ${item.question}`));
+  }
   if (adultsResolved || childAgesResolved) {
     luna.missing = luna.missing.filter((item) => {
       const field = `${item.field} ${item.question}`;
