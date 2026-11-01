@@ -46,7 +46,24 @@ blocked. Existing caller context routes remain in the chain; the adapter uses
 
 After any attempt, the adapter closes its approval scope and quarantines the
 page. Close the entire page to discard the draft. Do not manually press Apply
-or Save on that page. Calls must be serialized on the page and context.
+or Save on that page. Calls must be serialized on the page and context. Retained
+context guards only enforce the owning page and fall back to the caller's
+existing routes for another identified page; they never authorize that other
+page. Requests whose page ownership cannot be established are blocked. Guards
+remain installed until the context closes, so sequential attempts accumulate
+routing overhead.
+
+`timeoutMs` bounds the entire asynchronous operation, including route setup,
+record reads and response-body parsing, subject to event-loop scheduling rather
+than hard real-time guarantees. A deadline closes the approval scope and
+quarantines any installed fence before returning. If fence installation
+finishes late, the fence is quarantined as soon as it becomes available. A
+pending browser action or HMS request is **not cancelled** by the timeout or by
+closing the page; previously dispatched work can still complete. Immediately
+close the page and independently reconcile the saved record before any future
+action after an uncertain result, even if a new page is used. Other in-flight
+read operations may finish after the function returns, but the adapter will not
+start a new editor action after the deadline.
 
 ## Outcomes and evidence
 
@@ -57,10 +74,14 @@ or Save on that page. Calls must be serialized on the page and context.
   mean saved, approved, repriced or available. This post-fix result has **not**
   been verified by a live run.
 - `apply_uncertain` means an Apply may have been dispatched and was not fully
-  verified. Do not retry automatically. Close the page and independently
-  reconcile the saved record before any future action. `stage_uncertain` also
-  requires a fresh page and investigation. All outcomes have `saveEligible:
-  false`; pricing, tax and inventory remain `unknown`.
+  verified. Do not retry automatically. `stage_uncertain` means the editor may
+  have been opened or changed. Close the page and independently reconcile the
+  saved record before any future action after either outcome.
+- `CHILD_STAGE_TIMEOUT` is `not_staged` before editor opening,
+  `stage_uncertain` after opening, and `apply_uncertain` once Apply is
+  attempted. This classification does not prove an in-flight action stopped.
+  All outcomes have `saveEligible: false`; pricing, tax and inventory remain
+  `unknown`.
 - A response with the same ages in a different order remains uncertain. The
   multiset is useful diagnostic evidence, not proof that child ordering or
   identity can be ignored. Form and model fields are reported separately.

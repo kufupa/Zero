@@ -169,16 +169,29 @@ describe('saved child validation request fence', () => {
 });
 
 // Exercise actual stage orchestration with synthetic native controls and layered routes.
+function fakeContext() {
+  const routes: Array<(route: any) => Promise<void>> = [];
+  return { routes, _options: { serviceWorkers: 'block' }, serviceWorkers: () => [],
+    route: async (_: string, handler: any) => { routes.push(handler); } };
+}
+function deferredGate() {
+  let release!: () => void, entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  return { started, release, block: async () => { entered(); await waiting; } };
+}
+type Gate = ReturnType<typeof deferredGate>;
 function fakePage(settings: {
   badResponse?: boolean; unexpectedRequest?: boolean; blankZero?: boolean; changedIdentity?: boolean; extraWindow?: boolean;
   orderedResponse?: boolean; wrongValidationTarget?: boolean; changedTargetAfterApply?: boolean;
   mismatchedNativeCounts?: boolean; mismatchedVisibleCounts?: boolean; mismatchedModelCounts?: boolean; unexpectedSideEffect?: boolean;
-} = {}) {
+  identityGate?: Gate; identityGateAt?: number; readJsonGate?: Gate; validationJsonGate?: Gate; routeGate?: Gate;
+} = {}, context = fakeContext()) {
   const pageRoutes: Array<(route: any) => Promise<void>> = [];
-  const contextRoutes: Array<(route: any) => Promise<void>> = [];
+  const contextRoutes = context.routes;
   const ages = [8, 12]; let selected = 0; let toggle = false; let identityReads = 0; let pending: ((value: any) => void) | undefined;
   let popupOpen = false; let applied = false;
-  const effects = { reads: 0, aborted: 0, writes: 0, popupClosed: 0, afterApplyTargetReads: 0, afterApplySnapshots: 0 };
+  const effects = { reads: 0, aborted: 0, writes: 0, popupClosed: 0, afterApplyTargetReads: 0, afterApplySnapshots: 0, applyClicks: 0 };
   const bands = () => ({ child1: ages.filter((age) => age <= 2).length,
     child2: ages.filter((age) => age >= 3 && age <= 12).length, child3: ages.filter((age) => age >= 13).length });
   const parentSnapshot = () => {
@@ -221,6 +234,7 @@ function fakePage(settings: {
     },
     locator: (selector: string) => {
       if (selector === 'a.x-btn:visible') return { filter: () => ({ count: async () => 1, click: async () => {
+        effects.applyClicks++;
         const req = request({ frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails`, body: body({
           propertyCode: 'HRCEN', reservationStayId: '5', adultCount: '2', childCount: String(ages.length),
           childAges: [...ages], updateChildCategories: true, activeChildCategories: 3, confirmChildCategory: false,
@@ -230,13 +244,16 @@ function fakePage(settings: {
         if (effects.writes > before) {
           applied = true; popupOpen = false; effects.popupClosed++;
           const derived = bands();
-          pending?.({ request: () => req, ok: () => true, json: async () => ({
-            propertyCode: 'HRCEN', reservationStayId: settings.wrongValidationTarget ? '6' : '5', adultCount: 2,
-            childCount: ages.length, childAges: settings.orderedResponse ? [...ages] : [...ages].sort((a, b) => a - b),
-            updateChildCategories: true, activeChildCategories: 3, confirmChildCategory: false,
-            childCategoryCounts: { CHILD1: derived.child1, CHILD2: derived.child2 - (settings.mismatchedNativeCounts ? 1 : 0),
-              CHILD3: derived.child3 }, dirtyList: [], gUserID: '', gFunctionName: '', gRemovePooledBean: false, gEntityName: '',
-          }) });
+          pending?.({ request: () => req, ok: () => true, json: async () => {
+            if (settings.validationJsonGate) await settings.validationJsonGate.block();
+            return {
+              propertyCode: 'HRCEN', reservationStayId: settings.wrongValidationTarget ? '6' : '5', adultCount: 2,
+              childCount: ages.length, childAges: settings.orderedResponse ? [...ages] : [...ages].sort((a, b) => a - b),
+              updateChildCategories: true, activeChildCategories: 3, confirmChildCategory: false,
+              childCategoryCounts: { CHILD1: derived.child1, CHILD2: derived.child2 - (settings.mismatchedNativeCounts ? 1 : 0),
+                CHILD3: derived.child3 }, dirtyList: [], gUserID: '', gFunctionName: '', gRemovePooledBean: false, gEntityName: '',
+            };
+          } });
         }
       } }) };
       if (selector === 'input[name="updatechildcategories"]') return { count: async () => 1, evaluate: async () => toggle, click: async () => { toggle = true; } };
@@ -260,10 +277,12 @@ function fakePage(settings: {
     },
   };
   const frame: any = {
+    page: () => page,
     url: () => `${ORIGIN}/record`,
     evaluate: async (_fn: unknown, arg: any) => {
       if (arg?.expected) {
         identityReads++;
+        if (settings.identityGate && identityReads === settings.identityGateAt) await settings.identityGate.block();
         if (applied) effects.afterApplyTargetReads++;
         const changed = (settings.changedIdentity && identityReads > 1) || (settings.changedTargetAfterApply && applied);
         return { native: { reservationstayid: changed ? '6' : '5' }, track: 'T', partyPreimage: parties };
@@ -287,7 +306,10 @@ function fakePage(settings: {
       if (selector === '[data-qtip="Enter Child Ages"]:visible') return { count: async () => 1, click: async () => {
         const req = request({ frame }); await visit(req);
         if (effects.reads) { popupOpen = true; pending?.({ request: () => req, ok: () => true,
-          json: async () => ({ propertyCode: 'HRCEN', reservationStayId: settings.badResponse ? 'other' : '5', childAges: [8, 12], activeChildCategories: 3, updateChildCategories: false, confirmChildCategory: false }) }); }
+          json: async () => {
+            if (settings.readJsonGate) await settings.readJsonGate.block();
+            return { propertyCode: 'HRCEN', reservationStayId: settings.badResponse ? 'other' : '5', childAges: [8, 12], activeChildCategories: 3, updateChildCategories: false, confirmChildCategory: false };
+          } }); }
         if (settings.unexpectedRequest) await visit(request({ frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails` }));
       } };
       if (selector === '.x-window[id^="childagespopup"]:visible') return popup;
@@ -298,17 +320,26 @@ function fakePage(settings: {
       throw Error(`unexpected frame locator ${selector}`);
     },
   };
-  const context = { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [],
-    route: async (_: string, handler: any) => { contextRoutes.push(handler); } };
   const page: any = {
     url: () => `${ORIGIN}/main`, title: async () => 'Infor HMS - HRCEN', context: () => context,
-    route: async (_: string, handler: any) => { pageRoutes.push(handler); }, on: vi.fn(),
+    route: async (_: string, handler: any) => {
+      if (settings.routeGate && pageRoutes.length === 0) await settings.routeGate.block();
+      pageRoutes.push(handler);
+    }, on: vi.fn(),
     locator: (selector: string) => selector.includes('iframe:visible')
       ? { count: async () => 1, elementHandle: async () => ({ contentFrame: async () => frame }) }
       : { count: async () => 1 },
     waitForResponse: () => new Promise((resolve) => { pending = resolve; }),
   };
-  return { page, frame, visit, effects };
+  const visitContext = async (req: any) => {
+    const handlers = [...contextRoutes].reverse();
+    const next = async (i: number): Promise<void> => {
+      if (i === handlers.length) { effects.writes++; return; }
+      await handlers[i]({ request: () => req, fallback: () => next(i + 1), abort: async () => { effects.aborted++; } });
+    };
+    await next(0);
+  };
+  return { page, frame, visit, visitContext, effects };
 }
 
 // Even the exact previously authorized validation must be denied after the attempt.
@@ -323,6 +354,92 @@ async function expectQuarantined(fake: ReturnType<typeof fakePage>) {
 }
 
 describe('child staging lifecycle', () => {
+  it('allows consecutive fresh pages in the same guarded context while quarantining each owner', async () => {
+    const context = fakeContext();
+    let callerRequests = 0;
+    context.routes.push(async (route) => {
+      callerRequests++;
+      if (route.request().url().includes('/blocked-by-caller')) return route.abort();
+      return route.fallback();
+    });
+    const first = fakePage({ orderedResponse: true }, context);
+    const second = fakePage({ orderedResponse: true }, context);
+    const apply = { childCount: 3, childAges: [8, 12, 5], applyToDraft: true };
+    expect(await stageLabtestChildAmendment(first.page, expected, apply)).toMatchObject({ outcome: 'applied_to_unsaved_draft' });
+    expect(await stageLabtestChildAmendment(second.page, expected, apply)).toMatchObject({ outcome: 'applied_to_unsaved_draft' });
+    expect(first.effects).toMatchObject({ reads: 1, writes: 1 });
+    expect(second.effects).toMatchObject({ reads: 1, writes: 1 });
+    await expectQuarantined(first);
+    await expectQuarantined(second);
+    expect(callerRequests).toBe(4);
+
+    // An old context guard must defer, not authorize, another page's requests.
+    const third = fakePage({}, context);
+    await third.visitContext(request({ frame: third.frame, url: `${ORIGIN}/blocked-by-caller` }));
+    expect(third.effects).toMatchObject({ writes: 0, aborted: 1 });
+    expect(callerRequests).toBe(5);
+    // Ownership that Playwright cannot establish is denied, not delegated.
+    await third.visitContext(request({ frame: {} }));
+    expect(third.effects).toMatchObject({ writes: 0, aborted: 2 });
+    expect(callerRequests).toBe(5);
+  });
+  it('times out a stalled fence installation and quarantines it if installation finishes late', async () => {
+    const gate = deferredGate();
+    const fake = fakePage({ routeGate: gate });
+    const result = stageLabtestChildAmendment(fake.page, expected, { ...options, timeoutMs: 200 });
+    await gate.started;
+    expect(await result).toMatchObject({ outcome: 'not_staged', issue: 'CHILD_STAGE_TIMEOUT', saveEligible: false });
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await fake.visit(request({ frame: fake.frame }));
+    expect(fake.effects).toMatchObject({ reads: 0, writes: 0, aborted: 1 });
+  });
+  it('times out a stalled record read and refuses later work on the page', async () => {
+    const gate = deferredGate();
+    const fake = fakePage({ identityGate: gate, identityGateAt: 1 });
+    const result = stageLabtestChildAmendment(fake.page, expected, { ...options, timeoutMs: 200 });
+    await gate.started;
+    expect(await result).toMatchObject({ outcome: 'not_staged', issue: 'CHILD_STAGE_TIMEOUT', saveEligible: false });
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await fake.visit(request({ frame: fake.frame }));
+    expect(fake.effects).toMatchObject({ reads: 0, writes: 0, aborted: 1, applyClicks: 0 });
+  });
+  it('times out a stalled age response body and keeps the page quarantined', async () => {
+    const gate = deferredGate();
+    const fake = fakePage({ readJsonGate: gate });
+    const result = stageLabtestChildAmendment(fake.page, expected, { ...options, timeoutMs: 200 });
+    await gate.started;
+    expect(await result).toMatchObject({ outcome: 'stage_uncertain', issue: 'CHILD_STAGE_TIMEOUT', saveEligible: false });
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await fake.visit(request({ frame: fake.frame }));
+    expect(fake.effects).toMatchObject({ reads: 1, writes: 0, aborted: 1, applyClicks: 0 });
+  });
+  it('does not click Apply when its final identity read resolves after the deadline', async () => {
+    const gate = deferredGate();
+    const fake = fakePage({ identityGate: gate, identityGateAt: 3, orderedResponse: true });
+    const result = stageLabtestChildAmendment(fake.page, expected, { ...options, applyToDraft: true, timeoutMs: 200 });
+    await gate.started;
+    expect(await result).toMatchObject({ outcome: 'stage_uncertain', issue: 'CHILD_STAGE_TIMEOUT', saveEligible: false });
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await fake.visit(request({ frame: fake.frame, url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails` }));
+    expect(fake.effects).toMatchObject({ reads: 1, writes: 0, aborted: 1, applyClicks: 0 });
+  });
+  it('reports Apply uncertain when its response body stalls after dispatch', async () => {
+    const gate = deferredGate();
+    const fake = fakePage({ validationJsonGate: gate, orderedResponse: true });
+    const result = stageLabtestChildAmendment(fake.page, expected,
+      { childCount: 3, childAges: [8, 12, 5], applyToDraft: true, timeoutMs: 200 });
+    await gate.started;
+    expect(await result).toMatchObject({ outcome: 'apply_uncertain', issue: 'CHILD_STAGE_TIMEOUT', saveEligible: false });
+    expect(fake.effects).toMatchObject({ reads: 1, writes: 1, applyClicks: 1 });
+    gate.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expectQuarantined(fake);
+    expect(fake.effects.applyClicks).toBe(1);
+  });
   it('refuses an unverified or active service-worker context before routing or editing', async () => {
     const fake = fakePage();
     for (const context of [{ _options: {}, serviceWorkers: () => [] },

@@ -19,16 +19,10 @@ const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? e
 
 /** Explicit null is unknown; [] is an explicitly supplied no-children age list. */
 export function planSavedChildOccupancy(input = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
-  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
   const { childCount, childAges } = input;
-  if (!(childCount === null || countValid(childCount)) || !(childAges === null || agesValid(childAges))) {
-    return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
-  }
-  if (childCount !== null && childAges !== null && childCount !== childAges.length) {
-    return { outcome: 'input_gap', issue: 'CHILD_COUNT_AGES_MISMATCH', ...unknowns() };
-  }
+  if (!(childCount === null || countValid(childCount)) || !(childAges === null || agesValid(childAges))) return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
+  if (childCount !== null && childAges !== null && childCount !== childAges.length) return { outcome: 'input_gap', issue: 'CHILD_COUNT_AGES_MISMATCH', ...unknowns() };
   const bands = childAges === null ? null : {
     child1: childAges.filter((age) => age <= 2).length,
     child2: childAges.filter((age) => age >= 3 && age <= 12).length,
@@ -67,20 +61,14 @@ export function savedChildOccupancy(snapshot) {
   for (const name of NAMES) {
     const form = fields[name].form, model = fields[name].model;
     const value = form.present ? numeric(form.value) : null;
-    if (value === null || !model.present || numeric(model.value) !== value) {
-      return { valid: false, fields, ageState: 'unknown' };
-    }
+    if (value === null || !model.present || numeric(model.value) !== value) return { valid: false, fields, ageState: 'unknown' };
     counts[name] = value;
   }
-  if (!countValid(counts.children) || counts.child1 + counts.child2 + counts.child3 !== counts.children) {
-    return { valid: false, fields, ageState: 'unknown' };
-  }
+  if (!countValid(counts.children) || counts.child1 + counts.child2 + counts.child3 !== counts.children) return { valid: false, fields, ageState: 'unknown' };
   const ages = modelAges(fields.childages.model);
   if (ages !== null) {
     const plan = planSavedChildOccupancy({ childCount: counts.children, childAges: ages });
-    if (plan.outcome !== 'planned' || NAMES.slice(1).some((name) => counts[name] !== plan.derivedBands[name])) {
-      return { valid: false, fields, ageState: 'conflicting' };
-    }
+    if (plan.outcome !== 'planned' || NAMES.slice(1).some((name) => counts[name] !== plan.derivedBands[name])) return { valid: false, fields, ageState: 'conflicting' };
   }
   return { valid: true, fields, count: counts.children, bands: { child1: counts.child1, child2: counts.child2, child3: counts.child3 },
     ages, ageState: ages === null ? 'unknown' : 'native_model' };
@@ -238,7 +226,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
   if (prior.childAges === null) return { outcome: 'input_gap', issue: 'PREIMAGE_AGES_UNKNOWN', requested, ...unknowns() };
   if (options.applyToDraft !== undefined && typeof options.applyToDraft !== 'boolean') return { outcome: 'input_gap', issue: 'INVALID_APPLY_OPTION', ...unknowns() };
   const timeoutMs = options.timeoutMs ?? 20_000;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT', ...unknowns() };
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT', ...unknowns() };
   if (!page || typeof page.route !== 'function' || typeof page.context !== 'function' || typeof page.on !== 'function') {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED', ...unknowns() };
   }
@@ -251,34 +239,53 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_ALREADY_USED', ...unknowns() };
   usedPages.add(page);
   let fence, scope, readRequest = null, validationRequest = null, readArmed = false, validationArmed = false, opened = false, applyAttempted = false, active = true, nativeDialog = false, blocked = 0;
-  let state, baseline, occupancy, visible, validationResult;
+  let state, baseline, occupancy, visible, validationResult, timedOut = false;
+  const deadlineAt = performance.now() + timeoutMs;
+  const expire = () => { timedOut = true; active = false; scope?.close(); fence?.quarantine(); };
+  const isActive = () => {
+    if (!timedOut && performance.now() >= deadlineAt) expire();
+    return active;
+  };
+  const requireActive = () => {
+    if (!isActive() || blocked || nativeDialog) throw new Error(timedOut ? 'CHILD_STAGE_TIMEOUT' : 'CHILD_STAGE_GUARD_STOPPED');
+  };
   const onDialog = () => { nativeDialog = true; active = false; fence?.quarantine(); };
   page.on('dialog', onDialog);
-  try {
+  let timeout;
+  const execute = async () => {
     // Layer on the caller's existing context guard. Never bypass it with continue().
     fence = await installPageRequestFence(page, [READ, VALIDATE, SAVE]);
+    // Fence installation may finish after the outer deadline returned.
+    if (!isActive()) { fence.quarantine(); throw new Error('CHILD_STAGE_TIMEOUT'); }
     const contextGuard = async (route) => {
       const request = route.request();
+      // Retained guards govern only their own page. Unknown ownership fails closed.
+      let owner;
+      try { owner = request.frame().page(); } catch { blocked++; return route.abort(); }
+      if (!owner) { blocked++; return route.abort(); }
+      if (owner !== page) return route.fallback();
       let url;
       try { url = new URL(request.url()); } catch { blocked++; return route.abort(); }
       const safe = ['GET', 'HEAD', 'OPTIONS'].includes(request.method().toUpperCase()) &&
         !/save|delete|cancel|duplicate|checkin|checkout|send|email|mail|crs/i.test(url.pathname) &&
         ![...url.searchParams].some(([key, value]) => key.toLowerCase() === 'pageaction' &&
           /^(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|create|submit|autosave|amend|post)$/i.test(value.trim()));
-      if (safe || (active && (request === readRequest || request === validationRequest) && !fence.isQuarantined())) return route.fallback();
+      if (safe || (isActive() && (request === readRequest || request === validationRequest) && !fence.isQuarantined())) return route.fallback();
       blocked++; return route.abort();
     };
+    requireActive();
     await page.context().route('**/*', contextGuard);
+    requireActive();
     await page.route('**/*', async (route) => {
       const request = route.request();
       let url;
       try { url = new URL(request.url()); } catch { blocked++; return route.abort(); }
-      if (active && readArmed && !blocked && !nativeDialog && !readRequest && state && matchesSavedChildAgeRead(request, state.frame, state.native.reservationstayid, prior.childAges) &&
+      if (isActive() && readArmed && !blocked && !nativeDialog && !readRequest && state && matchesSavedChildAgeRead(request, state.frame, state.native.reservationstayid, prior.childAges) &&
           !fence.isQuarantined() && scope?.allow(request)) {
         readRequest = request;
         return route.fallback();
       }
-      if (active && validationArmed && !blocked && !nativeDialog && !validationRequest && state &&
+      if (isActive() && validationArmed && !blocked && !nativeDialog && !validationRequest && state &&
           matchesSavedChildAgeValidation(request, state.frame, { stayId: state.native.reservationstayid,
             adults: expected.adults, priorBands: occupancy.bands, ages: requested.childAges }) &&
           !fence.isQuarantined() && scope?.allow(request)) {
@@ -294,6 +301,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
       blocked++;
       return route.abort();
     });
+    requireActive();
     scope = fence.open();
     state = await currentLabtestRecord(page, expected, { allowBlankNote: true, allowUnchangedBusinessParties: true });
     baseline = await snapshotLabtestRecord(state.frame);
@@ -310,13 +318,15 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     if (!visibleMatches(visible, occupancy)) throw new Error('CHILD_VISIBLE_PREIMAGE_UNVERIFIED');
     if (await page.locator('.x-window:visible:not(.x-menu)').count() !== 1 ||
         await state.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0) throw new Error('UNEXPECTED_DIALOG');
+    requireActive();
     if (same(prior.childAges, requested.childAges)) return { outcome: 'unchanged', requested, saved: occupancy,
       savedVisible: visible, popup: null, ...unknowns() };
     const trigger = state.frame.locator('[data-qtip="Enter Child Ages"]:visible');
     if (await trigger.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
-    if (!active || blocked || nativeDialog) throw new Error('CHILD_STAGE_GUARD_STOPPED');
+    requireActive();
     const pending = page.waitForResponse((response) => response.request() === readRequest && readRequest !== null,
       { timeout: timeoutMs }).catch(() => null);
+    requireActive();
     readArmed = true;
     opened = true;
     await trigger.click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
@@ -352,6 +362,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     if (await toggle.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
     const readToggle = () => toggle.evaluate((el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.getValue?.());
     if (await readToggle() !== false || !active || blocked || nativeDialog) throw new Error('AGE_EDITOR_TOGGLE_UNVERIFIED');
+    requireActive();
     await toggle.click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
     if (await readToggle() !== true || !active || blocked || nativeDialog ||
         !same(popupBaseline, await snapshotLabtestRecord(state.frame))) throw new Error('AGE_EDITOR_TOGGLE_UNVERIFIED');
@@ -365,6 +376,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     while (countNow !== requested.childCount) {
       if (!active || blocked || nativeDialog) throw new Error('CHILD_STAGE_GUARD_STOPPED');
       const change = countNow < requested.childCount ? 1 : -1;
+      requireActive();
       await count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${change > 0 ? 'up' : 'down'}`)
         .click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
       countNow += change;
@@ -376,6 +388,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
       await label.waitFor({ timeout: timeoutMs });
       const row = label.locator('xpath=ancestor::table[contains(@class,"x-form-item")][1]');
       if (await row.locator('input:visible').count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
+      requireActive();
       await row.locator('.x-form-arrow-trigger:visible').click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
       const items = state.frame.locator('.x-boundlist:visible').last().locator('.x-boundlist-item:visible');
       await items.first().waitFor({ timeout: timeoutMs });
@@ -383,6 +396,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
         node.textContent.trim() === String(age) ? [index] : []), requested.childAges[i]);
       if (indexes.length !== 1) throw new Error('AGE_OPTION_NOT_UNIQUE');
       if (!active || blocked || nativeDialog) throw new Error('CHILD_STAGE_GUARD_STOPPED');
+      requireActive();
       await items.nth(indexes[0]).click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
       await exactInput(ageInput(i), requested.childAges[i]);
     }
@@ -407,8 +421,10 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
           !same(target.partyPreimage, state.partyPreimage) || !same(popupBaseline, await snapshotLabtestRecord(state.frame))) {
         throw new Error('SAVED_FORM_CHANGED');
       }
+      requireActive();
       const validating = page.waitForResponse((response) => response.request() === validationRequest && validationRequest !== null,
         { timeout: timeoutMs }).catch(() => null);
+      requireActive();
       validationArmed = true;
       applyAttempted = true;
       await apply.click({ timeout: Math.min(timeoutMs, 5000), noWaitAfter: true });
@@ -451,6 +467,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
       const draftOccupancy = Object.fromEntries([...NAMES, 'childages'].map((name) => [name, {
         form: exactField(draft.values, name), model: exactField(draft.data, name),
       }]));
+      requireActive();
       if (!delta.ok) return { outcome: 'apply_uncertain', issue: 'DRAFT_SIDE_EFFECTS_UNVERIFIED', requested,
         saved: occupancy, draftVisible, draftOccupancy, ...delta, nativeValidationVerified: true, ...unknowns() };
       return { outcome: 'applied_to_unsaved_draft', requested, saved: occupancy, draftVisible, draftOccupancy, ...delta,
@@ -458,14 +475,22 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
         nativeEditorSideEffects: ['successmessages', 'activechildcategories', 'recordDirty'],
         requiresReprice: true, ...unknowns() };
     }
+    requireActive();
     return { outcome: 'staged_in_editor', requested, saved: occupancy, savedVisible: afterVisible,
       popup: { childCount: popupCount, childAges: popupAges, applied: false },
       nativeReadVerified: true, nativeEditorSideEffects: ['successmessages', 'activechildcategories', 'recordDirty'], ...unknowns() };
+  };
+  try {
+    const deadline = new Promise((_, reject) => {
+      timeout = setTimeout(() => { expire(); reject(new Error('CHILD_STAGE_TIMEOUT')); }, timeoutMs);
+    });
+    return await Promise.race([execute(), deadline]);
   } catch (error) {
-    return { outcome: applyAttempted ? 'apply_uncertain' : opened ? 'stage_uncertain' : 'not_staged', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : issue(error),
+    return { outcome: applyAttempted ? 'apply_uncertain' : opened ? 'stage_uncertain' : 'not_staged', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : timedOut ? 'CHILD_STAGE_TIMEOUT' : issue(error),
       blockedRequests: blocked, ...(occupancy ? { saved: occupancy } : {}),
       ...(agesValid(validationResult?.childAges) ? { nativeResponseAges: validationResult.childAges } : {}), requested, ...unknowns() };
   } finally {
+    clearTimeout(timeout);
     active = false;
     scope?.close();
     // A delayed request or partial popup action cannot become authorized later.
