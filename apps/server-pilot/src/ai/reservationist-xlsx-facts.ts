@@ -3,12 +3,13 @@ import { AMBIGUOUS_NUMBER_GROUPS } from './card-mask.js';
 
 type Cell = { columnNumber: number; displayText: string };
 type Row = { rowNumber: number; cells: Cell[] };
-type Role = 'room' | 'quantity' | 'adults' | 'children' | 'childAges' | 'totalGuests' | 'firstName' | 'lastName' | 'guest' | 'age' | 'arrival' | 'departure' | 'board' | 'party' | 'reference';
+type Role = 'room' | 'roomIndex' | 'quantity' | 'adults' | 'children' | 'childAges' | 'totalGuests' | 'firstName' | 'lastName' | 'guest' | 'age' | 'arrival' | 'departure' | 'board' | 'party' | 'reference';
 
 // Deliberately recognize explicit column labels only. Everything else remains
 // visible for staff review; we do not guess a rooming-list layout.
 const labels: Record<Role, readonly string[]> = {
   room: ['room', 'room no', 'room number', 'room ref', 'room reference'],
+  roomIndex: ['room index', 'physical room index'],
   quantity: ['quantity', 'room quantity', 'number of rooms', 'room count'],
   adults: ['adult', 'adults', 'adult count', 'number of adults', 'no of adults'],
   children: ['child count', 'children', 'children count', 'number of children', 'no of children'],
@@ -39,7 +40,7 @@ function parseRow(line: string): Row | undefined {
 function header(row: Row): Map<Role, number> | undefined {
   const result = new Map<Role, number>();
   for (const cell of row.cells) {
-    const label = cell.displayText.trim().toLowerCase().replace(/[_\-#.:]+/g, ' ').replace(/\s+/g, ' ');
+    const label = cell.displayText.trim().toLowerCase().replace(/[_\-#.:]+/g, ' ').replace(/\s+/g, ' ').trim();
     const role = (Object.keys(labels) as Role[]).find(key => labels[key].includes(label));
     if (!role) continue;
     if (result.has(role)) return new Map(); // Ambiguous headers break the current table.
@@ -148,8 +149,8 @@ export function xlsxRowEntails(fact: ValidatedDocumentFact, source: DocumentSour
     const expectedName = `${fact.value.firstName} ${fact.value.lastName}`;
     if ((firstName && firstName !== fact.value.firstName) || (lastName && lastName !== fact.value.lastName) || (fullName && fullName !== expectedName)) return false;
     const quantity = text('quantity');
-    if (fact.value.roomIndex !== undefined && quantity !== undefined &&
-      (!/^\d+$/.test(quantity) || fact.value.roomIndex > Number(quantity))) return false;
+    if (fact.value.roomIndex !== undefined && (!same('roomIndex', fact.value.roomIndex) || quantity !== undefined &&
+      (!/^\d+$/.test(quantity) || fact.value.roomIndex > Number(quantity)))) return false;
     const name = same('firstName', fact.value.firstName) && same('lastName', fact.value.lastName) || same('guest', expectedName);
     return name && (fact.value.roomRef === undefined || same('room', fact.value.roomRef)) &&
       (fact.value.age === undefined || same('age', fact.value.age)) && fact.value.profileId === undefined;

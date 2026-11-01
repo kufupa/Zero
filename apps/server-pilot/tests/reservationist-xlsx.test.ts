@@ -31,7 +31,7 @@ async function extract(body: Uint8Array) {
 }
 
 describe('spreadsheet rows in reservationist extraction', () => {
-  it.each(['valid', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total', 'masked name', 'conflicting stay', 'conflicting board'])('binds row facts and retains independent mail asks: %s', async (mode) => {
+  it.each(['valid', 'unprinted room index', 'cross-row name', 'missing child count', 'conflicting quantity', 'conflicting total', 'masked name', 'conflicting stay', 'conflicting board'])('binds row facts and retains independent mail asks: %s', async (mode) => {
     const columns = ['Room', 'Adults', 'Children', 'First name', 'Last name', 'Arrival', 'Departure', 'Quantity', 'Total guests', ...(mode === 'conflicting board' ? ['Board'] : [])];
     const values = ['1', '2', mode === 'missing child count' ? '' : '0', mode === 'masked name' ? '4111 1111 1111 1111' : 'Alex', 'Example', '2027-02-10', '2027-02-11', mode === 'conflicting quantity' ? '30' : '1', mode === 'conflicting total' ? '3' : '2', ...(mode === 'conflicting board' ? ['BB'] : [])];
     const other = ['2', '1', '0', 'Jamie', 'Other', mode === 'conflicting stay' ? '2027-03-10' : '2027-02-10', mode === 'conflicting stay' ? '2027-03-11' : '2027-02-11', '1', '1', ...(mode === 'conflicting board' ? ['RO'] : [])];
@@ -47,7 +47,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
     const otherSource = { ...sheetSource, quote: otherRow };
     const facts = [
       { id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, disclosure: 'guest', source: sheetSource },
-      { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : mode === 'masked name' ? '[card ••••1111]' : 'Alex', lastName: 'Example', roomRef: '1' }, disclosure: 'guest', source: sheetSource },
+      { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : mode === 'masked name' ? '[card ••••1111]' : 'Alex', lastName: 'Example', roomRef: '1', ...(mode === 'unprinted room index' ? { roomIndex: 1 } : {}) }, disclosure: 'guest', source: sheetSource },
       { id: 'dates', kind: 'dates', value: { arrival: mode === 'conflicting stay' ? '2027-03-10' : '2027-02-10', departure: mode === 'conflicting stay' ? '2027-03-11' : '2027-02-11' }, disclosure: 'guest', source: mode === 'conflicting stay' ? otherSource : sheetSource },
       ...(mode === 'conflicting board' ? [{ id: 'board', kind: 'board', value: 'RO', disclosure: 'guest', source: otherSource }] : []),
     ];
@@ -71,6 +71,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
     expect(result.facts.some(fact => fact.kind === 'reservation_reference' && fact.value === 'A123')).toBe(true);
     expect(result.facts.some(fact => fact.kind === 'dates')).toBe(true);
     expect(result.facts.some(fact => fact.kind === 'guest')).toBe(!['cross-row name', 'masked name', 'conflicting stay'].includes(mode));
+    if (mode === 'unprinted room index') expect(result.facts.find(fact => fact.kind === 'guest')?.value).not.toHaveProperty('roomIndex');
     expect(result.facts.some(fact => fact.kind === 'room')).toBe(!['missing child count', 'conflicting quantity', 'conflicting total', 'conflicting stay', 'conflicting board'].includes(mode));
     expect(result.sourceIncomplete?.some(item => item.attachmentId === 'sheet')).toBe(mode !== 'valid');
   });

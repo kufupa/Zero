@@ -164,13 +164,6 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
  }
  return candidate;
 }
-/** A printed room label is distinct from a guest's index within that room group. */
-function invalidXlsxGuestIndexes(facts:readonly any[],xlsxIds:ReadonlySet<string>):any[]{
- return facts.filter(guest=>guest?.kind==='guest'&&xlsxIds.has(guest.source?.attachmentId)&&
-  Number.isSafeInteger(guest.value?.roomIndex)&&guest.value?.roomRef!==undefined&&
-  facts.some(room=>room?.kind==='room'&&room.value?.roomRef===guest.value.roomRef&&
-   Number.isSafeInteger(room.value?.quantity)&&guest.value.roomIndex>room.value.quantity));
-}
 /** Do not assign a workbook room or guest to another row's conflicting stay. */
 function filterXlsxStayConflicts(plan:ValidatedDocumentPlan,sources:readonly DocumentSource[],xlsxIds:ReadonlySet<string>):{plan:ValidatedDocumentPlan;incomplete:string[]}{
  const facts=new Map(plan.facts.map(fact=>[fact.id,fact])),incomplete=new Set<string>();
@@ -219,12 +212,17 @@ function filterUnverifiedXlsxFacts(output:unknown,sources:readonly DocumentSourc
   try{
    const bound=bindUniqueTextOffsets({facts:[fact],tasks:[]},sources) as {facts:unknown[]};
    const validated=validateDocumentPlan({facts:bound.facts,tasks:[],unresolvedAsks:[]},sources).facts[0]!;
-   if(!xlsxRowEntails(validated,sources.find(source=>source.attachmentId===id)))throw new Error('spreadsheet_row_unverified');
+   const source=sources.find(source=>source.attachmentId===id);
+   if(!xlsxRowEntails(validated,source)){
+    if(validated.kind!=='guest'||validated.value.roomIndex===undefined)throw new Error('spreadsheet_row_unverified');
+    const value={...validated.value};delete value.roomIndex;
+    if(!xlsxRowEntails({...validated,value},source))throw new Error('spreadsheet_row_unverified');
+    delete (bound.facts[0] as {value:{roomIndex?:number}}).value.roomIndex;incomplete.add(id);
+   }
    Object.assign(fact,bound.facts[0]);return true;
   }catch{removed.add(fact.id);incomplete.add(id);return false;}
  });
- for(const fact of invalidXlsxGuestIndexes(plan.facts,xlsxIds)){removed.add(fact.id);incomplete.add(fact.source.attachmentId);}
- if(removed.size){
+ if(removed.size||incomplete.size){
   plan.facts=plan.facts.filter(fact=>!removed.has(fact.id));
   for(const task of plan.tasks)if(Array.isArray(task?.factIds))task.factIds=task.factIds.filter((id:unknown)=>!removed.has(String(id)));
   if(plan.unresolvedAsks.length<32)plan.unresolvedAsks.push('A spreadsheet row needs staff review; other requests remain available.');
@@ -534,23 +532,15 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
       }
     }
     const xlsxIds=new Set(admitted.filter(a=>isReservationistXlsxMimeType(a.metadata.mimeType)).map(a=>a.metadata.attachmentId));
-    const invalidIndexes=invalidXlsxGuestIndexes(facts,xlsxIds);
-    const invalidIds=new Set(invalidIndexes.map(fact=>fact.id));
-    if(invalidIds.size){
-      facts.splice(0,facts.length,...facts.filter(fact=>!invalidIds.has(fact.id)));
-      for(const task of tasks)task.factIds=task.factIds.filter(id=>!invalidIds.has(id));
-      for(const fact of invalidIndexes)sourceIncomplete.push({attachmentId:fact.source.attachmentId,sourceHash:fact.source.sourceHash,reason:'spreadsheet_row_unverified'});
-    }
     for(const recovery of plans.flatMap(plan=>plan.sourceIncomplete??[])){
       if(!sourceIncomplete.some(item=>item.attachmentId===recovery.attachmentId&&item.sourceHash===recovery.sourceHash&&item.reason===recovery.reason))sourceIncomplete.push(recovery);
     }
     const unresolvedAsks=[...new Set(plans.flatMap(plan=>plan.unresolvedAsks))];
-    if(invalidIds.size&&unresolvedAsks.length<32&&!unresolvedAsks.includes('A spreadsheet row needs staff review; other requests remain available.'))unresolvedAsks.push('A spreadsheet row needs staff review; other requests remain available.');
     const checked=filterXlsxStayConflicts({facts,tasks,unresolvedAsks,draftReady:false},admitted.flatMap(a=>a.source?[a.source]:[]),xlsxIds);
     for(const id of checked.incomplete){const source=admitted.find(a=>a.metadata.attachmentId===id)?.source;if(source&&!sourceIncomplete.some(item=>item.attachmentId===id&&item.reason==='spreadsheet_row_unverified'))sourceIncomplete.push({attachmentId:id,sourceHash:source.sourceHash,reason:'spreadsheet_row_unverified'});}
     if(checked.plan.facts.length>64||checked.plan.tasks.length>32||checked.plan.unresolvedAsks.length>32||checked.plan.tasks.some(t=>t.factIds.length>64))throw new Error('Merged extraction plan exceeds bounds');
     const emptySelection=!checked.plan.tasks.length&&!checked.plan.facts.length&&!checked.plan.unresolvedAsks.length&&!sourceIncomplete.length&&plans.length>0;
-    input.signal.throwIfAborted();return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...new Set([...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...plans.flatMap(plan=>plan.manualRequired??[]),...(invalidIds.size||checked.incomplete.length?['spreadsheet_row_unverified']:[]),...(sourceIncomplete.some(item=>item.reason==='attachment_batch_unavailable')?['attachment_batch_unavailable']:[])])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
+    input.signal.throwIfAborted();return{...checked.plan,version:RESERVATIONIST_EXTRACTION_VERSION,sourceIncomplete,manualRequired:[...new Set([...input.admissions.filter(a=>a.status==='manual_required').map(a=>a.reason),...plans.flatMap(plan=>plan.manualRequired??[]),...(checked.incomplete.length?['spreadsheet_row_unverified']:[]),...(sourceIncomplete.some(item=>item.reason==='attachment_batch_unavailable')?['attachment_batch_unavailable']:[])])],...(emptySelection&&plans.every(plan=>'sourceReviewSelectionCompleted' in plan&&plan.sourceReviewSelectionCompleted)?{sourceReviewSelectionCompleted:true as const}:emptySelection&&plans.every(plan=>'noActionSelectionCompleted' in plan&&plan.noActionSelectionCompleted)?{noActionSelectionCompleted:true as const}:{})};
   }
   if ((admitted.length > 8&&input.factEnrichmentMode!=='source_batches') || admitted.some(a => !a.source)) throw new Error('Invalid admitted source inventory');
   const files = admitted.filter(a => a.metadata.mimeType === 'application/pdf').map(a => {
@@ -667,12 +657,9 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
         }
       }
       const wireFacts=merged.map(({id,kind,value,disclosure,source,convention})=>({id,kind,value:convention?.originalValue??value,disclosure,source}));
-      const invalidIndexes=invalidXlsxGuestIndexes(wireFacts,xlsxIds),invalidIds=new Set(invalidIndexes.map(fact=>fact.id));
-      noteSpreadsheetIncomplete(invalidIndexes.map(fact=>fact.source.attachmentId));
-      if(invalidIds.size&&unresolved.length<32&&!unresolved.includes('A spreadsheet row needs staff review; other requests remain available.'))unresolved.push('A spreadsheet row needs staff review; other requests remain available.');
-      const mergedPlan=validateDocumentPlan({facts:wireFacts.filter(fact=>!invalidIds.has(fact.id)),tasks:selectedTasks.map(t=>({...t,factIds:refs.get(t.id)!.filter(id=>!invalidIds.has(id))})),unresolvedAsks:unresolved},sources);
+      const mergedPlan=validateDocumentPlan({facts:wireFacts,tasks:selectedTasks.map(t=>({...t,factIds:refs.get(t.id)!})),unresolvedAsks:unresolved},sources);
       for(const fact of mergedPlan.facts)assertEntailed(fact,sources,mergedPlan.facts,mergedPlan.tasks,xlsxIds);
-      if(JSON.stringify(mergedPlan.facts)!==JSON.stringify(merged.filter(fact=>!invalidIds.has(fact.id))))throw new Error('source_batch_normalized_identity_changed');
+      if(JSON.stringify(mergedPlan.facts)!==JSON.stringify(merged))throw new Error('source_batch_normalized_identity_changed');
       const checked=filterXlsxStayConflicts(mergedPlan,sources,xlsxIds);noteSpreadsheetIncomplete(checked.incomplete);
       for(const task of checked.plan.tasks)assertNewBookingTask(task,sources,triggerMessageId);unchanged();
       const unavailable=sourceIncomplete.length>0;sourceIncomplete.push(...spreadsheetIncomplete.values());

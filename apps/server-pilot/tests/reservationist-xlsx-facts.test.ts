@@ -33,17 +33,22 @@ function factAt(
 }
 
 describe('reservationist XLSX row facts', () => {
-  it('treats roomIndex as a position bounded by a same-row printed quantity, not as roomRef', () => {
+  it('requires a separately printed physical room index, and accepts punctuated headings', () => {
     const { page, source, dataRows } = sheet(
-      ['Room reference', 'Quantity', 'First name', 'Last name'],
-      [['A-12', '2', 'Ada', 'Lovelace']],
+      ['Room No.', 'Quantity', 'First name', 'Last name', 'Room index'],
+      [['A-12', '2', 'Ada', 'Lovelace', '2']],
     );
     const at = (roomIndex: number) => factAt(source, page, dataRows[0]!, 'guest', {
       firstName: 'Ada', lastName: 'Lovelace', roomRef: 'A-12', roomIndex,
     });
 
     expect(xlsxRowEntails(at(2), source)).toBe(true);
+    expect(xlsxRowEntails(at(1), source)).toBe(false);
     expect(xlsxRowEntails(at(3), source)).toBe(false);
+    const missing = sheet(['Room reference', 'Quantity', 'First name', 'Last name'], [['A-12', '2', 'Ada', 'Lovelace']]);
+    expect(xlsxRowEntails(factAt(missing.source, missing.page, missing.dataRows[0]!, 'guest', {
+      firstName: 'Ada', lastName: 'Lovelace', roomRef: 'A-12', roomIndex: 2,
+    }), missing.source)).toBe(false);
   });
 
   it('rejects conflicting populated first, last, or full-name cells even when another name form matches', () => {
