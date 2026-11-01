@@ -117,7 +117,7 @@ function currentVoucherReviewSources(messages:readonly {id:string;text:string;di
  for(const hit of current.matchAll(/\b(?:attached|enclosed)\s+(?:hotel\s+)?vouchers?\b/gi)){
   const start=hit.index!,mentionEnd=start+hit[0].length,lineStart=current.lastIndexOf('\n',start-1)+1,lineEnd=current.indexOf('\n',start),line=current.slice(lineStart,lineEnd<0?current.length:lineEnd),sentenceStart=Math.max(current.lastIndexOf('.',start-1),current.lastIndexOf('!',start-1),current.lastIndexOf('?',start-1),current.lastIndexOf(';',start-1))+1,sentenceTail=current.slice(sentenceStart).search(/[.!?;]/),parent=current.slice(sentenceStart,sentenceTail<0?current.length:sentenceStart+sentenceTail+1);
   if(/^\s*>/.test(line)||/^\s*>/m.test(parent)||/\b(?:not|never|no|don't|do not|if|unless|without|withdraw|disregard|ignore|historical|previous|whether|was|were|other property|another property)\b/i.test(parent))continue;
-  const qualifierMatch=current.slice(mentionEnd).match(/^[ \t]+for[ \t]+(?:(?:guest|booking|reservation|confirmation(?:[ \t]+number)?)[ \t]+|(?:mr|mrs|ms|miss)\.?[ \t]+)[\p{L}\p{N}][\p{L}\p{N}'’.-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’.-]*)?/iu);
+  const qualifierMatch=current.slice(mentionEnd).match(/^[ \t]+for[ \t]+(?:(?:guest|booking|reservation|confirmation(?:[ \t]+number)?)[ \t]+|(?:mr|mrs|ms|miss)\.?[ \t]+)[\p{L}\p{N}][\p{L}\p{N}'’-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’-]*)?/iu);
   const qualifier=(qualifierMatch?.[0]??'').replace(/[ \t]+(?:and|or|then|but)\b[\s\S]*$/iu,'').replace(/[.!?;,]+$/u,'');
   const end=mentionEnd+qualifier.length;
   out.push({source:{attachmentId:`message:${m.id}`,sourceHash:createHash('sha256').update(m.text).digest('hex'),page:1,start,end,quote:m.text.slice(start,end)},mentionStart:start,mentionEnd});
