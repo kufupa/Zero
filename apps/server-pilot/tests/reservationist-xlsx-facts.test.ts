@@ -97,6 +97,16 @@ describe('reservationist XLSX row facts', () => {
     }), source)).toBe(true);
   });
 
+  it('does not reuse a text-only table mapping after a different section header', () => {
+    const { page, source, dataRows } = sheet(
+      ['Room', 'Guest name', 'Company'],
+      [['Room category', 'Booking contact', 'Internal notes'], ['Suite', 'Ada Lovelace', 'VIP']],
+    );
+    expect(xlsxRowEntails(factAt(source, page, dataRows[1]!, 'guest', {
+      firstName: 'Ada', lastName: 'Lovelace', roomRef: 'Suite',
+    }), source)).toBe(false);
+  });
+
   it('does not carry prior columns through an unrecognized multi-column heading', () => {
     const { page, source, dataRows } = sheet(
       ['Room', 'Adults', 'Children', 'First name', 'Last name'],

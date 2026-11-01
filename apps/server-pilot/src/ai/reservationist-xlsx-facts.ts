@@ -25,7 +25,7 @@ const labels: Record<Role, readonly string[]> = {
   party: ['company', 'agency', 'organization', 'organisation'],
   reference: ['confirmation', 'confirmation number', 'reservation reference', 'reservation number'],
 };
-const columnHeadingTerms = /^(?:(?:accommodation|adult|adults|age|agency|arrival|basis|board|booking|category|check[ -]?(?:in|out)|child|children|company|confirmation|count|date|departure|family|first|given|guest|group|index|last|meal|name|no|number|occupant|of|plan|quantity|ref|reference|reservation|room|surname|total|type)(?:[\s_-]+|$))+$/i;
+const columnHeadingTerms = /^(?:(?:accommodation|adult|adults|age|agency|arrival|basis|board|booking|category|check[ -]?(?:in|out)|child|children|comment|comments|company|confirmation|contact|count|date|departure|email|family|first|given|guest|group|index|internal|last|meal|name|no|notes|number|occupant|of|phone|plan|quantity|ref|reference|remarks|reservation|room|surname|telephone|total|type)(?:[\s_-]+|$))+$/i;
 
 function parseRow(line: string): Row | undefined {
   try {
