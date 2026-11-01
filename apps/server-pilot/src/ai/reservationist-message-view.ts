@@ -17,6 +17,8 @@ export function validReservationistMessageViews(text: string, views: unknown): v
   };
   if (!validQuoted(plain.quoted) || !validQuoted(html.quoted)) return false;
   const plainHistory = plain.quoted, htmlHistory = html.quoted;
+  if (plainHistory && htmlHistory && plainHistory.start === htmlHistory.start && plainHistory.end === htmlHistory.end)
+    return text.slice(html.end, plainHistory.start) === '\n\n' && plainHistory.end === text.length;
   if (plainHistory && htmlHistory)
     return text.slice(html.end, plainHistory.start) === '\n\n' &&
       text.slice(plainHistory.end, htmlHistory.start) === '\n\n[HTML alternative context]\n' && htmlHistory.end === text.length;

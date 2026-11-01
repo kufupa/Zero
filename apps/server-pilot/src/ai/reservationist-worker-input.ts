@@ -93,6 +93,7 @@ function combineMessageViews(primary: string, alternative: string): { text: stri
   if (primaryTail?.trim()) add(primaryTail.trim(), undefined, '', 'plain');
   if (alternativeTail?.trim() && comparable(primaryTail ?? '') !== comparable(alternativeTail))
     add(alternativeTail.trim(), undefined, '[HTML alternative context]\n', 'html');
+  else if (primaryTail?.trim() && alternativeTail?.trim()) quoted.html = quoted.plain;
   const views = sourceViews.length === 2 ? sourceViews.map(view => {
     const history = quoted[view.name];
     return history ? { ...view, quoted: history } : view;
