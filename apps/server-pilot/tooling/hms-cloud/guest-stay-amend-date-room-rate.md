@@ -161,3 +161,35 @@ committed HEAD, and this dispatch cannot commit.
 Do not run live probes until the coordinator schedules an exclusive fake stay.
 The coordinator must integrate these exports into a saved-stay session separately;
 this module intentionally does not edit the shared session or save lifecycle.
+
+## Availability read bound to a saved Labtest form
+
+`readLabtestStayAmendmentAvailability(recordPage, availabilityPage, expected,
+options)` connects a proposed date, room or rate change to a separate Hotel
+Availability read. It verifies the clean saved fake-stay form before and after
+the read, including its date/room/rate preimage, adult count, native child ages
+and linked party IDs. Supply explicit `change`, `occupancy`, `partyContext`,
+`roomQuantity` and private `snapshotPath` in `options` as documented in
+[amendment availability](guest-stay-amend-availability.md). Select the native
+party on the separate availability page first when required by `readQuote`.
+The full form must remain identical across the read, or the result is refused.
+A saved stay with missing or ambiguous child ages remains unsupported. A verified
+zero child count and matching zero age bands permit an empty age list only when
+the native age field is genuinely blank and no displayed age field conflicts. Linked-party limitations of the existing
+Labtest guard still apply. A page used for the saved Record View cannot also be
+the availability page.
+
+This combines the current saved-record adapter and existing Hotel Availability
+reader. It does not reprice the saved form, establish amendment inventory,
+authorize Save, or integrate the shared saved-stay agent session. Count and rate
+observations remain separate from native amendment availability, especially when
+the existing booking already occupies inventory. Real-guest writes remain out
+of scope.
+
+On 2026-11-02 the existing date adapter staged a one-day departure extension
+on a separately reserved HRCEN Proof Labtest stay. The visible date and native
+field date matched the requested day; the bound record still held the prior
+value. The adapter returned `updated_unsaved` with no blocked request and no
+Save. A fresh independent session reread the original clean record unchanged.
+This is staging evidence, not saved persistence, native repricing or inventory.
+Private screenshots and evidence: `/tmp/hms-date-alt-stage-OCvA0p/`.
