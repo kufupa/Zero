@@ -26,9 +26,9 @@ async function fixture() {
   });
   const persistPreimage = vi.fn(async () => true);
   const endRun = vi.fn(async () => true);
-  const fileLabtestVoucher = vi.fn(async ({ checkAuthority, persistPreimage: persist }: any) => {
+  const fileLabtestVoucher = vi.fn(async ({ checkAuthority, checkDeadline, persistPreimage: persist }: any) => {
     if (!(await checkAuthority())) return { outcome: 'not_dispatched' };
-    if (!(await persist({ marker }))) return { outcome: 'not_dispatched' };
+    if (!(await persist({ marker })) || !checkDeadline()) return { outcome: 'not_dispatched' };
     return { outcome: 'awaiting_readback', marker };
   });
   const deps = { db: {} as any, fence, serverGrantId: 'grant-1', page,
@@ -141,6 +141,57 @@ describe('fenced voucher filing runner', () => {
       expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
       expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
     }
+  });
+
+  it('refuses an expired or invalid run deadline before consuming the grant', async () => {
+    for (const deadline of [new Date(0), new Date(NaN)]) {
+      const f = await fixture();
+      f.deps.fence.deadlineAt = deadline;
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('refused');
+      expect(f.consume).not.toHaveBeenCalled();
+    }
+  });
+
+  it('refuses when the deadline expires during the pre-submit HMS read', async () => {
+    const f = await fixture();
+    const deadline = Date.now() + 60_000;
+    f.deps.fence.deadlineAt = new Date(deadline);
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      f.checkBeforeSave.mockImplementationOnce(async ({ readHmsState }: any) => {
+        await readHmsState(); clock.mockReturnValue(deadline); return { status: 'unchanged' as const };
+      });
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
+      expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('refuses release when the deadline expires during the final authority check', async () => {
+    const f = await fixture();
+    const deadline = Date.now() + 60_000;
+    f.deps.fence.deadlineAt = new Date(deadline);
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      f.checkBeforeSave.mockImplementationOnce(async ({ readHmsState }: any) => {
+        await readHmsState(); return { status: 'unchanged' as const };
+      }).mockImplementationOnce(async ({ readHmsState }: any) => {
+        await readHmsState(); clock.mockReturnValue(deadline); return { status: 'unchanged' as const };
+      });
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect(f.persistPreimage).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('refuses when the deadline expires during durable preimage persistence', async () => {
+    const f = await fixture();
+    const deadline = Date.now() + 60_000;
+    f.deps.fence.deadlineAt = new Date(deadline);
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      f.persistPreimage.mockImplementationOnce(async () => { clock.mockReturnValue(deadline); return true; });
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect(f.persistPreimage).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
   });
 
   it('rejects changed source bytes both before dispatch and during the release check', async () => {
