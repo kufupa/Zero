@@ -403,6 +403,7 @@ export const workItemsRouter = router({
       z
         .object({
           workItemId: z.string().uuid(),
+          expectedSeq: z.number().int().min(0).optional(),
           section: z.discriminatedUnion('type', [
             z.object({ type: z.literal('contact') }).strict(),
             z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
@@ -416,9 +417,11 @@ export const workItemsRouter = router({
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
         section: input.section,
+        expectedSeq: input.expectedSeq,
       });
       if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'This work item changed. Reload, then reset.' });
       return { reset: result.reset };
     }),
 });

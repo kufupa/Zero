@@ -2400,12 +2400,13 @@ export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: stri
 export type ResetWorkSectionResult =
   | { status: 'not_found' }
   | { status: 'invalid_section' }
+  | { status: 'stale' }
   | { status: 'recorded'; reset: number };
 
 /** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
 export async function resetWorkSection(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; section: WorkItemSection },
+  input: { transportId: string; workItemId: string; userId: string; section: WorkItemSection; expectedSeq?: number },
 ): Promise<ResetWorkSectionResult> {
   if (input.section.type === 'stay' && !STAY_ID_PATTERN.test(input.section.stayId)) {
     return { status: 'invalid_section' };
@@ -2424,6 +2425,10 @@ export async function resetWorkSection(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    // New clients pin the reviewed revision; older clients may omit it until their bundle reloads.
+    if (input.expectedSeq !== undefined && input.expectedSeq !== item.revisionSeq) {
+      return { status: 'stale' as const };
+    }
 
     const paths = Object.keys(item.state).filter((fieldPath) => {
       if (input.section.type === 'contact') return contactFieldOf(fieldPath) !== null;
