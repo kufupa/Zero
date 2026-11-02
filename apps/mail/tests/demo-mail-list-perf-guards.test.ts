@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   useThread: vi.fn(),
   useDraft: vi.fn(),
   folder: 'inbox',
+  setMailSelection: vi.fn(),
+  onNavigate: null as null | ((threadId: string | null) => void),
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -95,11 +97,14 @@ vi.mock('@/hooks/use-mail-navigation', async () => {
   const { atom } = await import('jotai');
   return {
     focusedIndexAtom: atom<number | null>(null),
-    useMailNavigation: () => ({
-      focusedIndex: null,
-      handleMouseEnter: vi.fn(),
-      keyboardActive: false,
-    }),
+    useMailNavigation: (args: { onNavigate: (threadId: string | null) => void }) => {
+      mocks.onNavigate = args.onNavigate;
+      return {
+        focusedIndex: null,
+        handleMouseEnter: vi.fn(),
+        keyboardActive: false,
+      };
+    },
   };
 });
 
@@ -132,7 +137,9 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: () => [null, vi.fn()],
+  useQueryStates: () => [{ threadId: null, sourceMessageId: 'old-source' }, mocks.setMailSelection],
 }));
 
 vi.mock('@/components/icons/empty-state-svg', () => ({
@@ -145,6 +152,8 @@ type MemoExoticComponent = typeof MailList & {
 
 beforeEach(() => {
   mocks.folder = 'inbox';
+  mocks.setMailSelection.mockReset();
+  mocks.onNavigate = null;
   mocks.searchValue = {
     ...EMPTY_SEARCH_VALUE,
     value: 'deposit',
@@ -182,6 +191,15 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('clears the old source message when keyboard navigation opens another thread', async () => {
+    render(createElement(MailList));
+    expect(mocks.onNavigate).not.toBeNull();
+    act(() => mocks.onNavigate?.('new-thread'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({
+      threadId: 'new-thread', sourceMessageId: null,
+    }));
+  });
+
   it('shows effective query miss copy and preserves query state when trying all folders', () => {
     render(createElement(MailList));
 
