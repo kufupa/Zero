@@ -29,10 +29,13 @@ describe('POP3 filing source', () => {
     expect(await acquirePop3VoucherSource(identity, s.deps, prepared!.source)).toEqual(prepared);
   });
 
-  it('accepts valid non-ASCII filenames', async () => {
+  it('accepts safe names and generic PDF MIME while still verifying bytes', async () => {
     const s = setup();
-    s.set({ ...makeRecord(), filename: 'Voucher Müller.pdf' });
-    expect((await acquirePop3VoucherSource(identity, s.deps))?.source.filename).toBe('Voucher Müller.pdf');
+    for (const filename of ['Voucher Müller.pdf', "O'Neil [voucher].pdf"]) {
+      s.set({ ...makeRecord(), filename, mimeType: 'application/octet-stream' });
+      expect((await acquirePop3VoucherSource(identity, s.deps))?.source).toMatchObject({ filename, mimeType: 'application/pdf' });
+    }
+    expect(await acquirePop3VoucherSource(identity, { ...s.deps, readBounded: async () => Buffer.from('not a PDF') })).toBeNull();
   });
 
   it('binds legacy bytes without an ingest hash at prepare and rejects changed bytes at dispatch', async () => {

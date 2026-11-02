@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MAX_VOUCHER_FILING_BYTES, readAndHashVoucherBytes } from './voucher-filing-bytes.js';
+import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
 
 /** Trusted fields loaded from the server's mailbox-scoped message/attachment join. */
 export type Pop3FilingRecord = {
@@ -36,19 +37,12 @@ export type Pop3FilingDependencies = {
   checkAuthority: () => Promise<boolean>;
 };
 
-function safePdfFilename(value: string): boolean {
-  return typeof value === 'string' && value.length > 0 && value.length <= 150 &&
-    /\.pdf$/i.test(value) && !value.includes('/') && !value.includes('\\') &&
-    !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
-}
-
 function snapshot(identity: Identity, row: Pop3FilingRecord | null, bucket: string, contentSha256: string): Pop3FilingSource | null {
   if (!row || !bucket || bucket.length > 255 ||
       ![identity.transportId, identity.messageId, identity.attachmentId].every((v) => typeof v === 'string' && v.length > 0 && v.length <= 200) ||
       row.transportId !== identity.transportId || row.messageId !== identity.messageId || row.attachmentId !== identity.attachmentId ||
       !row.ingestMailboxId || !row.pop3Uidl || row.direction !== 'inbound' || row.historyOnly || row.attention != null ||
-      row.isInline || row.mimeType !== 'application/pdf' ||
-      !safePdfFilename(row.filename) ||
+      row.isInline || !isVoucherPdfMime(row.mimeType) || !isVoucherPdfFilename(row.filename) ||
       !Number.isSafeInteger(row.sizeBytes) || row.sizeBytes <= 0 || row.sizeBytes > MAX_VOUCHER_FILING_BYTES ||
       (row.sha256 !== null && !/^[a-f0-9]{64}$/.test(row.sha256)) || !/^[a-f0-9]{64}$/.test(contentSha256) ||
       (row.sha256 !== null && row.sha256 !== contentSha256) || !row.s3Key.startsWith('attachments/')) return null;

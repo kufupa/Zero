@@ -113,6 +113,17 @@ describe.skipIf(!ingestionDbAvailable)('voucher filing source with disposable da
       expect(s.state.calls).toHaveLength(0);
     }));
 
+  it('accepts safe Unicode names and generic PDF MIME with matching stored artifact identity', async () =>
+    withIngestionDb(async ({ db }) => {
+      const s = await setup(db);
+      await db.update(attachment).set({ filename: "O'Neil [Müller].pdf", mimeType: 'application/octet-stream' })
+        .where(eq(attachment.id, s.attachmentId));
+      await db.update(outlookSyncArtifact).set({ contentType: 'application/octet-stream' })
+        .where(eq(outlookSyncArtifact.id, s.artifactId));
+      const prepared = await prepareVoucherFilingSource(s.input, s.deps);
+      expect(prepared).toMatchObject({ status: 'ready', source: { filename: "O'Neil [Müller].pdf", mimeType: 'application/pdf' } });
+    }));
+
   it('accepts an unversioned receipt only when fresh bytes still match the approved hash', async () =>
     withIngestionDb(async ({ db }) => {
       const s = await setup(db);

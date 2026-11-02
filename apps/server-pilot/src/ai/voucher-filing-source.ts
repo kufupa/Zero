@@ -9,6 +9,7 @@ import type { OutlookSyncStorage, SyncSealedArtifact } from '../outlook-sync/sto
 import type { S3Storage } from '../storage/s3.js';
 import { acquirePop3VoucherSource, type Pop3FilingRecord } from './voucher-filing-pop3-source.js';
 import { voucherFilingReceiptSchema } from './voucher-filing-receipt.js';
+import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
 import { voucherFilingFormSchema, type VoucherFilingForm } from './voucher-filing-contract.js';
 
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -53,8 +54,8 @@ async function resolveSnapshot(input: SourceIdentity, deps: VoucherSourceDepende
       eq(message.transportId, input.transportId))).limit(2);
   if (rows.length !== 1) return null;
   const row = rows[0]!;
-  if (row.direction !== 'inbound' || row.historyOnly || row.isInline || row.mimeType !== 'application/pdf' ||
-      !/^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,149}$/.test(row.filename) || !/\.pdf$/i.test(row.filename) ||
+  if (row.direction !== 'inbound' || row.historyOnly || row.isInline || !isVoucherPdfMime(row.mimeType) ||
+      !isVoucherPdfFilename(row.filename) ||
       !Number.isSafeInteger(row.sizeBytes) || row.sizeBytes <= 0 || row.sizeBytes > MAX_BYTES ||
       !hash.safeParse(row.sha256).success || !id.safeParse(row.sourceAttachmentId).success) return null;
   const duplicates = await deps.db.select({ id: attachment.id }).from(attachment)
