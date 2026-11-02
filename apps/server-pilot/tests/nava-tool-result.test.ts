@@ -60,6 +60,19 @@ describe('Nava tool result contract', () => {
       verifiedReadback: { readback: { confirmation: '123' } } }).outcome).toBe('uncertain');
   });
 
+  it.each(['amended', 'cancelled', 'attached'])('requires trusted fresh readback for legacy %s writes', (outcome) => {
+    const result = { outcome };
+    expect(adaptExistingToolResult(result, { operation: 'write' }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ status: outcome, outcome: 'not_dispatched' }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult({ status: 'not_dispatched', outcome }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'read' }).outcome).toBe('refused');
+  });
+
   it('requires verified readback for successful writes', () => {
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
     expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');

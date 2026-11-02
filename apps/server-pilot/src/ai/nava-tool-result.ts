@@ -141,9 +141,12 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
   const reason = stableReason(result.reason ?? result.issue ?? result.error ?? (knownPreDispatchRefusal ? code : undefined));
   const uncertainCodes = new Set(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_unconfirmed', 'save_failed', 'partial']);
   // Generic status 'ok' can accompany a refused outcome; strong commit statuses cannot.
-  const strongWriteStatuses = new Set(['saved', 'committed', 'confirmed', 'verified', 'readback_verified']);
+  const strongWriteStatuses = new Set(['saved', 'committed', 'confirmed', 'verified', 'readback_verified', 'amended', 'cancelled', 'attached']);
   const preDispatchCodes = new Set(['refused', 'not_dispatched', 'refused_flag_off', 'amend_preview_required', 'needs_input', 'input_gap']);
-  const contradictoryWrite = options.operation === 'write' && strongWriteStatuses.has(result.status ?? '') && preDispatchCodes.has(code);
+  const contradictoryWrite = options.operation === 'write' && (
+    (strongWriteStatuses.has(result.status ?? '') && preDispatchCodes.has(result.outcome ?? '')) ||
+    (strongWriteStatuses.has(result.outcome ?? '') && preDispatchCodes.has(result.status ?? ''))
+  );
   const ambiguous = contradictoryWrite || uncertainCodes.has(code) || uncertainCodes.has(result.status ?? '') ||
     (result.reason === 'pane_save_unconfirmed' || result.issue === 'pane_save_unconfirmed');
   const possibleDispatch = result.clickedSave === true || result.clickedSave === 'unknown' ||
@@ -151,7 +154,8 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.clickedOk === true || result.clickedOk === 'unknown' || result.saveDispatched === true || result.saveDispatched === 'unknown' ||
     result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
   const successful = (['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) ||
-    (options.operation === 'read' && code === 'found')) && result.status !== 'refused';
+    (options.operation === 'read' && code === 'found') ||
+    (options.operation === 'write' && ['amended', 'cancelled', 'attached'].includes(code))) && result.status !== 'refused';
   const hasTrustedReadback = options.readbackVerified === true && options.verifiedReadback?.readback != null;
   let outcome: NavaToolResult<unknown>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';
