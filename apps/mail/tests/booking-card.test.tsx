@@ -2435,15 +2435,18 @@ describe('pane save helpers', () => {
       'osress_reader_parked',
       'osress_duplicate',
       'pane_save_preview_required',
+      'pane_preview_persist_failed',
       'pane_save_digest_mismatch',
       'pane_save_lock_unavailable',
       'refused_lock_busy',
       'refused_save_blank_required',
       'pane_save_unconfirmed',
+      'write_in_flight',
     ]) {
       expect(paneRefusalMessage(reason)).not.toBe(generic);
     }
     expect(paneRefusalMessage('pane_save_labtest_required')).toBe(PANE_SAVE_LAB_GUARD_COPY);
+    expect(paneRefusalMessage('pane_preview_persist_failed')).toBe(PANE_PREVIEW_FAILED_COPY);
   });
 
   const johnSmith = { firstName: 'John', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' };
@@ -2453,6 +2456,7 @@ describe('pane save helpers', () => {
       'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
     );
     expect(paneRefusalMessage(PANE_SAVE_UNCONFIRMED_REASON, johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
+    expect(paneRefusalMessage('write_in_flight', johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
     expect(PANE_SAVE_UNCONFIRMED_REASON).toBe('pane_save_unconfirmed');
   });
 
