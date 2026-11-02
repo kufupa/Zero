@@ -139,6 +139,6 @@ export function reconcilePaneCreateScope(input: {
       (totalAdults !== null && totalAdults !== adults) || (totalChildren !== null && totalChildren !== ages.length)) return false;
   // Legacy empty ages alongside an unresolved child warning do not prove zero children.
   if (ages.length === 0 && totalChildren === null && !Object.hasOwn(input.state, `${rowPath}.childAges`) &&
-      payload.missing.some((item) => /child/i.test(`${item.field} ${item.question}`))) return false;
+      scopedWarnings.some((item) => /child/i.test(`${item.field} ${item.question}`))) return false;
   return true;
 }
