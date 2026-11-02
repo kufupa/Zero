@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { projectNativeSavedStayPreimage } from '../tooling/hms-cloud/stay360-native-preimage.mjs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { projectNativeSavedStayPreimage, readNativeSavedStayPreimage } from '../tooling/hms-cloud/stay360-native-preimage.mjs';
 
 const expected = { propertyCode: 'HRCEN', confirmation: '123456-1' };
 const data = { propertycode: 'HRCEN', confirmationnumber: '123456-1', guestid: '42', status: 'Reserved',
@@ -38,5 +38,49 @@ describe('bounded native saved-stay preimage', () => {
       { ...row, data: { ...row.data, reservationstayid: '' } },
       { ...row, values: { ...row.values, arrivaldate: '11-JAN-2027' } },
     ]) expect(projectNativeSavedStayPreimage(bad, expected)).toBeNull();
+  });
+});
+
+
+describe('native browser preimage reader', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function browserFixture() {
+    const guest = { id: 'guestid-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
+    const fields = [{ getName: () => 'guestid', isDirty: () => false }];
+    const record = { data: { ...data, secretNotForExport: 'private' }, dirty: false, modified: {} };
+    const form = { getFields: () => ({ items: fields }), getValues: () => ({ ...values, secretNotForExport: 'private' }), isDirty: () => false };
+    const panel = { el: { dom: { contains: (node: unknown) => node === guest } }, getForm: () => form, getRecord: () => record };
+    vi.stubGlobal('document', { querySelectorAll: () => [guest] });
+    vi.stubGlobal('getComputedStyle', () => ({ visibility: 'visible' }));
+    vi.stubGlobal('Ext', { getCmp: () => ({ up: () => panel }) });
+    let observed: unknown;
+    const frame = { evaluate: async (callback: (arg: { keys: string[]; formKeys: string[] }) => unknown,
+      arg: { keys: string[]; formKeys: string[] }) => { observed = callback(arg); return observed; } };
+    return { frame, record, fields, guest, observed: () => observed };
+  }
+
+  it('runs the callback and returns only bounded clean fields', async () => {
+    const f = browserFixture();
+    expect(await readNativeSavedStayPreimage(f.frame, expected)).toMatchObject({
+      confirmation: '123456-1', guestId: '42', reservationStayId: '81', childAges: 'unknown',
+    });
+    expect(JSON.stringify(f.observed())).not.toContain('secretNotForExport');
+    expect(JSON.stringify(f.observed())).not.toContain('private');
+  });
+
+  it('rejects dirty fields, dirty models, duplicate keys and duplicate guest controls', async () => {
+    const f = browserFixture();
+    f.fields[0]!.isDirty = () => true;
+    expect(await readNativeSavedStayPreimage(f.frame, expected)).toBeNull();
+    f.fields[0]!.isDirty = () => false;
+    f.record.dirty = true;
+    expect(await readNativeSavedStayPreimage(f.frame, expected)).toBeNull();
+    f.record.dirty = false;
+    Object.assign(f.record.data, { GuestID: '42' });
+    expect(await readNativeSavedStayPreimage(f.frame, expected)).toBeNull();
+    delete (f.record.data as Record<string, unknown>).GuestID;
+    vi.stubGlobal('document', { querySelectorAll: () => [f.guest, f.guest] });
+    expect(await readNativeSavedStayPreimage(f.frame, expected)).toBeNull();
   });
 });
