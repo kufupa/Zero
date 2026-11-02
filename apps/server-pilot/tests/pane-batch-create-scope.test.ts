@@ -174,6 +174,11 @@ describe('batch create scope reconciliation', () => {
     f.state['stays[s1].rows[r3].count'] = null;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
   });
+  it('holds an unresolved selected room count as a source change', () => {
+    const f = fixture();
+    f.state['stays[s1].rows[r2].count'] = null;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+  });
   it('holds cross-stay removal-ID collisions that hide an approved row in the pane', () => {
     const f = fixture();
     f.payload.stays.push({ ...structuredClone(f.payload.stays[0]!), id: 's2', rows: [{ ...f.payload.stays[0]!.rows[0]!, id: 'r1' }] });
