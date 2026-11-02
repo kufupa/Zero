@@ -104,6 +104,14 @@ async function moveWindow(page, popup, arrival) {
 function searchRequest(request) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
+    // No unknown parameter has established neutral semantics. A narrower server
+    // query can look complete while omitting existing same-arrival bookings.
+    const allowed = new Set(['MADDON_FILTER_ALIAS_NAME_1', 'MADDON_FILTER_OPERATOR_1', 'MADDON_FILTER_VALUE_1',
+      'MADDON_FILTER_ALIAS_NAME_2', 'MADDON_FILTER_OPERATOR_2', 'MADDON_FILTER_VALUE_2',
+      'MADDON_FILTER_ALIAS_NAME_5', 'MADDON_FILTER_OPERATOR_5', 'MADDON_FILTER_VALUE_5', 'GRID_NAME']);
+    const entries = [...body];
+    if (url.username || url.password || url.search || url.hash || entries.length !== allowed.size ||
+        entries.some(([key]) => !allowed.has(key))) return false;
     const exact = (key, value) => {
       const names = [...body.keys()].filter((name) => name.toLowerCase() === key.toLowerCase());
       return names.length === 1 && names[0] === key && body.get(key) === value;

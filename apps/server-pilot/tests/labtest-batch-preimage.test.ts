@@ -7,14 +7,14 @@ import { consumeLabtestPreimage, searchLabtestBatchPreimage, searchLabtestPreima
 const binding = { manifestDigest: 'a'.repeat(64), childId: 'b'.repeat(64), childDigest: 'c'.repeat(64) };
 const dates = { arrival: '2027-03-01', departure: '2027-03-03' };
 const offset = (date) => (Date.parse(`${date}T00:00:00Z`) - Date.parse('2026-11-02T00:00:00Z')) / 86_400_000;
-function makePage({ firstName = 'Proof', duringText, duringGrid, extraForm } = {}) {
+function makePage({ firstName = 'Proof', duringText, duringGrid, extraForm, query = '' } = {}) {
   const page = new EventEmitter();
   const form = new URLSearchParams({ MADDON_FILTER_ALIAS_NAME_1: 'departuredate', MADDON_FILTER_OPERATOR_1: '>=',
     MADDON_FILTER_VALUE_1: String(offset('2027-02-20')), MADDON_FILTER_ALIAS_NAME_2: 'arrivaldate',
     MADDON_FILTER_OPERATOR_2: '<=', MADDON_FILTER_VALUE_2: String(offset('2027-03-20')),
     MADDON_FILTER_ALIAS_NAME_5: 'lastname_filter', MADDON_FILTER_OPERATOR_5: 'BEGINS', MADDON_FILTER_VALUE_5: 'Labtest', GRID_NAME: 'OSRESS' });
-  if (extraForm) form.append(extraForm[0], extraForm[1]);
-  const request = { method: () => 'POST', url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESS.search', postData: () => form.toString() };
+  if (extraForm) for (const [key, value] of Array.isArray(extraForm[0]) ? extraForm : [extraForm]) form.append(key, value);
+  const request = { method: () => 'POST', url: () => `https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESS.search${query}`, postData: () => form.toString() };
   const response = { request: () => request, status: () => 200, text: async () => {
     duringText?.(page, request);
     return JSON.stringify({ pageData: { grid: { GRIDRESULT: { GRID: { METADATA: { GRIDNAME: 'OSRESS', RECORDS: '1', MORERECORDPRESENT: '-' },
@@ -76,6 +76,22 @@ describe('Labtest batch native census proof', () => {
     const result = await searchLabtestBatchPreimage(page, dates, { binding, authorizeSiblings });
     expect(result.outcome).toBe('incomplete');
     expect(authorizeSiblings).not.toHaveBeenCalled();
+  });
+  it('holds a narrower census with extra filters or unknown request semantics', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    const cases = [
+      { extraForm: [['MADDON_FILTER_ALIAS_NAME_3', 'firstname'], ['MADDON_FILTER_OPERATOR_3', '='],
+        ['MADDON_FILTER_VALUE_3', 'Someone']] },
+      { extraForm: ['MADDON_FILTER_JOINER_1', 'OR'] },
+      { extraForm: ['UNKNOWN_SEARCH_FILTER', 'Someone'] },
+      { query: '?firstname=Someone' },
+    ];
+    for (const options of cases) {
+      const authorizeSiblings = vi.fn();
+      const result = await searchLabtestBatchPreimage(makePage(options), dates, { binding, authorizeSiblings });
+      expect(result.outcome).toBe('incomplete');
+      expect(authorizeSiblings).not.toHaveBeenCalled();
+    }
   });
   it('keeps existing same-arrival matches unavailable to the single-create path', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
