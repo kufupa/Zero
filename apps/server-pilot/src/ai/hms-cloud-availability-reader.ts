@@ -2,12 +2,19 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AvailabilityRequest } from './hms-availability.js';
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 
 const PRIVATE_SNAPSHOT_PREFIX = 'nava-cloud-availability-';
 // Prior HRCEN reads returned 496 rows; cap only unusually large views and expose any remaining cursor.
 const MAX_OPTIONS_PER_GROUP = 1000;
 const PAGE_SIZE = 50;
+
+function supportedCenturionTarget(target: HmsReadTarget): boolean {
+  const expected = CENTURION_HMS_READ_TARGET;
+  return Boolean(target) && target.propertyCode === expected.propertyCode &&
+    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
+    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+}
 
 type RecordValue = Record<string, unknown>;
 
@@ -124,9 +131,10 @@ function stockStatus(
   availableCount: number | null,
   requestedCount: number,
 ): 'available' | 'sold' | 'restricted' | 'unknown' {
+  if (reasons.includes('unknown')) return 'unknown';
   if (reasons.some((reason) => /restrict|closed/i.test(reason))) return 'restricted';
   if (availableCount === 0) return 'sold';
-  if (availableCount !== null && availableCount >= requestedCount && !reasons.includes('unknown')) return 'available';
+  if (availableCount !== null && availableCount >= requestedCount) return 'available';
   return 'unknown';
 }
 
@@ -220,8 +228,9 @@ export function projectCloudAvailability(
         roomQuantity.combinedAvailability !== 'unknown') return null;
     const coverage = coverageFor(view);
     const criteriaMatch = record(coverage.checkedCriteriaMatch);
-    const criteriaVerified = criteriaMatch?.propertyCode === true && criteriaMatch.dates === true &&
-      criteriaMatch.occupancy === true;
+    const criteriaVerified = criteriaMatch?.property === true && criteriaMatch.dates === true &&
+      criteriaMatch.occupancy === true && criteriaMatch.partyContext === true &&
+      criteriaMatch.roomTypes === true && criteriaMatch.ratePlans === true;
     const groupOutcome = read.outcome === 'criteria_unavailable' || !criteriaVerified
       ? 'criteria_unavailable' as const
       : 'observed' as const;
@@ -241,7 +250,6 @@ export function projectCloudAvailability(
   });
   if (groups.some((group) => group === null)) return { outcome: 'execution_failure', error: 'CLOUD_AVAILABILITY_VIEW_INVALID' };
   const validGroups = groups as NonNullable<(typeof groups)[number]>[];
-  const allUnavailable = validGroups.every((group) => group.outcome === 'criteria_unavailable');
   const flattenedCoverage = validGroups.map((group) => ({
     id: group.id,
     requestedRoomType: group.requestedRoomType,
@@ -270,7 +278,8 @@ export function projectCloudAvailability(
       officialTotal: 'unknown',
       contractRate: 'unknown',
     },
-    searchOutcome: allUnavailable ? 'unavailable' : 'partial',
+    // Unverified search context is not evidence that rooms are unavailable.
+    searchOutcome: 'partial',
     observedAt,
     groups: validGroups,
     coverage: {
@@ -284,6 +293,11 @@ export function projectCloudAvailability(
 
 /** Runs the Cloud Hotel Availability reader with private snapshots removed on exit. */
 export async function runCloudAvailability(input: CloudAvailabilityRunInput): Promise<CloudAvailabilityGroupRead[]> {
+  if (!supportedCenturionTarget(input.target)) {
+    return input.request.rooms.map((): CloudAvailabilityGroupRead => ({
+      outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED',
+    }));
+  }
   const bootstrapUrl = new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url);
   const quoteReadUrl = new URL('../../tooling/hms-cloud/quote-read.mjs', import.meta.url);
   const quoteViewUrl = new URL('../../tooling/hms-cloud/quote-view.mjs', import.meta.url);

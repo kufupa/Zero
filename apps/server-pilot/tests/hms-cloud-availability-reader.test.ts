@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { projectCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
+import { projectCloudAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 const request = {
   kind: 'availability' as const,
@@ -16,7 +17,7 @@ function readView(displayedTextStatus: string = 'captured', datesMatch = true) {
     coverage: {
       roomCatalog: { complete: true, loaded: 9, total: 9 },
       rateCatalog: { complete: false, loaded: 50, total: 95 },
-      checkedCriteriaMatch: { propertyCode: true, dates: datesMatch, occupancy: true },
+      checkedCriteriaMatch: { property: true, dates: datesMatch, occupancy: true, partyContext: true, roomTypes: true, ratePlans: true },
       page: { returned: 1, nextOffset: null },
       nights: { total: 2, returned: 2, nextOffset: null, matchesAppliedCriteria: true },
     },
@@ -27,7 +28,7 @@ function readView(displayedTextStatus: string = 'captured', datesMatch = true) {
       reasons: [],
       nights: [
         { date: '2027-01-10', roomsAvailable: 3, reasons: [], price: { responseValue: '1250.00', currency: 'ZAR', displayedTextStatus } },
-        { date: '2027-01-11', roomsAvailable: 0, reasons: [], price: { responseValue: '1250.00', currency: 'ZAR', displayedTextStatus } },
+        { date: '2027-01-11', roomsAvailable: 0, reasons: [] as string[], price: { responseValue: '1250.00', currency: 'ZAR', displayedTextStatus } },
       ],
     }],
   };
@@ -78,9 +79,34 @@ describe('Cloud HMS read result projection', () => {
     expect(result.groups[0]?.outcome).toBe('criteria_unavailable');
     expect(result.groups[0]?.options).toEqual([]);
     expect(result.groups[0]?.coverage.checkedCriteriaMatch).toEqual({
-      propertyCode: true, dates: false, occupancy: true,
+      property: true, dates: false, occupancy: true, partyContext: true, roomTypes: true, ratePlans: true,
     });
     expect(result.coverage.readGroupCount).toBe(0);
+  });
+
+  it('keeps unknown stock unknown and withholds unverified criteria', () => {
+    const unknownNight = readView();
+    unknownNight.options[0]!.nights[1]!.reasons.push('unknown');
+    const observed = projectCloudAvailability(request, [{ outcome: 'ok', view: unknownNight }]);
+    expect(observed.outcome).toBe('read');
+    if (observed.outcome !== 'read') throw new Error('expected read result');
+    expect(observed.groups[0]?.options[0]?.nightly[1]?.stockStatus).toBe('unknown');
+
+    const unchecked = readView();
+    unchecked.coverage.checkedCriteriaMatch.partyContext = false;
+    const suppressed = projectCloudAvailability(request, [{ outcome: 'ok', view: unchecked }]);
+    expect(suppressed.outcome).toBe('read');
+    if (suppressed.outcome !== 'read') throw new Error('expected read result');
+    expect(suppressed.groups[0]?.outcome).toBe('criteria_unavailable');
+    expect(suppressed.groups[0]?.options).toEqual([]);
+    expect(suppressed.searchOutcome).toBe('partial');
+  });
+
+  it('refuses an unsupported target before opening a Cloud session', async () => {
+    const result = await runCloudAvailability({
+      request, target: { ...CENTURION_HMS_READ_TARGET, origin: 'https://wrong-origin.example' },
+    });
+    expect(result).toEqual([{ outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' }]);
   });
 
   it('uses the oldest valid observed-group timestamp, or unknown if one is missing', () => {
