@@ -20,14 +20,27 @@ export type SavedStayAmendProposal = {
   };
 };
 
+export type SavedStayAmendEditorIdentity = {
+  propertyCode: string; threadId: string; messageId: string; mailboxEmail: string; sourceHash: string;
+};
+
 export type SavedStayAmendDraftUpdate = {
-  threadId: string;
-  messageId: string;
-  mailboxEmail: string;
-  sourceHash: string;
+  identity: SavedStayAmendEditorIdentity;
+  confirmation: string;
+  extractionRevision: string;
+  /** Local comparison only. Not an HMS freshness proof or a write grant. */
+  basis: string | null;
   proposal: SavedStayAmendProposal | null;
   errors: string[];
 };
+
+/** Compare the full displayed stay and extracted dates. This string contains stay data, not a security hash. */
+export function savedStayAmendReviewBasis(stay: StayRecordWire,
+  request: { arrival?: string | null; departure?: string | null }, extractionRevision: string): string {
+  const fields = Object.entries(stay).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, value]) => [key, typeof value, value]);
+  return JSON.stringify([extractionRevision, request.arrival ?? null, request.departure ?? null, fields]);
+}
 
 /** Candidate only: the server must resolve property/ownership, re-read the preimage and issue the grant. */
 export type SavedStayCloudWriteCandidate = {
@@ -36,6 +49,9 @@ export type SavedStayCloudWriteCandidate = {
   propertyCode: string;
   payload: {
     source: { threadId: string; messageId: string; mailboxEmail: string; sourceHash: string };
+    extractionRevision: string;
+    /** Local UI comparison, not a replacement for the server-owned preimage. */
+    basis: string;
     proposal: SavedStayAmendProposal;
     preimageRef: string;
   };
@@ -48,6 +64,8 @@ export type SavedStayAmendResult = {
   messageId: string;
   mailboxEmail: string;
   sourceHash: string;
+  extractionRevision: string;
+  basis: string;
   confirmation: string;
   state: 'not_dispatched' | 'needs_check' | 'verified';
   proposal: SavedStayAmendProposal;

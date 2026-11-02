@@ -1,20 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { StayRecordWire } from '@/lib/quote-workflow/amend-find';
 import {
-  amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal,
-  type SavedStayAmendDraft, type SavedStayAmendProposal, type SavedStayAmendResult,
+  amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal, savedStayAmendReviewBasis,
+  type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity,
+  type SavedStayAmendProposal, type SavedStayAmendResult,
 } from '@/lib/quote-workflow/saved-stay-amendment';
 
 const inputClass = 'h-8 min-w-0 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 text-[12px] text-[#1e293b]';
 const labelClass = 'text-[10px] font-semibold uppercase tracking-wide text-[#64748b]';
 const smallClass = 'text-[11.5px] text-[#64748b]';
 
-type EditorIdentity = {
-  propertyCode: string; threadId: string; messageId: string; mailboxEmail: string; sourceHash: string;
-};
-
 type Props = {
-  identity: EditorIdentity;
+  identity: SavedStayAmendEditorIdentity;
+  /** Caller-owned extraction revision, independent of the mail source hash. */
+  extractionRevision: string;
   confirmation: string;
   stay: StayRecordWire;
   requestedArrival?: string | null;
@@ -23,10 +22,13 @@ type Props = {
   /** The current source and the proposal actually submitted, not values copied from the result. */
   resultContext?: {
     source: { threadId: string; messageId: string; mailboxEmail: string; sourceHash: string };
+    extractionRevision: string;
+    basis: string;
     submittedProposal: SavedStayAmendProposal;
   } | null;
   screenshot?: ReactNode;
-  onDraftChange?: (input: { identity: EditorIdentity; confirmation: string; proposal: SavedStayAmendProposal | null; errors: string[] }) => void;
+  /** Consumer compares identity, extraction revision and basis to its current selection before using an update. */
+  onDraftChange?: (input: SavedStayAmendDraftUpdate) => void;
 };
 
 function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStayAmendProposal | null | undefined): boolean {
@@ -37,7 +39,9 @@ function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStay
     key === otherKeys[index] && JSON.stringify(left[key]) === JSON.stringify(right[key]));
 }
 
-type StoredDraft = { draft: SavedStayAmendDraft; touched: boolean };
+type DraftField = keyof SavedStayAmendDraft;
+type StoredDraft = { draft: SavedStayAmendDraft; touched: DraftField[]; acceptedBasis: string };
+const changedDetails = 'Booking or email details changed. Update untouched entries, then review the request.';
 
 /** Local request only. Nothing here approves or writes to HMS. */
 export function SavedStayAmendEditor(props: Props) {
@@ -47,59 +51,81 @@ export function SavedStayAmendEditor(props: Props) {
   const identity = props.identity;
   const parts = [identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
     identity?.sourceHash, props.confirmation];
-  const validIdentity = parts.every((part) => typeof part === 'string' && part.trim() !== '');
+  const validIdentity = [...parts, props.extractionRevision].every((part) => typeof part === 'string' && part.trim() !== '');
   useEffect(() => {
-    if (!validIdentity) onDraftRef.current?.({ identity, confirmation: props.confirmation, proposal: null,
-      errors: ['Select the property, email and booking first.'] });
+    if (!validIdentity) onDraftRef.current?.({ identity, confirmation: props.confirmation,
+      extractionRevision: props.extractionRevision, basis: null, proposal: null,
+      errors: ['Select the property, email, booking and current request first.'] });
   }, [validIdentity, identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
-    identity?.sourceHash, props.confirmation]);
-  if (!validIdentity) return <p aria-live="polite" className={smallClass}>Select the property, email and booking first.</p>;
+    identity?.sourceHash, props.confirmation, props.extractionRevision]);
+  if (!validIdentity) return <p aria-live="polite" className={smallClass}>Select the property, email, booking and current request first.</p>;
   const key = JSON.stringify(parts);
   return <SavedStayAmendEditorContent key={key} {...props} storedDraft={drafts.current.get(key)}
-    storeDraft={(draft) => drafts.current.set(key, { draft: { ...draft }, touched: true })} />;
+    storeDraft={(value) => drafts.current.set(key, { ...value, draft: { ...value.draft }, touched: [...value.touched] })} />;
 }
 
-function SavedStayAmendEditorContent({ identity, confirmation, stay, requestedArrival, requestedDeparture, result, resultContext,
+function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture, result, resultContext,
   screenshot, onDraftChange, storedDraft, storeDraft }: Props & {
-    storedDraft?: StoredDraft; storeDraft: (draft: SavedStayAmendDraft) => void;
+    storedDraft?: StoredDraft; storeDraft: (draft: StoredDraft) => void;
   }) {
-  const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, {
-    arrival: requestedArrival, departure: requestedDeparture,
-  }));
-  const [touched, setTouched] = useState(storedDraft?.touched ?? false);
+  const request = { arrival: requestedArrival, departure: requestedDeparture };
+  const basis = savedStayAmendReviewBasis(stay, request, extractionRevision);
+  const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, request));
+  const [touched, setTouched] = useState<DraftField[]>(() => storedDraft?.touched ?? []);
+  const [acceptedBasis, setAcceptedBasis] = useState(() => storedDraft?.acceptedBasis ?? basis);
+  const needsReview = basis !== acceptedBasis;
   const onDraftRef = useRef(onDraftChange);
   onDraftRef.current = onDraftChange;
+  const currentBasis = useRef({ basis, extractionRevision });
+  currentBasis.current = { basis, extractionRevision };
   const binding = useRef({ identity: { ...identity }, confirmation }).current;
-  const validation = savedStayAmendProposal(confirmation, stay, draft);
+  const validation = needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, draft);
   useEffect(() => {
-    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
-      ...savedStayAmendProposal(confirmation, stay, draft) });
-  }, [binding, confirmation, stay, draft]);
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
+      ...(basis !== acceptedBasis ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, draft)) });
+  }, [binding, basis, acceptedBasis, draft]);
   useEffect(() => () => {
     onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
-      proposal: null, errors: ['The booking selection changed.'] });
+      ...currentBasis.current, proposal: null, errors: ['The booking selection changed.'] });
   }, [binding]);
-  const update = (next: SavedStayAmendDraft) => {
-    setTouched(true);
+  const field = (name: DraftField, value: string) => {
+    const next = { ...draft, [name]: value };
+    const nextTouched = touched.includes(name) ? touched : [...touched, name];
+    setTouched(nextTouched);
     setDraft(next);
-    storeDraft(next);
-    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
+    storeDraft({ draft: next, touched: nextTouched, acceptedBasis });
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
+      ...(needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, next)) });
+  };
+  const updateUntouched = () => {
+    const next = initialSavedStayAmendDraft(stay, request);
+    for (const name of touched) next[name] = draft[name];
+    setDraft(next);
+    setAcceptedBasis(basis);
+    storeDraft({ draft: next, touched, acceptedBasis: basis });
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
       ...savedStayAmendProposal(confirmation, stay, next) });
   };
-  const field = (name: 'arrival' | 'departure' | 'adults' | 'children' | 'childAges', value: string) =>
-    update({ ...draft, [name]: value });
   const sourceMatches = !!result && !!resultContext && result.propertyCode === identity.propertyCode &&
+    typeof result.extractionRevision === 'string' && result.extractionRevision.trim() !== '' &&
+    typeof result.basis === 'string' && result.basis !== '' &&
+    result.extractionRevision === resultContext.extractionRevision && result.basis === resultContext.basis &&
     (['threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
       .every((key) => resultContext.source[key] === identity[key] && result[key] === identity[key]);
   const visibleResult = sourceMatches && result?.confirmation === confirmation &&
     sameProposal(result.proposal, resultContext?.submittedProposal) && result.proposal.confirmation === confirmation ? result : null;
-  const resultMatchesDraft = visibleResult ? sameProposal(visibleResult.proposal, validation.proposal) : false;
+  const resultMatchesDraft = visibleResult ? visibleResult.extractionRevision === extractionRevision && visibleResult.basis === basis &&
+    sameProposal(visibleResult.proposal, validation.proposal) : false;
   const readback = visibleResult?.state === 'verified' && visibleResult.screenshotRef ? visibleResult.readback : null;
   const differences = readback && visibleResult ? amendmentReadbackDifferences(visibleResult) : [];
   return (
     <div data-testid="amend-form" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       <p className={labelClass}>Requested change</p>
       <p className={smallClass}>These entries stay only while this panel is open and are not saved to HMS.</p>
+      {needsReview ? <div aria-live="polite" className={smallClass}>
+        <p>{changedDetails}</p>
+        <button type="button" className="min-h-8 font-semibold text-[#1e40af] underline" onClick={updateUntouched}>Update untouched entries</button>
+      </div> : null}
       <div className="grid grid-cols-2 gap-2">
         {(['arrival', 'departure', 'adults', 'children'] as const).map((name) => {
           const title = { arrival: 'Arrival', departure: 'Departure', adults: 'Adults', children: 'Children' }[name];
@@ -122,7 +148,7 @@ function SavedStayAmendEditorContent({ identity, confirmation, stay, requestedAr
           placeholder="Ages separated by commas" aria-describedby="amend-child-ages-hint" />
       </label>
       <p id="amend-child-ages-hint" className={smallClass}>HMS child ages not shown. If changing children, enter one age per child.</p>
-      {touched && validation.errors.length ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
+      {touched.length > 0 && !needsReview && validation.errors.length ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
         {validation.errors.map((error) => <li key={error}>{error}</li>)}
       </ul> : null}
       {visibleResult ? <div aria-live="polite" className={smallClass}>
