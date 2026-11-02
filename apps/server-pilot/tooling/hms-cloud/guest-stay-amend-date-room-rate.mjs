@@ -6,6 +6,8 @@ import {
   unchangedLabtestBusinessParties,
 } from './labtest-record.mjs';
 import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { savedChildOccupancy } from './guest-stay-amend-children.mjs';
+import { prepareStayAmendmentAvailability, readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const SPECS = Object.freeze({
@@ -246,6 +248,56 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
   } catch (error) {
     return { outcome: 'refused', issue: /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '')
       ? error.message : 'SAVED_OPTIONS_UNVERIFIED' };
+  }
+}
+
+/** Read availability for a proposal bound to one clean saved Labtest form. */
+export async function readLabtestStayAmendmentAvailability(recordPage, availabilityPage, expected = {}, options = {}) {
+  if (!ownObject(expected) || Object.keys(expected).some((key) =>
+    !['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key)) ||
+      !ownObject(options) || Object.keys(options).some((key) =>
+        !['change', 'occupancy', 'partyContext', 'roomQuantity', 'snapshotPath'].includes(key))) {
+    return { outcome: 'input_gap', issue: 'AMEND_INPUT_INVALID', saveEligible: false };
+  }
+  if (!recordPage || !availabilityPage || recordPage === availabilityPage) {
+    return { outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED', saveEligible: false };
+  }
+  const input = { existing: { propertyCode: 'HRCEN', arrival: expected.arrival, departure: expected.departure,
+    roomType: expected.roomType, ratePlan: expected.ratePlan }, change: options.change,
+    occupancy: options.occupancy, partyContext: options.partyContext, roomQuantity: options.roomQuantity };
+  const prepared = prepareStayAmendmentAvailability(input);
+  if (prepared.outcome !== 'prepared') return { ...prepared, saveEligible: false };
+  try {
+    const state = await currentLabtestRecord(recordPage, expected, { allowBlankNote: true, allowUnchangedBusinessParties: true });
+    const baseline = await snapshotLabtestRecord(state.frame);
+    if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
+    if (!matchesStayPreimage(baseline, expected)) throw new Error('AMEND_PREIMAGE_UNVERIFIED');
+    if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+    const formAdult = field(baseline, 'values', 'adults'), modelAdult = field(baseline, 'data', 'adults');
+    const children = savedChildOccupancy(baseline);
+    if (formAdult.state !== 'value' || modelAdult.state !== 'value' ||
+        String(formAdult.value) !== String(options.occupancy.adults) || String(modelAdult.value) !== String(options.occupancy.adults) ||
+        !children.valid || children.ages === null || !equal(children.ages, options.occupancy.childAges)) {
+      throw new Error('AMEND_OCCUPANCY_UNVERIFIED');
+    }
+    const partyKeys = { group: 'groupid', organization: 'companyid', bookingAgency: 'taid1' };
+    if (Object.entries(partyKeys).some(([name, key]) => typeof state.partyPreimage[key] !== 'string' ||
+        state.partyPreimage[key].trim() !== (options.partyContext[name]?.trim() || ''))) {
+      throw new Error('AMEND_PARTY_CONTEXT_MISMATCH');
+    }
+    const result = await readStayAmendmentAvailability(availabilityPage, input, { snapshotPath: options.snapshotPath });
+    const after = await currentLabtestRecord(recordPage, expected, { allowBlankNote: true, allowUnchangedBusinessParties: true });
+    const afterSnapshot = await snapshotLabtestRecord(after.frame);
+    if (state.frame !== after.frame || !equal(state.native, after.native) || !equal(state.partyPreimage, after.partyPreimage) ||
+        !equal(baseline, afterSnapshot)) {
+      return { outcome: 'refused', issue: 'AMEND_PREIMAGE_CHANGED', saveEligible: false,
+        ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}) };
+    }
+    return { ...result, saveEligible: false, savedPreimage: 'verified_labtest_form',
+      ...(result.prepared ? { prepared: { ...result.prepared, savedPreimage: 'verified_labtest_form' } } : {}) };
+  } catch (error) {
+    return { outcome: 'refused', issue: /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '')
+      ? error.message : 'AMEND_AVAILABILITY_UNVERIFIED', saveEligible: false };
   }
 }
 

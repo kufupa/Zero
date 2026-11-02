@@ -45,3 +45,8 @@ and unknown pricing and inventory. `criteria_unavailable`, failed reads and
 empty observations remain distinct. No retry of a possibly dispatched HMS action
 is authorized by this read-only result. The caller is responsible for private
 data handling and independent verification of the saved record.
+
+For a guarded saved Labtest record, prefer the connected
+`readLabtestStayAmendmentAvailability` entry point in
+[the saved-stay adapter](guest-stay-amend-date-room-rate.md#availability-read-bound-to-a-saved-labtest-form).
+It binds the scenario to the current saved form before and after the read.
