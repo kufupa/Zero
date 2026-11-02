@@ -78,10 +78,12 @@ export function BatchBookingEvidence({ client, batchRunId, allocationId, scope, 
       // The acknowledgement is not proof of persistence: read the batch afresh, scoped to its run.
       const result = await client.read({ workItemId: scope.workItemId, runId: batchRunId });
       if (request !== sequence.current) return;
-      if (result.workItemId !== scope.workItemId || result.runId !== batchRunId || !Array.isArray(result.rooms)) throw new Error('review_read_mismatch');
+      if (result.workItemId !== scope.workItemId || result.runId !== batchRunId || result.complete !== true || !Array.isArray(result.rooms)) throw new Error('review_read_mismatch');
       const matches = result.rooms.filter((room) => room.allocationId === allocationId);
       const room = matches[0];
       if (matches.length !== 1 || room?.status !== 'confirmed' || room.screenshotRecorded !== true || room.readbackRecorded !== true ||
+          !room.confirmation || result.rooms.filter((item) => item.status === 'confirmed' && item.confirmation === room.confirmation).length !== 1 ||
+          result.rooms.filter((item) => item.status === 'confirmed' && item.attempt?.childId === scope.childId).length !== 1 ||
           room.attempt?.runId !== scope.runId || room.attempt?.childId !== scope.childId ||
           !sameDecision(matchingReview(scope, room.reviewed), expected)) throw new Error('review_read_mismatch');
       onVerified(expected); setFlagging(false);

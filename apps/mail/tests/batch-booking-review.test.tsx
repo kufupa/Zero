@@ -15,12 +15,12 @@ function input(): BatchReviewInput {
     childAges: [], roomType: 'STQN', ratePlan: 'BAR', track: 'BAR', sourceOfBusiness: 'Email', guestoptin4: false,
     guaranteeType: 'NGI', confirmationSendMail: false };
   return { propertyCode: 'HRCEN', source: { transportId: 'mailbox', threadId: 'thread', messageId: 'mail', workItemId: 'item' },
-    rooms: [{ allocationId: 'g:1', stay, amount: { minor: 120000, currency: null, basis: 'room_night', tax: 'unknown', status: 'unavailable' } },
-      { allocationId: 'g:2', stay: { ...stay, roomType: 'STWN' }, amount: { minor: null, currency: null, basis: 'unknown', tax: 'unknown', status: 'unavailable' } }] };
+    rooms: [{ allocationId: 'g:1', identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 }, stay, amount: { minor: 120000, currency: null, basis: 'room_night', tax: 'unknown', status: 'unavailable' } },
+      { allocationId: 'g:2', identity: { stayId: 's1', rowId: 'r2', roomIndex: 1 }, stay: { ...stay, roomType: 'STWN' }, amount: { minor: null, currency: null, basis: 'unknown', tax: 'unknown', status: 'unavailable' } }] };
 }
 function review(source = input()): BatchReview {
   return { reviewId: 'review', manifestDigest: 'digest', expiresAt: '2099-01-01T00:00:00Z', batchLimit: 2, blockers: [],
-    propertyCode: source.propertyCode, source: source.source, rooms: source.rooms.map((room) => ({ allocationId: room.allocationId,
+    propertyCode: source.propertyCode, source: source.source, rooms: source.rooms.map((room) => ({ allocationId: room.allocationId, identity: room.identity,
       roomType: room.stay.roomType, ratePlan: room.stay.ratePlan, guest: { firstName: room.stay.firstName, lastName: room.stay.lastName, profileId: '123' },
       stay: { arrival: room.stay.arrival, departure: room.stay.departure, adults: room.stay.adults, childAges: [] },
       agency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
@@ -67,7 +67,7 @@ describe('batch booking review', () => {
   });
   it('invalidates an old review even when an excluded room is re-included', async () => {
     const api = client(), source = input();
-    source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3' });
+    source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: 'r2', roomIndex: 2 } });
     api.prepare = vi.fn(async (request) => ({ ...review(request), batchLimit: 3 }));
     render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
@@ -84,7 +84,7 @@ describe('batch booking review', () => {
   });
   it('invalidates a review when excluded room details change, even if restored', async () => {
     const api = client(), original = input();
-    original.rooms.push({ ...original.rooms[1]!, allocationId: 'g:3' });
+    original.rooms.push({ ...original.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: 'r2', roomIndex: 2 } });
     const { rerender } = render(<BatchBookingReview client={api} input={original} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
@@ -107,7 +107,7 @@ describe('batch booking review', () => {
   });
   it('sends only included rooms, in source order, and refuses an undersized selection', async () => {
     const api = client(), source = input();
-    source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3' });
+    source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: 'r2', roomIndex: 2 } });
     render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('checkbox', { name: /Room 2/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
@@ -115,6 +115,23 @@ describe('batch booking review', () => {
     expect(vi.mocked(api.prepare).mock.calls[0]![0].rooms.map((room) => room.allocationId)).toEqual(['g:1', 'g:3']);
     fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
     expect(screen.getByText(/Select between 2 and 8 rooms/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+  });
+  it('holds duplicate source-room identities even with different allocation IDs', () => {
+    const api = client(), source = input();
+    source.rooms[1]!.identity = structuredClone(source.rooms[0]!.identity);
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    expect(screen.getByRole('alert').textContent).toMatch(/Room details need checking/);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled();
+  });
+  it('rejects a prepared review whose source-room identity differs', async () => {
+    const api = client(); api.prepare = vi.fn(async (request) => {
+      const result = review(request); result.rooms[0]!.identity = { ...result.rooms[0]!.identity, rowId: 'wrong' }; return result;
+    });
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/could not prepare/);
     expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
   });
   it('does not offer repeat approval after a lost response', async () => {
@@ -155,6 +172,48 @@ describe('batch booking review', () => {
     expect(document.body.textContent).not.toContain('private/shot');
     expect(document.body.textContent).not.toContain('private-version');
     expect(document.body.textContent).not.toContain(CHILD_A);
+  });
+  it('shows missing child results as needing checks even if the read says complete', async () => {
+    const api = client();
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: true, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true, attempt: { runId: 'run', childId: CHILD_A } },
+    ] }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(await screen.findByText(/Booked · confirmation C1/)).toBeTruthy();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
+  });
+  it('holds duplicate result rows and warns about an unexpected allocation', async () => {
+    const api = client();
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: true, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true, attempt: { runId: 'run', childId: CHILD_A } },
+      { allocationId: 'g:1', status: 'unattempted' as const },
+      { allocationId: 'g:2', status: 'unattempted' as const },
+      { allocationId: 'unreviewed', status: 'unattempted' as const },
+    ] }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(await screen.findByText('Outcome needs checking in HMS')).toBeTruthy();
+    expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
+    expect(screen.getByText('Not attempted')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
+  });
+  it('does not assert an unattempted child when the result read is incomplete', async () => {
+    const api = client();
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: false, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true, attempt: { runId: 'run', childId: CHILD_A } },
+      { allocationId: 'g:2', status: 'unattempted' as const },
+    ] }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(await screen.findByText(/Booked · confirmation C1/)).toBeTruthy();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeTruthy();
+    expect(screen.queryByText('Not attempted')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
   });
   it('uses a confirmed child’s original run when a later batch continues', async () => {
     const api = client();
@@ -336,6 +395,19 @@ describe('batch booking review', () => {
     await waitFor(() => expect(screen.queryByText('Nava is checking HMS. This can take more than 30 seconds.')).toBeNull());
     expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
     expect(screen.getByText(/Review may have been saved/)).toBeTruthy();
+  });
+  it('does not confirm a screenshot review from an incomplete fresh read', async () => {
+    const api = client(), initialRead = api.read; let reads = 0;
+    api.read = vi.fn(async (scope) => ({ ...(await initialRead(scope)), complete: ++reads === 1 }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View HMS screenshot' }));
+    fireEvent.load(await screen.findByRole('img', { name: 'Saved booking in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Review may have been saved/)).toBeTruthy();
+    expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
   });
   it('records a flagged child review only with a note after viewing the screenshot', async () => {
     const api = client();

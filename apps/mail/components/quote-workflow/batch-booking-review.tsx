@@ -34,6 +34,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const [reviewAttempts, setReviewAttempts] = useState<Record<string, ReviewAttempt>>({});
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const readSequence = useRef(0);
+  const approvedRoomIds = useRef<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [approvalStarted, setApprovalStarted] = useState(false);
   const [error, setError] = useState('');
@@ -42,7 +43,11 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const excludedIds = new Set(excluded.source === sourceKey ? excluded.ids : []);
   const selectedInput = input ? { ...input, rooms: input.rooms.filter((room) => !excludedIds.has(room.allocationId)) } : null;
   const inputIds = input?.rooms.map((room) => room.allocationId) ?? [];
-  const identitiesValid = inputIds.every((id) => Boolean(id.trim())) && new Set(inputIds).size === inputIds.length;
+  const sourceIds = input?.rooms.map(({ identity }) => JSON.stringify([identity?.stayId, identity?.rowId, identity?.roomIndex])) ?? [];
+  const identitiesValid = inputIds.every((id) => typeof id === 'string' && Boolean(id.trim())) && new Set(inputIds).size === inputIds.length &&
+    (input?.rooms.every(({ identity }) => /^[A-Za-z0-9_-]{1,40}$/.test(identity?.stayId ?? '') &&
+      /^[A-Za-z0-9_-]{1,40}$/.test(identity?.rowId ?? '') && Number.isInteger(identity?.roomIndex) &&
+      identity.roomIndex >= 1 && identity.roomIndex <= 999) ?? false) && new Set(sourceIds).size === sourceIds.length;
   const countValid = !!selectedInput && selectedInput.rooms.length >= 2 && selectedInput.rooms.length <= 8;
   const currentKey = JSON.stringify({ input, missing, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
   const keyRef = useRef(currentKey);
@@ -62,8 +67,19 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       rooms.filter((item) => item.status === 'confirmed' && item.confirmation === room.confirmation).length !== 1)
       ? { ...room, status: 'uncertain' as const } : room);
   const acceptResults = (result: Awaited<ReturnType<PaneBatchClient['read']>>, workItemId: string, expectedRunId: string, sequence: number) => {
-    if (result.workItemId !== workItemId || result.runId !== expectedRunId || !Array.isArray(result.rooms)) throw new Error('batch_result_mismatch');
-    setResults(safeResults(result.rooms));
+    if (result.workItemId !== workItemId || result.runId !== expectedRunId || !Array.isArray(result.rooms) || !approvedRoomIds.current.length) throw new Error('batch_result_mismatch');
+    const expected = approvedRoomIds.current;
+    const safe = safeResults(result.rooms);
+    const incomplete = result.complete !== true || safe.some((room) => !expected.includes(room.allocationId)) ||
+      expected.some((id) => safe.filter((room) => room.allocationId === id).length !== 1);
+    setResults(expected.map((id) => {
+      const matches = safe.filter((room) => room.allocationId === id);
+      if (matches.length !== 1 || (result.complete !== true && matches[0]!.status !== 'confirmed')) {
+        return { allocationId: id, status: 'uncertain' as const };
+      }
+      return matches[0]!;
+    }));
+    if (incomplete) setError('Some booking results are incomplete. Check HMS before trying again.');
     setRefreshEpoch(sequence);
   };
 
@@ -80,6 +96,8 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       const ids = selected.rooms.map((room) => room.allocationId);
       if (!sameSource || !Array.isArray(next.blockers) || next.propertyCode !== selected.propertyCode || next.rooms.length !== ids.length ||
           next.rooms.some((room, index) => room.allocationId !== ids[index] || room.cmsSend !== false ||
+            room.identity?.stayId !== selected.rooms[index]?.identity.stayId || room.identity?.rowId !== selected.rooms[index]?.identity.rowId ||
+            room.identity?.roomIndex !== selected.rooms[index]?.identity.roomIndex ||
             room.guest.firstName !== 'Proof' || room.guest.lastName !== 'Labtest')) throw new Error('invalid_review');
       setReview(next); setReviewKey(key); setReviewGeneration(generation);
     } catch { setError('Nava could not prepare these rooms. Nothing was saved.'); }
@@ -89,6 +107,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   async function approve() {
     if (!client || !fresh || !selectedInput || !eligible || busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < selectedInput.rooms.length ||
         !Number.isFinite(Date.parse(fresh.expiresAt)) || Date.parse(fresh.expiresAt) <= Date.now()) return;
+    approvedRoomIds.current = fresh.rooms.map((room) => room.allocationId);
     setBusy(true); setApprovalStarted(true); onLock(true); setError('');
     try {
       const queued = await client.approve({ workItemId: selectedInput.source.workItemId, reviewId: fresh.reviewId, manifestDigest: fresh.manifestDigest });
@@ -121,6 +140,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
         label: `Room ${index + 1} · ${rowRoomLabel({ roomPreference: stay.roomType, quantity: 1 })} · ${stay.firstName} ${stay.lastName}` }))}
       included={selectedInput?.rooms.map((room) => room.allocationId) ?? []} disabled={busy || approvalStarted}
       onChange={(ids) => { const included = new Set(ids); setExcluded({ source: sourceKey, ids: inputIds.filter((id) => !included.has(id)) }); }} /> : null}
+    {client && input && !identitiesValid ? <p role="alert">Room details need checking before review.</p> : null}
     {client && input && !countValid ? <p className="text-[11.5px] text-[#475569]">Select between 2 and 8 rooms to review.</p> : null}
     {client && selectedInput && countValid && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
     {missing.length ? <p className="text-[11.5px] text-[#475569]">Needed before review: {missing.join(', ')}.</p> : null}

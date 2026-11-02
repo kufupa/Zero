@@ -1,14 +1,16 @@
 import type { PaneStayInput } from './pane-stay-bind';
 
+export type BatchSourceIdentity = { stayId: string; rowId: string; roomIndex: number };
+
 /** The server resolves profile IDs and property, and stores the returned immutable manifest in its approval form. */
 export type BatchReviewInput = {
   propertyCode: string;
   source: { transportId: string; threadId: string; messageId: string; workItemId: string };
-  rooms: Array<{ allocationId: string; stay: PaneStayInput; amount: { minor: number | null; currency: string | null;
+  rooms: Array<{ allocationId: string; identity: BatchSourceIdentity; stay: PaneStayInput; amount: { minor: number | null; currency: string | null;
     basis: 'room_night' | 'unknown'; tax: 'unknown'; status: 'estimate' | 'unavailable' } }>;
 };
 export type BatchReviewedRoom = {
-  allocationId: string; roomType: string; ratePlan: string;
+  allocationId: string; identity: BatchSourceIdentity; roomType: string; ratePlan: string;
   guest: { firstName: string; lastName: string; profileId: string };
   stay: { arrival: string; departure: string; adults: number; childAges: number[] };
   agency: { name: string; nativeId: string } | null;
