@@ -38,6 +38,43 @@ function matchesCreateModelFieldSchema(formData) {
     createHash('sha256').update(keys.join('\n')).digest('hex') === CREATE_MODEL_FIELD_KEYS_SHA256;
 }
 
+const EPHEMERAL_CREATE_SESSION_FIELDS = new Set(['sessionid', 'bookingsessionid']);
+const validSessionText = (value) => {
+  const text = typeof value === 'string' ? value : Number.isSafeInteger(value) ? String(value) : '';
+  return text.length > 0 && text.length <= 512 && text === text.trim() &&
+    ![...text].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
+};
+
+function validCreateSessionFields(formData) {
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return false;
+  const keys = Object.keys(formData);
+  const uniqueKey = (name) => {
+    const matches = keys.filter((key) => key.toLowerCase() === name.toLowerCase());
+    return matches.length === 1 && matches[0] === name;
+  };
+  if (!uniqueKey('bookingsessionid') || !uniqueKey('sessionID') || !validSessionText(formData.bookingsessionid)) return false;
+  const native = formData.sessionID;
+  const nativeValue = typeof native === 'string' ? native : native && typeof native === 'object' && !Array.isArray(native) &&
+    Object.keys(native).length === 1 && Object.hasOwn(native, 'sessionID') ? native.sessionID : null;
+  return validSessionText(nativeValue);
+}
+
+/** Fingerprint a native form without volatile session IDs. This does not validate its field schema. */
+export function stableNativeCreateFormDigest(formData) {
+  if (!validCreateSessionFields(formData)) return null;
+  const controls = [['SYSTEM_FUNCTION_NAME', 'OSRESV'], ['USER_FUNCTION_NAME', 'OSRESV'], ['CURRENT_TAB_NAME', 'HDR']];
+  const entries = [];
+  for (const [key, raw] of Object.entries(formData)) {
+    if (EPHEMERAL_CREATE_SESSION_FIELDS.has(key.toLowerCase())) continue;
+    if (raw != null && !['string', 'number', 'boolean'].includes(typeof raw)) return null;
+    const text = String(raw ?? '');
+    entries.push([key, key === 'revenuevalue' && numericZero(text) ? '0' : text]);
+  }
+  entries.push(...controls);
+  entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+}
+
 export function validCreateBillingReference(value) {
   return typeof value === 'string' && value.length <= 4000 && Boolean(value.trim()) &&
     ![...value].some((char) => char.charCodeAt(0) <= 31 || char.charCodeAt(0) === 127);
@@ -525,7 +562,7 @@ function safeCreateContext(page) {
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
   createFieldProof, agencySelection, organizationSelection, arSelection, billingReference,
-} = {}, { timeoutMs = 20_000, beforeSaveScreenshot } = {}) {
+} = {}, { timeoutMs = 20_000, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || guaranteeType !== 'NGI' || typeof note !== 'string' || !note.trim() || note.length > 200 ||
@@ -549,7 +586,12 @@ export async function saveNewLabtestStay(page, {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') {
     return { outcome: 'input_gap', issue: 'SCREENSHOT_CALLBACK_INVALID' };
   }
-  const strictCreateProof = Boolean(createFields || agency || organization || ar);
+  if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) {
+    return { outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
+  }
+  const strictCreateProof = Boolean(createFields || agency || organization || ar || authorizeCandidate);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
@@ -610,6 +652,7 @@ export async function saveNewLabtestStay(page, {
       fence,
       scope,
       isArmed: () => armed && !nativeDialog,
+      ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}),
       matches: (request) => matchesSave(page, request, expected, (diagnostic) => {
         createBodyMismatches.set(request, diagnostic);
       }),
@@ -713,6 +756,9 @@ export async function saveNewLabtestStay(page, {
     response = await bounded(pending);
     armed = false;
     if (response?.status() === 200 && !nativeDialog) {
+      // The native response can precede the server wrapper's commit. A late
+      // wrapper error is uncertain, not a successful Save.
+      if (!await bounded(routeChain.waitForDispatch())) throw new Error('SAVE_DISPATCH_UNCERTAIN');
       await bounded(page.waitForFunction(() => {
         const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
         const confirmations = [...document.querySelectorAll('input[name="confirmationnumber"]')].filter(visible);

@@ -68,6 +68,8 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
+import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
+  type CreateFenceIdentity } from './pane-create-dispatch-fence.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 
@@ -2151,6 +2153,8 @@ export async function recordStayCommit(
     workItemId: string;
     stayId: string;
     record: StayCommitRecord;
+    /** Trusted server-owned identity, never supplied by pane or tool input. */
+    fence?: CreateFenceIdentity;
   },
 ): Promise<StayCommitWriteResult> {
   if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
@@ -2162,6 +2166,15 @@ export async function recordStayCommit(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (input.fence) {
+      // Batch children require a separately verified server-owned manifest.
+      if (input.fence.scope?.kind !== 'single' || input.fence.scope.stayId !== input.stayId) {
+        throw new CreateFenceError('owner_mismatch');
+      }
+      await assertCreateDispatchFenceOwner(tx, input, input.fence);
+    } else {
+      await assertNoCreateDispatchFence(tx, input);
+    }
     const existing = stayCommitOf(item.state, input.stayId);
     if (existing?.confirmationNumber) return { status: 'already_booked' as const };
     const state = withStayCommit(item.state, input.stayId, input.record);
@@ -2189,6 +2202,7 @@ export async function recordStayActionResult(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    await assertNoCreateDispatchFence(tx, input);
     const state = withStayActionResult(item.state, input.stayId, {
       confirmationNumber: input.confirmationNumber,
       screenshotRef: input.screenshotRef,

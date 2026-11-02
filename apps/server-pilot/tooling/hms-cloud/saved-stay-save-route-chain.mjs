@@ -16,20 +16,30 @@ export async function installLabtestSaveRouteChain(page, {
   scope,
   isArmed,
   matches,
+  authorizeCandidate,
+  dispatchCandidate,
+  onAuthorizationAttempt,
   onCandidate,
   onDispatch,
   onBlocked,
 } = {}) {
   if (!page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
       typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
-      typeof isArmed !== 'function' || typeof matches !== 'function') {
+      typeof isArmed !== 'function' || typeof matches !== 'function' ||
+      (authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function')) {
     throw new Error('AMEND_ROUTE_CHAIN_INPUT_INVALID');
   }
 
   const context = page.context();
   let active = true;
   let candidateRequest = null;
+  let authorizing = false;
+  let dispatching = false;
   let continuedRequest = null;
+  let finishDispatch;
+  const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
   const observeBlocked = (request) => {
     try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
   };
@@ -58,13 +68,57 @@ export async function installLabtestSaveRouteChain(page, {
   };
   const contextRoute = async (route) => {
     const request = route.request();
-    if (active && candidateRequest === request && continuedRequest !== request &&
+    if (active && !dispatching && candidateRequest === request && continuedRequest !== request &&
         isSameFrame(request) && isArmed() && !fence.isQuarantined()) {
-      // Once this exact request enters the fallback chain, a failure is reconciled
-      // as potentially dispatched by the caller. Never allow it a second time.
-      continuedRequest = request;
-      onDispatch?.(request);
-      return route.continue();
+      dispatching = true;
+      let wrapperFinished = false;
+      let attempted = false;
+      let continuationSettled = false;
+      let continuationSucceeded = false;
+      let wrapperSucceeded = false;
+      // The server wrapper must await this function while holding any source locks.
+      // A delayed or repeated call cannot dispatch after it has returned.
+      const continueOnce = () => {
+        const task = (async () => {
+          if (wrapperFinished || attempted || !active || !isArmed() || fence.isQuarantined() || !isSameFrame(request)) {
+            throw new Error('SAVE_DISPATCH_NOT_AUTHORIZED');
+          }
+          attempted = true;
+          continuedRequest = request;
+          onDispatch?.(request);
+          try {
+            const result = await route.continue();
+            continuationSucceeded = true;
+            return result;
+          } finally { continuationSettled = true; }
+        })();
+        // A buggy wrapper may fail to await the continuation. Its rejection is
+        // still returned to a correct caller without becoming unhandled.
+        void task.catch(() => {});
+        return task;
+      };
+      try {
+        const result = dispatchCandidate ? await dispatchCandidate(request, continueOnce) : await continueOnce();
+        wrapperFinished = true;
+        if (!attempted) {
+          observeBlocked(request);
+          return route.abort();
+        }
+        if (!continuationSettled) throw new Error('SAVE_DISPATCH_NOT_AWAITED');
+        if (!continuationSucceeded) throw new Error('SAVE_DISPATCH_UNCERTAIN');
+        wrapperSucceeded = true;
+        return result;
+      } catch (error) {
+        wrapperFinished = true;
+        if (attempted) throw error; // May have dispatched; retain needs-check.
+        observeBlocked(request);
+        return route.abort();
+      } finally {
+        dispatching = false;
+        // A native response can arrive before the server wrapper completes.
+        // Surface its eventual result without an unhandled rejection.
+        finishDispatch(wrapperSucceeded);
+      }
     }
     // Deny unexpected mutations and send/email paths throughout this context,
     // including popup/other-page requests the page-local route cannot see.
@@ -93,10 +147,21 @@ export async function installLabtestSaveRouteChain(page, {
     if (safeRead) return route.fallback();
 
     if (url.pathname === SAVE_PATH) {
-      if (active && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) &&
+      if (active && !authorizing && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) &&
           matches(request, frame)) {
         let allowed = false;
-        try { allowed = scope.allow(request); } catch { /* The lifetime fence stays fail-closed. */ }
+        authorizing = true;
+        try {
+          if (authorizeCandidate) {
+            try { onAuthorizationAttempt?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
+            if (await authorizeCandidate(request) !== true || !active || !isArmed() || fence.isQuarantined()) {
+              observeBlocked(request);
+              return route.fallback();
+            }
+          }
+          allowed = scope.allow(request);
+        } catch { /* The lifetime fence stays fail-closed. */ }
+        finally { authorizing = false; }
         if (allowed) {
           candidateRequest = request;
           try { onCandidate?.(request); } catch { /* The authorized request is still fenced. */ }
@@ -129,6 +194,7 @@ export async function installLabtestSaveRouteChain(page, {
   return {
     candidate: () => candidateRequest,
     continued: () => continuedRequest,
+    waitForDispatch: () => dispatchFinished,
     disarm: () => { active = false; },
     async close() {
       active = false;

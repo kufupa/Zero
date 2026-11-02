@@ -150,7 +150,7 @@ describe('mail extraction contract', () => {
       'A POP or proof of payment tied to an existing hotel confirmation number, with no new booking request, remains voucher_pop.',
     );
     expect(EXTRACTION_RULES).toContain(
-      'A voucher-only delivery or confirmation with no new booking request remains voucher_pop; a voucher alone is not proof of payment.',
+      'A voucher for a new stay to be booked at the hotel is booking, even when the voucher says it is paid or presents the agent booking as confirmed. A voucher for a stay already confirmed by the hotel, with no new booking request, is voucher_pop for filing. A voucher alone is not proof of payment.',
     );
   });
 

@@ -2406,6 +2406,22 @@ describe('pane save helpers', () => {
   it('gives plain words with a next step for every refusal the server can return', () => {
     const generic = paneRefusalMessage('not_a_known_code');
     for (const reason of [
+      'cloud_create_field_unsupported',
+      'property_mismatch',
+      'labtest_guest_required',
+      'cloud_create_guarantee_unsupported',
+      'adults_required',
+      'child_ages_required',
+      'source_of_business_required',
+      'staff_note_required',
+      'native_room_codes_required',
+      'cms_message_invalid',
+      'booking_agency_id_and_name_required',
+      'organization_id_and_name_required',
+      'prepared_guest_identity_required',
+      'cloud_create_proof_mismatch',
+      'cloud_create_party_mismatch',
+      'cloud_create_proof_invalid',
       'pane_save_flag_off',
       'pane_save_labtest_required',
       'pane_save_arrival_2027_required',
@@ -2417,15 +2433,18 @@ describe('pane save helpers', () => {
       'osress_reader_parked',
       'osress_duplicate',
       'pane_save_preview_required',
+      'pane_preview_persist_failed',
       'pane_save_digest_mismatch',
       'pane_save_lock_unavailable',
       'refused_lock_busy',
       'refused_save_blank_required',
       'pane_save_unconfirmed',
+      'write_in_flight',
     ]) {
       expect(paneRefusalMessage(reason)).not.toBe(generic);
     }
     expect(paneRefusalMessage('pane_save_labtest_required')).toBe(PANE_SAVE_LAB_GUARD_COPY);
+    expect(paneRefusalMessage('pane_preview_persist_failed')).toBe(PANE_PREVIEW_FAILED_COPY);
   });
 
   const johnSmith = { firstName: 'John', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' };
@@ -2435,6 +2454,7 @@ describe('pane save helpers', () => {
       'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
     );
     expect(paneRefusalMessage(PANE_SAVE_UNCONFIRMED_REASON, johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
+    expect(paneRefusalMessage('write_in_flight', johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
     expect(PANE_SAVE_UNCONFIRMED_REASON).toBe('pane_save_unconfirmed');
   });
 

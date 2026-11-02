@@ -41,6 +41,7 @@ export const WORK_EVENT_TYPES = [
   'field.reject',
   'approval.granted',
   'approval.consumed',
+  'create.fence.started',
   'write.evidence',
   'review.ok',
   'review.flag',
