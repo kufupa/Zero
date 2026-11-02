@@ -456,15 +456,18 @@ async function recordBoundPreview(input: {
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<void> {
   const persist = boundPreviewPersist(input);
-  if (persist && input.workItemId && input.stayId) {
+  if (input.workItemId && input.stayId) {
+    if (!persist) throw new Error('stay_preview_persist_unavailable');
     await persist.record({
       workItemId: input.workItemId,
       stayId: input.stayId,
       digest: input.digest,
       now: input.now,
     });
+    // A bound grant is durable only; remove any stale unbound memory grant.
+    takePanePreview(input.owner, input.digest, input.now);
+    return;
   }
-  // A failed bound write must not leave a fresh memory-only grant behind.
   recordPanePreview(input.owner, input.digest, input.now);
 }
 
@@ -477,19 +480,18 @@ async function takeBoundPreview(input: {
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<boolean> {
   const persist = boundPreviewPersist(input);
-  if (persist && input.workItemId && input.stayId) {
-    const taken = await persist.take({
+  if (input.workItemId && input.stayId) {
+    // A stale process-local grant cannot replace a consumed durable grant.
+    takePanePreview(input.owner, input.digest, input.now);
+    if (!persist) return false;
+    return persist.take({
       workItemId: input.workItemId,
       stayId: input.stayId,
       digest: input.digest,
       now: input.now,
     });
-    if (taken) {
-      takePanePreview(input.owner, input.digest, input.now);
-      return true;
-    }
   }
-  // Preview today may omit work-item ids (memory only). Commit still sends them; honour the same-process grant.
+  // Legacy unbound previews use memory; the create bridge must require bound IDs.
   return takePanePreview(input.owner, input.digest, input.now);
 }
 
@@ -757,7 +759,7 @@ export async function runPaneStay(input: {
         // Adding a room to this guest's own booking finds that booking on the same dates; that is the parent.
         if (status === 'duplicate' && !parent) return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
+        // Bound grants use durable storage only; unbound legacy previews use memory.
         if (
           !(await takeBoundPreview({
             owner: input.owner,
