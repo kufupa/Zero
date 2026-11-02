@@ -2009,6 +2009,27 @@ describe('needs-you list', () => {
     return listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
   }
 
+  it('lists a separate request from a self-sent pre-stay but not its stay', () =>
+    withDb(async (db) => {
+      const subject = 'Pre Stay: Property HRCEN Confirmation No 57291630 Guest';
+      const ask = 'Please arrange airport transport.';
+      // The self-sender is a known sent-from address, so ordinary internal mail would be auto-closed.
+      await sentFromBefore(db, 'prestay', CENTURION_EMAIL);
+      for (const [id, asks] of [['prestay-pure', []], ['prestay-mixed', [ask]]] as const) {
+        const messageId = await seedMail(db, id);
+        await db.update(message).set({ fromAddress: CENTURION_EMAIL, subject }).where(eq(message.id, messageId));
+        const read = { ...payload(), origin: 'system_notice' as const, secondaryAsks: [...asks] };
+        await insertRead(db, messageId, { version: 'extract-v1', kind: 'other', payload: read });
+        await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      }
+      const rows = await openList(db);
+      expect(rows.map((row) => row.sourceMessageId)).toContain('msg-prestay-mixed');
+      expect(rows.map((row) => row.sourceMessageId)).not.toContain('msg-prestay-pure');
+      const mixed = await storedWorkFor(db, { transportId: CENTURION, internetMessageId: 'prestay-mixed@example.com' });
+      expect(mixed).toMatchObject({ status: 'ready', existingStayInformation: true, kind: 'other',
+        workItemId: expect.any(String), analysis: { secondaryAsks: [ask], groups: [] } });
+    }));
+
   it('lists needs you before review, and the oldest mail first within a chip', () =>
     withDb(async (db) => {
       const newer = await openItem(db, 'o-new', '2026-10-08T09:00:00Z');

@@ -3450,6 +3450,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
       analysis: {
         ...stored.analysis,
         intent: 'quote',
+        secondaryAsks: ['Please arrange airport transport.'],
         luna: { workflow: 'create_booking', flags: [], rateClaims: [] },
       },
     };
@@ -3460,6 +3461,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     const notice = await screen.findByTestId('existing-stay-information');
     expect(notice.textContent).toContain('Existing stay information');
     expect(notice.textContent).toContain('57291630-1');
+    expect(notice.textContent).toContain('Please arrange airport transport.');
     expect(screen.getByRole('status', { name: 'Nava reads this as: Not for Nava' })).toBeDefined();
     expect(screen.queryByText('New booking')).toBeNull();
     expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
