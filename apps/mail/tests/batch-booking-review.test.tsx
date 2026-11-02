@@ -56,6 +56,17 @@ describe('batch booking review', () => {
     expect(onLock).toHaveBeenCalledWith(true);
     expect(api.approve).toHaveBeenCalledWith({ workItemId: 'item', reviewId: 'review', manifestDigest: 'digest' });
   });
+  it('offers a new review when the approval expires', async () => {
+    const api = client();
+    api.prepare = vi.fn(async (request) => ({ ...review(request), expiresAt: new Date(Date.now() + 400).toISOString() }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    expect(await screen.findByText('Review expired. Review these rooms again.', {}, { timeout: 2000 })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
   it('invalidates review when any room changes', async () => {
     const api = client(), original = input(), { rerender } = render(<BatchBookingReview client={api} input={original} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
@@ -72,7 +83,7 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     await screen.findByRole('button', { name: 'Approve and book these rooms' });
-    const third = screen.getByRole('checkbox', { name: /Room 3/ });
+    const third = screen.getAllByRole('checkbox')[2]!;
     fireEvent.click(third);
     expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
     fireEvent.click(third);
@@ -86,7 +97,7 @@ describe('batch booking review', () => {
     const api = client(), original = input();
     original.rooms.push({ ...original.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: 'r2', roomIndex: 2 } });
     const { rerender } = render(<BatchBookingReview client={api} input={original} missing={[]} onLock={() => {}} />);
-    fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
+    fireEvent.click(screen.getAllByRole('checkbox')[2]!);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     await screen.findByRole('button', { name: 'Approve and book these rooms' });
     const changed = structuredClone(original); changed.rooms[2]!.stay.adults = 2;
@@ -109,11 +120,11 @@ describe('batch booking review', () => {
     const api = client(), source = input();
     source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: 'r2', roomIndex: 2 } });
     render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
-    fireEvent.click(screen.getByRole('checkbox', { name: /Room 2/ }));
+    fireEvent.click(screen.getAllByRole('checkbox')[1]!);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     await screen.findByRole('button', { name: 'Approve and book these rooms' });
     expect(vi.mocked(api.prepare).mock.calls[0]![0].rooms.map((room) => room.allocationId)).toEqual(['g:1', 'g:3']);
-    fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
+    fireEvent.click(screen.getAllByRole('checkbox')[2]!);
     expect(screen.getByText(/Select between 2 and 8 rooms/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
   });
@@ -122,7 +133,7 @@ describe('batch booking review', () => {
     source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: '', roomIndex: 1 } });
     render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
     expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
-    fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
+    fireEvent.click(screen.getAllByRole('checkbox')[2]!);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     await screen.findByRole('button', { name: 'Approve and book these rooms' });
     expect(vi.mocked(api.prepare).mock.calls[0]![0].rooms.map((room) => room.allocationId)).toEqual(['g:1', 'g:2']);
@@ -191,7 +202,7 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText('Outcome needs checking in HMS')).toHaveLength(2));
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
   });
@@ -206,7 +217,7 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText('Outcome needs checking in HMS')).toHaveLength(2));
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.queryByText('Not attempted')).toBeNull();
     expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
@@ -222,7 +233,7 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText('Outcome needs checking in HMS')).toHaveLength(2));
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'View HMS screenshot' })).toBeNull();
   });
@@ -265,7 +276,7 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText('Outcome needs checking in HMS')).toHaveLength(2));
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'View HMS screenshot' })).toBeNull();
   });
@@ -348,6 +359,28 @@ describe('batch booking review', () => {
     ] }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh booking results' }));
     expect(await screen.findByText('HMS booking reviewed.')).toBeTruthy();
+    expect(api.reviewChild).toHaveBeenCalledTimes(1);
+  });
+  it('does not confirm a pending review from an incomplete manual refresh', async () => {
+    const api = client();
+    api.reviewChild = vi.fn(async (request: BatchReviewChildInput) => ({ ...request, status: 'recorded' as const, runId: 'other-run' }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View HMS screenshot' }));
+    fireEvent.load(await screen.findByRole('img', { name: 'Saved booking in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    expect(await screen.findByText(/Review may have been saved/)).toBeTruthy();
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: false, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true,
+        attempt: { runId: 'run', childId: CHILD_A }, reviewed: { workItemId: 'item', runId: 'run', childId: CHILD_A, evidenceVersion: 'private-version', decision: 'ok' as const } },
+      { allocationId: 'g:2', status: 'unattempted' as const },
+    ] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh booking results' }));
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(1));
+    await screen.findByText('Some booking results are incomplete. Check HMS before trying again.');
+    expect(screen.getByText(/Review may have been saved/)).toBeTruthy();
+    expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
     expect(api.reviewChild).toHaveBeenCalledTimes(1);
   });
   it.each(['unavailable', 'error'] as const)('shows a plain-language %s evidence state without leaking errors', async (kind) => {

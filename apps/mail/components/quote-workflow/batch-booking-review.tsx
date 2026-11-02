@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import { hasExactBatchRoomOrder } from '@/lib/quote-workflow/pane-batch-booking';
@@ -38,6 +38,19 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const approvedRoomIds = useRef<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [approvalStarted, setApprovalStarted] = useState(false);
+  const [, setExpiryTick] = useState(0);
+  useEffect(() => {
+    if (!review || approvalStarted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expires = Date.parse(review.expiresAt);
+    const checkExpiry = () => {
+      const remaining = expires - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) { setExpiryTick((tick) => tick + 1); return; }
+      timer = setTimeout(checkExpiry, Math.min(remaining + 1, 2_147_483_647));
+    };
+    checkExpiry();
+    return () => { if (timer) clearTimeout(timer); };
+  }, [review, approvalStarted]);
   const [error, setError] = useState('');
   const [excluded, setExcluded] = useState<{ source: string; ids: string[] }>({ source: '', ids: [] });
   const sourceKey = JSON.stringify(input?.source ?? null);
@@ -55,8 +68,11 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const editGeneration = useRef(0);
   if (keyRef.current !== currentKey) editGeneration.current += 1;
   keyRef.current = currentKey;
-  // Editing and then restoring the old values still requires a new server review.
-  const fresh = review && reviewKey === currentKey && reviewGeneration === editGeneration.current ? review : null;
+  // Editing and then restoring old values or letting the review expire requires a new review.
+  const expiry = review ? Date.parse(review.expiresAt) : NaN;
+  const expired = !!review && (!Number.isFinite(expiry) || expiry <= Date.now());
+  const fresh = review && reviewKey === currentKey && reviewGeneration === editGeneration.current &&
+    (approvalStarted || !expired) ? review : null;
   const labEligible = selectedInput?.propertyCode === 'HRCEN' && selectedInput.rooms.every(({ stay }) =>
     stay.firstName === 'Proof' && stay.lastName === 'Labtest' && stay.arrival >= '2027-01-01' && stay.confirmationSendMail === false);
   const eligible = labEligible && identitiesValid && countValid;
@@ -78,10 +94,10 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       if (!exactOrder || matches.length !== 1 || (result.complete !== true && matches[0]!.status !== 'confirmed')) {
         return { allocationId: id, status: 'uncertain' as const };
       }
-      return matches[0]!;
+      return result.complete === true ? matches[0]! : { ...matches[0]!, reviewed: null };
     }));
     if (incomplete) setError('Some booking results are incomplete. Check HMS before trying again.');
-    setRefreshEpoch(sequence);
+    else setRefreshEpoch(sequence);
   };
 
   async function prepare() {
@@ -137,15 +153,15 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     <p className="text-[11.5px] text-[#475569]">Rooms are booked separately and are not linked in HMS. If one booking needs checking, later rooms will not be attempted.</p>
     {!client ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
     {client && input ? <BatchRoomInclusion
-      rooms={input.rooms.map(({ allocationId, stay }, index) => ({ id: allocationId,
-        label: `Room ${index + 1} · ${rowRoomLabel({ roomPreference: stay.roomType, quantity: 1 })} · ${stay.firstName} ${stay.lastName}` }))}
+      rooms={input.rooms.map(({ allocationId, stay }) => ({ id: allocationId,
+        label: `${rowRoomLabel({ roomPreference: stay.roomType, quantity: 1 })} · ${stay.arrival} – ${stay.departure} · ${stay.firstName} ${stay.lastName}` }))}
       included={selectedInput?.rooms.map((room) => room.allocationId) ?? []} disabled={busy || approvalStarted}
       onChange={(ids) => { const included = new Set(ids); setExcluded({ source: sourceKey, ids: inputIds.filter((id) => !included.has(id)) }); }} /> : null}
     {client && input && !identitiesValid ? <p role="alert">Room details need checking before review.</p> : null}
     {client && input && !countValid ? <p className="text-[11.5px] text-[#475569]">Select between 2 and 8 rooms to review.</p> : null}
     {client && selectedInput && countValid && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
     {missing.length ? <p className="text-[11.5px] text-[#475569]">Needed before review: {missing.join(', ')}.</p> : null}
-    {review && !fresh && !runId ? <p role="status" className="text-[11.5px] text-amber-900">Booking details changed. Review again.</p> : null}
+    {review && !fresh && !runId ? <p role="status" className="text-[11.5px] text-amber-900">{expired ? 'Review expired. Review these rooms again.' : 'Booking details changed. Review again.'}</p> : null}
     {fresh ? <div data-pii className="flex flex-col gap-2 text-[11.5px] text-[#334155]">
       <p>Hotel {fresh.propertyCode}. HMS confirmation email is off for every test booking.</p>
       {fresh.rooms.map((room) => <div key={room.allocationId} className="border-t border-[#e2e8f0] pt-2">
