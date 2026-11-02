@@ -471,7 +471,7 @@ describe('pane stay preview digest and commit', () => {
       previewDigest: paneStayDigest(labStay),
     });
     expect(paneStayDigest(labStay)).toMatch(/^[0-9a-f]{64}$/);
-    expect(paneStayDigest({ ...labStay, firstName: '  Pat  ' })).toBe(paneStayDigest(labStay));
+    expect(paneStayDigest({ ...labStay, firstName: '  Proof  ' })).toBe(paneStayDigest(labStay));
     expect(paneStayDigest({ ...labStay, arrival: '2027-09-15' })).not.toBe(paneStayDigest(labStay));
   });
 

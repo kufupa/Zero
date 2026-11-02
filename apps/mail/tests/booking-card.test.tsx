@@ -2409,6 +2409,8 @@ describe('pane save helpers', () => {
       'pane_save_flag_off',
       'pane_save_labtest_required',
       'pane_save_arrival_2027_required',
+      'trusted_staff_create_authorization_unavailable',
+      'confirmation_email_writer_unavailable',
       'pane_save_property_mismatch',
       'pane_save_children_unsupported',
       'pane_save_adults_required',

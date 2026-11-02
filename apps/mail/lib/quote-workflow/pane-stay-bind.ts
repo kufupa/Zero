@@ -30,6 +30,10 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
+  trusted_staff_create_authorization_unavailable:
+    'Nava cannot confirm approval for this booking yet. Nothing was saved. Book it by hand in HMS.',
+  confirmation_email_writer_unavailable:
+    'Nava cannot send a confirmation for this test booking. Turn off HMS confirmation and preview again.',
   pane_save_children_unsupported: PANE_CHILDREN_COPY,
   pane_save_adults_required:
     'This booking needs at least one adult. Enter it in HMS for now.',
