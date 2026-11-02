@@ -120,9 +120,12 @@ returns fresh census and candidate readbacks. Never retry a possibly dispatched
 save without reconciliation. Browser-side no-send observations cannot prove
 what HMS may have queued server-side.
 
-The expanded party and CMS combinations have not yet been verified in live HMS.
-The current strict full-body create path has not yet been proven by a
-dispatched create under that guard. See [guest-stay-save.md](./guest-stay-save.md)
-for the existing fake-only request, preimage, no-send and proof limitations.
+One HRCEN Proof Labtest create dispatched through the strict full-body guard and
+was independently read back with its selected agency and organization, blank
+A/R account, and CMS message `03`. The CMS send box was unchecked, and no
+browser send requests were observed; this does not establish server-side email
+queue behavior. Saved A/R, reason for stay, and other combinations remain
+unverified. See [guest-stay-save.md](./guest-stay-save.md) for the existing
+fake-only request, preimage, no-send and proof limitations.
 No part of this interface enables real-guest writes or replaces a future
 authenticated staff approval boundary.
