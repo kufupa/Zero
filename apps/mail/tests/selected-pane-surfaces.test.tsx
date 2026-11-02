@@ -12,6 +12,7 @@ vi.mock('@/lib/workstation/use-outlook-bridge', () => ({
   useOutlookBridge: () => state.bridge, reportBridgeFailure: vi.fn(),
 }));
 vi.mock('@/lib/workstation/web-pane-bridge', () => ({
+  PREVIEW_ONLY_MESSAGE: 'Preview only: copy the reply or download the PDF.',
   useWebPreview: () => ({ selection: { status: 'ready', email: state.bridge?.activeEmail }, bridge: state.bridge }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
