@@ -7,7 +7,10 @@ export type NavaToolResult<T> = {
   reason?: string;
   field?: string;
   data?: T;
-  children?: { key: string; outcome: NavaToolResult<unknown>['outcome']; reason?: string; confirmation?: string }[];
+  /** Additional producer fields when an explicit data payload also exists; not verification. */
+  legacyData?: Record<string, unknown>;
+  children?: { key: string; outcome: NavaToolResult<unknown>['outcome']; reason?: string; confirmation?: string;
+    data?: unknown; legacyData?: Record<string, unknown>; evidence?: NavaToolResult<unknown>['evidence'] }[];
   evidence?: {
     screenshots?: { runId: string; name: string; sha256: string }[];
     readback?: unknown;
@@ -61,6 +64,9 @@ export type ExistingToolResult<T> = {
   field?: string;
   data?: T;
   clickedSave?: boolean;
+  saveAttempted?: boolean | 'unknown';
+  uploadSent?: boolean | 'unknown';
+  clickedOk?: boolean | 'unknown';
   saveDispatched?: boolean | 'unknown';
   possiblyDispatched?: boolean;
   dispatched?: boolean;
@@ -109,10 +115,17 @@ function normalizeExistingEvidence<T>(result: ExistingToolResult<T>): NavaToolRe
   };
 }
 
+const existingControlFields = new Set<keyof ExistingToolResult<unknown>>([
+  'status', 'outcome', 'reason', 'issue', 'field', 'data', 'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched',
+  'possiblyDispatched', 'dispatched', 'runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback', 'evidence',
+]);
+type LegacyPayload<R> = Omit<R, keyof ExistingToolResult<unknown>>;
+type AdaptedData<R> = (R extends { data: infer T } ? T : never) | LegacyPayload<R>;
+
 /** `readbackVerified` must be established by the trusted caller from a fresh, matching read. */
-export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, options: {
+export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(result: R, options: {
   operation: 'read' | 'write'; readbackVerified?: boolean;
-}): NavaToolResult<T> {
+}): NavaToolResult<AdaptedData<R>> {
   const code = result.outcome ?? result.status ?? '';
   // These amendment outcomes are produced before a runner can start. Unknown codes stay uncertain.
   const knownPreDispatchRefusal = ['refused_flag_off', 'amend_preview_required'].includes(code);
@@ -120,8 +133,9 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
   const uncertainCodes = new Set(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_unconfirmed', 'save_failed', 'partial']);
   const ambiguous = uncertainCodes.has(code) || uncertainCodes.has(result.status ?? '') ||
     (result.reason === 'pane_save_unconfirmed' || result.issue === 'pane_save_unconfirmed');
-  const possibleDispatch = result.clickedSave === true || result.saveDispatched === true ||
-    result.saveDispatched === 'unknown' || result.possiblyDispatched === true || result.dispatched === true;
+  const possibleDispatch = result.clickedSave === true || result.saveAttempted === true || result.saveAttempted === 'unknown' ||
+    result.uploadSent === true || result.uploadSent === 'unknown' || result.clickedOk === true || result.clickedOk === 'unknown' ||
+    result.saveDispatched === true || result.saveDispatched === 'unknown' || result.possiblyDispatched === true || result.dispatched === true;
   const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
   let outcome: NavaToolResult<T>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!options.readbackVerified || !successful))) outcome = 'uncertain';
@@ -131,18 +145,24 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
     outcome = options.operation === 'write' && !options.readbackVerified ? 'uncertain' : 'ok';
   } else outcome = options.operation === 'write' ? 'uncertain' : 'refused';
   const evidence = normalizeExistingEvidence(result);
+  // Legacy tools put useful observations beside their outcome rather than in data.
+  const legacyData = Object.fromEntries(Object.entries(result).filter(([key]) =>
+    !existingControlFields.has(key as keyof ExistingToolResult<unknown>)));
+  const hasLegacyData = Object.keys(legacyData).length > 0;
+  const data = result.data !== undefined ? result.data : hasLegacyData ? legacyData : undefined;
   return {
     schema: 'nava.tool/v1', outcome,
     ...(reason ? { reason } : {}),
     ...(result.field ? { field: result.field } : {}),
-    ...(result.data !== undefined ? { data: result.data } : {}),
+    ...(data !== undefined ? { data: data as AdaptedData<R> } : {}),
+    ...(result.data !== undefined && hasLegacyData ? { legacyData } : {}),
     ...(evidence !== undefined ? { evidence } : {}),
   };
 }
 
 /** Batch stays partial even when individual children have uncertain outcomes. Use this adapter, not the single-result adapter, for batches. */
-export function adaptBatchToolResult<T>(children: Array<{
-  key: string; result: ExistingToolResult<T>; readbackVerified?: boolean; confirmation?: string;
+export function adaptBatchToolResult<R extends ExistingToolResult<unknown>>(children: Array<{
+  key: string; result: R; readbackVerified?: boolean; confirmation?: string;
 }>): NavaToolResult<never> {
   if (children.length === 0) return { schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' };
   return {
@@ -150,7 +170,9 @@ export function adaptBatchToolResult<T>(children: Array<{
     children: children.map(({ key, result, readbackVerified, confirmation }) => {
       const adapted = adaptExistingToolResult(result, { operation: 'write', readbackVerified });
       return { key, outcome: adapted.outcome, ...(adapted.reason ? { reason: adapted.reason } : {}),
-        ...(confirmation ? { confirmation } : {}) };
+        ...(confirmation ? { confirmation } : {}), ...(adapted.data !== undefined ? { data: adapted.data } : {}),
+        ...(adapted.legacyData !== undefined ? { legacyData: adapted.legacyData } : {}),
+        ...(adapted.evidence !== undefined ? { evidence: adapted.evidence } : {}) };
     }),
   };
 }

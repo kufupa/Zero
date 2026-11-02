@@ -15,6 +15,8 @@ describe('Nava tool result contract', () => {
       .toMatchObject({ outcome: 'uncertain', reason: 'pane_save_unconfirmed' });
   });
   it.each([{ clickedSave: true }, { saveDispatched: true }, { saveDispatched: 'unknown' as const },
+    { saveAttempted: true }, { saveAttempted: 'unknown' as const }, { uploadSent: true },
+    { uploadSent: 'unknown' as const }, { clickedOk: true }, { clickedOk: 'unknown' as const },
     { possiblyDispatched: true }, { dispatched: true }])('keeps possible dispatch uncertain: %o', (signal) => {
     expect(adaptExistingToolResult({ outcome: 'refused', ...signal }, { operation: 'write' }).outcome).toBe('uncertain');
   });
@@ -46,8 +48,20 @@ describe('Nava tool result contract', () => {
   });
   it('adapts a legacy committed booking only after fresh readback', () => {
     const result = { status: 'ok', outcome: 'committed', clickedSave: true, confirmationNumber: '123456-1' };
-    expect(adaptExistingToolResult(result, { operation: 'write' }).outcome).toBe('uncertain');
-    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
+    expect(adaptExistingToolResult(result, { operation: 'write' })).toMatchObject({
+      outcome: 'uncertain', data: { confirmationNumber: '123456-1' },
+    });
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true })).toMatchObject({
+      outcome: 'ok', data: { confirmationNumber: '123456-1' },
+    });
+  });
+  it('retains all legacy search rows and other producer fields', () => {
+    const rows = [{ confirmation: '123', extra: { exact: true } }, { confirmation: '456' }];
+    expect(adaptExistingToolResult({ outcome: 'ok', rows, coverage: { complete: true } }, { operation: 'read' }))
+      .toMatchObject({ outcome: 'ok', data: { rows, coverage: { complete: true } } });
+    expect(adaptExistingToolResult({ outcome: 'ok', data: { normalized: true }, confirmationNumber: '123',
+      previewDigest: null }, { operation: 'write' })).toMatchObject({ outcome: 'uncertain',
+      data: { normalized: true }, legacyData: { confirmationNumber: '123', previewDigest: null } });
   });
   it('keeps batch child identity, confirmation and uncertainty', () => {
     expect(adaptBatchToolResult([
@@ -56,6 +70,17 @@ describe('Nava tool result contract', () => {
     ])).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'ok', confirmation: '123' },
       { key: 'b', outcome: 'uncertain', reason: 'save_unconfirmed' },
+    ] });
+  });
+  it('retains each batch child payload and evidence without treating them as verification', () => {
+    const batch = adaptBatchToolResult([
+      { key: 'a', result: { status: 'confirmed', confirmationNumber: '123', runId: 'run-a', screenshots: ['save.png'] } },
+      { key: 'b', result: { status: 'uncertain', confirmationNumber: '456', saveAttempted: true } },
+    ]);
+    expect(batch).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'uncertain', data: { confirmationNumber: '123' },
+        evidence: { legacy: [{ runId: 'run-a', screenshots: ['save.png'] }] } },
+      { key: 'b', outcome: 'uncertain', data: { confirmationNumber: '456' } },
     ] });
   });
   it('preserves producer-style confirmed and uncertain batch children', () => {
