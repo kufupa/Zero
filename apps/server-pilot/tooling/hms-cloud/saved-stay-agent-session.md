@@ -33,7 +33,10 @@ possible; after opening Record View, start a new session to read another stay.
 A retry after an unverified single-candidate hint worked on one page. Retry
 after a multi-candidate ambiguity has not been verified; start a fresh session.
 A native dialog interrupts an in-progress read, seals the session, and is left
-untouched; reopen in a fresh session.
+untouched; reopen in a fresh session. If an availability read is interrupted,
+its underlying read can still write the caller-requested private snapshot after
+the interruption or session closure. Do not treat that file as a completed read;
+inspect the private path before retrying and use a new path for the fresh read.
 
 Availability tools retain the same separate page for the whole session. Search
 returns a current `searchId` and candidates; explicitly select a native ID from
