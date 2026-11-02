@@ -48,7 +48,7 @@ import { useParams } from 'react-router';
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
-import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
@@ -352,41 +352,24 @@ export function ThreadContextMenu({
     }
   };
 
-  const handleThreadReply = () => {
+  const openThreadCompose = (mode: ReplyComposeMode) => {
     setMailSelection({ threadId, sourceMessageId });
-    void openReplyComposeContext({
-      mode: 'reply',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
+    let messageId = threadData?.latest?.id ?? null;
+    if (sourceMessageId !== null) {
+      const matches = threadData?.messages.filter((message) => message.id === sourceMessageId) ?? [];
+      if (!sourceMessageId.trim() || matches.length !== 1 || matches[0]?.threadId !== threadId || matches[0]?.isDraft) {
+        void setComposeState({ mode: null, activeReplyId: null, draftId: null });
+        toast.error('The selected email is unavailable. Open it again to continue.');
+        return;
+      }
+      messageId = sourceMessageId;
+    }
+    void openReplyComposeContext({ mode, messageId, setMode, setActiveReplyId, setDraftId, setComposeState });
   };
 
-  const handleThreadReplyAll = () => {
-    setMailSelection({ threadId, sourceMessageId });
-    void openReplyComposeContext({
-      mode: 'replyAll',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
-  };
-
-  const handleThreadForward = () => {
-    setMailSelection({ threadId, sourceMessageId });
-    void openReplyComposeContext({
-      mode: 'forward',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
-  };
+  const handleThreadReply = () => { openThreadCompose('reply'); };
+  const handleThreadReplyAll = () => { openThreadCompose('replyAll'); };
+  const handleThreadForward = () => { openThreadCompose('forward'); };
 
   const handleOpenInNewTab = () => {
     const query = new URLSearchParams({ threadId });

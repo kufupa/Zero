@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   navaMounts: 0,
   folder: 'inbox',
   searchListFolder: 'inbox',
+  searchListValid: true,
+  searchListAvailable: true,
+  placeholderData: false,
   wide: true,
   useWebPreview: vi.fn(),
 }));
@@ -69,20 +72,20 @@ vi.mock('../hooks/use-media-query', () => ({
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../hooks/use-threads', () => ({
   useThreads: () => [
-    { isFetching: false, refetch: vi.fn() },
+    { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
     [],
     false,
     vi.fn(),
-    { isValid: true, folder: mocks.searchListFolder },
+    mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
   ],
 }));
 vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => [
-    { isFetching: false, refetch: vi.fn() },
+    { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
     [],
     false,
     vi.fn(),
-    { isValid: true, folder: mocks.searchListFolder },
+    mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
   ],
 }));
 vi.mock('../hooks/use-connections', () => ({
@@ -184,6 +187,9 @@ beforeEach(() => {
   mocks.navaMounts = 0;
   mocks.folder = 'inbox';
   mocks.searchListFolder = 'inbox';
+  mocks.searchListValid = true;
+  mocks.searchListAvailable = true;
+  mocks.placeholderData = false;
   mocks.wide = true;
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
@@ -304,6 +310,35 @@ describe('Nava pane beside the open thread', () => {
 });
 
 describe('workflow folder mail routing', () => {
+  it('fails closed if a workflow search becomes invalid or unavailable', async () => {
+    mocks.folder = 'quotes';
+    mocks.searchListFolder = 'quotes';
+    mocks.threadId = 'thread-42';
+    const { rerender } = render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    for (const state of ['invalid', 'unavailable'] as const) {
+      mocks.searchListValid = state !== 'invalid';
+      mocks.searchListAvailable = state !== 'unavailable';
+      mocks.useWebPreview.mockClear();
+      rerender(<MailLayout />);
+      expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+        threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: '',
+      });
+    }
+  });
+
+  it('does not fall back while a workflow list is retained during an all-mail search', async () => {
+    mocks.folder = 'quotes';
+    mocks.searchListFolder = 'all';
+    mocks.placeholderData = true;
+    mocks.threadId = 'thread-42';
+    render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+      threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: '',
+    });
+  });
+
   it('renders the standard mail list, thread view, and Nava pane', async () => {
     mocks.folder = 'quotes';
     mocks.searchListFolder = 'quotes';

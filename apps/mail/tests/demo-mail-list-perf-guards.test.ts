@@ -234,6 +234,25 @@ describe('demo mail list perf guards', () => {
     await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'classified-source' }));
   });
 
+  it.each<[string, string, boolean, boolean]>([
+    ['an invalid workflow search', 'quotes', false, false],
+    ['an all-mail search with retained workflow rows', 'quotes', true, true],
+    ['a route change with retained workflow rows', 'inbox', true, true],
+  ])('keeps the classified source during %s', async (_label, folder, valid, placeholder) => {
+    mocks.folder = folder;
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false,
+        hasNextPage: false, isError: false, error: null, isPlaceholderData: placeholder },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      valid ? { isValid: true, folder: 'all', useDraftsList: false } : { isValid: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({
+      threadId: 'thread-a', sourceMessageId: 'classified-source',
+    }));
+  });
+
   it('does not infer a missing workflow source for keyboard navigation', async () => {
     mocks.folder = 'quotes';
     mocks.useThreads.mockReturnValue([

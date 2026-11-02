@@ -11,6 +11,7 @@ import type { IGetThreadResponse } from '@zero/server/driver/types';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { createSerializer, parseAsString } from 'nuqs';
 
 type Message = IGetThreadResponse['messages'][number];
 
@@ -142,6 +143,17 @@ describe('latest inbound selection', () => {
 });
 
 describe('exact source message selection', () => {
+  it('round-trips an explicit missing source through the real URL serializer', () => {
+    const serialize = createSerializer({ threadId: parseAsString, sourceMessageId: parseAsString });
+    const query = serialize({ threadId: 'thread-1', sourceMessageId: '' });
+    const params = new URLSearchParams(query);
+    expect(params.has('sourceMessageId')).toBe(true);
+    const source = params.get('sourceMessageId');
+    expect(source).toBe('');
+    expect(selectPreviewMessage([message({ id: 'newer' })], MAILBOX, TRANSPORT, 'thread-1', source ?? undefined))
+      .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+  });
+
   const messages = [
     message({ id: 'source-a', threadId: 'thread-1', messageId: '<a@example.com>', receivedOn: '2026-10-08T09:00:00Z' }),
     message({ id: 'source-b', threadId: 'thread-1', messageId: '<b@example.com>', receivedOn: '2026-10-08T10:00:00Z' }),

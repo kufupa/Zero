@@ -25,3 +25,13 @@ export type WorkflowFolderNavId = (typeof WORKFLOW_FOLDER_NAV_ITEMS)[number]['id
 export function isWorkflowFolderNavId(value: string | undefined | null): value is WorkflowFolderNavId {
   return WORKFLOW_FOLDER_NAV_ITEMS.some((item) => item.id === value?.toLowerCase());
 }
+
+/** Previous rows can belong to a different list while a search or route changes. */
+export function selectionRequiresExactSource(
+  folder: string | null | undefined,
+  search: { isValid: false } | { isValid: true; folder: string } | null | undefined,
+  isPlaceholderData: boolean | undefined,
+): boolean {
+  return isPlaceholderData === true ||
+    (isWorkflowFolderNavId(folder) && (search?.isValid !== true || search.folder !== 'all'));
+}

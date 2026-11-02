@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useSidebar } from '@/components/ui/sidebar';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
 import type { MailListThreadRow, MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
-import { isWorkflowFolderNavId } from '@/config/workflow-folders';
+import { selectionRequiresExactSource } from '@/config/workflow-folders';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import { ThreadContextMenu } from '@/components/context/thread-context';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -151,8 +151,8 @@ const Thread = memo(
     const [searchValue] = useSearchValue();
     const timezone = useTimezone();
     const { folder } = useParams<{ folder: string }>();
-    const [, threads, , , searchList] = useThreads();
-    const workflowScoped = isWorkflowFolderNavId(folder) && searchList?.isValid === true && searchList.folder !== 'all';
+    const [threadsQuery, threads, , , searchList] = useThreads();
+    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData);
     const { userLabels } = useLabels();
     const reservedSpamLabelIds = useMemo(
       () => buildReservedSpamLabelIdSet(userLabels ?? []),
@@ -959,7 +959,7 @@ export const MailList = memo(function MailList() {
     }, [setAnchorIndex]);
 
     const [threadsQuery, items, , loadMore, searchList] = useThreads();
-    const workflowScoped = isWorkflowFolderNavId(folder) && searchList?.isValid === true && searchList.folder !== 'all';
+    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData);
     const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
