@@ -3186,6 +3186,33 @@ describe('batch booking card integration', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('passes stored stay and row identities through the opt-in panel and booking host', async () => {
+    const api = batchClient(), draft = draftReady();
+    const paneConfig: QuotePaneConfig = { transportId: 't1', propertyCode: HRCEN_PROPERTY_CODE,
+      roomTypes: [], ratePlans: [], boards: ['room_only', 'bb', 'dinner_bb'], salesStrategies: [],
+      overrideRateCodes: [], eventRateCodes: [] };
+    render(<QuoteWorkflowPanel session={quotedSession(draft)} contact={CARD_CONTACT} paneConfig={paneConfig}
+      workItemId="11111111-1111-4111-8111-111111111111" batchReview={{ client: api, revision: 'rev' }}
+      workItemPane={{ fieldProvenance: {}, refs: { g1: { stayId: 'source-stay', rowId: 'source-row' } } }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 'source-stay', rowId: 'source-row', roomIndex: 1 } }),
+      expect.objectContaining({ identity: { stayId: 'source-stay', rowId: 'source-row', roomIndex: 2 } }),
+    ] }));
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('holds batch and legacy writes when the opt-in panel lacks work-item refs', () => {
+    const api = batchClient(), { client: single, preview, commit } = paneClient();
+    render(<QuoteWorkflowPanel session={quotedSession()} paneSave={single} batchReview={{ client: api }} />);
+    expect(screen.getByText(/Multi-room booking is not available/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled();
+    expect(preview).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+  });
+
   it('holds review when a selected room has no server-source identity', () => {
     const api = batchClient(), draft = draftReady();
     render(<BookingCards draft={draft} groups={[g1]} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION}
