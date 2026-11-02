@@ -68,6 +68,8 @@ test('rejects unknown authority fields and room-count aliases rather than droppi
     { ...request, approval: { grantId: 'caller-value' } },
     { ...request, rooms: [request.room, request.room] },
     { ...request, quantity: 2 },
+    { ...request, '': null, quantity: 2 },
+    { ...request, room: { ...request.room, '': null, quantity: 2 } },
     { ...request, room: { ...request.room, quantity: 2 } },
   ]) {
     const result = normalizeCloudCreateRequest(changed);

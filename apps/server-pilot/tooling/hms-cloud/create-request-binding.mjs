@@ -8,7 +8,7 @@ const isObject = (value) => Boolean(value && typeof value === 'object' && !Array
 function objectKeys(value, allowed, required, path) {
   if (!isObject(value)) return fail('CREATE_OBJECT_REQUIRED', path);
   const unknown = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unknown) return fail('CREATE_FIELD_UNSUPPORTED', path ? `${path}.${unknown}` : unknown);
+  if (unknown !== undefined) return fail('CREATE_FIELD_UNSUPPORTED', path ? `${path}.${unknown}` : unknown);
   const missing = required.find((key) => !Object.hasOwn(value, key) || value[key] === undefined);
   if (missing) return fail('CREATE_FIELD_REQUIRED', path ? `${path}.${missing}` : missing);
   return null;
