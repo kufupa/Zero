@@ -1462,6 +1462,30 @@ describe('contact edits', () => {
 });
 
 describe('section reset', () => {
+  it('refuses a stale reset without clearing a newer edit', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'reset-seq');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'reset-seq');
+      const caller = centurionCaller();
+      const cursor = await caller.workItems.revisionCursor({ workItemId: work.workItemId });
+      await recordFieldEvent(db, {
+        transportId: CENTURION, workItemId: work.workItemId, userId: USER,
+        type: 'field.edit', fieldPath: 'contact.company', value: 'Newer company',
+      });
+      await expect(caller.workItems.resetSection({
+        workItemId: work.workItemId, section: { type: 'contact' }, expectedSeq: cursor.seq,
+      })).rejects.toMatchObject({ code: 'CONFLICT' });
+      const [before] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect(before?.state['contact.company']).toBe('Newer company');
+      expect((await eventsFor(db, work.workItemId)).filter((event) => event.type === 'field.reset')).toHaveLength(0);
+      const current = await caller.workItems.revisionCursor({ workItemId: work.workItemId });
+      await expect(caller.workItems.resetSection({
+        workItemId: work.workItemId, section: { type: 'contact' }, expectedSeq: current.seq,
+      })).resolves.toEqual({ reset: 1 });
+      expect((await readyWork(db, 'reset-seq')).contact.company).toBe('Horizon Trail Tours');
+    }));
+
   it('restores only each selected section and logs fields with extraction values', () =>
     withDb(async (db) => {
       await addOtherTransport(db);
