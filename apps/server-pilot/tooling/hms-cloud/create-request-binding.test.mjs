@@ -101,3 +101,13 @@ test('rejects invalid dates, unsupported child bands, and non-string native iden
   assert.equal(normalizeCloudCreateRequest({ ...request,
     guest: { ...request.guest, nativeId: 123 } }).issue, 'CREATE_GUEST_IDENTITY_INVALID');
 });
+
+test('distinguishes absent and explicitly reviewed create notes', () => {
+  const { note: omitted, ...withoutNote } = request;
+  assert.equal(omitted, 'One room only');
+  const absent = digestCloudCreateRequest(withoutNote);
+  const present = digestCloudCreateRequest(request);
+  assert.equal(absent.outcome, 'ok');
+  assert.equal(Object.hasOwn(absent.request, 'note'), false);
+  assert.notEqual(absent.normalizedRequestDigest, present.normalizedRequestDigest);
+});
