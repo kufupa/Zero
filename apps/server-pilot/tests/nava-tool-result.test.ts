@@ -51,6 +51,15 @@ describe('Nava tool result contract', () => {
   it('keeps unknown refusal-looking codes uncertain', () => {
     expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
   });
+  it('accepts matched stay reads with nullable reasons without treating found as a write success', () => {
+    const result = { outcome: 'found', reason: null, stay: { confirmation: '123' }, screenshots: [], runId: null };
+    expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({
+      outcome: 'ok', data: { stay: { confirmation: '123' } },
+    });
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: { confirmation: '123' } } }).outcome).toBe('uncertain');
+  });
+
   it('requires verified readback for successful writes', () => {
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
     expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');

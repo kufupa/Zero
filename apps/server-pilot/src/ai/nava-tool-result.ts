@@ -59,7 +59,7 @@ export type BatchManifestGrant = z.infer<typeof BatchManifestGrantSchema>;
 export type ExistingToolResult<T> = {
   status?: string;
   outcome?: string;
-  reason?: string;
+  reason?: string | null;
   issue?: string;
   error?: string;
   stack?: string;
@@ -150,7 +150,8 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.saveAttempted === true || result.saveAttempted === 'unknown' || result.uploadSent === true || result.uploadSent === 'unknown' ||
     result.clickedOk === true || result.clickedOk === 'unknown' || result.saveDispatched === true || result.saveDispatched === 'unknown' ||
     result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
-  const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
+  const successful = (['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) ||
+    (options.operation === 'read' && code === 'found')) && result.status !== 'refused';
   const hasTrustedReadback = options.readbackVerified === true && options.verifiedReadback?.readback != null;
   let outcome: NavaToolResult<unknown>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';
