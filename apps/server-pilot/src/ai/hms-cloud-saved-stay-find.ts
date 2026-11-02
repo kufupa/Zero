@@ -4,7 +4,7 @@ import type {
   PaneStayFindInput,
   PaneStayFindResult,
 } from './pane-stay-lookup.js';
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 
 export type CloudStayRunInput = {
   request: PaneStayFindInput;
@@ -44,6 +44,7 @@ export type HmsCloudFindResult = PaneStayFindResult & {
   /** Narrow allowlist of reservation context controls; no broad Record View dump. */
   reservationObservations?: HmsCloudReservationObservations;
   observedAt: string | null;
+  searchedDateRange?: { from: string; to: string };
 };
 
 type RecordValue = Record<string, unknown>;
@@ -245,7 +246,8 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
       };
     }
     const stay = paneStayFields(confirmation, fields);
-    const guestName = fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
+    const guestName = [stay.firstName, stay.lastName].filter((part): part is string => Boolean(part?.trim())).join(' ') ||
+      fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
     const commercial = paneStayCommercial(stay);
     return {
       outcome: 'found', reason: null, stay,
@@ -260,11 +262,15 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
   }
   const issue = text(root?.issue) ?? 'SAVED_STAY_READ_FAILED';
   if (issue === 'CONFIRMATION_NOT_FOUND') {
-    return { outcome: 'not_found', reason: issue, stay: null, arrivalMismatch: false,
+    const range = record(root?.searchedDateRange);
+    const searchedDateRange = realDay(range?.from) && realDay(range?.to) && range.from <= range.to
+      ? { from: range.from, to: range.to } : undefined;
+    return { outcome: 'ambiguous', reason: 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW', stay: null, arrivalMismatch: false,
       requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
+      ...(searchedDateRange ? { searchedDateRange } : {}),
       source: 'hms_cloud_saved_stay', guestName: null, observedAt: observationTimestamp(root?.observedAt) };
   }
-  if (['AMBIGUOUS_CONFIRMATION', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_HINT_UNVERIFIED', 'SEARCH_RESULTS_CHANGED'].includes(issue)) {
+  if (['AMBIGUOUS_CONFIRMATION', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_HINT_MISMATCH', 'CONFIRMATION_HINT_UNVERIFIED', 'SEARCH_RESULTS_CHANGED'].includes(issue)) {
     return { outcome: 'ambiguous', reason: issue, stay: null, arrivalMismatch: false,
       requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
       source: 'hms_cloud_saved_stay', guestName: null, observedAt: observationTimestamp(root?.observedAt) };
@@ -292,20 +298,47 @@ export function stampCloudStayReadResult(
   };
 }
 
+function supportedCenturionTarget(target: HmsReadTarget): boolean {
+  const expected = CENTURION_HMS_READ_TARGET;
+  return Boolean(target) && target.propertyCode === expected.propertyCode &&
+    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
+    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+}
+
 export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknown> {
+  if (!supportedCenturionTarget(input.target)) {
+    return { outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' };
+  }
   const sessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
     withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal }) => Promise<T>;
   };
   return module.withSavedStayAgentSession(async (session) => {
-    // A fallback timestamp bounds the observation from before the read begins.
+    // A fallback timestamp bounds both attempts from before the first read begins.
     const readStartedAt = new Date().toISOString();
-    const result = await session.runTool({
-      tool: 'read',
-      confirmation: input.request.confirmation,
-      ...(input.request.arrival ? { arrivalDate: input.request.arrival } : {}),
-      view: 'record',
-    });
+    const result = await readCloudStayForPane(session, input.request);
     return stampCloudStayReadResult(result, readStartedAt);
   }, { signal: input.signal });
+}
+
+/** A read-only retry relaxes only the arrival hint, never the shared native matching guard. */
+export async function readCloudStayForPane(
+  session: { runTool: (request: Record<string, unknown>) => Promise<unknown> },
+  request: PaneStayFindInput,
+): Promise<unknown> {
+  const first = await session.runTool({
+    tool: 'read', confirmation: request.confirmation,
+    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record',
+  });
+  const failure = record(first);
+  if (!request.arrival || failure?.outcome !== 'read_failed' || failure.issue !== 'CONFIRMATION_HINT_MISMATCH') {
+    return first;
+  }
+  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record' });
+  if (record(second)?.outcome !== 'ok') return second;
+  const checked = projectCloudStayFind(request, second);
+  if (checked.outcome !== 'found' || !checked.arrivalMismatch) {
+    return { outcome: 'read_failed', issue: 'CONFIRMATION_HINT_UNVERIFIED' };
+  }
+  return second;
 }

@@ -1,7 +1,53 @@
-import { describe, expect, it } from 'vitest';
-import { projectCloudStayFind, stampCloudStayReadResult } from '../src/ai/hms-cloud-saved-stay-find.js';
+import { describe, expect, it, vi } from 'vitest';
+import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind, stampCloudStayReadResult } from '../src/ai/hms-cloud-saved-stay-find.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 describe('Cloud saved-stay projection', () => {
+  it('retries only arrival-hint mismatch and verifies the resulting stay', async () => {
+    const request = { confirmation: '123456-1', arrival: '2027-01-10' };
+    const raw = {
+      outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
+      record: { details: { fields: [
+        { name: 'firstname', value: 'Test' }, { name: 'lastname', value: 'Guest' },
+        { name: 'arrivaldate', value: '12-Jan-2027' },
+      ] } },
+    };
+    const runTool = vi.fn().mockResolvedValueOnce({ outcome: 'read_failed', issue: 'CONFIRMATION_HINT_MISMATCH' })
+      .mockResolvedValueOnce(raw);
+    const result = await readCloudStayForPane({ runTool }, request);
+    expect(runTool.mock.calls).toEqual([
+      [{ tool: 'read', confirmation: '123456-1', arrivalDate: '2027-01-10', view: 'record' }],
+      [{ tool: 'read', confirmation: '123456-1', view: 'record' }],
+    ]);
+    expect(projectCloudStayFind(request, result)).toEqual(expect.objectContaining({
+      outcome: 'found', guestName: 'Test Guest', arrivalMismatch: true, hmsArrival: '2027-01-12',
+    }));
+    const unsafe = vi.fn().mockResolvedValueOnce({ outcome: 'read_failed', issue: 'CONFIRMATION_HINT_MISMATCH' })
+      .mockResolvedValueOnce({ ...raw, shallow: { ...raw.shallow, searchResults: { complete: false } } });
+    expect(projectCloudStayFind(request, await readCloudStayForPane({ runTool: unsafe }, request)).outcome).toBe('ambiguous');
+    const otherFailure = vi.fn().mockResolvedValue({ outcome: 'read_failed', issue: 'SEARCH_RESULTS_CAPPED' });
+    await readCloudStayForPane({ runTool: otherFailure }, request);
+    expect(otherFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports bounded not-found as ambiguous and preserves a valid search range', () => {
+    const result = projectCloudStayFind({ confirmation: '123456-1' }, {
+      outcome: 'read_failed', issue: 'CONFIRMATION_NOT_FOUND',
+      searchedDateRange: { from: '2027-01-01', to: '2027-01-31' },
+    });
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'ambiguous', reason: 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW',
+      searchedDateRange: { from: '2027-01-01', to: '2027-01-31' },
+    }));
+  });
+
+  it('refuses an unsupported target before opening a Cloud session', async () => {
+    await expect(runCloudStayFind({
+      request: { confirmation: '123456-1' },
+      target: { ...CENTURION_HMS_READ_TARGET, browserSlot: 'davinci' },
+    })).resolves.toEqual({ outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' });
+  });
+
   it('stamps session results that omit their own observation time', () => {
     const result = stampCloudStayReadResult(
       { outcome: 'ok', shallow: { confirmation: '123456-1' }, record: { details: { fields: [] } } },
@@ -21,7 +67,8 @@ describe('Cloud saved-stay projection', () => {
         { name: 'arrivaldayofweek', label: 'Arrival Date', value: 'Sunday' },
         { name: 'departuredate', label: 'Departure Date', value: '12-Jan-2027' },
         { name: 'departuredayofweek', label: 'Departure Date', value: 'Tuesday' },
-        { name: 'guestfullname', label: 'Guest Name', value: 'Test Guest' },
+        { name: 'firstname', label: 'First Name', value: 'Test' },
+        { name: 'lastname', label: 'Last Name', value: 'Guest' },
         { name: 'company', label: 'Organization', value: 'Test Organization' },
         { name: 'ta1', label: 'Primary Booking Agency', value: 'Test Agency' },
         { name: 'averagerate', label: 'Average Rate', value: '1250.00' },
