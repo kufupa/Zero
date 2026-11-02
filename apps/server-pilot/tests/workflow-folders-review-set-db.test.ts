@@ -150,6 +150,36 @@ describe.skipIf(!TEST_DB_AVAILABLE)('workflow folder review set (disposable Post
     });
   });
 
+  it('returns the workflow membership source instead of a newer unclassified inbound', async () => {
+    await withTestDb(async (db) => {
+      await seedTransport(db);
+      const threadId = 'workflow-source-thread';
+      await seedThread(db, threadId);
+      await seedMessage(db, { messageId: 'workflow-source', threadId, receivedAt: new Date('2026-10-12T10:00:00Z') });
+      await seedMessage(db, { messageId: 'newer-unclassified', threadId, receivedAt: new Date('2026-10-12T11:00:00Z') });
+      const otherThreadId = 'workflow-source-other-thread';
+      await seedThread(db, otherThreadId);
+      await seedMessage(db, { messageId: 'workflow-source-other', threadId: otherThreadId, receivedAt: new Date('2026-10-12T12:00:00Z') });
+      await db.insert(mailExtraction).values([
+        { messageId: 'workflow-source', extractorVersion: 'workflow-source-test',
+          status: 'succeeded', kind: 'quote', payload: {} },
+        { messageId: 'workflow-source-other', extractorVersion: 'workflow-source-test',
+          status: 'succeeded', kind: 'quote', payload: {} },
+      ]);
+      await withRouteDb(db, async () => {
+        const workflow = await caller().mail.listThreads({ folder: 'all', workflowFolder: 'quotes', limit: 20 });
+        expect(workflow.threads).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: threadId, workflowSourceMessageId: 'workflow-source', workflowSourceRequired: true }),
+          expect.objectContaining({ id: otherThreadId, workflowSourceMessageId: 'workflow-source-other', workflowSourceRequired: true }),
+        ]));
+        const ordinary = await caller().mail.listThreads({ folder: 'all', limit: 20 });
+        expect(ordinary.threads).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: threadId, workflowSourceMessageId: null, workflowSourceRequired: false }),
+        ]));
+      });
+    });
+  });
+
   it('lists and opens an eval message that is not the live thread message', async () => {
     await withTestDb(async (db) => {
       await seedTransport(db);

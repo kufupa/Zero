@@ -45,6 +45,15 @@ describe('compose draft ownership wiring', () => {
     expect(saveSuccessSection).not.toMatch(/setHasUnsavedChanges\(false\);\s*\n\s*return true;/);
   });
 
+  it('reads synchronous revision state, not stale rendered state, after a save', () => {
+    const check = emailComposerSource.slice(emailComposerSource.indexOf('const hasSynchronousDraftChanges'),
+      emailComposerSource.indexOf('const processAndSetAttachments'));
+    expect(check).toContain('revisionRef.current.localRevision > revisionRef.current.savedRevision');
+    expect(check).toContain('pendingAttachmentWorkRef.current > 0');
+    expect(check).toContain('pendingInlineImageWorkRef.current > 0');
+    expect(check).not.toContain('hasUnsavedChanges ||');
+  });
+
   it('keeps fresh new-mail composer mounted after first draft id', () => {
     expect(createEmailSource).toContain('initialDraftIdRef');
     expect(createEmailSource).toMatch(/initialDraftIdRef\.current.*!draft.*!draftError/s);

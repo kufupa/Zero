@@ -48,7 +48,8 @@ import { useParams } from 'react-router';
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
-import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
+import { flushComposeBeforeSwitch } from '@/lib/mail/compose-flush-registry';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
@@ -123,6 +124,7 @@ export async function createLabelInThreadContext(input: ThreadLabelCreateContext
 interface EmailContextMenuProps {
   children: ReactNode;
   threadId: string;
+  sourceMessageId?: string | null;
   isInbox?: boolean;
   isSpam?: boolean;
   isSent?: boolean;
@@ -213,6 +215,7 @@ const LabelsList = ({ threadId, bulkSelected, onCreateLabel }: { threadId: strin
 export function ThreadContextMenu({
   children,
   threadId,
+  sourceMessageId = null,
   isInbox = true,
   isSpam = false,
   isSent = false,
@@ -232,7 +235,7 @@ export function ThreadContextMenu({
   const effectiveIsSpam = isSpam || isReservedSpamFolder;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
-  const [, setThreadId] = useQueryState('threadId');
+  const [, setMailSelection] = useQueryStates({ threadId: parseAsString, sourceMessageId: parseAsString });
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -350,44 +353,37 @@ export function ThreadContextMenu({
     }
   };
 
-  const handleThreadReply = () => {
-    setThreadId(threadId);
-    void openReplyComposeContext({
-      mode: 'reply',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
+  const openThreadCompose = async (mode: ReplyComposeMode) => {
+    // Capture the row's source before awaiting the current composer's save.
+    let messageId = threadData?.latest?.id ?? null;
+    let unavailable = false;
+    if (sourceMessageId !== null) {
+      const matches = threadData?.messages.filter((message) => message.id === sourceMessageId) ?? [];
+      unavailable = !sourceMessageId.trim() || matches.length !== 1 ||
+        matches[0]?.threadId !== threadId || !!matches[0]?.isDraft;
+      messageId = sourceMessageId;
+    }
+    if (!(await flushComposeBeforeSwitch())) {
+      toast.error('Could not save your draft. Try again before opening another reply.');
+      return;
+    }
+    void setMailSelection({ threadId, sourceMessageId });
+    if (unavailable) {
+      void setComposeState({ mode: null, activeReplyId: null, draftId: null });
+      toast.error('The selected email is unavailable. Open it again to continue.');
+      return;
+    }
+    void openReplyComposeContext({ mode, messageId, setMode, setActiveReplyId, setDraftId, setComposeState });
   };
 
-  const handleThreadReplyAll = () => {
-    setThreadId(threadId);
-    void openReplyComposeContext({
-      mode: 'replyAll',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
-  };
-
-  const handleThreadForward = () => {
-    setThreadId(threadId);
-    void openReplyComposeContext({
-      mode: 'forward',
-      messageId: threadData?.latest?.id ?? null,
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
-    });
-  };
+  const handleThreadReply = () => { void openThreadCompose('reply'); };
+  const handleThreadReplyAll = () => { void openThreadCompose('replyAll'); };
+  const handleThreadForward = () => { void openThreadCompose('forward'); };
 
   const handleOpenInNewTab = () => {
-    window.open(`/mail/${folder}?threadId=${threadId}`, '_blank');
+    const query = new URLSearchParams({ threadId });
+    if (sourceMessageId !== null) query.set('sourceMessageId', sourceMessageId);
+    window.open(`/mail/${folder}?${query.toString()}`, '_blank');
   };
 
   const primaryActions: EmailAction[] = useMemo(

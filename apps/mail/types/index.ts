@@ -143,6 +143,8 @@ export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 export type MailListThreadRow = {
   id: string;
   historyId?: string | null;
+  workflowSourceMessageId?: string | null;
+  workflowSourceRequired?: boolean;
   categoryIds?: string[];
   centurionCategory?: CenturionMailCategory;
   latestMessageAt?: string | Date | null;
@@ -161,12 +163,13 @@ export type MailListThreadRow = {
     threadId: string;
     label: string;
     latestMessageAt?: string | Date | null;
+    workflowSourceMessageId?: string | null;
   }[];
 };
 
 export type ThreadProps = {
   message: MailListThreadRow;
-  onClick?: (message: ParsedMessage) => () => void;
+  onClick?: (message: ParsedMessage, row: MailListThreadRow) => () => void;
   isKeyboardFocused?: boolean;
   isKeyboardNavigationActive?: boolean;
 };

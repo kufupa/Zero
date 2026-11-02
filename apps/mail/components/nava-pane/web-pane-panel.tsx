@@ -11,7 +11,10 @@ function statusCopy(selection: PreviewSelection): string {
   if (selection.status === 'loading') return 'Loading thread…';
   if (selection.status === 'error') return 'Could not load this thread.';
   if (selection.status === 'unsynced' && selection.reason === 'no_message_id') {
-    return 'Not analysable: the latest guest email has no Message-ID, so Nava cannot bind it.';
+    return 'Not analysable: the selected guest email has no Message-ID, so Nava cannot bind it.';
+  }
+  if (selection.status === 'unsynced' && selection.reason === 'source_message_unavailable') {
+    return 'The selected email is unavailable. Open it again before continuing.';
   }
   if (selection.status === 'unsynced') return 'No guest email in this thread to analyse.';
   return '';
@@ -21,12 +24,14 @@ function statusCopy(selection: PreviewSelection): string {
 export function WebPanePanel({
   threadId,
   sourceThreadId,
+  sourceMessageId,
   onOpenThread,
   goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
   sourceThreadId?: string;
+  sourceMessageId?: string;
   onOpenThread?: (threadId: string) => void;
   goldLabelEnabled?: boolean;
   hmsNoticesManagedByParent?: boolean;
@@ -34,6 +39,7 @@ export function WebPanePanel({
   const { selection, bridge } = useWebPreview({
     threadId,
     ...(sourceThreadId ? { sourceThreadId } : {}),
+    ...(sourceMessageId !== undefined ? { sourceMessageId } : {}),
   });
   const reporter = useHmsJobNoticeReporter();
   const activeEmail = selection.status === 'ready' ? selection.email : null;
@@ -70,6 +76,7 @@ export function WebPanePanel({
       className="h-full overflow-y-auto"
     >
       <NavaPane
+        key={emailKey}
         bridge={bridge}
         preview
         onOpenThread={onOpenThread}

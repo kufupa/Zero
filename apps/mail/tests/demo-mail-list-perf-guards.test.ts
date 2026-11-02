@@ -1,12 +1,14 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
-import { MailList, areMailLabelsEqual } from '../components/mail/mail-list';
+import { MailList, areMailLabelsEqual, listThreadSelection } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
+import { retainSameScopePlaceholder, selectionRequiresExactSource } from '../config/workflow-folders';
+import { registerComposeFlush, registerComposeUnsavedCheck } from '../lib/mail/compose-flush-registry';
 
 const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
@@ -16,6 +18,9 @@ const mocks = vi.hoisted(() => ({
   useThread: vi.fn(),
   useDraft: vi.fn(),
   folder: 'inbox',
+  setMailSelection: vi.fn(),
+  onNavigate: null as null | ((threadId: string | null) => void),
+  linkedTarget: null as string | null,
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -68,13 +73,11 @@ vi.mock('@/components/ui/sidebar', () => ({
 }));
 
 vi.mock('@/lib/mail/build-mail-list-virtual-rows', () => ({
-  buildMailListVirtualRows: (items: Array<{ id: string }>) =>
-    items.map((message, threadIndex) => ({
-      type: 'thread',
-      key: message.id,
-      threadIndex,
-      message,
-    })),
+  buildMailListVirtualRows: (items: Array<{ id: string }>) => [
+    ...items.map((message, threadIndex) => ({ type: 'thread', key: message.id, threadIndex, message })),
+    ...(mocks.linkedTarget ? [{ type: 'linked-stub', key: 'linked', parentThreadIndex: 0,
+      stub: { threadId: mocks.linkedTarget } }] : []),
+  ],
 }));
 
 vi.mock('virtua', async () => {
@@ -95,11 +98,14 @@ vi.mock('@/hooks/use-mail-navigation', async () => {
   const { atom } = await import('jotai');
   return {
     focusedIndexAtom: atom<number | null>(null),
-    useMailNavigation: () => ({
-      focusedIndex: null,
-      handleMouseEnter: vi.fn(),
-      keyboardActive: false,
-    }),
+    useMailNavigation: (args: { onNavigate: (threadId: string | null) => void }) => {
+      mocks.onNavigate = args.onNavigate;
+      return {
+        focusedIndex: null,
+        handleMouseEnter: vi.fn(),
+        keyboardActive: false,
+      };
+    },
   };
 });
 
@@ -132,12 +138,31 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: () => [null, vi.fn()],
+  useQueryStates: () => [{ threadId: null, sourceMessageId: 'old-source' }, mocks.setMailSelection],
 }));
 
 vi.mock('@/components/icons/empty-state-svg', () => ({
   EmptyStateIcon: () => null,
 }));
+
+vi.mock('@/components/mail/linked-thread-stub-row', () => ({
+  LinkedThreadStubRow: ({ stub, onNavigate }: { stub: { threadId: string }; onNavigate: (id: string) => void }) =>
+    createElement('button', { onClick: () => onNavigate(stub.threadId) }, 'Linked thread'),
+}));
+
+vi.mock('@/components/context/thread-context', () => ({
+  ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('@/components/ui/bimi-avatar', () => ({ BimiAvatar: () => null }));
+vi.mock('@/components/ui/tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+  TooltipContent: () => null,
+}));
+vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
+
 
 type MemoExoticComponent = typeof MailList & {
   compare: null | ((prev: unknown, next: unknown) => boolean);
@@ -145,6 +170,11 @@ type MemoExoticComponent = typeof MailList & {
 
 beforeEach(() => {
   mocks.folder = 'inbox';
+  mocks.linkedTarget = null;
+  registerComposeFlush(null);
+  registerComposeUnsavedCheck(null);
+  mocks.setMailSelection.mockReset();
+  mocks.onNavigate = null;
   mocks.searchValue = {
     ...EMPTY_SEARCH_VALUE,
     value: 'deposit',
@@ -179,9 +209,162 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  registerComposeFlush(null);
+  registerComposeUnsavedCheck(null);
 });
 
 describe('demo mail list perf guards', () => {
+  it('retains placeholders only when their actual row scope matches the next list', () => {
+    const ordinary = { pages: [{ threads: [{ id: 'ordinary', workflowSourceRequired: false }] }] };
+    const workflow = { pages: [{ threads: [{ id: 'workflow', workflowSourceRequired: true, workflowSourceMessageId: null }] }] };
+    const unknown = { pages: [{ threads: [{ id: 'old-cache' }] }] };
+    expect(retainSameScopePlaceholder(ordinary, false)).toBe(ordinary);
+    expect(retainSameScopePlaceholder(workflow, true)).toBe(workflow);
+    expect(retainSameScopePlaceholder(ordinary, true)).toBeUndefined();
+    expect(retainSameScopePlaceholder(workflow, false)).toBeUndefined();
+    expect(retainSameScopePlaceholder(unknown, false)).toBeUndefined();
+    expect(retainSameScopePlaceholder({ pages: [{ threads: [] }] }, false)).toBeUndefined();
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, ordinary.pages[0]!.threads)).toBe(false);
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, workflow.pages[0]!.threads)).toBe(true);
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, unknown.pages[0]!.threads)).toBe(true);
+  });
+
+  it('clears source for an ordinary retained row during search', async () => {
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: true, isFetchingNextPage: false,
+        hasNextPage: false, isError: false, error: null, isPlaceholderData: true },
+      [{ id: 'thread-a', workflowSourceRequired: false, workflowSourceMessageId: null }], false, vi.fn(),
+      { isValid: true, folder: 'all', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: null }));
+  });
+
+  it('keeps exact workflow IDs and refuses absent row sources', () => {
+    const rows = [
+      { id: 'thread-a', workflowSourceMessageId: 'source-a' },
+      { id: 'thread-b', workflowSourceMessageId: 'source-b' },
+      { id: 'missing-source' },
+    ];
+    expect(listThreadSelection('thread-a', true, rows)).toEqual({ threadId: 'thread-a', sourceMessageId: 'source-a' });
+    expect(listThreadSelection('thread-b', true, rows)).toEqual({ threadId: 'thread-b', sourceMessageId: 'source-b' });
+    expect(listThreadSelection('missing-source', true, rows)).toEqual({ threadId: 'missing-source', sourceMessageId: '' });
+    expect(listThreadSelection('missing-row', true, rows)).toEqual({ threadId: 'missing-row', sourceMessageId: '' });
+    expect(listThreadSelection('thread-a', false, rows)).toEqual({ threadId: 'thread-a', sourceMessageId: null });
+  });
+
+  it('opens the workflow source for keyboard and pointer selection, not the latest message', async () => {
+    mocks.folder = 'quotes';
+    const latest = { id: 'newer-message', threadId: 'thread-a', sender: { name: 'Guest', email: 'guest@example.com' },
+      subject: 'Request', body: '', tags: [], to: [], unread: false };
+    mocks.useThread.mockReturnValue({ data: { latest, messages: [latest], labels: [], totalReplies: 0 }, isGroupThread: false, latestDraft: null });
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'classified-source' }));
+    mocks.setMailSelection.mockClear();
+    fireEvent.click(screen.getByText('Guest'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'classified-source' }));
+  });
+
+  it.each<[string, string, boolean, boolean]>([
+    ['an invalid workflow search', 'quotes', false, false],
+    ['an all-mail search with retained workflow rows', 'quotes', true, true],
+    ['a route change with retained workflow rows', 'inbox', true, true],
+  ])('keeps the classified source during %s', async (_label, folder, valid, placeholder) => {
+    mocks.folder = folder;
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false,
+        hasNextPage: false, isError: false, error: null, isPlaceholderData: placeholder },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      valid ? { isValid: true, folder: 'all', useDraftsList: false } : { isValid: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({
+      threadId: 'thread-a', sourceMessageId: 'classified-source',
+    }));
+  });
+
+  it.each(['keyboard', 'linked'])('captures the selected source before a pending %s draft save', async (kind) => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = kind === 'linked' ? 'thread-a' : null;
+    let finish!: () => void;
+    registerComposeFlush(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const query = { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false,
+      hasNextPage: false, isError: false, error: null };
+    const search = { isValid: true, folder: 'quotes', useDraftsList: false };
+    mocks.useThreads.mockReturnValue([query, [{ id: 'thread-a', workflowSourceMessageId: 'original' }], false, vi.fn(), search]);
+    const view = render(createElement(MailList));
+    if (kind === 'linked') fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    else act(() => mocks.onNavigate?.('thread-a'));
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    mocks.useThreads.mockReturnValue([query, [{ id: 'thread-a', workflowSourceMessageId: 'replacement' }], false, vi.fn(), search]);
+    view.rerender(createElement(MailList));
+    await act(async () => { finish(); });
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'original' }));
+  });
+
+  it.each(['keyboard', 'linked', 'pointer'])('keeps the composer open after a failed %s navigation save', async (kind) => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = kind === 'linked' ? 'thread-a' : null;
+    const checkDirty = vi.fn(() => true);
+    registerComposeFlush(async () => {}); // The real failed save returns without clearing its dirty revision.
+    registerComposeUnsavedCheck(checkDirty);
+    const latest = { id: 'newer-message', threadId: 'thread-a', sender: { name: 'Guest', email: 'guest@example.com' },
+      subject: 'Request', body: '', tags: [], to: [], unread: false };
+    mocks.useThread.mockReturnValue({ data: { latest, messages: [latest], labels: [], totalReplies: 0 }, isGroupThread: false, latestDraft: null });
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    if (kind === 'linked') fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    else if (kind === 'pointer') fireEvent.click(screen.getByText('Guest'));
+    else act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(checkDirty).toHaveBeenCalled());
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+  });
+
+  it('opens the exact source carried by a linked workflow stub', async () => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = 'thread-b';
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'source-a', linkedStubs: [{ threadId: 'thread-b', workflowSourceMessageId: 'source-b' }] }],
+      false, vi.fn(), { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: 'source-b' }));
+  });
+
+  it('does not infer a missing workflow source for keyboard navigation', async () => {
+    mocks.folder = 'quotes';
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [], true, vi.fn(), { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-without-row'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-without-row', sourceMessageId: '' }));
+  });
+
+  it('clears the old source message when keyboard navigation opens another thread', async () => {
+    render(createElement(MailList));
+    expect(mocks.onNavigate).not.toBeNull();
+    act(() => mocks.onNavigate?.('new-thread'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({
+      threadId: 'new-thread', sourceMessageId: null,
+    }));
+  });
+
   it('shows effective query miss copy and preserves query state when trying all folders', () => {
     render(createElement(MailList));
 

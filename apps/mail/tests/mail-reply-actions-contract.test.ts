@@ -295,7 +295,7 @@ describe('thread toolbar reply actions', () => {
 });
 
 describe('existing context-menu and keyboard reply surfaces', () => {
-  it('preserves list context reply action IDs, labels, and latest-message modes', () => {
+  it('preserves list context action IDs and delegates each reply mode to the source-aware handler', () => {
     const primaryActions = listContextPrimaryActionsSource();
     const contextMenuContent = listContextMenuContentSource();
 
@@ -328,10 +328,10 @@ describe('existing context-menu and keyboard reply surfaces', () => {
       expect(action).toContain(`id: '${id}'`);
       expect(action).toContain(`label: ${label},`);
       expect(action).toContain(`action: ${handler},`);
-      expect(handlerSource).toContain('void openReplyComposeContext({');
-      expect(handlerSource).toContain(`mode: '${mode}',`);
-      expect(handlerSource).toContain('messageId: threadData?.latest?.id ?? null,');
+      expect(handlerSource).toContain(`openThreadCompose('${mode}')`);
     }
+    expect(threadContextSource).toContain('setMailSelection({ threadId, sourceMessageId });');
+    expect(threadContextSource).toContain('messageId = sourceMessageId;');
   });
 
   it('keeps r, a, and f mapped to latest-message reply compose handlers', () => {

@@ -11,6 +11,7 @@ import type { IGetThreadResponse } from '@zero/server/driver/types';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { createSerializer, parseAsString } from 'nuqs';
 
 type Message = IGetThreadResponse['messages'][number];
 
@@ -138,6 +139,86 @@ describe('latest inbound selection', () => {
       status: 'unsynced',
       reason: 'no_inbound',
     });
+  });
+});
+
+describe('exact source message selection', () => {
+  it('round-trips an explicit missing source through the real URL serializer', () => {
+    const serialize = createSerializer({ threadId: parseAsString, sourceMessageId: parseAsString });
+    const query = serialize({ threadId: 'thread-1', sourceMessageId: '' });
+    const params = new URLSearchParams(query);
+    expect(params.has('sourceMessageId')).toBe(true);
+    const source = params.get('sourceMessageId');
+    expect(source).toBe('');
+    expect(selectPreviewMessage([message({ id: 'newer' })], MAILBOX, TRANSPORT, 'thread-1', source ?? undefined))
+      .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+  });
+
+  const messages = [
+    message({ id: 'source-a', threadId: 'thread-1', messageId: '<a@example.com>', receivedOn: '2026-10-08T09:00:00Z' }),
+    message({ id: 'source-b', threadId: 'thread-1', messageId: '<b@example.com>', receivedOn: '2026-10-08T10:00:00Z' }),
+  ];
+
+  it('selects A/B/A by stored message id instead of the newest message', () => {
+    for (const id of ['source-a', 'source-b', 'source-a']) {
+      expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT, 'thread-1', id))
+        .toMatchObject({ status: 'ready', email: { entryId: id } });
+    }
+  });
+
+  it('refuses missing, blank, wrong-thread, outbound, draft and duplicate source ids', () => {
+    for (const [rows, id] of [
+      [messages, 'absent'], [messages, ''], [[message({ id: '' })], ''],
+      [[message({ id: 'other', threadId: 'other-thread' })], 'other'],
+      [[staffReply({ id: 'outbound' })], 'outbound'],
+      [[message({ id: 'draft', isDraft: true })], 'draft'],
+      [[message({ id: 'duplicate' }), message({ id: 'duplicate' })], 'duplicate'],
+    ] as Array<[Message[], string]>) {
+      expect(selectPreviewMessage(rows, MAILBOX, TRANSPORT, 'thread-1', id))
+        .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    }
+  });
+
+  it.each(['inbound', 'outbound'] as const)(
+    'opens the exact self-addressed pre-stay source with %s ingest direction',
+    (direction) => {
+      const preStay = message({
+        id: 'pre-stay', direction, sender: { email: MAILBOX.toUpperCase() },
+        to: [{ email: MAILBOX }], subject: 'Pre Stay : Property HRDAV Confirmation No 57291630 Guest',
+        messageId: '<pre-stay@example.com>',
+      });
+      const newer = message({ id: 'newer', receivedOn: '2026-10-09T09:00:00Z' });
+      expect(selectPreviewMessage([preStay, newer], MAILBOX, TRANSPORT, 'thread-1', 'pre-stay'))
+        .toMatchObject({ status: 'ready', email: { entryId: 'pre-stay', internetMessageId: '<pre-stay@example.com>' } });
+    },
+  );
+
+  it('only admits an exact outbound pre-stay when sender, recipient, subject and confirmation agree', () => {
+    const valid = staffReply({
+      id: 'self', to: [{ email: MAILBOX }],
+      subject: 'Pre Stay : Property HRDAV Confirmation No 57291630 Guest',
+    });
+    const cases: Array<[Message, string]> = [
+      [{ ...valid, sender: { email: 'other@example.com' } }, MAILBOX],
+      [{ ...valid, to: [{ email: 'other@example.com' }] }, MAILBOX],
+      [{ ...valid, subject: 'Reservation Confirmation No 57291630 Guest' }, MAILBOX],
+      [{ ...valid, subject: 'Pre Stay : Property HRDAV Guest' }, MAILBOX],
+      [{ ...valid, isDraft: true }, MAILBOX],
+      [valid, ''],
+    ];
+    for (const [row, mailbox] of cases) {
+      expect(selectPreviewMessage([row], mailbox, TRANSPORT, 'thread-1', 'self'))
+        .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    }
+    expect(selectPreviewMessage([valid, { ...valid, isDraft: true }], MAILBOX, TRANSPORT, 'thread-1', 'self'))
+      .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    expect(selectPreviewMessage([valid], MAILBOX, TRANSPORT))
+      .toEqual({ status: 'unsynced', reason: 'no_inbound' });
+  });
+
+  it('refuses an exact source without an internet Message-ID', () => {
+    expect(selectPreviewMessage([message({ id: 'source-a', messageId: undefined })], MAILBOX, TRANSPORT, 'thread-1', 'source-a'))
+      .toEqual({ status: 'unsynced', reason: 'no_message_id' });
   });
 });
 

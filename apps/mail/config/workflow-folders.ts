@@ -25,3 +25,42 @@ export type WorkflowFolderNavId = (typeof WORKFLOW_FOLDER_NAV_ITEMS)[number]['id
 export function isWorkflowFolderNavId(value: string | undefined | null): value is WorkflowFolderNavId {
   return WORKFLOW_FOLDER_NAV_ITEMS.some((item) => item.id === value?.toLowerCase());
 }
+
+type SourceScopedRow = {
+  id: string;
+  workflowSourceMessageId?: string | null;
+  workflowSourceRequired?: boolean;
+  linkedStubs?: readonly { threadId: string; workflowSourceMessageId?: string | null }[];
+};
+
+/** A placeholder carries the scope of the rows it actually displays, not the destination route. */
+export function selectionRequiresExactSource(
+  folder: string | null | undefined,
+  search: { isValid: false } | { isValid: true; folder: string } | null | undefined,
+  isPlaceholderData: boolean | undefined,
+  rows: readonly SourceScopedRow[] = [],
+): boolean {
+  if (isPlaceholderData) return rows.length === 0 || rows.some((row) => row.workflowSourceRequired !== false);
+  return isWorkflowFolderNavId(folder) && (search?.isValid !== true || search.folder !== 'all');
+}
+
+/** Never retain rows across workflow/ordinary scope changes or unknown provenance. */
+export function retainSameScopePlaceholder<T extends { pages: readonly { threads: readonly SourceScopedRow[] }[] }>(
+  previous: T | undefined, workflowScoped: boolean,
+): T | undefined {
+  const rows = previous?.pages.flatMap((page) => page.threads) ?? [];
+  return rows.length && rows.every((row) => row.workflowSourceRequired === workflowScoped) ? previous : undefined;
+}
+
+/** A missing workflow row or source remains explicit; it must not select another email. */
+export function listThreadSelection(
+  threadId: string | null, workflowScoped: boolean, rows: readonly SourceScopedRow[],
+): { threadId: string | null; sourceMessageId: string | null } {
+  if (!threadId || !workflowScoped) return { threadId, sourceMessageId: null };
+  const matches = rows.flatMap((row) => [
+    ...(row.id === threadId ? [row.workflowSourceMessageId] : []),
+    ...(row.linkedStubs ?? []).filter((stub) => stub.threadId === threadId)
+      .map((stub) => stub.workflowSourceMessageId),
+  ]);
+  return { threadId, sourceMessageId: matches.length === 1 ? matches[0] ?? '' : '' };
+}

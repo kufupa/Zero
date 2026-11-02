@@ -23,7 +23,7 @@ import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
 import { clearBulkSelectionAtom } from './use-mail';
 import { useThreads } from '@/hooks/use-threads';
-import { isWorkflowFolderNavId } from '@/config/workflow-folders';
+import { isWorkflowFolderNavId, selectionRequiresExactSource } from '@/config/workflow-folders';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
@@ -407,18 +407,17 @@ function MailLayoutContent() {
     }
   }, [navigate, session?.user, isPending]);
 
-  const [{ isFetching, refetch: refetchThreads }, , , , searchList] = useThreads();
+  const [threadsQuery, threads, , , searchList] = useThreads();
+  const { isFetching, refetch: refetchThreads } = threadsQuery;
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
-  const [{ threadId }, setMailSelection] = useQueryStates({
+  const [{ threadId, sourceMessageId }, setMailSelection] = useQueryStates({
     threadId: parseAsString,
     sourceMessageId: parseAsString,
   });
-  const sourceThreadId =
-    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all'
-      ? threadId ?? undefined
-      : undefined;
+  const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData, threads);
+  const sourceThreadId = workflowScoped || sourceMessageId !== null ? threadId ?? undefined : undefined;
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -754,9 +753,10 @@ function MailLayoutContent() {
                     }
                   >
                     <WebPanePanel
-                      key={threadId}
+                      key={JSON.stringify([threadId, sourceMessageId])}
                       threadId={threadId}
                       sourceThreadId={sourceThreadId}
+                      sourceMessageId={sourceMessageId ?? (workflowScoped ? '' : undefined)}
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent

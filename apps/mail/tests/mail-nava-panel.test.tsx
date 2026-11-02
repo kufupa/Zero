@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebPanePanel } from '../components/nava-pane/web-pane-panel';
 import NavaPreviewPage from '../app/(routes)/nava-preview/page';
@@ -14,8 +15,14 @@ import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
+  sourceMessageId: null as string | null,
+  navaMounts: 0,
   folder: 'inbox',
   searchListFolder: 'inbox',
+  searchListValid: true,
+  searchListAvailable: true,
+  placeholderData: false,
+  listRows: [] as Array<{ id: string; workflowSourceRequired?: boolean }>,
   wide: true,
   useWebPreview: vi.fn(),
 }));
@@ -37,11 +44,14 @@ const readSource = (relativePath: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), relativePath), 'utf8');
 
 vi.mock('../lib/workstation/web-pane-bridge', () => ({
-  useWebPreview: (args: { threadId: string; sourceThreadId?: string }) => mocks.useWebPreview(args),
+  useWebPreview: (args: { threadId: string; sourceThreadId?: string; sourceMessageId?: string }) => mocks.useWebPreview(args),
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: () => <div data-testid="nava-pane" />,
+  NavaPane: () => {
+    const [mount] = useState(() => ++mocks.navaMounts);
+    return <div data-testid="nava-pane" data-mount={mount} />;
+  },
 }));
 
 vi.mock('../components/mail/thread-display', () => ({
@@ -63,20 +73,20 @@ vi.mock('../hooks/use-media-query', () => ({
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../hooks/use-threads', () => ({
   useThreads: () => [
-    { isFetching: false, refetch: vi.fn() },
-    [],
+    { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
+    mocks.listRows,
     false,
     vi.fn(),
-    { isValid: true, folder: mocks.searchListFolder },
+    mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
   ],
 }));
 vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => [
-    { isFetching: false, refetch: vi.fn() },
-    [],
+    { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
+    mocks.listRows,
     false,
     vi.fn(),
-    { isValid: true, folder: mocks.searchListFolder },
+    mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
   ],
 }));
 vi.mock('../hooks/use-connections', () => ({
@@ -114,7 +124,7 @@ vi.mock('nuqs', () => ({
   parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
   // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
-  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: mocks.sourceMessageId }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -174,8 +184,14 @@ const setNavaToggle = (open: boolean) => act(() => getDefaultStore().set(navaSid
 beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
+  mocks.sourceMessageId = null;
+  mocks.navaMounts = 0;
   mocks.folder = 'inbox';
   mocks.searchListFolder = 'inbox';
+  mocks.searchListValid = true;
+  mocks.searchListAvailable = true;
+  mocks.placeholderData = false;
+  mocks.listRows = [];
   mocks.wide = true;
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
@@ -197,6 +213,23 @@ describe('Nava pane beside the open thread', () => {
     expect(panelSize('mail-list-panel')).toBe('30.0');
     expect(panelSize('mail-thread-panel')).toBe('42.0');
     expect(panelSize('mail-nava-panel')).toBe('28.0');
+  });
+
+  it('remounts the pane on A/B/A source changes within one thread', async () => {
+    mocks.threadId = 'thread-42';
+    mocks.sourceMessageId = 'source-a';
+    const { rerender } = render(<MailLayout />);
+    const first = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-a' });
+    mocks.sourceMessageId = 'source-b';
+    rerender(<MailLayout />);
+    const second = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-b' });
+    mocks.sourceMessageId = 'source-a';
+    rerender(<MailLayout />);
+    const third = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-a' });
+    expect(new Set([first, second, third]).size).toBe(3);
   });
 
   it('is hidden when the toggle is off, and the two-pane layout is unchanged', () => {
@@ -279,6 +312,46 @@ describe('Nava pane beside the open thread', () => {
 });
 
 describe('workflow folder mail routing', () => {
+  it('fails closed if a workflow search becomes invalid or unavailable', async () => {
+    mocks.folder = 'quotes';
+    mocks.searchListFolder = 'quotes';
+    mocks.threadId = 'thread-42';
+    const { rerender } = render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    for (const state of ['invalid', 'unavailable'] as const) {
+      mocks.searchListValid = state !== 'invalid';
+      mocks.searchListAvailable = state !== 'unavailable';
+      mocks.useWebPreview.mockClear();
+      rerender(<MailLayout />);
+      expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+        threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: '',
+      });
+    }
+  });
+
+  it('does not fall back while a workflow list is retained during an all-mail search', async () => {
+    mocks.folder = 'quotes';
+    mocks.searchListFolder = 'all';
+    mocks.placeholderData = true;
+    mocks.threadId = 'thread-42';
+    render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+      threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: '',
+    });
+  });
+
+  it('keeps ordinary retained search rows on latest-inbound behavior', async () => {
+    mocks.folder = 'inbox';
+    mocks.searchListFolder = 'all';
+    mocks.placeholderData = true;
+    mocks.listRows = [{ id: 'thread-42', workflowSourceRequired: false }];
+    mocks.threadId = 'thread-42';
+    render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42' });
+  });
+
   it('renders the standard mail list, thread view, and Nava pane', async () => {
     mocks.folder = 'quotes';
     mocks.searchListFolder = 'quotes';
@@ -292,6 +365,7 @@ describe('workflow folder mail routing', () => {
     expect(mocks.useWebPreview).toHaveBeenCalledWith({
       threadId: 'thread-42',
       sourceThreadId: 'thread-42',
+      sourceMessageId: '',
     });
   });
 });

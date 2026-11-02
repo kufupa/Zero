@@ -9,6 +9,7 @@ import type { WorkstationInfo } from './use-outlook-bridge';
 import type { PaneBridge } from './pane-bridge-types';
 import { useThread } from '@/hooks/use-threads';
 import { useMemo } from 'react';
+import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
 
 /**
  * Web stand-in for the Outlook bridge, used by the /nava-preview viewer. It serves one
@@ -29,7 +30,7 @@ type MailAddress = { name?: string; email: string };
 export type PreviewSelection =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' }
+  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' | 'source_message_unavailable' }
   | { status: 'ready'; email: WorkstationEmailPayload };
 
 function sameAddress(left: string, right: string): boolean {
@@ -99,19 +100,43 @@ export function activeEmailFromMessage(
   };
 }
 
-/** Selects the latest inbound message, optionally pinned to a workflow row's source thread. */
+/** An exact self-mail source is openable even when Outlook stored it as sent. */
+function isSelfAddressedPreStay(message: ThreadMessage, mailboxEmail: string): boolean {
+  return (
+    Boolean(mailboxEmail.trim()) &&
+    [...message.to, ...(message.cc ?? []), ...(message.bcc ?? [])].some((recipient) =>
+      sameAddress(recipient.email, mailboxEmail),
+    ) &&
+    isSelfSentPreStayInformationMail({
+      fromAddress: message.sender.email,
+      mailboxAddress: mailboxEmail,
+      subject: message.subject,
+    })
+  );
+}
+
+/** Select the exact source when supplied; never replace a missing source with a newer message. */
 export function selectPreviewMessage(
   messages: readonly ThreadMessage[],
   mailboxEmail: string,
   transportId: string,
   sourceThreadId?: string,
+  sourceMessageId?: string,
 ): PreviewSelection {
   const sourceMessages = sourceThreadId
     ? messages.filter((message) => message.threadId === sourceThreadId)
     : messages;
-  const inbound = latestInboundMessage(sourceMessages, mailboxEmail);
-  if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
-  const email = activeEmailFromMessage(inbound, transportId);
+  const exactMatches = sourceMessageId !== undefined
+    ? sourceMessages.filter((message) => message.id === sourceMessageId)
+    : undefined;
+  if (exactMatches && (!sourceMessageId?.trim() || exactMatches.length !== 1 || exactMatches[0]!.isDraft ||
+    (!isInboundMessage(exactMatches[0]!, mailboxEmail) &&
+      !isSelfAddressedPreStay(exactMatches[0]!, mailboxEmail)))) {
+    return { status: 'unsynced', reason: 'source_message_unavailable' };
+  }
+  const selected = exactMatches ? exactMatches[0] : latestInboundMessage(sourceMessages, mailboxEmail);
+  if (!selected) return { status: 'unsynced', reason: 'no_inbound' };
+  const email = activeEmailFromMessage(selected, transportId);
   if (!email) return { status: 'unsynced', reason: 'no_message_id' };
   return { status: 'ready', email };
 }
@@ -163,9 +188,11 @@ export function buildPreviewBridge(activeEmail: WorkstationEmailPayload | null):
 export function useWebPreview({
   threadId,
   sourceThreadId,
+  sourceMessageId,
 }: {
   threadId: string;
   sourceThreadId?: string;
+  sourceMessageId?: string;
 }): {
   selection: PreviewSelection;
   bridge: PaneBridge;
@@ -179,8 +206,8 @@ export function useWebPreview({
   const selection = useMemo<PreviewSelection>(() => {
     if (thread.isError) return { status: 'error' };
     if (!connection || !threadMessages) return { status: 'loading' };
-    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId);
-  }, [connection, mailboxEmail, sourceThreadId, thread.isError, threadMessages, transportId]);
+    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId, sourceMessageId);
+  }, [connection, mailboxEmail, sourceThreadId, sourceMessageId, thread.isError, threadMessages, transportId]);
 
   const stableKey = selection.status === 'ready' ? JSON.stringify(selection.email) : '';
   const activeEmail = useMemo(
