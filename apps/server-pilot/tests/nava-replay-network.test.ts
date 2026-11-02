@@ -38,7 +38,7 @@ describe('replay page network fence', () => {
           await run('https://other.example/secret'),
           await run('https://other.example/api/trpc/mail.get?batch=1', 'POST')];
       });
-      expect(results).toEqual([true, true, false, false, false, false, false, true, false, false, false]);
+      expect(results, `source=${JSON.stringify(seen)} blocked=${JSON.stringify(blocked)} trpc=${JSON.stringify(blockedTrpc)}`).toEqual([true, true, false, false, false, false, false, true, false, false, false]);
       expect(seen).toEqual(expect.arrayContaining(['GET /outlook-pane', 'GET /favicon.ico', 'GET /api/auth/get-session', 'POST /api/trpc/mail.get?batch=1']));
       expect(seen.filter((item) => /unsafe|sign-out|native|mail\.send/.test(item))).toEqual([]);
       expect(blocked.map((item) => item.reason)).toEqual(['endpoint', 'endpoint', 'method', 'auth', 'native', 'origin', 'origin']);

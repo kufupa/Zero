@@ -34,6 +34,7 @@ describe('synthetic real Outlook pane', () => {
     try {
       const blocked: BlockedReplayNetwork[] = [], blockedTrpc: BlockedWrite[] = [];
       const savedReplyReads: string[] = [];
+      const calls: Array<{ method: string; procedures: string[] }> = [];
       const savedReply = { id: 'saved-A', html: '<p>Synthetic saved reply</p>',
         attachments: [{ fileName: 'synthetic-quote.pdf', pdfBase64: 'JVBERi0xLjQKJSVFT0YK' }] };
       const { context, page } = await createReplayPage(browser, origin, blocked, blockedTrpc, { syntheticLoopback: true });
@@ -46,6 +47,7 @@ describe('synthetic real Outlook pane', () => {
       await page.route('**/api/trpc/**', async (route) => {
         const request = route.request(), url = new URL(request.url());
         const decision = classifyTrpcRequest(url.href);
+        calls.push({ method: request.method(), procedures: decision.procedures });
         if (url.origin !== origin || request.method() !== 'POST' || decision.procedures.length !== 1 || !decision.allowed ||
           !analysisInputsSafe(url.href, request.method(), request.postData(), decision.procedures)) return route.fallback();
         const name = decision.procedures[0]!;
@@ -84,7 +86,16 @@ describe('synthetic real Outlook pane', () => {
         }, { subject, readAs }, { timeout: 30_000 });
       }
       const insert = page.getByRole('button', { name: 'Insert saved reply' });
-      await insert.waitFor({ state: 'visible', timeout: 30_000 });
+      try {
+        await insert.waitFor({ state: 'visible', timeout: 30_000 });
+      } catch (error) {
+        const state = await page.evaluate(() => ({
+          text: document.body.innerText.slice(0, 3000),
+          actions: (globalThis as unknown as { __navaFakeOutlook: { requests: Array<{ action?: string }> } })
+            .__navaFakeOutlook.requests.map((item) => item.action),
+        }));
+        throw new Error(`Saved-reply diagnostics: ${JSON.stringify({ calls: calls.slice(-50), savedReplyReads, blocked, blockedTrpc, state })}`, { cause: error });
+      }
       const readsBeforeClick = savedReplyReads.filter((threadId) => threadId === 'thread-A').length;
       expect(readsBeforeClick).toBeGreaterThanOrEqual(1);
       const requestsBeforeClick = await page.evaluate(() => (globalThis as unknown as {
