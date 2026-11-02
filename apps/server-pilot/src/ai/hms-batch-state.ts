@@ -109,7 +109,8 @@ export function batchStates(manifest: BatchManifest, rows: BatchEventRow[]): Bat
       .flatMap((event) => event.kind === 'claimed' ? [] : [event.screenshotRef, event.readbackRef])
       .filter((value): value is string => Boolean(value)));
     const conflict = states.some((other) => other !== state &&
-      ((state.confirmation && other.confirmation === state.confirmation) ||
+      ((state.confirmation && history.some((event) => event.childId === other.childId && event.kind !== 'claimed' &&
+          event.confirmation === state.confirmation)) ||
         history.some((event) => event.childId === other.childId && event.kind !== 'claimed' &&
           [event.screenshotRef, event.readbackRef].some((value) => value && evidence.has(value)))));
     return conflict ? { childId: state.childId, claimRunIds: state.claimRunIds, status: 'uncertain' as const } : state;

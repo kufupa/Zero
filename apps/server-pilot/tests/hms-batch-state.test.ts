@@ -61,6 +61,14 @@ describe('durable batch child state', () => {
     expect(batchStates(f.manifest, rows(f.claim, f.outcome, otherClaim, otherOutcome)).map((state) => state.status))
       .toEqual(['uncertain', 'uncertain']);
   });
+  it('holds a confirmed room when an uncertain sibling reports the same confirmation', () => {
+    const f = fixture(), other = f.manifest.rooms[1]!;
+    const otherClaim = { ...f.claim, childId: batchChildId(f.manifest, other), runId: 'r2', childDigest: batchRoomDigest(other) };
+    const pending = { kind: 'outcome', childId: otherClaim.childId, runId: otherClaim.runId, digest: f.claim.digest,
+      status: 'uncertain', confirmation: 'C1', screenshotRef: 'distinct-shot', readbackRef: 'distinct-read' };
+    expect(batchStates(f.manifest, rows(f.claim, f.outcome, otherClaim, pending)).map((state) => state.status))
+      .toEqual(['uncertain', 'uncertain']);
+  });
   it('holds shared screenshot or readback evidence across otherwise distinct confirmations', () => {
     const f = fixture(), other = f.manifest.rooms[1]!;
     const otherClaim = { ...f.claim, childId: batchChildId(f.manifest, other), runId: 'r2', childDigest: batchRoomDigest(other) };
