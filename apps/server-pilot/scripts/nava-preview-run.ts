@@ -195,6 +195,7 @@ export const NEVER_COMMIT_OR_SEND: ReadonlySet<string> = new Set([
 /** Each entry must be individually reviewed. Input messageId is the selected stored message id. */
 export const PREPARE_PREVIEW_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.prepareBookingDraft',
+  'workstation.prepareUnquotedBookingDraft',
 ]);
 
 export type ReplayPreparePolicy = {

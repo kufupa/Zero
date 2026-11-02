@@ -490,6 +490,22 @@ describe('identity-bound replay prepare', () => {
     ]) expect(replayPrepareAllowed({ ...request, ...change })).toBe(false);
   });
 
+  it('permits unquoted prepare only with its own explicit selected-message policy', () => {
+    const unquoted = 'workstation.prepareUnquotedBookingDraft';
+    const selected = { ...request, url: `${origin}/api/trpc/${unquoted}?batch=1`, procedure: unquoted,
+      policy: { ...policy, procedures: new Set([unquoted]) } };
+    expect(classifyTrpcRequest(selected.url).allowed).toBe(false);
+    expect(replayPrepareAllowed(selected)).toBe(true);
+    expect(replayPrepareAllowed({ ...selected, policy })).toBe(false);
+    expect(replayPrepareAllowed({ ...selected, sessionUserId: 'staff-2' })).toBe(false);
+    expect(replayPrepareAllowed({ ...selected, requestTransportId: 'other' })).toBe(false);
+    expect(replayPrepareAllowed({ ...selected, body: JSON.stringify({ 0: { json: { messageId: 'message-2' } } }) })).toBe(false);
+    expect(classifyTrpcRequest(`${origin}/api/trpc/${unquoted},mail.send?batch=1`).allowed).toBe(false);
+    const active = env({ NAVA_PREVIEW_PREPARE_PROCEDURES: unquoted, NAVA_PREVIEW_USER_ID: 'staff-1',
+      NAVA_PREVIEW_TRANSPORT_ID: 'mailbox-1', NAVA_PREVIEW_MESSAGE_ID: 'message-1' });
+    expect(parseRunConfig(['--threads', 't-1'], active, dir).preparePolicy?.procedures).toEqual(new Set([unquoted]));
+  });
+
   it('requires explicit reviewed procedures and identity, and refuses multi-thread runs', () => {
     const active = env({ NAVA_PREVIEW_PREPARE_PROCEDURES: procedure, NAVA_PREVIEW_USER_ID: 'staff-1',
       NAVA_PREVIEW_TRANSPORT_ID: 'mailbox-1', NAVA_PREVIEW_MESSAGE_ID: 'message-1' });
