@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { paneTextareaClass, SecondaryButton } from '@/components/nava-pane/pane-ui';
+import { hasExactBatchRoomOrder } from '@/lib/quote-workflow/pane-batch-booking';
 import type { BatchChildReview, BatchEvidenceScope, PaneBatchClient } from '@/lib/quote-workflow/pane-batch-booking';
 
 type Shot = { status: 'idle' | 'loading' | 'unavailable' | 'expired' } |
@@ -18,8 +19,8 @@ function matchingReview(scope: BatchEvidenceScope, review: BatchChildReview | nu
 }
 
 /** Render only evidence returned for this particular confirmed child and its originating write run. */
-export function BatchBookingEvidence({ client, batchRunId, allocationId, scope, reviewed, refreshEpoch, currentReadSequence, pending, onPending, onVerified }: {
-  client: PaneBatchClient; batchRunId: string; allocationId: string; scope: BatchEvidenceScope;
+export function BatchBookingEvidence({ client, batchRunId, allocationId, approvedRoomIds, scope, reviewed, refreshEpoch, currentReadSequence, pending, onPending, onVerified }: {
+  client: PaneBatchClient; batchRunId: string; allocationId: string; approvedRoomIds: readonly string[]; scope: BatchEvidenceScope;
   reviewed?: BatchChildReview | null; refreshEpoch: number; currentReadSequence: () => number;
   pending?: ReviewAttempt; onPending: (attempt: ReviewAttempt) => void; onVerified: (review: BatchChildReview) => void;
 }) {
@@ -78,7 +79,8 @@ export function BatchBookingEvidence({ client, batchRunId, allocationId, scope, 
       // The acknowledgement is not proof of persistence: read the batch afresh, scoped to its run.
       const result = await client.read({ workItemId: scope.workItemId, runId: batchRunId });
       if (request !== sequence.current) return;
-      if (result.workItemId !== scope.workItemId || result.runId !== batchRunId || result.complete !== true || !Array.isArray(result.rooms)) throw new Error('review_read_mismatch');
+      if (result.workItemId !== scope.workItemId || result.runId !== batchRunId || result.complete !== true || !Array.isArray(result.rooms) ||
+          !hasExactBatchRoomOrder(result.rooms, approvedRoomIds)) throw new Error('review_read_mismatch');
       const matches = result.rooms.filter((room) => room.allocationId === allocationId);
       const room = matches[0];
       if (matches.length !== 1 || room?.status !== 'confirmed' || room.screenshotRecorded !== true || room.readbackRecorded !== true ||

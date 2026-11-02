@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
+import { hasExactBatchRoomOrder } from '@/lib/quote-workflow/pane-batch-booking';
 import type { BatchReview, BatchReviewInput, BatchReviewedRoom, BatchRoomResult, PaneBatchClient } from '@/lib/quote-workflow/pane-batch-booking';
 import { BatchBookingEvidence, type ReviewAttempt } from './batch-booking-evidence';
 import { BatchRoomInclusion } from './batch-room-inclusion';
@@ -70,11 +71,11 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     if (result.workItemId !== workItemId || result.runId !== expectedRunId || !Array.isArray(result.rooms) || !approvedRoomIds.current.length) throw new Error('batch_result_mismatch');
     const expected = approvedRoomIds.current;
     const safe = safeResults(result.rooms);
-    const incomplete = result.complete !== true || safe.some((room) => !expected.includes(room.allocationId)) ||
-      expected.some((id) => safe.filter((room) => room.allocationId === id).length !== 1);
+    const exactOrder = hasExactBatchRoomOrder(safe, expected);
+    const incomplete = result.complete !== true || !exactOrder;
     setResults(expected.map((id) => {
       const matches = safe.filter((room) => room.allocationId === id);
-      if (matches.length !== 1 || (result.complete !== true && matches[0]!.status !== 'confirmed')) {
+      if (!exactOrder || matches.length !== 1 || (result.complete !== true && matches[0]!.status !== 'confirmed')) {
         return { allocationId: id, status: 'uncertain' as const };
       }
       return matches[0]!;
@@ -160,7 +161,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
           <p>{item.status === 'confirmed' ? `Booked · confirmation ${item.confirmation}` : item.status === 'uncertain' ? 'Outcome needs checking in HMS' : item.status === 'unattempted' ? 'Not attempted' : item.status === 'not_dispatched' ? 'Not sent to HMS' : item.status === 'reconciled_not_booked' ? 'Checked in HMS · not booked' : 'Could not book'}</p>
           {item.status === 'confirmed' && item.attempt && client && input ? <BatchBookingEvidence
             key={`${input.source.workItemId}:${item.attempt.runId}:${item.attempt.childId}`}
-            client={client} batchRunId={runId!} allocationId={item.allocationId}
+            client={client} batchRunId={runId!} allocationId={item.allocationId} approvedRoomIds={approvedRoomIds.current}
             scope={{ workItemId: input.source.workItemId, runId: item.attempt.runId, childId: item.attempt.childId }}
             reviewed={item.reviewed} refreshEpoch={refreshEpoch} currentReadSequence={() => readSequence.current}
             pending={reviewAttempts[JSON.stringify([input.source.workItemId, item.attempt.runId, item.attempt.childId])]}

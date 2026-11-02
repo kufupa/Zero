@@ -191,8 +191,8 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findByText(/Booked · confirmation C1/)).toBeTruthy();
-    expect(screen.getByText('Outcome needs checking in HMS')).toBeTruthy();
+    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
   });
   it('holds duplicate result rows and warns about an unexpected allocation', async () => {
@@ -206,10 +206,25 @@ describe('batch booking review', () => {
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
-    expect(await screen.findByText('Outcome needs checking in HMS')).toBeTruthy();
+    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
-    expect(screen.getByText('Not attempted')).toBeTruthy();
+    expect(screen.queryByText('Not attempted')).toBeNull();
     expect(screen.getByRole('alert').textContent).toMatch(/results are incomplete/);
+  });
+  it.each(['extra', 'reordered'] as const)('holds every child for a complete but %s result', async (mismatch) => {
+    const api = client(), originalRead = api.read;
+    api.read = vi.fn(async (scope) => {
+      const result = await originalRead(scope);
+      return { ...result, rooms: mismatch === 'extra'
+        ? [...result.rooms, { allocationId: 'unreviewed', status: 'unattempted' as const }]
+        : [...result.rooms].reverse() };
+    });
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(await screen.findAllByText('Outcome needs checking in HMS')).toHaveLength(2);
+    expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'View HMS screenshot' })).toBeNull();
   });
   it('does not assert an unattempted child when the result read is incomplete', async () => {
     const api = client();
@@ -409,6 +424,25 @@ describe('batch booking review', () => {
   it('does not confirm a screenshot review from an incomplete fresh read', async () => {
     const api = client(), initialRead = api.read; let reads = 0;
     api.read = vi.fn(async (scope) => ({ ...(await initialRead(scope)), complete: ++reads === 1 }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View HMS screenshot' }));
+    fireEvent.load(await screen.findByRole('img', { name: 'Saved booking in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Review may have been saved/)).toBeTruthy();
+    expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
+  });
+  it.each(['extra', 'reordered'] as const)('does not confirm screenshot review from a %s fresh result', async (mismatch) => {
+    const api = client(), originalRead = api.read; let reads = 0;
+    api.read = vi.fn(async (scope) => {
+      const result = await originalRead(scope);
+      if (++reads === 1) return result;
+      return { ...result, rooms: mismatch === 'extra'
+        ? [...result.rooms, { allocationId: 'unreviewed', status: 'unattempted' as const }]
+        : [...result.rooms].reverse() };
+    });
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));

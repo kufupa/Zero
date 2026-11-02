@@ -32,6 +32,11 @@ export type BatchRoomResult = { allocationId: string; status: 'unattempted' | 'u
   /** Original write run, including when another approved run later continues the batch. */
   attempt?: { runId: string; childId: string };
   reviewed?: BatchChildReview | null };
+/** A batch result is usable only for exactly the approved children, in approved order. */
+export function hasExactBatchRoomOrder(rooms: BatchRoomResult[], approvedIds: readonly string[]): boolean {
+  return approvedIds.length > 0 && rooms.length === approvedIds.length &&
+    rooms.every((room, index) => room.allocationId === approvedIds[index]);
+}
 export type BatchEvidenceReply = BatchEvidenceScope & (
   | { status: 'available'; evidenceVersion: string; dataUrl: string }
   | { status: 'unavailable' | 'expired' }
