@@ -68,6 +68,7 @@ function pageStub(evaluateResult = null) {
   return {
     on() {},
     off() {},
+    context() { return { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }; },
     locator() { return { count: async () => 0 }; },
     evaluate: async () => evaluateResult,
   };
@@ -114,6 +115,14 @@ test('matches every supplied model value and the three fixed controls', () => {
 
 test('rejects create-body drift, omissions, duplicates, extras, and unsupported values', () => {
   const formData = createModelData();
+
+  const selectedAccounts = { ...formData, araccountid: '75', arprofileid: '501', araccountname: 'Test Account', udfchar09: '03' };
+  assert.equal(matchesFullCreateBody(createSaveBody(selectedAccounts), selectedAccounts), true);
+  for (const key of ['araccountid', 'arprofileid', 'araccountname', 'udfchar09']) {
+    const changed = createSaveBody(selectedAccounts);
+    changed.set(key, 'other');
+    assert.equal(matchesFullCreateBody(changed, selectedAccounts), false);
+  }
 
   const changedSideEffect = createSaveBody(formData);
   changedSideEffect.set('emailaddress', 'unexpected@example.invalid');
@@ -336,4 +345,159 @@ test('reports only a confirmed, unblocked request as saved', () => {
     blockedAfterDispatch: 1 }), 'uncertain');
   assert.equal(outcome({ possiblyDispatched: true }), 'uncertain');
   assert.equal(outcome(), 'not_dispatched');
+});
+
+
+test('requires A/R selection response identity and current draft verification', async () => {
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75',
+    displayedArAccount: 'Test Account', nativeIdEvidence: 'form_change_response',
+    selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const pending = await saveNewLabtestStay(pageStub(), { ...saveInputs, arSelection });
+  assert.equal(pending.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  for (const bad of [{ ...arSelection, nativeReadback: { araccountid: 'other', araccountname: 'Test Account' } },
+    { ...arSelection, nativeIdEvidence: 'unknown' }, { ...arSelection, searchId: '' }]) {
+    const result = await saveNewLabStayForTest(bad);
+    assert.equal(result.issue, 'AR_SELECTION_UNVERIFIED');
+  }
+  async function saveNewLabStayForTest(selection) { return saveNewLabtestStay(pageStub(), { ...saveInputs, arSelection: selection }); }
+});
+
+test('CMS code proof must match selected native value and another current selection', async () => {
+  const cms = { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' };
+  const good = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), cmsMessageSelection: cms } });
+  assert.equal(good.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  for (const proof of [{ cmsMessageSelection: cms }, { adultSelection: adultSelection(2), cmsMessageSelection: { ...cms, actual: '01' } }]) {
+    const result = await saveNewLabtestStay(pageStub(), { ...saveInputs, createFieldProof: proof });
+    assert.equal(result.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
+  }
+});
+
+
+test('reason for stay proof binds the selected code and display', async () => {
+  const reason = { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } };
+  const good = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), reasonSelection: reason } });
+  assert.equal(good.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  const bad = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), reasonSelection: { ...reason, actual: { value: 'OTHER', display: 'Business' } } } });
+  assert.equal(bad.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
+});
+
+// Run the actual browser-side draft callback against a small synthetic Ext form.
+function nativeCreateDraftPage() {
+  const blanks = ['taid1', 'companyid', 'groupid', 'groupcompanyid', 'grouptaid', 'groupta2id', 'groupta3id',
+    'bookingagency2id', 'bookingagency3id', 'bookingagencycontractid', 'ta1', 'company', 'companyname', 'groupname',
+    'araccountname', 'bacontract', 'bookingagency2name', 'bookingagency3name', 'bookingagency1iatanumber',
+    'bookingagency2iatanumber', 'bookingagency3iatanumber'];
+  const visible = { ta1: '', company: '', groupname: '', bacontract: '', confirmationnumber: '', guestid: '1234567',
+    firstname: 'Proof', lastname: 'Labtest', arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', roomtype: 'STQN',
+    rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
+    revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
+    udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account',
+    bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' };
+  const data = { ...Object.fromEntries(blanks.map((key) => [key, ''])), ...visible, propertycode: 'HRCEN',
+    PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', reservationid: '', reservationstayid: '', recordid: '',
+    guaranteecreditcardid: '', leaseguaranteecreditcardid: '', araccountid: '75', arprofileid: '501',
+    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS',
+    bookingagencycommissionpricing: '', bookingagencycommissiontype: '' };
+  const values = { ...data, bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' }, elements = Object.entries(visible).map(([name, value]) => ({ name, value,
+    id: `${name}-inputEl`, offsetWidth: 1, offsetHeight: 1, readOnly: ['revenuevalue', 'nightsvalue'].includes(name),
+    closest: () => null }));
+  const root = { contains: (element) => elements.includes(element), querySelectorAll: () => elements };
+  const form = { el: { dom: root }, getRecord: () => ({ data, getData: () => ({ ...data }) }),
+    getForm: () => ({ getValues: () => ({ ...values }), getFields: () => ({ items: Object.values(components) }) }) };
+  const components = Object.fromEntries(elements.map((element) => [element.name, {
+    up: () => form, getName: () => element.name,
+    getValue: () => element.name === 'udfchkbox04' ? false : values[element.name],
+    getSubmitData: () => ({ [element.name]: values[element.name] }),
+    getFieldLabel: () => element.name === 'nightsvalue' ? 'Lifetime Nights' : '',
+  }]));
+  const env = { location: { origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' },
+    document: { title: 'Infor HMS - HRCEN', querySelectorAll: () => elements },
+    getComputedStyle: () => ({ visibility: 'visible' }), Ext: { getCmp: (name) => components[name] } };
+  const page = { data, values, elements, components, on() {}, off() {},
+    context: () => ({ _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }),
+    locator: () => ({ count: async () => 0 }),
+    async evaluate(fn, arg) {
+      const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+      try {
+        for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+        const result = await fn(arg); page.lastDraft = result; return result;
+      } finally {
+        for (const key of Object.keys(env)) {
+          if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
+          else delete globalThis[key];
+        }
+      }
+    } };
+  return page;
+}
+
+test('native draft binds A/R, CMS and reason controls before any save route', async () => {
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
+    nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const createFieldProof = { adultSelection: adultSelection(2),
+    cmsMessageSelection: { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' },
+    reasonSelection: { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } } };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, arSelection, createFieldProof });
+  // Fixture is deliberately not a full 985-field HMS model. A valid native draft reaches the schema guard.
+  assert.equal((await run(nativeCreateDraftPage())).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  const wrongAccount = nativeCreateDraftPage(); wrongAccount.data.araccountid = '76';
+  assert.equal((await run(wrongAccount)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongProfile = nativeCreateDraftPage(); wrongProfile.data.arprofileid = '';
+  assert.equal((await run(wrongProfile)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongCms = nativeCreateDraftPage(); wrongCms.components.udfchar09.getSubmitData = () => ({ udfchar09: '01' });
+  assert.equal((await run(wrongCms)).draftCheck, 'DRAFT_CMS_MESSAGE_VALUE');
+  const wrongReason = nativeCreateDraftPage(); wrongReason.components.reasonforstay.getSubmitData = () => ({ reasonforstay: 'OTHER' });
+  assert.equal((await run(wrongReason)).draftCheck, 'DRAFT_REASON_FOR_STAY_VALUE');
+});
+
+
+test('save refuses a context that does not block service workers', async () => {
+  for (const context of [null, { _options: {}, serviceWorkers: () => [] },
+    { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [{}] }]) {
+    const page = pageStub();
+    page.context = () => context;
+    const result = await saveNewLabtestStay(page, saveInputs);
+    assert.equal(result.outcome, 'refused');
+    assert.equal(result.issue, 'BROWSER_CONTEXT_UNSAFE');
+  }
+});
+
+
+test('agency commission defaults are bound from unique native submit controls', async () => {
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.taid1 = '77'; page.data.ta1 = 'Test Agency'; page.data.bookingagency1iatanumber = '123456';
+    page.values.ta1 = 'Test Agency';
+    page.elements.find((element) => element.name === 'ta1').value = 'Test Agency';
+    return page;
+  };
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
+    nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, agencySelection: agencySelection(), arSelection,
+    createFieldProof: { adultSelection: adultSelection(2) } });
+  const valid = makePage();
+  assert.equal((await run(valid)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal(valid.lastDraft.formData.bookingagencycommissionpricing, 'FLAT');
+  assert.equal(valid.lastDraft.formData.bookingagencycommissiontype, 'PERCNT');
+  const body = createSaveBody(valid.lastDraft.formData);
+  assert.equal(matchesFullCreateBody(body, valid.lastDraft.formData), true);
+  body.set('bookingagencycommissiontype', 'OTHER');
+  assert.equal(matchesFullCreateBody(body, valid.lastDraft.formData), false);
+  const badSubmit = makePage();
+  badSubmit.components.bookingagencycommissiontype.getSubmitData = () => ({ bookingagencycommissiontype: 'OTHER' });
+  assert.equal((await run(badSubmit)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const badControl = makePage();
+  badControl.components.bookingagencycommissionpricing.getValue = () => 'OTHER';
+  assert.equal((await run(badControl)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const duplicate = makePage();
+  duplicate.components.extraCommission = { ...duplicate.components.bookingagencycommissiontype };
+  assert.equal((await run(duplicate)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const missing = makePage(); delete missing.components.bookingagencycommissionpricing;
+  assert.equal((await run(missing)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
 });

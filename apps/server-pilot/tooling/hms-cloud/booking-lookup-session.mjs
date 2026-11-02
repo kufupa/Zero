@@ -476,7 +476,14 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
 export const runPartyTool = runBookingLookupTool;
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates } = {}) {
+export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false } = {}) {
+  if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
+  return { headless, blockServiceWorkers };
+}
+
+export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
+  blockServiceWorkers = false } = {}) {
+  const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
@@ -525,7 +532,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       page.off('dialog', onDialog);
       unexpectedNativeDialogs.delete(page);
     }
-  }, { headless });
+  }, pageOptions);
 }
 
 const usage = 'Usage: node booking-lookup-session.mjs --jsonl [--labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD]\n' +
@@ -572,7 +579,7 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     } finally {
       lines.close();
     }
-  }, { labtestDates });
+  }, { labtestDates, blockServiceWorkers: labtestDates !== undefined });
 }
 
 export function main() {

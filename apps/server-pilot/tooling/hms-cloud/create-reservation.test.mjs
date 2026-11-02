@@ -21,7 +21,7 @@ const fields = (pairs) => Object.entries(pairs).map(([name, value]) => ({ name, 
 function harness(options = {}) {
   const calls = [], sources = [...Array.from({ length: 100 }, (_, i) => ({ nativeCode: `X${i}`, description: `Other ${i}` })),
     { nativeCode: 'EMA', description: 'E-Mail' }];
-  let freshReads = 0, censuses = 0;
+  let freshReads = 0, censuses = 0, sessionOptions;
   const partyFields = {};
   const partyDefaults = { organization: { nativeId: '41', name: 'Example Company' },
     agency: { nativeId: '99', name: 'Example Agency', city: 'Pretoria', referenceNumber: '123' },
@@ -51,7 +51,10 @@ function harness(options = {}) {
       case 'closeGuestProfilePicker': return options.close || { outcome: 'closed_unsaved' };
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
-      case 'selectGuestStayDropdown': return request.field === 'guaranteeType' && options.guaranteeResult ? options.guaranteeResult : { outcome: 'updated_unsaved', field: request.field, requested: request.value,
+      case 'selectGuestStayDropdown':
+        if (request.field === 'reasonForStay') { partyFields.reasonforstay = 'Business'; return { outcome: 'updated_unsaved', field: request.field,
+          requested: request.value, actual: { value: request.value, display: 'Business' } }; }
+        return request.field === 'guaranteeType' && options.guaranteeResult ? options.guaranteeResult : { outcome: 'updated_unsaved', field: request.field, requested: request.value,
         actual: request.field === 'adults' ? { value: options.actualAdults ?? 2, display: '2' } : { value: options.actualGuarantee ?? 'NGI', display: 'Non-Guaranteed Individual' }, profileProofToken: 'token' };
       case 'setGuestStayChildAges': return { outcome: 'updated_unsaved', actualChildAges: options.actualChildAges ?? request.childAges,
         requestedChildAges: request.childAges, ageBandCounts: request.childAges.length === 0
@@ -73,21 +76,25 @@ function harness(options = {}) {
       case 'selectPrimaryBookingAgency': return partySelect('agency', request, 'displayedAgency', 'ta1');
       case 'selectArAccount': return partySelect('arAccount', request, 'displayedArAccount', 'araccountname');
       case 'closeGuestStayPartyPicker': return options.partyClose || { outcome: 'closed_unsaved' };
+      case 'listCmsMessageIds': return { outcome: 'ok', searchId: 'cms', candidates: [{ code: '03', description: 'Test' }], coverage: { complete: null, loaded: 1 } };
+      case 'closeCmsMessageIdPicker': return { outcome: 'closed_unsaved' };
+      case 'selectCmsMessageId': partyFields.udfchar09 = request.code; return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: request.code, actual: request.code };
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
       case 'setGuestStayText': return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
-      case 'saveNewLabtestStay': return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true };
+      case 'saveNewLabtestStay': return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501' };
       case 'readSavedLabtestRecord': return { outcome: 'read_back_verified', organization: { nativeId: '41', name: 'Example Company' } };
       default: throw new Error(`unexpected call ${request.tool}`);
     }
   };
-  return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, options: {
-    withSession: async (operation) => operation({ runTool, page: { screenshot: async () => Buffer.from('private screenshot') },
-      labtestPreimage: { preimageId: 'p' } }),
+  return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, get sessionOptions() { return sessionOptions; }, options: {
+    withSession: async (operation, options) => { sessionOptions = options; return operation({ runTool, page: { screenshot: async () => Buffer.from('private screenshot') },
+      labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
       return operation({ runTool: async () => ({ outcome: 'ok', record: { details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
     },
+    partyReadback: async (request) => options.partyReadback?.(request) ?? { outcome: 'verified' },
     census: async () => { censuses += 1; return { outcome: 'existing_matches', coverage: { complete: true }, sameArrival: [{ confirmation: '123456-1' }] }; },
   } };
 }
@@ -96,7 +103,7 @@ test('unsupported commit requests, nested unknowns and explicit clears stop befo
   let sessions = 0;
   const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
   for (const [change, fields] of [
-    [{ price: 100, parties: { organizationId: '41', agencyId: '99' } }, ['price', 'parties.agencyId']],
+    [{ price: 100, parties: { organizationId: '41', agencyId: '99' } }, ['price']],
     [{ guest: { ...input.guest, searchExtra: { nested: { unknown: null } } } }, ['guest.searchExtra.nested.unknown']],
     [{ stay: { ...input.stay, occupancy: { other: 1 } } }, ['stay.occupancy.other']],
     [{ cms: { send: false, messageId: null } }, ['cms.messageId']],
@@ -487,17 +494,63 @@ test('party selection handles duplicate IDs, truncated misses, picker errors and
   assert.equal(mismatch.field, 'ta1');
 });
 
-test('party commit requests and explicit clears remain unsupported before session', async () => {
-  let sessions = 0;
-  const noSession = async () => { sessions++; throw new Error('unexpected session'); };
-  for (const parties of [{ agencyId: '99', organizationId: '41' }, { agencyName: 'Example' },
-    { arAccountId: '75' }, { arAccountName: 'Example' }, { agencyId: null }, { arAccountName: null }]) {
-    const result = await createReservation({ ...input, parties }, { withSession: noSession });
+test('party clears stay unsupported and unresolved choices never save', async () => {
+  for (const parties of [{ agencyId: null }, { arAccountName: null }]) {
+    let sessions = 0;
+    const result = await createReservation({ ...input, parties }, { withSession: async () => { sessions++; } });
     assert.equal(result.outcome, 'unsupported');
-    assert.equal(result.approvalReady, false);
+    assert.equal(sessions, 0);
   }
-  assert.equal(sessions, 0);
+  for (const parties of [{ agencyId: '99' }, { agencyName: 'Example' }, { arAccountId: '75' }, { arAccountName: 'Example' }]) {
+    const fake = harness();
+    const result = await createReservation({ ...input, parties }, fake.options);
+    assert.equal(result.outcome, 'needs_input');
+    assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  }
 });
+
+test('commit independently passes selected parties and requires fresh native identity readback', async (t) => {
+  const dirs = new Set();
+  t.after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
+  for (const parties of [
+    { agencyId: '99', agencyName: 'Example' },
+    { arAccountId: '75', arAccountName: 'Example' },
+    { agencyId: '99', agencyName: 'Example', organizationId: '41', arAccountId: '75', arAccountName: 'Example' },
+  ]) {
+    let checked;
+    const fake = harness({ record: { ...values, company: parties.organizationId ? 'Example Company' : '' },
+      partyReadback: (request) => { checked = request; return { outcome: 'verified' }; } });
+    const result = await createReservation({ ...input, parties }, fake.options);
+    if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+    assert.equal(result.outcome, 'saved');
+    const save = fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
+    assert.equal(save.agencySelection?.nativeId ?? null, parties.agencyId ?? null);
+    assert.equal(save.arSelection?.nativeId ?? null, parties.arAccountId ?? null);
+    assert.equal(save.organizationSelection?.nativeId ?? null, parties.organizationId ?? null);
+    assert.equal(checked.agency?.nativeId ?? null, parties.agencyId ?? null);
+    assert.equal(checked.arAccount?.profileId ?? null, parties.arAccountId ? '501' : null);
+  }
+  const fake = harness({ record: { ...values, company: '' }, partyReadback: () => ({ outcome: 'unverified' }) });
+  const result = await createReservation({ ...input, parties: { agencyId: '99', agencyName: 'Example' } }, fake.options);
+  if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+});
+
+test('optional CMS code is selected and checked without sending', async (t) => {
+  const fake = harness({ record: { ...values, udfchar09: '03' } });
+  const result = await createReservation({ ...input, cms: { send: false, messageId: '03' } }, fake.options);
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(result.outcome, 'saved');
+  assert.equal(result.applied.cmsMessageId, '03');
+  assert.equal(fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay').createFieldProof.cmsMessageSelection.actual, '03');
+  const unavailable = harness();
+  const missing = await createReservation({ ...input, cms: { messageId: 'UNAVAILABLE' } }, unavailable.options);
+  assert.equal(missing.outcome, 'needs_input');
+  assert.ok(missing.missing.includes('cms.messageId.selection'));
+  assert.equal(unavailable.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
 
 
 test('explicit loaded IDs survive truncated search but not duplicate or conflicting organization evidence', async () => {
@@ -530,4 +583,29 @@ test('failed picker search or uncertain selection does not continue', async () =
   assert.equal(uncertain.outcome, 'uncertain');
   assert.equal(uncertain.partySearches.agency.candidates[0].nativeId, '99');
   assert.equal(failedSelection.calls.some(({ tool }) => tool === 'searchArAccount'), false);
+});
+
+
+test('reason for stay uses current dropdown and saved visible readback', async (t) => {
+  const fake = harness({ record: { ...values, reasonforstay: 'Business' } });
+  const result = await createReservation({ ...input, reasonForStay: 'BUS' }, fake.options);
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(result.outcome, 'saved');
+  assert.equal(result.applied.reasonForStay, 'Business');
+  assert.equal(fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay').createFieldProof.reasonSelection.actual.value, 'BUS');
+  const mismatch = harness({ record: { ...values, reasonforstay: 'Leisure' } });
+  const uncertain = await createReservation({ ...input, reasonForStay: 'BUS' }, mismatch.options);
+  if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'reasonForStay'));
+});
+
+
+test('guarded create requests blocked workers before opening its booking session', async () => {
+  const fake = harness();
+  await createReservation(input, fake.options);
+  assert.equal(fake.sessionOptions.blockServiceWorkers, true);
+  const prepare = harness();
+  await createReservation({ ...input, mode: 'prepare' }, prepare.options);
+  assert.equal(prepare.sessionOptions.blockServiceWorkers, undefined);
 });

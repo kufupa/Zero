@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './guest-profile.mjs';
 import { consumeLabtestPreimage } from './labtest-preimage.mjs';
 import { blankPartyFields } from './labtest-party-fields.mjs';
+import { verifiedArSelectionToken, isVerifiedArSelectionCurrent } from './lookup.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 
@@ -17,8 +18,8 @@ const draftChecks = new Set([
   'DRAFT_PROFILE_PRIVACY_FIELDS', 'DRAFT_FORM_MODEL_SHAPE', 'DRAFT_FORM_MODEL_KEYS',
   'DRAFT_ADULT_MODEL', 'DRAFT_CHILD_MODEL', 'DRAFT_CHILD_AGES_MODEL', 'DRAFT_CHILD_CATEGORY_MODEL',
   'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
-  'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
-  'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_REQUIRED_FIELDS',
+  'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
+  'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_AGENCY_COMMISSION_VALUE', 'DRAFT_REQUIRED_FIELDS',
 ]);
 const safeDraftCheck = (value) => draftChecks.has(value) ? value : null;
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
@@ -77,7 +78,7 @@ function normalizeSourceSelection(selection) {
 }
 
 function normalizeCreateFieldProof(proof) {
-  const allowed = ['adultSelection', 'childAgeSelection', 'sourceSelection'];
+  const allowed = ['adultSelection', 'childAgeSelection', 'sourceSelection', 'cmsMessageSelection', 'reasonSelection'];
   if (!proof || typeof proof !== 'object' || Array.isArray(proof) ||
       Object.keys(proof).some((key) => !allowed.includes(key)) ||
       !allowed.some((key) => Object.hasOwn(proof, key))) return null;
@@ -87,10 +88,20 @@ function normalizeCreateFieldProof(proof) {
   if ((Object.hasOwn(proof, 'adultSelection') && !adult) ||
       (Object.hasOwn(proof, 'childAgeSelection') && !child) ||
       (Object.hasOwn(proof, 'sourceSelection') && !source)) return null;
+  const cms = proof.cmsMessageSelection;
+  if (Object.hasOwn(proof, 'cmsMessageSelection') && (!cms || cms.outcome !== 'updated_unsaved' ||
+      cms.field !== 'cmsMessageId' || typeof cms.requested !== 'string' || !cms.requested ||
+      cms.actual !== cms.requested)) return null;
+  const reason = proof.reasonSelection;
+  if (Object.hasOwn(proof, 'reasonSelection') && (!reason ||
+      !['updated_unsaved', 'unchanged_unsaved'].includes(reason.outcome) || reason.field !== 'reasonForStay' ||
+      typeof reason.requested !== 'string' || !reason.requested || String(reason.actual?.value) !== reason.requested ||
+      typeof reason.actual?.display !== 'string' || !reason.actual.display.trim())) return null;
   const tokens = [adult?.profileProofToken, child?.profileProofToken, source?.profileProofToken].filter(Boolean);
   if (!tokens.length || tokens.some((token) => token !== tokens[0])) return null;
   return { adults: adult?.adults ?? null, childAges: child?.ages ?? null,
-    childAgeBands: child?.bands ?? null, sourceBusiness: source,
+    childAgeBands: child?.bands ?? null, sourceBusiness: source, cmsMessage: cms?.requested ?? null,
+    reason: reason ? { value: reason.requested, display: reason.actual.display } : null,
     profileProofToken: tokens[0] };
 }
 
@@ -114,6 +125,15 @@ function normalizeAgencySelection(selection) {
       selection.selectedField?.name !== 'ta1' || clean(selection.selectedField.value) !== name) return undefined;
   return { nativeId, name, referenceNumber: rawIataNumber ?? '', referenceNumberType: rawReferenceType ?? '',
     profileProofToken: clean(selection.profileProofToken) };
+}
+
+function normalizeArSelection(selection) {
+  const nativeId = clean(selection?.nativeId), name = clean(selection?.displayedArAccount);
+  if (selection?.outcome !== 'selected_unsaved' || !clean(selection.searchId) || !nativeId || !name ||
+      selection.nativeIdEvidence !== 'form_change_response' || selection.selectedField?.name !== 'araccountname' ||
+      clean(selection.selectedField.value) !== name || clean(selection.nativeReadback?.araccountid) !== nativeId ||
+      clean(selection.nativeReadback?.araccountname) !== name) return null;
+  return { nativeId, name };
 }
 
 export function normalizeOrganizationSelection(selection) {
@@ -154,7 +174,9 @@ async function draft(page, expected) {
       ...(expected.strictCreateProof ? ['revenuevalue', 'nightsvalue'] : []), 'udfchkbox04', 'udfchar13', 'emailaddress',
       ...(expected.createFieldProof?.adults != null ? ['adults'] : []),
       ...(expected.createFieldProof?.childAges != null ? ['children', ...childBands] : []),
-      ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : [])];
+      ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : []),
+      ...(expected.createFieldProof?.cmsMessage != null ? ['udfchar09'] : []),
+      ...(expected.createFieldProof?.reason ? ['reasonforstay'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return 'DRAFT_VISIBLE_FIELDS';
@@ -181,8 +203,11 @@ async function draft(page, expected) {
           !partyValueAllowed(el.name.toLowerCase(), String(el.value ?? '').trim()))) return 'DRAFT_PARTY_FIELDS';
     if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
         !exact('guestid', expected.guestId) || !exact('firstname', 'Proof') || !exact('lastname', 'Labtest') ||
-        ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid', 'arprofileid', 'araccountid',
+        ['confirmationnumber', 'reservationid', 'reservationstayid', 'recordid',
           'guaranteecreditcardid', 'leaseguaranteecreditcardid'].some((name) => !exact(name, '')) ||
+        !exact('araccountid', expected.arSelection?.nativeId ?? '') ||
+        (expected.arSelection ? !keys.includes('arprofileid') || keys.filter((key) => key.toLowerCase() === 'arprofileid').length !== 1 ||
+          !String(data.arprofileid ?? '').trim() : !exact('arprofileid', '')) ||
         !keys.includes('bookingsessionid') || keys.filter((k) => k.toLowerCase() === 'bookingsessionid').length !== 1 ||
         !String(data.bookingsessionid ?? '').trim()) return 'DRAFT_RESERVATION_MODEL';
     if (value('confirmationnumber') || value('guestid') !== expected.guestId ||
@@ -228,6 +253,23 @@ async function draft(page, expected) {
         return [input.value, component.getValue(), submitted[submittedKeys[0]]].every((item) => String(item ?? '') === value)
           ? current : null;
       };
+      // Agency selection can update native form controls without updating the model.
+      // Bind only the two current commission controls, not unrelated form fields.
+      if (expected.agencySelection) {
+        const controls = form.getForm?.()?.getFields?.()?.items;
+        if (!Array.isArray(controls)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+        for (const name of ['bookingagencycommissionpricing', 'bookingagencycommissiontype']) {
+          const current = currentFormValue(name);
+          const matches = controls.filter((control) => control.getName?.() === name || control.name === name);
+          if (!current.found || typeof current.value !== 'string' || matches.length !== 1) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+          const control = matches[0], submitted = control.getSubmitData?.();
+          const keys = Object.keys(submitted || {}).filter((key) => key.toLowerCase() === name.toLowerCase());
+          if (control.up?.('form') !== form || control.disabled || control.isDisabled?.() ||
+              typeof control.getValue !== 'function' || control.getValue() !== current.value ||
+              keys.length !== 1 || !Object.hasOwn(submitted, name) || submitted[name] !== current.value ||
+              !copyCurrentFormValue(name, current)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+        }
+      }
       const proof = expected.createFieldProof;
       if (proof && proof.adults !== null && !override('adults', proof.adults)) return 'DRAFT_ADULT_MODEL';
       if (proof && proof.childAges !== null) {
@@ -248,6 +290,15 @@ async function draft(page, expected) {
       if (proof && proof.childAges !== null && (value('children') !== String(proof.childAges.length) ||
           childBands.some((name) => value(name) !== String(proof.childAgeBands[name])))) return 'DRAFT_CHILD_VISIBLE_VALUE';
       if (!override('reservationnote', expected.note) || !nativeFormValue('reservationnote')) return 'DRAFT_NOTE_SUBMIT_VALUE';
+      if (proof?.cmsMessage != null && (!override('udfchar09', proof.cmsMessage) || !nativeFormValue('udfchar09'))) return 'DRAFT_CMS_MESSAGE_VALUE';
+      if (proof?.reason) {
+        const component = cmp('reasonforstay');
+        const submitted = component?.getSubmitData?.();
+        if (value('reasonforstay') !== proof.reason.display || String(component?.getValue?.() ?? '') !== proof.reason.value ||
+            String(submitted?.reasonforstay ?? '') !== proof.reason.value || !override('reasonforstay', proof.reason.value)) {
+          return 'DRAFT_REASON_FOR_STAY_VALUE';
+        }
+      }
       const modelNumber = (name) => {
         const matches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
         if (matches.length !== 1) return null;
@@ -287,6 +338,7 @@ async function draft(page, expected) {
     const verifiedPartyValues = { ...partyValues };
     if (expected.organizationSelection) verifiedPartyValues.companyname = String(data.companyname ?? '').trim();
     return { session: String(data.bookingsessionid).trim(), track: value('track'),
+      ...(expected.arSelection ? { arProfileId: String(data.arprofileid).trim() } : {}),
       ...(expected.strictCreateProof ? { ...(expected.createFieldProof?.childAges != null ? { activeChildCategories } : {}),
         modelData: Object.fromEntries(Object.keys(modelData).map((key) => [key, modelData[key]])),
         formData: Object.fromEntries(Object.keys(formData).map((key) => [key, formData[key]])), partyValues: verifiedPartyValues } : {}) };
@@ -388,9 +440,11 @@ function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
       departuredate: expected.departureWire, roomtype: expected.roomType, rateplan: expected.ratePlan, track: expected.track,
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: '0', udfchar13: '', emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
-      arprofileid: '', araccountid: '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
+      arprofileid: expected.arProfileId ?? '', araccountid: expected.arSelection?.nativeId ?? '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
       ...(proof?.adults != null ? { adults: proof.adults } : {}),
       ...childAgeFields,
+      ...(proof?.cmsMessage != null ? { udfchar09: proof.cmsMessage } : {}),
+      ...(proof?.reason ? { reasonforstay: proof.reason.value } : {}),
       ...(proof?.sourceBusiness ? { sourceofbus: proof.sourceBusiness.nativeCode,
         sourceofbusinessdesc: proof.sourceBusiness.description } : {}),
       ...Object.fromEntries(blankPartyFields.map((name) => [name, expected.partyValues[name] ?? ''])),
@@ -401,6 +455,8 @@ function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
       url.pathname === SAVE_PATH && !url.hash && [...url.searchParams].length === 1 && url.searchParams.get('pageaction') === 'SAVE' &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
       isVerifiedLabtestProfileCurrent(page, { nativeId: expected.guestId, session: expected.session, token: expected.profileToken }) &&
+      (!expected.arSelection || isVerifiedArSelectionCurrent(page, { session: expected.session, accountId: expected.arSelection.nativeId,
+        profileId: expected.arProfileId, token: expected.arToken })) &&
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
     if (!matchesRequest) return false;
@@ -412,10 +468,18 @@ function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
   } catch { return false; }
 }
 
+function safeCreateContext(page) {
+  try {
+    const context = page.context();
+    return context?._options?.serviceWorkers === 'block' && typeof context.serviceWorkers === 'function' &&
+      context.serviceWorkers().length === 0;
+  } catch { return false; }
+}
+
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
-  createFieldProof, agencySelection, organizationSelection,
+  createFieldProof, agencySelection, organizationSelection, arSelection,
 } = {}, { timeoutMs = 20_000 } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
@@ -430,8 +494,12 @@ export async function saveNewLabtestStay(page, {
   const organizationSelectionProvided = organizationSelection !== undefined && organizationSelection !== null;
   const organization = organizationSelectionProvided ? normalizeOrganizationSelection(organizationSelection) : null;
   if (organizationSelectionProvided && !organization) return { outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_UNVERIFIED' };
-  const strictCreateProof = Boolean(createFields || agency || organization);
+  const arSelectionProvided = arSelection !== undefined && arSelection !== null;
+  const ar = arSelectionProvided ? normalizeArSelection(arSelection) : null;
+  if (arSelectionProvided && !ar) return { outcome: 'input_gap', issue: 'AR_SELECTION_UNVERIFIED' };
+  const strictCreateProof = Boolean(createFields || agency || organization || ar);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
+  if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
@@ -461,10 +529,11 @@ export async function saveNewLabtestStay(page, {
       taid1: agency.nativeId, ta1: agency.name, bookingagency1iatanumber: agency.referenceNumber,
     });
     if (organization) Object.assign(partyValues, { companyid: organization.nativeId, company: organization.name });
+    if (ar) partyValues.araccountname = ar.name;
     const expected = { ...formatted, guestId: clean(guestId), roomType, ratePlan, guaranteeType, note,
       ...(createFields ? { createFieldProof: createFields } : {}),
       ...(agency ? { agencySelection: agency } : {}), ...(organization ? { organizationSelection: organization } : {}),
-      strictCreateProof, partyValues };
+      ...(ar ? { arSelection: ar } : {}), strictCreateProof, partyValues };
     const state = await bounded(draft(page, expected));
     if (typeof state === 'string') throw Object.assign(new Error('LABTEST_DRAFT_UNVERIFIED'), { draftCheck: state });
     if (!state) throw new Error('LABTEST_DRAFT_UNVERIFIED');
@@ -472,7 +541,11 @@ export async function saveNewLabtestStay(page, {
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
     if (!profileToken) throw new Error('LABTEST_PROFILE_PROOF_STALE');
     if (!createSelectionProofTokensMatch(createFields, agency, organization, profileToken)) throw new Error('CREATE_SELECTION_PROOF_STALE');
-    Object.assign(expected, state, { profileToken });
+    const arToken = ar ? await bounded(verifiedArSelectionToken(page, { session: state.session, accountId: ar.nativeId,
+      profileId: state.arProfileId })) : null;
+    if (ar && !arToken) throw new Error('AR_SELECTION_PROOF_STALE');
+    Object.assign(expected, state, { profileToken, arToken });
+    if (!safeCreateContext(page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();
     if (!consumeLabtestPreimage(page, { preimageId, arrival, departure })) throw new Error('PREIMAGE_STALE_OR_MISMATCHED');
@@ -548,7 +621,8 @@ export async function saveNewLabtestStay(page, {
       hasConfirmation: Boolean(requestSeen && snapshot.confirmation), nativeDialog, dialogs: dialogs.length, blockedAfterDispatch }),
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
-      browserSendRequests: sendRequests, nativeDialog, dialogs, ...(blockedRequest ? { blockedRequest } : {}) };
+      browserSendRequests: sendRequests, nativeDialog, dialogs, ...(ar ? { arProfileId: state.arProfileId } : {}),
+      ...(blockedRequest ? { blockedRequest } : {}) };
   } catch (error) {
     armed = false;
     if (possiblyDispatched) fence?.quarantine();

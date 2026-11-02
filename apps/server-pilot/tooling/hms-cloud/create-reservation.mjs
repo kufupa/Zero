@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { withBookingLookupSession } from './booking-lookup-session.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
+import { readCreateParties } from './create-party-readback.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -21,13 +22,8 @@ function validate(input) {
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
   const fidelity = inspectRequest(input);
-  if (input.mode === 'commit') {
-    for (const key of ['agencyId', 'agencyName', 'arAccountId', 'arAccountName']) {
-      if (Object.hasOwn(input.parties || {}, key) && input.parties[key] != null) {
-        fidelity.unsupported.push({ field: `parties.${key}`, issue: 'not_settable_yet' });
-      }
-    }
-  }
+  if (input.cms?.messageId != null && !code(input.cms.messageId, 100)) fidelity.invalid.push('cms.messageId');
+  if (input.reasonForStay != null && !code(input.reasonForStay, 100)) fidelity.invalid.push('reasonForStay');
   if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
   if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
   if (input.guaranteeType != null && input.guaranteeType !== 'NGI') {
@@ -78,17 +74,17 @@ function validate(input) {
 // Only these request keys are understood by this wrapper. Presence is significant:
 // an explicit null is not the same request as an omitted optional field.
 const requestShape = {
-  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
+  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
   guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
   stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
   room: ['roomType', 'ratePlan'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
   cms: ['send', 'messageId', 'recipient'], approval: ['by', 'at'], booker: ['name', 'contact'],
 };
-const unsupportedPaths = new Set(['booker', 'cms.messageId', 'cms.recipient',
+const unsupportedPaths = new Set(['booker', 'cms.recipient',
   'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
-const optionalNoClear = new Set(['sourceOfBusiness', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
+const optionalNoClear = new Set(['sourceOfBusiness', 'reasonForStay', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
   'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'parties.agencyId', 'parties.agencyName',
-  'parties.arAccountId', 'parties.arAccountName', 'cms.send']);
+  'parties.arAccountId', 'parties.arAccountName', 'cms.send', 'cms.messageId']);
 
 function inspectRequest(input) {
   const unsupported = [], invalid = [];
@@ -116,7 +112,7 @@ function inspectRequest(input) {
   };
   visit(input, '');
   for (const [field, value] of [
-    ['sourceOfBusiness', input.sourceOfBusiness], ['note', input.note],
+    ['sourceOfBusiness', input.sourceOfBusiness], ['reasonForStay', input.reasonForStay], ['note', input.note], ['cms.messageId', input.cms?.messageId],
     ['guest.search.lastName', input.guest?.search?.lastName], ['guest.search.firstName', input.guest?.search?.firstName],
     ['guest.search.email', input.guest?.search?.email], ...['organizationName', 'agencyName', 'arAccountName']
       .map((key) => [`parties.${key}`, input.parties?.[key]]),
@@ -255,7 +251,8 @@ function formValue(fields, name) {
 }
 
 /** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
-export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession, census } = {}) {
+export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
+  partyReadback = readCreateParties, census } = {}) {
   const checked = validate(input);
   if (checked.outcome) return { ...checked, approvalReady: false };
   const commit = input.mode === 'commit', missing = checked.missing;
@@ -347,11 +344,32 @@ export async function createReservation(input, { withSession = withBookingLookup
         missing.push('guaranteeType.staging');
         output.warnings.push({ field: 'guaranteeType', issue: 'requires_verified_labtest_draft' });
       }
-      if (!commit && input.parties) {
-        for (const kind of ['organization', 'agency', 'arAccount']) {
+      if (input.parties) {
+        for (const kind of commit ? ['agency', 'arAccount'] : ['organization', 'agency', 'arAccount']) {
           state[kind] = await prepareParty(runTool, kind, input.parties, propertyCode, output, missing);
         }
       }
+      if (input.reasonForStay != null) {
+        state.reason = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'reasonForStay', value: input.reasonForStay });
+        if (String(state.reason.actual?.value) !== input.reasonForStay || !text(state.reason.actual?.display)) {
+          stop('uncertain', 'requested_field_not_staged', { field: 'reasonForStay' });
+        }
+        output.applied.reasonForStay = state.reason.actual.display;
+      }
+      if (input.cms?.messageId != null) {
+        const found = await call(runTool, 'listCmsMessageIds', { propertyCode });
+        output.cmsSearch = { candidates: found.candidates, coverage: found.coverage };
+        const matches = (found.candidates || []).filter((item) => item.code === input.cms.messageId);
+        if (matches.length !== 1) {
+          missing.push('cms.messageId.selection');
+          await call(runTool, 'closeCmsMessageIdPicker', { propertyCode }, ['closed_unsaved']);
+        } else {
+          state.cms = await call(runTool, 'selectCmsMessageId', { propertyCode, searchId: found.searchId, code: input.cms.messageId });
+          if (state.cms.actual !== input.cms.messageId) stop('uncertain', 'requested_field_not_staged', { field: 'cms.messageId' });
+          output.applied.cmsMessageId = state.cms.actual;
+        }
+      }
+      if (commit && missing.length) return;
       if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
       const note = input.note ?? (commit ? `Proof Labtest create ${randomUUID()}` : null);
       if (note != null && typeof note === 'string' && note.trim() && note.length <= 200) {
@@ -375,6 +393,8 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.agency ? [['ta1', state.agency.displayedAgency]] : []),
         ...(state.arAccount ? [['araccountname', state.arAccount.displayedArAccount]] : []),
         ...(state.guarantee ? [['guaranteetype', state.guarantee.actual.display]] : []),
+        ...(state.cms ? [['udfchar09', state.cms.actual]] : []),
+        ...(state.reason ? [['reasonforstay', state.reason.actual.display]] : []),
         ...(commit || input.cms?.send === false ? [['udfchkbox04', false]] : []),
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
@@ -402,14 +422,18 @@ export async function createReservation(input, { withSession = withBookingLookup
           arrival: stay.arrival, departure: stay.departure, guestId: state.guest.selected.nativeId,
           roomType: room.roomType, ratePlan: room.ratePlan, guaranteeType: input.guaranteeType, note,
           createFieldProof: { adultSelection: state.adult, childAgeSelection: state.children,
-            ...(state.source ? { sourceSelection: state.source } : {}) },
-          ...(state.organization ? { organizationSelection: state.organization } : {}) });
+            ...(state.source ? { sourceSelection: state.source } : {}),
+            ...(state.cms ? { cmsMessageSelection: state.cms } : {}),
+            ...(state.reason ? { reasonSelection: state.reason } : {}) },
+          ...(state.organization ? { organizationSelection: state.organization } : {}),
+          ...(state.agency ? { agencySelection: state.agency } : {}),
+          ...(state.arAccount ? { arSelection: state.arAccount } : {}) });
       } catch { state.save = { outcome: 'uncertain', issue: 'SAVE_TOOL_FAILED' }; }
       try { await screenshot('after'); } catch { state.afterScreenshotFailed = true; }
-      if (state.organization && state.save.outcome === 'saved_same_form') {
+      if (state.organization && !state.agency && !state.arAccount && state.save.outcome === 'saved_same_form') {
         state.organizationReadback = await runTool({ tool: 'readSavedLabtestRecord', confirmation: state.save.confirmation });
       }
-    }, { memory: null, ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure } } : {}) });
+    }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure } } : {}) });
   } catch (error) {
     state.sessionFailedAfterSave = Boolean(state.saveAttempted);
     Object.assign(output, error.result || (error.phase === 'labtest_preimage' ? { outcome: error.labtestPreimage?.outcome === 'existing_matches' ? 'needs_input' : 'uncertain',
@@ -430,10 +454,24 @@ export async function createReservation(input, { withSession = withBookingLookup
   try {
     output.readback = await readLabtestCreate({ confirmation: output.confirmation, stay, expected }, { withSavedSession });
     if (!output.readback.mismatches) return { ...output, issue: 'readback_unverified' };
-    if (state.organization) output.readback.organizationProof = state.organizationReadback;
+    if (state.reason && !same(formValue(output.readback.fields, 'reasonforstay'), state.reason.actual.display)) {
+      output.readback.mismatches.push({ field: 'reasonForStay', issue: 'missing_or_mismatched' });
+    }
+    if (state.cms && formValue(output.readback.fields, 'udfchar09') !== state.cms.actual) {
+      output.readback.mismatches.push({ field: 'cmsMessageId', issue: 'missing_or_mismatched' });
+    }
+    if (state.agency || state.arAccount) {
+      output.readback.partyProof = await partyReadback({ confirmation: output.confirmation, arrival: stay.arrival,
+        guestId: state.guest.selected.nativeId,
+        agency: state.agency ? { nativeId: state.agency.nativeId, name: state.agency.displayedAgency } : null,
+        organization: state.organization ? { nativeId: state.organization.nativeId, name: state.organization.displayedOrganization } : null,
+        arAccount: state.arAccount ? { nativeId: state.arAccount.nativeId, name: state.arAccount.displayedArAccount,
+          profileId: state.save.arProfileId } : null });
+    } else if (state.organization) output.readback.organizationProof = state.organizationReadback;
+    const partiesVerified = state.agency || state.arAccount ? output.readback.partyProof?.outcome === 'verified' :
+      !state.organization || state.organizationReadback?.outcome === 'read_back_verified';
     if (state.save.outcome === 'saved_same_form' && !state.afterScreenshotFailed && !state.sessionFailedAfterSave &&
-        (!state.organization || state.organizationReadback?.outcome === 'read_back_verified') &&
-        output.readback.mismatches.length === 0) output.outcome = 'saved';
+        partiesVerified && output.readback.mismatches.length === 0) output.outcome = 'saved';
     else output.issue = state.afterScreenshotFailed ? 'result_screenshot_failed' : 'save_requires_reconciliation';
   } catch { output.issue = 'readback_unverified'; }
   return output;
