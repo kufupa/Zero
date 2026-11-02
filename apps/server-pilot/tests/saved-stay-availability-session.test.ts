@@ -99,6 +99,29 @@ describe('saved-stay amendment availability session', () => {
     });
   });
 
+  it.each(['LABTEST_RECORD_UNVERIFIED', 'AMEND_AVAILABILITY_UNVERIFIED'])(
+    'seals the session when a saved-form recheck returns %s', async (issue) => {
+      fixtures.labtest.mockResolvedValueOnce({ outcome: 'refused', issue, saveEligible: false });
+      await withSavedStayAgentSession(async ({ runTool }) => {
+        await runTool({ tool: 'read', confirmation: expected.confirmation });
+        expect(await runTool({ tool: 'readAmendmentAvailability', mode: 'labtest', expected, options }))
+          .toMatchObject({ outcome: 'refused', issue, saveEligible: false });
+        expect(await runTool({ tool: 'prepareCancellation' })).toMatchObject({ outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' });
+        expect(await runTool({ tool: 'prepareFinance' })).toMatchObject({ outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' });
+      });
+    },
+  );
+
+  it('keeps the current record when the Labtest reader only reports an input gap', async () => {
+    fixtures.labtest.mockResolvedValueOnce({ outcome: 'input_gap', issue: 'AMEND_CHANGE_REQUIRED', saveEligible: false });
+    await withSavedStayAgentSession(async ({ runTool }) => {
+      await runTool({ tool: 'read', confirmation: expected.confirmation });
+      expect(await runTool({ tool: 'readAmendmentAvailability', mode: 'labtest', expected, options }))
+        .toMatchObject({ outcome: 'input_gap', issue: 'AMEND_CHANGE_REQUIRED' });
+      expect(await runTool({ tool: 'prepareFinance' })).not.toMatchObject({ issue: 'FRESH_SESSION_REQUIRED' });
+    });
+  });
+
   it('refuses Labtest-bound availability for a non-reserved record', async () => {
     fixtures.readRecord.mockResolvedValueOnce({ details: { fields: [{ name: 'status', value: 'Cancelled' }] } });
     await withSavedStayAgentSession(async ({ runTool }) => {

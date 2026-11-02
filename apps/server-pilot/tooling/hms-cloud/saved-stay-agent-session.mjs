@@ -168,7 +168,10 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
           } else {
             result = await readStayAmendmentAvailability(availabilityPage, request.input, request.options);
           }
-          if (result.outcome === 'selection_uncertain' || result.issue === 'AMEND_PREIMAGE_CHANGED') sealed = true;
+          // A Labtest refusal can come from either pre-read or post-read checks;
+          // the adapter does not distinguish them, so the cached record is no longer safe.
+          if (result.outcome === 'selection_uncertain' ||
+              (tool === 'readAmendmentAvailability' && request.mode === 'labtest' && result.outcome === 'refused')) sealed = true;
           return result;
         } catch {
           sealed = true;

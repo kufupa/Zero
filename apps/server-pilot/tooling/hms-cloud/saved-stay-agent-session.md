@@ -51,7 +51,7 @@ the matching current Reserved record, `expected` (`confirmation`, `guestId`,
 `arrival`, `departure`, `roomType`, `ratePlan`, `note`), and `options` with
 `change`, `occupancy`, `partyContext`, `roomQuantity`, and `snapshotPath`.
 The underlying reader checks the saved fake form before and after the read.
-A changed preimage seals the session. See
+Any refusal from the underlying Labtest reader seals the session. See
 [availability contract](guest-stay-amend-availability.md) and
 [Labtest adapter](guest-stay-amend-date-room-rate.md) for validation and limits.
 
