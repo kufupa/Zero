@@ -12,7 +12,7 @@ import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step'
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
-import type { BatchReview, PaneBatchClient } from '../lib/quote-workflow/pane-batch-booking';
+import type { BatchReview, BatchReviewInput, PaneBatchClient } from '../lib/quote-workflow/pane-batch-booking';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -3106,7 +3106,7 @@ describe('batch booking card integration', () => {
   function batchClient(): PaneBatchClient {
     return {
       mode: () => 'on',
-      prepare: vi.fn(async (request) => ({
+      prepare: vi.fn(async (request: BatchReviewInput) => ({
         reviewId: 'review', manifestDigest: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00Z',
         batchLimit: 8, blockers: [], propertyCode: request.propertyCode, source: request.source,
         rooms: request.rooms.map(({ allocationId, identity, stay, amount }) => ({
@@ -3178,7 +3178,7 @@ describe('batch booking card integration', () => {
     if (response === 'lost') await screen.findByText(/booking outcome needs checking/i);
     else await screen.findByRole('button', { name: 'Refresh booking results' });
     expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Message Id') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByLabelText('Message Id')).toHaveProperty('disabled', true);
     expect(screen.getAllByLabelText('First name').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
     const inclusion = screen.getByRole('group', { name: 'Rooms to review' });
     expect(within(inclusion).getAllByRole('checkbox').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
