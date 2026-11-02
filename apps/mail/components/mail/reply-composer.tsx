@@ -389,10 +389,11 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   }, [draftId, composeSeed]);
 
   const hasDraftRecipients = draftTo.length > 0 || draftCc.length > 0 || draftBcc.length > 0;
+  const savedHeaders = draft?.id === draftId && draft?.headersSaved === true;
   const shouldUseDraftRecipients =
-    hasDraftRecipients && Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
+    (savedHeaders || hasDraftRecipients) && Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
   const initialToRecipients = shouldUseDraftRecipients
-    ? draftTo.length > 0
+    ? savedHeaders || draftTo.length > 0
       ? draftTo
       : derivedReplyRecipients.to
     : derivedReplyRecipients.to;
@@ -400,6 +401,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];
 
   const replyComposeInitialSubject = useMemo(() => {
+    if (savedHeaders) return draft?.subject ?? '';
     if (draft?.subject) return draft.subject;
     const raw = replyToMessage?.subject?.trim() ?? '';
     if (!raw) return '';
@@ -412,7 +414,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       return `Re: ${raw}`;
     }
     return raw;
-  }, [draft?.subject, mode, replyToMessage?.subject]);
+  }, [draft?.subject, mode, replyToMessage?.subject, savedHeaders]);
 
   const headerPreview = useMemo(() => {
     if (!canShowHeaderDebug(activeConnection?.id) || !isHeaderDebugEnabled()) return [];
@@ -450,6 +452,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         initialBcc={initialBccRecipients}
         initialSubject={replyComposeInitialSubject}
         syncReplyHeadersFromProps
+        replyHeaderSeed={composeSeed}
         autofocus={true}
         settingsLoading={settingsLoading}
         replyToMessageId={replyToMessage?.id ?? null}

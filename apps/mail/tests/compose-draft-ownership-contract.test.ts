@@ -15,8 +15,10 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('revisionRef');
     expect(emailComposerSource).toContain('markUnsavedChanges');
     expect(emailComposerSource).toMatch(/hasLocalEdits:\s*revisionRef\.current\.localRevision > 0/);
-    expect(emailComposerSource).toContain('onValueChange={markNonBodyChanges}');
-    expect(emailComposerSource).toContain('onApply={markNonBodyChanges}');
+    for (const field of ['to', 'cc', 'bcc']) {
+      expect(emailComposerSource).toContain(`onValueChange={() => markHeaderChanges('${field}')}`);
+    }
+    expect(emailComposerSource).toContain("onApply={() => markHeaderChanges('to', 'cc', 'bcc', 'subject')}");
     expect(recipientSource).toContain('onValueChange();');
     expect(templateSource).toContain('onApply();');
     expect(emailComposerSource).toMatch(
@@ -28,7 +30,7 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('saveInFlightRef');
     expect(emailComposerSource).toContain('activeDraftIdRef');
     expect(emailComposerSource).toContain('capturedRevision');
-    expect(emailComposerSource).toContain("type: 'saved', capturedRevision");
+    expect(emailComposerSource).toMatch(/type: 'saved',\s*capturedRevision/);
     expect(emailComposerSource).toContain('flushDraftUntilCurrent');
     expect(emailComposerSource).toContain('autosaveSuppressedAfterFailure');
     expect(emailComposerSource).toContain('setAutosaveSuppressedAfterFailure(true)');

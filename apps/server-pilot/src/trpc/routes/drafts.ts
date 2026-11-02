@@ -1348,15 +1348,22 @@ export const draftsRouter = tRouter({
     const db = getDb();
     const transportId = ctx.activeTransportId;
     const rows = await db
-      .select()
+      .select({
+        draft: mailDraft,
+        // A promoted candidate can have empty default fields. An edited revision records staff intent.
+        headersSaved: sql<boolean>`(${mailDraft.origin} = 'manual' OR EXISTS (
+          SELECT 1 FROM ${mailDraftRevision}
+          WHERE ${mailDraftRevision.draftId} = ${mailDraft.id} AND ${mailDraftRevision.kind} = 'edited'
+        ))`,
+      })
       .from(mailDraft)
       .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
       .limit(1);
     if (rows.length === 0) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
     }
-    const r = rows[0]!;
-    return toDraftWire(r, false, await loadDraftReviewSummary(db, r));
+    const { draft: r, headersSaved } = rows[0]!;
+    return { ...toDraftWire(r, false, await loadDraftReviewSummary(db, r)), headersSaved };
   }),
 
   /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
@@ -1746,7 +1753,7 @@ export const draftsRouter = tRouter({
       toAddresses: input.to,
       ccAddresses: input.cc,
       bccAddresses: input.bcc,
-      subject: input.subject || null,
+      subject: input.subject,
       textBody: input.html || null,
       htmlBody: input.html || null,
       attachments: [] as (typeof mailDraft.$inferSelect)['attachments'],
@@ -1790,7 +1797,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        if (changed) {
+        // A staff snapshot can intentionally clear a derived To even when the AI row was already empty.
+        if (changed || (prior.origin === 'ai' && row.toAddresses.length === 0)) {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId,
@@ -1830,7 +1838,7 @@ export const draftsRouter = tRouter({
           toAddresses: input.to,
           ccAddresses: input.cc,
           bccAddresses: input.bcc,
-          subject: input.subject || null,
+          subject: input.subject,
           textBody: input.html || null,
           htmlBody: input.html || null,
           attachments: row.attachments,
@@ -1899,7 +1907,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        if (changed) {
+        // A staff snapshot can intentionally clear a derived To even when the AI row was already empty.
+        if (changed || (prior.origin === 'ai' && row.toAddresses.length === 0)) {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId: activeId,
@@ -1956,7 +1965,7 @@ export const draftsRouter = tRouter({
       if (input.to) patch.toAddresses = input.to;
       if (input.cc) patch.ccAddresses = input.cc;
       if (input.bcc) patch.bccAddresses = input.bcc;
-      if (input.subject !== undefined) patch.subject = input.subject || null;
+      if (input.subject !== undefined) patch.subject = input.subject;
       if (input.content !== undefined) patch.textBody = input.content || null;
       if (input.html !== undefined) patch.htmlBody = input.html || null;
       if (input.threadId !== undefined) patch.threadId = input.threadId || null;
@@ -2142,7 +2151,7 @@ export const draftsRouter = tRouter({
             toAddresses: input.to,
             ccAddresses: [],
             bccAddresses: [],
-            subject: input.subject || null,
+            subject: input.subject,
             textBody: html,
             htmlBody: html,
             attachments,
@@ -2173,7 +2182,7 @@ export const draftsRouter = tRouter({
             toAddresses: input.to,
             ccAddresses: [],
             bccAddresses: [],
-            subject: input.subject || null,
+            subject: input.subject,
             textBody: html,
             htmlBody: html,
             attachments,

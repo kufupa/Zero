@@ -11,6 +11,7 @@ export type DraftLike = {
   replyToMessageId?: string | null;
   content?: string | null;
   subject?: string | null;
+  headersSaved?: boolean;
   updatedAt?: string;
   status?: 'active' | 'candidate' | 'discarded' | 'sent';
   origin?: 'manual' | 'ai';
@@ -46,7 +47,8 @@ const toDemoDraftPayload = (draft?: DemoDraft | null): DraftLike | undefined => 
     threadId: draft.threadId ?? null,
     replyToMessageId: null,
     content: draft.body,
-    subject: draft.subject?.trim() || undefined,
+    subject: draft.subject,
+    headersSaved: true,
     updatedAt: draft.updatedAt,
     status: 'active',
     origin: 'manual',

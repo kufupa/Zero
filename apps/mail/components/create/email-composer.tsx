@@ -100,6 +100,7 @@ interface EmailComposerProps {
   editorClassName?: string;
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
+  replyHeaderSeed?: string;
   replyToMessageId?: string | null;
   replyToMessage?: ParsedMessage | null;
   headerPreview?: HeaderDebugLine[];
@@ -143,6 +144,7 @@ export function EmailComposer({
   settingsLoading = false,
   editorClassName,
   syncReplyHeadersFromProps = false,
+  replyHeaderSeed,
   replyToMessageId = null,
   replyToMessage = null,
   headerPreview = [],
@@ -177,9 +179,15 @@ export function EmailComposer({
     () => nonBodyEditedAtRef.current > revisionRef.current.savedRevision,
     [],
   );
+  const editedHeadersRef = useRef(new Set<'to' | 'cc' | 'bcc' | 'subject'>());
+  const headerSeedRef = useRef(replyHeaderSeed);
+  const markHeaderChanges = useCallback((...fields: ('to' | 'cc' | 'bcc' | 'subject')[]) => {
+    fields.forEach((field) => editedHeadersRef.current.add(field));
+    markNonBodyChanges();
+  }, [markNonBodyChanges]);
   const composerRef = useRef<HTMLDivElement>(null);
   // A partially typed address is not yet in the form's recipient array.
-  const hasPendingRecipientInput = useCallback((section?: 'cc' | 'bcc') => {
+  const hasPendingRecipientInput = useCallback((section?: 'to' | 'cc' | 'bcc') => {
     const selector = section
       ? `[data-recipient-section="${section}"] input[type="email"]`
       : 'input[type="email"]';
@@ -389,14 +397,26 @@ export function EmailComposer({
   useEffect(() => {
     if (!syncReplyHeadersFromProps) return;
 
-    setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
-    setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
-    setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
-    setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
-    setShowCc(initialCc.length > 0);
-    setShowBcc(initialBcc.length > 0);
+    if (headerSeedRef.current !== replyHeaderSeed) {
+      headerSeedRef.current = replyHeaderSeed;
+      // A mode/target change intentionally derives new recipients, but keeps an edited subject.
+      editedHeadersRef.current.delete('to');
+      editedHeadersRef.current.delete('cc');
+      editedHeadersRef.current.delete('bcc');
+    }
+    // A late draft refresh must not replace a header edited in this composer, even after save.
+    if (!editedHeadersRef.current.has('to') && !hasPendingRecipientInput('to')) setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
+    if (!editedHeadersRef.current.has('cc') && !hasPendingRecipientInput('cc')) {
+      setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
+      setShowCc(initialCc.length > 0);
+    }
+    if (!editedHeadersRef.current.has('bcc') && !hasPendingRecipientInput('bcc')) {
+      setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
+      setShowBcc(initialBcc.length > 0);
+    }
+    if (!editedHeadersRef.current.has('subject')) setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
-  }, [externalHeaderSyncKey, syncReplyHeadersFromProps, setValue]);
+  }, [externalHeaderSyncKey, hasPendingRecipientInput, replyHeaderSeed, syncReplyHeadersFromProps, setValue]);
 
   const toEmails = watch('to');
   const ccEmails = watch('cc');
@@ -1322,14 +1342,14 @@ export function EmailComposer({
         {/* To, Cc, Bcc */}
         <div className="shrink-0 overflow-visible border-b border-[#E7E7E7] pb-2 dark:border-[#252525]">
           <div className="flex min-w-0 justify-between px-3 pt-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div data-recipient-section="to" className="flex min-w-0 flex-1 items-center gap-2">
               <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">To:</p>
               <RecipientAutosuggest
                 control={form.control}
                 name="to"
                 placeholder="Enter email address"
                 disabled={isLoading}
-                onValueChange={markNonBodyChanges}
+                onValueChange={() => markHeaderChanges('to')}
               />
             </div>
 
@@ -1371,7 +1391,7 @@ export function EmailComposer({
                   name="cc"
                   placeholder="Enter email for Cc"
                   disabled={isLoading}
-                  onValueChange={markNonBodyChanges}
+                  onValueChange={() => markHeaderChanges('cc')}
                 />
               </div>
             )}
@@ -1385,7 +1405,7 @@ export function EmailComposer({
                   name="bcc"
                   placeholder="Enter email for Bcc"
                   disabled={isLoading}
-                  onValueChange={markNonBodyChanges}
+                  onValueChange={() => markHeaderChanges('bcc')}
                 />
               </div>
             )}
@@ -1405,7 +1425,7 @@ export function EmailComposer({
               onChange={(e) => {
                 const value = replaceEmojiShortcodes(e.target.value);
                 setValue('subject', value);
-                markNonBodyChanges();
+                markHeaderChanges('subject');
               }}
             />
           </div>
@@ -1488,7 +1508,7 @@ export function EmailComposer({
               cc={ccEmails ?? []}
               bcc={bccEmails ?? []}
               setRecipients={(field, val) => setValue(field, val)}
-              onApply={markNonBodyChanges}
+              onApply={() => markHeaderChanges('to', 'cc', 'bcc', 'subject')}
             />
             <Input
               type="file"

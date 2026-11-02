@@ -4,23 +4,39 @@ import { useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useController } from 'react-hook-form';
 import { EmailComposer } from '../components/create/email-composer';
+import ReplyCompose from '../components/mail/reply-composer';
 import { flushComposeBeforeLeave, registerComposeFlush, registerComposeUnsavedCheck, runComposeSwitch } from '../lib/mail/compose-flush-registry';
 
 const mocks = vi.hoisted(() => ({
   save: vi.fn(), navigate: vi.fn(), toast: vi.fn(), bodyChanged: null as null | (() => void),
+  replyMode: false, mode: 'reply', draft: null as any, setQuery: vi.fn(), refetch: vi.fn(),
+  enableScope: vi.fn(), disableScope: vi.fn(), ensure: vi.fn(),
   editorHtml: '<p>Quoted</p>',
   editor: { getHTML: () => mocks.editorHtml, getText: () => mocks.editorHtml.replace(/<[^>]+>/g, ''), commands: { focus: vi.fn(), setContent: vi.fn(), clearContent: vi.fn() } },
 }));
 vi.mock('@/hooks/use-compose-editor', () => ({ default: (options: { onLengthChange: () => void }) => { mocks.bodyChanged = options.onLengthChange; return mocks.editor; } }));
 vi.mock('@tiptap/react', () => ({ EditorContent: () => <div>Editor</div> }));
 vi.mock('@/hooks/use-settings', () => ({ useSettings: () => ({ data: { settings: {} } }) }));
-vi.mock('@/hooks/use-threads', () => ({ useThread: () => ({ data: undefined }) }));
-vi.mock('@/hooks/use-drafts', () => ({ useDraft: () => ({ data: undefined }) }));
+vi.mock('@/hooks/use-threads', () => ({ useThread: () => mocks.replyMode ? {
+  data: { latest: { id: 'message-1', threadId: 'thread-a', sender: { email: 'guest@example.com' },
+    to: [{ email: 'hotel@example.com' }], cc: [{ email: 'copy@example.com' }], subject: 'Request', decodedBody: 'Request' },
+    messages: [] }, latestDraft: mocks.draft, aiDraftCandidates: [], refetch: mocks.refetch,
+} : { data: undefined } }));
+vi.mock('@/hooks/use-drafts', () => ({ useDraft: () => ({ data: mocks.replyMode ? mocks.draft : undefined }),
+  isAssistedDraft: (draft: { origin?: string } | null) => draft?.origin === 'ai',
+  useEnsureEditableDraftForReply: () => ({ mutateAsync: mocks.ensure }),
+}));
+vi.mock('@/hooks/use-connections', () => ({ useActiveConnection: () => ({ data: { email: 'hotel@example.com' } }) }));
+vi.mock('@/hooks/use-timezone', () => ({ useTimezone: () => 'UTC' }));
+vi.mock('@/hooks/use-undo-send', () => ({ useUndoSend: () => ({ handleUndoSend: vi.fn() }) }));
+vi.mock('@/lib/auth-client', () => ({ useSession: () => ({ data: { user: { email: 'hotel@example.com' } } }) }));
+vi.mock('react-hotkeys-hook', () => ({ useHotkeysContext: () => ({ enableScope: mocks.enableScope, disableScope: mocks.disableScope }) }));
 vi.mock('@/hooks/use-optimistic-actions', () => ({ useOptimisticActions: () => ({ optimisticDeleteDraft: vi.fn() }) }));
-vi.mock('nuqs', () => ({ useQueryState: (key: string) => [key === 'threadId' ? 'thread-a' : null, vi.fn()] }));
+vi.mock('nuqs', () => ({ useQueryState: (key: string) => [key === 'threadId' ? 'thread-a'
+  : mocks.replyMode && key === 'mode' ? mocks.mode : mocks.replyMode && key === 'draftId' ? mocks.draft?.id ?? null : null, mocks.setQuery] }));
 vi.mock('@/providers/query-provider', () => ({ useTRPC: () => ({
-  drafts: { create: { mutationOptions: () => ({}) }, list: { queryKey: () => ['drafts'] }, get: { queryKey: () => ['draft'] } },
-  mail: { get: { queryKey: () => ['mail'] }, unreadCounts: { queryKey: () => ['unread'] }, listThreads: { infiniteQueryKey: () => ['threads'] } },
+  drafts: { create: { mutationOptions: () => ({}) }, approve: { mutationOptions: () => ({}) }, list: { queryKey: () => ['drafts'] }, get: { queryKey: () => ['draft'] } },
+  mail: { send: { mutationOptions: () => ({}) }, get: { queryKey: () => ['mail'] }, unreadCounts: { queryKey: () => ['unread'] }, listThreads: { infiniteQueryKey: () => ['threads'] } },
 }) }));
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({ mutateAsync: mocks.save }),
@@ -58,17 +74,23 @@ vi.mock('../components/create/toolbar', () => ({ Toolbar: () => null }));
 vi.mock('../components/create/quote-history-expander', () => ({ QuoteHistoryExpander: () => null }));
 vi.mock('../components/create/image-compression-settings', () => ({ ImageCompressionSettings: () => null }));
 
-function Harness({ initialSubject = 'Original', initialAttachments = [], initialTo = ['guest@example.com'] }: { initialSubject?: string; initialAttachments?: File[]; initialTo?: string[] }) {
+function Harness({ initialSubject = 'Original', initialAttachments = [], initialTo = ['guest@example.com'], initialCc = [], initialBcc = [], syncHeaders = false, seed = 'reply' }: {
+  initialSubject?: string; initialAttachments?: File[]; initialTo?: string[]; initialCc?: string[];
+  initialBcc?: string[]; syncHeaders?: boolean; seed?: string;
+}) {
   const [open, setOpen] = useState(true);
   return <>
     {open && <EmailComposer initialMessage="<p>Quoted</p>" initialSubject={initialSubject}
-      initialTo={initialTo} initialAttachments={initialAttachments} onSendEmail={async () => false} />}
+      initialTo={initialTo} initialCc={initialCc} initialBcc={initialBcc} initialAttachments={initialAttachments}
+      syncReplyHeadersFromProps={syncHeaders} replyHeaderSeed={seed} onSendEmail={async () => false} />}
     <button onClick={() => { void runComposeSwitch(() => { mocks.navigate(); setOpen(false); }); }}>Open another</button>
   </>;
 }
 
 beforeEach(() => {
   mocks.editorHtml = '<p>Quoted</p>'; mocks.bodyChanged = null;
+  mocks.replyMode = false; mocks.mode = 'reply'; mocks.draft = null; mocks.setQuery.mockReset();
+  mocks.refetch.mockReset().mockResolvedValue(undefined);
   mocks.save.mockReset().mockResolvedValue({ id: 'draft-1' });
   mocks.navigate.mockReset(); mocks.toast.mockReset();
   registerComposeFlush(null); registerComposeUnsavedCheck(null);
@@ -76,6 +98,33 @@ beforeEach(() => {
 afterEach(() => { cleanup(); registerComposeFlush(null); registerComposeUnsavedCheck(null); });
 
 describe('real composer draft handoff', () => {
+  it('keeps edited headers through stale refreshes and re-derives recipients on mode change', async () => {
+    const view = render(<Harness syncHeaders initialTo={['first@example.com']} initialSubject="Original" />);
+    const to = screen.getByLabelText('to') as HTMLInputElement;
+    const subject = screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement;
+    fireEvent.change(to, { target: { value: '' } });
+    fireEvent.change(subject, { target: { value: '' } });
+    view.rerender(<Harness syncHeaders initialTo={['stale@example.com']} initialSubject="Stale" />);
+    expect(to.value).toBe(''); expect(subject.value).toBe('');
+    await act(async () => { await flushComposeBeforeLeave(); });
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ to: '', subject: '' }));
+    view.rerender(<Harness syncHeaders initialTo={['older@example.com']} initialSubject="Older" />);
+    expect(to.value).toBe(''); expect(subject.value).toBe('');
+    view.rerender(<Harness syncHeaders seed="replyAll" initialTo={['reply-all@example.com']} initialSubject="Re: Request" />);
+    expect(to.value).toBe('reply-all@example.com'); expect(subject.value).toBe('');
+  });
+
+  it.each(['to', 'cc', 'bcc'])('keeps uncommitted %s input during a draft refresh', async (field) => {
+    const view = render(<Harness syncHeaders />);
+    if (field !== 'to') fireEvent.click(screen.getByRole('button', { name: field === 'cc' ? 'Cc' : 'Bcc' }));
+    const pending = screen.getByLabelText(`pending-${field}`) as HTMLInputElement;
+    fireEvent.change(pending, { target: { value: 'unfinished@example.com' } });
+    const incoming = { [`initial${field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}`]: ['other@example.com'] };
+    view.rerender(<Harness syncHeaders initialSubject="Updated" {...incoming} />);
+    expect(screen.getByLabelText(`pending-${field}`)).toBe(pending);
+    expect(pending.value).toBe('unfinished@example.com');
+  });
+
   it('does not save an untouched quoted draft', async () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
@@ -212,5 +261,56 @@ describe('real composer draft handoff', () => {
     await waitFor(() => expect(mocks.navigate).toHaveBeenCalledOnce());
     expect(mocks.save).toHaveBeenCalledTimes(2);
     expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({ subject: 'Second edit' }));
+  });
+});
+
+
+describe('mounted reply header persistence', () => {
+  beforeEach(() => { mocks.replyMode = true; });
+
+  it('preserves cleared headers on refresh and after reopening', async () => {
+    mocks.draft = { id: 'draft-1', origin: 'manual', headersSaved: true, to: ['custom@example.com'], cc: [], bcc: [], subject: 'Custom', content: '<p>Quoted</p>' };
+    const view = render(<ReplyCompose />);
+    const to = screen.getByLabelText('to') as HTMLInputElement;
+    const subject = screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement;
+    fireEvent.change(to, { target: { value: '' } });
+    fireEvent.change(subject, { target: { value: '' } });
+    mocks.draft = { ...mocks.draft, to: ['stale@example.com'], subject: 'Stale' };
+    view.rerender(<ReplyCompose />);
+    expect(to.value).toBe(''); expect(subject.value).toBe('');
+    await act(async () => { await flushComposeBeforeLeave(); });
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ to: '', subject: '' }));
+    view.unmount();
+    mocks.draft = { ...mocks.draft, to: [], subject: null };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('');
+  });
+
+  it.each([null, ''])('derives recipients and subject for a pristine generated draft with subject %s', (subject) => {
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: false, to: [], cc: [], bcc: [], subject, content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('guest@example.com');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('Re: Request');
+  });
+
+  it('keeps an intentionally empty To even when saved Cc is populated', () => {
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: true, to: [], cc: ['copy@example.com'], bcc: [], subject: 'Custom', content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('cc') as HTMLInputElement).value).toBe('copy@example.com');
+  });
+
+  it('derives recipients for reply-all and forward without restoring an edited subject', () => {
+    mocks.draft = { id: 'draft-1', origin: 'manual', headersSaved: true, to: ['custom@example.com'], cc: [], bcc: [], subject: 'Custom', content: '<p>Quoted</p>' };
+    const view = render(<ReplyCompose />);
+    fireEvent.change(screen.getByPlaceholderText('Re: Design review feedback'), { target: { value: '' } });
+    mocks.mode = 'replyAll'; view.rerender(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('guest@example.com');
+    expect((screen.getByLabelText('cc') as HTMLInputElement).value).toBe('copy@example.com');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('');
+    mocks.mode = 'forward'; view.rerender(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('');
   });
 });
