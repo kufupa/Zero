@@ -89,7 +89,8 @@ describe('server-owned batch room-choice snapshot', () => {
     expect(c.choices.map((choice) => choice.identity.roomIndex)).toEqual([2, 3]);
   });
   it('changes the digest whenever the child choices change', () => {
-    const a = add(null, null), b = add(a, a.generation, second);
+    const a = add(null, null), b = structuredClone(a);
+    b.choices[0]!.roomType = 'STWN';
     expect(paneBatchChoiceDigest(a)).toMatch(/^[a-f0-9]{64}$/);
     expect(paneBatchChoiceDigest(a)).not.toBe(paneBatchChoiceDigest(b));
   });
