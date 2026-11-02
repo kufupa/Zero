@@ -87,7 +87,7 @@ export type PaneStay = {
 
 export type PaneStayMode = 'preview' | 'commit';
 
-/** off: copy-only. lab: saves Labtest stays arriving 2027 or later. on: saves real guests. */
+/** Configured create mode. The legacy runner separately limits commits to the fake Labtest identity. */
 export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 export type PaneWriteWorkflow = 'create' | 'amend' | 'cancel';
@@ -362,14 +362,25 @@ export function assertLabStayGuard(input: {
   }
 }
 
-// Refusals decided before the lock, in order: the mode, adults ≥1, then the
-// Labtest guard in lab mode.
+// The create runner is a legacy path without trusted staff approval. Only the
+// designated fake identity is eligible for a write until that contract exists.
+function assertCreateLabStay(stay: PaneStay): void {
+  if (!/^proof$/i.test(stay.firstName.trim())) throw new Error('pane_save_labtest_required');
+  const arrivalMs = Date.parse(`${stay.arrival}T00:00:00.000Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(stay.arrival) || !Number.isFinite(arrivalMs) ||
+      new Date(arrivalMs).toISOString().slice(0, 10) !== stay.arrival) {
+    throw new Error('pane_save_arrival_2027_required');
+  }
+  assertLabStayGuard({ lastName: stay.lastName, arrival: stay.arrival });
+}
+
+// Refusals decided before the lock: the mode, adults, then the lab identity.
 export function paneStayModeRefusal(mode: PaneSaveMode, stay: PaneStay): string | null {
   if (mode === 'off') return 'pane_save_flag_off';
   if (!Number.isInteger(stay.adults) || stay.adults < 1) return 'pane_save_adults_required';
   if (mode === 'lab') {
     try {
-      assertLabStayGuard({ lastName: stay.lastName, arrival: stay.arrival });
+      assertCreateLabStay(stay);
     } catch (error) {
       return (error as Error).message;
     }
@@ -683,9 +694,20 @@ export async function runPaneStay(input: {
   const target = resolved.target;
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
-      assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
+      assertCreateLabStay(input.stay);
     } catch (error) {
       return { status: 'refused', reason: (error as Error).message };
+    }
+  }
+  if (input.mode === 'commit') {
+    try {
+      assertCreateLabStay(input.stay);
+    } catch {
+      return { status: 'refused', reason: 'trusted_staff_create_authorization_unavailable' };
+    }
+    // A recipient causes this legacy runner to tick HMS Send Mail. Test writes must not send.
+    if (input.stay.confirmationRecipient != null) {
+      return { status: 'refused', reason: 'confirmation_email_writer_unavailable' };
     }
   }
   const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));

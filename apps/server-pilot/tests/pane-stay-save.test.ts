@@ -69,7 +69,7 @@ import {
 } from '../src/ai/pane-stay-preview-persist.js';
 
 const labStay = {
-  firstName: 'Pat',
+  firstName: 'Proof',
   lastName: 'Labtest',
   arrival: '2027-09-14',
   departure: '2027-09-16',
@@ -471,7 +471,7 @@ describe('pane stay preview digest and commit', () => {
       previewDigest: paneStayDigest(labStay),
     });
     expect(paneStayDigest(labStay)).toMatch(/^[0-9a-f]{64}$/);
-    expect(paneStayDigest({ ...labStay, firstName: '  Pat  ' })).toBe(paneStayDigest(labStay));
+    expect(paneStayDigest({ ...labStay, firstName: '  Proof  ' })).toBe(paneStayDigest(labStay));
     expect(paneStayDigest({ ...labStay, arrival: '2027-09-15' })).not.toBe(paneStayDigest(labStay));
   });
 
@@ -851,19 +851,32 @@ describe('pane stay save modes', () => {
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
   });
 
-  it('on lets a real guest through preview and commit, under the same grant rules', async () => {
+  it('on allows a real-guest preview but refuses commit before lock or spawn', async () => {
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
     const owner = freshOwner();
     const preview = await runPaneStay({ mode: 'preview', stay: realStay, owner });
-    expect(preview).toMatchObject({
-      status: 'ok',
-      outcome: 'previewed',
-      previewDigest: paneStayDigest(realStay),
-    });
-    await expect(
-      runPaneStay({ mode: 'commit', stay: realStay, owner, previewDigest: paneStayDigest(realStay) }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => { throw new Error('must not spawn'); };
+    for (const stay of [realStay, { ...labStay, firstName: 'Pat' },
+      { ...labStay, arrival: '2026-12-31' }, { ...labStay, arrival: 'zzzz' },
+      { ...labStay, arrival: '2027-02-30' }]) {
+      await expect(runPaneStay({ mode: 'commit', stay, owner, previewDigest: paneStayDigest(stay) }))
+        .resolves.toMatchObject({ status: 'refused', reason: 'trusted_staff_create_authorization_unavailable' });
+    }
+    expect(locked).toEqual([]);
+  });
+
+  it('refuses a Labtest commit requesting an HMS confirmation email before lock', async () => {
+    enableSave();
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    const stay = { ...labStay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } };
+    await expect(runPaneStay({ mode: 'commit', stay, owner: freshOwner(), previewDigest: paneStayDigest(stay) }))
+      .resolves.toMatchObject({ status: 'refused', reason: 'confirmation_email_writer_unavailable' });
+    expect(locked).toEqual([]);
   });
 
   it('on still refuses a commit when the duplicate check finds the guest on those dates', async () => {
@@ -876,9 +889,9 @@ describe('pane stay save modes', () => {
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: realStay,
+        stay: labStay,
         owner: freshOwner(),
-        previewDigest: paneStayDigest(realStay),
+        previewDigest: paneStayDigest(labStay),
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'osress_duplicate' });
   });
@@ -904,7 +917,7 @@ describe('pane stay save modes', () => {
     paneStaySaveLoaders.mode = () => 'on';
     const owner = freshOwner();
     const previewed = {
-      ...realStay,
+      ...labStay,
       bookingAgency: { name: 'XYZ TRAVEL' },
       reservationNote: 'Late arrival',
     };
@@ -954,10 +967,10 @@ describe('pane stay save modes', () => {
       confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
       cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
     const owner = freshOwner();
-    const previewDigest = paneStayDigest(realStay);
+    const previewDigest = paneStayDigest(labStay);
     const { recordPanePreview } = await import('../src/ai/pane-stay-save.js');
     recordPanePreview(owner, previewDigest, Date.now());
-    await expect(runPaneStay({ mode: 'commit', stay: realStay, owner, previewDigest }))
+    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }))
       .resolves.toMatchObject({ status: 'ok', outcome: 'committed_unverified',
         confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
         cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
@@ -1108,6 +1121,21 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
       key: string;
     } | null;
     expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
+  });
+
+  it('lab refuses a different first name before opening HMS', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    for (const [stay, owner] of [
+      [{ ...labStay, firstName: 'Pat' }, freshOwner()],
+      [{ ...davinciStay, firstName: 'Pat' }, freshOwner('transport-davinci')],
+    ] as const) {
+      await expect(runPaneStay({ mode: 'preview', stay, owner }))
+        .resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
+    }
+    expect(locked).toEqual([]);
   });
 
   it('HRDAV + lab + non-Labtest → refused even when PANE_WRITE_CREATE is on', async () => {

@@ -429,6 +429,8 @@ describe('pane HMS write (U26)', () => {
 
   it('attach CLI --allow-real-guest skips Labtest identity; without it a real guest is refused', () => {
     const argv = [
+      '--property',
+      'HRCEN',
       '--confirmation',
       CONFIRMATION,
       '--arrival',
