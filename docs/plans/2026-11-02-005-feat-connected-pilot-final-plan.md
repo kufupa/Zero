@@ -19,9 +19,22 @@ evidence: docs/research/2026-11-02-connected-lean-plan-004-adversarial-review.md
 
 Every write goes through Prepare → staff Go → native guard → Save → screenshot → fresh readback.
 
-**Done:** main deployed through the bundle, plus one final fake booking on the deployed code, plus each lane walked in the deployed webmail pane, plus each lane's Outlook-mode replay passing. Owner bar, 2026-11-02. The client tests real Outlook the next day.
+**Done:** main deployed through the bundle, plus one final fake booking on the deployed code, plus an AI test-walk of each lane in the deployed webmail pane, plus each lane's fake-bridge replay (no Outlook) passing. Owner bar, 2026-11-02. The client tests real Outlook the next day.
 
 **v2 changes:** all 15 peer P1s are accepted, two with a narrower fix. An eighth session (R: replay and new guest) is added. Contract-free work starts at minute 0 rather than after the stubs. G12 moves before the create gate. See §8.
+
+## Plain-language terms
+
+| Term | Means |
+|---|---|
+| Lane / AI session | One Claude coding session in its own worktree. No humans and no staff work during the run |
+| Labtest test booking ("fake save") | A real HMS Save on the fake guest "Proof Labtest", 2027+ dates, HRCEN. Never a real guest. CMS email off |
+| Edit without saving ("unsaved staging") | Open a real booking in HMS, type changes, close without Save. Nothing changes in HMS |
+| Real read | Looking up real guests, agencies or bookings in HMS. Read-only |
+| AI test-walk | A headless browser drives the deployed webmail pane on stored mail. No staff and no send |
+| Fake-bridge replay (no Outlook) | Same idea on `/outlook-pane`, with a fake stand-in for the Outlook add-in bridge. No Outlook, mailbox or staff touched. The client tests real Outlook the next day |
+| Apex | The Greptile code review required on every PR |
+| Checks | Remote typecheck and focused tests on EC2. DB tests are skipped and reported as skipped |
 
 ## 0. ETA
 
@@ -30,12 +43,12 @@ Calibration: ledger orchestration median 0.96 (n=46). The 1.11 sensitivity exclu
 | Milestone | Raw | Cal. | 1.11 | UK if go 19:30 | What you can see |
 |---|---:|---:|---:|---:|---|
 | **K1** Kickoff | 25 | 25 | 28 | 19:55 | Uncommitted work on WIP branches; 8 lanes running; stubs on a branch. C1, Q1, T2a, F-1, A1 and R1 already running since minute 0 |
-| **K2** Quote provider settled | 65 | 62 | 72 | 20:32 | One HMS probe compared with the installed quote; PDF label merged. This is not a staff walk yet |
+| **K2** Quote provider settled | 65 | 62 | 72 | 20:32 | One HMS probe compared with the installed quote; PDF label merged. This is not a full pane test yet |
 | **K3** First connected fake booking | 75 | 72 | 83 | 20:42 | App-prepared Labtest create saved and read back |
 | **K4** Triage merged, amend staged, new guest answered | 205 | 197 | 228 | 22:47 | Voucher, mixed-ask and pre-stay fixes merged; date+occupancy staged unsaved on a real old confirmation; "does HMS need a new profile?" answered |
 | **K5** Writes proven | 295 | 283 | 327 | 00:13 | Fake saves read back for two-room, general create (real agency, CMS off), amend and filing |
 | **K6** Integrated head green | 320 | 307 | 355 | 00:37 | All lanes merged; remote typecheck, focused suites and Apex on one head; DB suites reported as skipped |
-| **K7** Done | **365** | **≈350 (5h50m)** | 405 | **01:20** | Deployed; flags re-read on all 4 PM2 processes; webmail walks; Outlook-mode replay; final fake booking |
+| **K7** Done | **365** | **≈350 (5h50m)** | 405 | **01:20** | Deployed; flags re-read on all 4 PM2 processes; AI webmail test-walks; fake-bridge replay (no Outlook); final Labtest test booking |
 
 Work content is about 1,950 agent-minutes: 8 AI sessions' busy time plus the coordinator. Wall clock is the longest lane plus the serial tail. Human time during the run is zero.
 
@@ -61,14 +74,14 @@ T    T2a T2b T4a T4b T4c T5 T9 T6a T6b T6c T17 T18|A17 A19/21 A20 G18|gate
 F    F-1 F0a F0b F7 F8 F9a F9b F9c F13 F14 (F-src)|F21 F22 F22a F28/29 F23 F24 F25*
 A    A1 A0 A12a1 A12a2 A12b A12c A12r A12d A15a* A15b A15c A22 A26a A26b A27a* (A27b*) A28
 M    M1 M2a M2b M6 M6g|M8a M8b M8c M9 M11a M11b M14 M19 M20 M17**
-R    R1 R2 R3a R3b R3c R3d|G8a G8b* G8c G8g| … |R4 (integrated)|R5 deployed --outlook
+R    R1 R2 R3a R3b R3c R3d|G8a G8b* G8c G8g| … |R4 (integrated)|R5 deployed fake-bridge
                                                      * = HRCEN fake save
 ```
 
 **Lane ends (raw):** M 265, C/G 285, A 285, T 285, F 295 (315 with F-src), Q 225, R 300. The last merge is about 285, followed by a 10-min buffer, I20 at 295–320, and the tail at 320–365.
 
 **Why not shorter:**
-- The tail (I20, then deploy, flags, walks and final booking) is serial after the last merge.
+- The tail (I20, then deploy, flags, AI test-walks and final Labtest booking) is serial after the last merge.
 - Each lane ends in dependent code, then check, then Apex, then HMS save.
 - A ninth lane would only split T or F, and both touch shared files. Splitting saves at most 15 min, at the cost of merge conflicts.
 
@@ -283,11 +296,11 @@ Each piece is ≤20 min. P/T = product/test LOC, a judgment. Check = focused sui
 | 180 | G8g | Checks, Apex and merge (before G11c rebases) | 0/0 | CT, Apex | — |
 | 200 | R4a | Incremental replay on current main; route breaks to their lanes | 0/0 | Replay | real read |
 | 285 | R4b | Replay on the integrated head | 0/0 | Replay | real read |
-| 335 | R5 | Deployed replay + `--outlook` on all fixtures | 0/0 | Replay | real read |
+| 335 | R5 | Deployed replay in fake-bridge mode (`--outlook` flag; no Outlook, no staff) on all fixtures | 0/0 | Replay | real read |
 
-### Final walks (all owners, in parallel at t ≈ 335)
+### Final AI test-walks (all AI lanes, in parallel at t ≈ 335)
 
-Each owner walks their lane in the deployed **webmail** pane: selected mail → result, no send. About 15 min. R runs R5 at the same time.
+Each AI lane drives a headless browser through its own lane in the deployed **webmail** pane: selected mail → result, no send. About 15 min. R runs R5 at the same time.
 
 ## 3. Cut, and why
 
@@ -298,7 +311,7 @@ Each owner walks their lane in the deployed **webmail** pane: selected mail → 
 | Golden-set evaluation | Owner removed the gate; evaluation is optional, against staff outbound |
 | Amount amend | Dropped by the owner |
 | Batch worker lease | The serial inline commit core under the property lock is enough. The sibling census is **kept** (M9; the peer was right) |
-| 12 host walks | Webmail walks plus Outlook-mode replay; the client checks real Outlook next day |
+| 12 host walks | AI webmail test-walks plus fake-bridge replay (no Outlook); the client checks real Outlook next day |
 
 ## 4. Agent-facing tool contract (frozen at S2)
 
@@ -341,7 +354,7 @@ type NavaToolResult<T> = {
 | Layer | What | Why |
 |---|---|---|
 | Trust boundaries | One focused test per boundary (grant, digest, fence, uncertain, refuse), listed per piece | Unsafe writes come from here |
-| Replay (R1–R5) | Real threads → real pane (webmail, plus the `--outlook` fake bridge) → contract JSON → allowlisted prepare/preview, never commit → `results.json` and screenshots. About 3 threads per workflow, each with an expected outcome. Real-thread booking fixtures that stop at `labtest_guest_required` are labelled as refusals; prepared-create coverage uses Labtest inputs | One run shows what breaks across the frontend→backend seam. Nothing to maintain |
+| Replay (R1–R5) | Real threads → real pane (webmail, plus fake-bridge mode: a fake `window.chrome.webview` stands in for the Outlook add-in; no Outlook, no staff) → contract JSON → allowlisted prepare/preview, never commit → `results.json` and screenshots. About 3 threads per workflow, each with an expected outcome. Real-thread booking fixtures that stop at `labtest_guest_required` are labelled as refusals; prepared-create coverage uses Labtest inputs | One run shows what breaks across the frontend→backend seam. Nothing to maintain |
 | Live HMS | One fake save per write path (C14, G20, M17, A27, F25, G8b), plus A15a's observation and the final deployed booking | Owner's lean proof bar |
 | DB suites | Skipped and reported as skipped | Owner 11-02 |
 
@@ -387,7 +400,7 @@ None blocking. Defaults:
 | Amend may misclassify dispatch | Accept; source confirmed (`pane-hms-write.ts:827`) | A11, A11t |
 | Real staging vs fake save | Accept | A12r, A12a1/2 |
 | Retain-rate request unobserved | Accept: observe first, then match | A15a–c |
-| Outlook replay shim too thin | Accept; reuse the `WB` helper so it is cheaper | R3a–d |
+| Fake-bridge replay too thin | Accept; reuse the `WB` helper so it is cheaper | R3a–d |
 | Replay allowlist | Accept | R1 |
 | Result adapter | Accept; renamed `NavaToolResult` | §4 |
 | P2: one EC2 lock | Accept; 10-min buffer priced | §1 |
