@@ -3,7 +3,7 @@ import { batchChildId, batchDigest, batchManifestSchema, batchRoomDigest, parseL
 
 function manifest(): BatchManifest {
   const room: BatchManifest['rooms'][number] = {
-    allocationId: 'group-a:1', guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
+    allocationId: 'group-a:1', identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 }, guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
     stay: { arrival: '2027-03-01', departure: '2027-03-03', adults: 1, childAges: [] },
     roomType: 'STQN', ratePlan: 'BAR', amount: { status: 'unknown' }, agency: null, organization: null,
     guaranteeType: 'NGI', sourceOfBusiness: null, note: null, track: null, marketSegment: null,
@@ -11,7 +11,7 @@ function manifest(): BatchManifest {
   };
   return { version: 'hms-batch/1', propertyCode: 'HRCEN',
     source: { transportId: 'transport-centurion', threadId: 'thread', messageId: 'message', workItemId: '11111111-1111-4111-8111-111111111111' },
-    rooms: [room, { ...structuredClone(room), allocationId: 'group-b:1', roomType: 'STWN' }] };
+    rooms: [room, { ...structuredClone(room), allocationId: 'group-b:1', identity: { stayId: 's1', rowId: 'r2', roomIndex: 1 }, roomType: 'STWN' }] };
 }
 
 describe('batch manifest', () => {
@@ -21,6 +21,8 @@ describe('batch manifest', () => {
     expect(Object.isFrozen(parsed.rooms[0]!.stay.childAges)).toBe(true);
     const reordered = structuredClone(original); reordered.rooms.reverse();
     expect(batchDigest(reordered)).not.toBe(batchDigest(parsed));
+    const changedIdentity = structuredClone(original); changedIdentity.rooms[1]!.identity.roomIndex = 2;
+    expect(batchDigest(changedIdentity)).not.toBe(batchDigest(parsed));
     const changed = structuredClone(original); changed.rooms[1]!.roomType = 'DIFFERENT';
     expect(batchDigest(changed)).not.toBe(batchDigest(parsed));
     expect(batchRoomDigest(changed.rooms[1]!)).not.toBe(batchRoomDigest(parsed.rooms[1]!));
@@ -32,6 +34,10 @@ describe('batch manifest', () => {
   it('refuses duplicate or invalid allocations, impossible dates and more than eight children', () => {
     const duplicate = manifest(); duplicate.rooms[1]!.allocationId = duplicate.rooms[0]!.allocationId;
     expect(batchManifestSchema.safeParse(duplicate).success).toBe(false);
+    const duplicateIdentity = manifest(); duplicateIdentity.rooms[1]!.identity = { ...duplicateIdentity.rooms[0]!.identity };
+    expect(batchManifestSchema.safeParse(duplicateIdentity).success).toBe(false);
+    const malformedIdentity = manifest(); malformedIdentity.rooms[0]!.identity.stayId = 'd:2027-03-01';
+    expect(batchManifestSchema.safeParse(malformedIdentity).success).toBe(false);
     const badDate = manifest(); badDate.rooms[0]!.stay.arrival = '2027-02-30';
     expect(batchManifestSchema.safeParse(badDate).success).toBe(false);
     const tooMany = manifest(); tooMany.rooms = Array.from({ length: 9 }, (_, i) => ({ ...structuredClone(tooMany.rooms[0]!), allocationId: `room-${i}` }));

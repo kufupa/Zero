@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { canonicalJson } from './draft-approval.js';
 
 const text = z.string().trim().min(1).max(200);
+const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
+const sourceIdentity = z.object({ stayId: stableId, rowId: stableId, roomIndex: z.number().int().min(1).max(999) }).strict();
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
@@ -25,7 +27,7 @@ export const batchManifestSchema = z.object({
   source: z.object({ transportId: text, threadId: text, messageId: text, workItemId: z.string().uuid() }).strict(),
   rooms: z.array(z.object({
     // Stable across re-approvals for this source and allocation, not the array index or a grant ID.
-    allocationId: text,
+    allocationId: text, identity: sourceIdentity,
     guest: z.object({ firstName: text, lastName: text, profileId: z.string().regex(/^\d+$/) }).strict(),
     stay: z.object({ arrival: date, departure: date, adults: z.number().int().min(1).max(16),
       childAges: z.array(z.number().int().min(0).max(17)).max(16) }).strict(),
@@ -39,9 +41,13 @@ export const batchManifestSchema = z.object({
   }).strict()).min(2).max(8),
 }).strict().superRefine((manifest, ctx) => {
   const seen = new Set<string>();
+  const identities = new Set<string>();
   manifest.rooms.forEach((room, index) => {
     if (seen.has(room.allocationId)) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'allocationId'], message: 'duplicate allocation' });
     seen.add(room.allocationId);
+    const identity = JSON.stringify([room.identity.stayId, room.identity.rowId, room.identity.roomIndex]);
+    if (identities.has(identity)) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'identity'], message: 'duplicate source room' });
+    identities.add(identity);
     if (room.stay.arrival >= room.stay.departure) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'stay'], message: 'invalid date range' });
   });
 });

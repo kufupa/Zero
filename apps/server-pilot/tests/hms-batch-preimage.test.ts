@@ -5,13 +5,13 @@ import { checkBatchPreimage, type BatchPreimage, type ConfirmedBatchSibling } fr
 const now = new Date('2027-01-01T10:00:00Z');
 const digest = 'a'.repeat(64);
 function fixture() {
-  const room: BatchManifest['rooms'][number] = { allocationId: 'a', guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
+  const room: BatchManifest['rooms'][number] = { allocationId: 'a', identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 }, guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
     stay: { arrival: '2027-03-01', departure: '2027-03-03', adults: 1, childAges: [] }, roomType: 'STQN', ratePlan: 'BAR',
     amount: { status: 'unknown' }, agency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
     track: null, marketSegment: null, guestOptIn: false, booker: null, cmsSend: false, cmsMessageId: null, cmsRecipient: null };
   const manifest: BatchManifest = { version: 'hms-batch/1', propertyCode: 'HRCEN',
     source: { transportId: 'transport', threadId: 'thread', messageId: 'message', workItemId: '11111111-1111-4111-8111-111111111111' },
-    rooms: [room, { ...structuredClone(room), allocationId: 'b', roomType: 'STWN' }] };
+    rooms: [room, { ...structuredClone(room), allocationId: 'b', identity: { stayId: 's1', rowId: 'r2', roomIndex: 1 }, roomType: 'STWN' }] };
   const sibling: ConfirmedBatchSibling = { manifestDigest: batchDigest(manifest), childId: batchChildId(manifest, room), status: 'confirmed', confirmation: 'C1', recordDigest: digest };
   const preimage: BatchPreimage = { proofId: 'proof', arrival: '2027-03-01', departure: '2027-03-03', observedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 300_000).toISOString(), complete: true, matches: [{ confirmation: 'C1', recordDigest: digest }] };
