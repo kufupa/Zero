@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workItem } from '../db/schema/work.js';
+import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
 
 const STAY_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -77,6 +78,7 @@ export async function recordStayPreview(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    await assertNoCreateDispatchFence(tx, input);
     const state = withStayPreview(item.state, input.stayId, input.record);
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const };
@@ -96,6 +98,7 @@ export async function takeStayPreview(
       .limit(1)
       .for('update');
     if (!item) return false;
+    await assertNoCreateDispatchFence(tx, input);
     const grant = stayPreviewGrantOf(stayPreviewOf(item.state, input.stayId), input.digest, input.now);
     await tx
       .update(workItem)
@@ -108,12 +111,13 @@ export async function takeStayPreview(
 export function createWorkItemPreviewPersist(db: DB, transportId: string, ttlMs: number) {
   return {
     record: async (input: { workItemId: string; stayId: string; digest: string; now: number }) => {
-      await recordStayPreview(db, {
+      const result = await recordStayPreview(db, {
         transportId,
         workItemId: input.workItemId,
         stayId: input.stayId,
         record: { digest: input.digest, status: 'previewed', expiresAt: input.now + ttlMs },
       });
+      if (result.status !== 'recorded') throw new Error('stay_preview_not_recorded');
     },
     take: async (input: { workItemId: string; stayId: string; digest: string; now: number }) =>
       takeStayPreview(db, { transportId, ...input }),

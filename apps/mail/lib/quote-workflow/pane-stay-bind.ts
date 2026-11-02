@@ -71,6 +71,7 @@ const REFUSAL_COPY: Record<string, string> = {
     'HMS already has a booking for this guest on these dates, so Nava did not save. Check HMS, then book by hand.',
   pane_save_preview_required:
     'This preview has expired or was already used. Press Preview in HMS again.',
+  pane_preview_persist_failed: PANE_PREVIEW_FAILED_COPY,
   pane_save_digest_mismatch: 'The booking changed after the preview. Press Preview in HMS again.',
   pane_save_lock_unavailable: "Nava can't reach HMS right now. Nothing was saved. Tell the Nava team.",
   refused_lock_busy:
@@ -94,7 +95,7 @@ export function paneUnconfirmedMessage(stay?: PaneStayGuest): string {
 }
 
 export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGuest): string {
-  if (reason === PANE_SAVE_UNCONFIRMED_REASON) return paneUnconfirmedMessage(stay);
+  if (reason === PANE_SAVE_UNCONFIRMED_REASON || reason === 'write_in_flight') return paneUnconfirmedMessage(stay);
   return (reason && REFUSAL_COPY[reason]) || REFUSED_FALLBACK;
 }
 
