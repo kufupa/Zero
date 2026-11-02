@@ -694,7 +694,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  it('a stay that opens as a non-Labtest record is refused before Save as needs-check, and approval waits for a fresh read', async () => {
+  it('a stay that opens as a non-Labtest record is refused before Save, and consumed approval requires reconciliation', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -709,8 +709,8 @@ describe('pane HMS write (U26)', () => {
         reason: 'pane_save_labtest_required',
       });
       expect(attachCalls).toHaveLength(0);
-      // Needs-check that wrote nothing does not block approval. The dropped snapshot makes the next approval wait for a read.
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
+      // A consumed unsuccessful approval remains blocked until the outcome is reconciled.
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 
