@@ -3165,6 +3165,27 @@ describe('batch booking card integration', () => {
     expect(api.approve).not.toHaveBeenCalled();
   });
 
+  it.each(['acknowledged', 'lost'] as const)('locks the parent controls when approval is %s', async (response) => {
+    const { client: single, commit } = paneClient(), api = batchClient(), draft = draftReady();
+    if (response === 'lost') api.approve = vi.fn(async () => { throw new Error('connection_lost'); });
+    render(<BookingCards draft={draft} groups={[g1]} paneSave={single} contact={CARD_CONTACT}
+      confirmation={CARD_CONFIRMATION} session={quotedSession(draft)} propertyCode={HRCEN_PROPERTY_CODE}
+      workItemId="11111111-1111-4111-8111-111111111111"
+      batchReview={{ client: api, refs: { g1: { stayId: 's1', rowId: 'r1' } } }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    if (response === 'lost') await screen.findByText(/booking outcome needs checking/i);
+    else await screen.findByRole('button', { name: 'Refresh booking results' });
+    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Message Id') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getAllByLabelText('First name').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
+    const inclusion = screen.getByRole('group', { name: 'Rooms to review' });
+    expect(within(inclusion).getAllByRole('checkbox').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('holds review when a selected room has no server-source identity', () => {
     const api = batchClient(), draft = draftReady();
     render(<BookingCards draft={draft} groups={[g1]} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION}
