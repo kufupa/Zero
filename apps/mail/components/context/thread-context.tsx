@@ -49,6 +49,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
+import { composeHasUnsavedChanges, flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
@@ -352,24 +353,39 @@ export function ThreadContextMenu({
     }
   };
 
-  const openThreadCompose = (mode: ReplyComposeMode) => {
-    setMailSelection({ threadId, sourceMessageId });
+  const openThreadCompose = async (mode: ReplyComposeMode) => {
+    // Capture the row's source before awaiting the current composer's save.
     let messageId = threadData?.latest?.id ?? null;
+    let unavailable = false;
     if (sourceMessageId !== null) {
       const matches = threadData?.messages.filter((message) => message.id === sourceMessageId) ?? [];
-      if (!sourceMessageId.trim() || matches.length !== 1 || matches[0]?.threadId !== threadId || matches[0]?.isDraft) {
-        void setComposeState({ mode: null, activeReplyId: null, draftId: null });
-        toast.error('The selected email is unavailable. Open it again to continue.');
-        return;
-      }
+      unavailable = !sourceMessageId.trim() || matches.length !== 1 ||
+        matches[0]?.threadId !== threadId || !!matches[0]?.isDraft;
       messageId = sourceMessageId;
+    }
+    try {
+      await flushComposeBeforeLeave();
+    } catch {
+      toast.error('Could not save your draft. Try again before opening another reply.');
+      return;
+    }
+    // The registered save reports failure by leaving its dirty revision intact.
+    if (composeHasUnsavedChanges()) {
+      toast.error('Could not save your draft. Try again before opening another reply.');
+      return;
+    }
+    void setMailSelection({ threadId, sourceMessageId });
+    if (unavailable) {
+      void setComposeState({ mode: null, activeReplyId: null, draftId: null });
+      toast.error('The selected email is unavailable. Open it again to continue.');
+      return;
     }
     void openReplyComposeContext({ mode, messageId, setMode, setActiveReplyId, setDraftId, setComposeState });
   };
 
-  const handleThreadReply = () => { openThreadCompose('reply'); };
-  const handleThreadReplyAll = () => { openThreadCompose('replyAll'); };
-  const handleThreadForward = () => { openThreadCompose('forward'); };
+  const handleThreadReply = () => { void openThreadCompose('reply'); };
+  const handleThreadReplyAll = () => { void openThreadCompose('replyAll'); };
+  const handleThreadForward = () => { void openThreadCompose('forward'); };
 
   const handleOpenInNewTab = () => {
     const query = new URLSearchParams({ threadId });

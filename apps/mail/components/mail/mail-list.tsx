@@ -975,11 +975,12 @@ export const MailList = memo(function MailList() {
 
     const handleNavigateToThread = useCallback(
       (threadId: string | null) => {
+        const selection = listThreadSelection(threadId, workflowScoped, itemsRef.current);
         void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setMailSelection(listThreadSelection(threadId, workflowScoped, itemsRef.current)));
+        }).then(() => setMailSelection(selection));
       },
       [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
     );
@@ -1179,11 +1180,12 @@ export const MailList = memo(function MailList() {
 
     const handleNavigateToLinkedThread = useCallback(
       (threadId: string) => {
+        const selection = listThreadSelection(threadId, workflowScoped, itemsRef.current);
         void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setMailSelection(listThreadSelection(threadId, workflowScoped, itemsRef.current)));
+        }).then(() => setMailSelection(selection));
       },
       [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
     );

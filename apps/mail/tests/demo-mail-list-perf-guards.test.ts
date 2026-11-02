@@ -8,6 +8,7 @@ import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual, listThreadSelection } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 import { retainSameScopePlaceholder, selectionRequiresExactSource } from '../config/workflow-folders';
+import { registerComposeFlush } from '../lib/mail/compose-flush-registry';
 
 const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   folder: 'inbox',
   setMailSelection: vi.fn(),
   onNavigate: null as null | ((threadId: string | null) => void),
+  linkedTarget: null as string | null,
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -71,13 +73,11 @@ vi.mock('@/components/ui/sidebar', () => ({
 }));
 
 vi.mock('@/lib/mail/build-mail-list-virtual-rows', () => ({
-  buildMailListVirtualRows: (items: Array<{ id: string }>) =>
-    items.map((message, threadIndex) => ({
-      type: 'thread',
-      key: message.id,
-      threadIndex,
-      message,
-    })),
+  buildMailListVirtualRows: (items: Array<{ id: string }>) => [
+    ...items.map((message, threadIndex) => ({ type: 'thread', key: message.id, threadIndex, message })),
+    ...(mocks.linkedTarget ? [{ type: 'linked-stub', key: 'linked', parentThreadIndex: 0,
+      stub: { threadId: mocks.linkedTarget } }] : []),
+  ],
 }));
 
 vi.mock('virtua', async () => {
@@ -147,6 +147,11 @@ vi.mock('@/components/icons/empty-state-svg', () => ({
   EmptyStateIcon: () => null,
 }));
 
+vi.mock('@/components/mail/linked-thread-stub-row', () => ({
+  LinkedThreadStubRow: ({ stub, onNavigate }: { stub: { threadId: string }; onNavigate: (id: string) => void }) =>
+    createElement('button', { onClick: () => onNavigate(stub.threadId) }, 'Linked thread'),
+}));
+
 vi.mock('@/components/context/thread-context', () => ({
   ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -165,6 +170,8 @@ type MemoExoticComponent = typeof MailList & {
 
 beforeEach(() => {
   mocks.folder = 'inbox';
+  mocks.linkedTarget = null;
+  registerComposeFlush(null);
   mocks.setMailSelection.mockReset();
   mocks.onNavigate = null;
   mocks.searchValue = {
@@ -201,6 +208,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  registerComposeFlush(null);
 });
 
 describe('demo mail list perf guards', () => {
@@ -279,6 +287,25 @@ describe('demo mail list perf guards', () => {
     await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({
       threadId: 'thread-a', sourceMessageId: 'classified-source',
     }));
+  });
+
+  it.each(['keyboard', 'linked'])('captures the selected source before a pending %s draft save', async (kind) => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = kind === 'linked' ? 'thread-a' : null;
+    let finish!: () => void;
+    registerComposeFlush(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const query = { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false,
+      hasNextPage: false, isError: false, error: null };
+    const search = { isValid: true, folder: 'quotes', useDraftsList: false };
+    mocks.useThreads.mockReturnValue([query, [{ id: 'thread-a', workflowSourceMessageId: 'original' }], false, vi.fn(), search]);
+    const view = render(createElement(MailList));
+    if (kind === 'linked') fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    else act(() => mocks.onNavigate?.('thread-a'));
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    mocks.useThreads.mockReturnValue([query, [{ id: 'thread-a', workflowSourceMessageId: 'replacement' }], false, vi.fn(), search]);
+    view.rerender(createElement(MailList));
+    await act(async () => { finish(); });
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'original' }));
   });
 
   it('does not infer a missing workflow source for keyboard navigation', async () => {
