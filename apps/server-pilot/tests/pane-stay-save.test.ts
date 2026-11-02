@@ -30,6 +30,7 @@ import {
   runPaneStay,
 } from '../src/ai/pane-stay-save.js';
 import { hmsDavinciCreateMode } from '../src/env.js';
+import { CreateFenceError } from '../src/ai/pane-create-dispatch-fence.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src/hms/property-read-lock.js';
 import {
@@ -1459,6 +1460,88 @@ describe('stay commit persist/reload', () => {
 });
 
 describe('pane stay preview persist', () => {
+  it('refuses a failed bound preview and discards any earlier memory grant', async () => {
+    enableSave();
+    const owner = freshOwner();
+    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { throw new Error('database_unavailable'); },
+      take: () => false,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runPaneStay({
+        mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      })).resolves.toEqual({ status: 'refused', reason: 'pane_preview_persist_failed' });
+      await expect(runPaneStay({
+        mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay),
+      })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('registers a fenced preview run for expiry even when preview persistence refuses', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
+    const runId = randomUUID();
+    let now = 9_000_000;
+    paneStaySaveLoaders.now = () => now;
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed', clickedSave: false, confirmationNumber: '', runId, runDir,
+    });
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { throw new CreateFenceError('active'); },
+      take: () => false,
+    };
+    try {
+      await expect(runPaneStay({
+        mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
+      now += PANE_RUN_TTL_MS + 1;
+      await readPaneStayScreenshot({ runId, name: 'filled.png', owner });
+      await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a bound commit on an active create fence even with an in-memory grant', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    paneStaySaveLoaders.previewPersist = {
+      record: () => undefined,
+      take: () => { throw new CreateFenceError('active'); },
+    };
+    const spawn = vi.fn(cliSpawn);
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(runPaneStay({
+      mode: 'commit', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      previewDigest: preview.previewDigest as string,
+    })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
+    expect(spawn).not.toHaveBeenCalled();
+    await expect(runPaneStay({
+      mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest as string,
+    })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+  });
+
+  it('does not leave an in-memory grant when bound preview persistence meets an active fence', async () => {
+    enableSave();
+    const owner = freshOwner();
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { throw new CreateFenceError('active'); },
+      take: () => false,
+    };
+    await expect(runPaneStay({
+      mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+    })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
+    await expect(runPaneStay({
+      mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay),
+    })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+  });
+
   it('preview survives service restart and digest change invalidates it', async () => {
     enableSave();
     let state: Record<string, unknown> = {};
