@@ -12,6 +12,7 @@ import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step'
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import type { BatchReview, PaneBatchClient } from '../lib/quote-workflow/pane-batch-booking';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -3097,5 +3098,81 @@ describe('booking card HMS notes copy', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith([...quoted, 'Confirmation: 98765-1'].join('\n')));
+  });
+});
+
+
+describe('batch booking card integration', () => {
+  function batchClient(): PaneBatchClient {
+    return {
+      mode: () => 'on',
+      prepare: vi.fn(async (request) => ({
+        reviewId: 'review', manifestDigest: 'a'.repeat(64), expiresAt: '2099-01-01T00:00:00Z',
+        batchLimit: 8, blockers: [], propertyCode: request.propertyCode, source: request.source,
+        rooms: request.rooms.map(({ allocationId, identity, stay, amount }) => ({
+          allocationId, identity, roomType: stay.roomType, ratePlan: stay.ratePlan,
+          guest: { firstName: stay.firstName, lastName: stay.lastName, profileId: 'profile' },
+          stay: { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, childAges: stay.childAges ?? [] },
+          agency: null, organization: null, guaranteeType: stay.guaranteeType,
+          sourceOfBusiness: stay.sourceOfBusiness, note: null, track: stay.track, marketSegment: null,
+          guestOptIn: stay.guestoptin4, booker: null, cmsSend: stay.confirmationSendMail === true,
+          cmsMessageId: stay.cmsMessageId ?? null, cmsRecipient: stay.confirmationRecipient ?? null, amount,
+        })),
+      } satisfies BatchReview)),
+      approve: vi.fn(async () => ({ runId: 'run' })),
+      read: vi.fn(async ({ workItemId, runId }) => ({ workItemId, runId, complete: true,
+        rooms: [{ allocationId: 'g1:1', status: 'unattempted' as const }, { allocationId: 'g1:2', status: 'unattempted' as const }] })),
+    };
+  }
+
+  it('holds legacy room saves when batch capability is unavailable or disappears', () => {
+    const { client, commit, preview } = paneClient();
+    const props = { draft: draftReady(), paneSave: client, groups: [g1],
+      batchReview: { refs: { g1: { stayId: 's1', rowId: 'r1' } } } };
+    const { rerender } = render(<BookingCards {...props} />);
+    expect(screen.getByText(/Multi-room booking is not available/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Book this stay' })).toBeNull();
+    rerender(<BookingCards draft={props.draft} paneSave={client} groups={[g1]} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(commit).not.toHaveBeenCalled();
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('excludes an incomplete room and invalidates the review when it is edited', async () => {
+    const { client: single, commit, preview } = paneClient();
+    const api = batchClient(), draft = draftReady();
+    draft.draft.rooms.push({ ...structuredClone(draft.draft.rooms[1]!), roomIndex: 3 });
+    const group = { ...g1, quantity: 3 };
+    render(<BookingCards draft={draft} groups={[group]} paneSave={single} contact={CARD_CONTACT}
+      confirmation={CARD_CONFIRMATION} session={quotedSession(draft)} propertyCode={HRCEN_PROPERTY_CODE}
+      workItemId="11111111-1111-4111-8111-111111111111"
+      batchReview={{ client: api, refs: { g1: { stayId: 's1', rowId: 'r1' } }, revision: 'revision-1' }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    const inclusion = screen.getByRole('group', { name: 'Rooms to review' });
+    fireEvent.click(within(inclusion).getAllByRole('checkbox')[2]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByRole('button', { name: 'Approve and book these rooms' })).toBeDefined();
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 },
+        stay: expect.objectContaining({ confirmationSendMail: true, confirmationRecipient: { mode: 'client', address: 'booker@example.invalid' } }) }),
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } }),
+    ] }));
+    fireEvent.change(screen.getAllByLabelText('First name')[2]!, { target: { value: 'Changed' } });
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(screen.getByText(/Booking details changed/)).toBeDefined();
+    expect(commit).not.toHaveBeenCalled(); expect(preview).not.toHaveBeenCalled();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('holds review when a selected room has no server-source identity', () => {
+    const api = batchClient(), draft = draftReady();
+    render(<BookingCards draft={draft} groups={[g1]} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION}
+      session={quotedSession(draft)} propertyCode={HRCEN_PROPERTY_CODE}
+      workItemId="11111111-1111-4111-8111-111111111111" batchReview={{ client: api, refs: {} }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    expect(screen.getByText(/room source/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,9 @@ import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shot
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { BatchReviewInput, PaneBatchClient } from '@/lib/quote-workflow/pane-batch-booking';
+import { BatchBookingReview } from './batch-booking-review';
+import { BatchRoomInclusion } from './batch-room-inclusion';
 import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { subscribeStayingGuestName } from './quote-people-step';
@@ -868,6 +871,7 @@ export function BookingCards({
   propertyCode,
   confirmation,
   onSaveDefault,
+  batchReview,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -898,6 +902,8 @@ export function BookingCards({
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Supplied only by the separately authorized batch integration. An absent client holds writes. */
+  batchReview?: { client?: PaneBatchClient; refs: Record<string, { stayId: string; rowId: string | null }>; revision?: string };
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -976,7 +982,13 @@ export function BookingCards({
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
+  const [batchLocked, setBatchLocked] = useState(false);
+  const [batchExcluded, setBatchExcluded] = useState<{ source: string; ids: string[] }>({ source: '', ids: [] });
   const stayBookingRef = useRef(false);
+  // A transient capability loss or a changed room list cannot expose legacy write buttons again.
+  const batchWasEnabled = useRef(false);
+  if (batchReview && draft.draft.rooms.length > 1) batchWasEnabled.current = true;
+  const batchMode = batchWasEnabled.current;
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
@@ -1427,22 +1439,56 @@ export function BookingCards({
     return commit.status === 'booked' && !commit.unverified;
   }
 
+  // Selection exists before a room is complete, so staff may exclude an incomplete room.
+  // These identities are proposals only: the server rechecks every selected child against the locked source.
+  const batchSource = session?.staffSource;
+  const batchSourceKey = JSON.stringify([workItemId, session?.binding?.transportId, batchSource?.threadId, batchSource?.messageId]);
+  const excludedIds = new Set(batchExcluded.source === batchSourceKey ? batchExcluded.ids : []);
+  const batchRooms = draft.draft.rooms.map((room) => ({ room, group: roomGroupFor(room, groups), built: roomBuilt(room) }));
+  const selectedRooms = batchRooms.filter(({ room }) => !excludedIds.has(roomKeyOf(room)));
+  const stableId = /^[A-Za-z0-9_-]{1,40}$/;
+  const sourceIdentity = ({ room, group }: typeof batchRooms[number]) => {
+    const stored = batchReview?.refs[room.groupId];
+    const ref = stored ?? (group?.stayId && stableId.test(group.stayId) && stableId.test(group.id)
+      ? { stayId: group.stayId, rowId: group.id } : null);
+    const rowId = ref?.rowId ?? (ref ? `${ref.stayId}_row` : '');
+    return ref && stableId.test(ref.stayId) && stableId.test(rowId) && Number.isInteger(room.roomIndex) &&
+      room.roomIndex >= 1 && room.roomIndex <= 999
+      ? { stayId: ref.stayId, rowId, roomIndex: room.roomIndex } : null;
+  };
+  const batchMissing = [...new Set([
+    ...selectedRooms.flatMap(({ built }) => built.missing),
+    ...(!propertyCode ? ['hotel'] : []),
+    ...(!workItemId || !session?.binding?.transportId || !batchSource?.threadId || batchSource.messageId !== draft.messageId ? ['email source'] : []),
+    ...(selectedRooms.some((item) => !sourceIdentity(item)) ? ['room source'] : []),
+    ...(selectedRooms.some(({ room }) => savedOutcomeBlocksRoom(roomKeyOf(room))) ? ['existing booking outcome must be checked'] : []),
+  ])];
+  const batchInput: BatchReviewInput | null = batchMode && propertyCode && workItemId && session?.binding?.transportId &&
+    batchSource?.threadId && batchSource.messageId === draft.messageId &&
+    selectedRooms.every((item) => item.built.stay && sourceIdentity(item))
+    ? { propertyCode, source: { transportId: session.binding.transportId, threadId: batchSource.threadId, messageId: draft.messageId, workItemId },
+        rooms: selectedRooms.map((item) => ({ allocationId: roomKeyOf(item.room), identity: sourceIdentity(item)!, stay: item.built.stay!,
+          amount: { status: 'unavailable', minor: roomTypeChanged || priceInputChanged ? null :
+            (item.group?.rowPrice?.amountMinor ?? item.group?.quotedAmountMinor ?? null), currency: null,
+            basis: 'room_night', tax: 'unknown' } })) }
+    : null;
+
   return (
     <section aria-label="Booking details" className="flex flex-col gap-2">
       <p className="text-[11px] text-[#64748b]">
-        {savesOn
+        {batchMode ? 'Check each room and guest below before reviewing the booking.' : savesOn
           ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
-            disabled={stayBooking} onChange={(event) => setSendConfirmation(event.target.checked)} />
+            disabled={stayBooking || batchLocked} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
-          <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
+          <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking || batchLocked}
             value={cmsMessage} onChange={(event) => setChosenCmsMessage(event.target.value)}>
             <option value="">Select confirmation type</option>
             {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
@@ -1455,7 +1501,7 @@ export function BookingCards({
           customAddress={customAddress}
           userEmail={sources?.userEmail ?? ''}
           clientEmail={clientEmail}
-          disabled={stayBooking}
+          disabled={stayBooking || batchLocked}
           unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
@@ -1571,7 +1617,7 @@ export function BookingCards({
           });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
+        const locked = stayBooking || batchLocked || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
         const request = room.request;
         const group = roomGroupFor(room, groups);
         const generatedNote = generatedNoteForChoice(session, propertyCode, room, group, choice);
@@ -1831,7 +1877,7 @@ export function BookingCards({
                 ],
               })}
             />
-            {client && savesOn ? (
+            {!batchMode && client && savesOn ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1855,15 +1901,26 @@ export function BookingCards({
                 onPreview={() => undefined}
                 onBook={() => undefined}
               />
-            ) : (
+            ) : !batchMode ? (
               <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
                 <PrimaryButton disabled>{WRITES_OFF_LABEL}</PrimaryButton>
               </div>
-            )}
+            ) : null}
           </article>
         );
       })}
-      {client && savesOn ? (
+      {batchMode ? <>
+        {batchReview?.client ? <BatchRoomInclusion
+          rooms={batchRooms.map(({ room, group }) => { const choice = choices[roomKeyOf(room)]; return { id: roomKeyOf(room),
+            label: `${rowRoomLabel({ roomPreference: choice?.roomType ?? roomTypeFor(room, group), quantity: 1 })} · ${choice?.firstName ?? textValue(room.request.firstName)} ${choice?.lastName ?? textValue(room.request.lastName)}` }; })}
+          included={selectedRooms.map(({ room }) => roomKeyOf(room))} disabled={batchLocked}
+          onChange={(ids) => { const included = new Set(ids); setBatchExcluded({ source: batchSourceKey,
+            ids: batchRooms.map(({ room }) => roomKeyOf(room)).filter((id) => !included.has(id)) }); }} /> : null}
+        <BatchBookingReview client={batchReview?.client} input={batchInput} missing={batchMissing} onLock={setBatchLocked} hideInclusion
+          revisionKey={JSON.stringify([batchReview?.revision, session?.inputRevision, batchReview?.refs, draft, groups, choices,
+            contact, selectedGuestName, sendConfirmation, cmsMessage, effectiveRecipientMode, customAddress])} />
+      </> : null}
+      {!batchMode && client && savesOn ? (
         <StayBookBar
           rooms={draft.draft.rooms}
           saves={saves}
