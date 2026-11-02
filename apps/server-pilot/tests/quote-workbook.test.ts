@@ -120,14 +120,26 @@ describe('quote workbook totals and formulas', () => {
   it('totals in the workbook equal the PDF total for the same revision', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const { bytes, totalMinor } = quoteWorkbookForRevision({ revision, facts, header });
-    const pdfTotal = pdfTotalMinor(renderRevisionProposalHtml(revision, pdfHeader, facts));
+    const html = renderRevisionProposalHtml(revision, pdfHeader, facts);
+    const pdfTotal = pdfTotalMinor(html);
     const sheet = sheetOf(bytes);
+    expect(html).toContain('total of displayed line amounts');
+    expect(cellXml(sheet, 'A34')).toContain('Total of displayed line amounts');
     expect(totalMinor).toBe(pdfTotal);
     // Seven lines move the subtotal to row 32 and the total to row 34.
     expect(cachedCents(sheet, 'H34')).toBe(pdfTotal);
     expect(cachedCents(sheet, 'H32')).toBe(pdfTotal);
     const lineTotals = [24, 25, 26, 27, 28, 29, 30].reduce((sum, row) => sum + cachedCents(sheet, `H${row}`), 0);
     expect(lineTotals).toBe(pdfTotal);
+  });
+
+  it('labels room-only totals as displayed line amounts too', async () => {
+    const revision = await syntheticRevision();
+    const sheet = sheetOf(quoteWorkbookForRevision({ revision, header }).bytes);
+    expect(cellXml(sheet, 'A33')).toContain('Total of displayed line amounts');
+    expect(cellXml(sheet, 'A33')).toContain('s="20"');
+    expect(cellXml(sheet, 'G33')).not.toContain('<v>');
+    expect(renderRevisionProposalHtml(revision, pdfHeader)).toContain('total of displayed line amounts');
   });
 
   it('writes Da Vinci name and Sandton, strips Centurion logos, and omits the Centurion phone', async () => {
