@@ -1,0 +1,95 @@
+// Bounded, read-only observation of the Ext model behind the selected Record View.
+// This is not an approval, a write grant, or proof that an ID is stable across sessions.
+const KEYS = ['propertycode', 'confirmationnumber', 'guestid', 'status', 'firstname', 'lastname',
+  'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3',
+  'childages', 'reservationstayid', 'reservationid', 'recordid'];
+const FORM_KEYS = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'arrivaldate',
+  'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
+const value = (source, key) => {
+  if (!object(source) || !Object.hasOwn(source, key) ||
+      Object.keys(source).filter((name) => name.toLowerCase() === key.toLowerCase()).length !== 1) return null;
+  const raw = source[key];
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  const text = String(raw).trim();
+  return text.length <= 200 ? text : null;
+};
+const day = (input, kind) => {
+  if (typeof input !== 'string') return null;
+  const match = kind === 'model' ? /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(input) : /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(input);
+  if (!match) return null;
+  const month = kind === 'model' ? Number(match[1]) : MONTHS.indexOf(match[2].toUpperCase()) + 1;
+  const date = kind === 'model' ? Number(match[2]) : Number(match[1]);
+  const iso = `${match[3]}-${String(month).padStart(2, '0')}-${String(date).padStart(2, '0')}`;
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : null;
+};
+const count = (input, max) => /^(0|[1-9]\d*)$/.test(input ?? '') && Number(input) <= max ? Number(input) : null;
+
+/** Validates bounded observations from one clean, uniquely selected form. */
+export function projectNativeSavedStayPreimage(snapshot, expected) {
+  if (!object(snapshot) || !object(expected) || snapshot.formDirty !== false || snapshot.recordDirty !== false ||
+      !Array.isArray(snapshot.dirtyFields) || snapshot.dirtyFields.length ||
+      !Array.isArray(snapshot.modifiedFields) || snapshot.modifiedFields.length) return null;
+  const data = snapshot.data, form = snapshot.values;
+  if (!object(data) || !object(form)) return null;
+  const field = (key) => value(data, key);
+  if (!expected.confirmation || !expected.propertyCode || field('confirmationnumber') !== expected.confirmation ||
+      field('propertycode') !== expected.propertyCode || !/^\d+$/.test(field('guestid') ?? '') ||
+      !['reservationstayid', 'reservationid', 'recordid'].every((key) => /^\d+$/.test(field(key) ?? ''))) return null;
+  const paired = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'roomtype', 'rateplan',
+    'adults', 'children', 'child1', 'child2', 'child3'];
+  if (paired.some((key) => !field(key) || field(key) !== value(form, key))) return null;
+  const arrival = day(field('arrivaldate'), 'model'), departure = day(field('departuredate'), 'model');
+  if (!arrival || !departure || arrival >= departure || day(value(form, 'arrivaldate'), 'form') !== arrival ||
+      day(value(form, 'departuredate'), 'form') !== departure) return null;
+  const adults = count(field('adults'), 16), children = count(field('children'), 9);
+  const bands = ['child1', 'child2', 'child3'].map((key) => count(field(key), 9));
+  if (adults === null || adults < 1 || children === null || bands.some((band) => band === null) ||
+      bands.reduce((sum, band) => sum + band, 0) !== children) return null;
+  let childAges = 'unknown';
+  const ageKeys = Object.keys(data).filter((name) => name.toLowerCase() === 'childages');
+  const rawAges = ageKeys.length === 1 && ageKeys[0] === 'childages' ? data.childages : null;
+  const ages = Array.isArray(rawAges) ? rawAges : typeof rawAges === 'string' && /^(?:0|[1-9]\d?)(?:,(?:0|[1-9]\d?))*$/.test(rawAges)
+    ? rawAges.split(',').map(Number) : null;
+  if (ages && Array.from(ages).every((age) => Number.isInteger(age) && age >= 0 && age <= 17) && ages.length === children &&
+      ages.filter((age) => age <= 2).length === bands[0] &&
+      ages.filter((age) => age >= 3 && age <= 12).length === bands[1] &&
+      ages.filter((age) => age >= 13).length === bands[2]) childAges = [...ages];
+  return { source: 'record_view_ext_model', propertyCode: expected.propertyCode, confirmation: expected.confirmation,
+    reservationStayId: field('reservationstayid'), reservationId: field('reservationid'), recordId: field('recordid'),
+    guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
+    arrival, departure, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges };
+}
+
+/** Observe only allowlisted fields, not the full model, which can contain credentials and card data. */
+export async function readNativeSavedStayPreimage(frame, expected) {
+  const snapshot = await frame.evaluate(({ keys, formKeys }) => {
+    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
+      getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const guests = [...document.querySelectorAll('input[name="guestid"]')].filter(visible);
+    if (guests.length !== 1) return null;
+    const panel = globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form');
+    const form = panel?.getForm?.(), record = panel?.getRecord?.(), fields = form?.getFields?.()?.items;
+    const values = form?.getValues?.(), data = record?.data;
+    if (!panel?.el?.dom || !panel.el.dom.contains(guests[0]) || !values || !data || !Array.isArray(fields) ||
+        !fields.length || typeof form.isDirty !== 'function' || typeof record.dirty !== 'boolean' ||
+        fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
+    const pick = (source, wanted) => {
+      const result = {};
+      for (const key of wanted) {
+        const matches = Object.keys(source).filter((name) => name.toLowerCase() === key.toLowerCase());
+        if (matches.length !== 1 || matches[0] !== key) continue;
+        const item = source[key];
+        if (typeof item === 'string' || typeof item === 'number' ||
+            (key === 'childages' && Array.isArray(item) && item.every((n) => typeof n === 'number'))) result[key] = item;
+      }
+      return result;
+    };
+    return { data: pick(data, keys), values: pick(values, formKeys), formDirty: form.isDirty(), recordDirty: record.dirty,
+      dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
+      modifiedFields: Object.keys(record.modified || {}) };
+  }, { keys: KEYS, formKeys: FORM_KEYS });
+  return projectNativeSavedStayPreimage(snapshot, expected);
+}

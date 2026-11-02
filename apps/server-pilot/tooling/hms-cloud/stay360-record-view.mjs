@@ -1,8 +1,9 @@
 // Open the selected Stay 360 record and read its Record View in the same page.
 import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { readNativeSavedStayPreimage } from './stay360-native-preimage.mjs';
 
-export async function readRecordViewFromStay360(page, confirmation) {
+export async function readRecordViewFromStay360(page, confirmation, options = {}) {
   const wanted = typeof confirmation === 'string' ? confirmation.trim() : '';
   if (!wanted) throw new Error('INVALID_CONFIRMATION');
   await installReadOnlyGuard(page.context());
@@ -130,8 +131,19 @@ export async function readRecordViewFromStay360(page, confirmation) {
   if (details.confirmationInRecord !== wanted || details.activeTab !== 'Record View') {
     throw new Error('RECORD_CONFIRMATION_MISMATCH');
   }
+  let nativePreimage = null;
+  if (options.nativePropertyCode) {
+    const property = options.nativePropertyCode;
+    const title = await page.title();
+    const titleProperty = /^Infor HMS\s*-\s*([A-Z0-9]+)(?:\s|$)/i.exec(title.trim())?.[1]?.toUpperCase();
+    if (typeof property === 'string' && /^[A-Z0-9]{2,20}$/.test(property) &&
+        titleProperty === property && new URL(page.url()).origin === new URL(frame.url()).origin) {
+      // A missing or inconsistent observation stays unknown, without weakening the ordinary visible read.
+      nativePreimage = await readNativeSavedStayPreimage(frame, { propertyCode: property, confirmation: wanted }).catch(() => null);
+    }
+  }
   notes.push(...await takeHandledNotes(page));
-  return { notes, details };
+  return { notes, details, ...(options.nativePropertyCode ? { nativePreimage } : {}) };
 }
 
 /*
