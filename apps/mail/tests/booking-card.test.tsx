@@ -2597,25 +2597,38 @@ describe('pane save helpers', () => {
     });
   });
 
-  it('reads the server flag, and reads off when the client has no brain router', async () => {
-    await expect(
-      readPaneSaveFlag({ brain: { getCapabilities: { query: async () => ({ paneSave: true }) } } }),
-    ).resolves.toBe(true);
-    await expect(readPaneSaveFlag({})).resolves.toBe(false);
-  });
-
-  it('keeps shared writes off even if a stale capability advertises lab', async () => {
-    const trpc = { brain: { getCapabilities: { query: vi.fn() } } };
-    trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: false, paneWrite: { create: 'off' }, paneAttach: 'lab' });
-    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: false });
-    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
-    for (const paneAttach of ['lab', 'on', 'off', undefined, 'bogus']) {
-      trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: true, paneWrite: { create: 'lab' }, paneAttach });
-      await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: true, attachWritesEnabled: false });
+  it('keeps create and shared writes off for stale server capabilities', async () => {
+    const query = vi.fn();
+    const preview = vi.fn();
+    const commit = vi.fn();
+    const trpc = { brain: { getCapabilities: { query } }, quoteWorkflow: {
+      previewStay: { mutate: preview }, commitStay: { mutate: commit },
+    } };
+    const client = paneStayFromTrpc(trpc);
+    const stay = { firstName: 'Proof', lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-16',
+      adults: 1, sourceOfBusiness: 'E-Mail', roomType: 'STQN', ratePlan: 'BAR', track: 'BAR',
+      guestoptin4: false, guaranteeType: 'NGI' };
+    const refused = { status: 'refused', reason: 'pane_create_dispatch_unavailable' };
+    // The bound client cannot dispatch, even before capabilities are read.
+    await expect(client.preview(stay)).resolves.toEqual(refused);
+    await expect(client.commit(stay, 'a'.repeat(64))).resolves.toEqual(refused);
+    for (const capabilities of [
+      { paneSave: true },
+      { paneSave: true, paneSaveMode: 'lab' },
+      { paneSave: true, paneSaveMode: 'on' },
+      { paneSave: true, paneWrite: { create: 'lab' }, paneAttach: 'lab' },
+      { paneSave: true, paneWrite: { create: 'on' }, paneAttach: 'on' },
+      { paneSave: false, paneWrite: { create: 'off' } },
+    ]) {
+      query.mockResolvedValue(capabilities);
+      await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: false });
+      expect(client.mode?.()).toBe('off');
+      await expect(client.commit(stay, 'a'.repeat(64))).resolves.toEqual(refused);
     }
-    trpc.brain.getCapabilities.query.mockRejectedValue(new Error('unavailable'));
-    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: false });
-    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
+    expect(query).not.toHaveBeenCalled();
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    await expect(readPaneSaveFlag({})).resolves.toBe(false);
   });
 
   it('maps the server capabilities to a mode; a server with no mode name reads as lab', () => {
@@ -2640,22 +2653,22 @@ describe('pane save helpers', () => {
     ).toBe('off');
   });
 
-  it('remembers the mode on the tRPC client it read the flag through', async () => {
+  it('remembers the held mode on the tRPC client it read the flag through', async () => {
     const trpc = { brain: { getCapabilities: { query: async () => ({ paneSave: true, paneSaveMode: 'on' }) } } };
     expect(paneStayFromTrpc(trpc).mode?.()).toBeNull();
-    await expect(readPaneSaveFlag(trpc)).resolves.toBe(true);
-    expect(paneStayFromTrpc(trpc).mode?.()).toBe('on');
+    await expect(readPaneSaveFlag(trpc)).resolves.toBe(false);
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
   });
 
-  it('keeps the mode on the real tRPC client shape, a Proxy over a function', async () => {
+  it('keeps the held mode on the real tRPC client shape, a Proxy over a function', async () => {
     // createFlatProxy in @trpc/server returns new Proxy(noop, ...), so typeof is 'function'.
     const query = async () => ({ paneSave: true, paneSaveMode: 'lab' });
     const trpc = new Proxy(() => {}, {
       get: (_target, name) => (name === 'brain' ? { getCapabilities: { query } } : undefined),
     });
     expect(typeof trpc).toBe('function');
-    await expect(readPaneSaveFlag(trpc)).resolves.toBe(true);
-    expect(paneStayFromTrpc(trpc).mode?.()).toBe('lab');
+    await expect(readPaneSaveFlag(trpc)).resolves.toBe(false);
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
   });
 });
 

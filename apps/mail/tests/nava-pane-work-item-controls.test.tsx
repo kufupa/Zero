@@ -27,8 +27,10 @@ const {
   syncStatusQuery,
   saveReplyMutate,
   bookingVoucherModes,
+  paneCreateModes,
 } = vi.hoisted(() => ({
   bookingVoucherModes: [] as boolean[],
+  paneCreateModes: [] as boolean[],
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   syncStatusQuery: vi.fn().mockResolvedValue(null),
@@ -51,6 +53,7 @@ const {
   }),
   bridgeMockState: {
     paneAttach: 'off' as 'off' | 'lab',
+    createMode: 'off' as 'off' | 'lab' | 'on' | 'legacy',
     userId: 'staff-1',
     sessionId: 'session-1',
     transportId: 'transport-1',
@@ -103,6 +106,14 @@ vi.mock('../components/nava-pane/blocks/booking-voucher-card', async (importOrig
   return { BookingVoucherCard: (props: Parameters<typeof original.BookingVoucherCard>[0]) => {
     bookingVoucherModes.push(props.writesEnabled === true);
     return <original.BookingVoucherCard {...props} />;
+  } };
+});
+
+vi.mock('../components/quote-workflow/quote-workflow-panel', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../components/quote-workflow/quote-workflow-panel')>();
+  return { ...original, QuoteWorkflowPanel: (props: Parameters<typeof original.QuoteWorkflowPanel>[0]) => {
+    paneCreateModes.push(props.paneSave != null);
+    return <original.QuoteWorkflowPanel {...props} />;
   } };
 });
 
@@ -174,7 +185,11 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
-    brain: { getCapabilities: { query: async () => ({ paneSave: false, paneWrite: { create: 'off' }, paneAttach: bridgeMockState.paneAttach }) } },
+    brain: { getCapabilities: { query: async () => ({
+      ...(bridgeMockState.createMode === 'legacy' ? { paneSave: true } : {
+        paneSave: bridgeMockState.createMode !== 'off', paneWrite: { create: bridgeMockState.createMode },
+      }), paneAttach: bridgeMockState.paneAttach,
+    }) } },
     workstation: {
       ping: { mutate: pingMutate },
       quoteProposalPdf: { mutate: quotePdfMutate },
@@ -395,9 +410,9 @@ const READY_WORK = {
   },
 };
 
-async function renderReadyPane() {
+async function renderReadyPane(preview = false) {
   bridgeMockState.storedWork = READY_WORK;
-  render(<NavaPane bridge={fakeBridge} />);
+  render(<NavaPane bridge={fakeBridge} preview={preview} />);
   await screen.findByText('Ada Lovelace', {}, { timeout: 4000 });
   await screen.findByRole('button', { name: 'Undo' }, { timeout: 4000 });
   await act(async () => {
@@ -409,7 +424,9 @@ describe('Nava pane work-item controls', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     bridgeMockState.paneAttach = 'off';
+    bridgeMockState.createMode = 'off';
     bookingVoucherModes.length = 0;
+    paneCreateModes.length = 0;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.storedWork = null;
@@ -435,6 +452,16 @@ describe('Nava pane work-item controls', () => {
     sessionStorage.clear();
     resetPaneEditsForTests();
     cleanup();
+  });
+
+  it.each([
+    ['Outlook', false, 'lab'], ['Outlook', false, 'on'], ['Outlook', false, 'legacy'],
+    ['webmail', true, 'lab'], ['webmail', true, 'on'], ['webmail', true, 'legacy'],
+  ] as const)('keeps %s create controls off with preview=%s and stale %s capabilities', async (_surface, preview, mode) => {
+    bridgeMockState.createMode = mode;
+    await renderReadyPane(preview);
+    await waitFor(() => expect(paneCreateModes.length).toBeGreaterThan(0));
+    expect(paneCreateModes.every((enabled) => enabled === false)).toBe(true);
   });
 
   it('keeps shared write controls off even when a stale capability says lab', async () => {
