@@ -52,5 +52,22 @@ There is no adult amendment Save path here. Guarded availability recalculation,
 approval and persistence are not implemented here. Any future save requires
 independent readback in a fresh session; staging does not establish persistence.
 
+## Isolated save observation
+
+On 2026-11-02, a one-off experimental copy of this adapter used the shared
+one-save lifecycle on an exclusive fake HRCEN stay. It staged adults from two
+to three and sent one exactly matched Save request without an availability
+recalculation. HMS returned HTTP 200, but the outcome was `uncertain`. A later
+screenshot showed the native prompt “Retain the current rates?” with Yes, No
+and Cancel. No option was selected. The runner did not capture the response
+body or the dialog count, so it did not establish the server response or the
+meaning of either option.
+
+A separate fresh session found the clean saved form and model unchanged apart
+from session identifiers, including the original adult count. This is a
+point-in-time readback, not proof that the earlier request cannot complete
+later. No retry was made. Pricing, tax and inventory correctness remain
+unknown. This experiment does not add a Save path to the adapter.
+
 The result and preview can contain private guest, stay, rate, note and party
 information. Keep them in private storage and never put them in logs or Git.

@@ -147,6 +147,41 @@ describe('shared Labtest amendment save lifecycle', () => {
     expect(result).toMatchObject({ outcome: 'uncertain', httpStatus: 200, blockedRequestsAfterDispatch: 1 });
   });
 
+  it('reports a visible native modal after dispatch without accepting it', async () => {
+    const routes = mockPage();
+    const response = deferredValue<any>();
+    routes.page.waitForResponse.mockReturnValue(response.promise);
+    routes.page.waitForTimeout.mockResolvedValue(undefined);
+    const frame = { locator: () => ({ count: async () => 1 }) };
+    const request = {
+      url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
+      method: () => 'POST', postData: () => 'approved=true', frame: () => frame,
+    };
+    const save = { click: vi.fn(async () => {
+      await routes.pageRoutes[1]!({
+        request: () => request,
+        abort: vi.fn(),
+        fallback: async () => routes.pageRoutes[0]!({
+          request: () => request, abort: vi.fn(),
+          fallback: async () => routes.contextRoutes[0]!({
+            request: () => request, abort: vi.fn(), fallback: vi.fn(), continue: vi.fn(),
+          }),
+        }),
+      });
+      response.resolve({ request: () => request, status: () => 200 });
+    }) };
+    const result = await runLabtestAmendSave(routes.page as never, {
+      prepare: async () => ({ frame, save }),
+      stage: async () => ({ draft: true }),
+      matches: () => true,
+      validate: async () => true,
+    });
+    expect(save.click).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      outcome: 'uncertain', httpStatus: 200, visibleDialogCount: 1, blockedRequestsAfterDispatch: 0,
+    });
+  });
+
   it('quarantines a route chain that finishes installing after timeout and refuses page reuse', async () => {
     const routes = mockPage(true);
     const save = { click: vi.fn() };
