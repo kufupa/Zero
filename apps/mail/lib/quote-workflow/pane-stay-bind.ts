@@ -223,6 +223,7 @@ type PaneStayTrpc = {
       query: () => Promise<{
         paneSave?: boolean;
         paneSaveMode?: unknown;
+        paneAttach?: unknown;
         paneWrite?: { create?: unknown };
       }>;
     };
@@ -284,17 +285,25 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   };
 }
 
-// The server mode, read through the tRPC client. Any failure reads as off, so the card stays copy-only.
-export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
+// Create and existing-write controls are independent. Missing or failed capabilities stay off.
+export async function readPaneSaveCapabilities(trpc: unknown): Promise<{
+  saveEnabled: boolean; attachWritesEnabled: boolean;
+}> {
   let mode: PaneSaveMode = 'off';
+  let attachWritesEnabled = false;
   try {
     const capabilities = await (trpc as PaneStayTrpc).brain?.getCapabilities.query();
     mode = paneSaveModeOf(capabilities);
+    attachWritesEnabled = capabilities?.paneAttach === 'lab';
   } catch {
     mode = 'off';
   }
   if (isClientKey(trpc)) paneSaveModes.set(trpc, mode);
-  return mode !== 'off';
+  return { saveEnabled: mode !== 'off', attachWritesEnabled };
+}
+
+export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
+  return (await readPaneSaveCapabilities(trpc)).saveEnabled;
 }
 
 export type PaneStayChoice = {

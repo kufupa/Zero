@@ -64,7 +64,7 @@ import {
   type PriorStaffQuoteRequoteRow,
   type UsePriorQuoteForBookingReady,
 } from '@/lib/quote-workflow/booking-draft-bind';
-import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
+import { paneStayFromTrpc, readPaneSaveCapabilities } from '@/lib/quote-workflow/pane-stay-bind';
 import {
   partyFinderFromTrpc,
   partyIndexFromTrpc,
@@ -332,10 +332,10 @@ export function NavaPane({
   const [combinedEdit, setCombinedEdit] = useState<CombinedReplyEdit | null>(null);
   useEffect(() => {
     let alive = true;
-    void readPaneSaveFlag(trpcClient).then((on) => {
+    void readPaneSaveCapabilities(trpcClient).then(({ saveEnabled, attachWritesEnabled }) => {
       if (!alive) return;
-      setPaneSaveOn(on);
-      setAttachWritesEnabled(PANE_STAY_CLIENT.mode?.() === 'lab');
+      setPaneSaveOn(saveEnabled);
+      setAttachWritesEnabled(attachWritesEnabled);
     });
     return () => {
       alive = false;

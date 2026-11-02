@@ -26,7 +26,9 @@ const {
   voucherFindQuery,
   syncStatusQuery,
   saveReplyMutate,
+  bookingVoucherModes,
 } = vi.hoisted(() => ({
+  bookingVoucherModes: [] as boolean[],
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   syncStatusQuery: vi.fn().mockResolvedValue(null),
@@ -48,6 +50,7 @@ const {
     };
   }),
   bridgeMockState: {
+    paneAttach: 'off' as 'off' | 'lab',
     userId: 'staff-1',
     sessionId: 'session-1',
     transportId: 'transport-1',
@@ -94,6 +97,14 @@ const {
     resetSection: vi.fn(async (_input?: unknown) => ({ reset: 1 })),
   },
 }));
+
+vi.mock('../components/nava-pane/blocks/booking-voucher-card', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../components/nava-pane/blocks/booking-voucher-card')>();
+  return { BookingVoucherCard: (props: Parameters<typeof original.BookingVoucherCard>[0]) => {
+    bookingVoucherModes.push(props.writesEnabled === true);
+    return <original.BookingVoucherCard {...props} />;
+  } };
+});
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -163,6 +174,7 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
+    brain: { getCapabilities: { query: async () => ({ paneSave: false, paneWrite: { create: 'off' }, paneAttach: bridgeMockState.paneAttach }) } },
     workstation: {
       ping: { mutate: pingMutate },
       quoteProposalPdf: { mutate: quotePdfMutate },
@@ -396,6 +408,8 @@ async function renderReadyPane() {
 describe('Nava pane work-item controls', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.paneAttach = 'off';
+    bookingVoucherModes.length = 0;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.storedWork = null;
@@ -421,6 +435,17 @@ describe('Nava pane work-item controls', () => {
     sessionStorage.clear();
     resetPaneEditsForTests();
     cleanup();
+  });
+
+  it('passes independently enabled Labtest existing-write controls to the shared pane', async () => {
+    bridgeMockState.paneAttach = 'lab';
+    await renderReadyPane();
+    await waitFor(() => expect(bookingVoucherModes.at(-1)).toBe(true));
+  });
+
+  it('keeps existing-write controls off when the attachment capability is off', async () => {
+    await renderReadyPane();
+    await waitFor(() => expect(bookingVoucherModes.at(-1)).toBe(false));
   });
 
   it('marks a staff-edited field Edited and an AI field AI', async () => {

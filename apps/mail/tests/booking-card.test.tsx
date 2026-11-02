@@ -40,6 +40,7 @@ import {
   PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   readPaneSaveFlag,
+  readPaneSaveCapabilities,
   type PaneStayClient,
   type PaneStayResult,
 } from '../lib/quote-workflow/pane-stay-bind';
@@ -2597,6 +2598,20 @@ describe('pane save helpers', () => {
       readPaneSaveFlag({ brain: { getCapabilities: { query: async () => ({ paneSave: true }) } } }),
     ).resolves.toBe(true);
     await expect(readPaneSaveFlag({})).resolves.toBe(false);
+  });
+
+  it('reads attachment capability independently of held create and fails closed', async () => {
+    const trpc = { brain: { getCapabilities: { query: vi.fn() } } };
+    trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: false, paneWrite: { create: 'off' }, paneAttach: 'lab' });
+    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: true });
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
+    for (const paneAttach of ['on', 'off', undefined, 'bogus']) {
+      trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: true, paneWrite: { create: 'lab' }, paneAttach });
+      await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: true, attachWritesEnabled: false });
+    }
+    trpc.brain.getCapabilities.query.mockRejectedValue(new Error('unavailable'));
+    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: false });
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
   });
 
   it('maps the server capabilities to a mode; a server with no mode name reads as lab', () => {
