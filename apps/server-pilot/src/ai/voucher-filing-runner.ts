@@ -52,7 +52,8 @@ export type FilingRunnerDependencies = {
     checkAuthority: () => Promise<boolean>; deadlineAt: Date;
     persistPreimage: (preimage: unknown) => Promise<boolean> }): Promise<NativeOutcome>;
   consume?: typeof consumeHmsWriteApproval;
-  checkBeforeSave?: typeof assertHmsUnchangedBeforeSave;
+  /** Must check the fenced approval and HMS digest without ending a consumed run as NEEDS_CHECK. */
+  checkBeforeSave: typeof assertHmsUnchangedBeforeSave;
   endRun?: typeof endHmsWriteRun;
 };
 
@@ -85,42 +86,44 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
   const { db, serverGrantId, page, propertyLock } = deps;
   const fence = structuredClone(deps.fence);
   const consume = deps.consume ?? consumeHmsWriteApproval;
-  const checkBeforeSave = deps.checkBeforeSave ?? assertHmsUnchangedBeforeSave;
+  // The shared helper can end a consumed run as nonblocking NEEDS_CHECK; do not default to it.
+  const checkBeforeSave = deps.checkBeforeSave;
   const endRun = deps.endRun ?? endHmsWriteRun;
   let invoked = false;
   const withinDeadline = () => fence?.deadlineAt instanceof Date &&
     Number.isFinite(fence.deadlineAt.getTime()) && Date.now() < fence.deadlineAt.getTime();
   const lockHeld = () => Boolean(propertyLock?.tenantId && propertyLock.propertyCode &&
     isPropertyReadConnectionHeld(propertyLock.connection, propertyReadLockKey(propertyLock.tenantId, propertyLock.propertyCode)));
-  const finish = async (outcome: 'refused' | 'uncertain', reason: string, marker?: string) => {
+  const finish = async (reason: string, marker?: string) => {
     try {
-      const ended = await endRun({ db, fence, failureClass: outcome === 'uncertain' ? 'UNKNOWN' : 'NEEDS_CHECK', reason });
+      const ended = await endRun({ db, fence, failureClass: 'UNKNOWN', reason });
       if (!ended) return result('uncertain', 'filing_needs_check', marker);
     } catch { return result('uncertain', 'filing_needs_check', marker); }
-    return result(outcome, reason, marker);
+    return result('uncertain', reason, marker);
   };
   return {
     async run(input) {
-      if (invoked) return result('refused', 'filing_run_already_invoked');
+      if (invoked) return result('uncertain', 'filing_run_already_invoked');
       invoked = true;
-      if (!fence?.runId || !fence.claimOwner || !fence.claimToken) return result('refused', 'filing_authority_unavailable');
+      if (!fence?.runId || !fence.claimOwner || !fence.claimToken) return result('uncertain', 'filing_authority_unavailable');
       // Another invocation with this fence may already have consumed the grant. UNKNOWN blocks
       // reapproval if consumed, while the approval layer permits it if no consume exists.
       const parsed = FilingRunnerInputSchema.safeParse(input);
-      if (!parsed.success) return finish('uncertain', 'filing_input_invalid');
-      if (!serverGrantId || parsed.data.grantRef !== serverGrantId || !withinDeadline() || !safePage(page) || !lockHeld()) {
-        return finish('uncertain', 'filing_authority_unavailable');
+      if (!parsed.success) return finish('filing_input_invalid');
+      if (!serverGrantId || parsed.data.grantRef !== serverGrantId || (typeof checkBeforeSave !== 'function' || checkBeforeSave === assertHmsUnchangedBeforeSave) ||
+          !withinDeadline() || !safePage(page) || !lockHeld()) {
+        return finish('filing_authority_unavailable');
       }
       let form: ApprovedForm;
       try {
         const consumed = await consume({ db, runId: fence.runId, fence });
-        if (consumed.grantId !== serverGrantId) return finish('refused', 'filing_grant_mismatch');
+        if (consumed.grantId !== serverGrantId) return finish('filing_grant_mismatch');
         form = structuredClone(consumed.form);
-      } catch { return finish('uncertain', 'filing_grant_unavailable'); }
-      if (!withinDeadline()) return finish('refused', 'filing_deadline_expired');
-      if (form.propertyCode !== propertyLock.propertyCode) return finish('refused', 'filing_property_mismatch');
+      } catch { return finish('filing_grant_unavailable'); }
+      if (!withinDeadline()) return finish('filing_deadline_expired');
+      if (form.propertyCode !== propertyLock.propertyCode) return finish('filing_property_mismatch');
       const expectedHash = sourceHash(form);
-      if (!expectedHash) return finish('refused', 'filing_source_unavailable');
+      if (!expectedHash) return finish('filing_source_unavailable');
       const readBytes = async (): Promise<Buffer | null> => {
         try {
           const source = await deps.readApprovedSource(structuredClone(form));
@@ -131,8 +134,8 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         } catch { return null; }
       };
       const bytes = await readBytes();
-      if (!bytes) return finish('refused', 'filing_source_unavailable');
-      if (!withinDeadline()) return finish('refused', 'filing_deadline_expired');
+      if (!bytes) return finish('filing_source_unavailable');
+      if (!withinDeadline()) return finish('filing_deadline_expired');
       let preSubmitValidated = false;
       try {
         const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
@@ -143,9 +146,9 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
             return snapshot;
           } });
         if (checked.status !== 'unchanged' || !preSubmitValidated || !withinDeadline() || !lockHeld() || !safePage(page)) {
-          return finish('refused', 'filing_needs_check');
+          return finish('filing_needs_check');
         }
-      } catch { return finish('refused', 'filing_needs_check'); }
+      } catch { return finish('filing_needs_check'); }
       // The upload route can be paused when this runs. Do not touch the HMS page here.
       // Native dispatch remains held until a fresh, complete baseline is independently proven.
       const checkAuthority = async (): Promise<boolean> => {
@@ -169,10 +172,10 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         const possible = native.possiblyDispatched === true || native.dispatched === true ||
           native.saveDispatched === true || native.saveDispatched === 'unknown';
         if (!possible && ['not_dispatched', 'refused', 'input_gap'].includes(native.outcome ?? '')) {
-          return finish('refused', 'filing_not_dispatched');
+          return finish('filing_needs_check');
         }
-        return finish('uncertain', 'filing_needs_check', native.marker);
-      } catch { return finish('uncertain', 'filing_needs_check'); }
+        return finish('filing_needs_check', native.marker);
+      } catch { return finish('filing_needs_check'); }
     },
   };
 }

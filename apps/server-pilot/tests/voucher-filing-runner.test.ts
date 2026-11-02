@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createFilingRunner, prepareFilingContext } from '../src/ai/voucher-filing-runner.js';
-import { HmsApprovalError } from '../src/ai/hms-approval.js';
+import { assertHmsUnchangedBeforeSave, HmsApprovalError } from '../src/ai/hms-approval.js';
 import { createPropertyReadLock } from '../src/hms/property-read-lock.js';
 
 const pdf = Buffer.from('%PDF-synthetic');
@@ -115,6 +115,17 @@ describe('fenced voucher filing runner', () => {
     expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
   });
 
+  it('fails closed before consuming when the approval checker is absent or the unsafe shared helper', async () => {
+    for (const check of [undefined, assertHmsUnchangedBeforeSave]) {
+      const f = await fixture();
+      f.deps.checkBeforeSave = check as any;
+      const result = await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }));
+      expect(result.outcome).toBe('uncertain');
+      expect(f.consume).not.toHaveBeenCalled();
+      expect(f.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN' }));
+    }
+  });
+
   it('refuses a missing held property lock or a mismatched approved property', async () => {
     const missing = await fixture();
     expect((await createFilingRunner(missing.deps).run({ grantRef: 'grant-1' })).reason).toBe('filing_authority_unavailable');
@@ -185,7 +196,7 @@ describe('fenced voucher filing runner', () => {
       }).mockImplementationOnce(async ({ readHmsState }: any) => {
         await readHmsState(); clock.mockReturnValue(deadline); return { status: 'unchanged' as const };
       });
-      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
       expect(f.persistPreimage).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
@@ -197,7 +208,7 @@ describe('fenced voucher filing runner', () => {
     const clock = vi.spyOn(Date, 'now');
     try {
       f.persistPreimage.mockImplementationOnce(async () => { clock.mockReturnValue(deadline); return true; });
-      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
       expect(f.persistPreimage).toHaveBeenCalledOnce();
     } finally { clock.mockRestore(); }
   });
@@ -210,7 +221,7 @@ describe('fenced voucher filing runner', () => {
     const later = await fixture();
     later.readApprovedSource.mockResolvedValueOnce({ status: 'ready', bytes: pdf })
       .mockResolvedValueOnce({ status: 'ready', bytes: Buffer.from('%PDF-mutated') });
-    expect((await later.lock.withLock(() => createFilingRunner(later.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+    expect((await later.lock.withLock(() => createFilingRunner(later.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
     expect(later.persistPreimage).not.toHaveBeenCalled();
   });
 
@@ -220,7 +231,7 @@ describe('fenced voucher filing runner', () => {
       if (scenario === 'changed') f.readIndependentSnapshot.mockResolvedValueOnce({ identity: 'other', coverage: { complete: true, refreshVerified: true } });
       if (scenario === 'incomplete') f.readIndependentSnapshot.mockResolvedValueOnce({ identity: 'same-shape', coverage: { complete: false, refreshVerified: true } });
       if (scenario === 'error') f.readIndependentSnapshot.mockRejectedValueOnce(new Error('read failed'));
-      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
       expect(f.persistPreimage).not.toHaveBeenCalled();
     }
   });
@@ -231,8 +242,9 @@ describe('fenced voucher filing runner', () => {
       f.checkBeforeSave.mockResolvedValueOnce({ status: 'needs_check', reason: 'form_changed' } as any);
       return true;
     });
-    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
     expect(f.persistPreimage).toHaveBeenCalledOnce();
+    expect(f.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN' }));
   });
 
   it('ends pre-consume refusals as unknown because another invocation may have consumed', async () => {
@@ -258,7 +270,7 @@ describe('fenced voucher filing runner', () => {
 
   it('rejects a preimage that cannot be persisted durably', async () => {
     const f = await fixture(); f.persistPreimage.mockResolvedValueOnce(false);
-    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_needs_check');
   });
 
   it('never treats an adapter exception or contradictory possible dispatch as a refusal', async () => {
