@@ -120,7 +120,7 @@ reference, the writer stages it with the save route unarmed, then captures the
 before screenshot after staging. Fresh readback requires exact native-model and
 visible text. An uncertain create without confirmation cannot yet verify billing
 or party identity through its census candidates. No implicit retry occurs.
-If no note is supplied, a unique synthetic marker helps reconciliation.
+For a verified Proof Labtest draft, prepare generates a unique synthetic note only when the note is omitted. Review the returned `applied.note` and pass that exact value to commit; a note-less Labtest commit is refused. An explicit null note is unsupported and is not replaced.
 
 Outcomes are `prepared`, `saved`, `refused`, `needs_input`, `unsupported`, or
 `uncertain`. `applied` records observed draft values and `appliedVerification`
