@@ -56,6 +56,12 @@ export function matchesRealDateDraft(before, after, expected, changes) {
   }
   const arrival = changes.arrival ?? expected.arrival, departure = changes.departure ?? expected.departure;
   if (arrival >= departure) return false;
+  const nights = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000;
+  const derived = { nights:String(nights), arrivaldayofweek:weekdays[new Date(`${arrival}T00:00:00Z`).getUTCDay()],
+    departuredayofweek:weekdays[new Date(`${departure}T00:00:00Z`).getUTCDay()] };
+  // When HMS exposes dependent fields, an unchanged stale value is not proof.
+  if (Object.entries(derived).some(([name, wanted]) => Object.hasOwn(after.values, name) &&
+      String(after.values[name]) !== wanted)) return false;
   const changedDates = Object.keys(dateFields).filter((key) => Object.hasOwn(changes, key) && changes[key] !== expected[key]);
   if (!changedDates.length || !after.formDirty || changedDates.some((key) => !after.dirtyFields.includes(dateFields[key]))) return false;
   const actualChanges = new Set();
@@ -69,8 +75,7 @@ export function matchesRealDateDraft(before, after, expected, changes) {
       if (date) {
         if (right[name] !== (part === 'values' ? finalDates[date].display : finalDates[date].wire)) return false;
       } else if (part === 'values' && name === 'nights') {
-        const nights = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000;
-        if (String(right[name]) !== String(nights)) return false;
+        if (String(right[name]) !== derived.nights) return false;
       } else if (part === 'values' && ['arrivaldayofweek','departuredayofweek'].includes(name)) {
         const key = name.startsWith('arrival') ? 'arrival' : 'departure';
         if (!changedDates.includes(key) || right[name] !== weekdays[new Date(`${key === 'arrival' ? arrival : departure}T00:00:00Z`).getUTCDay()]) return false;

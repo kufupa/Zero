@@ -26,6 +26,8 @@ test('rejects wrong derived values, arbitrary side effects and missing original 
   for (const mutate of [
     (f) => { f.after.values.nights = '7'; },
     (f) => { f.after.values.departuredayofweek = 'Sun'; },
+    (f) => { f.after.values.departuredayofweek = 'Fri'; },
+    (f) => { f.after.values.nights = '5'; },
     (f) => { f.after.data.nights = '6'; },
     (f) => { f.after.data.ratetax = '123'; },
     (f) => { f.after.data.enablecheckavailability = '1'; },
@@ -38,7 +40,9 @@ test('rejects wrong derived values, arbitrary side effects and missing original 
 });
 test('accepts an exact simple date-only delta and refuses invalid or stale dates', () => {
   const {before, after} = snapshots();
-  after.values.nights = before.values.nights; after.values.departuredayofweek = before.values.departuredayofweek;
+  for (const part of ['data','values']) for (const key of ['nights','departuredayofweek']) {
+    delete before[part][key]; delete after[part][key];
+  }
   after.values.averagerate = before.values.averagerate; after.data.ratetax = before.data.ratetax;
   after.data.enablecheckavailability = before.data.enablecheckavailability;
   after.dirtyFields = ['adults', 'departuredate']; after.modifiedFields = ['adults'];
