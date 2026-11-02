@@ -84,10 +84,15 @@ function normalizeExistingEvidence<T>(result: ExistingToolResult<T>): NavaToolRe
       .map((shot) => ({ runId: result.runId!, name: shot.name, sha256: shot.sha256 }))
     : [];
   const existingShots = result.evidence?.screenshots ?? [];
+  // Never attach an unverified producer observation to an unrelated verified level.
+  const missingVerifiedReadback = result.evidence?.level === 'readback_verified' &&
+    result.evidence.readback === undefined;
   const readback = result.evidence?.readback !== undefined ? result.evidence.readback
-    : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
+    : missingVerifiedReadback ? undefined
+      : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
   return {
     ...result.evidence,
+    ...(missingVerifiedReadback ? { level: 'none' as const } : {}),
     ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
     ...(readback !== undefined ? { readback } : {}),
     ...(hasLegacy ? { legacy: [...(result.evidence?.legacy ?? []), legacy] } : {}),

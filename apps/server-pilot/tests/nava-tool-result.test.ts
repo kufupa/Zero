@@ -102,6 +102,18 @@ describe('Nava tool result contract', () => {
         readback: { top: true }, changedFieldsReadback: { changed: true } }] });
     expect(adapted.evidence?.screenshots).toBeUndefined();
   });
+  it('does not attach an unverified legacy readback to an unrelated verified level', () => {
+    for (const legacy of [{ readback: { raw: true } }, { changedFieldsReadback: { raw: true } }]) {
+      const adapted = adaptExistingToolResult({ outcome: 'ok', ...legacy,
+        evidence: { level: 'readback_verified' } }, { operation: 'read' });
+      expect(adapted.evidence).toEqual({ level: 'none', legacy: [legacy] });
+    }
+    const verified = { id: 'verified-stay' };
+    const adapted = adaptExistingToolResult({ outcome: 'ok', readback: { raw: true },
+      evidence: { level: 'readback_verified', readback: verified } }, { operation: 'read' });
+    expect(adapted.evidence).toEqual({ level: 'readback_verified', readback: verified,
+      legacy: [{ readback: { raw: true } }] });
+  });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
     expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);
