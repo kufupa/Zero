@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { recordStayPreview, takeStayPreview } from '../src/ai/pane-stay-preview-persist.js';
+import { createWorkItemPreviewPersist, recordStayPreview, takeStayPreview } from '../src/ai/pane-stay-preview-persist.js';
 
 const key = { transportId: 'hotel', workItemId: 'work-1', stayId: 'stay-1' };
 const record = { digest: 'a'.repeat(64), status: 'previewed' as const, expiresAt: 200 };
@@ -50,6 +50,15 @@ describe('bound stay previews during create dispatch', () => {
     const takeDb = fakeDb([]);
     await expect(takeStayPreview(takeDb.db, { ...key, digest: record.digest, now: 100 })).resolves.toBe(true);
     expect(takeDb.calls).toEqual(['lock', 'lock', 'fences', 'update']);
+  });
+
+  it('does not report a durable preview when its bound work item is missing', async () => {
+    const fake = fakeDb([], false);
+    const persist = createWorkItemPreviewPersist(fake.db, key.transportId, 100);
+    await expect(persist.record({
+      workItemId: key.workItemId, stayId: key.stayId, digest: record.digest, now: 100,
+    })).rejects.toThrow('stay_preview_not_recorded');
+    expect(fake.tx.update).not.toHaveBeenCalled();
   });
 
   it('does not read fences or mutate when the work item is absent', async () => {

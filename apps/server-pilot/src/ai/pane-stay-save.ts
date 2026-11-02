@@ -792,19 +792,20 @@ export async function runPaneStay(input: {
   }
   if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
   const spawned = gate.spawned;
+  // Register every completed run before any refusal so its directory expires.
+  if (spawned.runId && spawned.runDir) {
+    registerPaneRun({
+      runId: spawned.runId,
+      dir: spawned.runDir,
+      owner: input.owner,
+      now: paneStayClock(),
+    });
+  }
   if (/^refused/i.test(spawned.outcome)) {
     return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
   }
   if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
     // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
-    if (spawned.runId && spawned.runDir) {
-      registerPaneRun({
-        runId: spawned.runId,
-        dir: spawned.runDir,
-        owner: input.owner,
-        now: paneStayClock(),
-      });
-    }
     const shots = await persistDurableStayShots({
       runId: spawned.runId,
       runDir: spawned.runDir,
@@ -833,8 +834,9 @@ export async function runPaneStay(input: {
         previewPersist: input.previewPersist,
       });
     } catch (error) {
+      // Never report an unusable bound preview, or retain an older memory grant.
+      takePanePreview(input.owner, digest, paneStayClock());
       if (error instanceof CreateFenceError && error.reason === 'active') {
-        takePanePreview(input.owner, digest, paneStayClock());
         return { status: 'refused', reason: 'write_in_flight' };
       }
       console.warn('stay_preview_persist_failed', {
@@ -842,15 +844,8 @@ export async function runPaneStay(input: {
         workItemId: input.workItemId,
         error,
       });
+      return { status: 'refused', reason: 'pane_preview_persist_failed' };
     }
-  }
-  if (spawned.runId && spawned.runDir) {
-    registerPaneRun({
-      runId: spawned.runId,
-      dir: spawned.runDir,
-      owner: input.owner,
-      now: paneStayClock(),
-    });
   }
   const shots = await persistDurableStayShots({
     runId: spawned.runId,

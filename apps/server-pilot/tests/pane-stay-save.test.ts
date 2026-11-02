@@ -1460,6 +1460,53 @@ describe('stay commit persist/reload', () => {
 });
 
 describe('pane stay preview persist', () => {
+  it('refuses a failed bound preview and discards any earlier memory grant', async () => {
+    enableSave();
+    const owner = freshOwner();
+    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { throw new Error('database_unavailable'); },
+      take: () => false,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runPaneStay({
+        mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      })).resolves.toEqual({ status: 'refused', reason: 'pane_preview_persist_failed' });
+      await expect(runPaneStay({
+        mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay),
+      })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('registers a fenced preview run for expiry even when preview persistence refuses', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
+    const runId = randomUUID();
+    let now = 9_000_000;
+    paneStaySaveLoaders.now = () => now;
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed', clickedSave: false, confirmationNumber: '', runId, runDir,
+    });
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { throw new CreateFenceError('active'); },
+      take: () => false,
+    };
+    try {
+      await expect(runPaneStay({
+        mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
+      now += PANE_RUN_TTL_MS + 1;
+      await readPaneStayScreenshot({ runId, name: 'filled.png', owner });
+      await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a bound commit on an active create fence even with an in-memory grant', async () => {
     enableSave();
     const owner = freshOwner();
