@@ -131,6 +131,17 @@ describe('Nava tool result contract', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
     expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);
   });
+  it('rejects duplicate or noncanonical batch keys and invalid child digests', () => {
+    const child = { key: 'room-a', stayDigest: 'a'.repeat(64), previewDigest: 'b'.repeat(64) };
+    const manifest = { manifestId: 'manifest', revision: 1, expiresAt: '2027-01-01T00:00:00Z', children: [child] };
+    expect(BatchManifestGrantSchema.safeParse(manifest).success).toBe(true);
+    for (const children of [
+      [child, child], [{ ...child, key: ' ' }], [{ ...child, key: ' room-a' }], [{ ...child, key: 'room\na' }],
+      [{ ...child, stayDigest: 'not-a-digest' }], [{ ...child, previewDigest: 'A'.repeat(64) }],
+    ]) expect(BatchManifestGrantSchema.safeParse({ ...manifest, children }).success).toBe(false);
+    expect(BatchManifestGrantSchema.safeParse({ ...manifest, manifestId: ' ' }).success).toBe(false);
+  });
+
   it('refuses unknown fields and requires server grants', () => {
     expect(FilingRunnerInputSchema.safeParse({ grantRef: 'g', extra: true }).success).toBe(false);
     expect(FilingRunnerInputSchema.safeParse({}).success).toBe(false);

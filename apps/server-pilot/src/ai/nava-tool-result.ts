@@ -35,12 +35,22 @@ export const AmendStageInputSchema = z.object({
 }).strict();
 export type AmendStageInput = z.infer<typeof AmendStageInputSchema>;
 
+// Parsing validates structure only. Authority still requires a server-owned manifest and an unexpired grant.
+const manifestIdentifier = z.string().min(1).refine((value) => value === value.trim() &&
+  ![...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127));
+const manifestDigest = z.string().regex(/^[a-f0-9]{64}$/);
 export const BatchManifestGrantSchema = z.object({
-  manifestId: z.string().min(1),
+  manifestId: manifestIdentifier,
   revision: z.number().int().nonnegative(),
   expiresAt: z.string().datetime({ offset: true }),
-  children: z.array(z.object({ key: z.string().min(1), stayDigest: z.string().min(1), previewDigest: z.string().min(1) }).strict()).min(1),
-}).strict();
+  children: z.array(z.object({ key: manifestIdentifier, stayDigest: manifestDigest, previewDigest: manifestDigest }).strict()).min(1),
+}).strict().superRefine((grant, ctx) => {
+  const keys = new Set<string>();
+  for (const child of grant.children) {
+    if (keys.has(child.key)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['children'], message: 'Duplicate child key.' });
+    keys.add(child.key);
+  }
+});
 export type BatchManifestGrant = z.infer<typeof BatchManifestGrantSchema>;
 
 export type ExistingToolResult<T> = {
