@@ -61,15 +61,17 @@ export type ExistingToolResult<T> = {
   outcome?: string;
   reason?: string;
   issue?: string;
+  error?: string;
+  stack?: string;
   field?: string;
   data?: T;
-  clickedSave?: boolean;
+  clickedSave?: boolean | 'unknown';
   saveAttempted?: boolean | 'unknown';
   uploadSent?: boolean | 'unknown';
   clickedOk?: boolean | 'unknown';
   saveDispatched?: boolean | 'unknown';
-  possiblyDispatched?: boolean;
-  dispatched?: boolean;
+  possiblyDispatched?: boolean | 'unknown';
+  dispatched?: boolean | 'unknown';
   runId?: string | null;
   screenshots?: string[];
   shots?: { name: string; sha256: string; at?: string }[];
@@ -86,9 +88,17 @@ function stableReason(value: string | undefined): string | undefined {
 
 /** Preserve original observations; a filename or readback alone does not prove a write. */
 function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, verified: boolean): NavaToolResult<T>['evidence'] {
-  const legacy = Object.fromEntries(Object.entries(result).filter(([key]) =>
-    existingControlFields.has(key as keyof ExistingToolResult<unknown>)));
+  // Keep dispatch indicators and observations, but never echo raw errors or duplicate data.
+  const legacyFields = new Set(['runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback',
+    'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched', 'possiblyDispatched', 'dispatched', 'claimedLevel']);
+  const keepEvidence = (source: Record<string, unknown>) => Object.fromEntries(
+    Object.entries(source).filter(([key]) => legacyFields.has(key)),
+  );
+  const legacy = keepEvidence(result as Record<string, unknown>);
+  if (result.evidence?.level === 'readback_verified' && (!verified || result.evidence.readback == null))
+    legacy.claimedLevel = 'readback_verified';
   const hasLegacy = Object.keys(legacy).length > 0;
+  const previousLegacy = (result.evidence?.legacy ?? []).map(keepEvidence).filter((item) => Object.keys(item).length > 0);
   if (!result.evidence && !hasLegacy) return undefined;
   const screenshots = result.runId && result.shots
     ? result.shots.filter((shot) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(shot.name) && /^[a-f0-9]{64}$/i.test(shot.sha256))
@@ -104,20 +114,20 @@ function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, verified: b
     : missingVerifiedReadback ? undefined
       : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
   return {
-    ...result.evidence,
-    ...(untrustedVerifiedLevel ? { level: 'none' as const } : {}),
+    ...(result.evidence?.requestDigest !== undefined ? { requestDigest: result.evidence.requestDigest } : {}),
+    ...(result.evidence?.level !== undefined ? { level: untrustedVerifiedLevel ? 'none' as const : result.evidence.level } : {}),
     ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
     ...(readback !== undefined ? { readback } : {}),
-    ...(hasLegacy ? { legacy: [...(result.evidence?.legacy ?? []), legacy] } : {}),
+    ...(hasLegacy || previousLegacy.length ? { legacy: [...previousLegacy, ...(hasLegacy ? [legacy] : [])] } : {}),
   };
 }
 
 const existingControlFields = new Set<keyof ExistingToolResult<unknown>>([
-  'status', 'outcome', 'reason', 'issue', 'field', 'data', 'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched',
+  'status', 'outcome', 'reason', 'issue', 'error', 'stack', 'field', 'data', 'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched',
   'possiblyDispatched', 'dispatched', 'runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback', 'evidence',
 ]);
 type LegacyPayload<R> = Omit<R, keyof ExistingToolResult<unknown>>;
-type AdaptedData<R> = (R extends { data: infer T } ? T : never) | LegacyPayload<R>;
+type AdaptedData<R> = (R extends { data?: infer T } ? T : never) | LegacyPayload<R>;
 
 /** `readbackVerified` must be established by the trusted caller from a fresh, matching read. */
 export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(result: R, options: {
@@ -126,13 +136,14 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
   const code = result.outcome ?? result.status ?? '';
   // These amendment outcomes are produced before a runner can start. Unknown codes stay uncertain.
   const knownPreDispatchRefusal = ['refused_flag_off', 'amend_preview_required'].includes(code);
-  const reason = stableReason(result.reason ?? result.issue ?? (knownPreDispatchRefusal ? code : undefined));
+  const reason = stableReason(result.reason ?? result.issue ?? result.error ?? (knownPreDispatchRefusal ? code : undefined));
   const uncertainCodes = new Set(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_unconfirmed', 'save_failed', 'partial']);
   const ambiguous = uncertainCodes.has(code) || uncertainCodes.has(result.status ?? '') ||
     (result.reason === 'pane_save_unconfirmed' || result.issue === 'pane_save_unconfirmed');
-  const possibleDispatch = result.clickedSave === true || result.saveAttempted === true || result.saveAttempted === 'unknown' ||
-    result.uploadSent === true || result.uploadSent === 'unknown' || result.clickedOk === true || result.clickedOk === 'unknown' ||
-    result.saveDispatched === true || result.saveDispatched === 'unknown' || result.possiblyDispatched === true || result.dispatched === true;
+  const possibleDispatch = result.clickedSave === true || result.clickedSave === 'unknown' ||
+    result.saveAttempted === true || result.saveAttempted === 'unknown' || result.uploadSent === true || result.uploadSent === 'unknown' ||
+    result.clickedOk === true || result.clickedOk === 'unknown' || result.saveDispatched === true || result.saveDispatched === 'unknown' ||
+    result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
   const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
   let outcome: NavaToolResult<unknown>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!options.readbackVerified || !successful))) outcome = 'uncertain';

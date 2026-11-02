@@ -14,10 +14,11 @@ describe('Nava tool result contract', () => {
     expect(adaptExistingToolResult({ status: 'refused', reason: 'pane_save_unconfirmed' }, { operation: 'write' }))
       .toMatchObject({ outcome: 'uncertain', reason: 'pane_save_unconfirmed' });
   });
-  it.each([{ clickedSave: true }, { saveDispatched: true }, { saveDispatched: 'unknown' as const },
+  it.each([{ clickedSave: true }, { clickedSave: 'unknown' as const }, { saveDispatched: true }, { saveDispatched: 'unknown' as const },
     { saveAttempted: true }, { saveAttempted: 'unknown' as const }, { uploadSent: true },
     { uploadSent: 'unknown' as const }, { clickedOk: true }, { clickedOk: 'unknown' as const },
-    { possiblyDispatched: true }, { dispatched: true }])('keeps possible dispatch uncertain: %o', (signal) => {
+    { possiblyDispatched: true }, { possiblyDispatched: 'unknown' as const },
+    { dispatched: true }, { dispatched: 'unknown' as const }])('keeps possible dispatch uncertain: %o', (signal) => {
     expect(adaptExistingToolResult({ outcome: 'refused', ...signal }, { operation: 'write' }).outcome).toBe('uncertain');
   });
   it('never converts a dispatched refusal to a definite refusal even with claimed verification', () => {
@@ -157,10 +158,27 @@ describe('Nava tool result contract', () => {
       evidence: { level: 'readback_verified' as const, readback: { id: 'producer-claim' } } };
     const adapted = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
     expect(adapted.outcome).toBe('uncertain');
-    expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [source] });
+    expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [{ saveAttempted: true, claimedLevel: 'readback_verified' }] });
     const successful = adaptExistingToolResult({ ...source, outcome: 'ok' }, { operation: 'write' });
     expect(successful.outcome).toBe('uncertain');
     expect(successful.evidence?.level).toBe('none');
+  });
+  it('does not expose raw error text or duplicate data through legacy evidence', () => {
+    const adapted = adaptExistingToolResult({ outcome: 'refused', reason: 'sensitive failure details',
+      issue: 'internal error details', error: 'hidden error', stack: 'private stack',
+      data: { payload: true }, saveAttempted: true }, { operation: 'write' });
+    expect(adapted).toMatchObject({ outcome: 'uncertain', reason: 'tool_result_unclassified',
+      data: { payload: true }, evidence: { legacy: [{ saveAttempted: true }] } });
+    expect(JSON.stringify(adapted.evidence)).not.toContain('failure details');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('internal error');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('hidden error');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('private stack');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('payload');
+    const older = adaptExistingToolResult({ outcome: 'ok', evidence: { legacy: [
+      { reason: 'old error details', runId: 'old-run' },
+    ] } }, { operation: 'read' });
+    expect(older.evidence?.legacy).toEqual([{ runId: 'old-run' }]);
+    expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'read' }).evidence).toBeUndefined();
   });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
