@@ -73,6 +73,29 @@ describe('self-sent pre-stay information', () => {
     });
   });
 
+  it('keeps a separately requested action without offering a new booking', async () => {
+    const ask = 'Please arrange airport transport.';
+    const model = fakeModel(() => ({ ...CHANNEL_BOOKING_OUTPUT, secondaryAsks: [ask] }));
+    const result = await extractInboundMail({
+      adapter: model.adapter,
+      selection: selectionFor(`Arrival details for existing stay. ${ask}`, subject),
+      messageId: 'prestay-mixed', from: mailboxAddress, mailbox: mailboxAddress,
+    });
+    expect(result).toMatchObject({
+      ok: true, kind: 'other', needsAction: true, action: 'other_actionable',
+      payload: { needsAction: true, action: 'other_actionable', secondaryAsks: [ask] },
+    });
+  });
+
+  it('does not override a non-self-sent message with the same subject', async () => {
+    const model = fakeModel(() => CHANNEL_BOOKING_OUTPUT);
+    const result = await extractInboundMail({
+      adapter: model.adapter, selection: selectionFor('Please book a new stay.', subject),
+      messageId: 'prestay-external', from: 'guest@example.invalid', mailbox: mailboxAddress,
+    });
+    expect(result).toMatchObject({ ok: true, kind: 'booking' });
+  });
+
   it('keeps self-sent pre-stay triage out of booking and quote work', async () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async () => ({

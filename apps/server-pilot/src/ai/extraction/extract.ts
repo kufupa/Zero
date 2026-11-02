@@ -685,13 +685,19 @@ export async function extractInboundMail(input: {
       yearEvidenceText: stayDateYearEvidenceText(input.selection),
     },
   });
-  const kind = isSelfSentPreStayInformationMail({
+  const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: input.from,
     mailboxAddress: input.mailbox,
     subject: input.selection.subject,
     confirmationNumbers: sanitized.payload.confirmationNumbers,
-  })
-    ? 'other'
-    : sanitized.kind;
-  return { ok: true, ...sanitized, kind, usage, attachments: reads };
+  });
+  if (!existingStayInformation) return { ok: true, ...sanitized, usage, attachments: reads };
+  // Keep the stay non-bookable even if the model mislabels it. A separate request
+  // is staff work, never authority to create a reservation from pre-stay mail.
+  const needsAction = Boolean(sanitized.payload.secondaryAsks?.length);
+  const action = needsAction ? 'other_actionable' as const : 'no_action' as const;
+  return {
+    ok: true, ...sanitized, kind: 'other', needsAction, action,
+    payload: { ...sanitized.payload, needsAction, action }, usage, attachments: reads,
+  };
 }

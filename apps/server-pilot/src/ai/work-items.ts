@@ -1265,6 +1265,7 @@ type ThreadMail = {
   id: string;
   direction: 'inbound' | 'outbound';
   fromAddress: string;
+  subject: string | null;
   receivedAt: Date | null;
   deliveredAt: Date | null;
   sentAt: Date | null;
@@ -1450,6 +1451,8 @@ export async function planThreadWork(
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
       origin,
+      secondaryAsks: sql<unknown>`${mailExtraction.payload}->'secondaryAsks'`,
+      confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
     })
     .from(workItem)
     .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
@@ -1487,6 +1490,7 @@ export async function planThreadWork(
       id: message.id,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      subject: message.subject,
       receivedAt: message.receivedAt,
       deliveredAt: MESSAGE_DELIVERED_AT,
       sentAt: message.sentAt,
@@ -1533,6 +1537,18 @@ export async function planThreadWork(
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
+    const separatePreStayAsk = kind === 'other' && Array.isArray(item.secondaryAsks) &&
+      item.secondaryAsks.some((ask) => typeof ask === 'string' && ask.trim()) &&
+      isSelfSentPreStayInformationMail({
+        fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
+        confirmationNumbers: Array.isArray(item.confirmationNumbers)
+          ? item.confirmationNumbers.filter((number): number is string => typeof number === 'string') : [],
+      });
+    if (item.status === 'done' && separatePreStayAsk && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
     if (item.status === 'dismissed') {
       if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
         changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
@@ -1583,7 +1599,7 @@ export async function planThreadWork(
       }
       continue;
     }
-    const staffOther = kind === 'other' && ownSent(source);
+    const staffOther = kind === 'other' && ownSent(source) && !separatePreStayAsk;
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
@@ -1904,7 +1920,7 @@ async function readyView(
     subject: msg.subject,
     confirmationNumbers,
   });
-  const paneItem = existingStayInformation ? null : item;
+  const paneItem = existingStayInformation && !read.payload.secondaryAsks?.length ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
@@ -1917,6 +1933,11 @@ async function readyView(
   const stored = storedAnalysis(
     {
       ...read,
+      ...(existingStayInformation ? {
+        kind: 'other' as const,
+        classifier: null,
+        payload: { ...read.payload, stays: [], missing: [] },
+      } : {}),
       fromAddress: msg.fromAddress,
       subject: msg.subject,
       bodyText: msg.textBody,
@@ -1985,7 +2006,7 @@ export async function storedWorkFor(
     subject: msg.subject,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
+  if (existingStayInformation && !latest.payload.secondaryAsks?.length) return readyView(db, msg, latest, null, input.transportId);
   const [item] = await db
     .select({
       id: workItem.id,
@@ -2022,7 +2043,7 @@ export async function openStoredWork(
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
   if (
-    isSelfSentPreStayInformationMail({
+    !latest.payload.secondaryAsks?.length && isSelfSentPreStayInformationMail({
       fromAddress: msg.fromAddress,
       mailboxAddress: msg.mailboxAddress,
       subject: msg.subject,
@@ -2377,6 +2398,13 @@ export async function listWorkItems(
   // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
   // Coalesce keeps missing origin human-written.
   const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
+  const hasSeparateAsk = sql<boolean>`case when jsonb_typeof(${mailExtraction.payload}->'secondaryAsks') = 'array'
+    then jsonb_array_length(${mailExtraction.payload}->'secondaryAsks') > 0 else false end`;
+  const [mailbox] = await db.select({ email: mailboxTransport.email }).from(mailboxTransport)
+    .where(eq(mailboxTransport.id, input.transportId)).limit(1);
+  // System notices remain excluded except a self-sent pre-stay carrying a separate request.
+  const selfSender = sql`lower(trim(coalesce(substring(${message.fromAddress} from '<([^>]+)>'), ${message.fromAddress}))) = ${normalizeEmailAddress(mailbox?.email ?? '')}`;
+  const possibleSelfPreStay = and(selfSender, sql`${message.subject} ~* 'pre[[:space:]-]?(stay|arrival)'`);
   const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
   const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
     .mapWith(Number)
@@ -2395,6 +2423,8 @@ export async function listWorkItems(
       subject: message.subject,
       receivedAt: message.receivedAt,
       confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
+      secondaryAsks: sql<unknown>`${mailExtraction.payload}->'secondaryAsks'`,
+      extractionOrigin: origin,
       reopenReason: sql<string | null>`(
         select we.value->>'reasonLine'
         from ${workEvent} as we
@@ -2414,8 +2444,8 @@ export async function listWorkItems(
       and(
         eq(workItem.transportId, input.transportId),
         inArray(workItem.status, [...input.statuses]),
-        inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
-        ne(origin, 'system_notice'),
+        or(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), and(eq(workItem.kind, 'other'), hasSeparateAsk)),
+        or(ne(origin, 'system_notice'), and(eq(workItem.kind, 'other'), hasSeparateAsk, possibleSelfPreStay)),
         isNull(mailThread.spamAt),
         isNull(mailThread.trashedAt),
         ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
@@ -2427,25 +2457,22 @@ export async function listWorkItems(
       asc(workItem.id),
     )
     .limit(input.limit);
-  const [mailbox] = await db
-    .select({ email: mailboxTransport.email })
-    .from(mailboxTransport)
-    .where(eq(mailboxTransport.id, input.transportId))
-    .limit(1);
-  // Items opened before the pre-stay rule stay out of Needs You: the mail is about a stay already booked.
+  // The pre-stay itself is suppressed; only its separate request may enter Needs You.
   return rows
-    .filter(
-      (row) =>
-        !isSelfSentPreStayInformationMail({
-          fromAddress: row.sender,
-          mailboxAddress: mailbox?.email,
-          subject: row.subject,
-          confirmationNumbers: Array.isArray(row.confirmationNumbers)
-            ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
-            : [],
-        }),
-    )
-    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, ...row }) => ({
+    .filter((row) => {
+      const existing = isSelfSentPreStayInformationMail({
+        fromAddress: row.sender,
+        mailboxAddress: mailbox?.email,
+        subject: row.subject,
+        confirmationNumbers: Array.isArray(row.confirmationNumbers)
+          ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
+          : [],
+      });
+      const hasAsk = Array.isArray(row.secondaryAsks) && row.secondaryAsks.some((ask) => typeof ask === 'string' && ask.trim());
+      if (row.extractionOrigin === 'system_notice' && !existing) return false;
+      return !existing || hasAsk;
+    })
+    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, secondaryAsks: _asks, extractionOrigin: _origin, ...row }) => ({
       ...row,
       chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
     }));

@@ -170,7 +170,7 @@ function externalSenderFallback(
   };
 }
 
-function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumbers: string[] }) {
+function ExistingStayInformationCard({ confirmationNumbers, secondaryAsks }: { confirmationNumbers: string[]; secondaryAsks: string[] }) {
   return (
     <section
       role="status"
@@ -189,6 +189,12 @@ function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumb
           </span>
           : {confirmationNumbers.join(', ')}
         </p>
+      ) : null}
+      {secondaryAsks.length ? (
+        <div className="text-[13px] leading-5 text-[#475569]">
+          <p className="font-semibold text-[#1e293b]">Also needs attention</p>
+          <ul className="list-inside list-disc">{secondaryAsks.map((ask) => <li key={ask}>{ask}</li>)}</ul>
+        </div>
       ) : null}
     </section>
   );
@@ -2304,7 +2310,7 @@ export function NavaPane({
             {isExistingStayInformation ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? (
-                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} />
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} secondaryAsks={storedWork.pane.state === 'ready' ? storedWork.pane.analysis.secondaryAsks : []} />
                 ) : null}
               </div>
             ) : nonActionableMailSource ? (
