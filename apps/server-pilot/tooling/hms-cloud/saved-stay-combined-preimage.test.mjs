@@ -88,6 +88,30 @@ test('preserves unknown ages when only dates or adults change, never treats them
   assert.equal(binding(f), null);
 });
 
+test('rejects populated form ages when native model ages are unknown', () => {
+  for (const childCount of [0, 1]) {
+    const f = fixture();
+    f.expected.childAges = null; f.expected.childCount = childCount;
+    f.snapshot.data.childages = '';
+    if (childCount === 0) {
+      for (const part of [f.snapshot.data, f.snapshot.values]) {
+        part.children = '0'; part.child1 = '0'; part.child2 = '0'; part.child3 = '0';
+      }
+    }
+    f.changes = { adults:2, departure:'2027-10-14' };
+    for (const ages of ['8', 'unknown', ' ']) {
+      f.snapshot.values.childages = ages;
+      assert.equal(binding(f), null);
+    }
+    for (const ages of ['', null]) {
+      f.snapshot.values.childages = ages;
+      assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+    }
+    delete f.snapshot.values.childages;
+    assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  }
+});
+
 test('rejects sparse arrays even when extra properties mask missing indices', () => {
   const f = fixture();
   const sparse = Array(1); sparse.extra = 'not an element';

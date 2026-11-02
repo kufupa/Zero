@@ -80,8 +80,9 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
         !exact(snapshot.data, 'adults', expected.adults)) return null;
     const formAges = actual.fields.childages.form;
     if (prior.childAges === null) {
-      // Unknown is not []. The complete raw form/model is still bound, but no child change is allowed.
-      if (Object.hasOwn(changes, 'childCount') || Object.hasOwn(changes, 'childAges')) return null;
+      // Unknown is not []. Do not bind a populated form value the model cannot verify.
+      if ((formAges.present && formAges.value !== '' && formAges.value !== null) ||
+          Object.hasOwn(changes, 'childCount') || Object.hasOwn(changes, 'childAges')) return null;
     } else if (!same(actual.bands, prior.derivedBands) || (formAges.present &&
         !((prior.childCount === 0 && formAges.value === '') ||
           (typeof formAges.value === 'string' && formAges.value === prior.childAges.join(','))))) return null;
