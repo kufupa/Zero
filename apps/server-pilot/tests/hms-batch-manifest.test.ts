@@ -7,7 +7,7 @@ function manifest(): BatchManifest {
     stay: { arrival: '2027-03-01', departure: '2027-03-03', adults: 1, childAges: [] },
     roomType: 'STQN', ratePlan: 'BAR', amount: { status: 'unknown' }, agency: null, organization: null,
     guaranteeType: 'NGI', sourceOfBusiness: null, note: null, track: null, marketSegment: null,
-    guestOptIn: false, booker: null, cmsSend: false,
+    guestOptIn: false, booker: null, cmsSend: false, cmsMessageId: null, cmsRecipient: null,
   };
   return { version: 'hms-batch/1', propertyCode: 'HRCEN',
     source: { transportId: 'transport-centurion', threadId: 'thread', messageId: 'message', workItemId: '11111111-1111-4111-8111-111111111111' },
@@ -47,11 +47,30 @@ describe('batch manifest', () => {
     expect(() => parseLabBatch(realGuest, 'lab')).toThrow('batch_labtest_required');
     const oldDate = manifest(); oldDate.rooms[0]!.stay.arrival = '2026-12-29';
     expect(() => parseLabBatch(oldDate, 'lab')).toThrow('batch_labtest_required');
-    const email = structuredClone(manifest()) as unknown as { rooms: Array<{ cmsSend: boolean }> };
+    const email = structuredClone(manifest());
     email.rooms[0]!.cmsSend = true;
-    expect(() => parseLabBatch(email, 'lab')).toThrow();
+    expect(() => parseLabBatch(email, 'lab')).toThrow('batch_labtest_send_forbidden');
   });
 
+  it('binds send choice, confirmation type and recipient while Labtest still refuses sending', () => {
+    const base = manifest(), real = structuredClone(base);
+    real.rooms[0]!.cmsSend = true;
+    real.rooms[0]!.cmsMessageId = '03';
+    real.rooms[0]!.cmsRecipient = { mode: 'client', address: 'guest@example.test' };
+    expect(batchManifestSchema.safeParse(real).success).toBe(true);
+    expect(batchDigest(real)).not.toBe(batchDigest(base));
+    const sendOnly = structuredClone(base); sendOnly.rooms[0]!.cmsSend = true;
+    expect(batchDigest(sendOnly)).not.toBe(batchDigest(base));
+    expect(() => parseLabBatch(real, 'lab')).toThrow('batch_labtest_send_forbidden');
+    const changedRecipient = structuredClone(real);
+    changedRecipient.rooms[0]!.cmsRecipient!.address = 'other@example.test';
+    expect(batchDigest(changedRecipient)).not.toBe(batchDigest(real));
+    const changedMessage = structuredClone(real); changedMessage.rooms[0]!.cmsMessageId = '04';
+    expect(batchDigest(changedMessage)).not.toBe(batchDigest(real));
+    const missing = structuredClone(base) as unknown as { rooms: Array<Record<string, unknown>> };
+    delete missing.rooms[0]!.cmsRecipient;
+    expect(batchManifestSchema.safeParse(missing).success).toBe(false);
+  });
   it('requires a fresh trusted property-bound profile match for every child', async () => {
     await expect(verifyBatchProfiles(manifest(), async (propertyCode, profileId) => ({
       propertyCode, profileId, firstName: 'Proof', lastName: 'Labtest',

@@ -34,7 +34,8 @@ export const batchManifestSchema = z.object({
     guaranteeType: text, sourceOfBusiness: text.nullable(), note: z.string().max(200).nullable(),
     track: text.nullable(), marketSegment: text.nullable(), guestOptIn: z.boolean(),
     booker: z.object({ name: text.nullable(), email: text.nullable() }).strict().nullable(),
-    cmsSend: z.literal(false),
+    cmsSend: z.boolean(), cmsMessageId: text.nullable(),
+    cmsRecipient: z.object({ mode: z.enum(['self', 'client', 'custom']), address: text }).strict().nullable(),
   }).strict()).min(2).max(8),
 }).strict().superRefine((manifest, ctx) => {
   const seen = new Set<string>();
@@ -68,6 +69,7 @@ export function parseLabBatch(input: unknown, capability: 'off' | 'lab' | 'on'):
   const manifest = batchManifestSchema.parse(input);
   if (manifest.propertyCode !== 'HRCEN') throw new Error('batch_property_not_hrcen');
   for (const room of manifest.rooms) {
+    if (room.cmsSend !== false) throw new Error('batch_labtest_send_forbidden');
     if (room.guest.firstName !== 'Proof' || room.guest.lastName !== 'Labtest' || room.stay.arrival < '2027-01-01') {
       throw new Error('batch_labtest_required');
     }
