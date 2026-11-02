@@ -128,6 +128,7 @@ async function applyHistoryMove(
     workItemId: string;
     userId: string;
     expectedSeq?: number;
+    expectedExtractionId?: string | null;
     direction: 'undo' | 'redo';
   },
 ): Promise<PaneRevisionResult> {
@@ -148,7 +149,10 @@ async function applyHistoryMove(
     const revision = item.revision;
     const revisionHead = item.revisionHead;
     const seq = item.revisionSeq;
-    if (input.expectedSeq !== undefined && input.expectedSeq !== seq) {
+    if (
+      (input.expectedSeq !== undefined && input.expectedSeq !== seq) ||
+      (input.expectedExtractionId !== undefined && input.expectedExtractionId !== item.extractionId)
+    ) {
       return { status: 'stale' as const, revision, revisionHead, seq };
     }
     const undo = input.direction === 'undo';
@@ -182,14 +186,14 @@ async function applyHistoryMove(
 
 export async function undoWorkItemRevision(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number },
+  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number; expectedExtractionId?: string | null },
 ): Promise<PaneRevisionResult> {
   return applyHistoryMove(db, { ...input, direction: 'undo' });
 }
 
 export async function redoWorkItemRevision(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number },
+  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number; expectedExtractionId?: string | null },
 ): Promise<PaneRevisionResult> {
   return applyHistoryMove(db, { ...input, direction: 'redo' });
 }

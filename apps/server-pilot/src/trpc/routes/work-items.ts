@@ -157,7 +157,15 @@ export const workItemsRouter = router({
     if (result.status === 'invalid_value') {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
     }
-    return { aiValue: result.aiValue, value: result.value };
+    return {
+      aiValue: result.aiValue,
+      value: result.value,
+      previousSeq: result.previousSeq,
+      seq: result.seq,
+      revision: result.revision,
+      revisionHead: result.revisionHead,
+      workItemExtractionId: result.workItemExtractionId,
+    };
   }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
   adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {
@@ -374,7 +382,11 @@ export const workItemsRouter = router({
     }),
   undoRevision: mailboxProcedure
     .input(
-      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
+      z.object({
+        workItemId: z.string().uuid(),
+        expectedSeq: z.number().int().min(0),
+        expectedExtractionId: z.string().uuid().nullable().optional(),
+      }).strict(),
     )
     .mutation(async ({ input, ctx }) => {
       const result = await undoWorkItemRevision(getDb(), {
@@ -382,12 +394,17 @@ export const workItemsRouter = router({
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
         expectedSeq: input.expectedSeq,
+        expectedExtractionId: input.expectedExtractionId,
       });
       return historyMoveResult(result);
     }),
   redoRevision: mailboxProcedure
     .input(
-      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
+      z.object({
+        workItemId: z.string().uuid(),
+        expectedSeq: z.number().int().min(0),
+        expectedExtractionId: z.string().uuid().nullable().optional(),
+      }).strict(),
     )
     .mutation(async ({ input, ctx }) => {
       const result = await redoWorkItemRevision(getDb(), {
@@ -395,6 +412,7 @@ export const workItemsRouter = router({
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
         expectedSeq: input.expectedSeq,
+        expectedExtractionId: input.expectedExtractionId,
       });
       return historyMoveResult(result);
     }),

@@ -1062,6 +1062,111 @@ describe('corrections carry to a re-read', () => {
 });
 
 describe('field events', () => {
+  it('returns the locked revision chain and extraction link for edit, accept and reject', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'event-revision-chain');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const caller = centurionCaller();
+      const lookup = { internetMessageId: '<event-revision-chain@example.com>' };
+      const opened = await caller.workItems.open(lookup);
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
+      const workItemId = opened.workItemId;
+      expect(opened).toMatchObject({ revision: 0, revisionHead: 0, revisionSeq: 0, workItemExtractionId: first });
+      const base = { workItemId, fieldPath: 'contact.company' };
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Edited' })).toEqual({
+        aiValue: 'Horizon Trail Tours', value: 'Edited', previousSeq: 0, seq: 1,
+        revision: 1, revisionHead: 1, workItemExtractionId: first,
+      });
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.accept' })).toEqual({
+        aiValue: 'Horizon Trail Tours', value: 'Horizon Trail Tours', previousSeq: 1, seq: 2,
+        revision: 2, revisionHead: 2, workItemExtractionId: first,
+      });
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.reject', value: 'Rejected' })).toEqual({
+        aiValue: 'Horizon Trail Tours', value: 'Rejected', previousSeq: 2, seq: 3,
+        revision: 3, revisionHead: 3, workItemExtractionId: first,
+      });
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
+        revision: 3, revisionHead: 3, revisionSeq: 3, workItemExtractionId: first,
+        contact: { company: 'Rejected' },
+      });
+      await caller.workItems.undoRevision({ workItemId, expectedSeq: 3 });
+      await caller.workItems.undoRevision({ workItemId, expectedSeq: 4 });
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
+        revision: 1, revisionHead: 3, revisionSeq: 5, workItemExtractionId: first,
+        contact: { company: 'Edited' },
+      });
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'New branch' })).toEqual({
+        aiValue: 'Horizon Trail Tours', value: 'New branch', previousSeq: 5, seq: 6,
+        revision: 2, revisionHead: 2, workItemExtractionId: first,
+      });
+
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
+      expect(await caller.workItems.open(lookup)).toMatchObject({
+        revision: 2, revisionHead: 2, revisionSeq: 6, workItemExtractionId: second,
+        contact: { company: 'New branch' },
+      });
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Relinked' })).toEqual({
+        aiValue: 'Horizon Trail Tours', value: 'Relinked', previousSeq: 6, seq: 7,
+        revision: 3, revisionHead: 3, workItemExtractionId: second,
+      });
+      await db.update(workItem).set({ extractionId: null }).where(eq(workItem.id, workItemId));
+      expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Unlinked' })).toEqual({
+        aiValue: null, value: 'Unlinked', previousSeq: 7, seq: 8,
+        revision: 4, revisionHead: 4, workItemExtractionId: null,
+      });
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
+        revision: 4, revisionHead: 4, revisionSeq: 8, workItemExtractionId: null,
+        extractionId: second, contact: { company: 'Unlinked' },
+      });
+    }));
+
+  it('rejects undo and redo on relink even without a revision change', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'history-relink-guard');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const caller = centurionCaller();
+      const lookup = { internetMessageId: '<history-relink-guard@example.com>' };
+      const opened = await caller.workItems.open(lookup);
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
+      const workItemId = opened.workItemId;
+      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.company', value: 'First' });
+      await caller.workItems.undoRevision({ workItemId, expectedSeq: 1, expectedExtractionId: first });
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
+      expect(await caller.workItems.open(lookup)).toMatchObject({
+        revision: 0, revisionHead: 1, revisionSeq: 2, workItemExtractionId: second,
+      });
+      const stale = { workItemId, expectedSeq: 2, expectedExtractionId: first };
+      await expect(caller.workItems.undoRevision(stale)).rejects.toMatchObject({
+        code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
+      });
+      await expect(caller.workItems.redoRevision(stale)).rejects.toMatchObject({
+        code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
+      });
+      await expect(caller.workItems.undoRevision({ ...stale, expectedExtractionId: null })).rejects.toMatchObject({
+        code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
+      });
+      expect((await eventsFor(db, workItemId)).filter((event) => event.type === 'history.undo')).toHaveLength(1);
+      expect((await eventsFor(db, workItemId)).filter((event) => event.type === 'history.redo')).toHaveLength(0);
+      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.company', value: 'Second' });
+      // Legacy caller omits the new guard; it can still undo the new extraction's edit.
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 3 })).resolves.toMatchObject({
+        revision: 0, revisionHead: 1, seq: 4,
+      });
+      await db.update(workItem).set({ extractionId: null }).where(eq(workItem.id, workItemId));
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: null })).rejects.toMatchObject({
+        code: 'NOT_FOUND', message: 'Nothing left to undo or redo.',
+      });
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: second })).rejects.toMatchObject({
+        code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
+      });
+      await db.update(workItem).set({ extractionId: second }).where(eq(workItem.id, workItemId));
+      await expect(caller.workItems.redoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: second })).resolves.toMatchObject({
+        revision: 1, revisionHead: 1, seq: 5,
+      });
+    }));
+
   it('logs one edit with the AI value, the value, and the extractor version, and sets the field', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'e1');
@@ -1077,7 +1182,7 @@ describe('field events', () => {
         value: '2027-10-25',
         msSinceOpen: 1200,
       });
-      expect(result).toEqual({ status: 'recorded', aiValue: '2027-10-26', value: '2027-10-25' });
+      expect(result).toMatchObject({ status: 'recorded', aiValue: '2027-10-26', value: '2027-10-25' });
 
       const events = await eventsFor(db, work.workItemId);
       expect(events).toHaveLength(1);
@@ -1111,14 +1216,14 @@ describe('field events', () => {
           type: 'field.accept',
           fieldPath: `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`,
         }),
-      ).toEqual({ status: 'recorded', aiValue: 2, value: 2 });
+      ).toMatchObject({ status: 'recorded', aiValue: 2, value: 2 });
       expect(
         await recordFieldEvent(db, {
           ...base,
           type: 'field.reject',
           fieldPath: `stays[${STAY_ONE}].requested.departure`,
         }),
-      ).toEqual({ status: 'recorded', aiValue: '2027-10-28', value: null });
+      ).toMatchObject({ status: 'recorded', aiValue: '2027-10-28', value: null });
       expect(
         await recordFieldEvent(db, {
           ...base,
@@ -1126,7 +1231,7 @@ describe('field events', () => {
           fieldPath: `stays[${STAY_ONE}].rows[r_user01].count`,
           value: 5,
         }),
-      ).toEqual({ status: 'recorded', aiValue: null, value: 5 });
+      ).toMatchObject({ status: 'recorded', aiValue: null, value: 5 });
 
       const after = await readyWork(db, 'e2');
       expect(after.analysis.groups[0]).toMatchObject({ quantity: 2 });
@@ -1149,14 +1254,14 @@ describe('field events', () => {
       const work = await readyWork(db, 'del1');
       const base = { transportId: CENTURION, workItemId: work.workItemId, userId: USER, type: 'field.edit' as const };
 
-      expect(await recordFieldEvent(db, { ...base, fieldPath: `stays[${STAY_ONE}].removed`, value: true })).toEqual({
+      expect(await recordFieldEvent(db, { ...base, fieldPath: `stays[${STAY_ONE}].removed`, value: true })).toMatchObject({
         status: 'recorded',
         aiValue: false,
         value: true,
       });
       expect(
         await recordFieldEvent(db, { ...base, fieldPath: `stays[${STAY_TWO}].requested.arrival`, value: '2027-11-16' }),
-      ).toEqual({ status: 'recorded', aiValue: '2027-11-17', value: '2027-11-16' });
+      ).toMatchObject({ status: 'recorded', aiValue: '2027-11-17', value: '2027-11-16' });
 
       const after = await readyWork(db, 'del1');
       expect(after.analysis.groups.map((group) => group.id)).toEqual([ROW_STAY_TWO]);
@@ -1366,7 +1471,7 @@ describe('contact edits', () => {
         value: '+27 82 555 0100',
         msSinceOpen: 700,
       });
-      expect(result).toEqual({ status: 'recorded', aiValue: null, value: '+27 82 555 0100' });
+      expect(result).toMatchObject({ status: 'recorded', aiValue: null, value: '+27 82 555 0100' });
       const [logged] = await eventsFor(db, work.workItemId);
       expect(logged).toMatchObject({
         type: 'field.edit',
@@ -1394,7 +1499,7 @@ describe('contact edits', () => {
           fieldPath: 'contact.company',
           value: 'New Frontiers Tours',
         }),
-      ).toEqual({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: 'New Frontiers Tours' });
+      ).toMatchObject({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: 'New Frontiers Tours' });
       expect(
         await recordFieldEvent(db, {
           transportId: CENTURION,
@@ -1404,7 +1509,7 @@ describe('contact edits', () => {
           fieldPath: 'contact.company',
           value: null,
         }),
-      ).toEqual({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: null });
+      ).toMatchObject({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: null });
       expect((await readyWork(db, 'k2')).contact.company).toBeNull();
     }));
 
@@ -1462,6 +1567,44 @@ describe('contact edits', () => {
 });
 
 describe('section reset', () => {
+  it('returns the saved state and its row revision and extraction on both pane reads', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'reset-snapshot');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const caller = centurionCaller();
+      const lookup = { internetMessageId: '<reset-snapshot@example.com>' };
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
+        workItemId: null, revision: null, revisionHead: null, revisionSeq: null,
+        workItemExtractionId: null, extractionId: first,
+      });
+      const opened = await caller.workItems.open(lookup);
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
+      await recordFieldEvent(db, {
+        transportId: CENTURION, workItemId: opened.workItemId, userId: USER,
+        type: 'field.edit', fieldPath: 'contact.company', value: 'Saved company',
+      });
+      const [row] = await db.select({
+        state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq, extractionId: workItem.extractionId,
+      }).from(workItem).where(eq(workItem.id, opened.workItemId));
+      expect(row?.state['contact.company']).toBe('Saved company');
+      const expected = {
+        contact: { company: 'Saved company' },
+        revision: row?.revision,
+        revisionHead: row?.revisionHead,
+        revisionSeq: row?.revisionSeq,
+        workItemExtractionId: row?.extractionId,
+        extractionId: first,
+      };
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject(expected);
+      expect(await caller.workItems.open(lookup)).toMatchObject(expected);
+
+      // A new extraction exists, but getByMessage still projects the item's older linked read.
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
+      expect(await caller.workItems.getByMessage(lookup)).toMatchObject(expected);
+    }));
+
   it('restores only each selected section and logs fields with extraction values', () =>
     withDb(async (db) => {
       await addOtherTransport(db);
@@ -1765,7 +1908,7 @@ describe('work item route', () => {
           fieldPath: 'contact.email',
           value: 'buyer@example.com',
         }),
-      ).toEqual({ aiValue: null, value: 'buyer@example.com' });
+      ).toMatchObject({ aiValue: null, value: 'buyer@example.com' });
     }));
 
   it('retries a translation only for the transport that holds the item, and makes no call while the flag is off', () =>
@@ -1809,7 +1952,7 @@ describe('work item route', () => {
         value: 5,
         msSinceOpen: 900,
       });
-      expect(recorded).toEqual({ aiValue: 4, value: 5 });
+      expect(recorded).toMatchObject({ aiValue: 4, value: 5 });
       const [logged] = await eventsFor(db, work.workItemId);
       expect(logged).toMatchObject({ actorKind: 'user', actorUserId: USER, aiSource: 'extract-v1', msSinceOpen: 900 });
 
@@ -2410,7 +2553,7 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
       const arrival = `stays[${STAY_ONE}].requested.arrival`;
       await recordFieldEvent(db, { ...base, type: 'field.edit', fieldPath: arrival, value: '2027-10-25' });
 
-      expect(await recordFieldEvent(db, { ...base, type: 'field.accept', fieldPath: arrival })).toEqual({
+      expect(await recordFieldEvent(db, { ...base, type: 'field.accept', fieldPath: arrival })).toMatchObject({
         status: 'recorded',
         aiValue: '2027-10-26',
         value: '2027-10-26',
