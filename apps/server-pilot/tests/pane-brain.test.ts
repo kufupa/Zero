@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '@mastra/core/request-context';
 
 const analyseSelectionWithAgent = vi.hoisted(() => vi.fn());
+const createAzureLunaModel = vi.hoisted(() => vi.fn(() => 'azure-luna-test'));
 
 vi.mock('../src/ai/agent-pane-adapter.js', () => ({
   analyseSelectionWithAgent,
@@ -13,11 +14,13 @@ vi.mock('../src/ai/bedrock/luna.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/ai/bedrock/luna.js')>();
   return {
     ...actual,
-    createAzureLunaModel: () => 'azure-luna-test',
+    createAzureLunaModel,
   };
 });
 
 import { analyseWithPaneBrain, paneBrain } from '../src/ai/pane-brain.js';
+import { analyseSyncedSelection } from '../src/ai/quote-workflow-analyse-selection.js';
+import { quoteWorkflowLlmEnabled } from '../src/ai/quote-workflow-llm.js';
 import {
   CENTURION_HOTEL_RULES,
   createReservationistAgent,
@@ -108,6 +111,7 @@ describe('paneBrain', () => {
 describe('analyseWithPaneBrain producer', () => {
   afterEach(() => {
     analyseSelectionWithAgent.mockReset();
+    createAzureLunaModel.mockClear();
   });
 
   it('uses the classifier producer when the flag is unset', async () => {
@@ -119,6 +123,39 @@ describe('analyseWithPaneBrain producer', () => {
     });
     expect(analyseSelectionWithAgent).not.toHaveBeenCalled();
     expect(result).toMatchObject({ source: 'luna', analysis: { workflow: 'quote' } });
+  });
+
+  it('does not construct or call Azure when agent mode is disabled', async () => {
+    const result = await analyseWithPaneBrain({
+      selection,
+      adapter: quoteAdapter(),
+      enabled: false,
+      env: { PANE_BRAIN: 'agent' },
+    });
+    expect(result).toMatchObject({ source: 'regex_fallback', fallbackReason: 'disabled' });
+    expect(createAzureLunaModel).not.toHaveBeenCalled();
+    expect(analyseSelectionWithAgent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the quote entrypoint off in agent mode with Azure configured', async () => {
+    vi.stubEnv('PANE_BRAIN', 'agent');
+    vi.stubEnv('QUOTE_WORKFLOW_LLM', 'off');
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://fake.example/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'fake-key');
+    try {
+      const result = await analyseSyncedSelection(selection, {
+        selectionEpoch: 1,
+        cacheDir: null,
+        promptVersion: 'test',
+        transportId: 'transport-centurion',
+        llmEnabled: () => quoteWorkflowLlmEnabled(process.env),
+      });
+      expect(result.outcome).toEqual({ kind: 'fallback', reason: 'disabled' });
+      expect(createAzureLunaModel).not.toHaveBeenCalled();
+      expect(analyseSelectionWithAgent).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('uses the agent producer with Azure Luna and no HMS runners when PANE_BRAIN=agent', async () => {

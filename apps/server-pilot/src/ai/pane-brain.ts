@@ -27,7 +27,7 @@ export async function analyseWithPaneBrain(input: {
   staffNote?: string;
   env?: NodeJS.Dict<string>;
 }): Promise<AnalyseQuoteSelectionResult> {
-  if (paneBrain(input.env) === 'agent') {
+  if (input.enabled && paneBrain(input.env) === 'agent') {
     try {
       const result = await analyseSelectionWithAgent({
         selection: input.selection,

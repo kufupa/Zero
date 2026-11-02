@@ -9,8 +9,6 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
-REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
-REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "pm2-boot.sh must run as ubuntu" >&2
@@ -28,22 +26,19 @@ export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse H
 cd "$REPO_ROOT"
 
 validate_remote_env_files() {
-  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate || return 1
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --ensure-model || return 1
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate-model || return 1
 }
 
 start_remote_http() {
+  # PM2 receives no remote auth or model credentials; the child wrapper loads them.
   env -i \
     HOME="$HOME" \
     PATH="$PATH" \
     NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
     SERVER_PILOT="$SERVER_PILOT" \
-    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
-    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
     bash -ceu '
-      set -a
-      source "$REMOTE_COMMON_ENV"
-      source "$REMOTE_ADMIN_ENV"
-      set +a
       pm2 delete remote-http 2>/dev/null || true
       pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
     '
@@ -72,11 +67,14 @@ assert_http_loopback_with_retry() {
 }
 
 start_legacy_processes() {
+  local launch_build_commit="$NAVA_BUILD_COMMIT"
   local mode
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+  # Runtime env may contain an older SHA; every PM2 app uses the launch identity.
+  export NAVA_BUILD_COMMIT="$launch_build_commit"
   : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
   mode="${MAIL_TRANSPORT_MODE:-fixture}"
   if [ "$mode" = "fixture" ]; then
@@ -179,8 +177,11 @@ delete_all_pm2_processes || {
   exit 20
 }
 
+# Legacy env may contain an older build identity; retain the launch identity for remote-http.
+remote_launch_build_commit="$NAVA_BUILD_COMMIT"
 start_legacy_processes
-start_remote_http
+NAVA_BUILD_COMMIT="$remote_launch_build_commit" start_remote_http
+unset remote_launch_build_commit
 assert_http_loopback_with_retry || {
   echo "pm2-boot: raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 20

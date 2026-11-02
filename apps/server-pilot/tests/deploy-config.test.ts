@@ -5228,7 +5228,7 @@ if (!realMailGate) {
         /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
       );
       expect(pm2).toMatch(
-        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
+        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]deploy\/start-remote-http\.sh['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
       );
       expect(pm2).toMatch(
         /name:\s*['"]remote-http['"][\s\S]*?instances:\s*1[\s\S]*?exec_mode:\s*['"]fork['"]/,
@@ -5522,6 +5522,50 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('validates quote flag only when explicitly allowlisted by the legacy parser', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const parser = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-legacy-quote-'));
+      const legacy = join(temp, 'legacy');
+      const output = join(temp, 'rendered');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const invoke = (quote: boolean) => spawnSync(process.execPath, [
+        parser, legacy, output, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET',
+        ...(quote ? ['QUOTE_WORKFLOW_LLM'] : []),
+      ], { encoding: 'utf8' });
+      try {
+        // Existing callers that do not request the key keep their prior behavior.
+        writeFileSync(legacy, [...base, "QUOTE_WORKFLOW_LLM='maybe'", "GOOGLE_CLIENT_SECRET='fake'", ''].join('\n'));
+        expect(invoke(false).status).toBe(0);
+        expect(readFileSync(output, 'utf8')).toBe([...base, ''].join('\n'));
+        for (const flag of ['on', 'off']) {
+          writeFileSync(legacy, [...base, `QUOTE_WORKFLOW_LLM=${flag}`, ''].join('\n'));
+          const result = invoke(true);
+          expect(result.status).toBe(0);
+          expect(result.stdout).toBe('');
+          expect(readFileSync(output, 'utf8')).toBe([...base, `QUOTE_WORKFLOW_LLM='${flag}'`, ''].join('\n'));
+        }
+        writeFileSync(legacy, [...base, ''].join('\n'));
+        expect(invoke(true).status).toBe(0);
+        expect(readFileSync(output, 'utf8')).toBe([...base, ''].join('\n'));
+        for (const row of ["QUOTE_WORKFLOW_LLM=''", "QUOTE_WORKFLOW_LLM='maybe'"]) {
+          writeFileSync(legacy, [...base, row, ''].join('\n'));
+          writeFileSync(output, 'unchanged');
+          const result = invoke(true);
+          expect(result.status).toBe(2);
+          expect(result.stdout).toBe('');
+          expect(result.stderr).toBe('legacy runtime env malformed\n');
+          expect(readFileSync(output, 'utf8')).toBe('unchanged');
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
       const { isInboundTriageClassifierEnabled } = await import('../src/env.js');
@@ -5696,6 +5740,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('PANE_BRAIN');
+      expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
@@ -5929,6 +5975,266 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('preserves quote flag semantics and refuses overlay drift, conflicts, and races', async () => {
+      if (process.platform === 'win32') return; // Production uses GNU ln and POSIX modes.
+      const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const writer = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'write-ec2-remote-env.sh');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-azure-overlay-'));
+      const repo = join(temp, 'repo');
+      const server = join(repo, 'apps', 'server-pilot');
+      const bin = join(temp, 'bin');
+      const legacy = join(server, '.env.production');
+      const common = join(server, '.env.remote-common');
+      const admin = join(server, '.env.remote-admin');
+      const overlay = join(server, '.env.remote-azure');
+      const brainOverlay = join(server, '.env.remote-pane-brain');
+      const required = [
+        "NODE_ENV='production'",
+        "DATABASE_URL='fake-db'",
+        "AWS_REGION='af-south-1'",
+        "S3_BUCKET='fake-bucket'",
+      ];
+      const pair = ["AZURE_OPENAI_BASE_URL='https://fake.example/openai/v1'", "AZURE_FOUNDRY_API_KEY='fake'\\''key'"];
+      const otherSecrets = ["BETTER_AUTH_SECRET='legacy-fake'", "HMS_PASSWORD='hms-fake'", "GOOGLE_CLIENT_SECRET='google-fake'"];
+      const commonText = [...required, "HMS_QUOTE_PREPARE='off'", "PANE_WRITE_CREATE='lab'", "INBOUND_EXTRACTION='on'", ''].join('\n');
+      const adminText = ["BETTER_AUTH_URL='https://nava-admin.trynava.io'", "BETTER_AUTH_SECRET='remote-fake'", ''].join('\n');
+      const source = (rows: string[], brain = "PANE_BRAIN='agent'", quote = '') => [...required, ...rows, ...(brain ? [brain] : []), ...(quote ? [quote] : []), ...otherSecrets, ''].join('\n');
+      const expected = [...pair, ''].join('\n');
+      try {
+        mkdirSync(server, { recursive: true });
+        mkdirSync(bin);
+        writeFileSync(common, commonText);
+        writeFileSync(admin, adminText);
+        writeFileSync(legacy, source(pair));
+        writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'stat'), [
+          '#!/usr/bin/env bash',
+          'if [ "$3" = "${FAKE_BAD_PATH:-}" ]; then',
+          '  printf "%s\\n" "${FAKE_BAD_METADATA:-644:ubuntu:ubuntu}"',
+          'else',
+          '  printf "%s\\n" 600:ubuntu:ubuntu',
+          'fi',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        writeFileSync(join(bin, 'ln'), [
+          '#!/usr/bin/env bash',
+          'if [ "${FAKE_RACE:-}" = overlay ]; then',
+          '  printf "%s" "$FAKE_RACE_CONTENT" >"$FAKE_OVERLAY"',
+          '  chmod 600 "$FAKE_OVERLAY"',
+          'elif [ "${FAKE_RACE:-}" = source ]; then',
+          '  printf "%s" "$FAKE_DRIFT_CONTENT" >"$FAKE_LEGACY"',
+          'fi',
+          'exec /bin/ln "$@"',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        const run = (mode = '--ensure-model', extra: NodeJS.ProcessEnv = {}) => runBash({
+          args: [toBashPath(writer), mode],
+          env: {
+            ...process.env,
+            PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+            REPO_ROOT: toBashPath(repo),
+            ENV_FILE: toBashPath(legacy),
+            FAKE_RACE: '',
+            FAKE_BAD_PATH: '',
+            FAKE_OVERLAY: toBashPath(overlay),
+            FAKE_LEGACY: toBashPath(legacy),
+            ...extra,
+          },
+        });
+        const assertUntouched = () => {
+          expect(readFileSync(common, 'utf8')).toBe(commonText);
+          expect(readFileSync(admin, 'utf8')).toBe(adminText);
+        };
+
+        expect((await run()).status).toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe(expected);
+        expect(readFileSync(brainOverlay, 'utf8')).toBe("PANE_BRAIN='agent'\n");
+        expect(statSync(brainOverlay).mode & 0o777).toBe(0o600);
+        expect(statSync(overlay).mode & 0o777).toBe(0o600);
+        expect((await run('--validate-model')).status).toBe(0);
+        expect((await run()).status).toBe(0);
+        assertUntouched();
+
+        writeFileSync(legacy, source([], ''));
+        expect((await run()).status).not.toBe(0); // Pair-to-empty drift cannot overwrite.
+        expect(readFileSync(overlay, 'utf8')).toBe(expected);
+        assertUntouched();
+        const driftPair = [pair[0], "AZURE_FOUNDRY_API_KEY='new-fake-key'"];
+        writeFileSync(legacy, source(driftPair));
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe(expected);
+        assertUntouched();
+        writeFileSync(legacy, source(pair, "PANE_BRAIN='classifier'"));
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(brainOverlay, 'utf8')).toBe("PANE_BRAIN='agent'\n");
+        assertUntouched();
+        rmSync(overlay);
+        rmSync(brainOverlay);
+
+        writeFileSync(legacy, source(pair, "PANE_BRAIN='unsupported'"));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(overlay)).toBe(false);
+        expect(existsSync(brainOverlay)).toBe(false);
+        assertUntouched();
+
+        // No model keys and no routing value means the existing classifier fallback.
+        writeFileSync(legacy, source([], ''));
+        expect((await run()).status).toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe('');
+        expect(readFileSync(brainOverlay, 'utf8')).toBe('');
+        expect((await run('--validate-model')).status).toBe(0);
+        const defaultClassifier = `${commonText}PANE_BRAIN='classifier'\n`;
+        writeFileSync(common, defaultClassifier);
+        expect((await run()).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(defaultClassifier);
+        const conflictingAgent = `${commonText}PANE_BRAIN='agent'\n`;
+        writeFileSync(common, conflictingAgent);
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(conflictingAgent);
+        writeFileSync(common, commonText);
+        writeFileSync(legacy, source(pair, ''));
+        expect((await run()).status).not.toBe(0); // Empty-to-pair drift cannot overwrite.
+        expect(readFileSync(overlay, 'utf8')).toBe('');
+        rmSync(overlay);
+        rmSync(brainOverlay);
+        for (const [brain, quote] of [
+          ['', "QUOTE_WORKFLOW_LLM='off'"],
+          ["PANE_BRAIN='classifier'", ''],
+        ]) {
+          writeFileSync(legacy, source([], brain, quote));
+          expect((await run()).status).toBe(0);
+          expect(readFileSync(overlay, 'utf8')).toBe('');
+          expect(readFileSync(brainOverlay, 'utf8')).toBe(`${brain || quote}\n`);
+          assertUntouched();
+          rmSync(overlay);
+          rmSync(brainOverlay);
+        }
+        writeFileSync(legacy, source(pair, ''));
+        expect((await run()).status).toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe(expected);
+        expect(readFileSync(brainOverlay, 'utf8')).toBe('');
+        rmSync(overlay);
+        rmSync(brainOverlay);
+        writeFileSync(legacy, source(pair));
+        const conflictingCommon = `${commonText}PANE_BRAIN='classifier'\n`;
+        writeFileSync(common, conflictingCommon);
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(conflictingCommon);
+        expect(existsSync(overlay)).toBe(false);
+        expect(existsSync(brainOverlay)).toBe(false);
+        writeFileSync(common, commonText);
+        const symlinkTarget = join(temp, 'unrelated');
+        writeFileSync(symlinkTarget, 'unchanged');
+        symlinkSync(symlinkTarget, overlay);
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(symlinkTarget, 'utf8')).toBe('unchanged');
+        rmSync(overlay);
+
+        for (const rows of [
+          [pair[0]], [pair[1]], [pair[0], "AZURE_FOUNDRY_API_KEY=' '"],
+          ["AZURE_OPENAI_BASE_URL=''", "AZURE_FOUNDRY_API_KEY=''"],
+          ["AZURE_OPENAI_BASE_URL=''", pair[1]], [pair[0], "AZURE_FOUNDRY_API_KEY=''"],
+          ["AZURE_OPENAI_BASE_URL='not-a-url'", pair[1]],
+          ["AZURE_OPENAI_BASE_URL='https://fake.example'$(false)", pair[1]],
+        ]) {
+          writeFileSync(legacy, source(rows));
+          const result = await run();
+          expect(result.status).not.toBe(0);
+          expect(existsSync(overlay)).toBe(false);
+          expect(result.stdout + result.stderr).not.toContain('fake-key');
+          assertUntouched();
+        }
+        writeFileSync(legacy, source(pair));
+        for (const metadata of ['644:ubuntu:ubuntu', '600:root:root']) {
+          expect((await run('--ensure-model', { FAKE_BAD_PATH: legacy, FAKE_BAD_METADATA: metadata })).status).not.toBe(0);
+          expect(existsSync(overlay)).toBe(false);
+        }
+
+        const raceContent = [pair[0], "AZURE_FOUNDRY_API_KEY='race-fake-key'", ''].join('\n');
+        expect((await run('--ensure-model', { FAKE_RACE: 'overlay', FAKE_RACE_CONTENT: raceContent })).status).not.toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe(raceContent);
+        expect(existsSync(brainOverlay)).toBe(false);
+        writeFileSync(brainOverlay, "PANE_BRAIN='agent'\n", { mode: 0o600 });
+        assertUntouched();
+        expect((await run('--validate-model', { FAKE_BAD_PATH: overlay })).status).not.toBe(0);
+        expect((await run('--validate-model', { FAKE_BAD_PATH: brainOverlay })).status).not.toBe(0);
+        writeFileSync(brainOverlay, "PANE_BRAIN='unsupported'\n");
+        expect((await run('--validate-model')).status).not.toBe(0);
+        writeFileSync(brainOverlay, "PANE_BRAIN='agent'\n");
+        writeFileSync(overlay, `${expected}GOOGLE_CLIENT_SECRET='fake'\n`);
+        expect((await run('--validate-model')).status).not.toBe(0);
+        writeFileSync(overlay, `${pair[0]}\n`);
+        expect((await run('--validate-model')).status).not.toBe(0);
+        writeFileSync(overlay, `${pair[0]}\nAZURE_FOUNDRY_API_KEY='bad'$(false)\n`);
+        expect((await run('--validate-model')).status).not.toBe(0);
+        rmSync(overlay);
+        rmSync(brainOverlay);
+
+        expect((await run('--ensure-model', { FAKE_RACE: 'source', FAKE_DRIFT_CONTENT: source(driftPair) })).status).not.toBe(0);
+        expect(readFileSync(overlay, 'utf8')).toBe(expected);
+        expect((await run()).status).not.toBe(0);
+        assertUntouched();
+        rmSync(overlay);
+        rmSync(brainOverlay);
+        const matchingCommon = `${commonText}PANE_BRAIN='classifier'\n`;
+        writeFileSync(common, matchingCommon);
+        writeFileSync(legacy, source(pair, "PANE_BRAIN='classifier'"));
+        expect((await run()).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(matchingCommon);
+        expect(readFileSync(brainOverlay, 'utf8')).toBe("PANE_BRAIN='classifier'\n");
+        expect(readFileSync(admin, 'utf8')).toBe(adminText);
+        rmSync(overlay);
+        rmSync(brainOverlay);
+        writeFileSync(common, commonText);
+
+        // An explicit remote override must never be erased by an unset source.
+        const remoteOff = `${commonText}QUOTE_WORKFLOW_LLM='off'\n`;
+        writeFileSync(common, remoteOff);
+        writeFileSync(legacy, source(pair));
+        expect((await run()).status).not.toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(remoteOff);
+        expect(existsSync(overlay)).toBe(false);
+        writeFileSync(common, commonText);
+
+        for (const invalid of ["QUOTE_WORKFLOW_LLM=''", "QUOTE_WORKFLOW_LLM='maybe'"]) {
+          writeFileSync(legacy, source(pair, "PANE_BRAIN='agent'", invalid));
+          expect((await run()).status).not.toBe(0);
+          expect(existsSync(overlay)).toBe(false);
+          assertUntouched();
+        }
+        for (const flag of ['off', 'on']) {
+          const row = `QUOTE_WORKFLOW_LLM='${flag}'`;
+          writeFileSync(legacy, source(pair, "PANE_BRAIN='agent'", row));
+          expect((await run()).status).toBe(0);
+          expect(readFileSync(brainOverlay, 'utf8')).toBe(`PANE_BRAIN='agent'\n${row}\n`);
+          assertUntouched();
+          // A matching pre-existing override survives byte-for-byte.
+          const matchingFlag = `${commonText}${row}\n`;
+          writeFileSync(common, matchingFlag);
+          expect((await run()).status).toBe(0);
+          expect(readFileSync(common, 'utf8')).toBe(matchingFlag);
+          const other = flag === 'off' ? 'on' : 'off';
+          const conflictingFlag = `${commonText}QUOTE_WORKFLOW_LLM='${other}'\n`;
+          writeFileSync(common, conflictingFlag);
+          expect((await run()).status).not.toBe(0);
+          expect(readFileSync(common, 'utf8')).toBe(conflictingFlag);
+          writeFileSync(common, commonText);
+          // Source drift to unset is a hold, not an implicit switch back on.
+          writeFileSync(legacy, source(pair));
+          expect((await run()).status).not.toBe(0);
+          expect(readFileSync(brainOverlay, 'utf8')).toBe(`PANE_BRAIN='agent'\n${row}\n`);
+          rmSync(overlay);
+          rmSync(brainOverlay);
+        }
+        assertUntouched();
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it('validates remote files before PM2 mutation and isolates remote startup', async () => {
       const { readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -5944,8 +6250,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect(validation, `${file} remote validation`).toBeGreaterThanOrEqual(0);
         expect(firstPm2Mutation, `${file} PM2 mutation`).toBeGreaterThanOrEqual(0);
         expect(firstPm2Mutation, `${file} validates before PM2`).toBeGreaterThan(0);
-        expect(source).toContain('.env.remote-common');
-        expect(source).toContain('.env.remote-admin');
+        expect(source).toContain('--ensure-model');
+        expect(source).toContain('--validate-model');
         expect(source).toContain('start_remote_http');
 
         const remoteStart = source.match(
@@ -5953,11 +6259,277 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         )?.[1];
         expect(remoteStart, `${file} remote startup body`).toBeTruthy();
         expect(remoteStart).toContain('env -i');
-        expect(remoteStart).toContain('source "$REMOTE_COMMON_ENV"');
-        expect(remoteStart).toContain('source "$REMOTE_ADMIN_ENV"');
+        expect(remoteStart).not.toContain('source ');
         expect(remoteStart).not.toContain('.env.production');
         expect(remoteStart).toContain('--only remote-http');
       }
+    });
+
+    it('starts PM2 without passing remote credentials or workflow switches to its CLI', async () => {
+      if (process.platform === 'win32') return;
+      const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-remote-cli-'));
+      const bin = join(temp, 'bin');
+      const marker = join(temp, 'pm2-result');
+      try {
+        mkdirSync(bin);
+        writeFileSync(join(bin, 'pm2'), [
+          '#!/usr/bin/env bash',
+          'if [ "${UNRELATED_SECRET+x}${AZURE_FOUNDRY_API_KEY+x}${AZURE_OPENAI_BASE_URL+x}${BETTER_AUTH_SECRET+x}${DATABASE_URL+x}${PANE_BRAIN+x}${PANE_WRITE_CREATE+x}" != "" ]; then exit 3; fi',
+          'if [ "$1" = delete ]; then exit 0; fi',
+          'printf "%s\\n" "$NAVA_BUILD_COMMIT" >"$HOME/pm2-result"',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const source = readFileSync(join(deploy, file), 'utf8');
+          const start = source.match(/start_remote_http\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          expect(start, file).toBeTruthy();
+          const env = {
+            ...process.env,
+            HOME: toBashPath(temp),
+            PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+            NAVA_BUILD_COMMIT: 'a'.repeat(40),
+            SERVER_PILOT: toBashPath(temp),
+            UNRELATED_SECRET: 'fake-unrelated',
+            AZURE_FOUNDRY_API_KEY: 'fake-model-key',
+            AZURE_OPENAI_BASE_URL: 'https://fake.example/v1',
+            BETTER_AUTH_SECRET: 'fake-auth-key',
+            DATABASE_URL: 'fake-db',
+            PANE_BRAIN: 'agent',
+            PANE_WRITE_CREATE: 'lab',
+          };
+          const result = await runBash({ args: ['-c', `${start}\nstart_remote_http`], env });
+          expect(result.status, file).toBe(0);
+          expect(readFileSync(marker, 'utf8')).toBe(`${'a'.repeat(40)}\n`);
+          rmSync(marker);
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('retains the launch SHA across legacy env sourcing for every PM2 process', async () => {
+      if (process.platform === 'win32') return;
+      const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-launch-sha-'));
+      const bin = join(temp, 'bin');
+      const legacy = join(temp, 'legacy');
+      const marker = join(temp, 'pm2-sha');
+      try {
+        mkdirSync(bin);
+        writeFileSync(join(bin, 'pm2'), [
+          '#!/usr/bin/env bash',
+          'if [ "$1" = start ]; then',
+          '  for process in http worker ai-worker remote-http; do',
+          '    if [[ " $* " = *" --only $process "* ]]; then',
+          '      printf "%s %s\\n" "$process" "$NAVA_BUILD_COMMIT" >>"$HOME/pm2-sha"',
+          '    fi',
+          '  done',
+          'fi',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const source = readFileSync(join(deploy, file), 'utf8');
+          const remote = source.match(/start_remote_http\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const legacyStart = source.match(/start_legacy_processes\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const sequence = source.match(/remote_launch_build_commit="\$NAVA_BUILD_COMMIT"\nstart_legacy_processes\nNAVA_BUILD_COMMIT="\$remote_launch_build_commit" start_remote_http\nunset remote_launch_build_commit/)?.[0];
+          expect(remote, file).toBeTruthy();
+          expect(legacyStart, file).toBeTruthy();
+          expect(sequence, file).toBeTruthy();
+          const env = {
+            ...process.env,
+            HOME: toBashPath(temp),
+            PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+            NAVA_BUILD_COMMIT: 'a'.repeat(40),
+            ENV_FILE: toBashPath(legacy),
+            SERVER_PILOT: toBashPath(temp),
+          };
+          for (const mode of ['fixture', 'live']) {
+            writeFileSync(legacy, `BETTER_AUTH_URL='https://fake.example'\nNAVA_BUILD_COMMIT='${'b'.repeat(40)}'\nMAIL_TRANSPORT_MODE='${mode}'\n`);
+            const result = await runBash({ args: ['-c', `${remote}\n${legacyStart}\n${sequence}`], env });
+            expect(result.status, `${file} ${mode}`).toBe(0);
+            const names = mode === 'fixture' ? ['http', 'ai-worker', 'remote-http'] : ['http', 'worker', 'ai-worker', 'remote-http'];
+            expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(names.map((name) => `${name} ${'a'.repeat(40)}`));
+            rmSync(marker);
+          }
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('validates and isolates the remote wrapper on cold launch and later drift', async () => {
+      if (process.platform === 'win32') return;
+      const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-remote-wrapper-'));
+      const server = join(temp, 'repo', 'apps', 'server-pilot');
+      const copiedDeploy = join(server, 'deploy');
+      const bin = join(temp, 'bin');
+      const legacy = join(server, '.env.production');
+      const common = join(server, '.env.remote-common');
+      const admin = join(server, '.env.remote-admin');
+      const marker = join(temp, 'app-result');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const pair = ["AZURE_OPENAI_BASE_URL='https://fake.example/v1'", "AZURE_FOUNDRY_API_KEY='fake-key'"];
+      const source = (brain: string, quote = '') => [...base, ...pair, `PANE_BRAIN='${brain}'`, ...(quote ? [quote] : []), "GOOGLE_CLIENT_SECRET='unrelated-fake'", ''].join('\n');
+      const commonBase = [...base, "PANE_WRITE_CREATE='lab'", `NAVA_BUILD_COMMIT='${'b'.repeat(40)}'`];
+      try {
+        mkdirSync(copiedDeploy, { recursive: true });
+        mkdirSync(join(server, 'dist'));
+        mkdirSync(bin);
+        for (const file of ['start-remote-http.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) {
+          copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        }
+        writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nprintf "%s\\n" 600:ubuntu:ubuntu\n', { mode: 0o755 });
+        writeFileSync(legacy, source('agent'));
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        writeFileSync(admin, "BETTER_AUTH_URL='https://nava-admin.trynava.io'\nBETTER_AUTH_SECRET='remote-fake'\n");
+        writeFileSync(join(server, 'dist', 'main.js'), [
+          "const fs = require('node:fs');",
+          "const keys = ['HOME','PATH','NODE_ENV','PORT','NAVA_AUTH_SESSION_PROFILE','NAVA_BUILD_COMMIT','PANE_BRAIN','PANE_WRITE_CREATE','QUOTE_WORKFLOW_LLM','AZURE_FOUNDRY_API_KEY','BETTER_AUTH_SECRET','UNRELATED_SECRET','GOOGLE_CLIENT_SECRET','REPO_ROOT'];",
+          "const result = Object.fromEntries(keys.map(key => [key, process.env[key] ?? null]));",
+          "fs.writeFileSync(process.env.HOME + '/app-result', JSON.stringify(result));",
+          '',
+        ].join('\n'));
+        const env = {
+          ...process.env,
+          HOME: toBashPath(temp),
+          PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+          NAVA_BUILD_COMMIT: 'a'.repeat(40),
+          UNRELATED_SECRET: 'fake-unrelated',
+          GOOGLE_CLIENT_SECRET: 'fake-google',
+          PORT: '9999',
+          NAVA_AUTH_SESSION_PROFILE: 'legacy',
+          PANE_WRITE_CREATE: 'on',
+          QUOTE_WORKFLOW_LLM: 'on',
+          BETTER_AUTH_SECRET: 'wrong-fake',
+          AZURE_FOUNDRY_API_KEY: 'wrong-fake',
+        };
+        const run = (extra: NodeJS.ProcessEnv = {}) => runBash({ args: [toBashPath(join(copiedDeploy, 'start-remote-http.sh'))], env: { ...env, ...extra } });
+        const cold = await run();
+        expect(cold.status).toBe(0);
+        expect(JSON.parse(readFileSync(marker, 'utf8'))).toEqual({
+          HOME: toBashPath(temp), PATH: env.PATH,
+          NODE_ENV: 'production', PORT: '8789', NAVA_AUTH_SESSION_PROFILE: 'remote',
+          NAVA_BUILD_COMMIT: 'a'.repeat(40), PANE_BRAIN: 'agent', PANE_WRITE_CREATE: 'lab',
+          QUOTE_WORKFLOW_LLM: null,
+          AZURE_FOUNDRY_API_KEY: 'fake-key', BETTER_AUTH_SECRET: 'remote-fake',
+          UNRELATED_SECRET: null, GOOGLE_CLIENT_SECRET: null, REPO_ROOT: null,
+        });
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        writeFileSync(legacy, source('classifier'));
+        const drift = await run();
+        expect(drift.status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        expect(readFileSync(join(server, '.env.remote-pane-brain'), 'utf8')).toBe("PANE_BRAIN='agent'\n");
+        rmSync(join(server, '.env.remote-azure'));
+        rmSync(join(server, '.env.remote-pane-brain'));
+        // The child sees off from its first instruction; a repeat models PM2 resurrection.
+        writeFileSync(legacy, source('agent', "QUOTE_WORKFLOW_LLM='off'"));
+        writeFileSync(common, [...commonBase, "QUOTE_WORKFLOW_LLM='off'", ''].join('\n'));
+        for (let attempt = 0; attempt < 2; attempt++) {
+          expect((await run()).status).toBe(0);
+          const off = JSON.parse(readFileSync(marker, 'utf8'));
+          expect(off.QUOTE_WORKFLOW_LLM).toBe('off');
+          expect(off.NAVA_BUILD_COMMIT).toBe('a'.repeat(40));
+          rmSync(marker);
+        }
+        writeFileSync(common, [...commonBase, "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        writeFileSync(legacy, source('agent', "QUOTE_WORKFLOW_LLM='on'"));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        rmSync(join(server, '.env.remote-azure'));
+        rmSync(join(server, '.env.remote-pane-brain'));
+        expect((await run()).status).toBe(0);
+        expect(JSON.parse(readFileSync(marker, 'utf8')).QUOTE_WORKFLOW_LLM).toBe('on');
+        rmSync(marker);
+        expect((await run({ NAVA_BUILD_COMMIT: '' })).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+
+        // With no Azure pair or pane mode, off survives both launch and relaunch.
+        rmSync(join(server, '.env.remote-azure'));
+        rmSync(join(server, '.env.remote-pane-brain'));
+        writeFileSync(legacy, [...base, "QUOTE_WORKFLOW_LLM='off'", ''].join('\n'));
+        expect((await run()).status).toBe(0);
+        let fallback = JSON.parse(readFileSync(marker, 'utf8'));
+        expect(fallback).toMatchObject({ PANE_BRAIN: null, QUOTE_WORKFLOW_LLM: 'off', AZURE_FOUNDRY_API_KEY: null });
+        rmSync(marker);
+        expect((await run()).status).toBe(0);
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", ''].join('\n'));
+        expect((await run()).status).toBe(0);
+        fallback = JSON.parse(readFileSync(marker, 'utf8'));
+        expect(fallback.PANE_BRAIN).toBe('classifier');
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, "PANE_BRAIN='agent'", ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        rmSync(join(server, '.env.remote-azure'));
+        rmSync(join(server, '.env.remote-pane-brain'));
+        writeFileSync(legacy, [...base, ''].join('\n'));
+        expect((await run()).status).toBe(0);
+        fallback = JSON.parse(readFileSync(marker, 'utf8'));
+        expect(fallback).toMatchObject({ PANE_BRAIN: null, QUOTE_WORKFLOW_LLM: null, AZURE_FOUNDRY_API_KEY: null });
+        rmSync(marker);
+        writeFileSync(legacy, [...base, pair[0], ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('registers the guarded wrapper as the remote PM2 process', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { createRequire } = await import('node:module');
+      const { dirname, join } = await import('node:path');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const require = createRequire(import.meta.url);
+      const config = require(join(deploy, 'pm2.config.cjs')) as {
+        apps: Array<{ name: string; [key: string]: unknown }>;
+      };
+      const remote = config.apps.find((app) => app.name === 'remote-http');
+      expect(remote).toMatchObject({
+        script: 'deploy/start-remote-http.sh',
+        interpreter: '/bin/bash',
+        cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
+        instances: 1,
+        exec_mode: 'fork',
+        env: {
+          NODE_ENV: 'production',
+          PORT: '8789',
+          NAVA_AUTH_SESSION_PROFILE: 'remote',
+          NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+        },
+      });
+      const wrapper = readFileSync(join(deploy, 'start-remote-http.sh'), 'utf8');
+      expect(wrapper).toContain('env -i');
+      expect(wrapper).toContain('--ensure-model');
+      expect(wrapper).toContain('--validate-model');
+      expect(wrapper.indexOf('--ensure-model')).toBeLessThan(wrapper.indexOf('exec node'));
+      expect(wrapper).toContain('exec node "$SERVER_PILOT/dist/main.js"');
     });
 
     it('keeps normal deploy, restart, and boot remote-aware without starting HMS', async () => {

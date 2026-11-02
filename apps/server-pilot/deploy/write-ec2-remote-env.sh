@@ -16,6 +16,8 @@ if [ ! -f "$LEGACY_ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
 fi
 REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
 REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
+REMOTE_MODEL_ENV="${SERVER_PILOT}/.env.remote-azure"
+REMOTE_BRAIN_ENV="${SERVER_PILOT}/.env.remote-pane-brain"
 
 # HTTP-only controls. Intentionally excludes Better Auth, POP3, HMS, and Google keys.
 REMOTE_COMMON_ALLOWLIST=(
@@ -40,6 +42,8 @@ REMOTE_COMMON_ALLOWLIST=(
   CATCHUP_UPLOAD_ENABLED
   AI_STALE_RUN_TIMEOUT_MS
   AI_MODEL_ID
+  PANE_BRAIN
+  QUOTE_WORKFLOW_LLM
   AI_WORKER_IDEMPOTENCY_PREFIX
   BEDROCK_REGION
   BEDROCK_GUARDRAIL_ID
@@ -86,7 +90,7 @@ const common = new Set([
   "SMTP_SECRET_ARN", "MAIL_TLS_REJECT_UNAUTHORIZED", "UNDO_SEND_SECONDS",
   "INGEST_MAX_MESSAGE_BYTES", "INGEST_MAX_ATTACHMENT_BYTES",
   "INGEST_REQUIRE_OWNER_HEADER", "AI_ENABLED", "AI_WRITE_GATE_ENABLED",
-  "AI_DRAFTS_ENABLED", "CATCHUP_UPLOAD_ENABLED", "AI_STALE_RUN_TIMEOUT_MS", "AI_MODEL_ID",
+  "AI_DRAFTS_ENABLED", "CATCHUP_UPLOAD_ENABLED", "AI_STALE_RUN_TIMEOUT_MS", "AI_MODEL_ID", "PANE_BRAIN", "QUOTE_WORKFLOW_LLM",
   "AI_WORKER_IDEMPOTENCY_PREFIX", "BEDROCK_REGION", "BEDROCK_GUARDRAIL_ID",
   "BEDROCK_GUARDRAIL_VERSION", "MASTRA_STORAGE_PATH", "GOTENBERG_URL", "NAVA_BUILD_COMMIT",
   "HMS_DAVINCI_CREATE", "HMS_DAVINCI_MAKE_QUOTE", "HMS_DAVINCI_READS", "HMS_JOB_QUEUE", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "HMS_STAGEHAND_CDP_URL_DAVINCI",
@@ -110,11 +114,33 @@ try {
         throw new Error("invalid");
       }
     }
+    if (values.has("PANE_BRAIN") && !["agent", "classifier"].includes(values.get("PANE_BRAIN"))) {
+      throw new Error("invalid");
+    }
+    if (values.has("QUOTE_WORKFLOW_LLM") && !["on", "off"].includes(values.get("QUOTE_WORKFLOW_LLM"))) {
+      throw new Error("invalid");
+    }
     if (values.has("GOTENBERG_URL")) {
       const url = new URL(values.get("GOTENBERG_URL"));
       if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid");
     }
-  } else if (
+  } else if (kind === "brain") {
+    if (![...values.keys()].every((key) => ["PANE_BRAIN", "QUOTE_WORKFLOW_LLM"].includes(key)) ||
+      (values.has("PANE_BRAIN") && !["agent", "classifier"].includes(values.get("PANE_BRAIN"))) ||
+      (values.has("QUOTE_WORKFLOW_LLM") && !["on", "off"].includes(values.get("QUOTE_WORKFLOW_LLM")))) {
+      throw new Error("invalid");
+    }
+  } else if (kind === "model") {
+    const keys = ["AZURE_OPENAI_BASE_URL", "AZURE_FOUNDRY_API_KEY"];
+    if (values.size !== 0 && (values.size !== keys.length || keys.some((key) =>
+      !values.has(key) || values.get(key).trim().length === 0 ||
+      /[\x00-\x1f\x7f]/.test(values.get(key))
+    ))) throw new Error("invalid");
+    if (values.size !== 0) {
+      const url = new URL(values.get("AZURE_OPENAI_BASE_URL"));
+      if (url.protocol !== "https:" || url.username || url.password) throw new Error("invalid");
+    }
+  } else if (kind !== "admin" ||
     values.size !== 2 ||
     !values.has("BETTER_AUTH_URL") ||
     !values.has("BETTER_AUTH_SECRET") ||
@@ -146,10 +172,15 @@ case "${1:-}" in
     validate_remote_env_files
     exit 0
     ;;
-  '')
+  --validate-model)
+    validate_remote_env_file "$REMOTE_MODEL_ENV" model
+    validate_remote_env_file "$REMOTE_BRAIN_ENV" brain
+    exit 0
+    ;;
+  --ensure-model | '')
     ;;
   *)
-    echo "usage: $0 [--validate]" >&2
+    echo "usage: $0 [--validate|--validate-model|--ensure-model]" >&2
     exit 2
     ;;
 esac
@@ -165,6 +196,100 @@ fi
 if [ "$(stat -c '%a:%U:%G' "$LEGACY_ENV_FILE")" != "600:ubuntu:ubuntu" ]; then
   echo "legacy runtime env must be ubuntu-owned mode 0600: $LEGACY_ENV_FILE" >&2
   exit 2
+fi
+
+# Publish separate immutable overlays for the Azure pair and pane routing mode.
+# Existing remote common/admin files, including workflow switches, are never rewritten.
+if [ "${1:-}" = "--ensure-model" ]; then
+  validate_remote_env_files
+  umask 077
+  model_raw=""
+  model_candidate=""
+  model_check=""
+  brain_candidate=""
+  brain_check=""
+  cleanup_model() {
+    rm -f -- "$model_raw" "$model_candidate" "$model_check" "$brain_candidate" "$brain_check"
+  }
+  trap cleanup_model EXIT
+  model_raw="$(mktemp "${SERVER_PILOT}/.env.remote-azure.raw.XXXXXX")"
+  model_candidate="$(mktemp "${SERVER_PILOT}/.env.remote-azure.tmp.XXXXXX")"
+  model_check="$(mktemp "${SERVER_PILOT}/.env.remote-azure.check.XXXXXX")"
+  brain_candidate="$(mktemp "${SERVER_PILOT}/.env.remote-brain.tmp.XXXXXX")"
+  brain_check="$(mktemp "${SERVER_PILOT}/.env.remote-brain.check.XXXXXX")"
+
+  render_model() {
+    node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" "$LEGACY_ENV_FILE" "$model_raw" \
+      AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY PANE_BRAIN QUOTE_WORKFLOW_LLM
+    # Split by key: either overlay may be empty when the source uses defaults.
+    sed -n '/^AZURE_OPENAI_BASE_URL=/p; /^AZURE_FOUNDRY_API_KEY=/p' "$model_raw" >"$1"
+    sed -n '/^PANE_BRAIN=/p; /^QUOTE_WORKFLOW_LLM=/p' "$model_raw" >"$2"
+    validate_remote_env_file "$1" model
+    validate_remote_env_file "$2" brain
+  }
+
+  render_model "$model_candidate" "$brain_candidate"
+  render_model "$model_check" "$brain_check"
+  if ! cmp -s -- "$model_candidate" "$model_check" ||
+    ! cmp -s -- "$brain_candidate" "$brain_check"; then
+    echo "remote model source changed during preparation" >&2
+    exit 2
+  fi
+  # A pre-existing remote override may agree but must never be overwritten.
+  if grep -q '^PANE_BRAIN=' "$REMOTE_COMMON_ENV"; then
+    # An unset source defaults to classifier; preserve a matching explicit override.
+    brain_source="$(grep '^PANE_BRAIN=' "$brain_candidate" || true)"
+    if [ -z "$brain_source" ]; then brain_source="PANE_BRAIN='classifier'"; fi
+    if ! grep -Fqx -- "$brain_source" "$REMOTE_COMMON_ENV"; then
+      echo "remote pane routing conflicts with source; refusing replacement" >&2
+      exit 2
+    fi
+  fi
+  if grep -q '^QUOTE_WORKFLOW_LLM=' "$REMOTE_COMMON_ENV" &&
+    ! grep -Fqx -- "$(grep '^QUOTE_WORKFLOW_LLM=' "$REMOTE_COMMON_ENV")" "$brain_candidate"; then
+    echo "remote quote model flag conflicts with source; refusing replacement" >&2
+    exit 2
+  fi
+  check_existing_overlay() {
+    local candidate="$1" target="$2" kind="$3"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      validate_remote_env_file "$target" "$kind"
+      if ! cmp -s -- "$candidate" "$target"; then
+        echo "remote model overlay differs from source; refusing replacement" >&2
+        return 2
+      fi
+    fi
+  }
+  check_existing_overlay "$model_candidate" "$REMOTE_MODEL_ENV" model
+  check_existing_overlay "$brain_candidate" "$REMOTE_BRAIN_ENV" brain
+  publish_overlay() {
+    local candidate="$1" target="$2" kind="$3"
+    node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$candidate"
+    if ! ln -T -- "$candidate" "$target" 2>/dev/null; then
+      # Another writer may have won. Never replace its file, even on mismatch.
+      validate_remote_env_file "$target" "$kind"
+      if ! cmp -s -- "$candidate" "$target"; then
+        echo "remote model overlay differs from source; refusing replacement" >&2
+        return 2
+      fi
+    fi
+    validate_remote_env_file "$target" "$kind"
+    if ! cmp -s -- "$candidate" "$target"; then
+      echo "remote model overlay changed during preparation" >&2
+      return 2
+    fi
+  }
+  publish_overlay "$model_candidate" "$REMOTE_MODEL_ENV" model
+  publish_overlay "$brain_candidate" "$REMOTE_BRAIN_ENV" brain
+  # Catch source drift across publication; leave any published file untouched on failure.
+  render_model "$model_check" "$brain_check"
+  if ! cmp -s -- "$model_candidate" "$model_check" ||
+    ! cmp -s -- "$brain_candidate" "$brain_check"; then
+    echo "remote model source changed during preparation" >&2
+    exit 2
+  fi
+  node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$SERVER_PILOT"
+  exit 0
 fi
 
 REMOTE_COMMON_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-common.tmp.XXXXXX")"

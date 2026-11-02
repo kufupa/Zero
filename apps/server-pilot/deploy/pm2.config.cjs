@@ -29,9 +29,10 @@ module.exports = {
       },
     },
     {
-      // Started only by isolated remote env shells in deploy/restart/boot.
+      // Wrapper validates isolated remote env on every start, including resurrection.
       name: 'remote-http',
-      script: 'dist/main.js',
+      script: 'deploy/start-remote-http.sh',
+      interpreter: '/bin/bash',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
