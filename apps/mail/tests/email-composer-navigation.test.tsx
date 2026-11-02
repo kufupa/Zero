@@ -130,6 +130,24 @@ describe('real composer draft handoff', () => {
     expect((screen.getByLabelText('pending-to') as HTMLInputElement).value).toBe('partial@example.com');
   });
 
+  it.each(['cc', 'bcc'])('keeps unfinished %s text when its field is toggled', async (field) => {
+    render(<Harness />);
+    const button = screen.getByRole('button', { name: field === 'cc' ? 'Cc' : 'Bcc' });
+    fireEvent.click(button);
+    const input = screen.getByLabelText(`pending-${field}`) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'partial@example.com' } });
+    fireEvent.click(button);
+    expect(screen.getByLabelText(`pending-${field}`)).toBe(input);
+    expect(input.value).toBe('partial@example.com');
+    expect(mocks.toast).toHaveBeenCalledWith('Finish adding the email address before hiding this field.');
+    fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(button);
+    expect(screen.queryByLabelText(`pending-${field}`)).toBeNull();
+  });
+
   it('saves an attachment added immediately before navigation', async () => {
     const view = render(<Harness />);
     const file = new File(['receipt'], 'receipt.pdf', { type: 'application/pdf' });

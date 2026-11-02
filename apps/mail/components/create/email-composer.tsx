@@ -179,9 +179,22 @@ export function EmailComposer({
   );
   const composerRef = useRef<HTMLDivElement>(null);
   // A partially typed address is not yet in the form's recipient array.
-  const hasPendingRecipientInput = useCallback(() =>
-    Array.from(composerRef.current?.querySelectorAll<HTMLInputElement>('input[type="email"]') ?? [])
-      .some((input) => input.value.trim().length > 0), []);
+  const hasPendingRecipientInput = useCallback((section?: 'cc' | 'bcc') => {
+    const selector = section
+      ? `[data-recipient-section="${section}"] input[type="email"]`
+      : 'input[type="email"]';
+    return Array.from(composerRef.current?.querySelectorAll<HTMLInputElement>(selector) ?? [])
+      .some((input) => input.value.trim().length > 0);
+  }, []);
+  const toggleRecipientSection = (section: 'cc' | 'bcc') => {
+    const visible = section === 'cc' ? showCc : showBcc;
+    if (visible && hasPendingRecipientInput(section)) {
+      toast.error('Finish adding the email address before hiding this field.');
+      return;
+    }
+    if (section === 'cc') setShowCc(!visible);
+    else setShowBcc(!visible);
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
@@ -1321,14 +1334,14 @@ export function EmailComposer({
               <button
                 type="button"
                 className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
-                onClick={() => setShowCc(!showCc)}
+                onClick={() => toggleRecipientSection('cc')}
               >
                 <span>Cc</span>
               </button>
               <button
                 type="button"
                 className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
-                onClick={() => setShowBcc(!showBcc)}
+                onClick={() => toggleRecipientSection('bcc')}
               >
                 <span>Bcc</span>
               </button>
@@ -1348,7 +1361,7 @@ export function EmailComposer({
           <div className={`flex flex-col gap-2 ${showCc || showBcc ? 'pt-2' : ''}`}>
             {/* CC Section */}
             {showCc && (
-              <div className="flex min-w-0 items-center gap-2 px-3">
+              <div data-recipient-section="cc" className="flex min-w-0 items-center gap-2 px-3">
                 <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Cc:</p>
                 <RecipientAutosuggest
                   control={form.control}
@@ -1362,7 +1375,7 @@ export function EmailComposer({
 
             {/* BCC Section */}
             {showBcc && (
-              <div className="flex min-w-0 items-center gap-2 px-3">
+              <div data-recipient-section="bcc" className="flex min-w-0 items-center gap-2 px-3">
                 <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Bcc:</p>
                 <RecipientAutosuggest
                   control={form.control}
