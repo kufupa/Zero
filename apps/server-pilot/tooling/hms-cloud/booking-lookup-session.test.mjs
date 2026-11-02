@@ -43,3 +43,24 @@ test('real session queue clones requests while keeping screenshot callback in se
   await queue.close();
   assert.equal((await queue.runTool(request)).issue, 'SESSION_CLOSED');
 });
+
+test('save guard authority stays in session context and wire options cannot supply it', async () => {
+  const callback = async () => true;
+  const context = { page: { context: () => null }, labtestPreimage: { outcome: 'clear', preimageId: 'p' },
+    authorizeCandidate: callback, dispatchCandidate: callback };
+  const request = { tool: 'saveNewLabtestStay', preimageId: 'p', arrival: '2027-12-29', departure: '2027-12-31',
+    guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'NGI', note: 'synthetic' };
+  const queue = createBookingToolQueue(context);
+  assert.equal((await queue.runTool(request)).issue, 'BROWSER_CONTEXT_UNSAFE');
+  for (const options of [{ authorizeCandidate: 'spoofed' }, { dispatchCandidate: 'spoofed' },
+    { authorizeCandidate: 'spoofed', dispatchCandidate: 'spoofed' }]) {
+    assert.equal((await queue.runTool({ ...request, options })).issue, 'SERVER_SAVE_GUARD_ONLY');
+  }
+  assert.equal((await queue.runTool({ ...request, options: { authorizeCandidate: callback } })).issue, 'invalid_request');
+  await queue.close();
+  for (const guards of [{ authorizeCandidate: callback }, { dispatchCandidate: callback },
+    { authorizeCandidate: true, dispatchCandidate: callback }]) {
+    assert.equal((await runBookingLookupTool({ ...context, authorizeCandidate: undefined, dispatchCandidate: undefined, ...guards }, request)).issue,
+      'SAVE_GUARD_CALLBACKS_INVALID');
+  }
+});

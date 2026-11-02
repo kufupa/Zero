@@ -752,3 +752,26 @@ test('guest name lookup returns none, selects one, and refuses ambiguity without
   assert.equal(result.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
   assert.equal(refused.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
 });
+
+test('native guard callbacks travel only in server-owned commit session options', async (t) => {
+  const authorizeCandidate = async () => true;
+  const dispatchCandidate = async (_request, continueOnce) => continueOnce();
+  const fake = harness();
+  const result = await createReservation(input, { ...fake.options, authorizeCandidate, dispatchCandidate });
+  if (result.screenshots?.before) t.after(async () => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(result.outcome, 'saved');
+  assert.equal(fake.sessionOptions.authorizeCandidate, authorizeCandidate);
+  assert.equal(fake.sessionOptions.dispatchCandidate, dispatchCandidate);
+  const save = fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
+  assert.ok(save);
+  assert.equal(Object.hasOwn(save, 'authorizeCandidate'), false);
+  assert.equal(Object.hasOwn(save, 'dispatchCandidate'), false);
+  for (const guards of [{ authorizeCandidate }, { dispatchCandidate }, { authorizeCandidate: true, dispatchCandidate }]) {
+    const refused = await createReservation(input, { ...fake.options, ...guards });
+    assert.equal(refused.issue, 'SAVE_GUARD_CALLBACKS_INVALID');
+  }
+  const prepare = harness();
+  await createReservation({ ...input, mode: 'prepare' }, { ...prepare.options, authorizeCandidate, dispatchCandidate });
+  assert.equal(Object.hasOwn(prepare.sessionOptions, 'authorizeCandidate'), false);
+  assert.equal(Object.hasOwn(prepare.sessionOptions, 'dispatchCandidate'), false);
+});

@@ -295,7 +295,12 @@ function draftRequestBinding(input, state, output, formFields) {
 
 /** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
-  partyReadback = readCreateParties, census } = {}) {
+  partyReadback = readCreateParties, census, authorizeCandidate, dispatchCandidate } = {}) {
+  if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) {
+    return { outcome: 'refused', issue: 'SAVE_GUARD_CALLBACKS_INVALID', approvalReady: false };
+  }
   const checked = validate(input);
   if (checked.outcome) return { ...checked, approvalReady: false };
   const commit = input.mode === 'commit', missing = checked.missing;
@@ -486,7 +491,8 @@ export async function createReservation(input, { withSession = withBookingLookup
         state.organizationReadback = await runTool({ tool: 'readSavedLabtestRecord', confirmation: state.save.confirmation });
       }
     }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure },
-      ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}) } : {}) });
+      ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}),
+      ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}) } : {}) });
   } catch (error) {
     state.sessionFailedAfterSave = Boolean(state.saveAttempted);
     Object.assign(output, error.result || (error.phase === 'labtest_preimage' ? { outcome: error.labtestPreimage?.outcome === 'existing_matches' ? 'needs_input' : 'uncertain',
