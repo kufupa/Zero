@@ -21,7 +21,7 @@ const fields = (pairs) => Object.entries(pairs).map(([name, value]) => ({ name, 
 function harness(options = {}) {
   const calls = [], sources = [...Array.from({ length: 100 }, (_, i) => ({ nativeCode: `X${i}`, description: `Other ${i}` })),
     { nativeCode: 'EMA', description: 'E-Mail' }];
-  let freshReads = 0, censuses = 0;
+  let freshReads = 0, censuses = 0, sessionOptions;
   const partyFields = {};
   const partyDefaults = { organization: { nativeId: '41', name: 'Example Company' },
     agency: { nativeId: '99', name: 'Example Agency', city: 'Pretoria', referenceNumber: '123' },
@@ -87,9 +87,9 @@ function harness(options = {}) {
       default: throw new Error(`unexpected call ${request.tool}`);
     }
   };
-  return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, options: {
-    withSession: async (operation) => operation({ runTool, page: { screenshot: async () => Buffer.from('private screenshot') },
-      labtestPreimage: { preimageId: 'p' } }),
+  return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, get sessionOptions() { return sessionOptions; }, options: {
+    withSession: async (operation, options) => { sessionOptions = options; return operation({ runTool, page: { screenshot: async () => Buffer.from('private screenshot') },
+      labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
       return operation({ runTool: async () => ({ outcome: 'ok', record: { details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
@@ -598,4 +598,14 @@ test('reason for stay uses current dropdown and saved visible readback', async (
   if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
   assert.equal(uncertain.outcome, 'uncertain');
   assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'reasonForStay'));
+});
+
+
+test('guarded create requests blocked workers before opening its booking session', async () => {
+  const fake = harness();
+  await createReservation(input, fake.options);
+  assert.equal(fake.sessionOptions.blockServiceWorkers, true);
+  const prepare = harness();
+  await createReservation({ ...input, mode: 'prepare' }, prepare.options);
+  assert.equal(prepare.sessionOptions.blockServiceWorkers, undefined);
 });

@@ -451,6 +451,14 @@ function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
   } catch { return false; }
 }
 
+function safeCreateContext(page) {
+  try {
+    const context = page.context();
+    return context?._options?.serviceWorkers === 'block' && typeof context.serviceWorkers === 'function' &&
+      context.serviceWorkers().length === 0;
+  } catch { return false; }
+}
+
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
@@ -474,6 +482,7 @@ export async function saveNewLabtestStay(page, {
   if (arSelectionProvided && !ar) return { outcome: 'input_gap', issue: 'AR_SELECTION_UNVERIFIED' };
   const strictCreateProof = Boolean(createFields || agency || organization || ar);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
+  if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
@@ -519,6 +528,7 @@ export async function saveNewLabtestStay(page, {
       profileId: state.arProfileId })) : null;
     if (ar && !arToken) throw new Error('AR_SELECTION_PROOF_STALE');
     Object.assign(expected, state, { profileToken, arToken });
+    if (!safeCreateContext(page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
     scope = fence.open();
     if (!consumeLabtestPreimage(page, { preimageId, arrival, departure })) throw new Error('PREIMAGE_STALE_OR_MISMATCHED');

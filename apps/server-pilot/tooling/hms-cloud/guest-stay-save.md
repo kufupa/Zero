@@ -1,5 +1,9 @@
 # Save a fake HRCEN Labtest stay
 
+The writer refuses to dispatch unless its browser context blocks service workers
+and has no active service workers. This protects request interception; it does
+not by itself prove what HMS does server-side.
+
 Owner authorization applies to fake Labtest writes only. This standalone
 interface does not authenticate staff approval and does not authorize writes
 for real guests.

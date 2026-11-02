@@ -433,7 +433,7 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (state.organization && !state.agency && !state.arAccount && state.save.outcome === 'saved_same_form') {
         state.organizationReadback = await runTool({ tool: 'readSavedLabtestRecord', confirmation: state.save.confirmation });
       }
-    }, { memory: null, ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure } } : {}) });
+    }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure } } : {}) });
   } catch (error) {
     state.sessionFailedAfterSave = Boolean(state.saveAttempted);
     Object.assign(output, error.result || (error.phase === 'labtest_preimage' ? { outcome: error.labtestPreimage?.outcome === 'existing_matches' ? 'needs_input' : 'uncertain',

@@ -82,6 +82,10 @@ as `needs_input`; requested fields are never silently dropped. This
 includes explicit null for an unsupported field or an optional field whose
 clear is not supported. An omitted optional field is different. Booker, CMS recipient, billing reference, price, track, market
 segment, guest opt-in and confirmation recipient are not staged here.
+On one observed HRCEN draft, selecting an A/R account made Billing Reference
+required. This wrapper cannot set it, so that draft was refused before Save.
+The same draft also required Source of Business. These observations do not
+establish requirements for every account or property.
 `cms.send: true` is unsupported. Explicit `cms.send: false` is checked against
 the unsaved form as a no-send invariant. `cms.messageId` is optional and selected
 from the current picker; `03` remains a suggestion, not a default or requirement.

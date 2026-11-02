@@ -68,6 +68,7 @@ function pageStub(evaluateResult = null) {
   return {
     on() {},
     off() {},
+    context() { return { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }; },
     locator() { return { count: async () => 0 }; },
     evaluate: async () => evaluateResult,
   };
@@ -382,4 +383,84 @@ test('reason for stay proof binds the selected code and display', async () => {
   const bad = await saveNewLabtestStay(pageStub(), { ...saveInputs,
     createFieldProof: { adultSelection: adultSelection(2), reasonSelection: { ...reason, actual: { value: 'OTHER', display: 'Business' } } } });
   assert.equal(bad.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
+});
+
+// Run the actual browser-side draft callback against a small synthetic Ext form.
+function nativeCreateDraftPage() {
+  const blanks = ['taid1', 'companyid', 'groupid', 'groupcompanyid', 'grouptaid', 'groupta2id', 'groupta3id',
+    'bookingagency2id', 'bookingagency3id', 'bookingagencycontractid', 'ta1', 'company', 'companyname', 'groupname',
+    'araccountname', 'bacontract', 'bookingagency2name', 'bookingagency3name', 'bookingagency1iatanumber',
+    'bookingagency2iatanumber', 'bookingagency3iatanumber'];
+  const visible = { ta1: '', company: '', groupname: '', bacontract: '', confirmationnumber: '', guestid: '1234567',
+    firstname: 'Proof', lastname: 'Labtest', arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', roomtype: 'STQN',
+    rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
+    revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
+    udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account' };
+  const data = { ...Object.fromEntries(blanks.map((key) => [key, ''])), ...visible, propertycode: 'HRCEN',
+    PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', reservationid: '', reservationstayid: '', recordid: '',
+    guaranteecreditcardid: '', leaseguaranteecreditcardid: '', araccountid: '75', arprofileid: '501',
+    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS' };
+  const values = { ...data }, elements = Object.entries(visible).map(([name, value]) => ({ name, value,
+    id: `${name}-inputEl`, offsetWidth: 1, offsetHeight: 1, readOnly: ['revenuevalue', 'nightsvalue'].includes(name),
+    closest: () => null }));
+  const root = { contains: (element) => elements.includes(element), querySelectorAll: () => elements };
+  const form = { el: { dom: root }, getRecord: () => ({ data, getData: () => ({ ...data }) }),
+    getForm: () => ({ getValues: () => ({ ...values }) }) };
+  const components = Object.fromEntries(elements.map((element) => [element.name, {
+    up: () => form,
+    getValue: () => element.name === 'udfchkbox04' ? false : values[element.name],
+    getSubmitData: () => ({ [element.name]: values[element.name] }),
+    getFieldLabel: () => element.name === 'nightsvalue' ? 'Lifetime Nights' : '',
+  }]));
+  const env = { location: { origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' },
+    document: { title: 'Infor HMS - HRCEN', querySelectorAll: () => elements },
+    getComputedStyle: () => ({ visibility: 'visible' }), Ext: { getCmp: (name) => components[name] } };
+  const page = { data, values, elements, components, on() {}, off() {},
+    context: () => ({ _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }),
+    locator: () => ({ count: async () => 0 }),
+    async evaluate(fn, arg) {
+      const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+      try {
+        for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+        return await fn(arg);
+      } finally {
+        for (const key of Object.keys(env)) {
+          if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
+          else delete globalThis[key];
+        }
+      }
+    } };
+  return page;
+}
+
+test('native draft binds A/R, CMS and reason controls before any save route', async () => {
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
+    nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const createFieldProof = { adultSelection: adultSelection(2),
+    cmsMessageSelection: { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' },
+    reasonSelection: { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } } };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, arSelection, createFieldProof });
+  // Fixture is deliberately not a full 985-field HMS model. A valid native draft reaches the schema guard.
+  assert.equal((await run(nativeCreateDraftPage())).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  const wrongAccount = nativeCreateDraftPage(); wrongAccount.data.araccountid = '76';
+  assert.equal((await run(wrongAccount)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongProfile = nativeCreateDraftPage(); wrongProfile.data.arprofileid = '';
+  assert.equal((await run(wrongProfile)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongCms = nativeCreateDraftPage(); wrongCms.components.udfchar09.getSubmitData = () => ({ udfchar09: '01' });
+  assert.equal((await run(wrongCms)).draftCheck, 'DRAFT_CMS_MESSAGE_VALUE');
+  const wrongReason = nativeCreateDraftPage(); wrongReason.components.reasonforstay.getSubmitData = () => ({ reasonforstay: 'OTHER' });
+  assert.equal((await run(wrongReason)).draftCheck, 'DRAFT_REASON_FOR_STAY_VALUE');
+});
+
+
+test('save refuses a context that does not block service workers', async () => {
+  for (const context of [null, { _options: {}, serviceWorkers: () => [] },
+    { _options: { serviceWorkers: 'block' }, serviceWorkers: () => [{}] }]) {
+    const page = pageStub();
+    page.context = () => context;
+    const result = await saveNewLabtestStay(page, saveInputs);
+    assert.equal(result.outcome, 'refused');
+    assert.equal(result.issue, 'BROWSER_CONTEXT_UNSAFE');
+  }
 });
