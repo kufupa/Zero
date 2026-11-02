@@ -58,7 +58,8 @@ export async function readStayAmendmentAvailability(page, input, options = {}) {
   }
   const result = await readQuote(page, { criteria: prepared.criteria, roomQuantity: prepared.roomQuantity,
     snapshotPath: options.snapshotPath, view: { nightLimit: 31 } });
-  return { outcome: result.outcome, ...(result.issue ? { issue: result.issue } : {}), prepared,
+  return { outcome: result.outcome, ...(result.issue ? { issue: result.issue } : {}),
+    ...(result.stage ? { stage: result.stage } : {}), prepared,
     ...(result.snapshotPath ? { snapshotPath: result.snapshotPath } : {}),
     ...(result.view ? { availability: result.view } : {}),
     saveEligible: false, savedPreimage: 'caller_supplied_unverified',

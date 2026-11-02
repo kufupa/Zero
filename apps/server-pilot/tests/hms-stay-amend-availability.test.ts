@@ -67,6 +67,10 @@ describe('saved stay amendment availability', () => {
     expect(await readStayAmendmentAvailability({}, input(), { snapshotPath: '/private/a.json' })).toMatchObject({
       outcome: 'criteria_unavailable', issue: 'PARTY_NOT_SELECTED', saveEligible: false,
     });
+    mocks.readQuote.mockResolvedValueOnce({ outcome: 'execution_failure', stage: 'setting_criteria', issue: 'PARTY_SELECTION_NOT_VERIFIED' });
+    expect(await readStayAmendmentAvailability({}, input(), { snapshotPath: '/private/a.json' })).toMatchObject({
+      outcome: 'execution_failure', stage: 'setting_criteria', issue: 'PARTY_SELECTION_NOT_VERIFIED', saveEligible: false,
+    });
     mocks.readQuote.mockClear();
     expect((await readStayAmendmentAvailability({}, input(), { snapshotPath: '' })).issue).toBe('PRIVATE_SNAPSHOT_PATH_REQUIRED');
     expect(mocks.readQuote).not.toHaveBeenCalled();
