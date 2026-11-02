@@ -276,6 +276,31 @@ describe('blocked requests: pane failure or configuration error', () => {
     }
   });
 
+  it('allows reviewed current pane queries', () => {
+    for (const name of [
+      'ai.hmsCandidateState', 'drafts.reviewForMessage', 'quoteWorkflow.makeQuote',
+      'workItems.revisionCursor', 'workflowFolders.getOwnerActionLabel', 'workflowFolders.list',
+      'workflowFolders.summary', 'workflowFolders.thread', 'workstation.quotePdfJob',
+    ]) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(false);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
+    }
+  });
+
+  it('keeps current pane state mutations blocked, including in a mixed batch', () => {
+    for (const name of [
+      'drafts.setRequestHandled', 'drafts.setVoucherReviewHandled', 'settings.save',
+      'workItems.recordQuoteOutcome', 'workItems.redoRevision', 'workItems.resetSection',
+      'workItems.undoRevision', 'workflowFolders.setActionLabel', 'workstation.prepareUnquotedBookingDraft',
+    ]) {
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(true);
+      const decision = classifyTrpcRequest(`${origin}mail.get,${name}?batch=1`);
+      expect(decision.allowed, name).toBe(false);
+      expect(decision.blocked).toContainEqual({ procedure: name, reason: 'write' });
+    }
+  });
+
   it('reports an unclassified block as a configuration error, not as a write', () => {
     const unclassified = [result({ blockedWrites: ['mail.archive'] })];
     expect(configFailures(unclassified)).toEqual([

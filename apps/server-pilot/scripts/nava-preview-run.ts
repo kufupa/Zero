@@ -2,8 +2,8 @@
  * Real-browser gate for the /nava-preview viewer. Read-only: it opens each thread, waits
  * for the pane's analysis to settle, takes screenshots, and records what the pane shows.
  *
- * It never clicks a control. Every tRPC request that is not a GET is aborted unless it is
- * quoteWorkflow.analyseSelection (the analysis read), so no HMS or mailbox write can start.
+ * It never clicks a control. Requests are classified by tRPC procedure, not HTTP method.
+ * Analysis and explicitly configured reviewed prepare calls are exceptions; commits and sends stay blocked.
  * Aborted requests are listed per thread in results.json.
  *
  * Environment (values are never printed):
@@ -65,12 +65,13 @@ export function isPiiField(label: string): boolean {
  * these names against the server router and against the pane's client code.
  */
 export const READ_PROCEDURES: ReadonlySet<string> = new Set([
+  'ai.hmsCandidateState',
   'brain.getCapabilities',
   'categories.list',
   'connections.getDefault',
   'connections.list',
-  'drafts.get',
   'drafts.list',
+  'drafts.reviewForMessage',
   'drafts.savedReply',
   'hmsApproval.evidence',
   'hmsApproval.writeState',
@@ -84,6 +85,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'paneStayLookup.jobQueueEnabled',
   'paneStayLookup.jobStatus',
   'paneStayLookup.screenshot',
+  'quoteWorkflow.makeQuote',
   'quoteWorkflow.rateCatalogue',
   'quoteWorkflow.voucherFind',
   'rates.list',
@@ -91,11 +93,17 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workItems.followUpByMessage',
   'workItems.getByMessage',
   'workItems.list',
+  'workItems.revisionCursor',
+  'workflowFolders.getOwnerActionLabel',
+  'workflowFolders.list',
+  'workflowFolders.summary',
+  'workflowFolders.thread',
   'workstation.getPriorStaffQuoteRequote',
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
   'workstation.outlookSync.statusForActiveMailbox',
+  'workstation.quotePdfJob',
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
@@ -124,6 +132,8 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workItems.recordActions',
   'workstation.queueStaffQuote',
   'drafts.saveReply',
+  'drafts.setRequestHandled',
+  'drafts.setVoucherReviewHandled',
   'hmsApproval.approve',
   'hmsApproval.resolveNeedsCheck',
   'hmsApproval.review',
@@ -140,11 +150,17 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'rates.archive',
   'rates.create',
   'rates.update',
+  'settings.save',
+  'workflowFolders.setActionLabel',
   'workItems.dismiss',
   'workItems.dismissFollowUp',
   'workItems.open',
   'workItems.recordEvent',
+  'workItems.recordQuoteOutcome',
+  'workItems.redoRevision',
+  'workItems.resetSection',
   'workItems.retryTranslation',
+  'workItems.undoRevision',
   'workItems.useFollowUp',
   'workstation.bridgeTicket',
   'workstation.executeStaffQuote',
@@ -152,6 +168,7 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.outlookSync.control',
   'workstation.ping',
   'workstation.prepareBookingDraft',
+  'workstation.prepareUnquotedBookingDraft',
   'workstation.qualifiedQuoteProposalPdf',
   'workstation.quoteWorkbook',
   'workstation.reportBridgeFailure',
