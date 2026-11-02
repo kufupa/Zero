@@ -27,7 +27,7 @@ describe('adult amendment save-helper boundary', () => {
 
 // Evaluate the adapter's actual browser callbacks against a small Ext-like form.
 // Playwright serializes evaluate results, so snapshots must not alias the live model.
-function savedStayPage({ copyAdults = false } = {}) {
+function savedStayPage({ copyAdults = false, clockOffset = 0 } = {}) {
   const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
   const expected = {
     confirmation: '20270000001-1', guestId: '77', arrival: '2027-01-15', departure: '2027-01-16',
@@ -122,6 +122,8 @@ function savedStayPage({ copyAdults = false } = {}) {
   };
   const browser = {
     location: { origin },
+    performance: { now: () => performance.now() + clockOffset },
+    Date: class extends Date { static now() { return Date.now() + clockOffset; } },
     document: { querySelectorAll: (selector: string) => selector === 'input[name="guestid"]'
       ? elements.filter((element) => element.name === 'guestid') : elements },
     Ext: { getCmp: (id: string) => components[id] },
@@ -242,30 +244,49 @@ describe('adult amendment real callback chain', () => {
     expect(stay.save.click).not.toHaveBeenCalled();
   });
 
-  it.each(['count', 'evaluate'])('does not edit when adult %s completes after timeout', async (delayPoint) => {
+  it.each([
+    ['count', 0], ['evaluate', 0], ['evaluate', -10_000_000], ['evaluate', 10_000_000],
+  ])('does not edit when adult %s completes after timeout with browser clock offset %s', async (delayPoint, clockOffset) => {
     fixture.run.mockClear();
     const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
       '../tooling/hms-cloud/labtest-amend-save.mjs',
     );
     fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
-    const stay = savedStayPage();
-    let calls = 0;
-    let release!: () => void;
-    let entered!: () => void;
-    const delayed = new Promise<void>((resolve) => { release = resolve; });
-    const reached = new Promise<void>((resolve) => { entered = resolve; });
-    const delaySecondCall = async () => { if (++calls === 2) { entered(); await delayed; } };
-    if (delayPoint === 'count') stay.setOnAdultCount(delaySecondCall);
-    else stay.setOnAdultEvaluate(delaySecondCall);
+    vi.useFakeTimers();
+    try {
+      const stay = savedStayPage({ clockOffset: clockOffset as number });
+      let calls = 0;
+      let release!: () => void;
+      let entered!: () => void;
+      const delayed = new Promise<void>((resolve) => { release = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      const delaySecondCall = async () => { if (++calls === 2) { entered(); await delayed; } };
+      if (delayPoint === 'count') stay.setOnAdultCount(delaySecondCall);
+      else stay.setOnAdultEvaluate(delaySecondCall);
 
-    const pending = stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2, timeoutMs: 500 });
-    await reached;
-    const result = await pending;
-    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_TIMEOUT' });
-    release();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(stay.combo.setValue).not.toHaveBeenCalled();
-    expect(stay.form.updateRecord).not.toHaveBeenCalled();
+      const pending = stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2, timeoutMs: 500 });
+      await reached;
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await pending;
+      expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_TIMEOUT' });
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stay.combo.setValue).not.toHaveBeenCalled();
+      expect(stay.form.updateRecord).not.toHaveBeenCalled();
+      expect(stay.save.click).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([-10_000_000, 10_000_000])('stages before the deadline despite browser clock offset %s', async (clockOffset) => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage({ clockOffset });
+    const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'OCCUPANCY_REPRICE_REQUIRED' });
+    expect(stay.combo.setValue).toHaveBeenCalledOnce();
     expect(stay.save.click).not.toHaveBeenCalled();
   });
 

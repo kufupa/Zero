@@ -304,8 +304,8 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
       return 'ADULT_PREIMAGE_UNVERIFIED';
     }
     if (!commitChange) return true;
-    // A queued browser evaluation may run after the caller's timeout.
-    if (Date.now() >= deadline) return 'AMEND_TIMEOUT';
+    // Compare in the browser's own monotonic clock, not Node's wall clock.
+    if (performance.now() >= deadline) return 'AMEND_TIMEOUT';
     component.setValue(target.record);
     component.fireEvent('select', component, target.record);
     form.updateRecord(record);
@@ -339,9 +339,9 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
   if (!isAdultCount(adults)) return { outcome: 'input_gap', issue: 'ADULT_COUNT_INVALID' };
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   let active = true;
-  const deadlineAt = Date.now() + timeoutMs;
+  const deadlineAt = performance.now() + timeoutMs;
   const assertActive = () => {
-    if (!active || Date.now() >= deadlineAt) throw new Error('AMEND_TIMEOUT');
+    if (!active || performance.now() >= deadlineAt) throw new Error('AMEND_TIMEOUT');
   };
   const onDialog = () => { active = false; };
   if (typeof page?.on === 'function') page.on('dialog', onDialog);
@@ -363,16 +363,23 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
       if (adults === expected.adults) return { unchanged: true };
       if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
           await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
-      const control = await bounded(selectAdultOption(state.frame, baseline, adults, false, assertActive, deadlineAt));
+      // Sample the browser clock, then conservatively subtract the elapsed
+      // round trip from the remaining Node deadline. The clocks may have
+      // different origins when the browser runs on another host.
+      const browserNow = await bounded(state.frame.evaluate(() => performance.now()));
+      assertActive();
+      if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+      const browserDeadline = browserNow + Math.max(0, deadlineAt - performance.now());
+      const control = await bounded(selectAdultOption(state.frame, baseline, adults, false, assertActive, browserDeadline));
       const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
       if (await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
-      return { state, frame: state.frame, baseline, control, save };
+      return { state, frame: state.frame, baseline, control, save, browserDeadline };
     },
     // No Save request is authorized until the native availability recalculation is verified.
     matches: () => false,
     stage: async (bounded, prepared) => {
       await bounded(prepared.control.scrollIntoViewIfNeeded().catch(() => {}));
-      await bounded(selectAdultOption(prepared.frame, prepared.baseline, adults, true, assertActive, deadlineAt));
+      await bounded(selectAdultOption(prepared.frame, prepared.baseline, adults, true, assertActive, prepared.browserDeadline));
       const current = await bounded(currentLabtestRecord(page, expected, {
         allowBlankNote: true, allowUnchangedBusinessParties: true,
       }));
