@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   assertCreateDispatchFenceOwner,
   assertNoCreateDispatchFence,
@@ -24,26 +26,28 @@ type Row = { id: string; value: unknown };
 function fakeTx(opts: { exists?: boolean; events?: Row[] } = {}) {
   const calls: string[] = [];
   const inserts: unknown[] = [];
+  const predicates: ReturnType<PgDialect['sqlToQuery']>[] = [];
+  const dialect = new PgDialect();
   let selectNumber = 0;
   const tx = {
     select: vi.fn(() => {
       selectNumber += 1;
       if (selectNumber % 2 === 1) {
-        return { from: () => ({ where: () => ({ limit: () => ({
+        return { from: () => ({ where: (condition: SQL) => { predicates.push(dialect.sqlToQuery(condition)); return ({ limit: () => ({
           for: async (mode: string) => {
             calls.push(`lock:${mode}`);
             return opts.exists === false ? [] : [{ id: key.workItemId }];
           },
-        }) }) }) };
+        }) }); } }) };
       }
-      return { from: () => ({ where: () => ({ limit: async () => {
+      return { from: () => ({ where: (condition: SQL) => { predicates.push(dialect.sqlToQuery(condition)); return ({ limit: async () => {
         calls.push('read-fences');
         return opts.events ?? [];
-      } }) }) };
+      } }); } }) };
     }),
     insert: vi.fn(() => ({ values: async (value: unknown) => { calls.push('insert'); inserts.push(value); } })),
   } as unknown as CreateFenceTransaction;
-  return { tx, calls, inserts };
+  return { tx, calls, inserts, predicates };
 }
 
 // These are mocked operation-order tests, not evidence of PostgreSQL locking.
@@ -57,6 +61,22 @@ describe('durable create dispatch fence', () => {
       id: result.fenceId, workItemId: key.workItemId, actorKind: 'system', actorUserId: single.actorUserId,
       type: 'create.fence.started', value: single,
     })]);
+  });
+
+  it('scopes item lookup to the exact mailbox and events to the exact item and start type', async () => {
+    const fake = fakeTx();
+    await assertNoCreateDispatchFence(fake.tx, key);
+    expect(fake.predicates[0]?.sql).toContain('"work_item"."id"');
+    expect(fake.predicates[0]?.sql).toContain('"work_item"."transport_id"');
+    expect(fake.predicates[0]?.params).toEqual([key.workItemId, key.transportId]);
+    expect(fake.predicates[1]?.sql).toContain('"work_event"."work_item_id"');
+    expect(fake.predicates[1]?.sql).toContain('"work_event"."type"');
+    expect(fake.predicates[1]?.params).toEqual([key.workItemId, 'create.fence.started']);
+    const wrongMailbox = fakeTx({ exists: false });
+    await expect(assertNoCreateDispatchFence(wrongMailbox.tx, { ...key, transportId: 'other-hotel' }))
+      .rejects.toMatchObject({ reason: 'not_found' });
+    expect(wrongMailbox.predicates[0]?.params).toEqual([key.workItemId, 'other-hotel']);
+    expect(wrongMailbox.predicates).toHaveLength(1);
   });
 
   it('stores a batch-wide manifest instead of a child-specific scope', async () => {
