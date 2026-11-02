@@ -70,6 +70,17 @@ test('multipart and query bind the current frame, target, token, name and exact 
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);
 });
 
+test('multipart fields cannot diverge from the validated form or repeat a field', () => {
+  const changed = new Map(payload);
+  changed.set('daeCode', 'other#stay#HRCEN');
+  assert.equal(matchesDocumentUpload(upload({ values: changed }), frame, payload, file, token), false);
+  const original = upload(), body = original.postDataBuffer().toString('latin1');
+  const duplicate = { ...original, postDataBuffer: () => Buffer.from(body.replace('name="pages"', 'name="daeCode"'), 'latin1') };
+  const truncated = { ...original, postDataBuffer: () => Buffer.from(body.slice(0, -8), 'latin1') };
+  assert.equal(matchesDocumentUpload(duplicate, frame, payload, file, token), false);
+  assert.equal(matchesDocumentUpload(truncated, frame, payload, file, token), false);
+});
+
 test('refuses invalid files and contexts before any browser action', async () => {
   assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name: '../guest.txt' }, { evidenceRoot: '/tmp' }),
     { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
@@ -77,5 +88,8 @@ test('refuses invalid files and contexts before any browser action', async () =>
     { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' });
   const page = { context: () => ({ _options: { serviceWorkers: 'allow' } }) };
   assert.deepEqual(await attachLabtestDocument(page, {}, file, { evidenceRoot: '/tmp' }),
+    { outcome: 'refused', issue: 'DOCUMENT_CONTEXT_UNSAFE' });
+  const incomplete = { context: () => ({ _options: { serviceWorkers: 'block' } }) };
+  assert.deepEqual(await attachLabtestDocument(incomplete, {}, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_CONTEXT_UNSAFE' });
 });
