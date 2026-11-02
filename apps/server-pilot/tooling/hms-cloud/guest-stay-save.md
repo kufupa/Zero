@@ -168,9 +168,10 @@ page-lifetime no-POST fence remains unchanged. No billing-reference save has
 been proven in live HMS.
 
 The save also requires the current verified Proof Labtest profile, a new HRCEN
-stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
-no guarantee card, CMS Send unchecked, and blank CMS recipient and guest
-email. The save action and core identity/party fields are exact-matched on the
+stay, dates in 2027 or later, an `NGI` or `GTDAGT` guarantee, no guarantee
+card, CMS Send unchecked, and blank CMS recipient and guest email. A `GTDAGT`
+save also requires the current verified `guaranteeSelection` described above.
+The save action and core identity/party fields are exact-matched on the
 legacy path; strict proof mode also exact-matches whichever occupancy, source
 and party selections were supplied, plus the full serialized model. One exact request from the current main frame may
 pass through the page fence and writer-local context guard. Every other

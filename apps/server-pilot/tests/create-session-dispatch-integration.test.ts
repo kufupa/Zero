@@ -88,6 +88,7 @@ vi.mock('../tooling/hms-cloud/guest-stay-rate-plan.mjs', async (original) => ({
 }));
 
 import { createReservation } from '../tooling/hms-cloud/create-reservation.mjs';
+import { saveNewLabtestStay } from '../tooling/hms-cloud/guest-stay-save.mjs';
 
 function visibleFields() {
   return Object.entries({ guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
@@ -105,7 +106,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function simulatedPage(order: string[]) {
+function simulatedPage(order: string[], options: { guarantee?: string; bodyGuarantee?: string } = {}) {
   const frame = {}, ready = deferred<unknown>();
   let pageHandler: ((route: unknown) => Promise<unknown>) | undefined;
   let contextHandler: ((route: unknown) => Promise<unknown>) | undefined;
@@ -121,12 +122,13 @@ function simulatedPage(order: string[]) {
     departuredate: '12/31/2027', roomtype: 'STQN', rateplan: 'BAR', track: 'TRACK', reservationnote: 'Synthetic note',
     confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '', udfchkbox04: '0', udfchar13: '',
     emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '', arprofileid: '', araccountid: '',
-    guaranteetype: 'NGI', pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0', adults: '1',
+    guaranteetype: options.guarantee ?? 'NGI', pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0', adults: '1',
     children: '0', childages: '', child1: '0', child2: '0', child3: '0', activechildcategories: '0',
     updatechildcategories: 'true',
   };
   for (let n = 0; Object.keys(form).length < 985; n += 1) form[`zzsynthetic_${String(n).padStart(3, '0')}`] = '';
   const body = new URLSearchParams({ ...form, SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' });
+  if (options.bodyGuarantee !== undefined) body.set('guaranteetype', options.bodyGuarantee);
   const request = { frame: () => frame, method: () => 'POST',
     url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
     postData: () => body.toString(), headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }) };
@@ -189,4 +191,30 @@ describe('server-owned create callbacks through the real session and writer', ()
       expect(order).toEqual(succeeds ? ['authorize', 'lock', 'continue', 'unlock'] : ['authorize', 'lock', 'continue']);
     }, 15000);
   }
+});
+
+// The model-field schema and identity/preimage proofs are mocked above. This
+// exercises the real native matcher and route chain, not live HMS or the real schema.
+describe('agent guarantee in the real native request guard', () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const request = { preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31',
+    guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'GTDAGT',
+    guaranteeSelection: selection, note: 'Synthetic note' };
+
+  it('continues one matching agent-guarantee request', async () => {
+    const order: string[] = [];
+    const result = await saveNewLabtestStay(simulatedPage(order, { guarantee: 'GTDAGT' }), request, { timeoutMs: 1000 });
+    expect(result).toMatchObject({ outcome: 'saved_same_form', requestSeen: true, confirmation: '123456-1' });
+    expect(order).toEqual(['continue']);
+  }, 5000);
+
+  it('refuses an outgoing non-guaranteed code for the agent guarantee', async () => {
+    const order: string[] = [];
+    const result = await saveNewLabtestStay(
+      simulatedPage(order, { guarantee: 'GTDAGT', bodyGuarantee: 'NGI' }), request, { timeoutMs: 250 },
+    );
+    expect(result).toMatchObject({ outcome: 'not_dispatched', requestSeen: false });
+    expect(order).toEqual(['abort']);
+  }, 5000);
 });
