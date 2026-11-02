@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
 import { describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ open: vi.fn(), dismiss: vi.fn(), notes: vi.fn() }));
@@ -118,6 +120,121 @@ describe('document refresh observation', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it('preserves raw field states, nested values and unknown leaves', async () => {
+    const page = Object.assign(new EventEmitter(), { waitForTimeout: vi.fn(async () => {}) });
+    const child = { isLeaf: () => true, data: { documentFileName: 'voucher.pdf', documentcode: 'NAVA123',
+      description: '  ', nil: null, blank: '', missingValue: undefined, nested: { note: '  text  ' },
+      list: [null, ''] } };
+    const unknown = { isLeaf: () => true, data: { text: 'Unexpected item', extra: '  raw  ' } };
+    const root = { isLoaded: () => true, cascadeBy: (visit: (node: unknown) => void) => {
+      visit({ isLeaf: () => false, isLoaded: () => true }); visit(child); visit(unknown);
+    } };
+    const store = { getRootNode: () => root, isLoading: () => false };
+    vi.stubGlobal('Ext', { ComponentQuery: { query: () => [{ isVisible: () => true, getStore: () => store }] } });
+    try {
+      const target = Object.assign(frame(), { waitForFunction: vi.fn(async () => {}),
+        evaluate: async (read: () => unknown) => read() });
+      mocks.open.mockResolvedValue({ frame: target, notes: [] });
+      mocks.dismiss.mockResolvedValue([]); mocks.notes.mockResolvedValue([]);
+      const result = await readDocumentsFromStay360(page, confirmation);
+      const item = result.observedNodes[1];
+      expect(item.documentIndex).toBe(0);
+      expect(item.data.type).toBe('object');
+      expect(item.data.fields).toContainEqual({ key: 'description', value: { type: 'string', value: '  ' } });
+      expect(item.data.fields).toContainEqual({ key: 'nil', value: { type: 'null' } });
+      expect(item.data.fields).toContainEqual({ key: 'blank', value: { type: 'string', value: '' } });
+      expect(item.data.fields).toContainEqual({ key: 'missingValue', value: { type: 'undefined' } });
+      expect(item.data.fields.some((field: { key: string }) => field.key === 'absent')).toBe(false);
+      expect(item.data.fields).toContainEqual({ key: 'nested', value: { type: 'object', fields: [
+        { key: 'note', value: { type: 'string', value: '  text  ' } },
+      ] } });
+      expect(item.data.fields).toContainEqual({ key: 'list', value: { type: 'array', fields: [
+        { key: '0', value: { type: 'null' } }, { key: '1', value: { type: 'string', value: '' } },
+        { key: 'length', value: { type: 'number', value: '2' } },
+      ] } });
+      expect(result.observedNodes[2]).toMatchObject({ leaf: true, documentIndex: null,
+        data: { fields: expect.arrayContaining([{ key: 'extra', value: { type: 'string', value: '  raw  ' } }]) } });
+      expect(result.coverage).toMatchObject({ metadataCapture: 'captured', metadataIssues: 0,
+        unrecognizedLeaves: 1, status: 'partial', refreshVerified: false, complete: null });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('marks unsupported raw values incomplete and never treats them as coverage proof', async () => {
+    const page = Object.assign(new EventEmitter(), { waitForTimeout: vi.fn(async () => {}) });
+    const cyclic: Record<string, unknown> = {}; cyclic.self = cyclic;
+    const data: Record<string | symbol, unknown> = { documentFileName: 'voucher.pdf', documentcode: 'NAVA123', cyclic };
+    const getter = vi.fn(() => { throw new Error('must not invoke'); });
+    Object.defineProperty(data, 'unreadable', { get: getter, enumerable: true });
+    data[Symbol('native')] = 'not-serializable';
+    const child = { isLeaf: () => true, data };
+    const root = { isLoaded: () => true, cascadeBy: (visit: (node: unknown) => void) => {
+      visit({ isLeaf: () => false, isLoaded: () => true }); visit(child);
+    } };
+    const store = { getRootNode: () => root, isLoading: () => false };
+    vi.stubGlobal('Ext', { ComponentQuery: { query: () => [{ isVisible: () => true, getStore: () => store }] } });
+    try {
+      const target = Object.assign(frame(), { waitForFunction: vi.fn(async () => {}),
+        evaluate: async (read: () => unknown) => read() });
+      mocks.open.mockResolvedValue({ frame: target, notes: [] });
+      mocks.dismiss.mockResolvedValue([]); mocks.notes.mockResolvedValue([]);
+      const result = await readDocumentsFromStay360(page, confirmation);
+      expect(getter).not.toHaveBeenCalled();
+      expect(result.documents[0].documentId).toBeNull();
+      expect(result.observedNodes[1].data.fields).toContainEqual({ key: 'unreadable',
+        value: { type: 'unsupported', reason: 'accessor' } });
+      expect(result.coverage.metadataIssues).toBeGreaterThanOrEqual(3);
+      expect(result.coverage).toMatchObject({ status: 'partial', metadataCapture: 'partial',
+        refreshVerified: false, complete: null });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('marks bounded metadata capture as partial rather than silently dropping data', async () => {
+    const page = Object.assign(new EventEmitter(), { waitForTimeout: vi.fn(async () => {}) });
+    const nested: Record<string, unknown> = {}; let cursor = nested;
+    for (let index = 0; index < 14; index++) { const next = {}; cursor.next = next; cursor = next; }
+    const child = { isLeaf: () => true, data: { documentFileName: 'voucher.pdf', documentcode: 'NAVA123',
+      nested, oversized: 'x'.repeat(2_000_001) } };
+    const root = { isLoaded: () => true, cascadeBy: (visit: (node: unknown) => void) => {
+      visit({ isLeaf: () => false, isLoaded: () => true }); visit(child);
+    } };
+    const store = { getRootNode: () => root, isLoading: () => false };
+    vi.stubGlobal('Ext', { ComponentQuery: { query: () => [{ isVisible: () => true, getStore: () => store }] } });
+    try {
+      const target = Object.assign(frame(), { waitForFunction: vi.fn(async () => {}),
+        evaluate: async (read: () => unknown) => read() });
+      mocks.open.mockResolvedValue({ frame: target, notes: [] });
+      mocks.dismiss.mockResolvedValue([]); mocks.notes.mockResolvedValue([]);
+      const result = await readDocumentsFromStay360(page, confirmation);
+      expect(result.coverage.metadataIssues).toBeGreaterThanOrEqual(2);
+      expect(result.coverage).toMatchObject({ status: 'partial', metadataCapture: 'partial',
+        refreshVerified: false, complete: null });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('bounds unsupported symbol keys as well as captured values', async () => {
+    const page = Object.assign(new EventEmitter(), { waitForTimeout: vi.fn(async () => {}) });
+    const data: Record<string | symbol, unknown> = { documentFileName: 'voucher.pdf' };
+    for (let index = 0; index < 20_005; index++) data[Symbol()] = index;
+    const child = { isLeaf: () => true, data };
+    const root = { isLoaded: () => true, cascadeBy: (visit: (node: unknown) => void) => {
+      visit({ isLeaf: () => false, isLoaded: () => true }); visit(child);
+    } };
+    const store = { getRootNode: () => root, isLoading: () => false };
+    vi.stubGlobal('Ext', { ComponentQuery: { query: () => [{ isVisible: () => true, getStore: () => store }] } });
+    try {
+      const target = Object.assign(frame(), { waitForFunction: vi.fn(async () => {}),
+        evaluate: async (read: () => unknown) => read() });
+      mocks.open.mockResolvedValue({ frame: target, notes: [] });
+      mocks.dismiss.mockResolvedValue([]); mocks.notes.mockResolvedValue([]);
+      const result = await readDocumentsFromStay360(page, confirmation);
+      const fields = result.observedNodes[1].data.fields;
+      expect(fields.length).toBeLessThanOrEqual(20_001);
+      expect(fields).toContainEqual({ key: null, value: { type: 'unsupported', reason: 'capture_limit' } });
+      expect(result.coverage).toMatchObject({ status: 'partial', metadataCapture: 'partial',
+        refreshVerified: false, complete: null });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('removes listeners if navigation fails', async () => {
     const page = new EventEmitter();
     mocks.open.mockRejectedValueOnce(new Error('navigation failed'));
@@ -125,3 +242,37 @@ describe('document refresh observation', () => {
     expect(page.listenerCount('request')).toBe(0);
   });
 });
+
+// A loopback-only Playwright check verifies frame serialization, not HMS freshness.
+const chromiumBinary = [
+  process.env.HMS_TEST_CHROMIUM_PATH,
+  chromium.executablePath(),
+  '/home/ubuntu/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome',
+  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
+].find((candidate): candidate is string => typeof candidate === 'string' && existsSync(candidate));
+
+it.skipIf(!chromiumBinary)('serializes raw metadata through a real browser frame', async () => {
+  const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<!doctype html><title>Synthetic documents</title>');
+    await page.evaluate(() => {
+      const child = { isLeaf: () => true, data: { documentFileName: 'voucher.pdf', description: '  ',
+        absentValue: undefined, nil: null, nested: { extra: '' } } };
+      const root = { isLoaded: () => true, cascadeBy: (visit: (node: unknown) => void) => {
+        visit({ isLeaf: () => false, isLoaded: () => true }); visit(child);
+      } };
+      const store = { getRootNode: () => root, isLoading: () => false };
+      (globalThis as any).Ext = { ComponentQuery: { query: () => [{ isVisible: () => true, getStore: () => store }] } };
+    });
+    mocks.open.mockResolvedValue({ frame: page, notes: [] });
+    mocks.dismiss.mockResolvedValue([]); mocks.notes.mockResolvedValue([]);
+    const result = await readDocumentsFromStay360(page, confirmation);
+    expect(result.observedNodes[1].data.fields).toEqual(expect.arrayContaining([
+      { key: 'description', value: { type: 'string', value: '  ' } },
+      { key: 'absentValue', value: { type: 'undefined' } },
+      { key: 'nil', value: { type: 'null' } },
+    ]));
+    expect(result.coverage).toMatchObject({ metadataCapture: 'captured', refreshVerified: false, complete: null });
+  } finally { await browser.close(); }
+}, 20_000);

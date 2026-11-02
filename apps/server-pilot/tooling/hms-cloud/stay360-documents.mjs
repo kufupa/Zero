@@ -37,10 +37,83 @@ export async function readDocumentsFromStay360(page, confirmation, { identity } 
       }
       const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
       const documents = [];
+      const observedNodes = [];
       let unloadedFolders = 0;
       let unrecognizedLeaves = 0;
+      let metadataIssues = 0;
+      let metadataValues = 0;
+      let metadataKeys = 0;
+      let metadataCharacters = 0;
+      let omittedNodes = 0;
+      const unsupported = (reason) => {
+        metadataIssues += 1;
+        return { type: 'unsupported', reason };
+      };
+      // Tagged values keep null, undefined, absent fields, whitespace and nested
+      // values distinct across Playwright serialization. Unsupported data is
+      // reported rather than silently converted into a usable empty value.
+      const capture = (value, ancestors = new Set(), depth = 0) => {
+        metadataValues += 1;
+        if (metadataValues > 20000 || depth > 12) return unsupported('capture_limit');
+        if (value === null) return { type: 'null' };
+        if (value === undefined) return { type: 'undefined' };
+        if (typeof value === 'string') {
+          metadataCharacters += value.length;
+          if (metadataCharacters > 2000000) return unsupported('capture_limit');
+          return { type: 'string', value };
+        }
+        if (typeof value === 'boolean') return { type: 'boolean', value };
+        if (typeof value === 'number') return { type: 'number', value: Object.is(value, -0) ? '-0' : String(value) };
+        if (typeof value === 'bigint') return { type: 'bigint', value: String(value) };
+        if (typeof value !== 'object') return unsupported(typeof value);
+        if (ancestors.has(value)) return unsupported('circular');
+        try {
+          if (value instanceof Date) return Number.isNaN(value.getTime())
+            ? unsupported('invalid_date') : { type: 'date', value: value.toISOString() };
+          const array = Array.isArray(value);
+          const prototype = Object.getPrototypeOf(value);
+          if (!array && prototype !== Object.prototype && prototype !== null) return unsupported('object_type');
+          const next = new Set(ancestors);
+          next.add(value);
+          const fields = [];
+          for (const key of Reflect.ownKeys(value)) {
+            metadataKeys += 1;
+            if (metadataKeys > 20000) {
+              fields.push({ key: null, value: unsupported('capture_limit') });
+              break;
+            }
+            if (typeof key !== 'string') {
+              fields.push({ key: null, value: unsupported('symbol_key') });
+              continue;
+            }
+            metadataCharacters += key.length;
+            if (metadataCharacters > 2000000) {
+              fields.push({ key: null, value: unsupported('capture_limit') });
+              break;
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+              fields.push({ key, value: unsupported('accessor') });
+              continue;
+            }
+            fields.push({ key, value: capture(descriptor.value, next, depth + 1) });
+            if (metadataValues > 20000) break;
+          }
+          return { type: array ? 'array' : 'object', fields };
+        } catch {
+          return unsupported('inspection_failed');
+        }
+      };
       root.cascadeBy((node) => {
-        if (!node.isLeaf()) {
+        const leaf = node.isLeaf();
+        let observation;
+        if (observedNodes.length < 10000) {
+          observation = { leaf, documentIndex: null, data: capture(node.data) };
+          observedNodes.push(observation);
+        } else {
+          omittedNodes += 1;
+        }
+        if (!leaf) {
           if (!node.isLoaded?.()) unloadedFolders += 1;
           return;
         }
@@ -56,13 +129,19 @@ export async function readDocumentsFromStay360(page, confirmation, { identity } 
         }
         // No native identifier has been proven stable across refreshes and sessions.
         const description = clean(data.description) || null;
+        if (observation) observation.documentIndex = documents.length;
         documents.push({ name, documentCode, documentId: null, description, label });
       });
       return {
         documents,
+        observedNodes,
         hasUnloadedFolders: unloadedFolders > 0,
         coverage: {
-          status: unloadedFolders || unrecognizedLeaves ? 'partial' : documents.length ? 'loaded' : 'loaded_empty',
+          status: unloadedFolders || unrecognizedLeaves || metadataIssues || omittedNodes
+            ? 'partial' : documents.length ? 'loaded' : 'loaded_empty',
+          metadataCapture: metadataIssues || omittedNodes ? 'partial' : 'captured',
+          metadataIssues,
+          omittedNodes,
           loadedDocuments: documents.length,
           unloadedFolders,
           unrecognizedLeaves,
