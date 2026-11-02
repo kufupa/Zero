@@ -5,7 +5,7 @@ import { paneOwnRowsFromEvents } from '../src/ai/pane-create-scope-origin.js';
 const stay = { firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01', departure: '2027-03-03',
   adults: 1, childAges: [], sourceOfBusiness: 'Walk in', roomType: 'STQN', ratePlan: 'BAR',
   track: '', guaranteeType: 'NGI', reservationNote: 'Staff reviewed booking', propertyCode: 'HRCEN' };
-const row = { id: 'r1', roomType: null, rooms: 1, adultsPerRoom: 1, childAges: [], board: null };
+const row = { id: 'r1', roomType: 'Standard Queen', rooms: 1, adultsPerRoom: 1, childAges: [], board: null };
 const extractedStay = { id: 's1', hotel: null, requested: { arrival: '2027-03-01', departure: '2027-03-03' },
   booked: null, totalRooms: 1, totalAdults: 1, totalChildren: 0, rows: [row] };
 const payload = { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
@@ -74,8 +74,11 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, payload: { ...payload, stays: [
       { ...extractedStay, rows: [{ ...row, roomType: 'Standard room' }] },
     ] } })).toBe(false);
-    // A missing extracted room type remains available for an explicit staff choice.
-    expect(reconcilePaneCreateScope(base)).toBe(true);
+    const missing = { ...payload, stays: [{ ...extractedStay, rows: [{ ...row, roomType: null }] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: missing })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: missing, state: { 'stays[s1].rows[r1].roomType': 'STQN' } })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, payload: missing, state: { 'stays[s1].rows[r1].roomType': 'STWN' } })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: missing, state: { 'stays[s1].rows[r1].roomType': null } })).toBe(false);
   });
   it('accepts an explicit correction to one room but never guesses an unknown count', () => {
     const two = { ...payload, stays: [{ ...extractedStay, totalRooms: 2, rows: [{ ...row, rooms: 2 }] }] };
@@ -87,7 +90,7 @@ describe('create scope reconciliation', () => {
   it('requires saved rowless extraction provenance when a reread introduces another row', () => {
     const ownRow = 'stays[s1].rows[s1_row]';
     const state = { 'stays[s1].rows[r1].removed': true, [`${ownRow}.count`]: 1,
-      [`${ownRow}.adults`]: 1, [`${ownRow}.childAges`]: [] };
+      [`${ownRow}.adults`]: 1, [`${ownRow}.childAges`]: [], [`${ownRow}.roomType`]: 'STQN' };
     const historicalExtraction = { ...payload, stays: [{ ...extractedStay, rows: [] }] };
     const historicalOwnRows = [{ eventId: '11111111-1111-4111-8111-111111111111',
       extractionId: '22222222-2222-4222-8222-222222222222', fieldPath: `${ownRow}.count`, value: 1, extraction: historicalExtraction }];
@@ -113,7 +116,7 @@ describe('create scope reconciliation', () => {
       extractionId, extractionMessageId: 'message', extractorVersion: 'v1', extractionStatus: 'succeeded', extraction: historicalExtraction };
     const historicalOwnRows = paneOwnRowsFromEvents({ workItemId: 'item', transportId: 'transport', identity, rows: [row] });
     const state = { 'stays[s1].rows[r1].removed': true, [fieldPath]: 1,
-      'stays[s1].rows[s1_row].adults': 1, 'stays[s1].rows[s1_row].childAges': [] };
+      'stays[s1].rows[s1_row].adults': 1, 'stays[s1].rows[s1_row].childAges': [], 'stays[s1].rows[s1_row].roomType': 'STQN' };
     expect(reconcilePaneCreateScope({ ...base, identity, state, historicalOwnRows })).toBe(true);
     expect(reconcilePaneCreateScope({ ...base, identity, state, historicalOwnRows: paneOwnRowsFromEvents({
       workItemId: 'item', transportId: 'transport', identity, rows: [{ ...row, extractionMessageId: 'other' }],

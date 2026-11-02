@@ -110,11 +110,10 @@ export function reconcilePaneCreateScope(input: {
   const stayPath = `stays[${stay.id}]`;
   const rowPath = `${stayPath}.rows[${row.id}]`;
   const roomType = value(`${rowPath}.roomType`, row.roomType);
-  if (roomType !== null) {
-    // Extraction may hold a human label, not a native code. Never select an ambiguous match.
-    if (typeof roomType !== 'string' || !roomType.trim() ||
-        matchRoomType(roomType, input.stay.propertyCode).code !== input.stay.roomType) return false;
-  }
+  // A submitted create request cannot prove a missing row choice. Require either
+  // a uniquely mapped source label or a matching durable staff edit on this row.
+  if (typeof roomType !== 'string' || !roomType.trim() ||
+      matchRoomType(roomType, input.stay.propertyCode).code !== input.stay.roomType) return false;
   const hasStaffCount = Object.hasOwn(input.state, `${rowPath}.count`);
   const rawCount = value(`${rowPath}.count`, row.rooms);
   const count = rawCount === null && !hasStaffCount ? stay.totalRooms : rawCount;
