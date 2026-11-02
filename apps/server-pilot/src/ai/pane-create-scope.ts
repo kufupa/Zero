@@ -81,7 +81,25 @@ export function reconcilePaneCreateScope(input: {
       stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
     }
   }
-  const activeStays = [...stays.values()].filter((stay) => input.state[`stays[${stay.id}].removed`] !== true);
+  // formStays also hides a rowless stay when its only projected row was removed.
+  const removedRowStayIds = new Set(Object.entries(input.state).flatMap(([key, value]) => {
+    const path = parseFieldPath(key);
+    return path?.rowId && path.field === 'removed' && value === true ? [path.stayId] : [];
+  }));
+  // formStays uses one global removed-id set. A collision can hide a different stay or
+  // row in the pane; never approve one that the pane could have hidden by that collision.
+  const removedIds = new Set(Object.entries(input.state).flatMap(([key, value]) => {
+    const path = parseFieldPath(key);
+    return path?.field === 'removed' && value === true ? [path.rowId ?? path.stayId] : [];
+  }));
+  for (const candidate of stays.values()) {
+    if (input.state[`stays[${candidate.id}].removed`] === true) continue;
+    if (removedIds.has(candidate.id) || candidate.rows.some((row) =>
+      input.state[`stays[${candidate.id}].rows[${row.id}].removed`] !== true && removedIds.has(row.id))) return false;
+  }
+  const activeStays = [...stays.values()].filter((stay) => input.state[`stays[${stay.id}].removed`] !== true &&
+    (stay.rows.some((row) => input.state[`stays[${stay.id}].rows[${row.id}].removed`] !== true) ||
+      (stay.rows.length === 0 && !removedRowStayIds.has(stay.id))));
   if (activeStays.length !== 1) return false;
   const stay = activeStays[0]!;
   const rows = stay.rows.filter((row) => input.state[`stays[${stay.id}].rows[${row.id}].removed`] !== true);

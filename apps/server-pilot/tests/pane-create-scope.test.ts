@@ -43,6 +43,27 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r2].unknown': 1,
       'stays[s1].rows[r2].removed': true } })).toBe(false);
   });
+  it('ignores stays with all projected rows removed, including a previously rowless stay', () => {
+    const other = { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r2' }] };
+    const withOther = { ...payload, stays: [extractedStay, other] };
+    expect(reconcilePaneCreateScope({ ...base, payload: withOther })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: withOther,
+      state: { 'stays[s2].rows[r2].removed': true } })).toBe(true);
+    const rowless = { ...payload, stays: [extractedStay, { ...other, rows: [] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: rowless })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: rowless,
+      state: { 'stays[s2].rows[s2_row].removed': true } })).toBe(true);
+  });
+  it('holds if global pane removal IDs hide a row in another stay', () => {
+    const other = { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r1' }] };
+    const sameRowId = { ...payload, stays: [extractedStay, other] };
+    expect(reconcilePaneCreateScope({ ...base, payload: sameRowId,
+      state: { 'stays[s2].rows[r1].removed': true } })).toBe(false);
+    const crossKind = { ...payload, stays: [{ ...extractedStay, rows: [{ ...row, id: 's2' }] },
+      { ...other, rows: [{ ...row, id: 'r2' }] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: crossKind, identity: { ...base.identity, rowId: 's2' },
+      state: { 'stays[s2].removed': true } })).toBe(false);
+  });
   it('binds the reviewed room choice to the correct extracted or staff-edited row', () => {
     const queen = { ...payload, stays: [{ ...extractedStay, rows: [{ ...row, roomType: 'Standard Queen' }] }] };
     expect(reconcilePaneCreateScope({ ...base, payload: queen })).toBe(true);
