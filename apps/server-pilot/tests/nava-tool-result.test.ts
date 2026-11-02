@@ -53,8 +53,11 @@ describe('Nava tool result contract', () => {
       { key: 'child-a', outcome: 'ok', confirmation: '123456-1' },
       { key: 'child-b', outcome: 'uncertain' },
     ] });
-    expect(adaptExistingToolResult({ outcome: 'partial', possiblyDispatched: true }, { operation: 'write' }).outcome)
-      .toBe('uncertain'); // The single-write adapter cannot preserve batch children.
+    for (const signal of [{}, { possiblyDispatched: true }]) {
+      expect(adaptExistingToolResult({ outcome: 'partial', ...signal }, { operation: 'write' }).outcome)
+        .toBe('uncertain'); // The single-result adapter cannot preserve batch children.
+    }
+    expect(adaptExistingToolResult({ outcome: 'partial' }, { operation: 'read' }).outcome).toBe('uncertain');
   });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
