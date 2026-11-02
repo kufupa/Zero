@@ -156,13 +156,18 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.saveAttempted === true || result.saveAttempted === 'unknown' || result.uploadSent === true || result.uploadSent === 'unknown' ||
     result.clickedOk === true || result.clickedOk === 'unknown' || result.saveDispatched === true || result.saveDispatched === 'unknown' ||
     result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
+  const previewCodes = new Set(['previewed', 'preview_ok']);
+  const isPreview = previewCodes.has(result.status ?? '') || previewCodes.has(result.outcome ?? '');
   const successful = (['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) ||
-    (options.operation === 'read' && code === 'found') ||
+    (options.operation === 'read' && (code === 'found' || previewCodes.has(code))) ||
     (options.operation === 'write' && ['amended', 'cancelled', 'attached'].includes(code))) &&
     !preDispatchCodes.has(result.status ?? '');
   const hasTrustedReadback = options.readbackVerified === true && options.verifiedReadback?.readback != null;
+  const contradictoryPreview = isPreview && (possibleDispatch || strongWriteStatuses.has(result.status ?? '') ||
+    strongWriteStatuses.has(result.outcome ?? ''));
   let outcome: NavaToolResult<unknown>['outcome'];
-  if (ambiguous || (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';
+  if (ambiguous || contradictoryPreview || (options.operation === 'write' && isPreview) ||
+      (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';
   else if (code === 'refused' || code === 'not_dispatched' || knownPreDispatchRefusal) outcome = 'refused';
   else if (code === 'needs_input' || code === 'input_gap') outcome = 'needs_input';
   else if (successful) {

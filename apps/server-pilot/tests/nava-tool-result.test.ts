@@ -1,5 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { PaneHmsWriteResult } from '../src/ai/pane-hms-write.js';
+import type { PaneStayResult } from '../src/ai/pane-stay-save.js';
+import type { PaneStayCancelResult } from '../src/ai/pane-stay-cancel.js';
 import {
   adaptBatchToolResult, adaptExistingToolResult, AmendStageInputSchema,
   BatchManifestGrantSchema, FilingRunnerInputSchema,
@@ -87,6 +89,31 @@ describe('Nava tool result contract', () => {
     expect(adaptExistingToolResult({ status: 'not_dispatched', outcome }, { operation: 'write',
       readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
     expect(adaptExistingToolResult(result, { operation: 'read' }).outcome).toBe('refused');
+  });
+
+  it('recognizes actual successful previews as reads, never as completed writes', () => {
+    const booking: PaneStayResult = { status: 'ok', outcome: 'previewed', clickedSave: false, previewDigest: 'booking-preview' };
+    const cancellation: PaneStayCancelResult = {
+      outcome: 'preview_ok', statusBefore: 'Reserved', statusAfter: null, reasons: [], penaltyText: null,
+      message: null, arrivalMismatch: false, requestedArrival: null, hmsArrival: null,
+      screenshots: [], runId: null, previewDigest: 'cancel-preview',
+    };
+    for (const result of [booking, cancellation]) {
+      expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({
+        outcome: 'ok', data: { previewDigest: result.previewDigest },
+      });
+      expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    }
+    for (const preview of ['previewed', 'preview_ok']) {
+      expect(adaptExistingToolResult({ status: 'refused', outcome: preview }, { operation: 'read' }).outcome).toBe('refused');
+      expect(adaptExistingToolResult({ status: 'uncertain', outcome: preview }, { operation: 'read' }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ outcome: preview, clickedSave: true }, { operation: 'read' }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ status: preview, outcome: 'committed' }, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ status: preview, outcome: 'ok' }, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    }
   });
 
   it('requires verified readback for successful writes', () => {
