@@ -8,7 +8,8 @@ const expected = { confirmation:'12345678-1', guestId:'42', firstName:'Example',
 const changes = { departure:'2026-11-21', adults:2 };
 function fixture({ stale = false, wrongGuest = false, blocked = false, wrongNative = false, extraField = false,
   pendingTitle = false, pendingCommit = false, dialogCommit = false, executeAdultCallback = false,
-  staleBrowserForm = false, duplicateAdultOption = false, executeDateCallback = false, readonlyDate = false } = {}) {
+  staleBrowserForm = false, duplicateAdultOption = false, executeDateCallback = false, readonlyDate = false,
+  wrongNativeField = null } = {}) {
   const data = { propertycode:'HRCEN', status:'Reserved', confirmationnumber:expected.confirmation,
     guestid:wrongGuest ? '99' : expected.guestId, firstname:expected.firstName, lastname:expected.lastName,
     arrivaldate:'11/15/2026', departuredate:'11/20/2026', roomtype:expected.roomType,
@@ -16,7 +17,7 @@ function fixture({ stale = false, wrongGuest = false, blocked = false, wrongNati
   const values = { ...data, guestid:expected.guestId, arrivaldate:'15-NOV-2026', departuredate:'20-NOV-2026' };
   const snapshot = { data, values, formDirty:false, recordDirty:false, dirtyFields:[], modifiedFields:[],
     partyControls:[{name:'company',value:'Example Company'}], partyInputsBlank:false };
-  const pageRoutes = [], contextRoutes = [], events = [];
+  const pageRoutes = [], contextRoutes = [], events = [], dateEdits = [];
   let reads = 0, dialogHandler, releasePending;
   const pending = () => new Promise((resolve) => { releasePending = resolve; });
   const runAdultCallback = (fn, arg) => {
@@ -86,10 +87,15 @@ function fixture({ stale = false, wrongGuest = false, blocked = false, wrongNati
         return true;
       }
       if (executeDateCallback && name !== 'adults') return runDateCallback(_fn, arg, name);
-      if (typeof arg === 'string') return { componentDate:'2026-11-21', formModelDate:wrongNative ? '2026-11-20' : '2026-11-21' };
+      if (typeof arg === 'string') {
+        const [day, month, year] = snapshot.values[name].split('-');
+        const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+        const actual = `${year}-${String(months.indexOf(month) + 1).padStart(2, '0')}-${day}`;
+        return { componentDate:actual, formModelDate:wrongNative || wrongNativeField === name ? '1900-01-01' : actual };
+      }
       return true;
     },
-    fill:async (value) => { events.push('date'); snapshot.values[name] = value; },
+    fill:async (value) => { events.push('date'); dateEdits.push({ name, value }); snapshot.values[name] = value; },
     press:async () => { snapshot.dirtyFields.push(name); },
   });
   const frame = { url:() => `${ORIGIN}/record`, evaluate:async (_fn, arg) => {
@@ -107,7 +113,7 @@ function fixture({ stale = false, wrongGuest = false, blocked = false, wrongNati
     locator:() => ({count:async () => 1, elementHandle:async () => ({contentFrame:async () => frame})}),
     route:async (_pattern, handler) => { pageRoutes.push(handler); },
     on:(name, handler) => { if (name === 'dialog') dialogHandler = handler; }, waitForTimeout:async () => {} };
-  return {page, pageRoutes, contextRoutes, events, release:(value) => releasePending?.(value)};
+  return {page, pageRoutes, contextRoutes, events, dateEdits, release:(value) => releasePending?.(value)};
 }
 
 test('stages adult and date in one deny-all context without any Save exception', async () => {
@@ -122,6 +128,35 @@ test('stages adult and date in one deny-all context without any Save exception',
     assert.equal(aborted, true);
   }
   assert.equal((await stage(f.page, expected, changes)).issue, 'PAGE_ALREADY_USED');
+});
+
+test('stages arrival-only and both-date changes in the valid native edit order', async () => {
+  const cases = [
+    { changes:{ arrival:'2026-11-16', adults:2 }, order:[['arrivaldate','16-NOV-2026']] },
+    { changes:{ arrival:'2026-11-16', departure:'2026-11-21', adults:2 },
+      order:[['arrivaldate','16-NOV-2026'], ['departuredate','21-NOV-2026']] },
+    { changes:{ arrival:'2026-11-22', departure:'2026-11-25', adults:2 },
+      order:[['departuredate','25-NOV-2026'], ['arrivaldate','22-NOV-2026']] },
+    { changes:{ arrival:'2026-11-20', departure:'2026-11-23', adults:2 },
+      order:[['departuredate','23-NOV-2026'], ['arrivaldate','20-NOV-2026']] },
+  ];
+  for (const scenario of cases) {
+    const f = fixture();
+    const result = await stage(f.page, expected, scenario.changes);
+    assert.equal(result.outcome, 'updated_unsaved');
+    assert.equal(result.saveEligible, false);
+    assert.deepEqual(f.dateEdits, scenario.order.map(([name, value]) => ({ name, value })));
+  }
+});
+
+test('rejects mismatched native readback for either changed date', async () => {
+  for (const wrongNativeField of ['arrivaldate', 'departuredate']) {
+    const f = fixture({ wrongNativeField });
+    const result = await stage(f.page, expected, { arrival:'2026-11-16', departure:'2026-11-21', adults:2 });
+    assert.equal(result.outcome, 'stage_uncertain');
+    assert.equal(result.issue, 'REAL_DATE_DRAFT_UNVERIFIED');
+    assert.equal(result.saveEligible, false);
+  }
 });
 
 test('rejects stale or incorrect identity before editing', async () => {
