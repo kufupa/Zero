@@ -135,6 +135,26 @@ describe('batch booking review', () => {
     expect(onLock).toHaveBeenCalledWith(true);
     expect(api.approve).toHaveBeenCalledWith({ workItemId: 'item', reviewId: 'review', manifestDigest: 'd'.repeat(64) });
   });
+  it('keeps approved outcomes and evidence bound to the submitted source after mode or input changes', async () => {
+    const api = client(), original = input(), replacement = client();
+    const { rerender } = render(<BatchBookingReview client={api} input={original} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(await screen.findByText(/Booked · confirmation C1/)).toBeTruthy();
+    api.mode = () => 'off';
+    const changed = input(); changed.source.workItemId = 'other-item'; changed.rooms[0]!.stay.firstName = 'Other';
+    rerender(<BatchBookingReview client={replacement} input={changed} missing={['Other details']} onLock={() => {}} />);
+    expect(screen.getByText(/Booked · confirmation C1/)).toBeTruthy();
+    expect(screen.queryByText(/Other details/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'View HMS screenshot' }));
+    expect(await screen.findByAltText('Saved booking in HMS')).toBeTruthy();
+    expect(api.evidence).toHaveBeenCalledWith({ workItemId: 'item', runId: 'run', childId: CHILD_A });
+    expect(replacement.evidence).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh booking results' }));
+    await waitFor(() => expect(api.read).toHaveBeenLastCalledWith({ workItemId: 'item', runId: 'run' }));
+    expect(replacement.read).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+  });
   it('offers a new review when the approval expires', async () => {
     const api = client();
     api.prepare = vi.fn(async (request) => ({ ...review(request), expiresAt: new Date(Date.now() + 400).toISOString() }));

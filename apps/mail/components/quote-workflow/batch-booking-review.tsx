@@ -38,6 +38,13 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const approvedRoomIds = useRef<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [approvalStarted, setApprovalStarted] = useState(false);
+  // Once Go starts, results and evidence stay bound to the submitted source and client.
+  const approvedInput = useRef<BatchReviewInput | null>(null);
+  const approvedClient = useRef<PaneBatchClient | null>(null);
+  const approvedMissing = useRef<string[]>([]);
+  const viewInput = approvalStarted ? approvedInput.current : input;
+  const viewClient = approvalStarted ? approvedClient.current : client;
+  const viewMissing = approvalStarted ? approvedMissing.current : missing;
   const [, setExpiryTick] = useState(0);
   useEffect(() => {
     if (!review || approvalStarted) return;
@@ -53,10 +60,10 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   }, [review, approvalStarted]);
   const [error, setError] = useState('');
   const [excluded, setExcluded] = useState<{ source: string; ids: string[] }>({ source: '', ids: [] });
-  const sourceKey = JSON.stringify(input?.source ?? null);
+  const sourceKey = JSON.stringify(viewInput?.source ?? null);
   const excludedIds = new Set(excluded.source === sourceKey ? excluded.ids : []);
-  const selectedInput = input ? { ...input, rooms: input.rooms.filter((room) => !excludedIds.has(room.allocationId)) } : null;
-  const inputIds = input?.rooms.map((room) => room.allocationId) ?? [];
+  const selectedInput = viewInput ? { ...viewInput, rooms: viewInput.rooms.filter((room) => !excludedIds.has(room.allocationId)) } : null;
+  const inputIds = viewInput?.rooms.map((room) => room.allocationId) ?? [];
   const sourceIds = selectedInput?.rooms.map(({ identity }) => JSON.stringify([identity?.stayId, identity?.rowId, identity?.roomIndex])) ?? [];
   const identitiesValid = inputIds.every((id) => typeof id === 'string' && Boolean(id.trim())) && new Set(inputIds).size === inputIds.length &&
     (selectedInput?.rooms.every(({ identity }) => /^[A-Za-z0-9_-]{1,40}$/.test(identity?.stayId ?? '') &&
@@ -64,8 +71,8 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       identity.roomIndex >= 1 && identity.roomIndex <= 999) ?? false) && new Set(sourceIds).size === sourceIds.length;
   const countValid = !!selectedInput && selectedInput.rooms.length >= 2 && selectedInput.rooms.length <= 8;
   const sameArrival = !!selectedInput && selectedInput.rooms.every((room) => room.stay.arrival === selectedInput.rooms[0]?.stay.arrival);
-  const mode = client?.mode() ?? null;
-  const currentKey = JSON.stringify({ input, missing, mode, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
+  const mode = viewClient?.mode() ?? null;
+  const currentKey = JSON.stringify({ input: viewInput, missing: viewMissing, mode, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
   const keyRef = useRef(currentKey);
   const editGeneration = useRef(0);
   if (keyRef.current !== currentKey) editGeneration.current += 1;
@@ -73,8 +80,8 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   // Editing and then restoring old values or letting the review expire requires a new review.
   const expiry = review ? Date.parse(review.expiresAt) : NaN;
   const expired = !!review && (!Number.isFinite(expiry) || expiry <= Date.now());
-  const fresh = review && reviewKey === currentKey && reviewGeneration === editGeneration.current &&
-    (approvalStarted || !expired) ? review : null;
+  const fresh = review && (approvalStarted ||
+    (reviewKey === currentKey && reviewGeneration === editGeneration.current && !expired)) ? review : null;
   const labEligible = selectedInput?.propertyCode === 'HRCEN' && selectedInput.rooms.every(({ stay }) =>
     stay.firstName === 'Proof' && stay.lastName === 'Labtest' && stay.arrival >= '2027-01-01' && stay.confirmationSendMail === false);
   const eligible = identitiesValid && countValid && sameArrival && (mode === 'on' || (mode === 'lab' && labEligible));
@@ -140,17 +147,21 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   }
 
   async function approve() {
-    if (!client || client.mode() !== mode || !fresh || !selectedInput || !eligible || busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < selectedInput.rooms.length ||
+    if (!client || !input || client.mode() !== mode || !fresh || !selectedInput || !eligible || busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < selectedInput.rooms.length ||
         !Number.isFinite(Date.parse(fresh.expiresAt)) || Date.parse(fresh.expiresAt) <= Date.now()) return;
+    const submitted = structuredClone(input);
+    approvedInput.current = submitted;
+    approvedClient.current = client;
+    approvedMissing.current = [...missing];
     approvedRoomIds.current = fresh.rooms.map((room) => room.allocationId);
     setBusy(true); setApprovalStarted(true); onLock(true); setError('');
     try {
-      const queued = await client.approve({ workItemId: selectedInput.source.workItemId, reviewId: fresh.reviewId, manifestDigest: fresh.manifestDigest });
+      const queued = await client.approve({ workItemId: submitted.source.workItemId, reviewId: fresh.reviewId, manifestDigest: fresh.manifestDigest });
       if (!queued.runId) throw new Error('batch_run_missing');
       setRunId(queued.runId);
       const sequence = ++readSequence.current;
-      const result = await client.read({ workItemId: selectedInput.source.workItemId, runId: queued.runId });
-      acceptResults(result, selectedInput.source.workItemId, queued.runId, sequence);
+      const result = await client.read({ workItemId: submitted.source.workItemId, runId: queued.runId });
+      acceptResults(result, submitted.source.workItemId, queued.runId, sequence);
     } catch {
       // Approval or dispatch may have reached the server. Do not offer another approval.
       setError('The booking outcome needs checking. Check HMS before trying again.');
@@ -158,10 +169,10 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   }
 
   async function refresh() {
-    if (!client || !input || !runId || busy) return;
+    if (!viewClient || !viewInput || !runId || busy) return;
     setBusy(true); setError('');
     const sequence = ++readSequence.current;
-    try { acceptResults(await client.read({ workItemId: input.source.workItemId, runId }), input.source.workItemId, runId, sequence); }
+    try { acceptResults(await viewClient.read({ workItemId: viewInput.source.workItemId, runId }), viewInput.source.workItemId, runId, sequence); }
     catch { setError('Could not read the booking result. Check HMS before trying again.'); }
     finally { setBusy(false); }
   }
@@ -169,18 +180,18 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   return <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
     <p className="text-xs font-semibold">Multiple rooms</p>
     <p className="text-[11.5px] text-[#475569]">Rooms are booked separately and are not linked in HMS. If one booking needs checking, later rooms will not be attempted.</p>
-    {!client ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
-    {client && input ? <BatchRoomInclusion
-      rooms={input.rooms.map(({ allocationId, stay }) => ({ id: allocationId,
+    {!viewClient ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
+    {viewClient && viewInput ? <BatchRoomInclusion
+      rooms={viewInput.rooms.map(({ allocationId, stay }) => ({ id: allocationId,
         label: `${rowRoomLabel({ roomPreference: stay.roomType, quantity: 1 })} · ${stay.arrival} – ${stay.departure} · ${stay.firstName} ${stay.lastName}` }))}
       included={selectedInput?.rooms.map((room) => room.allocationId) ?? []} disabled={busy || approvalStarted}
       onChange={(ids) => { const included = new Set(ids); setExcluded({ source: sourceKey, ids: inputIds.filter((id) => !included.has(id)) }); }} /> : null}
-    {client && input && !identitiesValid ? <p role="alert">Room details need checking before review.</p> : null}
-    {client && input && !countValid ? <p className="text-[11.5px] text-[#475569]">Select between 2 and 8 rooms to review.</p> : null}
-    {client && input && countValid && !sameArrival ? <p className="text-[11.5px] text-[#475569]">Rooms with different arrival dates need separate bookings.</p> : null}
-    {client && (mode === null || mode === 'off') ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
-    {client && selectedInput && countValid && mode === 'lab' && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
-    {missing.length ? <p className="text-[11.5px] text-[#475569]">Needed before review: {missing.join(', ')}.</p> : null}
+    {viewClient && viewInput && !identitiesValid ? <p role="alert">Room details need checking before review.</p> : null}
+    {viewClient && viewInput && !countValid ? <p className="text-[11.5px] text-[#475569]">Select between 2 and 8 rooms to review.</p> : null}
+    {viewClient && viewInput && countValid && !sameArrival ? <p className="text-[11.5px] text-[#475569]">Rooms with different arrival dates need separate bookings.</p> : null}
+    {viewClient && !approvalStarted && (mode === null || mode === 'off') ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
+    {viewClient && !approvalStarted && selectedInput && countValid && mode === 'lab' && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
+    {viewMissing.length ? <p className="text-[11.5px] text-[#475569]">Needed before review: {viewMissing.join(', ')}.</p> : null}
     {review && !fresh && !runId ? <p role="status" className="text-[11.5px] text-amber-900">{expired ? 'Review expired. Review these rooms again.' : 'Booking details changed. Review again.'}</p> : null}
     {fresh ? <div data-pii className="flex flex-col gap-2 text-[11.5px] text-[#334155]">
       <p>Hotel {fresh.propertyCode}.{fresh.rooms.every((room) => !room.cmsSend) ? ' HMS confirmation email is off for these bookings.' : ''}</p>
@@ -198,14 +209,14 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
         {room.note ? <p>Reservation note: {room.note}</p> : null}
         {results?.filter((item) => item.allocationId === room.allocationId).map((item, index) => <div key={`${item.allocationId}:${index}`}>
           <p>{item.status === 'confirmed' ? `Booked · confirmation ${item.confirmation}` : item.status === 'uncertain' ? 'Outcome needs checking in HMS' : item.status === 'unattempted' ? 'Not attempted' : item.status === 'not_dispatched' ? 'Not sent to HMS' : item.status === 'reconciled_not_booked' ? 'Checked in HMS · not booked' : 'Could not book'}</p>
-          {item.status === 'confirmed' && item.attempt && client && input ? <BatchBookingEvidence
-            key={`${input.source.workItemId}:${item.attempt.runId}:${item.attempt.childId}`}
-            client={client} batchRunId={runId!} allocationId={item.allocationId} approvedRoomIds={approvedRoomIds.current}
-            scope={{ workItemId: input.source.workItemId, runId: item.attempt.runId, childId: item.attempt.childId }}
+          {item.status === 'confirmed' && item.attempt && viewClient && viewInput ? <BatchBookingEvidence
+            key={`${viewInput.source.workItemId}:${item.attempt.runId}:${item.attempt.childId}`}
+            client={viewClient} batchRunId={runId!} allocationId={item.allocationId} approvedRoomIds={approvedRoomIds.current}
+            scope={{ workItemId: viewInput.source.workItemId, runId: item.attempt.runId, childId: item.attempt.childId }}
             reviewed={item.reviewed} refreshEpoch={refreshEpoch} currentReadSequence={() => readSequence.current}
-            pending={reviewAttempts[JSON.stringify([input.source.workItemId, item.attempt.runId, item.attempt.childId])]}
-            onPending={(attempt) => { const key = JSON.stringify([input.source.workItemId, item.attempt!.runId, item.attempt!.childId]); setReviewAttempts((previous) => ({ ...previous, [key]: attempt })); }}
-            onVerified={(verified) => { const key = JSON.stringify([input.source.workItemId, item.attempt!.runId, item.attempt!.childId]); setReviewAttempts((previous) => previous[key] ? ({ ...previous, [key]: { ...previous[key]!, verified } }) : previous); }} /> : null}
+            pending={reviewAttempts[JSON.stringify([viewInput.source.workItemId, item.attempt.runId, item.attempt.childId])]}
+            onPending={(attempt) => { const key = JSON.stringify([viewInput.source.workItemId, item.attempt!.runId, item.attempt!.childId]); setReviewAttempts((previous) => ({ ...previous, [key]: attempt })); }}
+            onVerified={(verified) => { const key = JSON.stringify([viewInput.source.workItemId, item.attempt!.runId, item.attempt!.childId]); setReviewAttempts((previous) => previous[key] ? ({ ...previous, [key]: { ...previous[key]!, verified } }) : previous); }} /> : null}
         </div>)}
       </div>)}
       {fresh.blockers.length ? <p>Some booking details are not yet supported. Check HMS before approving.</p> : null}
@@ -215,8 +226,8 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     </div> : null}
     {error ? <p role="alert" className="text-[11.5px] text-amber-900">{error}</p> : null}
     {busy ? <p role="status" className="text-[11.5px] text-[#475569]">Nava is checking HMS. This can take more than 30 seconds.</p> : null}
-    {client && eligible && input && !approvalStarted && !fresh ? <PrimaryButton disabled={busy || missing.length > 0} onClick={() => void prepare()}>Review these rooms</PrimaryButton> : null}
-    {client && eligible && input && !approvalStarted && fresh ? <PrimaryButton disabled={busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < fresh.rooms.length} onClick={() => void approve()}>Approve and book these rooms</PrimaryButton> : null}
+    {viewClient && eligible && viewInput && !approvalStarted && !fresh ? <PrimaryButton disabled={busy || missing.length > 0} onClick={() => void prepare()}>Review these rooms</PrimaryButton> : null}
+    {viewClient && eligible && viewInput && !approvalStarted && fresh ? <PrimaryButton disabled={busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < fresh.rooms.length} onClick={() => void approve()}>Approve and book these rooms</PrimaryButton> : null}
     {runId ? <SecondaryButton disabled={busy} onClick={() => void refresh()}>Refresh booking results</SecondaryButton> : null}
   </div>;
 }
