@@ -1,0 +1,64 @@
+import { describe, expect, it } from 'vitest';
+import { batchChildId, batchDigest, batchManifestSchema, batchRoomDigest, parseLabBatch, verifyBatchProfiles, type BatchManifest } from '../src/ai/hms-batch-manifest.js';
+
+function manifest(): BatchManifest {
+  const room: BatchManifest['rooms'][number] = {
+    allocationId: 'group-a:1', guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
+    stay: { arrival: '2027-03-01', departure: '2027-03-03', adults: 1, childAges: [] },
+    roomType: 'STQN', ratePlan: 'BAR', amount: { status: 'unknown' }, agency: null, organization: null,
+    guaranteeType: 'NGI', sourceOfBusiness: null, note: null, track: null, marketSegment: null,
+    guestOptIn: false, booker: null, cmsSend: false,
+  };
+  return { version: 'hms-batch/1', propertyCode: 'HRCEN',
+    source: { transportId: 'transport-centurion', threadId: 'thread', messageId: 'message', workItemId: '11111111-1111-4111-8111-111111111111' },
+    rooms: [room, { ...structuredClone(room), allocationId: 'group-b:1', roomType: 'STWN' }] };
+}
+
+describe('batch manifest', () => {
+  it('binds source, order and every child field to the digest and freezes the parsed copy', () => {
+    const original = manifest(), parsed = parseLabBatch(original, 'lab');
+    expect(Object.isFrozen(parsed.rooms)).toBe(true);
+    expect(Object.isFrozen(parsed.rooms[0]!.stay.childAges)).toBe(true);
+    const reordered = structuredClone(original); reordered.rooms.reverse();
+    expect(batchDigest(reordered)).not.toBe(batchDigest(parsed));
+    const changed = structuredClone(original); changed.rooms[1]!.roomType = 'DIFFERENT';
+    expect(batchDigest(changed)).not.toBe(batchDigest(parsed));
+    expect(batchRoomDigest(changed.rooms[1]!)).not.toBe(batchRoomDigest(parsed.rooms[1]!));
+    expect(batchChildId(changed, changed.rooms[1]!)).toBe(batchChildId(parsed, parsed.rooms[1]!));
+    changed.source.messageId = 'different';
+    expect(batchChildId(changed, changed.rooms[1]!)).not.toBe(batchChildId(parsed, parsed.rooms[1]!));
+  });
+
+  it('refuses duplicate or invalid allocations, impossible dates and more than eight children', () => {
+    const duplicate = manifest(); duplicate.rooms[1]!.allocationId = duplicate.rooms[0]!.allocationId;
+    expect(batchManifestSchema.safeParse(duplicate).success).toBe(false);
+    const badDate = manifest(); badDate.rooms[0]!.stay.arrival = '2027-02-30';
+    expect(batchManifestSchema.safeParse(badDate).success).toBe(false);
+    const tooMany = manifest(); tooMany.rooms = Array.from({ length: 9 }, (_, i) => ({ ...structuredClone(tooMany.rooms[0]!), allocationId: `room-${i}` }));
+    expect(batchManifestSchema.safeParse(tooMany).success).toBe(false);
+    expect(batchManifestSchema.safeParse({ ...manifest(), extra: true }).success).toBe(false);
+  });
+
+  it('limits fake saves to HRCEN Proof Labtest 2027+, with CMS sending off', () => {
+    expect(() => parseLabBatch(manifest(), 'on')).toThrow('batch_capability_not_lab');
+    const wrongHotel = manifest(); wrongHotel.propertyCode = 'HRDAV';
+    expect(() => parseLabBatch(wrongHotel, 'lab')).toThrow('batch_property_not_hrcen');
+    const realGuest = manifest(); realGuest.rooms[0]!.guest.lastName = 'Guest';
+    expect(() => parseLabBatch(realGuest, 'lab')).toThrow('batch_labtest_required');
+    const oldDate = manifest(); oldDate.rooms[0]!.stay.arrival = '2026-12-29';
+    expect(() => parseLabBatch(oldDate, 'lab')).toThrow('batch_labtest_required');
+    const email = structuredClone(manifest()) as unknown as { rooms: Array<{ cmsSend: boolean }> };
+    email.rooms[0]!.cmsSend = true;
+    expect(() => parseLabBatch(email, 'lab')).toThrow();
+  });
+
+  it('requires a fresh trusted property-bound profile match for every child', async () => {
+    await expect(verifyBatchProfiles(manifest(), async (propertyCode, profileId) => ({
+      propertyCode, profileId, firstName: 'Proof', lastName: 'Labtest',
+    }))).resolves.toBeUndefined();
+    await expect(verifyBatchProfiles(manifest(), async (_propertyCode, profileId) => ({
+      propertyCode: 'HRDAV', profileId, firstName: 'Proof', lastName: 'Labtest',
+    }))).rejects.toThrow('batch_profile_unverified');
+    await expect(verifyBatchProfiles(manifest(), async () => null)).rejects.toThrow('batch_profile_unverified');
+  });
+});
