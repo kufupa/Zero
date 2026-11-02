@@ -16,8 +16,8 @@ describe('Cloud saved-stay projection', () => {
       .mockResolvedValueOnce(raw);
     const result = await readCloudStayForPane({ runTool }, request);
     expect(runTool.mock.calls).toEqual([
-      [{ tool: 'read', confirmation: '123456-1', arrivalDate: '2027-01-10', view: 'record' }],
-      [{ tool: 'read', confirmation: '123456-1', view: 'record' }],
+      [{ tool: 'read', confirmation: '123456-1', arrivalDate: '2027-01-10', view: 'record', includeNativePreimage: true }],
+      [{ tool: 'read', confirmation: '123456-1', view: 'record', includeNativePreimage: true }],
     ]);
     expect(projectCloudStayFind(request, result)).toEqual(expect.objectContaining({
       outcome: 'found', guestName: 'Test Guest', arrivalMismatch: true, hmsArrival: '2027-01-12',
@@ -28,6 +28,28 @@ describe('Cloud saved-stay projection', () => {
     const otherFailure = vi.fn().mockResolvedValue({ outcome: 'read_failed', issue: 'SEARCH_RESULTS_CAPPED' });
     await readCloudStayForPane({ runTool: otherFailure }, request);
     expect(otherFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('projects native identity only when it matches the selected visible stay', () => {
+    const fields = [
+      { name: 'status', value: 'Reserved' }, { name: 'guestid', value: '42' },
+      { name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' },
+      { name: 'arrivaldate', value: '10-Jan-2027' }, { name: 'departuredate', value: '12-Jan-2027' },
+      { name: 'roomtype', value: 'STQN' }, { name: 'rateplan', value: 'BAR' },
+      { name: 'adults', value: '2' }, { name: 'children', value: '0' },
+    ];
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
+      guestId: '42', reservationStayId: '81', reservationId: '82', recordId: '83',
+      status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: '2027-01-10',
+      departure: '2027-01-12', roomType: 'STQN', ratePlan: 'BAR', adults: 2, children: 0, childAges: 'unknown' };
+    const raw = (observed: unknown) => ({ outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
+      record: { details: { fields }, nativePreimage: observed } });
+    expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(native)).nativePreimage).toEqual(native);
+    for (const bad of [null, { ...native, confirmation: '999999-1' }, { ...native, guestId: '44' },
+      { ...native, propertyCode: 'HRDAV' }, { ...native, reservationStayId: '' },
+      { ...native, childAges: [8] }, { ...native, arrival: '2027-01-11' }]) {
+      expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(bad)).nativePreimage).toBeNull();
+    }
   });
 
   it('reports bounded not-found as ambiguous and preserves a valid search range', () => {
