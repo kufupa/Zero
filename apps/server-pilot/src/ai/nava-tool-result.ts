@@ -77,7 +77,7 @@ export type ExistingToolResult<T> = {
   shots?: { name: string; sha256: string; at?: string }[];
   readback?: unknown;
   changedFieldsReadback?: unknown;
-  evidence?: NavaToolResult<T>['evidence'];
+  evidence?: NavaToolResult<T>['evidence'] | string[];
 };
 
 function stableReason(value: string | undefined): string | undefined {
@@ -88,34 +88,37 @@ function stableReason(value: string | undefined): string | undefined {
 
 /** Preserve original observations; a filename or readback alone does not prove a write. */
 function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, trustedReadback?: { readback: unknown }): NavaToolResult<T>['evidence'] {
+  const sourceEvidence = Array.isArray(result.evidence) ? undefined : result.evidence;
   // Keep dispatch indicators and observations, but never echo raw errors or duplicate data.
   const legacyFields = new Set(['runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback',
-    'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched', 'possiblyDispatched', 'dispatched', 'claimedLevel', 'claimedReadback']);
+    'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched', 'possiblyDispatched', 'dispatched', 'claimedLevel', 'claimedReadback', 'legacyEvidenceNames']);
   const keepEvidence = (source: Record<string, unknown>) => Object.fromEntries(
     Object.entries(source).filter(([key]) => legacyFields.has(key)),
   );
   const legacy = keepEvidence(result as Record<string, unknown>);
-  if (result.evidence?.level === 'readback_verified') legacy.claimedLevel = 'readback_verified';
-  if (trustedReadback && result.evidence?.readback !== undefined) legacy.claimedReadback = result.evidence.readback;
+  // Legacy pane writes return screenshot names, not attributed or verified evidence.
+  if (Array.isArray(result.evidence)) legacy.legacyEvidenceNames = [...result.evidence];
+  if (sourceEvidence?.level === 'readback_verified') legacy.claimedLevel = 'readback_verified';
+  if (trustedReadback && sourceEvidence?.readback !== undefined) legacy.claimedReadback = sourceEvidence.readback;
   const hasLegacy = Object.keys(legacy).length > 0;
-  const previousLegacy = (result.evidence?.legacy ?? []).map(keepEvidence).filter((item) => Object.keys(item).length > 0);
-  if (!result.evidence && !hasLegacy && !trustedReadback) return undefined;
+  const previousLegacy = (sourceEvidence?.legacy ?? []).map(keepEvidence).filter((item) => Object.keys(item).length > 0);
+  if (!sourceEvidence && !hasLegacy && !trustedReadback) return undefined;
   const screenshots = result.runId && result.shots
     ? result.shots.filter((shot) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(shot.name) && /^[a-f0-9]{64}$/i.test(shot.sha256))
       .map((shot) => ({ runId: result.runId!, name: shot.name, sha256: shot.sha256 }))
     : [];
-  const existingShots = result.evidence?.screenshots ?? [];
+  const existingShots = sourceEvidence?.screenshots ?? [];
   // Never attach an unverified producer observation to an unrelated verified level.
-  const missingVerifiedReadback = result.evidence?.level === 'readback_verified' &&
-    result.evidence.readback == null;
+  const missingVerifiedReadback = sourceEvidence?.level === 'readback_verified' &&
+    sourceEvidence.readback == null;
   const readback = trustedReadback ? trustedReadback.readback
-    : result.evidence?.readback !== undefined ? result.evidence.readback
+    : sourceEvidence?.readback !== undefined ? sourceEvidence.readback
       : missingVerifiedReadback ? undefined
         : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
   return {
-    ...(result.evidence?.requestDigest !== undefined ? { requestDigest: result.evidence.requestDigest } : {}),
+    ...(sourceEvidence?.requestDigest !== undefined ? { requestDigest: sourceEvidence.requestDigest } : {}),
     ...(trustedReadback ? { level: 'readback_verified' as const }
-      : result.evidence?.level !== undefined ? { level: result.evidence.level === 'readback_verified' ? 'none' as const : result.evidence.level } : {}),
+      : sourceEvidence?.level !== undefined ? { level: sourceEvidence.level === 'readback_verified' ? 'none' as const : sourceEvidence.level } : {}),
     ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
     ...(readback !== undefined ? { readback } : {}),
     ...(hasLegacy || previousLegacy.length ? { legacy: [...previousLegacy, ...(hasLegacy ? [legacy] : [])] } : {}),

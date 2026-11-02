@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { PaneHmsWriteResult } from '../src/ai/pane-hms-write.js';
 import {
   adaptBatchToolResult, adaptExistingToolResult, AmendStageInputSchema,
   BatchManifestGrantSchema, FilingRunnerInputSchema,
@@ -190,6 +191,27 @@ describe('Nava tool result contract', () => {
       { key: 'a', outcome: 'refused' }, { key: 'b', outcome: 'refused', reason: 'policy_block' },
     ] });
     expect(adaptBatchToolResult([])).toEqual({ schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' });
+  });
+  it('accepts pane write evidence names without treating them as verified screenshots', () => {
+    const result: Extract<PaneHmsWriteResult, { status: 'succeeded' }> = {
+      status: 'succeeded', action: 'attach_document', outcome: 'attached', evidence: ['before.png', 'after.png'],
+    };
+    const unverified = adaptExistingToolResult(result, { operation: 'write' });
+    expect(unverified).toMatchObject({ outcome: 'uncertain', data: { action: 'attach_document' },
+      evidence: { legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] } });
+    expect(unverified.evidence?.screenshots).toBeUndefined();
+    expect(unverified.evidence?.level).toBeUndefined();
+    const reAdapted = adaptExistingToolResult({ outcome: 'ok', evidence: unverified.evidence }, { operation: 'read' });
+    expect(reAdapted.evidence?.legacy).toEqual([{ legacyEvidenceNames: ['before.png', 'after.png'] }]);
+    const fresh = { documentId: 'fresh' };
+    const verified = adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: fresh } });
+    expect(verified).toMatchObject({ outcome: 'ok', evidence: { level: 'readback_verified', readback: fresh,
+      legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] } });
+    expect(verified.evidence?.screenshots).toBeUndefined();
+    expect(adaptBatchToolResult([{ key: 'one', result }]).children?.[0]).toMatchObject({
+      outcome: 'uncertain', evidence: { legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] },
+    });
   });
   it('retains legacy hashed shots and readback without claiming verification', () => {
     const hash = 'a'.repeat(64);
