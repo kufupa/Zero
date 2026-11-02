@@ -126,9 +126,9 @@ export function reconcilePaneCreateScope(input: {
   const ages = value(`${rowPath}.childAges`, row.childAges);
   const totalAdults = value(`${stayPath}.totalAdults`, stay.totalAdults ?? null);
   const totalChildren = value(`${stayPath}.totalChildren`, stay.totalChildren ?? null);
-  // The pane retains stay-scoped occupancy warnings until staff correct the affected row.
+  // The pane retains matching stay-scoped and unscoped occupancy warnings until staff correct the affected row.
   // A numeric extraction alone does not confirm an explicitly questioned allocation.
-  const scopedWarnings = payload.missing.filter((item) => item.stayId === stay.id);
+  const scopedWarnings = payload.missing.filter((item) => !item.stayId || item.stayId === stay.id);
   if (scopedWarnings.some((item) => /adult|occupancy/i.test(`${item.field} ${item.question}`) &&
         !/total/i.test(item.field)) && !Object.hasOwn(input.state, `${rowPath}.adults`)) return false;
   if (scopedWarnings.some((item) => /child/i.test(`${item.field} ${item.question}`)) &&

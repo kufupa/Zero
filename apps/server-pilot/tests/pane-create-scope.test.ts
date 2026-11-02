@@ -131,6 +131,19 @@ describe('create scope reconciliation', () => {
     const total = { ...payload, missing: [{ field: 'adultsTotal', question: 'Confirm adult total.', stayId: 's1' }] };
     expect(reconcilePaneCreateScope({ ...base, payload: total })).toBe(true);
   });
+  it('requires saved corrections for unscoped occupancy warnings even with numeric values', () => {
+    const adult = { ...payload, missing: [{ field: 'adultsPerRoom', question: 'Confirm occupancy.' }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: adult })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: adult, state: { 'stays[s1].rows[r1].adults': 1 } })).toBe(true);
+    const childRow = { ...row, childAges: [8] };
+    const childPayload = { ...payload, missing: [{ field: 'childAges', question: 'Confirm child ages.' }],
+      stays: [{ ...extractedStay, totalChildren: 1, rows: [childRow] }] };
+    const input = { ...base, payload: childPayload, stay: { ...stay, childAges: [8] } };
+    expect(reconcilePaneCreateScope(input)).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, state: { 'stays[s1].rows[r1].childAges': [8] } })).toBe(true);
+    const withRemoved = { ...adult, stays: [extractedStay, { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r2' }] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: withRemoved, state: { 'stays[s2].removed': true } })).toBe(false);
+  });
   it('refuses ambiguous child occupancy, duplicate identities and unsupported fields', () => {
     const ambiguous = { ...payload, missing: [{ field: 'children', question: 'What are the child ages?' }],
       stays: [{ ...extractedStay, totalChildren: null }] };
