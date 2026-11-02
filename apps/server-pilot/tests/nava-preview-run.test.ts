@@ -8,6 +8,9 @@ import {
   isPiiField,
   KNOWN_WRITE_PROCEDURES,
   MARK_PII_JS,
+  NEVER_COMMIT_OR_SEND,
+  PREPARE_PREVIEW_PROCEDURES,
+  replayPrepareAllowed,
   outcomeOf,
   PANE_BODY_SELECTOR,
   parseRunConfig,
@@ -430,6 +433,51 @@ describe('guest details never reach the outputs', () => {
       for (const secret of SECRETS) expect(text).not.toContain(secret.toLowerCase());
     }
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('(hidden)');
+  });
+});
+
+describe('identity-bound replay prepare', () => {
+  const origin = 'https://pilot.example';
+  const procedure = 'workstation.prepareBookingDraft';
+  const policy = {
+    origin, userId: 'staff-1', transportId: 'mailbox-1', messageId: 'message-1',
+    procedures: new Set([procedure]),
+  };
+  const request = {
+    url: `${origin}/api/trpc/${procedure}?batch=1`, procedure, policy,
+    sessionUserId: 'staff-1', requestTransportId: 'mailbox-1',
+    body: JSON.stringify({ 0: { json: { messageId: 'message-1' } } }),
+  };
+
+  it('allows only a reviewed procedure for the exact signed-in user, mailbox, origin and message', () => {
+    expect(replayPrepareAllowed(request)).toBe(true);
+    for (const change of [
+      { sessionUserId: null }, { sessionUserId: 'staff-2' }, { requestTransportId: 'other' },
+      { url: 'https://other.example/api/trpc/workstation.prepareBookingDraft' },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-2' } } }) },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-1' }, meta: { values: {} } } }) },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-1' } }, 1: { json: {} } }) },
+      { body: '{' }, { procedure: 'quoteWorkflow.commitStay' },
+    ]) expect(replayPrepareAllowed({ ...request, ...change })).toBe(false);
+  });
+
+  it('requires explicit reviewed procedures and identity, and refuses multi-thread runs', () => {
+    const active = env({ NAVA_PREVIEW_PREPARE_PROCEDURES: procedure, NAVA_PREVIEW_USER_ID: 'staff-1',
+      NAVA_PREVIEW_TRANSPORT_ID: 'mailbox-1', NAVA_PREVIEW_MESSAGE_ID: 'message-1' });
+    expect(parseRunConfig(['--threads', 't-1'], active, dir).preparePolicy).toEqual(policy);
+    expect(parseRunConfig(['--threads', 't-1'], env(), dir).preparePolicy).toBeUndefined();
+    expect(() => parseRunConfig(['--threads', 't-1'], { ...active, NAVA_PREVIEW_USER_ID: '' }, dir)).toThrow('Prepare requires');
+    expect(() => parseRunConfig(['--threads', 't-1,t-2'], active, dir)).toThrow('exactly one thread');
+    expect(() => parseRunConfig(['--threads', 't-1'], { ...active, NAVA_PREVIEW_PREPARE_PROCEDURES: 'quoteWorkflow.commitStay' }, dir)).toThrow('unreviewed');
+  });
+
+  it('never permits a commit or mail write, even when HMS reads are opted in', () => {
+    for (const name of NEVER_COMMIT_OR_SEND) {
+      expect(PREPARE_PREVIEW_PROCEDURES.has(name)).toBe(false);
+      expect(classifyTrpcRequest(`${origin}/api/trpc/${name}`, { allowHmsReads: true }).allowed).toBe(false);
+      expect(replayPrepareAllowed({ ...request, procedure: name, policy: { ...policy, procedures: new Set([name]) } })).toBe(false);
+    }
+    expect(classifyTrpcRequest(`${origin}/api/trpc/${procedure},quoteWorkflow.commitStay?batch=1`).allowed).toBe(false);
   });
 });
 
