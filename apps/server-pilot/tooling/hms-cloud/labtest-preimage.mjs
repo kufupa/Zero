@@ -148,24 +148,70 @@ function searchResponse(text) {
     status: clean(row.status) }));
 }
 
-function forget(page) {
-  const previous = proofs.get(page);
-  if (previous) page.off('request', previous.invalidate);
-  proofs.delete(page);
+// Observe the census from before Run through proof installation. A second search or
+// a write during response/UI correlation invalidates the observation, not just the proof.
+function invalidatingRequest(request) {
+  try {
+    const url = new URL(request.url());
+    if (request.method() !== 'POST') return false;
+    if (url.pathname === '/web/base/OSRESS.search' || /save|delete|cancel|checkin|checkout/i.test(url.pathname)) return true;
+    if (url.pathname !== '/web/base/OSRESV.HDR') return false;
+    const body = new URLSearchParams(request.postData() || '');
+    return [...url.searchParams, ...body].some(([key, value]) => /^pageaction$/i.test(key) && /^(SAVE|DELETE)$/i.test(value));
+  } catch { return true; }
 }
 
-// Returns private candidate data. A clear result is usable once, on this page, for five minutes.
-export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
+function forget(page) {
+  const previous = proofs.get(page);
+  proofs.delete(page);
+  if (previous) {
+    page.off('request', previous.invalidate);
+    if (previous.onClose) page.off('close', previous.onClose);
+    previous.controller?.abort();
+  }
+}
+
+// The single-create API never accepts siblings and retains its original empty-census rule.
+export async function searchLabtestPreimage(page, options = {}) {
+  return search(page, options, null);
+}
+
+/**
+ * Internal trusted-server API only. Never expose authorizeSiblings or its inputs as a browser
+ * or tool request. The verifier must bind durable claims to this exact manifest and child and
+ * independently reopen every earlier confirmed record. It must do reads only, honor signal,
+ * and must not touch this paused page. Schema checks here are not write authority.
+ */
+export async function searchLabtestBatchPreimage(page, options = {}, { binding, authorizeSiblings } = {}) {
+  const keys = ['manifestDigest', 'childId', 'childDigest'];
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
+      Object.keys(binding).length !== keys.length || keys.some((key) => !/^[a-f0-9]{64}$/.test(binding[key] ?? '')) ||
+      typeof authorizeSiblings !== 'function') return { outcome: 'input_gap', issue: 'BATCH_AUTHORITY_REQUIRED' };
+  return search(page, options, { binding: Object.freeze(Object.fromEntries(keys.map((key) => [key, binding[key]]))), authorizeSiblings });
+}
+
+// Returns private candidate data. A verified result is usable once, on this page, for five minutes.
+async function search(page, { arrival, departure } = {}, batch) {
   const start = date(arrival), end = date(departure);
   if (!start || !end || arrival < '2027-01-01' || arrival >= departure) return { outcome: 'input_gap', issue: 'INVALID_LABTEST_DATES' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'SEARCH_IN_PROGRESS' };
   busy.add(page);
   forget(page);
+  let observation;
   try {
     if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
       throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
     }
     await installReadOnlyGuard(page.context());
+    const seen = [];
+    observation = { changed: false, seen };
+    observation.onRequest = (request) => {
+      if (searchRequest(request)) seen.push(request);
+      else if (invalidatingRequest(request)) observation.changed = true;
+    };
+    observation.onClose = () => { observation.changed = true; };
+    page.on('request', observation.onRequest);
+    page.on('close', observation.onClose);
     const search = page.locator('input[name="search"]:visible');
     await search.first().waitFor({ state: 'visible', timeout: 20_000 });
     if (await search.count() !== 1) throw new Error('SEARCH_NOT_UNIQUE');
@@ -181,10 +227,12 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
     let response = page.waitForResponse((item) => searchRequest(item.request()), { timeout: 30_000 }).catch(() => null);
     await adjacent[0].click();
     let observed = await response, found = await panel(page, box), window = await range(found.popup);
+    const expectedSearches = observed ? [observed.request()] : [];
     if (arrival < window.from || arrival > window.to) {
       response = page.waitForResponse((item) => searchRequest(item.request()), { timeout: 30_000 }).catch(() => null);
       await moveWindow(page, found.popup, start);
       observed = await response;
+      if (observed) expectedSearches.push(observed.request());
       found = await panel(page, box);
       window = await range(found.popup);
     }
@@ -201,33 +249,75 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
           cells[3]?.map(displayDate).includes(row.arrival) && cells[3]?.map(displayDate).includes(row.departure)).length !== 1)) {
       throw new Error('SEARCH_RESULTS_INCOMPLETE');
     }
+    if (observation.changed || observation.seen.length !== expectedSearches.length ||
+        observation.seen.some((request, index) => request !== expectedSearches[index])) {
+      throw new Error('SEARCH_CHANGED_DURING_OBSERVATION');
+    }
     const sameArrival = candidates.filter((row) => row.firstName.toLowerCase() === 'proof' &&
       row.lastName.toLowerCase() === 'labtest' && row.arrival === arrival);
     const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
-    if (sameArrival.length) return result;
-    const proof = { id: randomUUID(), arrival, departure, expiresAt: Date.now() + 5 * 60_000 };
-    proof.invalidate = (request) => {
-      try {
-        const url = new URL(request.url());
-        if (request.method() === 'POST' && (url.pathname === '/web/base/OSRESS.search' ||
-            /save|delete|cancel|checkin|checkout/i.test(url.pathname) ||
-            (url.pathname === '/web/base/OSRESV.HDR' && /^(SAVE|DELETE)$/i.test(url.searchParams.get('pageaction') || '')))) forget(page);
-      } catch { forget(page); }
+    if (sameArrival.length && !batch) return result;
+    const observedAt = Date.now();
+    const controller = batch ? new AbortController() : null;
+    const proof = { id: randomUUID(), arrival, departure, expiresAt: observedAt + 5 * 60_000,
+      state: batch ? 'pending' : 'ready', batchBinding: batch?.binding ?? null, controller };
+    const invalidate = () => {
+      controller?.abort();
+      if (proofs.get(page) === proof) forget(page);
     };
+    proof.invalidate = (request) => { if (invalidatingRequest(request)) invalidate(); };
+    proof.onClose = invalidate;
     proofs.set(page, proof);
     page.on('request', proof.invalidate);
+    page.on('close', proof.onClose);
+    if (batch) {
+      // Attach invalidation before awaiting independent reads. No page operation can turn a
+      // pending proof into write authority, and an aborted verifier can never mint a proof.
+      const timer = setTimeout(invalidate, Math.max(0, proof.expiresAt - Date.now()));
+      const stopped = new Promise((resolve) => controller.signal.addEventListener('abort', () => resolve(null), { once: true }));
+      const rows = Object.freeze(sameArrival.map((row) => Object.freeze({ ...row })));
+      const verified = await Promise.race([
+        Promise.resolve().then(() => batch.authorizeSiblings({ binding: batch.binding, sameArrival: rows, signal: controller.signal })).catch(() => null),
+        stopped,
+      ]);
+      clearTimeout(timer);
+      const matches = verified?.matches;
+      const valid = proofs.get(page) === proof && !controller.signal.aborted && Date.now() < proof.expiresAt &&
+        verified?.authorized === true && Array.isArray(matches) && matches.length === sameArrival.length &&
+        matches.every((match) => match && typeof match.confirmation === 'string' && /^[a-f0-9]{64}$/.test(match.recordDigest ?? '') &&
+          sameArrival.filter((row) => row.confirmation === match.confirmation).length === 1) &&
+        new Set(matches.map((match) => match.confirmation)).size === matches.length;
+      if (!valid) {
+        invalidate();
+        return { ...result, outcome: 'incomplete', issue: 'BATCH_SIBLINGS_UNVERIFIED' };
+      }
+      proof.state = 'ready';
+      return { ...result, outcome: 'siblings_verified', proofId: proof.id, preimageId: proof.id,
+        observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(proof.expiresAt).toISOString(),
+        matches: matches.map(({ confirmation, recordDigest }) => ({ confirmation, recordDigest })) };
+    }
     return { ...result, preimageId: proof.id, expiresAt: new Date(proof.expiresAt).toISOString() };
   } catch (error) {
+    forget(page);
     const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SEARCH_UNVERIFIED';
     return { outcome: 'incomplete', issue };
-  } finally { busy.delete(page); }
+  } finally {
+    if (observation) {
+      page.off('request', observation.onRequest);
+      page.off('close', observation.onClose);
+    }
+    busy.delete(page);
+  }
 }
 
 // Consuming a proof never asserts that another session cannot change HMS afterward.
-export function consumeLabtestPreimage(page, { preimageId, arrival, departure } = {}) {
+export function consumeLabtestPreimage(page, { preimageId, arrival, departure, batchBinding } = {}) {
   const proof = proofs.get(page);
   forget(page);
-  return Boolean(proof && proof.id === preimageId && proof.arrival === arrival && proof.departure === departure &&
-    Date.now() <= proof.expiresAt);
+  const sameBinding = proof?.batchBinding === null ? batchBinding === undefined : Boolean(batchBinding &&
+    typeof batchBinding === 'object' && !Array.isArray(batchBinding) && Object.keys(batchBinding).length === 3 &&
+    ['manifestDigest', 'childId', 'childDigest'].every((key) => batchBinding[key] === proof?.batchBinding?.[key]));
+  return Boolean(proof && proof.state === 'ready' && sameBinding && proof.id === preimageId &&
+    proof.arrival === arrival && proof.departure === departure && Date.now() < proof.expiresAt);
 }
