@@ -19,10 +19,14 @@ async function fixture() {
   const lock = createPropertyReadLock({ tenantId: 'tenant', propertyCode: 'HRCEN', connectionFactory: async () => connection });
   const consume = vi.fn(async () => ({ grantId: 'grant-1', payloadHash: 'hash', hmsBeforeDigest: 'before', form }));
   const readApprovedSource = vi.fn(async () => ({ status: 'ready' as const, bytes: pdf }));
-  const readApprovedSnapshot = vi.fn(async () => ({ identity: 'same-shape', coverage: { complete: true, refreshVerified: true } }));
+  const expectedSnapshot = { identity: 'same-shape', coverage: { complete: true, refreshVerified: true } };
+  const readApprovedSnapshot = vi.fn(async () => structuredClone(expectedSnapshot));
+  const readIndependentSnapshot = vi.fn(async () => structuredClone(expectedSnapshot));
   const isEligibleSnapshot = vi.fn((snapshot: any) => snapshot.coverage.complete && snapshot.coverage.refreshVerified);
   const checkBeforeSave = vi.fn(async ({ readHmsState }: any) => {
-    await readHmsState(); return { status: 'unchanged' as const };
+    const snapshot = await readHmsState();
+    return JSON.stringify(snapshot) === JSON.stringify(expectedSnapshot) ? { status: 'unchanged' as const } :
+      { status: 'needs_check' as const, reason: 'hms_changed' as const };
   });
   const persistPreimage = vi.fn(async () => true);
   const endRun = vi.fn(async () => true);
@@ -33,9 +37,9 @@ async function fixture() {
   });
   const deps = { db: {} as any, fence, serverGrantId: 'grant-1', page,
     propertyLock: { connection, tenantId: 'tenant', propertyCode: 'HRCEN' }, consume: consume as any,
-    checkBeforeSave: checkBeforeSave as any, readApprovedSource, readApprovedSnapshot, isEligibleSnapshot,
+    checkBeforeSave: checkBeforeSave as any, readApprovedSource, readApprovedSnapshot, readIndependentSnapshot, isEligibleSnapshot,
     persistPreimage, fileLabtestVoucher, endRun: endRun as any };
-  return { deps, form, consume, readApprovedSource, readApprovedSnapshot, isEligibleSnapshot, checkBeforeSave,
+  return { deps, form, consume, readApprovedSource, readApprovedSnapshot, readIndependentSnapshot, isEligibleSnapshot, checkBeforeSave,
     persistPreimage, fileLabtestVoucher, context, endRun, lock };
 }
 
@@ -86,6 +90,7 @@ describe('fenced voucher filing runner', () => {
       data: { documentCode: marker } });
     expect(f.consume).toHaveBeenCalledWith({ db: f.deps.db, runId: 'run-1', fence: f.deps.fence });
     expect(f.readApprovedSnapshot).toHaveBeenCalledOnce();
+    expect(f.readIndependentSnapshot).toHaveBeenCalled();
     expect(f.persistPreimage).toHaveBeenCalledWith({ fence: f.deps.fence, grantId: 'grant-1', preimage: { marker } });
     expect(f.fileLabtestVoucher).toHaveBeenCalledOnce();
     expect(f.fileLabtestVoucher).toHaveBeenCalledWith(expect.objectContaining({ deadlineAt: f.deps.fence.deadlineAt }));
@@ -96,6 +101,7 @@ describe('fenced voucher filing runner', () => {
   it('rejects client authority fields and a different grant before consuming', async () => {
     const f = await fixture();
     expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1', runId: 'client' } as any))).outcome).toBe('needs_input');
+    expect(f.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_input_invalid' }));
     expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'other' }))).outcome).toBe('refused');
     expect(f.consume).not.toHaveBeenCalled();
     expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
@@ -205,6 +211,45 @@ describe('fenced voucher filing runner', () => {
       .mockResolvedValueOnce({ status: 'ready', bytes: Buffer.from('%PDF-mutated') });
     expect((await later.lock.withLock(() => createFilingRunner(later.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
     expect(later.persistPreimage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when independent HMS state changed or is incomplete', async () => {
+    for (const scenario of ['changed', 'incomplete', 'error']) {
+      const f = await fixture();
+      if (scenario === 'changed') f.readIndependentSnapshot.mockResolvedValueOnce({ identity: 'other', coverage: { complete: true, refreshVerified: true } });
+      if (scenario === 'incomplete') f.readIndependentSnapshot.mockResolvedValueOnce({ identity: 'same-shape', coverage: { complete: false, refreshVerified: true } });
+      if (scenario === 'error') f.readIndependentSnapshot.mockRejectedValueOnce(new Error('read failed'));
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+      expect(f.persistPreimage).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rechecks approval after preimage persistence before allowing upload', async () => {
+    const f = await fixture();
+    f.persistPreimage.mockImplementationOnce(async () => {
+      f.checkBeforeSave.mockResolvedValueOnce({ status: 'needs_check', reason: 'form_changed' } as any);
+      return true;
+    });
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_not_dispatched');
+    expect(f.persistPreimage).toHaveBeenCalledOnce();
+  });
+
+  it('ends claimed runs on grant and initial authority refusals before dispatch', async () => {
+    const grant = await fixture();
+    grant.consume.mockRejectedValueOnce(new Error('state changed'));
+    expect((await grant.lock.withLock(() => createFilingRunner(grant.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_grant_unavailable');
+    expect(grant.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_grant_unavailable' }));
+    const context = await fixture();
+    context.context.pages = () => [];
+    expect((await context.lock.withLock(() => createFilingRunner(context.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_authority_unavailable');
+    expect(context.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_authority_unavailable' }));
+  });
+
+  it('reports uncertainty when ending a claimed run fails', async () => {
+    const f = await fixture();
+    f.consume.mockRejectedValueOnce(new Error('state changed'));
+    f.endRun.mockResolvedValueOnce(false);
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('uncertain');
   });
 
   it('rejects a preimage that cannot be persisted durably', async () => {

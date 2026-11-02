@@ -41,6 +41,8 @@ export type FilingRunnerDependencies = {
   readApprovedSource(form: ApprovedForm): Promise<SourceRead>;
   /** Must return the exact same canonical snapshot shape used at Prepare. */
   readApprovedSnapshot(form: ApprovedForm): Promise<unknown>;
+  /** Fresh independent HMS read, never on the paused upload page; no cached snapshot. */
+  readIndependentSnapshot(form: ApprovedForm): Promise<unknown>;
   /** Rejects mismatched source/stay, stale evidence and incomplete or unrefreshed Documents coverage. */
   isEligibleSnapshot(snapshot: unknown, form: ApprovedForm): boolean;
   /** The implementation must append the preimage durably under this same fenced run. */
@@ -90,26 +92,29 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
     Number.isFinite(fence.deadlineAt.getTime()) && Date.now() < fence.deadlineAt.getTime();
   const lockHeld = () => Boolean(propertyLock?.tenantId && propertyLock.propertyCode &&
     isPropertyReadConnectionHeld(propertyLock.connection, propertyReadLockKey(propertyLock.tenantId, propertyLock.propertyCode)));
-  const finish = async (outcome: 'refused' | 'uncertain', reason: string, marker?: string) => {
+  const finish = async (outcome: 'needs_input' | 'refused' | 'uncertain', reason: string, marker?: string) => {
     try {
-      await endRun({ db, fence, failureClass: outcome === 'uncertain' ? 'UNKNOWN' : 'NEEDS_CHECK', reason });
-    } catch { /* A still-claimed run blocks approval; the lease sweeper preserves an unknown outcome. */ }
+      const ended = await endRun({ db, fence, failureClass: outcome === 'uncertain' ? 'UNKNOWN' : 'NEEDS_CHECK', reason });
+      if (!ended) return result('uncertain', 'filing_needs_check', marker);
+    } catch { return result('uncertain', 'filing_needs_check', marker); }
     return result(outcome, reason, marker);
   };
   return {
     async run(input) {
-      const parsed = FilingRunnerInputSchema.safeParse(input);
-      if (!parsed.success) return result('needs_input', 'filing_input_invalid');
       if (invoked) return result('refused', 'filing_run_already_invoked');
       invoked = true;
-      if (!fence?.runId || !fence.claimOwner || !fence.claimToken || !serverGrantId ||
-          parsed.data.grantRef !== serverGrantId || !withinDeadline() || !safePage(page) || !lockHeld()) return result('refused', 'filing_authority_unavailable');
+      if (!fence?.runId || !fence.claimOwner || !fence.claimToken) return result('refused', 'filing_authority_unavailable');
+      const parsed = FilingRunnerInputSchema.safeParse(input);
+      if (!parsed.success) return finish('needs_input', 'filing_input_invalid');
+      if (!serverGrantId || parsed.data.grantRef !== serverGrantId || !withinDeadline() || !safePage(page) || !lockHeld()) {
+        return finish('refused', 'filing_authority_unavailable');
+      }
       let form: ApprovedForm;
       try {
         const consumed = await consume({ db, runId: fence.runId, fence });
         if (consumed.grantId !== serverGrantId) return finish('refused', 'filing_grant_mismatch');
         form = structuredClone(consumed.form);
-      } catch { return result('refused', 'filing_grant_unavailable'); }
+      } catch { return finish('refused', 'filing_grant_unavailable'); }
       if (!withinDeadline()) return finish('refused', 'filing_deadline_expired');
       if (form.propertyCode !== propertyLock.propertyCode) return finish('refused', 'filing_property_mismatch');
       const expectedHash = sourceHash(form);
@@ -126,16 +131,16 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
       const bytes = await readBytes();
       if (!bytes) return finish('refused', 'filing_source_unavailable');
       if (!withinDeadline()) return finish('refused', 'filing_deadline_expired');
-      let preSubmitSnapshot: unknown;
+      let preSubmitValidated = false;
       try {
         const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
           readHmsState: async () => {
             const snapshot = await deps.readApprovedSnapshot(structuredClone(form));
             if (!deps.isEligibleSnapshot(snapshot, structuredClone(form))) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
-            preSubmitSnapshot = structuredClone(snapshot);
+            preSubmitValidated = true;
             return snapshot;
           } });
-        if (checked.status !== 'unchanged' || preSubmitSnapshot === undefined || !withinDeadline() || !lockHeld() || !safePage(page)) {
+        if (checked.status !== 'unchanged' || !preSubmitValidated || !withinDeadline() || !lockHeld() || !safePage(page)) {
           return finish('refused', 'filing_needs_check');
         }
       } catch { return finish('refused', 'filing_needs_check'); }
@@ -145,7 +150,11 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         if (!withinDeadline() || !safePage(page) || !lockHeld() || !(await readBytes()) || !withinDeadline()) return false;
         try {
           const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
-            readHmsState: async () => structuredClone(preSubmitSnapshot) });
+            readHmsState: async () => {
+              const snapshot = await deps.readIndependentSnapshot(structuredClone(form));
+              if (!deps.isEligibleSnapshot(snapshot, structuredClone(form))) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
+              return snapshot;
+            } });
           return checked.status === 'unchanged' && withinDeadline() && lockHeld() && safePage(page);
         } catch { return false; }
       };
@@ -154,7 +163,7 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         const native = await deps.fileLabtestVoucher({ page, form: structuredClone(form), bytes: Buffer.from(bytes),
           checkAuthority, deadlineAt: new Date(fence.deadlineAt.getTime()),
           persistPreimage: async (preimage) => (await checkAuthority()) &&
-            (await deps.persistPreimage({ fence, grantId: serverGrantId, preimage })) && withinDeadline() });
+            (await deps.persistPreimage({ fence, grantId: serverGrantId, preimage })) && (await checkAuthority()) });
         const possible = native.possiblyDispatched === true || native.dispatched === true ||
           native.saveDispatched === true || native.saveDispatched === 'unknown';
         if (!possible && ['not_dispatched', 'refused', 'input_gap'].includes(native.outcome ?? '')) {
