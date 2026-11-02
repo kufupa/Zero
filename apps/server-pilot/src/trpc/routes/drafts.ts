@@ -60,6 +60,7 @@ import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
+import { draftWithEditedRevisionsQuery } from './draft-provenance-query.js';
 import { TRPCError } from '@trpc/server';
 import { parseEnv } from '../../env.js';
 import { z } from 'zod';
@@ -1349,16 +1350,7 @@ export const draftsRouter = tRouter({
   get: mailboxProcedure.input(z.object({ id: z.string() })).query(async ({ input, ctx }) => {
     const db = getDb();
     const transportId = ctx.activeTransportId;
-    const rows = await db
-      .select({
-        draft: mailDraft,
-        // Full snapshots and partial edits record distinct header intent without a schema migration.
-        editedRevisionIds: sql<string[]>`ARRAY(SELECT ${mailDraftRevision.id} FROM ${mailDraftRevision}
-          WHERE ${mailDraftRevision.draftId} = ${mailDraft.id} AND ${mailDraftRevision.kind} = 'edited')`,
-      })
-      .from(mailDraft)
-      .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
-      .limit(1);
+    const rows = await draftWithEditedRevisionsQuery(db, input.id, transportId);
     if (rows.length === 0) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
     }
