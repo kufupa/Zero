@@ -109,25 +109,46 @@ export async function loadReplayEmail(input: {
     const source = record(sourceData?.json);
     if (source?.status !== 'ready' || source.messageId !== input.messageId || source.threadId !== input.threadId) return null;
     if (!input.requireVoucherAttachment) return email;
-    const voucherResponse = await input.request.post(`${origin.origin}/api/trpc/quoteWorkflow.voucherFind?batch=1`, {
+    const attachment = await loadReplayVoucherAttachment({ ...input, internetMessageId: email.internetMessageId });
+    return attachment ? { ...email, sourceAttachment: attachment } : null;
+  } catch {
+    return null;
+  }
+}
+
+
+/** Current selected-message file metadata only. It is not proof of stored bytes or HMS filing. */
+export async function loadReplayVoucherAttachment(input: {
+  request: APIRequestContext;
+  origin: string;
+  transportId: string;
+  threadId: string;
+  messageId: string;
+  internetMessageId: string;
+}): Promise<NonNullable<CurrentReplayEmail['sourceAttachment']> | null> {
+  let origin: URL;
+  try { origin = new URL(input.origin); } catch { return null; }
+  if ((origin.protocol !== 'https:' && origin.protocol !== 'http:') || origin.origin !== input.origin ||
+    origin.username || origin.password || !input.transportId || !input.threadId || !input.messageId || !input.internetMessageId) return null;
+  try {
+    const response = await input.request.post(`${origin.origin}/api/trpc/quoteWorkflow.voucherFind?batch=1`, {
       headers: { 'x-zero-active-transport': input.transportId, 'content-type': 'application/json' },
-      data: { 0: { json: { internetMessageId: email.internetMessageId } } },
+      data: { 0: { json: { internetMessageId: input.internetMessageId } } },
       timeout: 20_000,
       maxRedirects: 0,
     });
-    if (!voucherResponse.ok()) return null;
-    const voucherPayload: unknown = await voucherResponse.json();
-    if (!Array.isArray(voucherPayload) || voucherPayload.length !== 1) return null;
-    const voucherItem = record(voucherPayload[0]);
-    const voucherResult = record(voucherItem?.result);
-    const voucherData = record(voucherResult?.data);
-    const voucher = record(voucherData?.json);
+    if (!response.ok()) return null;
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload) || payload.length !== 1) return null;
+    const item = record(payload[0]);
+    const result = record(item?.result);
+    const data = record(result?.data);
+    const voucher = record(data?.json);
     const file = record(voucher?.file);
     if (voucher?.status !== 'voucher' || voucher.messageId !== input.messageId || voucher.threadId !== input.threadId || !file ||
-      !text(file.id) || !text(file.filename) || !text(file.mimeType) ||
+      !text(file.id).trim() || !text(file.filename).trim() || !text(file.mimeType).trim() ||
       typeof file.sizeBytes !== 'number' || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes <= 0) return null;
-    return { ...email, sourceAttachment: { id: text(file.id), filename: text(file.filename),
-      mimeType: text(file.mimeType), sizeBytes: file.sizeBytes } };
+    return { id: text(file.id), filename: text(file.filename), mimeType: text(file.mimeType), sizeBytes: file.sizeBytes };
   } catch {
     return null;
   }
