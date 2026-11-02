@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -171,10 +171,74 @@ describe('retained preview integrity', () => {
       const shots = await persistHmsShots({ propertyCode, workItemId, runId, sourceDir: source, owner, now: Date.now(), env });
       const proof = { propertyCode, workItemId, runId, name: 'filled.png', owner, sha256: shots![0]!.sha256, env };
       await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      const validImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXcAAAAASUVORK5CYII=', 'base64');
+      await writeFile(join(dir, propertyCode, workItemId, runId, 'filled.png'), validImage);
+      const validProof = { ...proof, sha256: createHash('sha256').update(validImage).digest('hex') };
+      await expect(verifyStoredHmsPreview(validProof)).resolves.toBe(true);
       await rm(join(dir, 'by-run', `${runId}.json`));
-      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await expect(verifyStoredHmsPreview(validProof)).resolves.toBe(false);
     } finally {
       await rm(source, { recursive: true, force: true });
     }
   });
+
+  it('accepts size boundaries and rejects oversized or special retained files', async () => {
+    const dir = await makeRoot();
+    const source = await mkdtemp(join(tmpdir(), 'pane-preview-source-'));
+    try {
+      const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXcAAAAASUVORK5CYII=', 'base64');
+      await writeFile(join(source, 'filled.png'), image);
+      const propertyCode = PROPERTY!;
+      const workItemId = randomUUID();
+      const runId = randomUUID();
+      const owner = 'user-1:transport-sample';
+      const env = { HMS_SHOTS_DIR: dir };
+      const shots = await persistHmsShots({ propertyCode, workItemId, runId, sourceDir: source, owner, now: Date.now(), env });
+      const proof = { propertyCode, workItemId, runId, name: 'filled.png', owner, sha256: shots![0]!.sha256, env };
+      const indexPath = join(dir, 'by-run', `${runId}.json`);
+      const imagePath = join(dir, propertyCode, workItemId, runId, 'filled.png');
+      const index = await readFile(indexPath);
+      const sizedIndex = Buffer.concat([index, Buffer.alloc(16 * 1024 - index.length, 0x20)]);
+      await writeFile(indexPath, sizedIndex);
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(true);
+      await writeFile(indexPath, Buffer.concat([sizedIndex, Buffer.from(' ')]));
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await writeFile(indexPath, index);
+
+      await rm(indexPath);
+      await symlink(join(source, 'index.json'), indexPath);
+      await writeFile(join(source, 'index.json'), index);
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await rm(indexPath);
+      await mkdir(indexPath);
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await rm(indexPath, { recursive: true });
+      await writeFile(indexPath, index);
+
+      await rm(imagePath);
+      await symlink(join(source, 'filled.png'), imagePath);
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await rm(imagePath);
+      await mkdir(imagePath);
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await rm(imagePath, { recursive: true });
+
+      // Add an ancillary chunk before IEND so both sizes pass the structural check.
+      const paddedImage = (size: number) => {
+        const chunk = Buffer.alloc(size - image.length);
+        chunk.writeUInt32BE(chunk.length - 12, 0);
+        chunk.write('tEXt', 4, 'ascii');
+        return Buffer.concat([image.subarray(0, -12), chunk, image.subarray(-12)]);
+      };
+      const boundary = paddedImage(20 * 1024 * 1024);
+      await writeFile(imagePath, boundary);
+      await expect(verifyStoredHmsPreview({ ...proof, sha256: createHash('sha256').update(boundary).digest('hex') })).resolves.toBe(true);
+      const oversized = paddedImage(20 * 1024 * 1024 + 1);
+      await writeFile(imagePath, oversized);
+      await expect(verifyStoredHmsPreview({ ...proof, sha256: createHash('sha256').update(oversized).digest('hex') })).resolves.toBe(false);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
 });
