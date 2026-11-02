@@ -181,6 +181,9 @@ async function selectSavedOption(input, spec, current, target, nativeId, commit)
     const form = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id?.replace(/-inputEl$/, ''))?.up?.('form') : null;
     if (!form?.el?.dom || !form.el.dom.contains(element) || c?.up?.('form') !== form) return 'AMEND_PREIMAGE_UNVERIFIED';
     const store = c?.store;
+    // The native saved-form LOV opens a picker and can dispatch a saved-record
+    // change before Save. A catalog choice alone is not an authorized stage.
+    if (!store && c?.getXType?.() === 'lovfield') return 'SAVED_NATIVE_PICKER_UNVERIFIED';
     if (!c?.setValue || !c?.getValue || !c?.fireEvent || !store?.getCount || !store?.getAt ||
         typeof store.isLoading !== 'function' || store.isLoading() !== false) return 'SAVED_OPTIONS_UNAVAILABLE';
     const read = (record, key) => typeof record?.get === 'function' ? record.get(key) : record?.data?.[key];
@@ -226,6 +229,7 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
     const result = await input.evaluate((element, { spec, offset, limit }) => {
       const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
       const store = component?.store;
+      if (!store && component?.getXType?.() === 'lovfield') return { issue: 'SAVED_NATIVE_PICKER_UNVERIFIED' };
       if (!store || typeof store.getCount !== 'function' || typeof store.getAt !== 'function' ||
           typeof store.isLoading !== 'function') return null;
       const loaded = store.getCount(), loading = store.isLoading();
@@ -244,6 +248,7 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
         possiblyTruncated: loading || !Number.isInteger(reportedTotal) || reportedTotal <= 0 || loaded < reportedTotal } };
     }, { spec, offset, limit });
     if (!result) return { outcome: 'unavailable', issue: 'SAVED_OPTIONS_UNAVAILABLE' };
+    if (result.issue) return { outcome: 'unavailable', issue: result.issue };
     return { outcome: 'loaded_options', field: fieldName, ...result, availability: 'not_verified', quote: 'not_produced' };
   } catch (error) {
     return { outcome: 'refused', issue: /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '')
