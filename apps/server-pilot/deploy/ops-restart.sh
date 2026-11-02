@@ -30,15 +30,16 @@ export NVM_DIR=/home/ubuntu/.nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 export PATH="$HOME/.local/share/pnpm:$PATH"
 cd /home/ubuntu/repos/zero
-ENV_FILE=apps/server-pilot/.env.production
-[ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
 SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
+ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
+[ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$PWD/$ENV_FILE" ;; esac
+export ENV_FILE
 export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}"
 
 validate_remote_env_files() {
   bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate || return 1
   bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --ensure-model || return 1
-  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate-model || return 1
 }
 
 start_remote_http() {
@@ -47,6 +48,7 @@ start_remote_http() {
     HOME="$HOME" \
     PATH="$PATH" \
     NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    ENV_FILE="$ENV_FILE" \
     SERVER_PILOT="$SERVER_PILOT" \
     bash -ceu '
       pm2 delete remote-http 2>/dev/null || true
@@ -56,12 +58,13 @@ start_remote_http() {
 
 start_legacy_processes() {
   local launch_build_commit="$NAVA_BUILD_COMMIT"
+  local launch_env_file="$ENV_FILE"
   local mode
   set -a
   source "$ENV_FILE"
   set +a
   # Runtime env may contain an older SHA; every PM2 app uses the launch identity.
-  export NAVA_BUILD_COMMIT="$launch_build_commit"
+  export NAVA_BUILD_COMMIT="$launch_build_commit" ENV_FILE="$launch_env_file"
   : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
   mode="${MAIL_TRANSPORT_MODE:-fixture}"
   if [ "$mode" = "fixture" ]; then

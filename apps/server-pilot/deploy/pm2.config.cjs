@@ -44,6 +44,7 @@ module.exports = {
         PORT: '8789',
         NAVA_AUTH_SESSION_PROFILE: 'remote',
         NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+        ENV_FILE: process.env.ENV_FILE ?? '',
       },
     },
     {

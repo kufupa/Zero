@@ -14,30 +14,35 @@ exec env -i \
   REPO_ROOT="$REPO_ROOT" \
   SERVER_PILOT="$SERVER_PILOT" \
   NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-}" \
+  ENV_FILE="${ENV_FILE:-}" \
   NODE_ENV=production \
   PORT=8789 \
   NAVA_AUTH_SESSION_PROFILE=remote \
   bash -ceu '
     writer="$SERVER_PILOT/deploy/write-ec2-remote-env.sh"
-    bash "$writer" --validate
-    bash "$writer" --ensure-model
-    bash "$writer" --validate-model
     launch_build_commit="${NAVA_BUILD_COMMIT:-}"
     if [[ ! "$launch_build_commit" =~ ^[a-fA-F0-9]{40}$ ]]; then
       echo "remote build identity missing or invalid" >&2
       exit 2
     fi
+    snapshot="$(bash "$writer" --prepare-model)"
+    cleanup_snapshot() {
+      env -i PATH="$PATH" rm -f -- "$snapshot/model" "$snapshot/brain" "$snapshot/common" "$snapshot/admin"
+      env -i PATH="$PATH" rmdir -- "$snapshot"
+    }
+    trap cleanup_snapshot EXIT
+    trap "exit 2" HUP INT TERM
 
     set -a
-    source "$SERVER_PILOT/.env.remote-common"
-    source "$SERVER_PILOT/.env.remote-admin"
+    source "$snapshot/common"
+    source "$snapshot/admin"
     common_pane_brain_set="${PANE_BRAIN+x}"
     common_pane_brain="${PANE_BRAIN:-}"
     common_quote_llm_set="${QUOTE_WORKFLOW_LLM+x}"
     common_quote_llm="${QUOTE_WORKFLOW_LLM:-}"
     unset PANE_BRAIN QUOTE_WORKFLOW_LLM
-    source "$SERVER_PILOT/.env.remote-azure"
-    source "$SERVER_PILOT/.env.remote-pane-brain"
+    source "$snapshot/model"
+    source "$snapshot/brain"
     if [ "$common_pane_brain_set" = x ]; then
       if [ "$common_pane_brain" != "${PANE_BRAIN:-classifier}" ]; then
         echo "remote pane routing conflicts with source" >&2
@@ -51,7 +56,11 @@ exec env -i \
       exit 2
     fi
     NAVA_BUILD_COMMIT="$launch_build_commit"
-    unset common_pane_brain_set common_pane_brain common_quote_llm_set common_quote_llm launch_build_commit writer REPO_ROOT
     set +a
+    # Re-render and compare source and auth/flags after loading; never pass secrets to the checker.
+    env -i HOME="$HOME" PATH="$PATH" REPO_ROOT="$REPO_ROOT" ENV_FILE="${ENV_FILE:-}" bash "$writer" --check-model "$snapshot"
+    cleanup_snapshot
+    trap - EXIT HUP INT TERM
+    unset common_pane_brain_set common_pane_brain common_quote_llm_set common_quote_llm launch_build_commit writer snapshot REPO_ROOT ENV_FILE
     exec node "$SERVER_PILOT/dist/main.js"
   '

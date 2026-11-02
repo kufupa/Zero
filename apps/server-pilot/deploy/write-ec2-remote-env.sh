@@ -16,8 +16,6 @@ if [ ! -f "$LEGACY_ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
 fi
 REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
 REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
-REMOTE_MODEL_ENV="${SERVER_PILOT}/.env.remote-azure"
-REMOTE_BRAIN_ENV="${SERVER_PILOT}/.env.remote-pane-brain"
 
 # HTTP-only controls. Intentionally excludes Better Auth, POP3, HMS, and Google keys.
 REMOTE_COMMON_ALLOWLIST=(
@@ -172,15 +170,15 @@ case "${1:-}" in
     validate_remote_env_files
     exit 0
     ;;
-  --validate-model)
-    validate_remote_env_file "$REMOTE_MODEL_ENV" model
-    validate_remote_env_file "$REMOTE_BRAIN_ENV" brain
-    exit 0
+  --ensure-model | --validate-model | --prepare-model)
+    [ "$#" -eq 1 ] || exit 2
     ;;
-  --ensure-model | '')
+  --check-model)
+    [ "$#" -eq 2 ] || exit 2
     ;;
+  '') ;;
   *)
-    echo "usage: $0 [--validate|--validate-model|--ensure-model]" >&2
+    echo "usage: $0 [--validate|--ensure-model|--validate-model|--prepare-model|--check-model dir]" >&2
     exit 2
     ;;
 esac
@@ -198,30 +196,34 @@ if [ "$(stat -c '%a:%U:%G' "$LEGACY_ENV_FILE")" != "600:ubuntu:ubuntu" ]; then
   exit 2
 fi
 
-# Publish separate immutable overlays for the Azure pair and pane routing mode.
-# Existing remote common/admin files, including workflow switches, are never rewritten.
-if [ "${1:-}" = "--ensure-model" ]; then
+# Per-launch snapshots are private and disposable. Never modify older overlays.
+if [ -n "${1:-}" ]; then
   validate_remote_env_files
   umask 077
-  model_raw=""
-  model_candidate=""
-  model_check=""
-  brain_candidate=""
-  brain_check=""
-  cleanup_model() {
-    rm -f -- "$model_raw" "$model_candidate" "$model_check" "$brain_candidate" "$brain_check"
+  snapshot_dir=""
+  cleanup_snapshot() {
+    if [ -n "$snapshot_dir" ]; then
+      rm -f -- "$snapshot_dir/raw" "$snapshot_dir/model" "$snapshot_dir/model-check" \
+        "$snapshot_dir/brain" "$snapshot_dir/brain-check" "$snapshot_dir/common" "$snapshot_dir/admin"
+      rmdir -- "$snapshot_dir" || true
+    fi
   }
-  trap cleanup_model EXIT
-  model_raw="$(mktemp "${SERVER_PILOT}/.env.remote-azure.raw.XXXXXX")"
-  model_candidate="$(mktemp "${SERVER_PILOT}/.env.remote-azure.tmp.XXXXXX")"
-  model_check="$(mktemp "${SERVER_PILOT}/.env.remote-azure.check.XXXXXX")"
-  brain_candidate="$(mktemp "${SERVER_PILOT}/.env.remote-brain.tmp.XXXXXX")"
-  brain_check="$(mktemp "${SERVER_PILOT}/.env.remote-brain.check.XXXXXX")"
+  trap cleanup_snapshot EXIT
+  trap 'exit 2' HUP INT TERM
+  snapshot_dir="$(mktemp -d "${SERVER_PILOT}/.env.remote-launch.XXXXXX")"
+  model_raw="$snapshot_dir/raw"
+  model_candidate="$snapshot_dir/model"
+  model_check="$snapshot_dir/model-check"
+  brain_candidate="$snapshot_dir/brain"
+  brain_check="$snapshot_dir/brain-check"
+  cp -- "$REMOTE_COMMON_ENV" "$snapshot_dir/common"
+  cp -- "$REMOTE_ADMIN_ENV" "$snapshot_dir/admin"
+  validate_remote_env_file "$snapshot_dir/common" common
+  validate_remote_env_file "$snapshot_dir/admin" admin
 
   render_model() {
     node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" "$LEGACY_ENV_FILE" "$model_raw" \
       AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY PANE_BRAIN QUOTE_WORKFLOW_LLM
-    # Split by key: either overlay may be empty when the source uses defaults.
     sed -n '/^AZURE_OPENAI_BASE_URL=/p; /^AZURE_FOUNDRY_API_KEY=/p' "$model_raw" >"$1"
     sed -n '/^PANE_BRAIN=/p; /^QUOTE_WORKFLOW_LLM=/p' "$model_raw" >"$2"
     validate_remote_env_file "$1" model
@@ -230,65 +232,55 @@ if [ "${1:-}" = "--ensure-model" ]; then
 
   render_model "$model_candidate" "$brain_candidate"
   render_model "$model_check" "$brain_check"
+  validate_remote_env_files
+  if [ ! -f "$LEGACY_ENV_FILE" ] || [ -L "$LEGACY_ENV_FILE" ] ||
+    [ "$(stat -c '%a:%U:%G' "$LEGACY_ENV_FILE")" != "600:ubuntu:ubuntu" ]; then
+    echo "legacy runtime env changed or unsafe" >&2
+    exit 2
+  fi
   if ! cmp -s -- "$model_candidate" "$model_check" ||
-    ! cmp -s -- "$brain_candidate" "$brain_check"; then
+    ! cmp -s -- "$brain_candidate" "$brain_check" ||
+    ! cmp -s -- "$snapshot_dir/common" "$REMOTE_COMMON_ENV" ||
+    ! cmp -s -- "$snapshot_dir/admin" "$REMOTE_ADMIN_ENV"; then
     echo "remote model source changed during preparation" >&2
     exit 2
   fi
-  # A pre-existing remote override may agree but must never be overwritten.
-  if grep -q '^PANE_BRAIN=' "$REMOTE_COMMON_ENV"; then
-    # An unset source defaults to classifier; preserve a matching explicit override.
+  # Preserve a pre-existing remote override; an unset source defaults to classifier.
+  if grep -q '^PANE_BRAIN=' "$snapshot_dir/common"; then
     brain_source="$(grep '^PANE_BRAIN=' "$brain_candidate" || true)"
     if [ -z "$brain_source" ]; then brain_source="PANE_BRAIN='classifier'"; fi
-    if ! grep -Fqx -- "$brain_source" "$REMOTE_COMMON_ENV"; then
-      echo "remote pane routing conflicts with source; refusing replacement" >&2
+    if ! grep -Fqx -- "$brain_source" "$snapshot_dir/common"; then
+      echo "remote pane routing conflicts with source" >&2
       exit 2
     fi
   fi
-  if grep -q '^QUOTE_WORKFLOW_LLM=' "$REMOTE_COMMON_ENV" &&
-    ! grep -Fqx -- "$(grep '^QUOTE_WORKFLOW_LLM=' "$REMOTE_COMMON_ENV")" "$brain_candidate"; then
-    echo "remote quote model flag conflicts with source; refusing replacement" >&2
+  if grep -q '^QUOTE_WORKFLOW_LLM=' "$snapshot_dir/common" &&
+    ! grep -Fqx -- "$(grep '^QUOTE_WORKFLOW_LLM=' "$snapshot_dir/common")" "$brain_candidate"; then
+    echo "remote quote model flag conflicts with source" >&2
     exit 2
   fi
-  check_existing_overlay() {
-    local candidate="$1" target="$2" kind="$3"
-    if [ -e "$target" ] || [ -L "$target" ]; then
-      validate_remote_env_file "$target" "$kind"
-      if ! cmp -s -- "$candidate" "$target"; then
-        echo "remote model overlay differs from source; refusing replacement" >&2
-        return 2
+  if [ "${1:-}" = "--check-model" ]; then
+    input_dir="$2"
+    if [ "$(dirname -- "$input_dir")" != "$SERVER_PILOT" ] ||
+      [[ "$(basename -- "$input_dir")" != .env.remote-launch.* ]] ||
+      [ ! -d "$input_dir" ] || [ -L "$input_dir" ] ||
+      [ "$(stat -c '%a:%U:%G' "$input_dir")" != "700:ubuntu:ubuntu" ]; then
+      echo "remote launch snapshot missing or unsafe" >&2
+      exit 2
+    fi
+    for kind in model brain common admin; do
+      validate_remote_env_file "$input_dir/$kind" "$kind"
+      if ! cmp -s -- "$input_dir/$kind" "$snapshot_dir/$kind"; then
+        echo "remote launch source changed before execution" >&2
+        exit 2
       fi
-    fi
-  }
-  check_existing_overlay "$model_candidate" "$REMOTE_MODEL_ENV" model
-  check_existing_overlay "$brain_candidate" "$REMOTE_BRAIN_ENV" brain
-  publish_overlay() {
-    local candidate="$1" target="$2" kind="$3"
-    node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$candidate"
-    if ! ln -T -- "$candidate" "$target" 2>/dev/null; then
-      # Another writer may have won. Never replace its file, even on mismatch.
-      validate_remote_env_file "$target" "$kind"
-      if ! cmp -s -- "$candidate" "$target"; then
-        echo "remote model overlay differs from source; refusing replacement" >&2
-        return 2
-      fi
-    fi
-    validate_remote_env_file "$target" "$kind"
-    if ! cmp -s -- "$candidate" "$target"; then
-      echo "remote model overlay changed during preparation" >&2
-      return 2
-    fi
-  }
-  publish_overlay "$model_candidate" "$REMOTE_MODEL_ENV" model
-  publish_overlay "$brain_candidate" "$REMOTE_BRAIN_ENV" brain
-  # Catch source drift across publication; leave any published file untouched on failure.
-  render_model "$model_check" "$brain_check"
-  if ! cmp -s -- "$model_candidate" "$model_check" ||
-    ! cmp -s -- "$brain_candidate" "$brain_check"; then
-    echo "remote model source changed during preparation" >&2
-    exit 2
+    done
   fi
-  node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$SERVER_PILOT"
+  if [ "${1:-}" = "--prepare-model" ]; then
+    rm -f -- "$model_raw" "$model_check" "$brain_check"
+    printf '%s\n' "$snapshot_dir"
+    snapshot_dir=""
+  fi
   exit 0
 fi
 

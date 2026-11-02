@@ -54,6 +54,9 @@ try {
   const lines = ["NODE_ENV='production'"];
   for (const key of allowlist) {
     const value = values.get(key);
+    if (key === 'PANE_BRAIN' && value && !['agent', 'classifier'].includes(value)) {
+      throw new Error('invalid');
+    }
     if (key === 'QUOTE_WORKFLOW_LLM' && value !== undefined && !['on', 'off'].includes(value)) {
       throw new Error('invalid');
     }

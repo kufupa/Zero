@@ -9,6 +9,9 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
+# Preserve the same absolute runtime source through PM2 and resurrection.
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$PWD/$ENV_FILE" ;; esac
+export ENV_FILE
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "pm2-boot.sh must run as ubuntu" >&2
@@ -28,7 +31,6 @@ cd "$REPO_ROOT"
 validate_remote_env_files() {
   bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate || return 1
   bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --ensure-model || return 1
-  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate-model || return 1
 }
 
 start_remote_http() {
@@ -37,6 +39,7 @@ start_remote_http() {
     HOME="$HOME" \
     PATH="$PATH" \
     NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    ENV_FILE="$ENV_FILE" \
     SERVER_PILOT="$SERVER_PILOT" \
     bash -ceu '
       pm2 delete remote-http 2>/dev/null || true
@@ -68,13 +71,14 @@ assert_http_loopback_with_retry() {
 
 start_legacy_processes() {
   local launch_build_commit="$NAVA_BUILD_COMMIT"
+  local launch_env_file="$ENV_FILE"
   local mode
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
   # Runtime env may contain an older SHA; every PM2 app uses the launch identity.
-  export NAVA_BUILD_COMMIT="$launch_build_commit"
+  export NAVA_BUILD_COMMIT="$launch_build_commit" ENV_FILE="$launch_env_file"
   : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
   mode="${MAIL_TRANSPORT_MODE:-fixture}"
   if [ "$mode" = "fixture" ]; then
