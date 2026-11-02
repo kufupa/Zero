@@ -141,7 +141,9 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
   const code = result.outcome ?? result.status ?? '';
   // These amendment outcomes are produced before a runner can start. Unknown codes stay uncertain.
   const knownPreDispatchRefusal = ['refused_flag_off', 'amend_preview_required'].includes(code);
-  const reason = stableReason(result.reason ?? result.issue ?? result.error ?? (knownPreDispatchRefusal ? code : undefined));
+  // Keep named refusal causes without treating unknown write outcomes as pre-dispatch.
+  const refusalCode = /^refused_[a-zA-Z0-9_]{1,91}$/.test(code) ? code : undefined;
+  const reason = stableReason(result.reason ?? result.issue ?? result.error ?? (knownPreDispatchRefusal ? code : refusalCode));
   const uncertainCodes = new Set(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_unconfirmed', 'save_failed', 'partial']);
   // Generic status 'ok' can accompany a refused outcome; strong commit statuses cannot.
   const strongWriteStatuses = new Set(['saved', 'committed', 'confirmed', 'verified', 'readback_verified', 'amended', 'cancelled', 'attached']);

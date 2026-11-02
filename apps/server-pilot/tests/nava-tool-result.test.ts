@@ -66,6 +66,18 @@ describe('Nava tool result contract', () => {
     }
   });
 
+  it('keeps named legacy read refusals distinct without implying a write was not dispatched', () => {
+    for (const code of ['refused_input_invalid', 'refused_lock_busy']) {
+      const result = { outcome: code, reason: null, stay: null };
+      expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({ outcome: 'refused', reason: code });
+      expect(adaptExistingToolResult({ ...result, clickedSave: true }, { operation: 'write' }))
+        .toMatchObject({ outcome: 'uncertain', reason: code });
+    }
+    expect(adaptExistingToolResult({ outcome: 'refused_lock_busy', reason: 'POLICY_BLOCK' }, { operation: 'read' }))
+      .toMatchObject({ outcome: 'refused', reason: 'policy_block' });
+    expect(adaptExistingToolResult({ outcome: 'refused_secret@example.com' }, { operation: 'read' }).reason).toBeUndefined();
+  });
+
   it('keeps unknown refusal-looking codes uncertain', () => {
     expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
   });
