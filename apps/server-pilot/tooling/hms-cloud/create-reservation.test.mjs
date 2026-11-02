@@ -47,8 +47,8 @@ function harness(options = {}) {
     request = structuredClone(request);
     calls.push(request);
     switch (request.tool) {
-      case 'searchGuestProfiles': return { outcome: 'matches', searchId: 'g', candidates: options.profiles || [profile],
-        coverage: { loaded: (options.profiles || [profile]).length, possiblyTruncated: false }, correlation: { verifiedFields: ['firstname', 'lastname'] } };
+      case 'searchGuestProfiles': return { outcome: options.profileSearchOutcome ?? 'matches', searchId: 'g', candidates: options.profiles || [profile],
+        coverage: { loaded: (options.profiles || [profile]).length, possiblyTruncated: options.profileCoverageTruncated ?? false }, correlation: { verifiedFields: ['firstname', 'lastname'] } };
       case 'closeGuestProfilePicker': return options.close || { outcome: 'closed_unsaved' };
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
@@ -712,4 +712,43 @@ test('billing reports only absent A/R identity fields, without duplicates', asyn
     assert.deepEqual(result.missing, wanted);
   }
   assert.equal(sessions, 0);
+});
+
+
+test('guest name lookup returns none, selects one, and refuses ambiguity without a Save', async () => {
+  const search = { firstName: 'Real', lastName: 'Guest' };
+  const real = { ...profile, ...search };
+  const prepare = { ...input, mode: 'prepare', guest: { search } };
+  const none = harness({ profiles: [], profileSearchOutcome: 'no_match' });
+  const missing = await createReservation(prepare, none.options);
+  assert.equal(missing.issue, 'guest_not_found');
+  assert.ok(missing.missing.includes('guest'));
+  assert.equal(none.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
+
+  const one = harness({ profiles: [real], draft: { ...values, firstname: 'Real', lastname: 'Guest' } });
+  const staged = await createReservation(prepare, one.options);
+  assert.equal(staged.applied.guest.nativeId, '123');
+  assert.deepEqual(one.calls.find(({ tool }) => tool === 'searchGuestProfiles'),
+    { tool: 'searchGuestProfiles', field: 'lastName', query: 'Guest' });
+  assert.deepEqual(one.calls.find(({ tool }) => tool === 'selectGuestProfile'),
+    { tool: 'selectGuestProfile', searchId: 'g', nativeId: '123' });
+  assert.equal(staged.approvalReady, false);
+  assert.equal(one.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  for (const options of [
+    { profiles: [real, { ...real, nativeId: '124' }] },
+    { profiles: [real], profileCoverageTruncated: true },
+  ]) {
+    const many = harness(options);
+    const result = await createReservation(prepare, many.options);
+    assert.equal(result.issue, 'guest_ambiguous');
+    assert.ok(result.missing.includes('guest'));
+    assert.equal(many.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
+  }
+
+  const refused = harness({ profiles: [real] });
+  const result = await createReservation({ ...input, guest: { profileId: '123' } }, refused.options);
+  assert.equal(result.outcome, 'refused');
+  assert.equal(result.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
+  assert.equal(refused.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
 });
