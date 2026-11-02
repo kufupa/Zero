@@ -96,7 +96,8 @@ function harness(options = {}) {
       labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
-      return operation({ runTool: async () => ({ outcome: 'ok', record: { details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
+      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: options.nativePreimage ?? null,
+        details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
     },
     partyReadback: async (request) => options.partyReadback?.(request) ?? { outcome: 'verified' },
     census: async () => { censuses += 1; return { outcome: 'existing_matches', coverage: { complete: true }, sameArrival: [{ confirmation: '123456-1' }] }; },
@@ -184,7 +185,10 @@ test('agent guarantee is selected, bound, saved once and independently read back
   const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
     actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
   const agentValues = { ...values, guaranteetype: 'Guaranteed By Agent' };
-  const options = { guaranteeResult: selection, draft: agentValues, record: agentValues };
+  const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
+    status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
+    roomType: input.room.roomType, ratePlan: input.room.ratePlan, adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
+  const options = { guaranteeResult: selection, draft: agentValues, record: agentValues, nativePreimage };
   const preparing = harness(options);
   const prepared = await createReservation({ ...input, mode: 'prepare', guaranteeType: 'GTDAGT' }, preparing.options);
   assert.equal(prepared.outcome, 'prepared');
@@ -201,6 +205,25 @@ test('agent guarantee is selected, bound, saved once and independently read back
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].guaranteeSelection, selection);
   assert.ok(committing.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
+
+  // The same visible label is not proof of the saved native code, with or without a party.
+  for (const parties of [{}, { agencyId: '99' }, { organizationId: '41' }]) {
+    const partyValues = { ...agentValues, company: parties.organizationId ? 'Example Company' : '',
+      ...(parties.agencyId ? { ta1: 'Example Agency' } : {}) };
+    const matching = harness({ ...options, draft: partyValues, record: partyValues, nativePreimage });
+    const verified = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties }, matching.options);
+    if (verified.screenshots?.before) t.after(() => rm(dirname(verified.screenshots.before), { recursive: true, force: true }));
+    assert.equal(verified.outcome, 'saved');
+    assert.equal(matching.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+    for (const proof of [null, { ...nativePreimage, guaranteeCode: 'NGI' }, { ...nativePreimage, guestId: '999' }]) {
+      const fake = harness({ ...options, draft: partyValues, record: partyValues, nativePreimage: proof });
+      const uncertain = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties }, fake.options);
+      if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+      assert.equal(uncertain.outcome, 'uncertain');
+      assert.ok(uncertain.readback?.mismatches?.some(({ field }) => field === 'guaranteeTypeCode'));
+      assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+    }
+  }
 
   const mismatch = harness({ ...options, guaranteeResult: { ...selection, actual: { ...selection.actual, submitted: 'NGI' } } });
   const refused = await createReservation({ ...input, guaranteeType: 'GTDAGT' }, mismatch.options);

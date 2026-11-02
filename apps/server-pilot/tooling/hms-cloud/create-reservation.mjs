@@ -511,7 +511,8 @@ export async function createReservation(input, { withSession = withBookingLookup
   const expected = { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, children: stay.childAges.length,
     childBands: state.children.ageBandCounts, roomType: room.roomType, ratePlan: room.ratePlan, note: output.applied.note,
     guestId: state.guest.selected.nativeId, source: state.source?.candidate.description,
-    organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display };
+    organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display,
+    ...(input.guaranteeType === 'GTDAGT' ? { guaranteeCode: input.guaranteeType } : {}) };
   if (!output.confirmation) {
     const reconciliation = await reconcileLabtestCreate({ stay, expected }, { withSavedSession, ...(census ? { census } : {}) });
     if (input.billingReference != null) {

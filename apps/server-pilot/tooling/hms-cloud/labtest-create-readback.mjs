@@ -16,6 +16,7 @@ function validExpected(stay, expected) {
   return Boolean(expected && validDate(stay?.arrival) && validDate(stay?.departure) && stay.arrival < stay.departure &&
     expected.arrival === stay.arrival && expected.departure === stay.departure && /^\d+$/.test(String(expected.guestId ?? '')) &&
     ['roomType', 'ratePlan', 'note', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
+    (expected.guaranteeCode === undefined || ['NGI', 'GTDAGT'].includes(expected.guaranteeCode)) &&
     Number.isInteger(expected.adults) && expected.adults > 0 && Number.isInteger(expected.children) && expected.children >= 0 &&
     bands && Object.keys(bands).length === names.length && names.every((name) => Number.isInteger(bands[name]) && bands[name] >= 0) &&
     names.reduce((sum, name) => sum + bands[name], 0) === expected.children);
@@ -49,10 +50,21 @@ function compareRecord(fields, expected) {
 export async function readLabtestCreate({ confirmation, stay, expected }, { withSavedSession = withSavedStayAgentSession } = {}) {
   if (!validExpected(stay, expected)) return { issue: 'expected_record_invalid' };
   const read = await withSavedSession(({ runTool }) => runTool({ tool: 'read', confirmation,
-    guestName: 'Proof Labtest', arrivalDate: stay.arrival }));
+    guestName: 'Proof Labtest', arrivalDate: stay.arrival,
+    ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }));
   const fields = read?.record?.details?.fields;
-  return read.outcome === 'ok' && Array.isArray(fields) ? { fields, captureScope: read.record.details.captureScope,
-    mismatches: compareRecord(fields, expected) } : { issue: 'readback_unverified', detail: read };
+  if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
+  const mismatches = compareRecord(fields, expected);
+  if (expected.guaranteeCode) {
+    const native = read.record.nativePreimage;
+    const verified = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
+      native.confirmation === confirmation && native.guestId === expected.guestId && native.status === 'Reserved' &&
+      native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
+      native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
+      native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;
+    if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
+  }
+  return { fields, captureScope: read.record.details.captureScope, mismatches };
 }
 
 const readCensus = (stay) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {

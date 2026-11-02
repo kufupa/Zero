@@ -87,3 +87,26 @@ test('a failed reconciliation census never reads candidates', async () => {
   assert.deepEqual(result, { census: { outcome: 'incomplete', issue: 'census_unverified' }, candidates: [] });
   assert.equal(reads, 0);
 });
+
+test('requires fresh native guarantee and stay identity when a code is requested', async () => {
+  const agentExpected = { ...expected, guarantee: 'Guaranteed By Agent', guaranteeCode: 'GTDAGT' };
+  const agentFields = fields({ ...values, guaranteetype: 'Guaranteed By Agent' });
+  const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123-1', guestId: '123',
+    status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: stay.arrival, departure: stay.departure,
+    roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
+  let request;
+  const read = (preimage) => readLabtestCreate({ confirmation: '123-1', stay, expected: agentExpected }, {
+    withSavedSession: async (operation) => operation({ runTool: async (input) => {
+      request = input;
+      return { outcome: 'ok', record: { nativePreimage: preimage, details: { fields: agentFields } } };
+    } }),
+  });
+  assert.deepEqual((await read(native)).mismatches, []);
+  assert.equal(request.includeNativePreimage, true);
+  for (const preimage of [null, { ...native, guaranteeCode: 'NGI' }, { ...native, guestId: '999' },
+    { ...native, confirmation: '124-1' }, { ...native, propertyCode: 'HRDAV' },
+    { ...native, arrival: '2027-03-16' }, { ...native, source: 'unknown' }]) {
+    const result = await read(preimage);
+    assert.deepEqual(result.mismatches, [{ field: 'guaranteeTypeCode', issue: 'native_code_unverified' }]);
+  }
+});
