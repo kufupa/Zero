@@ -63,6 +63,13 @@ test('unknown quantity, inventory and conflicting criteria remain distinct', () 
   assert.ok(conflict.view.options[0].nights[1].reasons.includes('unknown'));
 });
 
+test('arrival closure is preserved as an HMS condition', () => {
+  const saved = snapshot();
+  saved.response.availabilitydata.children[0].children[0].children[0].columns.col1.combClosedToArrival = true;
+  const result = projectQuoteRequest({ snapshot: saved });
+  assert.ok(result.view.options[0].nights[0].reasons.includes('conditions_present'));
+});
+
 test('optional arithmetic is not an official price or joint availability', () => {
   const result = projectQuoteRequest({ snapshot: snapshot(), view: { includeNightlyValueSum: true } });
   const sum = result.view.options[0].nightlyValueSum;
@@ -123,6 +130,20 @@ test('row pagination and restrictions survive the offline projection', () => {
   assert.equal(nextPage.view.options[0].rate.code, 'OFF');
   assert.ok(nextPage.view.options[0].nights[0].reasons.includes('closed_or_restricted'));
   assert.equal(nextPage.view.coverage.page.nextOffset, null);
+});
+
+test('same-code rate rows with different promotions remain distinct and verified', () => {
+  const saved = snapshot();
+  const rates = saved.response.availabilitydata.children[0].children[0].children;
+  rates[0].promotioncode = 'PROMO-A';
+  const second = structuredClone(rates[0]);
+  second.promotioncode = 'PROMO-B';
+  rates.push(second);
+
+  const result = getQuoteView(saved, { roomQuantity: 2, limit: 10 });
+  assert.equal(result.coverage.duplicateRateRows, 0);
+  assert.deepEqual(result.options.map((option) => option.rate.promotioncode), ['PROMO-A', 'PROMO-B']);
+  assert.ok(result.options.every((option) => !option.reasons.includes('unknown')));
 });
 
 test('CLI accepts its exact input cap and promptly rejects one byte more', () => {

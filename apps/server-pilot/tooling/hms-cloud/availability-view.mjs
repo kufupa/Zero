@@ -344,7 +344,8 @@ export function getAvailabilityView(snapshot, filters = {}) {
     typeof item.code === 'string' && submittedProperties.includes(item.code.trim().toUpperCase())) : propertyRows;
   const rooms = properties.flatMap((property) => property.children.map((room) => ({ property, room })));
   const allRows = rooms.flatMap(({ property, room }) => room.children.map((rate) => ({ property, room, rate })));
-  const identity = ({ property, room, rate }) => JSON.stringify([property.code, room.code, rate.code]);
+  const identity = ({ property, room, rate }) =>
+    JSON.stringify([property.code, room.code, rate.code, rate.promotioncode ?? null]);
   const identities = new Map();
   for (const row of allRows) identities.set(identity(row), (identities.get(identity(row)) || 0) + 1);
   const roomSet = roomTypes && new Set(roomTypes);
