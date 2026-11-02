@@ -6,7 +6,8 @@ const changeFields = ['arrival', 'departure', 'roomType', 'ratePlan'];
 const parties = ['group', 'organization', 'bookingAgency'];
 const object = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const only = (value, fields) => object(value) && Object.keys(value).every((key) => fields.includes(key));
-const code = (value) => typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
+// Match Hotel Availability: preserve native codes and reject its delimiters.
+const code = (value) => typeof value === 'string' && Boolean(value.trim()) && !/[,\r\n]/.test(value);
 const day = (value) => {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);

@@ -35,6 +35,15 @@ describe('saved stay amendment availability', () => {
       .toBe('EXISTING_STAY_REQUIRED');
   });
 
+  it('accepts native codes beyond the saved-stage guard without accepting list delimiters', () => {
+    const request = input();
+    request.change = { ...request.change, roomType: 'DLX_KING', ratePlan: 'CORPORATE-RATE-WITH-A-LONG-NAME' };
+    expect(prepareStayAmendmentAvailability(request)).toMatchObject({ outcome: 'prepared',
+      criteria: { roomTypes: ['DLX_KING'], ratePlans: ['CORPORATE-RATE-WITH-A-LONG-NAME'] } });
+    request.change.ratePlan = 'BAR,OTHER';
+    expect(prepareStayAmendmentAvailability(request).issue).toBe('AMEND_CHANGE_INVALID');
+  });
+
   it('does not infer absent child ages, room counts or party identities', () => {
     expect(prepareStayAmendmentAvailability({ ...input(), occupancy: { adults: 2 } }).issue).toBe('OCCUPANCY_REQUIRED');
     expect(prepareStayAmendmentAvailability({ ...input(), roomQuantity: 0 }).issue).toBe('ROOM_QUANTITY_REQUIRED');
