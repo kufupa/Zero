@@ -44,6 +44,7 @@ describe('booking-session linked-organization readback binding', () => {
         roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
       },
       expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
+      expectedGuarantee: { code: 'NGI', display: 'Non-Guaranteed Individual' },
     });
     expect(buildLabtestOrganizationReadbackTarget({ ...saved, outcome: 'uncertain' }, request, selection)).toBeNull();
     expect(buildLabtestOrganizationReadbackTarget(saved, { ...request, agencySelection: {} }, selection)).toBeNull();

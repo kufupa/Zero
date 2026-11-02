@@ -12,7 +12,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { currentLabtestRecord } from './labtest-record.mjs';
+import { readCreatedLabtestRecord } from './labtest-record.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
@@ -33,7 +33,7 @@ import {
 } from './guest-stay-room-rate.mjs';
 import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
-import { normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
+import { guaranteeDisplayForSave, normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -94,8 +94,9 @@ export function labtestRecordOptionsForOrganizationSelection(selection) {
 export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization) {
   const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
   const confirmation = saveResult?.confirmation;
+  const guaranteeDisplay = guaranteeDisplayForSave(request?.guaranteeType, request?.guaranteeSelection);
   if (saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
-      !request || typeof request !== 'object' || request.agencySelection != null || !recordOptions ||
+      !request || typeof request !== 'object' || !guaranteeDisplay || request.agencySelection != null || !recordOptions ||
       !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection) ||
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
@@ -108,6 +109,7 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
     },
     expectedOrganization: recordOptions.expectedOrganization,
+    expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
   };
 }
 
@@ -135,8 +137,9 @@ async function readSavedOrganizationCreate(state, request) {
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
       await readRecordViewFromStay360(page, target.confirmation);
-      const record = await currentLabtestRecord(page, target.expected, {
+      const record = await readCreatedLabtestRecord(page, target.expected, {
         allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
+        expectedGuarantee: target.expectedGuarantee,
       });
       const organizationName = record.partyPreimage.company || record.partyPreimage.companyname;
       if (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
@@ -415,6 +418,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         !sameSessionOrganizationSelection(state.organizationSelection, request.organizationSelection)) {
       return { id, tool, outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_NOT_CURRENT' };
     }
+    // Keep the request used for both save and reconciliation stable across awaited work.
+    const saveRequest = tool === 'saveNewLabtestStay' ? { ...request,
+      organizationSelection: structuredClone(request.organizationSelection),
+      guaranteeSelection: structuredClone(request.guaranteeSelection),
+    } : null;
     let result;
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
       'closeRoomRatePicker', 'closeGuestStaySourceBusinessPicker'].includes(tool)) {
@@ -448,7 +456,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       const selection = request.selection ?? { nativeId: request.nativeId, searchId: request.searchId };
       result = await action(page, selection, request.options);
     } else if (tool === 'saveNewLabtestStay') {
-      result = await action(page, request, { ...request.options,
+      result = await action(page, saveRequest, { ...request.options,
         ...(beforeSaveScreenshot ? { beforeSaveScreenshot } : {}),
         ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}) });
     } else if ([
@@ -467,7 +475,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
-        result, request, state.organizationSelection);
+        result, saveRequest, state.organizationSelection);
     }
     return { id, tool, ...result };
   } catch (error) {

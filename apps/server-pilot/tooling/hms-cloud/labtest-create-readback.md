@@ -8,7 +8,10 @@ by the counts and age bands exposed by Record View, not exact individual ages.
 
 The expected stay, guest ID, note, room, rate, displayed guarantee and all
 three child bands are required. `guarantee` is the displayed label, not the
-native `guaranteeType` code. For example:
+native `guaranteeType` code. When `guaranteeCode` is supplied, a fresh clean
+native preimage must match the property, confirmation, stay identity and code.
+A missing, ambiguous or different code is a mismatch, not a confirmed save.
+For example:
 
 ```js
 await readLabtestCreate({
