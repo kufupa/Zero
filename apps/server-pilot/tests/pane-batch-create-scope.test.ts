@@ -71,6 +71,30 @@ describe('batch create scope reconciliation', () => {
     f.manifest.rooms[1]!.identity.roomIndex = 3;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
   });
+  it('requires an explicit remaining count when another source row was removed', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.totalRooms = 3; stay.totalAdults = null as never; stay.totalChildren = null as never;
+    stay.rows[0]!.rooms = null as never;
+    f.state['stays[s1].rows[r2].removed'] = true;
+    const first = f.manifest.rooms[0]!;
+    f.manifest.rooms = [first, { ...structuredClone(first), allocationId: 'b', identity: { ...first.identity, roomIndex: 2 } },
+      { ...structuredClone(first), allocationId: 'c', identity: { ...first.identity, roomIndex: 3 } }];
+    expect(isActivePaneBatchChild({ ...f, identity: first.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[2]!.identity })).toBe(false);
+    f.manifest.rooms.pop();
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('retains total-room defaults for a genuinely sole source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [{ ...stay.rows[0]!, rooms: null as never }];
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
   it('accepts separate stays with the same arrival and binds each row to its stay', () => {
     const f = fixture(), first = f.payload.stays[0]!;
     first.rows = [first.rows[0]!]; first.totalRooms = 1; first.totalAdults = 1;

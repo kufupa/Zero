@@ -9,6 +9,22 @@ export type BatchScopeResult = { status: 'ready' } | { status: 'held'; reason:
   'invalid_manifest' | 'party_unverified' | 'source_unverified' | 'source_room_changed' | 'occupancy_unverified' };
 
 type Projection = NonNullable<ReturnType<typeof projectPaneCreateScope>>;
+type ProjectedStay = Projection['stays'] extends Map<string, infer Stay> ? Stay : never;
+type ProjectedRow = ProjectedStay['rows'][number];
+
+/** A stay total is not a remaining row's count after other source rows were removed. */
+function rowCount(projection: Projection, state: WorkState, stay: ProjectedStay, row: ProjectedRow, activeRows: ProjectedRow[]): unknown {
+  const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+  const raw = Object.hasOwn(state, countPath) ? state[countPath] : row.rooms;
+  if (raw !== null || Object.hasOwn(state, countPath) || activeRows.length !== 1) return raw;
+  const source = projection.payload.stays.find((item) => item.id === stay.id);
+  const soleSourceRow = source?.rows.length === 1 && source.rows[0]?.id === row.id;
+  const removedRow = Object.entries(state).some(([path, value]) => value === true &&
+    path.startsWith(`stays[${stay.id}].rows[`) && path.endsWith('].removed'));
+  const ownRowOfRowlessSource = source?.rows.length === 0 && row.id === `${stay.id}_row` &&
+    stay.rows.length === 1 && !removedRow;
+  return soleSourceRow || ownRowOfRowlessSource ? stay.totalRooms : null;
+}
 
 function activeRow(projection: Projection, state: WorkState, identity: PaneCreateIdentity) {
   const stay = projection.stays.get(identity.stayId);
@@ -16,9 +32,7 @@ function activeRow(projection: Projection, state: WorkState, identity: PaneCreat
   const rows = stay.rows.filter((row) => state[`stays[${stay.id}].rows[${row.id}].removed`] !== true);
   const row = rows.find((item) => item.id === identity.rowId);
   if (!row) return null;
-  const countPath = `stays[${stay.id}].rows[${row.id}].count`;
-  const rawCount = Object.hasOwn(state, countPath) ? state[countPath] : row.rooms;
-  const count = rawCount === null && rows.length === 1 && !Object.hasOwn(state, countPath) ? stay.totalRooms : rawCount;
+  const count = rowCount(projection, state, stay, row, rows);
   return Number.isInteger(count) && (count as number) >= 1 && identity.roomIndex <= (count as number) ? { stay, row } : null;
 }
 
@@ -110,9 +124,8 @@ export function reconcilePaneBatchCreateScope(input: {
     // Every active row must have a known count, even with unknown totals.
     let rooms = 0, adults = 0, children = 0;
     for (const row of rows) {
-      const rowPath = `${stayPath}.rows[${row.id}]`, countPath = `${rowPath}.count`;
-      const rawCount = value(countPath, row.rooms);
-      const count = rawCount === null && rows.length === 1 && !Object.hasOwn(input.state, countPath) ? stay.totalRooms : rawCount;
+      const rowPath = `${stayPath}.rows[${row.id}]`;
+      const count = rowCount(projection, input.state, stay, row, rows);
       const adultCount = value(`${rowPath}.adults`, row.adultsPerRoom), ages = value(`${rowPath}.childAges`, row.childAges);
       if (!Number.isInteger(count) || (count as number) < 1 ||
           (totalAdults !== null && (!Number.isInteger(adultCount) || (adultCount as number) < 1)) ||
