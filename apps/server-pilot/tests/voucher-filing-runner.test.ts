@@ -236,6 +236,17 @@ describe('fenced voucher filing runner', () => {
     }
   });
 
+  it('rejects a checker that returns unchanged without an independent HMS read', async () => {
+    const f = await fixture();
+    f.checkBeforeSave.mockImplementationOnce(async ({ readHmsState }: any) => {
+      await readHmsState(); return { status: 'unchanged' as const };
+    }).mockResolvedValueOnce({ status: 'unchanged' });
+    const result = await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }));
+    expect(result.outcome).toBe('uncertain');
+    expect(f.readIndependentSnapshot).not.toHaveBeenCalled();
+    expect(f.persistPreimage).not.toHaveBeenCalled();
+  });
+
   it('rechecks approval after preimage persistence before allowing upload', async () => {
     const f = await fixture();
     f.persistPreimage.mockImplementationOnce(async () => {

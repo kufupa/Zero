@@ -154,13 +154,15 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
       const checkAuthority = async (): Promise<boolean> => {
         if (!withinDeadline() || !safePage(page) || !lockHeld() || !(await readBytes()) || !withinDeadline()) return false;
         try {
+          let freshReadValidated = false;
           const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
             readHmsState: async () => {
               const snapshot = await deps.readIndependentSnapshot(structuredClone(form));
               if (!deps.isEligibleSnapshot(snapshot, structuredClone(form))) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
+              freshReadValidated = true;
               return snapshot;
             } });
-          return checked.status === 'unchanged' && withinDeadline() && lockHeld() && safePage(page);
+          return checked.status === 'unchanged' && freshReadValidated && withinDeadline() && lockHeld() && safePage(page);
         } catch { return false; }
       };
       // Once the native adapter is invoked, any exception or non-definitive result might follow dispatch.
