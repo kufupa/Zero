@@ -37,6 +37,7 @@ export const GOLD_ACTION_FOR_READ_AS: Record<NavaReadAs, MailAction> = {
   payment: 'payment_proof',
   billing: 'billing',
   group: 'group_event',
+  other_to_do: 'other_actionable',
   not_for_nava: 'no_action',
 };
 
