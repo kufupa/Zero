@@ -50,9 +50,12 @@ export async function withLockedCreateSource<T>(
       .limit(1).for('update');
     if (!source || source.threadId !== input.threadId) throw new Error('create_source_stale');
 
+    // Relinking takes the item lock before checking the extraction FK. A
+    // non-key row lock still blocks translation updates, but lets that FK take
+    // KEY SHARE instead of deadlocking with our later item lock.
     const extractions = await tx.select().from(mailExtraction)
       .where(eq(mailExtraction.messageId, source.id)).orderBy(mailExtraction.id)
-      .limit(MAX_SOURCE_ROWS + 1).for('update');
+      .limit(MAX_SOURCE_ROWS + 1).for('no key update');
     if (extractions.length > MAX_SOURCE_ROWS) throw new Error('create_source_history_incomplete');
     const byId = new Map(extractions.map((row) => [row.id, row]));
     const extraction = byId.get(input.cursor.extractionId);

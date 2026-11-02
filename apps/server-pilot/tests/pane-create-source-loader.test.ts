@@ -63,7 +63,7 @@ describe('shared locked create source loader', () => {
       f.calls.push('continue');
       return source;
     });
-    expect(f.calls).toEqual(['transaction', 'mailbox', 'source:update', 'extractions:update', 'attachments:update',
+    expect(f.calls).toEqual(['transaction', 'mailbox', 'source:update', 'extractions:no key update', 'attachments:update',
       'item:update', 'history', 'continue', 'commit']);
     expect(result.historicalEventIds).toEqual([f.historical.event.id]);
     expect(result.sourceDigest).toBe(createSourceSnapshotDigest({ source: f.source, extraction: f.extraction,
