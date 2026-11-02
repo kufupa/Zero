@@ -882,6 +882,8 @@ export type StoredAnalysis = ReturnType<typeof storedAnalysis>['analysis'];
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null };
+/** Revision and extraction link belong to the same row read as the displayed saved state. */
+type WorkItemSnapshot = WorkItemRef & { revision: number; revisionHead: number; revisionSeq: number };
 
 function contentKeepsId<T extends { id: string }>(
   id: string,
@@ -957,7 +959,7 @@ export async function ensureWorkItem(
     kind: MailKind;
     extractionId: string;
   },
-): Promise<WorkItemRef> {
+): Promise<WorkItemSnapshot> {
   await db
     .insert(workItem)
     .values({
@@ -975,6 +977,9 @@ export async function ensureWorkItem(
         status: workItem.status,
         state: workItem.state,
         extractionId: workItem.extractionId,
+        revision: workItem.revision,
+        revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq,
       })
       .from(workItem)
       .where(
@@ -1750,6 +1755,11 @@ export type StoredWork =
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
       workItemId: string | null;
       workItemStatus: string | null;
+      /** The work-item row's revision and extraction link, read with its saved state; null without an item. */
+      revision: number | null;
+      revisionHead: number | null;
+      revisionSeq: number | null;
+      workItemExtractionId: string | null;
       extractionId: string;
       refs: Record<string, GroupRef>;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
@@ -1864,7 +1874,7 @@ async function readyView(
     mailboxAddress: string | null;
   },
   latest: ReadyRead,
-  item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
+  item: WorkItemSnapshot | null,
   transportId: string,
 ): Promise<StoredWork> {
   const messageId = msg.id;
@@ -1910,6 +1920,10 @@ async function readyView(
     confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
+    revision: paneItem?.revision ?? null,
+    revisionHead: paneItem?.revisionHead ?? null,
+    revisionSeq: paneItem?.revisionSeq ?? null,
+    workItemExtractionId: paneItem?.extractionId ?? null,
     extractionId: read.id,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
@@ -1958,7 +1972,15 @@ export async function storedWorkFor(
   });
   if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
   const [item] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+    .select({
+      id: workItem.id,
+      status: workItem.status,
+      state: workItem.state,
+      extractionId: workItem.extractionId,
+      revision: workItem.revision,
+      revisionHead: workItem.revisionHead,
+      revisionSeq: workItem.revisionSeq,
+    })
     .from(workItem)
     .where(
       and(
@@ -2008,7 +2030,16 @@ export type FieldEventResult =
   | { status: 'not_found' }
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
-  | { status: 'recorded'; aiValue: unknown; value: unknown };
+  | {
+      status: 'recorded';
+      aiValue: unknown;
+      value: unknown;
+      previousSeq: number;
+      seq: number;
+      revision: number;
+      revisionHead: number;
+      workItemExtractionId: string | null;
+    };
 
 /**
  * Appends one field event and updates that field in the work item's state, in one transaction. ai_value is read from the
@@ -2094,7 +2125,16 @@ export async function recordFieldEvent(
         updatedAt: new Date(),
       })
       .where(eq(workItem.id, input.workItemId));
-    return { status: 'recorded' as const, aiValue, value };
+    return {
+      status: 'recorded' as const,
+      aiValue,
+      value,
+      previousSeq: item.revisionSeq,
+      seq: item.revisionSeq + 1,
+      revision: advanced.revision,
+      revisionHead: advanced.revisionHead,
+      workItemExtractionId: item.extractionId,
+    };
   });
 }
 
