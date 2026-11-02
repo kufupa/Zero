@@ -71,8 +71,7 @@ import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { focusThreadElement } from '@/lib/mail/mail-row-focus';
 import { getMailRowSelectionClasses } from '@/lib/mail/mail-row-selection';
-import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
-import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
+import { flushComposeBeforeSwitch } from '@/lib/mail/compose-flush-registry';
 import {
   isUnsupportedSearchOperatorError,
   mergeSearchQuery,
@@ -973,16 +972,23 @@ export const MailList = memo(function MailList() {
       return () => window.removeEventListener('refreshMailList', handleRefresh);
     }, [refetch]);
 
+    const saveAndClearCompose = useCallback(async () => {
+      if (!(await flushComposeBeforeSwitch())) {
+        toast.error('Could not save your draft. Try again before opening another email.');
+        return false;
+      }
+      setMode(null);
+      setActiveReplyId(null);
+      setDraftId(null);
+      return true;
+    }, [setMode, setActiveReplyId, setDraftId]);
+
     const handleNavigateToThread = useCallback(
       (threadId: string | null) => {
         const selection = listThreadSelection(threadId, workflowScoped, itemsRef.current);
-        void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
-          setMode(null);
-          setActiveReplyId(null);
-          setDraftId(null);
-        }).then(() => setMailSelection(selection));
+        void saveAndClearCompose().then((saved) => { if (saved) void setMailSelection(selection); });
       },
-      [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
+      [saveAndClearCompose, setMailSelection, workflowScoped],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -1081,15 +1087,12 @@ export const MailList = memo(function MailList() {
         handleMouseEnter(message.id);
 
         const messageThreadId = workflowScoped ? row.id : (message.threadId ?? message.id);
+        const selection = listThreadSelection(messageThreadId, workflowScoped, [row]);
         const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
+        if (!(await saveAndClearCompose())) return;
         setFocusedIndex(clickedIndex);
         if (message.unread && autoReadEnabled) optimisticMarkAsRead([messageThreadId], true);
-        await runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
-          setMode(null);
-          setActiveReplyId(null);
-          setDraftId(null);
-        });
-        setMailSelection(listThreadSelection(messageThreadId, workflowScoped, [row]));
+        void setMailSelection(selection);
       },
       [
         getSelectMode,
@@ -1098,9 +1101,7 @@ export const MailList = memo(function MailList() {
         setFocusedIndex,
         optimisticMarkAsRead,
         setMailSelection,
-        setDraftId,
-        setMode,
-        setActiveReplyId,
+        saveAndClearCompose,
         autoReadEnabled,
         workflowScoped,
       ],
@@ -1181,13 +1182,9 @@ export const MailList = memo(function MailList() {
     const handleNavigateToLinkedThread = useCallback(
       (threadId: string) => {
         const selection = listThreadSelection(threadId, workflowScoped, itemsRef.current);
-        void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
-          setMode(null);
-          setActiveReplyId(null);
-          setDraftId(null);
-        }).then(() => setMailSelection(selection));
+        void saveAndClearCompose().then((saved) => { if (saved) void setMailSelection(selection); });
       },
-      [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
+      [saveAndClearCompose, setMailSelection, workflowScoped],
     );
 
     const vListRenderer = useCallback(

@@ -41,7 +41,9 @@ vi.mock('nuqs', () => ({
 vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: (_target, key) => () => String(key) }) }));
 vi.mock('@/lib/mail/reply-compose-context', () => ({ openReplyComposeContext: (...args: unknown[]) => mocks.compose(...args) }));
 vi.mock('@/lib/mail/compose-flush-registry', () => ({
-  flushComposeBeforeLeave: () => mocks.flush(), composeHasUnsavedChanges: () => mocks.unsaved(),
+  flushComposeBeforeSwitch: async () => {
+    try { await mocks.flush(); return !mocks.unsaved(); } catch { return false; }
+  },
 }));
 
 import { ThreadContextMenu } from '../components/context/thread-context';

@@ -49,7 +49,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
-import { composeHasUnsavedChanges, flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { flushComposeBeforeSwitch } from '@/lib/mail/compose-flush-registry';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
@@ -363,14 +363,7 @@ export function ThreadContextMenu({
         matches[0]?.threadId !== threadId || !!matches[0]?.isDraft;
       messageId = sourceMessageId;
     }
-    try {
-      await flushComposeBeforeLeave();
-    } catch {
-      toast.error('Could not save your draft. Try again before opening another reply.');
-      return;
-    }
-    // The registered save reports failure by leaving its dirty revision intact.
-    if (composeHasUnsavedChanges()) {
+    if (!(await flushComposeBeforeSwitch())) {
       toast.error('Could not save your draft. Try again before opening another reply.');
       return;
     }

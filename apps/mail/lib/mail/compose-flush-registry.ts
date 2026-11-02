@@ -24,3 +24,13 @@ export function registerComposeUnsavedCheck(fn: (() => boolean) | null): void {
 export function composeHasUnsavedChanges(): boolean {
   return composeUnsavedCheck?.() ?? false;
 }
+
+/** A row switch must not discard a reply when its save failed or it remains dirty. */
+export async function flushComposeBeforeSwitch(): Promise<boolean> {
+  try {
+    await flushComposeBeforeLeave();
+    return !composeHasUnsavedChanges();
+  } catch {
+    return false;
+  }
+}

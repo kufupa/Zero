@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   flushComposeBeforeLeave,
+  flushComposeBeforeSwitch,
+  registerComposeUnsavedCheck,
   getComposeFlush,
   registerComposeFlush,
 } from '../lib/mail/compose-flush-registry';
@@ -8,6 +10,7 @@ import {
 describe('compose-flush-registry', () => {
   beforeEach(() => {
     registerComposeFlush(null);
+    registerComposeUnsavedCheck(null);
   });
 
   it('registers and returns flush fn', () => {
@@ -23,6 +26,16 @@ describe('compose-flush-registry', () => {
     });
     await flushComposeBeforeLeave();
     expect(called).toBe(true);
+  });
+
+  it('refuses a switch when flushing throws or leaves the reply dirty', async () => {
+    registerComposeFlush(async () => { throw new Error('failed'); });
+    await expect(flushComposeBeforeSwitch()).resolves.toBe(false);
+    registerComposeFlush(async () => {});
+    registerComposeUnsavedCheck(() => true);
+    await expect(flushComposeBeforeSwitch()).resolves.toBe(false);
+    registerComposeUnsavedCheck(() => false);
+    await expect(flushComposeBeforeSwitch()).resolves.toBe(true);
   });
 
   it('flushComposeBeforeLeave is no-op when empty', async () => {

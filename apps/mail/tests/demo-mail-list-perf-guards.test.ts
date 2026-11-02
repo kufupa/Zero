@@ -8,7 +8,7 @@ import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual, listThreadSelection } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 import { retainSameScopePlaceholder, selectionRequiresExactSource } from '../config/workflow-folders';
-import { registerComposeFlush } from '../lib/mail/compose-flush-registry';
+import { registerComposeFlush, registerComposeUnsavedCheck } from '../lib/mail/compose-flush-registry';
 
 const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
@@ -172,6 +172,7 @@ beforeEach(() => {
   mocks.folder = 'inbox';
   mocks.linkedTarget = null;
   registerComposeFlush(null);
+  registerComposeUnsavedCheck(null);
   mocks.setMailSelection.mockReset();
   mocks.onNavigate = null;
   mocks.searchValue = {
@@ -209,6 +210,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   registerComposeFlush(null);
+  registerComposeUnsavedCheck(null);
 });
 
 describe('demo mail list perf guards', () => {
@@ -306,6 +308,28 @@ describe('demo mail list perf guards', () => {
     view.rerender(createElement(MailList));
     await act(async () => { finish(); });
     await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'original' }));
+  });
+
+  it.each(['keyboard', 'linked', 'pointer'])('keeps the composer open after a failed %s navigation save', async (kind) => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = kind === 'linked' ? 'thread-a' : null;
+    const checkDirty = vi.fn(() => true);
+    registerComposeFlush(async () => {}); // The real failed save returns without clearing its dirty revision.
+    registerComposeUnsavedCheck(checkDirty);
+    const latest = { id: 'newer-message', threadId: 'thread-a', sender: { name: 'Guest', email: 'guest@example.com' },
+      subject: 'Request', body: '', tags: [], to: [], unread: false };
+    mocks.useThread.mockReturnValue({ data: { latest, messages: [latest], labels: [], totalReplies: 0 }, isGroupThread: false, latestDraft: null });
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    if (kind === 'linked') fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    else if (kind === 'pointer') fireEvent.click(screen.getByText('Guest'));
+    else act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(checkDirty).toHaveBeenCalled());
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
   });
 
   it('does not infer a missing workflow source for keyboard navigation', async () => {

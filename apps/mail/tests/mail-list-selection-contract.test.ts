@@ -34,9 +34,9 @@ describe('mail list selection wiring', () => {
     const clickHandlerEnd = listSource.indexOf('const activeSearch', clickHandlerStart);
     const clickHandler = listSource.slice(clickHandlerStart, clickHandlerEnd);
 
-    expect(clickHandler.indexOf('runComposeLeaveFlush')).toBeGreaterThanOrEqual(0);
-    expect(clickHandler.indexOf('runComposeLeaveFlush')).toBeLessThan(
-      clickHandler.indexOf('setThreadId(messageThreadId)'),
+    expect(clickHandler.indexOf('saveAndClearCompose')).toBeGreaterThanOrEqual(0);
+    expect(clickHandler.indexOf('saveAndClearCompose')).toBeLessThan(
+      clickHandler.indexOf('setMailSelection(selection)'),
     );
   });
 });
