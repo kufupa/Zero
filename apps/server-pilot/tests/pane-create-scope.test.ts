@@ -29,6 +29,19 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[other].count': 1 } })).toBe(false);
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r1].removed': true } })).toBe(false);
   });
+  it('binds the reviewed room choice to the correct extracted or staff-edited row', () => {
+    const queen = { ...payload, stays: [{ ...extractedStay, rows: [{ ...row, roomType: 'Standard Queen' }] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: queen })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, payload: queen, stay: { ...stay, roomType: 'STWN' } })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: queen, stay: { ...stay, roomType: 'STWN' },
+      state: { 'stays[s1].rows[r1].roomType': 'STWN' } })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, payload: queen, state: { 'stays[s1].rows[r1].roomType': 'STWN' } })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: { ...payload, stays: [
+      { ...extractedStay, rows: [{ ...row, roomType: 'Standard room' }] },
+    ] } })).toBe(false);
+    // A missing extracted room type remains available for an explicit staff choice.
+    expect(reconcilePaneCreateScope(base)).toBe(true);
+  });
   it('accepts an explicit correction to one room but never guesses an unknown count', () => {
     const two = { ...payload, stays: [{ ...extractedStay, totalRooms: 2, rows: [{ ...row, rooms: 2 }] }] };
     expect(reconcilePaneCreateScope({ ...base, payload: two })).toBe(false);

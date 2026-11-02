@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { mailExtractionPayloadSchema, type ExtractionRow, type ExtractionStay } from './extraction/schema.js';
 import { parseFieldPath, validFieldValue, type WorkState } from './work-items.js';
 import type { PaneStay } from './pane-stay-save.js';
+import { matchRoomType } from './room-types.js';
 
 const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 export const paneCreatePartySchema = z.discriminatedUnion('kind', [
@@ -64,6 +65,12 @@ export function reconcilePaneCreateScope(input: {
   const value = (path: string, fallback: unknown): unknown => Object.hasOwn(input.state, path) ? input.state[path] : fallback;
   const stayPath = `stays[${stay.id}]`;
   const rowPath = `${stayPath}.rows[${row.id}]`;
+  const roomType = value(`${rowPath}.roomType`, row.roomType);
+  if (roomType !== null) {
+    // Extraction may hold a human label, not a native code. Never select an ambiguous match.
+    if (typeof roomType !== 'string' || !roomType.trim() ||
+        matchRoomType(roomType, input.stay.propertyCode).code !== input.stay.roomType) return false;
+  }
   const hasStaffCount = Object.hasOwn(input.state, `${rowPath}.count`);
   const rawCount = value(`${rowPath}.count`, row.rooms);
   const count = rawCount === null && !hasStaffCount ? stay.totalRooms : rawCount;
