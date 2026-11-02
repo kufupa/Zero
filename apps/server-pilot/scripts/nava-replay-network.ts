@@ -2,7 +2,7 @@
 import type { Browser, BrowserContext, BrowserContextOptions, Page } from 'playwright';
 import { installWriteGuard, type BlockedWrite, type ReplayPreparePolicy } from './nava-preview-run';
 
-export type BlockedReplayNetwork = { path: string; reason: 'origin' | 'method' | 'native' | 'auth' | 'other_page' | 'websocket' | 'endpoint' };
+export type BlockedReplayNetwork = { path: string; reason: 'origin' | 'method' | 'native' | 'auth' | 'other_page' | 'websocket' | 'endpoint' | 'redirect' | 'upstream' };
 
 const protectedPages = new WeakMap<BrowserContext, { page: Page; origin: string }>();
 
@@ -34,7 +34,27 @@ export async function createReplayPage(
         await route.abort('blockedbyclient');
         return;
       }
-      await route.fallback();
+      // Playwright routes only the first URL in a redirect chain. Fetch the
+      // already-guarded request without following redirects, then never expose
+      // a redirect response to Chromium, including same-origin 307/308 writes.
+      try {
+        const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
+        try {
+          if (response.status() >= 300 && response.status() < 400) {
+            blocked.push({ path: new URL(route.request().url()).pathname, reason: 'redirect' });
+            await route.abort('blockedbyclient');
+          } else {
+            await route.fulfill({ response });
+          }
+        } finally {
+          await response.dispose();
+        }
+      } catch {
+        let path = '(unknown)';
+        try { path = new URL(route.request().url()).pathname; } catch { /* invalid URL */ }
+        blocked.push({ path, reason: 'upstream' });
+        await route.abort('blockedbyclient').catch(() => {});
+      }
     });
     await context.routeWebSocket('**/*', async (socket) => {
       let path = '(unknown)';
