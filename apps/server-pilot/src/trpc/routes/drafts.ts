@@ -60,6 +60,7 @@ import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
+import { draftWithEditedRevisionsQuery } from './draft-provenance-query.js';
 import { TRPCError } from '@trpc/server';
 import { parseEnv } from '../../env.js';
 import { z } from 'zod';
@@ -1237,6 +1238,8 @@ export async function enqueueHmsCandidateRefresh(input: {
  * without a migration, the same way follow-up drafts are told apart by their draft id.
  */
 const SAVED_REPLY_REVISION_PREFIX = 'saved-reply:';
+// Partial updates do not assert that omitted headers were intentionally cleared.
+const PARTIAL_HEADER_REVISION_MARKER = ':partial-headers:';
 
 export const draftsRouter = tRouter({
   getArtifact: mailboxProcedure
@@ -1347,16 +1350,19 @@ export const draftsRouter = tRouter({
   get: mailboxProcedure.input(z.object({ id: z.string() })).query(async ({ input, ctx }) => {
     const db = getDb();
     const transportId = ctx.activeTransportId;
-    const rows = await db
-      .select()
-      .from(mailDraft)
-      .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
-      .limit(1);
+    const rows = await draftWithEditedRevisionsQuery(db, input.id, transportId);
     if (rows.length === 0) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
     }
-    const r = rows[0]!;
-    return toDraftWire(r, false, await loadDraftReviewSummary(db, r));
+    const { draft: r, editedRevisionIds } = rows[0]!;
+    // Historical edited revisions have no per-field provenance; retain the prior full-snapshot interpretation.
+    const fullHeaders = r.origin === 'manual' || editedRevisionIds.some((id) => !id.includes(PARTIAL_HEADER_REVISION_MARKER));
+    const partialFields = new Set(editedRevisionIds.filter((id) => id.includes(PARTIAL_HEADER_REVISION_MARKER))
+      .flatMap((id) => (id.split(PARTIAL_HEADER_REVISION_MARKER)[1] ?? '').split(',')));
+    const savedHeaderFields = { to: fullHeaders || partialFields.has('to'), cc: fullHeaders || partialFields.has('cc'),
+      bcc: fullHeaders || partialFields.has('bcc'), subject: fullHeaders || partialFields.has('subject') };
+    return { ...toDraftWire(r, false, await loadDraftReviewSummary(db, r)),
+      headersSaved: Object.values(savedHeaderFields).every(Boolean), savedHeaderFields };
   }),
 
   /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
@@ -1746,7 +1752,7 @@ export const draftsRouter = tRouter({
       toAddresses: input.to,
       ccAddresses: input.cc,
       bccAddresses: input.bcc,
-      subject: input.subject || null,
+      subject: input.subject,
       textBody: input.html || null,
       htmlBody: input.html || null,
       attachments: [] as (typeof mailDraft.$inferSelect)['attachments'],
@@ -1790,7 +1796,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        if (changed) {
+        // A staff snapshot asserts every header, including clears that match generated defaults.
+        if (changed || prior.origin === 'ai') {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId,
@@ -1830,7 +1837,7 @@ export const draftsRouter = tRouter({
           toAddresses: input.to,
           ccAddresses: input.cc,
           bccAddresses: input.bcc,
-          subject: input.subject || null,
+          subject: input.subject,
           textBody: input.html || null,
           htmlBody: input.html || null,
           attachments: row.attachments,
@@ -1899,7 +1906,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        if (changed) {
+        // A staff snapshot asserts every header, including clears that match generated defaults.
+        if (changed || prior.origin === 'ai') {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId: activeId,
@@ -1956,7 +1964,7 @@ export const draftsRouter = tRouter({
       if (input.to) patch.toAddresses = input.to;
       if (input.cc) patch.ccAddresses = input.cc;
       if (input.bcc) patch.bccAddresses = input.bcc;
-      if (input.subject !== undefined) patch.subject = input.subject || null;
+      if (input.subject !== undefined) patch.subject = input.subject;
       if (input.content !== undefined) patch.textBody = input.content || null;
       if (input.html !== undefined) patch.htmlBody = input.html || null;
       if (input.threadId !== undefined) patch.threadId = input.threadId || null;
@@ -2004,9 +2012,10 @@ export const draftsRouter = tRouter({
           JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
             JSON.stringify(merged.bccAddresses ?? []);
 
-        if (changed) {
+        const touchedHeaders = (['to', 'cc', 'bcc', 'subject'] as const).filter((field) => input[field] !== undefined);
+        if (changed || touchedHeaders.length > 0) {
           await tx.insert(mailDraftRevision).values({
-            id: randomUUID(),
+            id: `${randomUUID()}${PARTIAL_HEADER_REVISION_MARKER}${touchedHeaders.join(',')}`,
             draftId: input.id,
             generationId: merged.generationId,
             actorUserId: ctx.sessionUser.id,
@@ -2142,7 +2151,7 @@ export const draftsRouter = tRouter({
             toAddresses: input.to,
             ccAddresses: [],
             bccAddresses: [],
-            subject: input.subject || null,
+            subject: input.subject,
             textBody: html,
             htmlBody: html,
             attachments,
@@ -2173,7 +2182,7 @@ export const draftsRouter = tRouter({
             toAddresses: input.to,
             ccAddresses: [],
             bccAddresses: [],
-            subject: input.subject || null,
+            subject: input.subject,
             textBody: html,
             htmlBody: html,
             attachments,

@@ -27,6 +27,17 @@ describe('bounded native saved-stay preimage', () => {
     expect(projectNativeSavedStayPreimage({ ...withChild, data: { ...withChild.data, childages: '18' } }, expected)?.childAges).toBe('unknown');
     expect(projectNativeSavedStayPreimage({ ...withChild, data: { ...withChild.data, childages: '1' } }, expected)?.childAges).toBe('unknown');
   });
+  it('reports guarantee code only when clean model and control agree', () => {
+    const row = snapshot();
+    const paired = { ...row, data: { ...row.data, guaranteetype: 'GTDAGT' }, controls: { guaranteetype: 'GTDAGT' } };
+    expect(projectNativeSavedStayPreimage(paired, expected)?.guaranteeCode).toBe('GTDAGT');
+    for (const changed of [
+      { ...paired, controls: { guaranteetype: 'NGI' } },
+      { ...paired, controls: { guaranteetype: '' } },
+      { ...paired, controls: {} },
+      { ...paired, data: { ...paired.data, GuaranteeType: 'GTDAGT' } },
+    ]) expect(projectNativeSavedStayPreimage(changed, expected)?.guaranteeCode).toBeUndefined();
+  });
   it('refuses mismatched identity, dirty forms, duplicate keys and malformed native IDs', () => {
     const row = snapshot();
     for (const bad of [
@@ -57,7 +68,7 @@ describe('native browser preimage reader', () => {
     let observed: unknown;
     const frame = { evaluate: async (callback: (arg: { keys: string[]; formKeys: string[] }) => unknown,
       arg: { keys: string[]; formKeys: string[] }) => { observed = callback(arg); return observed; } };
-    return { frame, record, fields, guest, observed: () => observed };
+    return { frame, record, fields, guest, panel, observed: () => observed };
   }
 
   it('runs the callback and returns only bounded clean fields', async () => {
@@ -67,6 +78,23 @@ describe('native browser preimage reader', () => {
     });
     expect(JSON.stringify(f.observed())).not.toContain('secretNotForExport');
     expect(JSON.stringify(f.observed())).not.toContain('private');
+  });
+
+  it('reads native guarantee only from a unique clean control on the selected form', async () => {
+    const f = browserFixture();
+    Object.assign(f.record.data, { guaranteetype: 'GTDAGT' });
+    const input = { name: 'guaranteetype', id: 'guaranteetype-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
+    const guarantee = { getName: () => 'guaranteetype', isDirty: () => false, getValue: () => 'GTDAGT' };
+    f.fields.push(guarantee);
+    f.panel.el.dom.contains = (node: unknown) => node === f.guest || node === input;
+    vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [input] });
+    vi.stubGlobal('Ext', { getCmp: (id: string) => id === 'guaranteetype' ? guarantee : { up: () => f.panel } });
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.guaranteeCode).toBe('GTDAGT');
+    guarantee.getValue = () => 'NGI';
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.guaranteeCode).toBeUndefined();
+    guarantee.getValue = () => 'GTDAGT';
+    vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [input, input] });
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.guaranteeCode).toBeUndefined();
   });
 
   it('rejects dirty fields, dirty models, duplicate keys and duplicate guest controls', async () => {
