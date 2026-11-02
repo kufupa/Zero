@@ -135,6 +135,43 @@ describe('batch create scope reconciliation', () => {
     const unclear = fixture(); unclear.payload.stays[0]!.rows[1]!.childAges = null as never;
     expect(reconcilePaneBatchCreateScope(unclear)).toEqual(held('occupancy_unverified'));
   });
+  it('holds unresolved unselected counts even when occupancy totals are absent', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows.push({ ...stay.rows[0]!, id: 'r3' });
+    stay.totalRooms = 3; stay.totalAdults = null as never; stay.totalChildren = null as never;
+    f.state['stays[s1].rows[r3].count'] = null;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
+    f.state['stays[s1].rows[r3].count'] = 1;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('does not treat no-op room edits as authority to ignore extracted room totals', () => {
+    for (const edit of [
+      { 'stays[s1].rows[r1].removed': null },
+      { 'stays[s1].rows[r1].count': 1 },
+    ]) {
+      const f = fixture(); f.payload.stays[0]!.totalRooms = 3;
+      f.payload.stays[0]!.totalAdults = null as never; f.payload.stays[0]!.totalChildren = null as never;
+      f.state = edit;
+      expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
+    }
+  });
+  it('still checks extracted room totals when an unknown source row count is resolved', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows.push({ ...stay.rows[0]!, id: 'r3', rooms: null as never });
+    stay.totalRooms = 4; stay.totalAdults = null as never; stay.totalChildren = null as never;
+    f.state['stays[s1].rows[r3].count'] = 1;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
+    stay.totalRooms = 3;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('allows an explicit changed count while retaining complete active row counts', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.totalAdults = null as never; stay.totalChildren = null as never;
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+    f.state['stays[s1].rows[r2].count'] = null;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
+  });
   it('holds cross-stay removal-ID collisions that hide an approved row in the pane', () => {
     const f = fixture();
     f.payload.stays.push({ ...structuredClone(f.payload.stays[0]!), id: 's2', rows: [{ ...f.payload.stays[0]!.rows[0]!, id: 'r1' }] });

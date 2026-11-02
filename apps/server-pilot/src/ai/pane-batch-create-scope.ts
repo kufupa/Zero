@@ -90,11 +90,24 @@ export function reconcilePaneBatchCreateScope(input: {
     const stayPath = `stays[${stay.id}]`;
     const totalAdults = value(`${stayPath}.totalAdults`, stay.totalAdults ?? null);
     const totalChildren = value(`${stayPath}.totalChildren`, stay.totalChildren ?? null);
-    const compositionEdited = stay.rows.some((row) =>
-      Object.hasOwn(input.state, `${stayPath}.rows[${row.id}].count`) ||
-      Object.hasOwn(input.state, `${stayPath}.rows[${row.id}].removed`));
+    // Only an actual change to a known source count, an added row, or a
+    // removed source row supersedes the extracted room total. A null/no-op
+    // marker, or resolving an unknown count, does not change that total.
+    const sourceStay = projection.payload.stays.find((item) => item.id === stay.id);
+    const compositionEdited = stay.rows.some((row) => {
+      const rowPath = `${stayPath}.rows[${row.id}]`;
+      const sourceRow = sourceStay?.rows.find((item) => item.id === row.id);
+      const removed = input.state[`${rowPath}.removed`] === true;
+      if (removed) return Boolean(sourceRow);
+      if (!sourceRow) return true;
+      const originalCount = sourceRow.rooms === null && sourceStay?.rows.length === 1
+        ? sourceStay.totalRooms : sourceRow.rooms;
+      const countPath = `${rowPath}.count`;
+      return typeof originalCount === 'number' && Object.hasOwn(input.state, countPath) &&
+        input.state[countPath] !== originalCount;
+    });
     const needsRoomTotal = stay.totalRooms !== null && !compositionEdited;
-    if (totalAdults === null && totalChildren === null && !needsRoomTotal) continue;
+    // Every active row must have a known count, even with unknown totals.
     let rooms = 0, adults = 0, children = 0;
     for (const row of rows) {
       const rowPath = `${stayPath}.rows[${row.id}]`, countPath = `${rowPath}.count`;
