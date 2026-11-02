@@ -45,7 +45,7 @@ export type FilingRunnerDependencies = {
   isEligibleSnapshot(snapshot: unknown, form: ApprovedForm): boolean;
   /** The implementation must append the preimage durably under this same fenced run. */
   persistPreimage(input: { fence: AiRunFence; grantId: string; preimage: unknown }): Promise<boolean>;
-  /** Calls the guarded Labtest adapter, which invokes checkAuthority again immediately before release. */
+  /** The native adapter must check the supplied deadline immediately before dispatch. */
   fileLabtestVoucher(input: { page: Page; form: ApprovedForm; bytes: Buffer;
     checkAuthority: () => Promise<boolean>; deadlineAt: Date;
     persistPreimage: (preimage: unknown) => Promise<boolean> }): Promise<NativeOutcome>;
@@ -140,7 +140,7 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         }
       } catch { return finish('refused', 'filing_needs_check'); }
       // The upload route can be paused when this runs. Do not touch the HMS page here.
-      // The native adapter separately rechecks its clean record and complete baseline.
+      // Native dispatch remains held until a fresh, complete baseline is independently proven.
       const checkAuthority = async (): Promise<boolean> => {
         if (!withinDeadline() || !safePage(page) || !lockHeld() || !(await readBytes()) || !withinDeadline()) return false;
         try {
