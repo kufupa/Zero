@@ -1,5 +1,6 @@
 import { installFakeOutlookBridge, type FakeOutlookEmail } from '../scripts/nava-replay-fake-outlook';
-import { installWriteGuard, type BlockedWrite } from '../scripts/nava-preview-run';
+import { type BlockedWrite } from '../scripts/nava-preview-run';
+import { createReplayPage, type BlockedReplayNetwork } from '../scripts/nava-replay-network';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { existsSync } from 'node:fs';
@@ -25,12 +26,11 @@ describe('fake Outlook bridge', () => {
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
     try {
-      const context = await browser.newContext({ extraHTTPHeaders: { 'x-zero-active-transport': 'mailbox-1' } });
-      const page = await context.newPage();
-      const blocked: BlockedWrite[] = [];
-      await installWriteGuard(page, blocked);
+      const blocked: BlockedWrite[] = [], blockedNetwork: BlockedReplayNetwork[] = [];
+      const { context, page } = await createReplayPage(browser, origin, blockedNetwork, blocked,
+        { contextOptions: { extraHTTPHeaders: { 'x-zero-active-transport': 'mailbox-1' } } });
       await installFakeOutlookBridge(page, { origin, transportId: 'mailbox-1', storeId: 'store-1', emails: [email('A'), email('B')] });
-      await page.goto(origin);
+      await page.goto(`${origin}/outlook-pane`);
       const result = await page.evaluate(async () => {
         type Response = { version: number; requestId: string; action: string; success: boolean; data: Record<string, unknown> | null };
         type Event = { data: string };
@@ -83,11 +83,18 @@ describe('fake Outlook bridge', () => {
         const repeatAttachment = await native('ADD_ATTACHMENT_TO_DRAFT', { operationId: 'attachment-1', ...location,
           fileName: 'quote.pdf', base64Data: 'UERG' }, (await grant('ADD_ATTACHMENT_TO_DRAFT')).ticket);
         const forbidden = await native('SEND_EMAIL', {}, (await grant('GET_ACTIVE_EMAIL')).ticket);
+        let invalidNativeBlocked = false;
+        try { await fetch('/api/outlook/native/enroll', { method: 'POST' }); } catch { invalidNativeBlocked = true; }
+        let invalidTicketBlocked = false;
+        try { await fetch('/api/trpc/workstation.bridgeTicket?batch=1', { method: 'POST',
+          headers: { 'content-type': 'application/json' }, body: JSON.stringify({ 0: { json: { action: 'SEND_EMAIL' } } }) }); }
+        catch { invalidTicketBlocked = true; }
         let mixedBlocked = false;
         try { await fetch('/api/trpc/workstation.bridgeTicket,quoteWorkflow.commitStay?batch=1', { method: 'POST' }); }
         catch { mixedBlocked = true; }
         return { ping, bootstrap, registration, ticket, capabilities, reused, wrongAction, selections, reply, duplicateReply, attachment, repeatAttachment, forbidden,
-          mixedBlocked, drafts: host.__navaFakeOutlook.drafts };
+          mixedBlocked, invalidNativeBlocked, invalidTicketBlocked, drafts: host.__navaFakeOutlook.drafts,
+          forbiddenAttempts: (host.__navaFakeOutlook as State & { forbidden: string[] }).forbidden };
       });
       expect(result.ping).toMatchObject({ version: 4, success: true, data: { paired: true } });
       expect(result.bootstrap.paneChallenge).toHaveLength(43);
@@ -104,8 +111,13 @@ describe('fake Outlook bridge', () => {
       expect(result.drafts[0]?.attachments).toHaveLength(1);
       expect(result.forbidden.success).toBe(false);
       expect(result.mixedBlocked).toBe(true);
+      expect(result.invalidNativeBlocked).toBe(true);
+      expect(result.invalidTicketBlocked).toBe(true);
+      expect(result.forbiddenAttempts.length).toBeGreaterThan(0);
+      expect(blockedNetwork).toContainEqual({ path: '/api/outlook/native/enroll', reason: 'native' });
+      expect(blocked.map((item) => item.procedure)).toContain('workstation.bridgeTicket');
       expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.commitStay');
-      expect(requests).toEqual(['/']);
+      expect(requests).toEqual(['/outlook-pane']);
       await context.close();
     } finally {
       await browser.close();

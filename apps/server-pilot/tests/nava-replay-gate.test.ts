@@ -14,12 +14,12 @@ beforeEach(() => {
   const png = Buffer.from('89504e470d0a1a0a00', 'hex');
   writeFileSync(pane, png);
   writeFileSync(page, png);
-  expected = { threadId: 'thread-a', messageId: 'message-a', readAs: 'quote', requireDraft: true, requireAttachment: true };
+  expected = { threadId: 'thread-a', messageId: 'message-a', readAs: 'quote', requireDraft: true, requireAttachment: true, requireSourceAttachment: false };
   observed = {
     threadId: 'thread-a', messageId: 'message-a', synchronized: true, outcome: 'intent', readAs: 'quote',
     drafts: [{ messageId: 'message-a', location: { entryId: 'draft', storeId: 'store', folderEntryId: 'drafts' },
       attachments: [{ fileName: 'quote.pdf', base64Data: 'UERG' }] }],
-    forbiddenBatches: [], screenshotPaths: [pane, page],
+    forbiddenBatches: [], forbiddenNetwork: [], forbiddenBridgeActions: [], sourceAttachmentMetadata: null, screenshotPaths: [pane, page],
   };
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -38,6 +38,25 @@ describe('replay evidence gate', () => {
     observed.forbiddenBatches = [['workstation.bridgeTicket', 'quoteWorkflow.commitStay']]; observed.outcome = 'timeout';
     expect(replayGateFailures(expected, observed)).toEqual(expect.arrayContaining(['forbidden_batch', 'pane_not_ready']));
   });
+  it('fails blocked networks, failed bridge actions and absent safety evidence', () => {
+    observed.forbiddenNetwork = ['other_page']; observed.forbiddenBridgeActions = ['invalid_or_forbidden_bridge_action'];
+    expect(replayGateFailures(expected, observed)).toEqual(expect.arrayContaining(['forbidden_network', 'forbidden_bridge_action']));
+    observed.forbiddenNetwork = undefined as unknown as string[];
+    observed.forbiddenBridgeActions = undefined as unknown as string[];
+    expect(replayGateFailures(expected, observed)).toEqual(expect.arrayContaining(['forbidden_network', 'forbidden_bridge_action']));
+  });
+  it('requires current message-bound source attachment metadata for filing fixtures', () => {
+    expected.requireSourceAttachment = true;
+    expect(replayGateFailures(expected, observed)).toContain('missing_source_attachment_metadata');
+    observed.sourceAttachmentMetadata = { threadId: 'thread-a', messageId: 'message-b', id: 'file',
+      filename: 'voucher.pdf', mimeType: 'application/pdf', sizeBytes: 42 };
+    expect(replayGateFailures(expected, observed)).toContain('missing_source_attachment_metadata');
+    observed.sourceAttachmentMetadata.messageId = 'message-a';
+    expect(replayGateFailures(expected, observed)).not.toContain('missing_source_attachment_metadata');
+    observed.sourceAttachmentMetadata.sizeBytes = 0;
+    expect(replayGateFailures(expected, observed)).toContain('missing_source_attachment_metadata');
+  });
+
   it('requires a draft bound to the selected message and a nonempty attachment', () => {
     observed.drafts[0]!.messageId = 'message-b';
     expect(replayGateFailures(expected, observed)).toEqual(expect.arrayContaining(['missing_draft', 'missing_attachment']));

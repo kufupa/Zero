@@ -1,6 +1,7 @@
 /** Test-only Outlook bridge. Never reaches a native add-in or issues a real bridge ticket. */
 import type { Page } from 'playwright';
 import { randomUUID } from 'node:crypto';
+import { isProtectedReplayPage } from './nava-replay-network';
 
 export type FakeOutlookEmail = {
   entryId: string;
@@ -26,15 +27,16 @@ const CHALLENGE = 'f'.repeat(43);
 const DEVICE = '00000000-0000-4000-8000-000000000001';
 const ACTIONS = ['GET_CAPABILITIES', 'GET_ACTIVE_EMAIL', 'CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT'];
 
-/** Install after the general tRPC write guard, so all non-ticket requests fall through to it. */
+/** Install only on the designated fenced replay page. Invalid requests fall through to its guard. */
 export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookFixture): Promise<void> {
+  if (!isProtectedReplayPage(page, fixture.origin)) throw new Error('Fake Outlook requires a protected replay page');
   if (!fixture.transportId || !fixture.storeId || !fixture.emails.length ||
     fixture.emails.some((mail) => mail.storeId !== fixture.storeId))
     throw new Error('Fake Outlook requires selected emails from the configured store');
   await page.route('**/api/outlook/native/**', async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== fixture.origin || url.pathname !== '/api/outlook/native/bootstrap' || route.request().method() !== 'POST') {
-      await route.abort('blockedbyclient');
+      await route.fallback();
       return;
     }
     await route.fulfill({ json: { protocol: 'nava-outlook-v4', status: 'ready', paneChallenge: CHALLENGE, expiresInSeconds: 60 } });
@@ -67,7 +69,7 @@ export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookF
       input?.deviceId !== DEVICE || input?.paneChallenge !== CHALLENGE ||
       typeof input.action !== 'string' || !ACTIONS.includes(input.action) ||
       (input.storeId !== undefined && input.storeId !== fixture.storeId)) {
-      await route.abort('blockedbyclient');
+      await route.fallback();
       return;
     }
     const ticket = `fake-${randomUUID()}`;
@@ -80,7 +82,7 @@ export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookF
       }, { ticket, action: input.action });
       if (!registered) throw new Error('Fake navigation is not registered');
     } catch {
-      await route.abort('blockedbyclient');
+      await route.fallback();
       return;
     }
     const result = { result: { data: { json: { ticket, storeId: fixture.storeId, expiresInSeconds: 60 } } } };
@@ -102,6 +104,7 @@ export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookF
       return !!grant && grant.action === action && grant.expiresAt > Date.now();
     };
     const requests: Request[] = [];
+    const forbidden: string[] = [];
     const drafts: Draft[] = [];
     const emit = (message: unknown) => {
       const event = { data: JSON.stringify(message) };
@@ -154,6 +157,7 @@ export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookF
             else { if (!prior) draft.attachments.push(payload); data = { added: true }; }
           }
         } else error = 'Fake Outlook action is forbidden';
+        if (error) forbidden.push('invalid_or_forbidden_bridge_action');
         queueMicrotask(() => emit({ version: 4, requestId: request.requestId, action: request.action,
           success: !error, data, ...(error ? { error } : {}) }));
       },
@@ -162,7 +166,7 @@ export async function installFakeOutlookBridge(page: Page, fixture: FakeOutlookF
     root.chrome ??= {};
     root.chrome.webview = bridge;
     root.__navaFakeOutlook = {
-      requests, drafts,
+      requests, drafts, forbidden,
       issue: (ticket: string, action: string) => {
         if (!registered || !actions.includes(action)) return false;
         grants.set(ticket, { action, expiresAt: Date.now() + 60_000 });

@@ -7,6 +7,8 @@ export type ReplayExpectation = {
   readAs: string;
   requireDraft: boolean;
   requireAttachment: boolean;
+  /** Filing fixtures require metadata for an attachment on the exact current inbound. */
+  requireSourceAttachment: boolean;
 };
 
 export type ReplayDraftEvidence = {
@@ -25,6 +27,11 @@ export type ReplayObservation = {
   drafts: ReplayDraftEvidence[];
   /** Every batch the request guard rejected, including individual procedure names. */
   forbiddenBatches: string[][];
+  /** Includes blocked origins, unreviewed endpoints, other pages and WebSockets. */
+  forbiddenNetwork: string[];
+  forbiddenBridgeActions: string[];
+  /** Metadata only, not proof of source bytes or a successful HMS filing. */
+  sourceAttachmentMetadata: { threadId: string; messageId: string; id: string; filename: string; mimeType: string; sizeBytes: number } | null;
   screenshotPaths: string[];
 };
 
@@ -47,7 +54,13 @@ export function replayGateFailures(expected: ReplayExpectation, observed: Replay
   if (!observed.synchronized) failures.push('fixture_unsynced');
   if (observed.outcome !== 'intent') failures.push('pane_not_ready');
   if (!expected.readAs || observed.readAs !== expected.readAs) failures.push('wrong_outcome');
-  if (observed.forbiddenBatches.length) failures.push('forbidden_batch');
+  if (!Array.isArray(observed.forbiddenBatches) || observed.forbiddenBatches.length) failures.push('forbidden_batch');
+  if (!Array.isArray(observed.forbiddenNetwork) || observed.forbiddenNetwork.length) failures.push('forbidden_network');
+  if (!Array.isArray(observed.forbiddenBridgeActions) || observed.forbiddenBridgeActions.length) failures.push('forbidden_bridge_action');
+  const source = observed.sourceAttachmentMetadata;
+  if (expected.requireSourceAttachment && (!source || source.messageId !== expected.messageId ||
+    source.threadId !== expected.threadId || !source.id || !source.filename || !source.mimeType ||
+    !Number.isSafeInteger(source.sizeBytes) || source.sizeBytes <= 0)) failures.push('missing_source_attachment_metadata');
   const drafts = observed.drafts.filter((draft) => draft.messageId === expected.messageId &&
     Boolean(draft.location?.entryId && draft.location?.storeId && draft.location?.folderEntryId));
   if ((expected.requireDraft || expected.requireAttachment) && !drafts.length) failures.push('missing_draft');
