@@ -3125,6 +3125,122 @@ describe('batch booking card integration', () => {
     };
   }
 
+  function crossDraftSession(firstRoomCount = 1): QuoteSession {
+    const first = draftReady();
+    const second = draftReady();
+    first.draft.rooms = first.draft.rooms.slice(0, firstRoomCount);
+    second.draft.rooms = [{ ...second.draft.rooms[1]!, groupId: 'g2', roomIndex: 1,
+      request: { ...second.draft.rooms[1]!.request, departure: '2026-11-15', roomType: 'DLXKNG' } }];
+    const session = quotedSession(first);
+    return { ...session,
+      groups: [{ ...g1, quantity: firstRoomCount }, { ...g1, id: 'g2', quantity: 1, departureDate: '2026-11-15' }],
+      bookingDrafts: { '2026-11-12:2026-11-14': first, '2026-11-12:2026-11-15': second },
+    };
+  }
+
+  const crossReview = { refs: { g1: { stayId: 's1', rowId: 'r1' }, g2: { stayId: 's2', rowId: 'r2' } }, revision: 'rev' };
+  const itemId = '11111111-1111-4111-8111-111111111111';
+
+  it('reviews same-arrival drafts together and preserves a partial result after one Go', async () => {
+    const api = batchClient(), single = paneClient();
+    api.read = vi.fn(async ({ workItemId, runId }) => ({ workItemId, runId, complete: true, rooms: [
+      { allocationId: 'g1:1', status: 'confirmed' as const, confirmation: '123', screenshotRecorded: true,
+        readbackRecorded: true, attempt: { runId, childId: 'a'.repeat(64) } },
+      { allocationId: 'g2:1', status: 'uncertain' as const, attempt: { runId, childId: 'b'.repeat(64) } },
+    ] }));
+    const session = crossDraftSession();
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Review these rooms' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    await screen.findByText('Booked · confirmation 123');
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 },
+        stay: expect.objectContaining({ departure: '2026-11-14', roomType: 'STQN' }) }),
+      expect.objectContaining({ identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 },
+        stay: expect.objectContaining({ departure: '2026-11-15', roomType: 'DLXKNG' }) }),
+    ] }));
+    expect(api.approve).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByLabelText('First name').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: session.groups.slice(0, 1), bookingDrafts }} {...props} />);
+    expect(screen.getByText('Booked · confirmation 123')).toBeDefined();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(single.preview).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('does not offer another Go when an active source panel unmounts and returns', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    api.approve = vi.fn(() => new Promise<{ runId: string }>(() => {}));
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(api.approve).toHaveBeenCalledTimes(1);
+    expect(session.binding).not.toBeNull();
+    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2 } }} {...props} />);
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByText(/Multi-room booking is not available/)).toBeDefined();
+    expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a shared review when an excluded child in another draft is edited', async () => {
+    const api = batchClient();
+    render(<QuoteBookingHost session={crossDraftSession(2)} contact={CARD_CONTACT} propertyCode={HRCEN_PROPERTY_CODE}
+      workItemId={itemId} batchReview={{ ...crossReview, client: api }} />);
+    pickRoomChoices(0); pickRoomChoices(2);
+    const firstInclusion = screen.getAllByRole('group', { name: 'Rooms to review' })[0]!;
+    fireEvent.click(within(firstInclusion).getAllByRole('checkbox')[1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    fireEvent.change(screen.getAllByLabelText('First name')[1]!, { target: { value: 'Changed' } });
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(screen.getByText(/Booking details changed/)).toBeDefined();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('holds the whole review and legacy writes while one expected draft is absent', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    render(<QuoteBookingHost session={{ ...session, bookingDrafts }} contact={CARD_CONTACT} paneSave={single.client}
+      propertyCode={HRCEN_PROPERTY_CODE} workItemId={itemId} batchReview={{ ...crossReview, client: api }} />);
+    expect(screen.getByText(/booking details/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('discards a delayed review if an expected draft disappears', async () => {
+    const api = batchClient(), initialPrepare = api.prepare;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    api.prepare = vi.fn(async (input) => { await waiting; return initialPrepare(input); });
+    const session = crossDraftSession();
+    const props = { contact: CARD_CONTACT, propertyCode: HRCEN_PROPERTY_CODE, workItemId: itemId,
+      batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, bookingDrafts }} {...props} />);
+    await act(async () => { release(); await waiting; });
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
   it('holds legacy room saves when batch capability is unavailable or disappears', () => {
     const { client, commit, preview } = paneClient();
     const props = { draft: draftReady(), paneSave: client, groups: [g1],
