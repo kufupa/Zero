@@ -430,6 +430,23 @@ describe('BookingVoucherCard write card', () => {
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
+  it('shows a bound filing without approval controls while shared writes are held', async () => {
+    paneWrite.view = viewWith({ form: attachForm, before: null });
+    render(
+      <BookingVoucherCard
+        session={initialQuoteSession()}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        workItemId={WORK_ITEM}
+        writesEnabled={false}
+      />,
+    );
+    expect(await screen.findByRole('list', { name: 'Values to write' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+  });
+
   it('marks the confirmation, guest name and file name rows data-pii, and leaves the dates visible', async () => {
     paneWrite.view = viewWith({
       form: { ...attachForm, lastName: 'Guestlast', arrival: '2026-11-02' },
