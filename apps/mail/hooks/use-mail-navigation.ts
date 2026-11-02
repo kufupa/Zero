@@ -12,7 +12,7 @@ export const mailNavigationCommandAtom = atom<null | 'next' | 'previous'>(null);
 export interface UseMailNavigationProps {
   items: { id: string }[];
   containerRef: React.RefObject<HTMLDivElement | null>;
-  onNavigate: (threadId: string | null) => void;
+  onNavigate: (threadId: string | null) => Promise<boolean>;
 }
 
 export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNavigationProps) {
@@ -36,11 +36,24 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     setKeyboardActive(active);
   }, []);
 
-  const resetNavigation = useCallback(() => {
+  const navigationInFlight = useRef(false);
+  const attemptNavigation = useCallback(async (threadId: string | null): Promise<boolean> => {
+    if (navigationInFlight.current) return false;
+    navigationInFlight.current = true;
+    try {
+      return await onNavigateRef.current(threadId);
+    } catch {
+      return false;
+    } finally {
+      navigationInFlight.current = false;
+    }
+  }, []);
+
+  const resetNavigation = useCallback(async () => {
+    if (!(await attemptNavigation(null))) return;
     setFocusedIndex(null);
-    onNavigateRef.current(null);
     setKeyboardNavigationActive(false);
-  }, [setFocusedIndex, onNavigateRef, setKeyboardNavigationActive]);
+  }, [setFocusedIndex, attemptNavigation, setKeyboardNavigationActive]);
 
   const getThreadElement = useCallback(
     (index: number | null) => {
@@ -106,67 +119,28 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   );
 
   const navigateToThread = useCallback(
-    (index: number) => {
-      if (index === null || !itemsRef.current[index]) return;
-
-      const message = itemsRef.current[index];
-      const threadId = message.id;
-
-      if (threadId) {
-        onNavigateRef.current(threadId);
-        optimisticMarkAsRead([threadId], true);
-      }
-
-      setMail((prev) => ({
-        ...prev,
-        bulkSelected: [],
-      }));
+    async (index: number): Promise<boolean> => {
+      const threadId = itemsRef.current[index]?.id;
+      if (!threadId || !(await attemptNavigation(threadId))) return false;
+      optimisticMarkAsRead([threadId], true);
+      setMail((prev) => ({ ...prev, bulkSelected: [] }));
+      return true;
     },
-    [setMail, optimisticMarkAsRead],
+    [attemptNavigation, setMail, optimisticMarkAsRead],
   );
 
-  const navigateNext = useCallback(() => {
+  const navigateNext = useCallback(async () => {
+    const index = focusedIndex;
+    const items = itemsRef.current;
+    const nextIndex = index === null ? (items.length ? 0 : null)
+      : index < items.length - 1 ? index + 1 : items.length > 1 ? index - 1 : null;
+    const nextId = nextIndex === null ? null : items[nextIndex]?.id ?? null;
+    if (!(await attemptNavigation(nextId))) return;
+    const focusIndex = index !== null && nextIndex === index + 1 ? index : nextIndex;
     setKeyboardNavigationActive(true);
-
-    setFocusedIndex((prevIndex) => {
-      if (prevIndex === null) {
-        if (itemsRef.current.length > 0) {
-          const firstItem = itemsRef.current[0];
-          if (firstItem) {
-            onNavigateRef.current(firstItem.id);
-          }
-          scrollIntoView(0, 'auto');
-          return 0;
-        }
-        onNavigateRef.current(null);
-        return null;
-      }
-
-      if (prevIndex < itemsRef.current.length - 1) {
-        const newIndex = prevIndex;
-        const nextItem = itemsRef.current[prevIndex + 1];
-        if (nextItem) {
-          onNavigateRef.current(nextItem.id);
-        }
-        scrollIntoView(newIndex, 'auto');
-        return newIndex;
-      } else {
-        const newIndex = itemsRef.current.length > 1 ? prevIndex - 1 : null;
-
-        if (newIndex !== null) {
-          const nextItem = itemsRef.current[newIndex];
-          if (nextItem) {
-            onNavigateRef.current(nextItem.id);
-          }
-          scrollIntoView(newIndex, 'auto');
-          return newIndex;
-        } else {
-          onNavigateRef.current(null);
-          return null;
-        }
-      }
-    });
-  }, [onNavigateRef, scrollIntoView, setFocusedIndex, setKeyboardNavigationActive]);
+    setFocusedIndex(focusIndex);
+    if (focusIndex !== null) scrollIntoView(focusIndex, 'auto');
+  }, [attemptNavigation, focusedIndex, scrollIntoView, setFocusedIndex, setKeyboardNavigationActive]);
 
   useEffect(() => {
     if (command === 'next') {
@@ -181,55 +155,42 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   }, []);
 
   const moveFocus = useCallback(
-    (direction: 'up' | 'down') => {
+    async (direction: 'up' | 'down') => {
+      if (navigationInFlight.current || itemsRef.current.length === 0) return;
+      const hoveredIndex = getHoveredIndex();
+      const newIndex = focusedIndex === null
+        ? hoveredIndex !== -1 ? hoveredIndex : direction === 'up' ? itemsRef.current.length - 1 : 0
+        : direction === 'up' ? Math.max(0, focusedIndex - 1) : Math.min(itemsRef.current.length - 1, focusedIndex + 1);
+      if (newIndex === focusedIndex) return;
+      const targetId = itemsRef.current[newIndex]?.id;
+      if (!targetId || !(await navigateToThread(newIndex))) return;
+      const currentIndex = itemsRef.current.findIndex((item) => item.id === targetId);
+      if (currentIndex < 0) return;
       setKeyboardNavigationActive(true);
-
-      setFocusedIndex((prevIndex) => {
-        let newIndex: number;
-        if (prevIndex === null) {
-          const hoveredIndex = getHoveredIndex();
-          if (hoveredIndex !== -1) {
-            newIndex = hoveredIndex;
-          } else {
-            newIndex = direction === 'up' ? itemsRef.current.length - 1 : 0;
-          }
-        } else {
-          newIndex =
-            direction === 'up'
-              ? Math.max(0, prevIndex - 1)
-              : Math.min(itemsRef.current.length - 1, prevIndex + 1);
-        }
-
-        if (newIndex === prevIndex && prevIndex !== null) return prevIndex;
-
-        scrollIntoView(newIndex, 'smooth');
-        navigateToThread(newIndex);
-        return newIndex;
-      });
+      setFocusedIndex(currentIndex);
+      scrollIntoView(currentIndex, 'smooth');
     },
-    [setFocusedIndex, getHoveredIndex, scrollIntoView, navigateToThread, setKeyboardNavigationActive],
+    [focusedIndex, setFocusedIndex, getHoveredIndex, scrollIntoView, navigateToThread, setKeyboardNavigationActive],
   );
 
   const handleArrowUp = useCallback(() => {
-    moveFocus('up');
+    void moveFocus('up');
   }, [moveFocus]);
 
   const handleArrowDown = useCallback(() => {
-    moveFocus('down');
+    void moveFocus('down');
   }, [moveFocus]);
 
   const handleEnter = useCallback(() => {
     if (focusedIndex === null) return;
 
     const message = itemsRef.current[focusedIndex];
-    if (message) onNavigateRef.current(message.id);
-  }, [focusedIndex]);
+    if (message) void attemptNavigation(message.id);
+  }, [focusedIndex, attemptNavigation]);
 
   const handleEscape = useCallback(() => {
-    setFocusedIndex(null);
-    onNavigateRef.current(null);
-    setKeyboardNavigationActive(false);
-  }, [setFocusedIndex, onNavigateRef, setKeyboardNavigationActive]);
+    void resetNavigation();
+  }, [resetNavigation]);
 
   useHotkeys('ArrowUp', handleArrowUp, { preventDefault: true, enabled: !isSearchBarFocused });
   useHotkeys('ArrowDown', handleArrowDown, {
@@ -248,30 +209,6 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
       setKeyboardNavigationActive(false);
     },
     [setKeyboardNavigationActive],
-  );
-
-  const fastScroll = useCallback(
-    (direction: 'up' | 'down') => {
-      setKeyboardNavigationActive(true);
-
-      setFocusedIndex((prev) => {
-        const { length } = itemsRef.current;
-        const newIndex =
-          direction === 'up'
-            ? prev === null
-              ? length - 1
-              : Math.max(0, prev - 1)
-            : prev === null
-              ? 0
-              : Math.min(length - 1, prev + 1);
-
-        if (newIndex !== prev || prev === null) {
-          scrollIntoView(newIndex, 'auto');
-        }
-        return newIndex;
-      });
-    },
-    [scrollIntoView, setFocusedIndex, setKeyboardNavigationActive],
   );
 
   useEffect(() => {
@@ -294,9 +231,9 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
 
       requestAnimationFrame(() => {
         if (event.key === 'ArrowUp') {
-          fastScroll('up');
+          void moveFocus('up');
         } else if (event.key === 'ArrowDown') {
-          fastScroll('down');
+          void moveFocus('down');
         }
         isProcessingKey = false;
       });
@@ -307,7 +244,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [fastScroll, isSearchBarFocused]);
+  }, [moveFocus, isSearchBarFocused]);
 
   useEffect(() => {
     if (isSearchBarFocused) {

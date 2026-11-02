@@ -163,6 +163,7 @@ export type MailListThreadRow = {
     threadId: string;
     label: string;
     latestMessageAt?: string | Date | null;
+    workflowSourceMessageId?: string | null;
   }[];
 };
 

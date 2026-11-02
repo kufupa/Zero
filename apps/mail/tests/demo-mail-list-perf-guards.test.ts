@@ -332,6 +332,19 @@ describe('demo mail list perf guards', () => {
     expect(mocks.setMailSelection).not.toHaveBeenCalled();
   });
 
+  it('opens the exact source carried by a linked workflow stub', async () => {
+    mocks.folder = 'quotes';
+    mocks.linkedTarget = 'thread-b';
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'source-a', linkedStubs: [{ threadId: 'thread-b', workflowSourceMessageId: 'source-b' }] }],
+      false, vi.fn(), { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    fireEvent.click(screen.getByRole('button', { name: 'Linked thread' }));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: 'source-b' }));
+  });
+
   it('does not infer a missing workflow source for keyboard navigation', async () => {
     mocks.folder = 'quotes';
     mocks.useThreads.mockReturnValue([

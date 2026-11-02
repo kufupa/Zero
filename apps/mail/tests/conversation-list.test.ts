@@ -4,6 +4,7 @@ import {
   conversationListRowKey,
   type ConversationAwareListThread,
 } from '../lib/mail/conversation-list';
+import { listThreadSelection } from '../config/workflow-folders';
 
 function row(
   id: string,
@@ -53,6 +54,17 @@ describe('buildConversationPrimaryListRows', () => {
     expect(buildConversationPrimaryListRows(threads).map((entry) => entry.id)).toEqual([
       'workflow-thread-b',
     ]);
+  });
+
+  it('retains a hidden workflow sibling source without guessing missing or duplicate rows', () => {
+    const rows = buildConversationPrimaryListRows([
+      row('primary', { primaryThreadId: 'primary', linkedThreadIds: ['linked', 'missing'], workflowSourceMessageId: 'source-primary' }),
+      row('linked', { primaryThreadId: 'primary', workflowSourceMessageId: 'source-linked' }),
+    ]);
+    expect(listThreadSelection('linked', true, rows)).toEqual({ threadId: 'linked', sourceMessageId: 'source-linked' });
+    expect(listThreadSelection('missing', true, rows)).toEqual({ threadId: 'missing', sourceMessageId: '' });
+    expect(listThreadSelection('linked', false, rows)).toEqual({ threadId: 'linked', sourceMessageId: null });
+    expect(listThreadSelection('linked', true, [...rows, ...rows])).toEqual({ threadId: 'linked', sourceMessageId: '' });
   });
 
   it('builds linked stubs from hidden sibling rows', () => {

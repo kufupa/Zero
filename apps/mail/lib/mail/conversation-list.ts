@@ -14,6 +14,7 @@ export type LinkedThreadStub = {
   threadId: string;
   label: string;
   latestMessageAt?: string | Date | null;
+  workflowSourceMessageId?: string | null;
 };
 
 export type PrimaryConversationListRow = ConversationAwareListThread & {
@@ -56,6 +57,7 @@ export function buildConversationPrimaryListRows(
         threadId: linkedId,
         label: stubLabel(linked),
         latestMessageAt: linked?.latestMessageAt ?? linked?.receivedOn ?? null,
+        ...(linked?.workflowSourceMessageId !== undefined ? { workflowSourceMessageId: linked.workflowSourceMessageId } : {}),
       };
     });
 

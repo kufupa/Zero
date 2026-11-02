@@ -38,6 +38,16 @@ describe('compose-flush-registry', () => {
     await expect(flushComposeBeforeSwitch()).resolves.toBe(true);
   });
 
+  it('permits a synchronously acknowledged revision but blocks a later edit', async () => {
+    let localRevision = 1;
+    let savedRevision = 0;
+    registerComposeUnsavedCheck(() => localRevision > savedRevision);
+    registerComposeFlush(async () => { savedRevision = localRevision; });
+    await expect(flushComposeBeforeSwitch()).resolves.toBe(true);
+    registerComposeFlush(async () => { savedRevision = localRevision; localRevision += 1; });
+    await expect(flushComposeBeforeSwitch()).resolves.toBe(false);
+  });
+
   it('flushComposeBeforeLeave is no-op when empty', async () => {
     await expect(flushComposeBeforeLeave()).resolves.toBeUndefined();
   });

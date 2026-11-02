@@ -984,9 +984,11 @@ export const MailList = memo(function MailList() {
     }, [setMode, setActiveReplyId, setDraftId]);
 
     const handleNavigateToThread = useCallback(
-      (threadId: string | null) => {
+      async (threadId: string | null): Promise<boolean> => {
         const selection = listThreadSelection(threadId, workflowScoped, itemsRef.current);
-        void saveAndClearCompose().then((saved) => { if (saved) void setMailSelection(selection); });
+        if (!(await saveAndClearCompose())) return false;
+        await setMailSelection(selection);
+        return true;
       },
       [saveAndClearCompose, setMailSelection, workflowScoped],
     );

@@ -260,11 +260,10 @@ export function EmailComposer({
 
   const hasSynchronousDraftChanges = useCallback(
     () =>
-      hasUnsavedChanges ||
       revisionRef.current.localRevision > revisionRef.current.savedRevision ||
       pendingAttachmentWorkRef.current > 0 ||
       pendingInlineImageWorkRef.current > 0,
-    [hasUnsavedChanges],
+    [],
   );
 
   const processAndSetAttachments = useCallback(

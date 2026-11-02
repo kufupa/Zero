@@ -26,7 +26,12 @@ export function isWorkflowFolderNavId(value: string | undefined | null): value i
   return WORKFLOW_FOLDER_NAV_ITEMS.some((item) => item.id === value?.toLowerCase());
 }
 
-type SourceScopedRow = { id: string; workflowSourceMessageId?: string | null; workflowSourceRequired?: boolean };
+type SourceScopedRow = {
+  id: string;
+  workflowSourceMessageId?: string | null;
+  workflowSourceRequired?: boolean;
+  linkedStubs?: readonly { threadId: string; workflowSourceMessageId?: string | null }[];
+};
 
 /** A placeholder carries the scope of the rows it actually displays, not the destination route. */
 export function selectionRequiresExactSource(
@@ -52,5 +57,10 @@ export function listThreadSelection(
   threadId: string | null, workflowScoped: boolean, rows: readonly SourceScopedRow[],
 ): { threadId: string | null; sourceMessageId: string | null } {
   if (!threadId || !workflowScoped) return { threadId, sourceMessageId: null };
-  return { threadId, sourceMessageId: rows.find((row) => row.id === threadId)?.workflowSourceMessageId ?? '' };
+  const matches = rows.flatMap((row) => [
+    ...(row.id === threadId ? [row.workflowSourceMessageId] : []),
+    ...(row.linkedStubs ?? []).filter((stub) => stub.threadId === threadId)
+      .map((stub) => stub.workflowSourceMessageId),
+  ]);
+  return { threadId, sourceMessageId: matches.length === 1 ? matches[0] ?? '' : '' };
 }

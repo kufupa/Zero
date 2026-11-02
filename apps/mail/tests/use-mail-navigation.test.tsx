@@ -10,6 +10,7 @@ import { focusedIndexAtom, useMailNavigation } from '../hooks/use-mail-navigatio
 const mocks = vi.hoisted(() => ({
   hotkeys: new Map<string, (...args: unknown[]) => void>(),
   onNavigate: vi.fn(),
+  optimisticMarkAsRead: vi.fn(),
   handleMouseEnter: null as null | ((threadId: string) => void),
 }));
 
@@ -24,7 +25,7 @@ vi.mock('nuqs', () => ({
 }));
 
 vi.mock('../hooks/use-optimistic-actions', () => ({
-  useOptimisticActions: () => ({ optimisticMarkAsRead: vi.fn() }),
+  useOptimisticActions: () => ({ optimisticMarkAsRead: mocks.optimisticMarkAsRead }),
 }));
 
 vi.mock('../components/mail/use-mail', () => ({
@@ -78,6 +79,8 @@ function invokeHotkey(key: string) {
 beforeEach(() => {
   mocks.hotkeys.clear();
   mocks.onNavigate.mockReset();
+  mocks.onNavigate.mockResolvedValue(true);
+  mocks.optimisticMarkAsRead.mockReset();
   mocks.handleMouseEnter = null;
   if (!HTMLElement.prototype.scrollIntoView) {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -94,6 +97,59 @@ afterEach(() => {
 });
 
 describe('useMailNavigation focus handoff', () => {
+  it.each(['failed', 'thrown'])('does not mark read or move focus when switching is %s', async (failure) => {
+    if (failure === 'failed') mocks.onNavigate.mockResolvedValue(false);
+    else mocks.onNavigate.mockRejectedValue(new Error('save failed'));
+    renderNavigation();
+    const first = screen.getByTestId('row-0');
+    first.focus();
+    invokeHotkey('ArrowDown');
+    await waitFor(() => expect(mocks.onNavigate).toHaveBeenCalledWith('thread-b'));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.optimisticMarkAsRead).not.toHaveBeenCalled();
+    expect(screen.getByTestId('focused-index').textContent).toBe('0');
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('does not move focus on repeated keys after a refused switch', async () => {
+    mocks.onNavigate.mockResolvedValue(false);
+    renderNavigation();
+    const first = screen.getByTestId('row-0');
+    first.focus();
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', repeat: true })));
+    await waitFor(() => expect(mocks.onNavigate).toHaveBeenCalledWith('thread-b'));
+    expect(mocks.optimisticMarkAsRead).not.toHaveBeenCalled();
+    expect(screen.getByTestId('focused-index').textContent).toBe('0');
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('waits for the switch before marking read or moving focus', async () => {
+    let finish!: (saved: boolean) => void;
+    mocks.onNavigate.mockReturnValue(new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderNavigation();
+    screen.getByTestId('row-0').focus();
+    invokeHotkey('ArrowDown');
+    expect(screen.getByTestId('focused-index').textContent).toBe('0');
+    expect(mocks.optimisticMarkAsRead).not.toHaveBeenCalled();
+    await act(async () => { finish(true); });
+    expect(mocks.optimisticMarkAsRead).toHaveBeenCalledWith(['thread-b'], true);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('row-1')));
+  });
+
+  it('focuses the opened thread if the list reorders while saving', async () => {
+    let finish!: (saved: boolean) => void;
+    mocks.onNavigate.mockReturnValue(new Promise<boolean>((resolve) => { finish = resolve; }));
+    const rendered = renderNavigation();
+    invokeHotkey('ArrowDown');
+    rendered.rerender(<Provider store={rendered.store}>
+      <NavigationHarness items={[{ id: 'thread-b' }, { id: 'thread-a' }]} />
+    </Provider>);
+    await act(async () => { finish(true); });
+    expect(screen.getByTestId('focused-index').textContent).toBe('0');
+    expect(mocks.optimisticMarkAsRead).toHaveBeenCalledWith(['thread-b'], true);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('row-0')));
+  });
+
   it('moves DOM focus from the clicked row to the keyboard-selected row', async () => {
     renderNavigation();
     const firstRow = screen.getByTestId('row-0');
@@ -114,7 +170,7 @@ describe('useMailNavigation focus handoff', () => {
     screen.getByTestId('row-0').focus();
 
     invokeHotkey('ArrowDown');
-    expect(screen.getByTestId('focused-index').textContent).toBe('1');
+    await waitFor(() => expect(screen.getByTestId('focused-index').textContent).toBe('1'));
 
     rendered.rerender(
       <Provider store={rendered.store}>
@@ -129,6 +185,7 @@ describe('useMailNavigation focus handoff', () => {
     const rendered = renderNavigation();
     screen.getByTestId('row-0').focus();
     invokeHotkey('ArrowDown');
+    await waitFor(() => expect(screen.getByTestId('focused-index').textContent).toBe('1'));
 
     rendered.rerender(
       <Provider store={rendered.store}>
@@ -140,16 +197,16 @@ describe('useMailNavigation focus handoff', () => {
     expect(screen.getByTestId('row-1').getAttribute('data-thread-id')).toBe('thread-c');
   });
 
-  it('clears keyboard mode on Escape and pointer navigation', () => {
+  it('clears keyboard mode on Escape and pointer navigation', async () => {
     renderNavigation();
     invokeHotkey('ArrowDown');
-    expect(screen.getByTestId('keyboard-active').textContent).toBe('true');
+    await waitFor(() => expect(screen.getByTestId('keyboard-active').textContent).toBe('true'));
 
     invokeHotkey('Escape');
-    expect(screen.getByTestId('keyboard-active').textContent).toBe('false');
+    await waitFor(() => expect(screen.getByTestId('keyboard-active').textContent).toBe('false'));
 
     invokeHotkey('ArrowDown');
-    expect(screen.getByTestId('keyboard-active').textContent).toBe('true');
+    await waitFor(() => expect(screen.getByTestId('keyboard-active').textContent).toBe('true'));
 
     act(() => mocks.handleMouseEnter?.('thread-b'));
     expect(screen.getByTestId('keyboard-active').textContent).toBe('false');
