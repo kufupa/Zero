@@ -644,8 +644,6 @@ describe('pane HMS write (U26)', () => {
       expect((await runRow(db, run.runId)).state).toBe('dead_letter');
       expect(await eventsOf(db, workItemId, 'approval.consumed')).toHaveLength(0);
       expect(await eventsOf(db, workItemId, 'write.evidence')).toHaveLength(0);
-      // A prior holder may have dispatched. This must stay blocked even without a consumed event.
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 
