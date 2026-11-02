@@ -156,13 +156,13 @@ describe('pilot inert legacy routers', () => {
     try {
       process.env.RESERVATIONIST_PANE_SAVE = 'on';
       await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
-        paneSave: true,
-        paneSaveMode: 'on',
+        paneSave: false,
+        paneSaveMode: 'off',
       });
       process.env.RESERVATIONIST_PANE_SAVE = 'lab';
       await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
-        paneSave: true,
-        paneSaveMode: 'lab',
+        paneSave: false,
+        paneSaveMode: 'off',
       });
       process.env.RESERVATIONIST_PANE_SAVE = 'off';
       await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
