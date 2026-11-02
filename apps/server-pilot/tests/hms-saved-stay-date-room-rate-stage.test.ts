@@ -335,4 +335,18 @@ describe('availability for a verified saved Labtest stay', () => {
     expect(await readLabtestStayAmendmentAvailability(page, page, expected, options())).toMatchObject({ outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED' });
     expect(mocks.current).not.toHaveBeenCalled();
   });
+  it('does not let caller mutation change criteria during record verification', async () => {
+    const { state } = setup();
+    let release: () => void = () => {};
+    mocks.current.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(state); }));
+    const mutableExpected = { ...expected }, mutableOptions = options();
+    const result = readLabtestStayAmendmentAvailability({}, {}, mutableExpected, mutableOptions);
+    mutableExpected.departure = '2027-01-19';
+    mutableOptions.change.departure = '2027-01-22';
+    mutableOptions.occupancy.childAges[0] = 4;
+    release();
+    expect(await result).toMatchObject({ outcome: 'ok', prepared: { criteria: { departureDate: '2027-01-21', childAges: [8, 12] } } });
+    expect(mocks.current.mock.calls[0][1].departure).toBe('2027-01-20');
+  });
+
 });

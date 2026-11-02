@@ -262,6 +262,8 @@ export async function readLabtestStayAmendmentAvailability(recordPage, availabil
   if (!recordPage || !availabilityPage || recordPage === availabilityPage) {
     return { outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED', saveEligible: false };
   }
+  try { expected = structuredClone(expected); options = structuredClone(options); }
+  catch { return { outcome: 'input_gap', issue: 'AMEND_INPUT_INVALID', saveEligible: false }; }
   const input = { existing: { propertyCode: 'HRCEN', arrival: expected.arrival, departure: expected.departure,
     roomType: expected.roomType, ratePlan: expected.ratePlan }, change: options.change,
     occupancy: options.occupancy, partyContext: options.partyContext, roomQuantity: options.roomQuantity };
