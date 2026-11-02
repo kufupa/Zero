@@ -26,7 +26,24 @@
             "draft": true,
             "attachment": false
           }
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "stay_count",
+            "count": 1
+          },
+          {
+            "kind": "room_count",
+            "stay": 1,
+            "count": 1
+          },
+          {
+            "kind": "stay_dates",
+            "stay": 1,
+            "arrival": "16 Nov 2026",
+            "departure": "20 Nov 2026"
+          }
+        ]
       }
     },
     {
@@ -38,7 +55,7 @@
       "expected": {
         "readAs": "quote",
         "staffEvidence": "Staff sent a quotation.",
-        "coverage": "Four rooms; retain shuttle as a separate ask.",
+        "coverage": "Four rooms with dinner and breakfast; retain both airport and hotel-to-office shuttle requests.",
         "artifactPolicy": {
           "quote_ready": {
             "draft": true,
@@ -48,7 +65,55 @@
             "draft": true,
             "attachment": false
           }
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "stay_count",
+            "count": 1
+          },
+          {
+            "kind": "room_count",
+            "stay": 1,
+            "count": 4
+          },
+          {
+            "kind": "stay_dates",
+            "stay": 1,
+            "arrival": "5 Jan 2027",
+            "departure": "9 Jan 2027"
+          },
+          {
+            "kind": "dinner",
+            "stay": 1
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "airport"
+              ],
+              [
+                "shuttle",
+                "transfer",
+                "transport"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "momentum",
+                "office"
+              ],
+              [
+                "shuttle",
+                "transfer",
+                "transport"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -70,7 +135,22 @@
             "draft": true,
             "attachment": false
           }
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "stay_count",
+            "count": 1
+          },
+          {
+            "kind": "room_count",
+            "stay": 1,
+            "count": 1
+          },
+          {
+            "kind": "dinner",
+            "stay": 1
+          }
+        ]
       }
     },
     {
@@ -82,10 +162,22 @@
       "expected": {
         "readAs": "new_booking",
         "staffEvidence": "Staff said bookings were done and requested a voucher.",
-        "coverage": "Keep multiple guest requests; no native save in replay.",
+        "coverage": "Keep all five named guests; no native save in replay. Staff requested a voucher and said an invoice would follow.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "guests",
+            "names": [
+              "Nobela",
+              "Zondi",
+              "Tsotetsi",
+              "Shakoane",
+              "Nchabeleng"
+            ]
+          }
+        ]
       }
     },
     {
@@ -97,10 +189,75 @@
       "expected": {
         "readAs": "new_booking",
         "staffEvidence": "Staff said booking was done and requested payment proof.",
-        "coverage": "Keep both stays and dinner request; no native save in replay.",
+        "coverage": "Keep both stays, dinner and soft drinks, signed dinner slips and invoice requests; no native save in replay.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "stay_count",
+            "count": 2
+          },
+          {
+            "kind": "room_count",
+            "stay": 1,
+            "count": 1
+          },
+          {
+            "kind": "room_count",
+            "stay": 2,
+            "count": 1
+          },
+          {
+            "kind": "stay_dates",
+            "stay": 1,
+            "arrival": "16 Nov 2026",
+            "departure": "20 Nov 2026"
+          },
+          {
+            "kind": "stay_dates",
+            "stay": 2,
+            "arrival": "23 Nov 2026",
+            "departure": "27 Nov 2026"
+          },
+          {
+            "kind": "dinner",
+            "stay": 1
+          },
+          {
+            "kind": "dinner",
+            "stay": 2
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "invoice"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "dinner"
+              ],
+              [
+                "slip",
+                "receipt"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "soft drink",
+                "beverage"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -112,10 +269,24 @@
       "expected": {
         "readAs": "new_booking",
         "staffEvidence": "Staff said booking was done but no airport transfer was booked.",
-        "coverage": "Keep transfer as a separate ask; do not claim it was booked.",
+        "coverage": "Keep the provisional accommodation confirmation letter for the visa request. The inbound does not ask for a transfer; do not claim one was booked.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "visa"
+              ],
+              [
+                "confirmation",
+                "letter"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -131,7 +302,8 @@
         "artifactPolicy": {
           "source_attachment_required": true,
           "hms_filing_unproved": true
-        }
+        },
+        "detailChecks": []
       }
     },
     {
@@ -147,7 +319,8 @@
         "artifactPolicy": {
           "source_attachment_required": true,
           "hms_filing_unproved": true
-        }
+        },
+        "detailChecks": []
       }
     },
     {
@@ -163,7 +336,21 @@
         "artifactPolicy": {
           "source_attachment_required": true,
           "hms_filing_unproved": true
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "confirm"
+              ],
+              [
+                "order",
+                "correct"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -178,7 +365,25 @@
         "coverage": "Date change; no native save in replay.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "amendment",
+            "all": [
+              [
+                "1 nov",
+                "01 nov"
+              ],
+              [
+                "7 nov",
+                "07 nov"
+              ],
+              [
+                "2026"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -190,10 +395,39 @@
       "expected": {
         "readAs": "amendment",
         "staffEvidence": "Staff sent a revised document and requested an updated voucher.",
-        "coverage": "Arrival change and voucher follow-up; no native save in replay.",
+        "coverage": "Arrival and departure change with an updated quote for the sender to amend the voucher; no native save in replay.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "amendment",
+            "all": [
+              [
+                "16 sep"
+              ],
+              [
+                "17 sep"
+              ],
+              [
+                "2026"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "updated",
+                "revised"
+              ],
+              [
+                "quote",
+                "quotation"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -205,10 +439,89 @@
       "expected": {
         "readAs": "amendment",
         "staffEvidence": "Staff requested approval of charges before changing the booking.",
-        "coverage": "Do not infer an amendment was saved.",
+        "coverage": "Keep amended dates, updated confirmation and invoice, early-arrival and late-checkout questions, and no chargeable changes without informing the guest. Do not infer an amendment was saved.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "amendment",
+            "all": [
+              [
+                "1 nov",
+                "01 nov"
+              ],
+              [
+                "7 nov",
+                "07 nov"
+              ],
+              [
+                "2026"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "early",
+                "arrival",
+                "check-in"
+              ],
+              [
+                "charge",
+                "cost",
+                "price"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "late",
+                "checkout",
+                "check-out"
+              ],
+              [
+                "charge",
+                "cost",
+                "price"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "invoice"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "confirmation"
+              ]
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "inform",
+                "approval",
+                "permission"
+              ],
+              [
+                "charge",
+                "cost",
+                "price"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -223,7 +536,24 @@
         "coverage": "Keep two guests and invoice ask.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "guests",
+            "names": [
+              "Nene",
+              "Afrika"
+            ]
+          },
+          {
+            "kind": "ask",
+            "all": [
+              [
+                "invoice"
+              ]
+            ]
+          }
+        ]
       }
     },
     {
@@ -238,7 +568,22 @@
         "coverage": "Historical sold-out outcome is not current availability; alternative needs staff selection.",
         "artifactPolicy": {
           "requires_hms_write": false
-        }
+        },
+        "detailChecks": [
+          {
+            "kind": "stay_count",
+            "count": 1
+          },
+          {
+            "kind": "room_count",
+            "stay": 1,
+            "count": 1
+          },
+          {
+            "kind": "dinner",
+            "stay": 1
+          }
+        ]
       }
     },
     {
@@ -252,8 +597,10 @@
         "staffEvidence": "Staff acknowledged the accommodation voucher.",
         "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
         "artifactPolicy": {
-          "requires_hms_write": false
-        }
+          "requires_hms_write": false,
+          "source_attachment_required": true
+        },
+        "detailChecks": []
       }
     }
   ],
