@@ -26,9 +26,9 @@ async function fixture() {
   });
   const persistPreimage = vi.fn(async () => true);
   const endRun = vi.fn(async () => true);
-  const fileLabtestVoucher = vi.fn(async ({ checkAuthority, checkDeadline, persistPreimage: persist }: any) => {
+  const fileLabtestVoucher = vi.fn(async ({ checkAuthority, deadlineAt, persistPreimage: persist }: any) => {
     if (!(await checkAuthority())) return { outcome: 'not_dispatched' };
-    if (!(await persist({ marker })) || !checkDeadline()) return { outcome: 'not_dispatched' };
+    if (!(await persist({ marker })) || Date.now() >= deadlineAt.getTime()) return { outcome: 'not_dispatched' };
     return { outcome: 'awaiting_readback', marker };
   });
   const deps = { db: {} as any, fence, serverGrantId: 'grant-1', page,
@@ -88,6 +88,7 @@ describe('fenced voucher filing runner', () => {
     expect(f.readApprovedSnapshot).toHaveBeenCalledOnce();
     expect(f.persistPreimage).toHaveBeenCalledWith({ fence: f.deps.fence, grantId: 'grant-1', preimage: { marker } });
     expect(f.fileLabtestVoucher).toHaveBeenCalledOnce();
+    expect(f.fileLabtestVoucher).toHaveBeenCalledWith(expect.objectContaining({ deadlineAt: f.deps.fence.deadlineAt }));
     expect(f.endRun).toHaveBeenCalledWith({ db: f.deps.db, fence: f.deps.fence,
       failureClass: 'UNKNOWN', reason: 'filing_needs_check' });
   });

@@ -47,7 +47,7 @@ export type FilingRunnerDependencies = {
   persistPreimage(input: { fence: AiRunFence; grantId: string; preimage: unknown }): Promise<boolean>;
   /** Calls the guarded Labtest adapter, which invokes checkAuthority again immediately before release. */
   fileLabtestVoucher(input: { page: Page; form: ApprovedForm; bytes: Buffer;
-    checkAuthority: () => Promise<boolean>; checkDeadline: () => boolean;
+    checkAuthority: () => Promise<boolean>; deadlineAt: Date;
     persistPreimage: (preimage: unknown) => Promise<boolean> }): Promise<NativeOutcome>;
   consume?: typeof consumeHmsWriteApproval;
   checkBeforeSave?: typeof assertHmsUnchangedBeforeSave;
@@ -152,7 +152,7 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
       // Once the native adapter is invoked, any exception or non-definitive result might follow dispatch.
       try {
         const native = await deps.fileLabtestVoucher({ page, form: structuredClone(form), bytes: Buffer.from(bytes),
-          checkAuthority, checkDeadline: withinDeadline,
+          checkAuthority, deadlineAt: new Date(fence.deadlineAt.getTime()),
           persistPreimage: async (preimage) => (await checkAuthority()) &&
             (await deps.persistPreimage({ fence, grantId: serverGrantId, preimage })) && withinDeadline() });
         const possible = native.possiblyDispatched === true || native.dispatched === true ||
