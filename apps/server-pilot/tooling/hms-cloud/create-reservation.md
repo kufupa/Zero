@@ -1,10 +1,10 @@
 # Cloud create reservation
 
 `create-reservation.mjs` prepares an HRCEN Guest Stay from private JSON and
-can commit only a guarded Proof Labtest fake stay. The owner authorizes
-Labtest writes, not real-guest writes. This standalone interface does not
-authenticate a staff approval; caller-supplied approval fields are untrusted
-metadata and do not grant authority. See the live proof and limitations below.
+can commit only a guarded Proof Labtest fake stay. This standalone interface
+does not implement the owner's staff-approved real-guest booking authorization.
+Caller-supplied approval fields are rejected and do not grant authority. See the
+live proof and limitations below.
 
 ```sh
 umask 077
@@ -94,6 +94,9 @@ the unsaved form as a no-send invariant. `cms.messageId` is optional and selecte
 from the current picker; `03` remains a suggestion, not a default or requirement.
 
 A fully staged unsaved draft returns `prepared` with `approvalReady: false`.
+When eligible, `requestBinding` contains a versioned canonical request and digest.
+The digest helper accepts either its raw input or returned canonical request; it
+is not authorization and does not prove equality to the native save body.
 This does not claim approval, a save, or persistence. NGI is staged only when
 an eligible verified Proof Labtest profile and valid 2027+ dates are present.
 Other drafts retain their staged fields but report `guaranteeType.staging` as
@@ -107,7 +110,7 @@ Proof Labtest profile. Agency, organization and A/R selections are independent.
 A/R additionally requires the current page-bound account/profile proof. The save
 matches selected IDs, party names, the full native body, optional CMS code and reason for stay;
 all card fields remain blank. Caller-provided `approval.by` and `approval.at`
-are optional legacy metadata, not authentication. Commit obtains a same-date
+are rejected rather than treated as authentication. Commit obtains a same-date
 single-use preimage, takes private before and after screenshots, dispatches at
 most one guarded save, then independently reopens the record. Party combinations
 with agency or A/R require a fresh native ID and visible-name readback; a

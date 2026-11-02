@@ -34,12 +34,13 @@ function normalizeParty(value, path) {
   return { outcome: 'ok', value: { nativeId: value.nativeId, name: value.name } };
 }
 
-function normalizeParties(value) {
+function normalizeParties(value, canonical) {
   if (value === undefined) return { outcome: 'ok', value: {} };
-  const issue = objectKeys(value, ['agency', 'organization', 'arAccount'], [], 'parties');
+  const agencyField = canonical ? 'bookingAgency' : 'agency';
+  const issue = objectKeys(value, [agencyField, 'organization', 'arAccount'], [], 'parties');
   if (issue) return issue;
   const parties = {};
-  for (const [field, path] of [['agency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'arAccount']]) {
+  for (const [field, path] of [[agencyField, 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'arAccount']]) {
     if (!Object.hasOwn(value, field)) continue;
     const selected = normalizeParty(value[field], `parties.${field}`);
     if (selected.outcome !== 'ok') return selected;
@@ -68,10 +69,12 @@ function normalizeConfirmation(input) {
  */
 export function normalizeCloudCreateRequest(input) {
   const issue = objectKeys(input,
-    ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
+    ['version', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
       'parties', 'note', 'billingReference', 'cmsMessageId', 'sendHmsConfirmation'],
     ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sendHmsConfirmation'], '');
   if (issue) return issue;
+  const canonical = Object.hasOwn(input, 'version');
+  if (canonical && input.version !== CLOUD_CREATE_REQUEST_VERSION) return fail('CREATE_VERSION_INVALID', 'version');
   if (typeof input.propertyCode !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.propertyCode)) return fail('CREATE_PROPERTY_INVALID', 'propertyCode');
 
   const guestIssue = objectKeys(input.guest, ['nativeId', 'firstName', 'lastName'],
@@ -87,7 +90,7 @@ export function normalizeCloudCreateRequest(input) {
   if (stayIssue) return stayIssue;
   if (!isoDate(input.stay.arrival) || !isoDate(input.stay.departure) || input.stay.arrival >= input.stay.departure ||
       !Number.isSafeInteger(input.stay.adults) || input.stay.adults < 1 || !Array.isArray(input.stay.childAges) ||
-      !input.stay.childAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17)) {
+      !Array.from(input.stay.childAges).every((age) => Number.isInteger(age) && age >= 0 && age <= 17)) {
     return fail('CREATE_STAY_INVALID', 'stay');
   }
 
@@ -123,7 +126,7 @@ export function normalizeCloudCreateRequest(input) {
     reasonForStay = { value: input.reasonForStay.value, display: input.reasonForStay.display };
   }
 
-  const parties = normalizeParties(input.parties);
+  const parties = normalizeParties(input.parties, canonical);
   if (parties.outcome !== 'ok') return parties;
   if (input.billingReference !== undefined &&
       (!exactText(input.billingReference, { max: 4000 }) || !parties.value.arAccount)) {

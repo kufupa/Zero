@@ -52,6 +52,17 @@ test('digest is deterministic across object key order and sensitive to request c
   ]) assert.notEqual(digestCloudCreateRequest(changed).normalizedRequestDigest, original.normalizedRequestDigest);
 });
 
+test('validates and rehashes its versioned canonical result', () => {
+  const original = digestCloudCreateRequest(request);
+  const roundtrip = digestCloudCreateRequest(original.request);
+  assert.equal(roundtrip.outcome, 'ok');
+  assert.deepEqual(roundtrip.request, original.request);
+  assert.equal(roundtrip.normalizedRequestDigest, original.normalizedRequestDigest);
+  assert.equal(normalizeCloudCreateRequest({ ...original.request, version: 'other' }).issue, 'CREATE_VERSION_INVALID');
+  assert.equal(normalizeCloudCreateRequest({ ...original.request,
+    parties: { agency: request.parties.agency } }).issue, 'CREATE_FIELD_UNSUPPORTED');
+});
+
 test('rejects unknown authority fields and room-count aliases rather than dropping them', () => {
   for (const changed of [
     { ...request, approval: { grantId: 'caller-value' } },
@@ -83,6 +94,8 @@ test('rejects invalid dates, unsupported child bands, and non-string native iden
     stay: { ...request.stay, arrival: '2027-02-30' } }).issue, 'CREATE_STAY_INVALID');
   assert.equal(normalizeCloudCreateRequest({ ...request,
     stay: { ...request.stay, childAges: [18] } }).issue, 'CREATE_STAY_INVALID');
+  assert.equal(normalizeCloudCreateRequest({ ...request,
+    stay: { ...request.stay, childAges: Array(2) } }).issue, 'CREATE_STAY_INVALID');
   assert.equal(normalizeCloudCreateRequest({ ...request,
     guest: { ...request.guest, nativeId: 123 } }).issue, 'CREATE_GUEST_IDENTITY_INVALID');
 });
