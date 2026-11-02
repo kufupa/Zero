@@ -569,3 +569,11 @@ test('billing snapshot rejects unrelated form, model, identity and visible contr
   body.set('billingreference', 'ref');
   assert.equal(matchesFullCreateBody(body, { billingreference: ' ref ', roomtype: 'A' }), false);
 });
+
+test('native save refuses unpaired or nonfunction server guards before any browser work', async () => {
+  const callback = async () => true;
+  for (const guards of [{ authorizeCandidate: callback }, { dispatchCandidate: callback },
+    { authorizeCandidate: true, dispatchCandidate: callback }, { authorizeCandidate: callback, dispatchCandidate: null }]) {
+    assert.equal((await saveNewLabtestStay(pageStub(), saveInputs, guards)).issue, 'SAVE_GUARD_CALLBACKS_INVALID');
+  }
+});

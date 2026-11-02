@@ -23,6 +23,7 @@ import {
   type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
+import { CreateFenceError } from './pane-create-dispatch-fence.js';
 import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 
 const execFileAsync = promisify(execFile);
@@ -454,15 +455,17 @@ async function recordBoundPreview(input: {
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<void> {
-  recordPanePreview(input.owner, input.digest, input.now);
   const persist = boundPreviewPersist(input);
-  if (!persist || !input.workItemId || !input.stayId) return;
-  await persist.record({
-    workItemId: input.workItemId,
-    stayId: input.stayId,
-    digest: input.digest,
-    now: input.now,
-  });
+  if (persist && input.workItemId && input.stayId) {
+    await persist.record({
+      workItemId: input.workItemId,
+      stayId: input.stayId,
+      digest: input.digest,
+      now: input.now,
+    });
+  }
+  // A failed bound write must not leave a fresh memory-only grant behind.
+  recordPanePreview(input.owner, input.digest, input.now);
 }
 
 async function takeBoundPreview(input: {
@@ -780,24 +783,29 @@ export async function runPaneStay(input: {
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
+    if (error instanceof CreateFenceError && error.reason === 'active') {
+      takePanePreview(input.owner, digest, paneStayClock());
+      return { status: 'refused', reason: 'write_in_flight' };
+    }
     warnPaneStaySpawnFailed('save', error);
     throw error;
   }
   if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
   const spawned = gate.spawned;
+  // Register every completed run before any refusal so its directory expires.
+  if (spawned.runId && spawned.runDir) {
+    registerPaneRun({
+      runId: spawned.runId,
+      dir: spawned.runDir,
+      owner: input.owner,
+      now: paneStayClock(),
+    });
+  }
   if (/^refused/i.test(spawned.outcome)) {
     return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
   }
   if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
     // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
-    if (spawned.runId && spawned.runDir) {
-      registerPaneRun({
-        runId: spawned.runId,
-        dir: spawned.runDir,
-        owner: input.owner,
-        now: paneStayClock(),
-      });
-    }
     const shots = await persistDurableStayShots({
       runId: spawned.runId,
       runDir: spawned.runDir,
@@ -826,20 +834,18 @@ export async function runPaneStay(input: {
         previewPersist: input.previewPersist,
       });
     } catch (error) {
+      // Never report an unusable bound preview, or retain an older memory grant.
+      takePanePreview(input.owner, digest, paneStayClock());
+      if (error instanceof CreateFenceError && error.reason === 'active') {
+        return { status: 'refused', reason: 'write_in_flight' };
+      }
       console.warn('stay_preview_persist_failed', {
         stayId: input.stayId,
         workItemId: input.workItemId,
         error,
       });
+      return { status: 'refused', reason: 'pane_preview_persist_failed' };
     }
-  }
-  if (spawned.runId && spawned.runDir) {
-    registerPaneRun({
-      runId: spawned.runId,
-      dir: spawned.runDir,
-      owner: input.owner,
-      now: paneStayClock(),
-    });
   }
   const shots = await persistDurableStayShots({
     runId: spawned.runId,
