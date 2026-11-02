@@ -597,7 +597,8 @@
         "staffEvidence": "Staff acknowledged the accommodation voucher.",
         "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
         "artifactPolicy": {
-          "requires_hms_write": false
+          "requires_hms_write": false,
+          "source_attachment_required": true
         },
         "detailChecks": []
       }
