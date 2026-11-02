@@ -208,8 +208,15 @@ test('agent guarantee is selected, bound, saved once and independently read back
   assert.deepEqual(calls[0].guaranteeSelection, selection);
   assert.ok(committing.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
 
+  // An agency ID alone cannot select a party without the required name query.
+  const idOnly = harness(options);
+  const held = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties: { agencyId: '99' } }, idOnly.options);
+  assert.equal(held.outcome, 'needs_input');
+  assert.ok(held.missing.includes('parties.agencyName'));
+  assert.equal(idOnly.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
   // The same visible label is not proof of the saved native code, with or without a party.
-  for (const parties of [{}, { agencyId: '99' }, { organizationId: '41' }]) {
+  for (const parties of [{}, { agencyId: '99', agencyName: 'Example' }, { organizationId: '41' }]) {
     const partyValues = { ...agentValues, company: parties.organizationId ? 'Example Company' : '',
       ...(parties.agencyId ? { ta1: 'Example Agency' } : {}) };
     const matching = harness({ ...options, draft: partyValues, record: partyValues, nativePreimage });
