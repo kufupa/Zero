@@ -2,14 +2,17 @@
  * Real-browser gate for the /nava-preview viewer. Read-only: it opens each thread, waits
  * for the pane's analysis to settle, takes screenshots, and records what the pane shows.
  *
- * It never clicks a control. Every tRPC request that is not a GET is aborted unless it is
- * quoteWorkflow.analyseSelection (the analysis read), so no HMS or mailbox write can start.
+ * It never clicks a control. Requests are classified by tRPC procedure, not HTTP method.
+ * Analysis and explicitly configured reviewed prepare calls are exceptions; commits and sends stay blocked.
  * Aborted requests are listed per thread in results.json.
  *
  * Environment (values are never printed):
  *   NAVA_PREVIEW_BASE_URL       origin of the app, e.g. https://pilot.example
  *   NAVA_PREVIEW_STORAGE_STATE  Playwright storageState JSON holding a staff session
  *   NAVA_PREVIEW_CHROMIUM       optional path to a Chromium binary
+ *   NAVA_PREVIEW_PREPARE_PROCEDURES  comma-separated, explicitly reviewed prepare procedures
+ *   NAVA_PREVIEW_USER_ID, NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_MESSAGE_ID
+ *                              identity bound to every opted-in prepare request
  *
  * Usage (from the repo root):
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-preview-run.ts --latest 5
@@ -62,12 +65,13 @@ export function isPiiField(label: string): boolean {
  * these names against the server router and against the pane's client code.
  */
 export const READ_PROCEDURES: ReadonlySet<string> = new Set([
+  'ai.hmsCandidateState',
   'brain.getCapabilities',
   'categories.list',
   'connections.getDefault',
   'connections.list',
-  'drafts.get',
   'drafts.list',
+  'drafts.reviewForMessage',
   'drafts.savedReply',
   'hmsApproval.evidence',
   'hmsApproval.writeState',
@@ -81,6 +85,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'paneStayLookup.jobQueueEnabled',
   'paneStayLookup.jobStatus',
   'paneStayLookup.screenshot',
+  'quoteWorkflow.makeQuote',
   'quoteWorkflow.rateCatalogue',
   'quoteWorkflow.voucherFind',
   'rates.list',
@@ -88,11 +93,17 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workItems.followUpByMessage',
   'workItems.getByMessage',
   'workItems.list',
+  'workItems.revisionCursor',
+  'workflowFolders.getOwnerActionLabel',
+  'workflowFolders.list',
+  'workflowFolders.summary',
+  'workflowFolders.thread',
   'workstation.getPriorStaffQuoteRequote',
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
   'workstation.outlookSync.statusForActiveMailbox',
+  'workstation.quotePdfJob',
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
@@ -121,6 +132,8 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workItems.recordActions',
   'workstation.queueStaffQuote',
   'drafts.saveReply',
+  'drafts.setRequestHandled',
+  'drafts.setVoucherReviewHandled',
   'hmsApproval.approve',
   'hmsApproval.resolveNeedsCheck',
   'hmsApproval.review',
@@ -137,11 +150,17 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'rates.archive',
   'rates.create',
   'rates.update',
+  'settings.save',
+  'workflowFolders.setActionLabel',
   'workItems.dismiss',
   'workItems.dismissFollowUp',
   'workItems.open',
   'workItems.recordEvent',
+  'workItems.recordQuoteOutcome',
+  'workItems.redoRevision',
+  'workItems.resetSection',
   'workItems.retryTranslation',
+  'workItems.undoRevision',
   'workItems.useFollowUp',
   'workstation.bridgeTicket',
   'workstation.executeStaffQuote',
@@ -149,6 +168,7 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.outlookSync.control',
   'workstation.ping',
   'workstation.prepareBookingDraft',
+  'workstation.prepareUnquotedBookingDraft',
   'workstation.qualifiedQuoteProposalPdf',
   'workstation.quoteWorkbook',
   'workstation.reportBridgeFailure',
@@ -161,6 +181,66 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
  */
 export const BLOCKED_BY_DESIGN: ReadonlySet<string> = new Set(['workItems.open']);
 
+/** Absolute deny list. No environment setting may enable a commit or a real mail write. */
+export const NEVER_COMMIT_OR_SEND: ReadonlySet<string> = new Set([
+  'quoteWorkflow.commitStay',
+  'paneStayCancel.commitCancel',
+  'paneStayAmend.commitAmend',
+  'mail.send',
+  'drafts.saveReply',
+  'workstation.outlookSync.activate',
+  'workstation.outlookSync.control',
+]);
+
+/** Each entry must be individually reviewed. Input messageId is the selected stored message id. */
+export const PREPARE_PREVIEW_PROCEDURES: ReadonlySet<string> = new Set([
+  'workstation.prepareBookingDraft',
+]);
+
+export type ReplayPreparePolicy = {
+  origin: string;
+  userId: string;
+  transportId: string;
+  messageId: string;
+  procedures: ReadonlySet<string>;
+};
+
+/** SuperJSON batches use indexed {json: ...} envelopes; metadata can change the decoded value. */
+function prepareMessageId(body: string | null): string | null {
+  if (!body) return null;
+  try {
+    const wire: unknown = JSON.parse(body);
+    if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
+    const record = wire as Record<string, unknown>;
+    const envelope = '0' in record ? record['0'] : record;
+    if ('0' in record && (Object.keys(record).length !== 1 || !envelope)) return null;
+    if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return null;
+    const serialized = envelope as Record<string, unknown>;
+    if ('meta' in serialized || !serialized.json || typeof serialized.json !== 'object' || Array.isArray(serialized.json)) return null;
+    const value = (serialized.json as Record<string, unknown>).messageId;
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A prepare exception is valid only for one reviewed procedure and an authenticated, selected message. */
+export function replayPrepareAllowed(input: {
+  url: string;
+  procedure: string;
+  policy: ReplayPreparePolicy;
+  sessionUserId: string | null;
+  requestTransportId: string | null;
+  body: string | null;
+}): boolean {
+  const { policy, procedure } = input;
+  return new URL(input.url).origin === policy.origin &&
+    PREPARE_PREVIEW_PROCEDURES.has(procedure) && !NEVER_COMMIT_OR_SEND.has(procedure) &&
+    policy.procedures.has(procedure) && Boolean(policy.userId && policy.transportId && policy.messageId) &&
+    input.sessionUserId === policy.userId && input.requestTransportId === policy.transportId &&
+    prepareMessageId(input.body) === policy.messageId;
+}
+
 export type TrpcDecision = {
   allowed: boolean;
   procedures: string[];
@@ -168,6 +248,33 @@ export type TrpcDecision = {
 };
 
 const TRPC_PREFIX = '/api/trpc/';
+
+/** Analysis with a staff note persists a work-item event; never allow it in replay. */
+export function analysisInputsSafe(url: string, method: string, body: string | null, procedures: readonly string[]): boolean {
+  const indexes = procedures.flatMap((name, index) => name === 'quoteWorkflow.analyseSelection' ? [index] : []);
+  if (!indexes.length) return true;
+  if (method !== 'POST' || !body) return false;
+  try {
+    const wire: unknown = JSON.parse(body);
+    if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return false;
+    const batch = new URL(url).searchParams.get('batch') === '1';
+    if (!batch && procedures.length !== 1) return false;
+    const record = wire as Record<string, unknown>;
+    if (batch && (Object.keys(record).length !== procedures.length ||
+      !procedures.every((_, index) => Object.hasOwn(record, String(index))))) return false;
+    return indexes.every((index) => {
+      const envelope = batch ? record[String(index)] : record;
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
+      const serialized = envelope as Record<string, unknown>;
+      if (Object.keys(serialized).some((key) => key !== 'json')) return false;
+      const input = serialized.json;
+      return !!input && typeof input === 'object' && !Array.isArray(input) &&
+        !Object.hasOwn(input, 'staffNote');
+    });
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Classifies one request by the procedure names in its /api/trpc/ path, batched or not.
@@ -183,6 +290,10 @@ export function classifyTrpcRequest(url: string, options: { allowHmsReads?: bool
   }
   const blocked: TrpcDecision['blocked'] = [];
   for (const procedure of procedures) {
+    if (NEVER_COMMIT_OR_SEND.has(procedure)) {
+      blocked.push({ procedure, reason: 'write' });
+      continue;
+    }
     if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure)) continue;
     if (options.allowHmsReads && HMS_READ_PROCEDURES.has(procedure)) continue;
     blocked.push({
@@ -209,6 +320,7 @@ export type RunConfig = {
   timeoutMs: number;
   /** NAVA_PREVIEW_ALLOW_HMS_READS=1: let the pane's HMS lookups (HMS_READ_PROCEDURES) through. */
   allowHmsReads?: boolean;
+  preparePolicy?: ReplayPreparePolicy;
 };
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
@@ -330,6 +442,18 @@ export function parseRunConfig(
   if (transportRaw && !TRANSPORT_ID.test(transportRaw)) {
     throw new Error('NAVA_PREVIEW_TRANSPORT_ID has an invalid id');
   }
+  const requestedPrepare = (env.NAVA_PREVIEW_PREPARE_PROCEDURES ?? '')
+    .split(',').map((value) => value.trim()).filter(Boolean);
+  let preparePolicy: ReplayPreparePolicy | undefined;
+  if (requestedPrepare.length) {
+    const userId = env.NAVA_PREVIEW_USER_ID?.trim() ?? '';
+    const messageId = env.NAVA_PREVIEW_MESSAGE_ID?.trim() ?? '';
+    if (!requestedPrepare.every((name) => PREPARE_PREVIEW_PROCEDURES.has(name) && !NEVER_COMMIT_OR_SEND.has(name)))
+      throw new Error('NAVA_PREVIEW_PREPARE_PROCEDURES contains an unreviewed procedure');
+    if (!userId || !transportRaw || !messageId || selection.kind !== 'threads' || selection.ids.length !== 1)
+      throw new Error('Prepare requires user, transport, selected message and exactly one thread');
+    preparePolicy = { origin: base.origin, userId, transportId: transportRaw, messageId, procedures: new Set(requestedPrepare) };
+  }
   return {
     baseUrl: base.origin,
     storageStatePath,
@@ -340,6 +464,7 @@ export function parseRunConfig(
     outDir,
     timeoutMs,
     allowHmsReads: env.NAVA_PREVIEW_ALLOW_HMS_READS?.trim() === '1',
+    ...(preparePolicy ? { preparePolicy } : {}),
   };
 }
 
@@ -578,13 +703,45 @@ function threadFromReferer(referer: string | undefined): string | null {
   }
 }
 
-async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsReads = false): Promise<void> {
+export async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsReads = false, preparePolicy?: ReplayPreparePolicy): Promise<void> {
   await page.route('**/api/trpc/**', async (route: Route) => {
     const request = route.request();
     const decision = classifyTrpcRequest(request.url(), { allowHmsReads });
+    if (!analysisInputsSafe(request.url(), request.method(), request.postData(), decision.procedures)) {
+      decision.allowed = false;
+      decision.blocked.push({ procedure: 'quoteWorkflow.analyseSelection', reason: 'write' });
+    }
     if (decision.allowed) {
       await route.continue();
       return;
+    }
+    // Do not split mixed batches: forwarding one allowed prepare could forward a commit too.
+    const procedure = decision.procedures.length === 1 ? decision.procedures[0] : undefined;
+    if (preparePolicy && procedure && preparePolicy.procedures.has(procedure)) {
+      const headers = await request.allHeaders();
+      // Validate the credentials carried by this request, not the browser's potentially newer session.
+      // A selection or sign-in switch while a request is in flight must not authorize another user.
+      const credentials = {
+        ...(headers.cookie ? { cookie: headers.cookie } : {}),
+        ...(headers.authorization ? { authorization: headers.authorization } : {}),
+      };
+      let sessionUserId: string | null = null;
+      if (new URL(request.url()).origin === preparePolicy.origin && headers.cookie) {
+        try {
+          const response = await page.context().request.get(`${preparePolicy.origin}/api/auth/get-session`, {
+            headers: credentials, timeout: 5_000, maxRedirects: 0,
+          });
+          if (response.ok()) {
+            const session = await response.json() as { user?: { id?: unknown } } | null;
+            sessionUserId = typeof session?.user?.id === 'string' ? session.user.id : null;
+          }
+        } catch { /* A failed session check must never authorize a prepare. */ }
+      }
+      if (replayPrepareAllowed({ url: request.url(), procedure, policy: preparePolicy, sessionUserId,
+        requestTransportId: headers['x-zero-active-transport'] ?? null, body: request.postData() })) {
+        await route.continue();
+        return;
+      }
     }
     const thread = threadFromReferer(request.headers().referer);
     for (const item of decision.blocked) {
@@ -746,7 +903,7 @@ export async function runPreview(
     });
     const page = await context.newPage();
     const blocked: BlockedWrite[] = [];
-    await installWriteGuard(page, blocked, config.allowHmsReads === true);
+    await installWriteGuard(page, blocked, config.allowHmsReads === true, config.preparePolicy);
 
     await page.goto(`${config.baseUrl}/nava-preview`, { waitUntil: 'domcontentloaded' });
     if (new URL(page.url()).pathname.startsWith('/login')) {
@@ -821,7 +978,7 @@ export function gateFailures(
   if (counts.error > 0) failures.push(`${counts.error} thread(s) showed a pane error`);
   // Only named writes are a pane failure. An unclassified block is a configuration error (configFailures).
   const blocked = [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)];
-  const writes = blocked.filter((name) => KNOWN_WRITE_PROCEDURES.has(name) && !BLOCKED_BY_DESIGN.has(name)).length;
+  const writes = blocked.filter((name) => (KNOWN_WRITE_PROCEDURES.has(name) || NEVER_COMMIT_OR_SEND.has(name) || ANALYSIS_PROCEDURES.has(name)) && !BLOCKED_BY_DESIGN.has(name)).length;
   if (writes > 0) failures.push(`${writes} write request(s) were blocked`);
   return failures;
 }
@@ -836,7 +993,7 @@ export function configFailures(
 ): string[] {
   const unclassified = new Set<string>();
   for (const name of [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)]) {
-    if (!KNOWN_WRITE_PROCEDURES.has(name)) unclassified.add(name);
+    if (!KNOWN_WRITE_PROCEDURES.has(name) && !NEVER_COMMIT_OR_SEND.has(name) && !ANALYSIS_PROCEDURES.has(name)) unclassified.add(name);
   }
   if (unclassified.size === 0) return [];
   return [

@@ -1,13 +1,18 @@
 import {
   ANALYSING_TEXT,
+  analysisInputsSafe,
   BLOCKED_BY_DESIGN,
   buildGalleryHtml,
   classifyTrpcRequest,
   configFailures,
   gateFailures,
   isPiiField,
+  installWriteGuard,
   KNOWN_WRITE_PROCEDURES,
   MARK_PII_JS,
+  NEVER_COMMIT_OR_SEND,
+  PREPARE_PREVIEW_PROCEDURES,
+  replayPrepareAllowed,
   outcomeOf,
   PANE_BODY_SELECTOR,
   parseRunConfig,
@@ -27,6 +32,8 @@ import {
 } from '../scripts/nava-preview-run';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -270,6 +277,31 @@ describe('blocked requests: pane failure or configuration error', () => {
     }
   });
 
+  it('allows reviewed current pane queries', () => {
+    for (const name of [
+      'ai.hmsCandidateState', 'drafts.reviewForMessage', 'quoteWorkflow.makeQuote',
+      'workItems.revisionCursor', 'workflowFolders.getOwnerActionLabel', 'workflowFolders.list',
+      'workflowFolders.summary', 'workflowFolders.thread', 'workstation.quotePdfJob',
+    ]) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(false);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
+    }
+  });
+
+  it('keeps current pane state mutations blocked, including in a mixed batch', () => {
+    for (const name of [
+      'drafts.setRequestHandled', 'drafts.setVoucherReviewHandled', 'settings.save',
+      'workItems.recordQuoteOutcome', 'workItems.redoRevision', 'workItems.resetSection',
+      'workItems.undoRevision', 'workflowFolders.setActionLabel', 'workstation.prepareUnquotedBookingDraft',
+    ]) {
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(true);
+      const decision = classifyTrpcRequest(`${origin}mail.get,${name}?batch=1`);
+      expect(decision.allowed, name).toBe(false);
+      expect(decision.blocked).toContainEqual({ procedure: name, reason: 'write' });
+    }
+  });
+
   it('reports an unclassified block as a configuration error, not as a write', () => {
     const unclassified = [result({ blockedWrites: ['mail.archive'] })];
     expect(configFailures(unclassified)).toEqual([
@@ -430,6 +462,144 @@ describe('guest details never reach the outputs', () => {
       for (const secret of SECRETS) expect(text).not.toContain(secret.toLowerCase());
     }
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('(hidden)');
+  });
+});
+
+describe('identity-bound replay prepare', () => {
+  const origin = 'https://pilot.example';
+  const procedure = 'workstation.prepareBookingDraft';
+  const policy = {
+    origin, userId: 'staff-1', transportId: 'mailbox-1', messageId: 'message-1',
+    procedures: new Set([procedure]),
+  };
+  const request = {
+    url: `${origin}/api/trpc/${procedure}?batch=1`, procedure, policy,
+    sessionUserId: 'staff-1', requestTransportId: 'mailbox-1',
+    body: JSON.stringify({ 0: { json: { messageId: 'message-1' } } }),
+  };
+
+  it('allows only a reviewed procedure for the exact signed-in user, mailbox, origin and message', () => {
+    expect(replayPrepareAllowed(request)).toBe(true);
+    for (const change of [
+      { sessionUserId: null }, { sessionUserId: 'staff-2' }, { requestTransportId: 'other' },
+      { url: 'https://other.example/api/trpc/workstation.prepareBookingDraft' },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-2' } } }) },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-1' }, meta: { values: {} } } }) },
+      { body: JSON.stringify({ 0: { json: { messageId: 'message-1' } }, 1: { json: {} } }) },
+      { body: '{' }, { procedure: 'quoteWorkflow.commitStay' },
+    ]) expect(replayPrepareAllowed({ ...request, ...change })).toBe(false);
+  });
+
+  it('requires explicit reviewed procedures and identity, and refuses multi-thread runs', () => {
+    const active = env({ NAVA_PREVIEW_PREPARE_PROCEDURES: procedure, NAVA_PREVIEW_USER_ID: 'staff-1',
+      NAVA_PREVIEW_TRANSPORT_ID: 'mailbox-1', NAVA_PREVIEW_MESSAGE_ID: 'message-1' });
+    expect(parseRunConfig(['--threads', 't-1'], active, dir).preparePolicy).toEqual(policy);
+    expect(parseRunConfig(['--threads', 't-1'], env(), dir).preparePolicy).toBeUndefined();
+    expect(() => parseRunConfig(['--threads', 't-1'], { ...active, NAVA_PREVIEW_USER_ID: '' }, dir)).toThrow('Prepare requires');
+    expect(() => parseRunConfig(['--threads', 't-1,t-2'], active, dir)).toThrow('exactly one thread');
+    expect(() => parseRunConfig(['--threads', 't-1'], { ...active, NAVA_PREVIEW_PREPARE_PROCEDURES: 'quoteWorkflow.commitStay' }, dir)).toThrow('unreviewed');
+  });
+
+  it('never permits a commit or mail write, even when HMS reads are opted in', () => {
+    for (const name of NEVER_COMMIT_OR_SEND) {
+      expect(PREPARE_PREVIEW_PROCEDURES.has(name)).toBe(false);
+      expect(classifyTrpcRequest(`${origin}/api/trpc/${name}`, { allowHmsReads: true }).allowed).toBe(false);
+      expect(replayPrepareAllowed({ ...request, procedure: name, policy: { ...policy, procedures: new Set([name]) } })).toBe(false);
+    }
+    expect(classifyTrpcRequest(`${origin}/api/trpc/${procedure},quoteWorkflow.commitStay?batch=1`).allowed).toBe(false);
+    expect(gateFailures([result({ blockedWrites: ['mail.send', 'paneStayAmend.commitAmend'] })])).toEqual(['2 write request(s) were blocked']);
+    expect(configFailures([result({ blockedWrites: ['mail.send', 'paneStayAmend.commitAmend'] })])).toEqual([]);
+  });
+});
+
+describe('browser replay guard', () => {
+  it.skipIf(!chromiumBinary)('verifies the intercepted session and never forwards mixed batches', async () => {
+    const forwarded: string[] = [];
+    const server = createServer((req, res) => {
+      if (req.url === '/api/auth/get-session') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ user: { id: req.headers.cookie?.includes('session=staff-1') ? 'staff-1' : 'other' } }));
+      } else if (req.url?.startsWith('/api/trpc/')) {
+        forwarded.push(req.url);
+        res.setHeader('content-type', 'application/json');
+        res.end('{}');
+      } else res.end('<html></html>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+    try {
+      const context = await browser.newContext({ extraHTTPHeaders: { 'x-zero-active-transport': 'mailbox-1' } });
+      await context.addCookies([{ name: 'session', value: 'staff-1', url: origin }]);
+      const page = await context.newPage();
+      const blocked: Array<{ thread: string | null; procedure: string }> = [];
+      await installWriteGuard(page, blocked, false, { origin, userId: 'staff-1', transportId: 'mailbox-1',
+        messageId: 'message-1', procedures: new Set(['workstation.prepareBookingDraft']) });
+      await page.goto(origin);
+      const send = (path: string, messageId: string) => page.evaluate(async ({ path, messageId }) => {
+        try {
+          const response = await fetch(`/api/trpc/${path}?batch=1`, { method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ 0: { json: { messageId } } }) });
+          return response.ok;
+        } catch { return false; }
+      }, { path, messageId });
+      expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(true);
+      expect(await send('workstation.prepareBookingDraft', 'message-2')).toBe(false);
+      expect(await send('workstation.prepareBookingDraft,quoteWorkflow.commitStay', 'message-1')).toBe(false);
+      const analyse = (note: boolean) => page.evaluate(async (note) => {
+        try {
+          const response = await fetch('/api/trpc/quoteWorkflow.analyseSelection?batch=1', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ 0: { json: { selectionEpoch: 1, ...(note ? { staffNote: 'save this' } : {}) } } }),
+          });
+          return response.ok;
+        } catch { return false; }
+      }, note);
+      expect(await analyse(false)).toBe(true);
+      expect(await analyse(true)).toBe(false);
+      await context.clearCookies();
+      await context.addCookies([{ name: 'session', value: 'staff-2', url: origin }]);
+      expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(false);
+      expect(forwarded).toEqual(['/api/trpc/workstation.prepareBookingDraft?batch=1', '/api/trpc/quoteWorkflow.analyseSelection?batch=1']);
+      expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.analyseSelection');
+      expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.commitStay');
+      await context.close();
+    } finally {
+      await browser.close();
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  }, 30_000);
+});
+
+describe('analysis payload write fence', () => {
+  const prefix = 'https://pilot.example/api/trpc/';
+  const safe = { json: { internetMessageId: '<mail@example.org>', selectionEpoch: 1 } };
+  const allows = (path: string, body: unknown, method = 'POST') => {
+    const procedures = path.split(',');
+    return analysisInputsSafe(`${prefix}${path}?batch=1`, method, JSON.stringify(body), procedures);
+  };
+
+  it('allows a plain selected-mail analysis, including inside a read-only batch', () => {
+    expect(allows('quoteWorkflow.analyseSelection', { 0: safe })).toBe(true);
+    expect(allows('mail.get,quoteWorkflow.analyseSelection', { 0: { json: {} }, 1: safe })).toBe(true);
+  });
+
+  it('rejects notes, metadata, missing envelopes and non-POST requests', () => {
+    for (const body of [
+      { 0: { json: { ...safe.json, staffNote: 'remember this' } } },
+      { 0: { json: { ...safe.json, staffNote: '' } } },
+      { 0: { ...safe, meta: { values: { staffNote: ['undefined'] } } } },
+      { 1: safe }, { 0: safe, 1: safe }, {}, null,
+    ]) expect(allows('quoteWorkflow.analyseSelection', body)).toBe(false);
+    expect(allows('quoteWorkflow.analyseSelection', { 0: safe }, 'GET')).toBe(false);
+    expect(allows('mail.get,quoteWorkflow.analyseSelection', { 0: safe, 1: { json: { staffNote: 'x' } } })).toBe(false);
+  });
+
+  it('reports a blocked analysis as a write, not an unclassified procedure', () => {
+    const blocked = [result({ blockedWrites: ['quoteWorkflow.analyseSelection'] })];
+    expect(gateFailures(blocked)).toEqual(['1 write request(s) were blocked']);
+    expect(configFailures(blocked)).toEqual([]);
   });
 });
 
