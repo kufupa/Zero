@@ -22,6 +22,7 @@ import {
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
 import { canonicalJson } from './draft-approval.js';
+import { assertNoCreateDispatchFence, CreateFenceError } from './pane-create-dispatch-fence.js';
 import {
   assertHmsUnchangedBeforeSave,
   consumeHmsWriteApproval,
@@ -292,6 +293,14 @@ export async function bindAttachDocumentForm(input: {
       .limit(1)
       .for('update');
     if (!item) return { status: 'refused' as const, reason: 'not_found' };
+    try {
+      await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: item.id });
+    } catch (error) {
+      if (error instanceof CreateFenceError && error.reason === 'active') {
+        return { status: 'refused' as const, reason: 'write_in_flight' };
+      }
+      throw error;
+    }
     if (item.status === 'done' || item.status === 'dismissed') {
       return { status: 'refused' as const, reason: 'not_open' };
     }
