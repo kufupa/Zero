@@ -10,8 +10,9 @@ Open the exact Record View in a fresh, dedicated browser context created with
 The stage verifies the Playwright client's internal context options and refuses
 if the setting is missing, not blocked, or workers are active. This is fail-closed
 but relies on a private Playwright property. The pinned 1.63.0 client source
-sets it from context initializer options; runtime behavior still needs proof. The current Centurion bootstrap does not set this option and
-therefore cannot run this stage without a separate integration change. The caller owns the Labtest authorization and
+sets it from context initializer options; runtime behavior still needs proof.
+The Centurion bootstrap supports `blockServiceWorkers: true`; callers must opt
+in before using this stage. The caller owns the Labtest authorization and
 must coordinate exclusive use of the target. Use a new page for each staging
 attempt. `currentLabtestRecord` checks the guest, confirmation, property, dates,
 status, room, rate, note, guarantee, send settings and supported party links.
@@ -75,8 +76,10 @@ their match to the request, changed field names, dirty state, related date/room/
 rate fields, and before/after pricing and tax fields. Missing, null, blank,
 ambiguous and valued fields stay distinct. `networkRequestsBlocked` counts the
 extra context-wide deny route; `blockedRequests` reports the lifecycle's own
-blocked requests. If no usable option store exists, `SAVED_OPTIONS_UNAVAILABLE`
-or `SAVED_OPTION_UNAVAILABLE` is expected. No result authorizes Save, establishes
+blocked requests. A native saved-form LOV with no component option store returns
+`SAVED_NATIVE_PICKER_UNVERIFIED` without opening the picker or editing the form.
+Other unavailable stores or options return `SAVED_OPTIONS_UNAVAILABLE` or
+`SAVED_OPTION_UNAVAILABLE`. No result authorizes Save, establishes
 an eligible rate, or confirms availability. Other changed fields are observations,
 not approved Save deltas. Results can contain private data; handle accordingly.
 
@@ -143,6 +146,16 @@ session identifiers different in model data. Private evidence:
 `/tmp/hms-saved-date-native-5jxTCQ/room-reset-evidence.json` and
 `/tmp/hms-saved-date-native-5jxTCQ/room-selection-scout.json`.
 
+On 2026-11-02, a separate guarded room-picker follow-up verified one current
+room row and attempted picker confirmation. The page fence blocked the resulting
+saved-record `roomtypechange` POST; picker confirmation then stalled, and the
+isolated browser was stopped without a post-confirm form observation. A fresh,
+independent read found the saved form values and model data unchanged apart from
+session identifiers, and the record was clean. The highlighted row is not a
+staged room change. Private picker evidence and screenshot:
+`/tmp/hms-saved-room-followup-GWYjN3/`; independent readback and screenshot:
+`/tmp/hms-saved-room-reconcile-HvCqcp/`.
+
 A saved-rate scout allowed only the exact previously observed `OSRASD` entry
 request after checking the complete fake-stay preimage and current booking
 session. It returned HTTP 200 and opened Rate Shop. Its automatic rate inquiry
@@ -155,8 +168,7 @@ model data. Private evidence: `/tmp/hms-saved-date-native-5jxTCQ/rate-entry-scou
 
 A guarded saved-picker selection path is still needed; these observations are
 not inventory or price evidence. Repricing, inventory and Save remain unverified.
-Synthetic tests are written but have not run; the approved remote runner uses
-committed HEAD, and this dispatch cannot commit.
+The earlier synthetic store tests do not prove native saved-form selection.
 
 Do not run live probes until the coordinator schedules an exclusive fake stay.
 The coordinator must integrate these exports into a saved-stay session separately;

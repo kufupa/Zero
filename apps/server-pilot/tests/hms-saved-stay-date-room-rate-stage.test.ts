@@ -204,6 +204,30 @@ describe('saved-stay staged amendment diagnostics', () => {
       .toMatchObject({ outcome: 'refused', issue: 'AMEND_PREIMAGE_UNVERIFIED' });
   });
 
+  it('reports the native saved LOV picker hold without opening it or changing the form', async () => {
+    const form = { el: { dom: { contains: () => true } } };
+    const element = { id: 'room-inputEl', name: 'roomtype', value: 'DLX', disabled: false, readOnly: false };
+    const guest = { id: 'guest-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
+    const setValue = vi.fn(), fireEvent = vi.fn();
+    const component = { getXType: () => 'lovfield', getValue: () => 'DLX', up: () => form, setValue, fireEvent,
+      isDisabled: () => false, readOnly: false };
+    vi.stubGlobal('Ext', { getCmp: (id: string) => id === 'room' ? component : { up: () => form } });
+    vi.stubGlobal('document', { querySelectorAll: () => [guest] });
+    vi.stubGlobal('getComputedStyle', () => ({ visibility: 'visible' }));
+    const input = { count: async () => 1, evaluate: async (fn: any, arg: any) => fn(element, arg) };
+    const frame = { locator: (selector: string) => selector.startsWith('input[') ? input : { count: async () => 0 } };
+    const state = { frame, native: { PKID: '1' }, partyPreimage: {} };
+    const page = { locator: () => ({ count: async () => 1 }), context: () => ({ _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }) };
+    mocks.current.mockResolvedValue(state); mocks.snapshot.mockResolvedValue(structuredClone(before));
+    mocks.clean.mockReturnValue(true); mocks.parties.mockReturnValue(true);
+    expect(await inspectLabtestSavedRoomRateOptions(page, expected, { field: 'roomType' }))
+      .toMatchObject({ outcome: 'unavailable', issue: 'SAVED_NATIVE_PICKER_UNVERIFIED' });
+    await stageLabtestStayAmendment(page, expected, { field: 'roomType', value: 'DBL', nativeId: '12' });
+    const config = mocks.run.mock.calls.at(-1)![1] as any;
+    await expect(config.prepare(async <T,>(promise: Promise<T>) => promise)).rejects.toThrow('SAVED_NATIVE_PICKER_UNVERIFIED');
+    expect(setValue).not.toHaveBeenCalled(); expect(fireEvent).not.toHaveBeenCalled();
+  });
+
   it('uses the saved component store only for a unique exact native ID and code', async () => {
     let draft = structuredClone(before);
     const form = { el: { dom: { contains: () => true } } };
