@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   adaptBatchToolResult, adaptExistingToolResult, AmendStageInputSchema,
   BatchManifestGrantSchema, FilingRunnerInputSchema,
@@ -42,17 +42,35 @@ describe('Nava tool result contract', () => {
   });
   it('requires verified readback for successful writes', () => {
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
-    expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'read' }).outcome).toBe('ok');
-    expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
     expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write' }).outcome).toBe('uncertain');
+  });
+  it('rejects a verification boolean without its exact fresh readback', () => {
+    for (const readback of [undefined, null]) {
+      expect(adaptExistingToolResult({ outcome: 'committed', clickedSave: true }, {
+        operation: 'write', readbackVerified: true, verifiedReadback: { readback },
+      }).outcome).toBe('uncertain');
+    }
+    expect(adaptBatchToolResult([{ key: 'a', result: { outcome: 'committed' }, readbackVerified: true }])
+      .children?.[0]?.outcome).toBe('uncertain');
+  });
+  it('types required data without a spurious legacy payload union', () => {
+    const explicit = adaptExistingToolResult({ outcome: 'ok', data: { documentCode: 'ABC' } }, { operation: 'read' });
+    expectTypeOf(explicit.data).toEqualTypeOf<{ documentCode: string } | undefined>();
+    const legacy = adaptExistingToolResult({ outcome: 'ok', rows: ['ABC'] }, { operation: 'read' });
+    expectTypeOf(legacy.data).toEqualTypeOf<{ rows: string[] } | undefined>();
+    const optional: { outcome: string; data?: { documentCode: string }; rows: string[] } = { outcome: 'ok', rows: [] };
+    const adapted = adaptExistingToolResult(optional, { operation: 'read' });
+    expectTypeOf(adapted.data).toEqualTypeOf<{ documentCode: string } | { rows: string[] } | undefined>();
   });
   it('adapts a legacy committed booking only after fresh readback', () => {
     const result = { status: 'ok', outcome: 'committed', clickedSave: true, confirmationNumber: '123456-1' };
     expect(adaptExistingToolResult(result, { operation: 'write' })).toMatchObject({
       outcome: 'uncertain', data: { confirmationNumber: '123456-1' },
     });
-    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true })).toMatchObject({
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } })).toMatchObject({
       outcome: 'ok', data: { confirmationNumber: '123456-1' },
     });
   });
@@ -66,7 +84,7 @@ describe('Nava tool result contract', () => {
   });
   it('keeps batch child identity, confirmation and uncertainty', () => {
     expect(adaptBatchToolResult([
-      { key: 'a', result: { outcome: 'ok' }, readbackVerified: true, confirmation: '123' },
+      { key: 'a', result: { outcome: 'ok' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } }, confirmation: '123' },
       { key: 'b', result: { outcome: 'awaiting_readback', issue: 'SAVE_UNCONFIRMED' } },
     ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'ok', confirmation: '123' },
@@ -95,7 +113,7 @@ describe('Nava tool result contract', () => {
   });
   it('preserves producer-style confirmed and uncertain batch children', () => {
     expect(adaptBatchToolResult([
-      { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
+      { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-a' } }, confirmation: '123456-1' },
       { key: 'child-b', result: { status: 'uncertain', possiblyDispatched: true } },
     ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'child-a', outcome: 'ok', confirmation: '123456-1' },
@@ -109,8 +127,8 @@ describe('Nava tool result contract', () => {
   });
   it('keeps every nonempty batch partial, regardless of child outcomes', () => {
     const verified = adaptBatchToolResult([
-      { key: 'a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
-      { key: 'b', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123457-1' },
+      { key: 'a', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-a' } }, confirmation: '123456-1' },
+      { key: 'b', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-b' } }, confirmation: '123457-1' },
     ]);
     expect(verified).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'ok', confirmation: '123456-1' },
@@ -179,7 +197,7 @@ describe('Nava tool result contract', () => {
     const source = { outcome: 'committed', clickedSave: true,
       evidence: { level: 'readback_verified' as const, readback: claimed } };
     const withoutEvidence = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
-    expect(withoutEvidence.outcome).toBe('ok');
+    expect(withoutEvidence.outcome).toBe('uncertain');
     expect(withoutEvidence.evidence).toMatchObject({ level: 'none', readback: claimed,
       legacy: [{ claimedLevel: 'readback_verified' }] });
     const verified = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true,

@@ -127,7 +127,9 @@ const existingControlFields = new Set<keyof ExistingToolResult<unknown>>([
   'possiblyDispatched', 'dispatched', 'runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback', 'evidence',
 ]);
 type LegacyPayload<R> = Omit<R, keyof ExistingToolResult<unknown>>;
-type AdaptedData<R> = (R extends { data?: infer T } ? T : never) | LegacyPayload<R>;
+type AdaptedData<R> = R extends { data: infer T }
+  ? undefined extends T ? Exclude<T, undefined> | LegacyPayload<R> : T
+  : R extends { data?: infer T } ? T | LegacyPayload<R> : LegacyPayload<R>;
 
 /** The trusted caller must verify a fresh matching read; producer evidence is never that proof. */
 export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(result: R, options: {
@@ -145,14 +147,15 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.clickedOk === true || result.clickedOk === 'unknown' || result.saveDispatched === true || result.saveDispatched === 'unknown' ||
     result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
   const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
+  const hasTrustedReadback = options.readbackVerified === true && options.verifiedReadback?.readback != null;
   let outcome: NavaToolResult<unknown>['outcome'];
-  if (ambiguous || (options.operation === 'write' && possibleDispatch && (!options.readbackVerified || !successful))) outcome = 'uncertain';
+  if (ambiguous || (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';
   else if (code === 'refused' || code === 'not_dispatched' || knownPreDispatchRefusal) outcome = 'refused';
   else if (code === 'needs_input' || code === 'input_gap') outcome = 'needs_input';
   else if (successful) {
-    outcome = options.operation === 'write' && !options.readbackVerified ? 'uncertain' : 'ok';
+    outcome = options.operation === 'write' && !hasTrustedReadback ? 'uncertain' : 'ok';
   } else outcome = options.operation === 'write' ? 'uncertain' : 'refused';
-  const trustedReadback = options.readbackVerified === true && outcome === 'ok' && options.verifiedReadback?.readback != null
+  const trustedReadback = hasTrustedReadback && outcome === 'ok'
     ? options.verifiedReadback : undefined;
   const evidence = normalizeExistingEvidence(result, trustedReadback);
   // Legacy tools put useful observations beside their outcome rather than in data.
