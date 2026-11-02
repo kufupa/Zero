@@ -49,7 +49,12 @@ export function mapPaneStayToCloudCreateInput(
   if (stay.propertyCode !== undefined && stay.propertyCode !== 'HRCEN') {
     return { outcome: 'refused', reason: 'property_mismatch', field: 'propertyCode' };
   }
-  if (stay.firstName !== 'Proof' || stay.lastName !== 'Labtest') {
+  if (!cleanText(stay.firstName) || !cleanText(stay.lastName)) {
+    return { outcome: 'refused', reason: 'guest_name_required', field: 'guest' };
+  }
+  // Real guests may be searched and staged without saving. The existing commit
+  // hold remains until trusted write authority and native dispatch are integrated.
+  if (mode === 'commit' && (stay.firstName !== 'Proof' || stay.lastName !== 'Labtest')) {
     return { outcome: 'refused', reason: 'labtest_guest_required', field: 'guest' };
   }
   if (stay.guaranteeType !== 'NGI') return { outcome: 'refused', reason: 'cloud_create_guarantee_unsupported', field: 'guaranteeType' };
@@ -95,7 +100,7 @@ export function mapPaneStayToCloudCreateInput(
       propertyCode: 'HRCEN',
       guest: mode === 'commit'
         ? { profileId: nativeGuestId }
-        : { search: { firstName: 'Proof', lastName: 'Labtest' } },
+        : { search: { firstName: stay.firstName, lastName: stay.lastName } },
       stay: {
         arrival: stay.arrival, departure: stay.departure, adults: stay.adults,
         childAges: [...stay.childAges], childCount: stay.childAges.length,

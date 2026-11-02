@@ -39,8 +39,23 @@ describe('Cloud pane create mapping', () => {
     }
     expect(mapPaneStayToCloudCreateInput({ ...stay, childAges: undefined }, 'prepare'))
       .toMatchObject({ outcome: 'refused', reason: 'child_ages_required' });
-    expect(mapPaneStayToCloudCreateInput({ ...stay, lastName: 'Other' }, 'prepare'))
-      .toMatchObject({ outcome: 'refused', reason: 'labtest_guest_required' });
+    for (const name of ['', '   ', 'Guest\nName']) {
+      expect(mapPaneStayToCloudCreateInput({ ...stay, lastName: name }, 'prepare'))
+        .toMatchObject({ outcome: 'refused', reason: 'guest_name_required' });
+    }
+  });
+
+  it('uses the requested guest name for unsaved preparation and keeps real-guest commits refused', () => {
+    const real = { ...stay, firstName: 'Ada', lastName: 'Moyo' };
+    expect(mapPaneStayToCloudCreateInput(real, 'prepare')).toMatchObject({ outcome: 'ok', input: {
+      mode: 'prepare', guest: { search: { firstName: 'Ada', lastName: 'Moyo' } }, cms: { send: false },
+    } });
+    expect(mapPaneStayToCloudCreateInput(real, 'commit', '123')).toMatchObject({
+      outcome: 'refused', reason: 'labtest_guest_required',
+    });
+    const observed = { ...proof, guest: { ...proof.guest, firstName: 'Ada', lastName: 'Moyo' } };
+    expect(digestPaneCloudCreateProof(real, observed).outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(real, proof).outcome).toBe('refused');
   });
 
   it('accepts only native proof matching the reviewed stay and no-send intent', () => {
@@ -62,7 +77,6 @@ describe('Cloud pane create mapping', () => {
     const unsupported = [
       { ...stay, propertyCode: 'HRDAV' },
       { ...stay, guaranteeType: 'GTD' },
-      { ...stay, firstName: 'Other' },
       { ...stay, bookerName: 'Someone' },
       { ...stay, marketSegment: 'CORP' },
       { ...stay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } },
