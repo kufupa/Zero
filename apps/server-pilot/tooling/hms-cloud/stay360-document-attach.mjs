@@ -168,7 +168,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     const root = await stat(evidenceRoot);
     if (!root.isDirectory() || (root.mode & 0o077)) throw new Error('EVIDENCE_ROOT_UNSAFE');
     evidenceDir = await mkdtemp(join(evidenceRoot, 'hms-document-'));
-    const recordOptions = { allowUnchangedBusinessParties: true, ...(expectedOrganization ? { expectedOrganization } : {}) };
+    const recordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true, ...(expectedOrganization ? { expectedOrganization } : {}) };
     const state = await bounded(currentLabtestRecord(page, expected, recordOptions)); frame = state.frame;
     baseline = await bounded(snapshotLabtestRecord(frame));
     if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_NOT_CLEAN');

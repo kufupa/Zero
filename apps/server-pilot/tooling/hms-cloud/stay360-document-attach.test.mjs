@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { currentLabtestRecord } from './labtest-record.mjs';
 import { attachLabtestDocument, createDocumentUploadGate, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
   matchesDocumentUpload } from './stay360-document-attach.mjs';
 
@@ -175,6 +176,16 @@ test('multipart fields cannot diverge from the validated form or repeat a field'
   const truncated = { ...original, postDataBuffer: () => Buffer.from(body.slice(0, -8), 'latin1') };
   assert.equal(matchesDocumentUpload(duplicate, frame, payload, file, token), false);
   assert.equal(matchesDocumentUpload(truncated, frame, payload, file, token), false);
+});
+
+test('explicit blank note can be verified but an omitted note is refused', async () => {
+  const page = { url: () => 'https://invalid.example', title: async () => '' };
+  const expected = { confirmation: '123456-1', guestId: '123', arrival: '2027-10-12', departure: '2027-10-13',
+    roomType: 'STQN', ratePlan: 'BAR', note: '' };
+  await assert.rejects(currentLabtestRecord(page, expected, { allowBlankNote: true }), /PROPERTY_OR_ORIGIN_MISMATCH/);
+  await assert.rejects(currentLabtestRecord(page, { ...expected, note: undefined }, { allowBlankNote: true }),
+    /LABTEST_RECORD_INPUT_INVALID/);
+  await assert.rejects(currentLabtestRecord(page, expected), /LABTEST_RECORD_INPUT_INVALID/);
 });
 
 test('refuses invalid files and contexts before any browser action', async () => {
