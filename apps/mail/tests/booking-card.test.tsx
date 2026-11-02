@@ -2406,6 +2406,22 @@ describe('pane save helpers', () => {
   it('gives plain words with a next step for every refusal the server can return', () => {
     const generic = paneRefusalMessage('not_a_known_code');
     for (const reason of [
+      'cloud_create_field_unsupported',
+      'property_mismatch',
+      'labtest_guest_required',
+      'cloud_create_guarantee_unsupported',
+      'adults_required',
+      'child_ages_required',
+      'source_of_business_required',
+      'staff_note_required',
+      'native_room_codes_required',
+      'cms_message_invalid',
+      'booking_agency_id_and_name_required',
+      'organization_id_and_name_required',
+      'prepared_guest_identity_required',
+      'cloud_create_proof_mismatch',
+      'cloud_create_party_mismatch',
+      'cloud_create_proof_invalid',
       'pane_save_flag_off',
       'pane_save_labtest_required',
       'pane_save_arrival_2027_required',

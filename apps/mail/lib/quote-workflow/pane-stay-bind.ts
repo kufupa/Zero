@@ -27,6 +27,22 @@ export const PANE_COMMIT_UNREACHABLE_COPY =
   'Nava lost contact with HMS while booking, so it is not clear whether HMS saved it. Check HMS for this guest before booking again.';
 
 const REFUSAL_COPY: Record<string, string> = {
+  cloud_create_field_unsupported: 'Nava cannot enter one of these details in HMS yet. Book this stay by hand in HMS.',
+  property_mismatch: 'This booking is for a different hotel than this HMS session. Book it by hand in HMS.',
+  labtest_guest_required: PANE_SAVE_LAB_GUARD_COPY,
+  cloud_create_guarantee_unsupported: 'Nava cannot use this guarantee yet. Book this stay by hand in HMS.',
+  adults_required: 'Add at least one adult before previewing this booking.',
+  child_ages_required: 'Add an age for each child before previewing this booking.',
+  source_of_business_required: 'Choose a source of business before previewing this booking.',
+  staff_note_required: 'Add a reservation note of up to 200 characters before previewing.',
+  native_room_codes_required: 'Choose a room type and rate plan from HMS before previewing.',
+  cms_message_invalid: 'Nava could not confirm the confirmation choice. Check the details and preview again.',
+  booking_agency_id_and_name_required: 'Choose the booking agency from HMS before previewing.',
+  organization_id_and_name_required: 'Choose the company from HMS before previewing.',
+  prepared_guest_identity_required: 'Nava could not confirm the guest profile. Check it and preview again.',
+  cloud_create_proof_mismatch: 'The HMS preview does not match this request. Check the details and preview again.',
+  cloud_create_party_mismatch: 'The agency or company in HMS does not match this request. Check the details and preview again.',
+  cloud_create_proof_invalid: 'Nava could not verify the HMS preview. Check the details and preview again.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
