@@ -147,6 +147,15 @@ describe('create scope reconciliation', () => {
     const withRemoved = { ...adult, stays: [extractedStay, { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r2' }] }] };
     expect(reconcilePaneCreateScope({ ...base, payload: withRemoved, state: { 'stays[s2].removed': true } })).toBe(false);
   });
+  it('ignores another stay child warning when the selected stay has unknown child total', () => {
+    const source = { ...payload, missing: [{ field: 'childAges', question: 'Confirm child ages.', stayId: 's2' }],
+      stays: [{ ...extractedStay, totalChildren: null }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: source })).toBe(true);
+    const selected = { ...source, missing: [{ ...source.missing[0]!, stayId: 's1' }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: selected })).toBe(false);
+    const unscoped = { ...source, missing: [{ field: 'childAges', question: 'Confirm child ages.' }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: unscoped })).toBe(false);
+  });
   it('refuses ambiguous child occupancy, duplicate identities and unsupported fields', () => {
     const ambiguous = { ...payload, missing: [{ field: 'children', question: 'What are the child ages?' }],
       stays: [{ ...extractedStay, totalChildren: null }] };
