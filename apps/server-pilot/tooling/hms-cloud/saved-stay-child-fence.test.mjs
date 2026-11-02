@@ -130,3 +130,75 @@ test('child staging and upstream dispatch wrapper share one fence without wideni
   assert.equal(fake.calls.at(-1), 'abort'); assert.equal(dispatched, 1);
   scope.close(); await chain.close();
 });
+
+// Block the event loop past the lifecycle deadline without allowing its timer
+// callback to run. Native routing must consult the clock independently.
+function blockPastDeadline() {
+  const end = performance.now() + 250;
+  while (performance.now() < end) { /* Synthetic event-loop delay. */ }
+}
+
+test('child route refuses a request after the lifecycle deadline even before its timer fires', async () => {
+  const fake = mockPage(); await installReadOnlyGuard(fake.context);
+  const gate = createSavedChildStageRequestGate(target());
+  const result = await runLabtestAmendSave(fake.page, { ...config(gate, async () => {
+    assert.equal(gate.armRead(), true);
+    blockPastDeadline();
+    await fake.visit(read());
+    return {};
+  }, { click: async () => { throw new Error('Save must not be clicked'); } }), timeoutMs: 200 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.issue, 'AMEND_TIMEOUT');
+  assert.deepEqual(fake.calls, ['abort']);
+});
+
+test('child context route refuses a page-approved request after the lifecycle deadline', async () => {
+  const paused = { entered: deferred(), release: deferred() }, fake = mockPage({ paused });
+  await installReadOnlyGuard(fake.context);
+  const gate = createSavedChildStageRequestGate(target());
+  const result = await runLabtestAmendSave(fake.page, { ...config(gate, async () => {
+    assert.equal(gate.armRead(), true);
+    const pending = fake.visit(read());
+    await paused.entered.promise;
+    blockPastDeadline();
+    paused.release.resolve();
+    await pending;
+    return {};
+  }, { click: async () => { throw new Error('Save must not be clicked'); } }), timeoutMs: 200 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.issue, 'AMEND_TIMEOUT');
+  assert.deepEqual(fake.calls, ['abort']);
+});
+
+test('Save route refuses dispatch after the lifecycle deadline even before its timer fires', async () => {
+  const fake = mockPage(); await installReadOnlyGuard(fake.context);
+  const save = { click: async () => {
+    blockPastDeadline();
+    await fake.visit(makeRequest('/web/base/OSRESV.HDR?pageaction=SAVE', {}));
+  } };
+  const result = await runLabtestAmendSave(fake.page, { ...config(null, async () => ({}), save),
+    prepareOnly: false, timeoutMs: 200 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.issue, 'AMEND_TIMEOUT');
+  assert.deepEqual(fake.calls, ['abort']);
+});
+
+
+test('Save context route refuses a candidate after the lifecycle deadline', async () => {
+  const paused = { entered: deferred(), release: deferred() }, fake = mockPage({ paused });
+  await installReadOnlyGuard(fake.context);
+  const save = { click: async () => {
+    const pending = fake.visit(makeRequest('/web/base/OSRESV.HDR?pageaction=SAVE', {}));
+    await paused.entered.promise;
+    blockPastDeadline();
+    paused.release.resolve();
+    await pending;
+  } };
+  const result = await runLabtestAmendSave(fake.page, { ...config(null, async () => ({}), save),
+    prepareOnly: false, timeoutMs: 200 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.issue, 'AMEND_TIMEOUT');
+  assert.deepEqual(fake.calls, ['abort']);
+});

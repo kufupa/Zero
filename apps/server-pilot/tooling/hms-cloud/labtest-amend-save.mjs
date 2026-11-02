@@ -85,6 +85,10 @@ export async function runLabtestAmendSave(page, {
     } catch { return {}; }
   };
   const deadlineAt = performance.now() + timeoutMs;
+  const withinDeadline = () => {
+    if (!stopReason && performance.now() >= deadlineAt) stop('AMEND_TIMEOUT');
+    return !nativeDialog && !stopReason;
+  };
   const timer = setTimeout(() => stop('AMEND_TIMEOUT'), timeoutMs);
   const onDialog = (dialog) => {
     nativeDialog = { type: dialog.type() };
@@ -106,9 +110,9 @@ export async function runLabtestAmendSave(page, {
       frame: prepared.frame,
       fence,
       scope,
-      isArmed: () => !prepareOnly && armed && !nativeDialog && !stopReason,
+      isArmed: () => !prepareOnly && armed && withinDeadline(),
       childStageGate,
-      isChildStageActive: () => inStage && !nativeDialog && !stopReason,
+      isChildStageActive: () => inStage && withinDeadline(),
       matches: (request, requestFrame) => staged !== undefined &&
         matches(request, requestFrame, prepared, staged),
       onCandidate: (request) => {
@@ -150,8 +154,7 @@ export async function runLabtestAmendSave(page, {
     inStage = true;
     const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate,
       baseline: prepared.enableComposedStage === true && prepared.baseline ? structuredClone(prepared.baseline) : null,
-      isActive: () => inStage && !nativeDialog && !stopReason && blocked === 0 &&
-        performance.now() < deadlineAt && !fence.isQuarantined(),
+      isActive: () => inStage && blocked === 0 && withinDeadline() && !fence.isQuarantined(),
       remainingMs: () => Math.max(0, deadlineAt - performance.now()),
       stop,
     });
