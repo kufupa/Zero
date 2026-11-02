@@ -117,6 +117,16 @@ describe('batch booking review', () => {
     expect(screen.getByText(/Select between 2 and 8 rooms/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
   });
+  it('allows review of valid selected rooms when an excluded room lacks a source identity', async () => {
+    const api = client(), source = input();
+    source.rooms.push({ ...source.rooms[1]!, allocationId: 'g:3', identity: { stayId: 's1', rowId: '', roomIndex: 1 } });
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Room 3/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    expect(vi.mocked(api.prepare).mock.calls[0]![0].rooms.map((room) => room.allocationId)).toEqual(['g:1', 'g:2']);
+  });
   it('holds duplicate source-room identities even with different allocation IDs', () => {
     const api = client(), source = input();
     source.rooms[1]!.identity = structuredClone(source.rooms[0]!.identity);

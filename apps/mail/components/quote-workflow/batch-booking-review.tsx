@@ -43,9 +43,9 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const excludedIds = new Set(excluded.source === sourceKey ? excluded.ids : []);
   const selectedInput = input ? { ...input, rooms: input.rooms.filter((room) => !excludedIds.has(room.allocationId)) } : null;
   const inputIds = input?.rooms.map((room) => room.allocationId) ?? [];
-  const sourceIds = input?.rooms.map(({ identity }) => JSON.stringify([identity?.stayId, identity?.rowId, identity?.roomIndex])) ?? [];
+  const sourceIds = selectedInput?.rooms.map(({ identity }) => JSON.stringify([identity?.stayId, identity?.rowId, identity?.roomIndex])) ?? [];
   const identitiesValid = inputIds.every((id) => typeof id === 'string' && Boolean(id.trim())) && new Set(inputIds).size === inputIds.length &&
-    (input?.rooms.every(({ identity }) => /^[A-Za-z0-9_-]{1,40}$/.test(identity?.stayId ?? '') &&
+    (selectedInput?.rooms.every(({ identity }) => /^[A-Za-z0-9_-]{1,40}$/.test(identity?.stayId ?? '') &&
       /^[A-Za-z0-9_-]{1,40}$/.test(identity?.rowId ?? '') && Number.isInteger(identity?.roomIndex) &&
       identity.roomIndex >= 1 && identity.roomIndex <= 999) ?? false) && new Set(sourceIds).size === sourceIds.length;
   const countValid = !!selectedInput && selectedInput.rooms.length >= 2 && selectedInput.rooms.length <= 8;
