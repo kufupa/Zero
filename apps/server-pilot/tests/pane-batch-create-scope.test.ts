@@ -95,6 +95,20 @@ describe('batch create scope reconciliation', () => {
     expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
   });
+  it('defaults an originally rowless stay only while its own row is the sole composition', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [];
+    f.state = { 'stays[s1].rows[s1_row].roomType': 'STQN', 'stays[s1].rows[s1_row].adults': 1,
+      'stays[s1].rows[s1_row].childAges': [] };
+    f.manifest.rooms[0]!.identity = { stayId: 's1', rowId: 's1_row', roomIndex: 1 };
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 's1_row', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+    f.state['stays[s1].rows[added].removed'] = true;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[s1_row].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
   it('accepts separate stays with the same arrival and binds each row to its stay', () => {
     const f = fixture(), first = f.payload.stays[0]!;
     first.rows = [first.rows[0]!]; first.totalRooms = 1; first.totalAdults = 1;
