@@ -1,5 +1,6 @@
 // One exact saved-record Save may pass; keep every other context request fenced.
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const DANGEROUS_PATH = /save|delete|cancel|checkin|checkout|send|email|mail|crs/i;
@@ -19,6 +20,8 @@ export async function installLabtestSaveRouteChain(page, {
   authorizeCandidate,
   dispatchCandidate,
   onAuthorizationAttempt,
+  childStageGate = null,
+  isChildStageActive = () => false,
   onCandidate,
   onDispatch,
   onBlocked,
@@ -28,7 +31,9 @@ export async function installLabtestSaveRouteChain(page, {
       typeof isArmed !== 'function' || typeof matches !== 'function' ||
       (authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
-      (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function')) {
+      (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function') ||
+      typeof isChildStageActive !== 'function' ||
+      (childStageGate !== null && !isSavedChildStageRequestGate(childStageGate))) {
     throw new Error('AMEND_ROUTE_CHAIN_INPUT_INVALID');
   }
 
@@ -38,6 +43,7 @@ export async function installLabtestSaveRouteChain(page, {
   let authorizing = false;
   let dispatching = false;
   let continuedRequest = null;
+  const childCandidates = new WeakSet(), continuedChildren = new WeakSet();
   let finishDispatch;
   const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
   const observeBlocked = (request) => {
@@ -120,6 +126,12 @@ export async function installLabtestSaveRouteChain(page, {
         finishDispatch(wrapperSucceeded);
       }
     }
+    if (active && childStageGate && childCandidates.has(request) && !continuedChildren.has(request) &&
+        isSameFrame(request) && isChildStageActive() && childStageGate.isActive() && !fence.isQuarantined()) {
+      continuedChildren.add(request);
+      // Retain the shared read-only guard after the page-lifetime fence.
+      return route.fallback();
+    }
     // Deny unexpected mutations and send/email paths throughout this context,
     // including popup/other-page requests the page-local route cannot see.
     return denyUnapprovedContextRequest(route, request);
@@ -134,6 +146,16 @@ export async function installLabtestSaveRouteChain(page, {
     }
     const method = String(request.method() || '').toUpperCase();
     const pageAction = url.searchParams.get('pageaction') || '';
+    if (SAVED_CHILD_STAGE_PATHS.some((path) => path.toLowerCase() === url.pathname.toLowerCase())) {
+      let allowed = false;
+      try {
+        allowed = Boolean(active && childStageGate && isChildStageActive() && childStageGate.isActive() &&
+          !fence.isQuarantined() && isSameFrame(request) && childStageGate.consume(request) && scope.allow(request));
+      } catch { /* Refuse when the exact-match gate or page fence fails. */ }
+      if (!allowed) { observeBlocked(request); return route.abort(); }
+      childCandidates.add(request);
+      return route.fallback(); // The page fence consumes this exact Request object.
+    }
     if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === SAVE_PATH.toLowerCase()) {
       // The lifetime fence rejects every non-approved request to this path,
       // including GET/HEAD reads. Count before falling through so a blocked

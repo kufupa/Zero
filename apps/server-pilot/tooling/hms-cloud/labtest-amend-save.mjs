@@ -1,9 +1,12 @@
 // Shared one-save lifecycle for fenced saved Labtest amendments.
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
+import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const usedPages = new WeakSet();
+const stageContexts = new WeakSet();
+export const isLabtestAmendStageContext = (value) => Boolean(value && stageContexts.has(value));
 
 export const labtestAmendIssue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '')
   ? error.message
@@ -47,13 +50,15 @@ export async function runLabtestAmendSave(page, {
 
   let armed = false, possiblyDispatched = false, dispatched = false, blockedAtDispatch = 0;
   let blocked = 0, sendRequests = 0, nativeDialog = null, response = null, authorizedRequest = null;
-  let stopReason = null, scope, fence, routeChain, prepared, staged;
+  let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null;
   const blockedTargets = new Set();
   let signalStop;
   const stopped = new Promise((resolve) => { signalStop = resolve; });
   const stop = (reason) => {
     stopReason ||= reason;
     armed = false;
+    inStage = false;
+    childStageGate?.close();
     routeChain?.disarm();
     fence?.quarantine();
     signalStop({ reason });
@@ -79,6 +84,7 @@ export async function runLabtestAmendSave(page, {
       return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     } catch { return {}; }
   };
+  const deadlineAt = performance.now() + timeoutMs;
   const timer = setTimeout(() => stop('AMEND_TIMEOUT'), timeoutMs);
   const onDialog = (dialog) => {
     nativeDialog = { type: dialog.type() };
@@ -91,13 +97,18 @@ export async function runLabtestAmendSave(page, {
     if (prepared?.unchanged) return result('unchanged');
     if (!prepared?.frame || !prepared?.save) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
 
-    fence = await bounded(installPageRequestFence(page, [SAVE_PATH]));
+    const candidateGate = prepared.childStageGate ?? null;
+    if (candidateGate !== null && !isSavedChildStageRequestGate(candidateGate)) throw new Error('CHILD_STAGE_GATE_INVALID');
+    childStageGate = candidateGate;
+    fence = await bounded(installPageRequestFence(page, [SAVE_PATH, ...(childStageGate ? SAVED_CHILD_STAGE_PATHS : [])]));
     scope = fence.open();
     const routeSetup = installLabtestSaveRouteChain(page, {
       frame: prepared.frame,
       fence,
       scope,
       isArmed: () => !prepareOnly && armed && !nativeDialog && !stopReason,
+      childStageGate,
+      isChildStageActive: () => inStage && !nativeDialog && !stopReason,
       matches: (request, requestFrame) => staged !== undefined &&
         matches(request, requestFrame, prepared, staged),
       onCandidate: (request) => {
@@ -113,6 +124,8 @@ export async function runLabtestAmendSave(page, {
       },
       onBlocked: (request) => {
         blocked += 1;
+        inStage = false;
+        childStageGate?.close();
         try {
           const url = new URL(request.url());
           if (/send|email|mail/i.test(url.pathname)) sendRequests += 1;
@@ -134,7 +147,18 @@ export async function runLabtestAmendSave(page, {
     if (!routeChain) throw new Error(stopReason || 'AMEND_TIMEOUT');
     usedPages.add(page);
 
-    staged = await bounded(stage(bounded, prepared));
+    inStage = true;
+    const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate,
+      baseline: prepared.enableComposedStage === true && prepared.baseline ? structuredClone(prepared.baseline) : null,
+      isActive: () => inStage && !nativeDialog && !stopReason && blocked === 0 &&
+        performance.now() < deadlineAt && !fence.isQuarantined(),
+      remainingMs: () => Math.max(0, deadlineAt - performance.now()),
+      stop,
+    });
+    stageContexts.add(stageContext);
+    staged = await bounded(stage(bounded, prepared, stageContext));
+    inStage = false;
+    childStageGate?.close();
     const verification = blocked || nativeDialog
       ? { ok: false, issue: 'AMEND_DRAFT_CHANGED' }
       : await bounded(validate(bounded, prepared, staged));
@@ -180,6 +204,8 @@ export async function runLabtestAmendSave(page, {
     });
   } finally {
     clearTimeout(timer);
+    inStage = false;
+    childStageGate?.close();
     armed = false;
     routeChain?.disarm();
     scope?.close();
