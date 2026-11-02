@@ -168,6 +168,8 @@ export const BLOCKED_BY_DESIGN: ReadonlySet<string> = new Set(['workItems.open']
 export const NEVER_COMMIT_OR_SEND: ReadonlySet<string> = new Set([
   'quoteWorkflow.commitStay',
   'paneStayCancel.commitCancel',
+  'paneStayAmend.commitAmend',
+  'mail.send',
   'drafts.saveReply',
   'workstation.outlookSync.activate',
   'workstation.outlookSync.control',
@@ -928,7 +930,7 @@ export function gateFailures(
   if (counts.error > 0) failures.push(`${counts.error} thread(s) showed a pane error`);
   // Only named writes are a pane failure. An unclassified block is a configuration error (configFailures).
   const blocked = [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)];
-  const writes = blocked.filter((name) => KNOWN_WRITE_PROCEDURES.has(name) && !BLOCKED_BY_DESIGN.has(name)).length;
+  const writes = blocked.filter((name) => (KNOWN_WRITE_PROCEDURES.has(name) || NEVER_COMMIT_OR_SEND.has(name)) && !BLOCKED_BY_DESIGN.has(name)).length;
   if (writes > 0) failures.push(`${writes} write request(s) were blocked`);
   return failures;
 }
@@ -943,7 +945,7 @@ export function configFailures(
 ): string[] {
   const unclassified = new Set<string>();
   for (const name of [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)]) {
-    if (!KNOWN_WRITE_PROCEDURES.has(name)) unclassified.add(name);
+    if (!KNOWN_WRITE_PROCEDURES.has(name) && !NEVER_COMMIT_OR_SEND.has(name)) unclassified.add(name);
   }
   if (unclassified.size === 0) return [];
   return [

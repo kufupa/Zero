@@ -481,6 +481,8 @@ describe('identity-bound replay prepare', () => {
       expect(replayPrepareAllowed({ ...request, procedure: name, policy: { ...policy, procedures: new Set([name]) } })).toBe(false);
     }
     expect(classifyTrpcRequest(`${origin}/api/trpc/${procedure},quoteWorkflow.commitStay?batch=1`).allowed).toBe(false);
+    expect(gateFailures([result({ blockedWrites: ['mail.send', 'paneStayAmend.commitAmend'] })])).toEqual(['2 write request(s) were blocked']);
+    expect(configFailures([result({ blockedWrites: ['mail.send', 'paneStayAmend.commitAmend'] })])).toEqual([]);
   });
 });
 
