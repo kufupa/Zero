@@ -7,12 +7,13 @@ import { consumeLabtestPreimage, searchLabtestBatchPreimage, searchLabtestPreima
 const binding = { manifestDigest: 'a'.repeat(64), childId: 'b'.repeat(64), childDigest: 'c'.repeat(64) };
 const dates = { arrival: '2027-03-01', departure: '2027-03-03' };
 const offset = (date) => (Date.parse(`${date}T00:00:00Z`) - Date.parse('2026-11-02T00:00:00Z')) / 86_400_000;
-function makePage({ firstName = 'Proof', duringText, duringGrid } = {}) {
+function makePage({ firstName = 'Proof', duringText, duringGrid, extraForm } = {}) {
   const page = new EventEmitter();
   const form = new URLSearchParams({ MADDON_FILTER_ALIAS_NAME_1: 'departuredate', MADDON_FILTER_OPERATOR_1: '>=',
     MADDON_FILTER_VALUE_1: String(offset('2027-02-20')), MADDON_FILTER_ALIAS_NAME_2: 'arrivaldate',
     MADDON_FILTER_OPERATOR_2: '<=', MADDON_FILTER_VALUE_2: String(offset('2027-03-20')),
     MADDON_FILTER_ALIAS_NAME_5: 'lastname_filter', MADDON_FILTER_OPERATOR_5: 'BEGINS', MADDON_FILTER_VALUE_5: 'Labtest', GRID_NAME: 'OSRESS' });
+  if (extraForm) form.append(extraForm[0], extraForm[1]);
   const request = { method: () => 'POST', url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESS.search', postData: () => form.toString() };
   const response = { request: () => request, status: () => 200, text: async () => {
     duringText?.(page, request);
@@ -28,7 +29,7 @@ function makePage({ firstName = 'Proof', duringText, duringGrid } = {}) {
   const run = { boundingBox: async () => ({ x: 100, y: 0, width: 20, height: 20 }), click: async () => page.emit('request', request) };
   page.url = () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base';
   page.title = async () => 'Infor HMS - HRCEN'; page.context = () => ({});
-  page.waitForResponse = async () => response;
+  page.waitForResponse = async (predicate) => { if (!predicate(response)) throw new Error('UNMATCHED_RESPONSE'); return response; };
   page.locator = (selector) => selector.startsWith('input[name="search"]') ? input : selector === '.x-window.x-menu:visible'
     ? { count: async () => 1, nth: () => popup }
     : { filter() { return this; }, count: async () => 1, nth: () => run };
@@ -67,6 +68,20 @@ describe('Labtest batch native census proof', () => {
       expect(result).toMatchObject({ outcome: 'incomplete', issue: 'SEARCH_CHANGED_DURING_OBSERVATION' });
       expect(consumeLabtestPreimage(page, { ...dates, preimageId: result.preimageId, batchBinding: binding })).toBe(false);
     }
+  });
+  it('holds a census when a case-variant filter duplicates a matched request field', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    const page = makePage({ extraForm: ['maddon_filter_value_5', 'Other'] });
+    const authorizeSiblings = vi.fn();
+    const result = await searchLabtestBatchPreimage(page, dates, { binding, authorizeSiblings });
+    expect(result.outcome).toBe('incomplete');
+    expect(authorizeSiblings).not.toHaveBeenCalled();
+  });
+  it('keeps existing same-arrival matches unavailable to the single-create path', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    const result = await searchLabtestPreimage(makePage(), dates);
+    expect(result.outcome).toBe('existing_matches');
+    expect(result.preimageId).toBeUndefined();
   });
   it('rejects a proof if the clock moves behind the census start', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));

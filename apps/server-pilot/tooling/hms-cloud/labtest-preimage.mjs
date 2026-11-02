@@ -104,7 +104,10 @@ async function moveWindow(page, popup, arrival) {
 function searchRequest(request) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
-    const exact = (key, value) => body.getAll(key).length === 1 && body.get(key) === value;
+    const exact = (key, value) => {
+      const names = [...body.keys()].filter((name) => name.toLowerCase() === key.toLowerCase());
+      return names.length === 1 && names[0] === key && body.get(key) === value;
+    };
     return request.method() === 'POST' && url.origin === ORIGIN && url.pathname === '/web/base/OSRESS.search' &&
       exact('MADDON_FILTER_ALIAS_NAME_1', 'departuredate') && exact('MADDON_FILTER_OPERATOR_1', '>=') &&
       exact('MADDON_FILTER_ALIAS_NAME_2', 'arrivaldate') && exact('MADDON_FILTER_OPERATOR_2', '<=') &&
