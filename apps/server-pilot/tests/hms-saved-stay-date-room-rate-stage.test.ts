@@ -2,14 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(async (_page: unknown, _config: unknown) => ({ outcome: 'not_dispatched' })),
-  current: vi.fn(), snapshot: vi.fn(), clean: vi.fn(), parties: vi.fn(),
+  current: vi.fn(), snapshot: vi.fn(), clean: vi.fn(), parties: vi.fn(), quote: vi.fn(),
 }));
+vi.mock('../tooling/hms-cloud/quote-read.mjs', () => ({ readQuote: mocks.quote }));
 vi.mock('../tooling/hms-cloud/labtest-amend-save.mjs', () => ({ runLabtestAmendSave: mocks.run }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
   currentLabtestRecord: mocks.current, snapshotLabtestRecord: mocks.snapshot,
   cleanLabtestRecord: mocks.clean, unchangedLabtestBusinessParties: mocks.parties,
 }));
-import { inspectLabtestSavedRoomRateOptions, stageLabtestStayAmendment, summarizeSavedStayAmendment } from '../tooling/hms-cloud/guest-stay-amend-date-room-rate.mjs';
+import { inspectLabtestSavedRoomRateOptions, readLabtestStayAmendmentAvailability, stageLabtestStayAmendment, summarizeSavedStayAmendment } from '../tooling/hms-cloud/guest-stay-amend-date-room-rate.mjs';
 
 const expected = { confirmation: '20270000001-1', guestId: '77', arrival: '2027-01-18',
   departure: '2027-01-20', roomType: 'DLX', ratePlan: 'BAR', note: '' };
@@ -286,4 +287,100 @@ describe('saved-stay staged amendment diagnostics', () => {
     expect(staged.editIssue).toBe('AMEND_PREIMAGE_CHANGED');
     expect(control.fill).not.toHaveBeenCalled();
   });
+});
+
+
+describe('availability for a verified saved Labtest stay', () => {
+  const options = () => ({ change: { departure: '2027-01-21' }, occupancy: { adults: 2, childAges: [8, 12] },
+    partyContext: { group: null, organization: '42', bookingAgency: null }, roomQuantity: 1, snapshotPath: '/private/quote.json' });
+  const baseline = () => {
+    const result = structuredClone(before);
+    for (const part of [result.values, result.data]) Object.assign(part, { adults: '2', children: '2', child1: '0', child2: '2', child3: '0' });
+    Object.assign(result.data, { childages: '8,12' });
+    return result;
+  };
+  const setup = () => {
+    const snap = baseline();
+    const state = { frame: {}, native: { PKID: '1' }, partyPreimage: { groupid: '', companyid: '42', taid1: '' } };
+    mocks.current.mockResolvedValue(state); mocks.snapshot.mockResolvedValue(snap);
+    mocks.clean.mockReturnValue(true); mocks.parties.mockReturnValue(true);
+    mocks.quote.mockResolvedValue({ outcome: 'ok', snapshotPath: '/private/quote.json', view: { options: [] } });
+    return { snap, state };
+  };
+  beforeEach(() => { vi.clearAllMocks(); });
+  it('binds the proposal to saved dates, occupancy and party preimage before and after a separate read', async () => {
+    setup(); const record = {}, availability = {};
+    const result = await readLabtestStayAmendmentAvailability(record, availability, expected, options());
+    expect(result).toMatchObject({ outcome: 'ok', savedPreimage: 'verified_labtest_form', saveEligible: false,
+      prepared: { savedPreimage: 'verified_labtest_form', criteria: { departureDate: '2027-01-21', partyContext: { organization: '42' } } } });
+    expect(mocks.current).toHaveBeenCalledTimes(2);
+    expect(mocks.quote).toHaveBeenCalledWith(availability, expect.objectContaining({ roomQuantity: 1 }));
+  });
+  it('refuses contradictory occupancy or party context before any search', async () => {
+    setup(); const bad = options(); bad.occupancy.adults = 3;
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, bad)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    const wrongParty = options(); wrongParty.partyContext.organization = '99';
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, wrongParty)).toMatchObject({ outcome: 'refused', issue: 'AMEND_PARTY_CONTEXT_MISMATCH' });
+    expect(mocks.quote).not.toHaveBeenCalled();
+  });
+  it('refuses missing child ages and stale baseline', async () => {
+    const { snap } = setup(); Object.assign(snap.data, { childages: '' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    const current = baseline(), changed = structuredClone(current); changed.values.departuredate = '22-JAN-2027';
+    mocks.snapshot.mockReset().mockResolvedValueOnce(current).mockResolvedValueOnce(changed);
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_PREIMAGE_CHANGED', saveEligible: false });
+  });
+  it('accepts a verified zero-child count only with a genuinely blank native age value', async () => {
+    const { snap } = setup();
+    for (const part of [snap.values, snap.data]) Object.assign(part, { children: '0', child1: '0', child2: '0', child3: '0' });
+    Object.assign(snap.data, { childages: '' });
+    const zero = options(); zero.occupancy.childAges = [];
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'ok', savedPreimage: 'verified_labtest_form' });
+    mocks.quote.mockClear();
+    Object.assign(snap.data, { childages: 'bad' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    delete (snap.data as Record<string, unknown>).childages;
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    Object.assign(snap.data, { childages: '' });
+    Object.assign(snap.values, { childages: '8' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    expect(mocks.quote).not.toHaveBeenCalled();
+  });
+  it('refuses present form ages that conflict with the native model, including ambiguous field names', async () => {
+    const { snap } = setup();
+    Object.assign(snap.values, { childages: '8,12' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'ok' });
+    mocks.quote.mockClear();
+    Object.assign(snap.values, { childages: '8,11' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    Object.assign(snap.values, { childages: '' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    delete (snap.values as Record<string, unknown>).childages;
+    Object.assign(snap.values, { ChildAges: '8,12' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    for (const part of [snap.values, snap.data]) Object.assign(part, { children: '0', child1: '0', child2: '0', child3: '0' });
+    Object.assign(snap.data, { childages: '' });
+    const zero = options(); zero.occupancy.childAges = [];
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    expect(mocks.quote).not.toHaveBeenCalled();
+  });
+  it('requires separate record and availability pages', async () => {
+    const page = {};
+    expect(await readLabtestStayAmendmentAvailability(page, page, expected, options())).toMatchObject({ outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED' });
+    expect(mocks.current).not.toHaveBeenCalled();
+  });
+  it('does not let caller mutation change criteria during record verification', async () => {
+    const { state } = setup();
+    let release: () => void = () => {};
+    mocks.current.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(state); }));
+    const mutableExpected = { ...expected }, mutableOptions = options();
+    const result = readLabtestStayAmendmentAvailability({}, {}, mutableExpected, mutableOptions);
+    mutableExpected.departure = '2027-01-19';
+    mutableOptions.change.departure = '2027-01-22';
+    mutableOptions.occupancy.childAges[0] = 4;
+    release();
+    expect(await result).toMatchObject({ outcome: 'ok', prepared: { criteria: { departureDate: '2027-01-21', childAges: [8, 12] } } });
+    expect(mocks.current.mock.calls[0][1].departure).toBe('2027-01-20');
+  });
+
 });
