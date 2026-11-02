@@ -137,6 +137,7 @@ describe('quote workbook totals and formulas', () => {
     const revision = await syntheticRevision();
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, header }).bytes);
     expect(cellXml(sheet, 'A33')).toContain('Total of displayed line amounts');
+    expect(cellXml(sheet, 'A33')).toContain('s="20"');
     expect(cellXml(sheet, 'G33')).not.toContain('<v>');
     expect(renderRevisionProposalHtml(revision, pdfHeader)).toContain('total of displayed line amounts');
   });

@@ -510,7 +510,7 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   // The subtotal sums through the separator row, as the template's SUM(H24:H30) does, so it moves with it.
   sheet = setFormula(sheet, `H${below(31)}`, `SUM(H${FIRST_LINE_ROW}:H${below(30)})`, randText(subtotal));
   sheet = setFormula(sheet, `H${below(33)}`, `+H${below(31)}`, randText(subtotal));
-  sheet = setText(sheet, `A${below(33)}`, 'Total of displayed line amounts');
+  sheet = setText(sheet, `A${below(33)}`, 'Total of displayed line amounts', ' s="20"');
   sheet = clearCell(sheet, `G${below(33)}`);
   if (!input.breakfastIncluded) {
     sheet = setText(sheet, `A${below(38)}`, 'Meals are included only where stated in the line description.');
