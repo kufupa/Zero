@@ -133,13 +133,15 @@ function savedStayPage({ copyAdults = false } = {}) {
   ));
   const save = { count: async () => 1, click: vi.fn() };
   let onScroll = () => {};
+  let onAdultCount = async () => {};
+  let onAdultEvaluate = async () => {};
   const frame = {
     url: () => `${origin}/record`,
     evaluate: async (callback: Function, arg: unknown) => evaluate(callback, [arg]),
     locator: (selector: string) => {
       if (selector === 'input[name="adults"]:visible') return {
-        count: async () => 1,
-        evaluate: async (callback: Function, arg: unknown) => evaluate(callback, [adultInput, arg]),
+        count: async () => { await onAdultCount(); return 1; },
+        evaluate: async (callback: Function, arg: unknown) => { await onAdultEvaluate(); return evaluate(callback, [adultInput, arg]); },
         scrollIntoViewIfNeeded: async () => { onScroll(); },
       };
       if (selector === '[data-qtip="Save Record (Ctrl+S)"]:visible') return save;
@@ -166,7 +168,9 @@ function savedStayPage({ copyAdults = false } = {}) {
     on: vi.fn(), off: vi.fn(), waitForResponse: vi.fn(),
   };
   return { page, frame, save, pageRoutes, expected, data, values, adultInput, form, options, record, combo,
-    setOnScroll: (callback: () => void) => { onScroll = callback; } };
+    setOnScroll: (callback: () => void) => { onScroll = callback; },
+    setOnAdultCount: (callback: () => Promise<void>) => { onAdultCount = callback; },
+    setOnAdultEvaluate: (callback: () => Promise<void>) => { onAdultEvaluate = callback; } };
 }
 
 describe('adult amendment real callback chain', () => {
@@ -234,6 +238,33 @@ describe('adult amendment real callback chain', () => {
     expect(stay.adultInput.value).toBe('1 Adult');
     expect(stay.combo.setValue).not.toHaveBeenCalled();
     expect(stay.combo.fireEvent).not.toHaveBeenCalled();
+    expect(stay.form.updateRecord).not.toHaveBeenCalled();
+    expect(stay.save.click).not.toHaveBeenCalled();
+  });
+
+  it.each(['count', 'evaluate'])('does not edit when adult %s completes after timeout', async (delayPoint) => {
+    fixture.run.mockClear();
+    const actual = await vi.importActual<typeof import('../tooling/hms-cloud/labtest-amend-save.mjs')>(
+      '../tooling/hms-cloud/labtest-amend-save.mjs',
+    );
+    fixture.run.mockImplementationOnce(actual.runLabtestAmendSave);
+    const stay = savedStayPage();
+    let calls = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const delayed = new Promise<void>((resolve) => { release = resolve; });
+    const reached = new Promise<void>((resolve) => { entered = resolve; });
+    const delaySecondCall = async () => { if (++calls === 2) { entered(); await delayed; } };
+    if (delayPoint === 'count') stay.setOnAdultCount(delaySecondCall);
+    else stay.setOnAdultEvaluate(delaySecondCall);
+
+    const pending = stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2, timeoutMs: 500 });
+    await reached;
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'AMEND_TIMEOUT' });
+    release();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stay.combo.setValue).not.toHaveBeenCalled();
     expect(stay.form.updateRecord).not.toHaveBeenCalled();
     expect(stay.save.click).not.toHaveBeenCalled();
   });
