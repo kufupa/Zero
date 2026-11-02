@@ -80,12 +80,15 @@ shapes. Explicit unsupported fields and unrecognized nested fields appear in
 refuses the unsupported request before opening a session. Malformed types may take precedence
 as `needs_input`; requested fields are never silently dropped. This
 includes explicit null for an unsupported field or an optional field whose
-clear is not supported. An omitted optional field is different. Booker, CMS recipient, billing reference, price, track, market
+clear is not supported. An omitted optional field is different. Booker, CMS recipient, price, track, market
 segment, guest opt-in and confirmation recipient are not staged here.
-On one observed HRCEN draft, selecting an A/R account made Billing Reference
-required. This wrapper cannot set it, so that draft was refused before Save.
-The same draft also required Source of Business. These observations do not
-establish requirements for every account or property.
+
+`billingReference` is optional only for commit with an explicit A/R ID and name
+query. It must be caller-supplied, nonblank text without control characters.
+Whitespace is preserved and checked exactly; null, clear and prepare staging are
+unsupported. No value is inferred. On one HRCEN draft, selecting an A/R account
+made Billing Reference and Source of Business required. This observation does
+not establish requirements for every account or property.
 `cms.send: true` is unsupported. Explicit `cms.send: false` is checked against
 the unsaved form as a no-send invariant. `cms.messageId` is optional and selected
 from the current picker; `03` remains a suggestion, not a default or requirement.
@@ -108,7 +111,11 @@ are optional legacy metadata, not authentication. Commit obtains a same-date
 single-use preimage, takes private before and after screenshots, dispatches at
 most one guarded save, then independently reopens the record. Party combinations
 with agency or A/R require a fresh native ID and visible-name readback; a
-missing or mismatched proof makes the outcome uncertain. No implicit retry occurs.
+missing or mismatched proof makes the outcome uncertain. With an explicit billing
+reference, the writer stages it with the save route unarmed, then captures the
+before screenshot after staging. Fresh readback requires exact native-model and
+visible text. An uncertain create without confirmation cannot yet verify billing
+or party identity through its census candidates. No implicit retry occurs.
 If no note is supplied, a unique synthetic marker helps reconciliation.
 
 Outcomes are `prepared`, `saved`, `refused`, `needs_input`, `unsupported`, or
@@ -124,8 +131,8 @@ One HRCEN Proof Labtest create dispatched through the strict full-body guard and
 was independently read back with its selected agency and organization, blank
 A/R account, and CMS message `03`. The CMS send box was unchecked, and no
 browser send requests were observed; this does not establish server-side email
-queue behavior. Saved A/R, reason for stay, and other combinations remain
-unverified. See [guest-stay-save.md](./guest-stay-save.md) for the existing
+queue behavior. Saved A/R, billing reference, reason for stay, and other combinations remain
+unverified. The new billing path has not been proven with a live save. See [guest-stay-save.md](./guest-stay-save.md) for the existing
 fake-only request, preimage, no-send and proof limitations.
 No part of this interface enables real-guest writes or replaces a future
 authenticated staff approval boundary.

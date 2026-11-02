@@ -146,6 +146,21 @@ displayed name. Unselected party fields (group, secondary agency, contract, A/R 
 A selected A/R account must carry the matching current page-bound account/profile proof.
 The draft and full outgoing payload must match that identity and account name.
 
+The optional `billingReference` accepts explicit nonblank text only with a
+verified A/R selection. It preserves whitespace and rejects control characters.
+The writer installs its retained deny-unless-exact-save route chain unarmed
+before filling the control. Only the billing control may change in the full
+model, form snapshot and visible fields. The component, visible text and native
+submit value must agree exactly; all other required fields remain mandatory.
+The current fake-profile and A/R record proofs are checked again after staging
+and before Save. A blocked request, stale proof, timeout, dialog or uncertain
+staging quarantines the page; it must be discarded. The full outgoing model
+still must match, including the exact billing value. A fresh saved-record
+native-model and visible-field check is required before reporting `saved`.
+This is separate from the draft-only Booker/billing adapter, whose permanent
+page-lifetime no-POST fence remains unchanged. No billing-reference save has
+been proven in live HMS.
+
 The save also requires the current verified Proof Labtest profile, a new HRCEN
 stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
 no guarantee card, CMS Send unchecked, and blank CMS recipient and guest

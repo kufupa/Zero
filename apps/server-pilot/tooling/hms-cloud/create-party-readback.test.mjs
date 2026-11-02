@@ -64,3 +64,42 @@ test('saved-frame extraction verifies native IDs and rejects missing or duplicat
     }
   }
 });
+
+test('billing readback requires exact visible and native values, including whitespace', () => {
+  const expected = { confirmation: '123456-1', guestId: '123', arAccount: { nativeId: '75', name: 'Account', profileId: '501' }, billingReference: ' PO 123 ' };
+  const model = { propertycode: 'HRCEN', confirmationnumber: '123456-1', status: 'Reserved', guestid: '123',
+    firstname: 'Proof', lastname: 'Labtest', taid1: '', ta1: '', companyid: '', company: '',
+    araccountid: '75', araccountname: 'Account', arprofileid: '501', billingreference: ' PO 123 ' };
+  const visible = { ta1: '', company: '', araccountname: 'Account', billingreference: ' PO 123 ' };
+  const proof = compareCreatePartyRecord({ model, visible }, expected);
+  assert.equal(proof.outcome, 'verified');
+  assert.ok(proof.verified.includes('billingReference'));
+  assert.equal(compareCreatePartyRecord({ model, visible: { ...visible, billingreference: 'PO 123' } }, expected).outcome, 'unverified');
+  assert.equal(compareCreatePartyRecord({ model: { ...model, billingreference: null }, visible }, expected).outcome, 'unverified');
+});
+
+
+test('saved-frame extraction preserves exact billing text and rejects duplicate model and visible fields', async () => {
+  const { extractCreatePartySnapshot } = await import('./create-party-readback.mjs');
+  const model = { guestid: '123', billingreference: ' PO 123 ' };
+  const fields = ['guestid', 'billingreference'].map((name) => ({ name, id: `${name}-inputEl`, value: model[name],
+    offsetWidth: 1, offsetHeight: 1, closest: () => null }));
+  const form = { el: { dom: { contains: (field) => fields.includes(field) } }, getRecord: () => ({ data: model }) };
+  const env = { document: { querySelectorAll: () => fields }, getComputedStyle: () => ({ visibility: 'visible' }),
+    Ext: { getCmp: () => ({ up: () => form }) } };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  try {
+    for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    let snapshot = extractCreatePartySnapshot();
+    assert.equal(snapshot.model.billingreference, ' PO 123 ');
+    assert.equal(snapshot.visible.billingreference, ' PO 123 ');
+    fields.push({ ...fields[1] });
+    snapshot = extractCreatePartySnapshot(); assert.equal(snapshot.visible.billingreference, null);
+    fields.pop(); model.BillingReference = 'other';
+    snapshot = extractCreatePartySnapshot(); assert.equal(snapshot.model.billingreference, null);
+  } finally {
+    for (const key of Object.keys(env)) {
+      if (previous[key]) Object.defineProperty(globalThis, key, previous[key]); else delete globalThis[key];
+    }
+  }
+});

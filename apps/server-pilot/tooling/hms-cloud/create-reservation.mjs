@@ -6,6 +6,7 @@ import { withBookingLookupSession } from './booking-lookup-session.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
+import { validCreateBillingReference } from './guest-stay-save.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -22,6 +23,11 @@ function validate(input) {
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
   const fidelity = inspectRequest(input);
+  if (Object.hasOwn(input, 'billingReference') && input.billingReference != null &&
+      !validCreateBillingReference(input.billingReference)) fidelity.invalid.push('billingReference');
+  if (Object.hasOwn(input, 'billingReference') && input.mode === 'prepare' && input.billingReference != null) {
+    fidelity.unsupported.push({ field: 'billingReference', issue: 'commit_only' });
+  }
   if (input.cms?.messageId != null && !code(input.cms.messageId, 100)) fidelity.invalid.push('cms.messageId');
   if (input.reasonForStay != null && !code(input.reasonForStay, 100)) fidelity.invalid.push('reasonForStay');
   if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
@@ -65,6 +71,9 @@ function validate(input) {
   }
   if (input.note != null && (typeof input.note !== 'string' || !input.note.trim() || input.note.length > 200)) missing.push('note');
   if (input.mode === 'commit') {
+    if (input.billingReference != null && (input.parties?.arAccountId == null || !text(input.parties?.arAccountName))) {
+      missing.push('parties.arAccountId', 'parties.arAccountName');
+    }
     if ([room.roomType, room.ratePlan].some((value) => value && !/^[A-Z0-9]{1,12}$/.test(value))) return { outcome: 'refused', issue: 'native_code_not_supported_yet' };
     if (date(stay.arrival) && stay.arrival < '2027-01-01') return { outcome: 'refused', issue: 'labtest_arrival_required' };
   }
@@ -81,8 +90,8 @@ const requestShape = {
   cms: ['send', 'messageId', 'recipient'], approval: ['by', 'at'], booker: ['name', 'contact'],
 };
 const unsupportedPaths = new Set(['booker', 'cms.recipient',
-  'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
-const optionalNoClear = new Set(['sourceOfBusiness', 'reasonForStay', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
+  'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
+const optionalNoClear = new Set(['billingReference', 'sourceOfBusiness', 'reasonForStay', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
   'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'parties.agencyId', 'parties.agencyName',
   'parties.arAccountId', 'parties.arAccountName', 'cms.send', 'cms.messageId']);
 
@@ -415,7 +424,8 @@ export async function createReservation(input, { withSession = withBookingLookup
         await writeFile(path, await page.screenshot({ fullPage: true }), { mode: 0o600, flag: 'wx' });
         output.screenshots[name] = path;
       };
-      await screenshot('before');
+      state.screenshot = screenshot;
+      if (input.billingReference == null) await screenshot('before');
       state.saveAttempted = true;
       try {
         state.save = await runTool({ tool: 'saveNewLabtestStay', preimageId: labtestPreimage.preimageId,
@@ -427,13 +437,16 @@ export async function createReservation(input, { withSession = withBookingLookup
             ...(state.reason ? { reasonSelection: state.reason } : {}) },
           ...(state.organization ? { organizationSelection: state.organization } : {}),
           ...(state.agency ? { agencySelection: state.agency } : {}),
-          ...(state.arAccount ? { arSelection: state.arAccount } : {}) });
+          ...(state.arAccount ? { arSelection: state.arAccount } : {}),
+          ...(input.billingReference != null ? { billingReference: input.billingReference } : {}) });
       } catch { state.save = { outcome: 'uncertain', issue: 'SAVE_TOOL_FAILED' }; }
+      if (state.save.billingReferenceStaged === true) output.applied.billingReference = input.billingReference;
       try { await screenshot('after'); } catch { state.afterScreenshotFailed = true; }
       if (state.organization && !state.agency && !state.arAccount && state.save.outcome === 'saved_same_form') {
         state.organizationReadback = await runTool({ tool: 'readSavedLabtestRecord', confirmation: state.save.confirmation });
       }
-    }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure } } : {}) });
+    }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure },
+      ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}) } : {}) });
   } catch (error) {
     state.sessionFailedAfterSave = Boolean(state.saveAttempted);
     Object.assign(output, error.result || (error.phase === 'labtest_preimage' ? { outcome: error.labtestPreimage?.outcome === 'existing_matches' ? 'needs_input' : 'uncertain',
@@ -449,8 +462,16 @@ export async function createReservation(input, { withSession = withBookingLookup
     childBands: state.children.ageBandCounts, roomType: room.roomType, ratePlan: room.ratePlan, note: output.applied.note,
     guestId: state.guest.selected.nativeId, source: state.source?.candidate.description,
     organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display };
-  if (!output.confirmation) return { ...output, issue: 'save_requires_reconciliation',
-    reconciliation: await reconcileLabtestCreate({ stay, expected }, { withSavedSession, ...(census ? { census } : {}) }) };
+  if (!output.confirmation) {
+    const reconciliation = await reconcileLabtestCreate({ stay, expected }, { withSavedSession, ...(census ? { census } : {}) });
+    if (input.billingReference != null) {
+      reconciliation.billingReferenceVerification = 'not_checked';
+      for (const candidate of reconciliation.candidates) {
+        candidate.billingAndPartyProof = { outcome: 'unverified', issue: 'FRESH_PARTY_AND_BILLING_READBACK_REQUIRED' };
+      }
+    }
+    return { ...output, issue: 'save_requires_reconciliation', reconciliation };
+  }
   try {
     output.readback = await readLabtestCreate({ confirmation: output.confirmation, stay, expected }, { withSavedSession });
     if (!output.readback.mismatches) return { ...output, issue: 'readback_unverified' };
@@ -466,11 +487,13 @@ export async function createReservation(input, { withSession = withBookingLookup
         agency: state.agency ? { nativeId: state.agency.nativeId, name: state.agency.displayedAgency } : null,
         organization: state.organization ? { nativeId: state.organization.nativeId, name: state.organization.displayedOrganization } : null,
         arAccount: state.arAccount ? { nativeId: state.arAccount.nativeId, name: state.arAccount.displayedArAccount,
-          profileId: state.save.arProfileId } : null });
+          profileId: state.save.arProfileId } : null,
+        ...(input.billingReference != null ? { billingReference: input.billingReference } : {}) });
     } else if (state.organization) output.readback.organizationProof = state.organizationReadback;
     const partiesVerified = state.agency || state.arAccount ? output.readback.partyProof?.outcome === 'verified' :
       !state.organization || state.organizationReadback?.outcome === 'read_back_verified';
     if (state.save.outcome === 'saved_same_form' && !state.afterScreenshotFailed && !state.sessionFailedAfterSave &&
+        (input.billingReference == null || (state.save.billingReferenceStaged === true && Boolean(output.screenshots.before))) &&
         partiesVerified && output.readback.mismatches.length === 0) output.outcome = 'saved';
     else output.issue = state.afterScreenshotFailed ? 'result_screenshot_failed' : 'save_requires_reconciliation';
   } catch { output.issue = 'readback_unverified'; }

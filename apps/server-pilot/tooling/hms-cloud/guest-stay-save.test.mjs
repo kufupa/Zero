@@ -4,6 +4,7 @@ import {
   guestStaySaveOutcome,
   matchesFullCreateBody,
   createSelectionProofTokensMatch,
+  validCreateBillingReference, billingOnlyDraftChange,
   saveNewLabtestStay,
 } from './guest-stay-save.mjs';
 
@@ -396,7 +397,7 @@ function nativeCreateDraftPage() {
     rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
     revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
     udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account',
-    bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' };
+    bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT', billingreference: '' };
   const data = { ...Object.fromEntries(blanks.map((key) => [key, ''])), ...visible, propertycode: 'HRCEN',
     PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', reservationid: '', reservationstayid: '', recordid: '',
     guaranteecreditcardid: '', leaseguaranteecreditcardid: '', araccountid: '75', arprofileid: '501',
@@ -424,7 +425,7 @@ function nativeCreateDraftPage() {
       const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
       try {
         for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-        const result = await fn(arg); page.lastDraft = result; return result;
+        const result = await fn(arg); page.lastDraft = result; page.lastDraftFunction = fn; page.lastDraftArguments = arg; return result;
       } finally {
         for (const key of Object.keys(env)) {
           if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
@@ -500,4 +501,68 @@ test('agency commission defaults are bound from unique native submit controls', 
   assert.equal((await run(duplicate)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
   const missing = makePage(); delete missing.components.bookingagencycommissionpricing;
   assert.equal((await run(missing)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+});
+
+
+test('billing input requires explicit nonblank text and current A/R selection', async () => {
+  for (const value of [null, '', '   ', 'X\nY', 0, 'x'.repeat(4001)]) {
+    assert.equal(validCreateBillingReference(value), false);
+    assert.equal((await saveNewLabtestStay(pageStub(), { ...saveInputs, billingReference: value })).issue, 'BILLING_REFERENCE_OR_AR_INVALID');
+  }
+  assert.equal(validCreateBillingReference('  PO 123  '), true);
+  assert.equal((await saveNewLabtestStay(pageStub(), { ...saveInputs, billingReference: 'PO' })).issue, 'BILLING_REFERENCE_OR_AR_INVALID');
+});
+
+test('billing draft exempts only its own blank required control and verifies native submit data', async () => {
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
+    nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, arSelection, billingReference: ' PO 123 ',
+    createFieldProof: { adultSelection: adultSelection(2) } });
+  const page = nativeCreateDraftPage();
+  page.components.billingreference.allowBlank = false;
+  assert.equal((await run(page)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  const before = page.lastDraft, fn = page.lastDraftFunction, args = page.lastDraftArguments;
+  page.values.billingreference = ' PO 123 ';
+  page.elements.find((field) => field.name === 'billingreference').value = ' PO 123 ';
+  const after = await page.evaluate(fn, { ...args, expected: { ...args.expected, billingPhase: 'after' } });
+  assert.equal(after.formData.billingreference, ' PO 123 ');
+  assert.equal(billingOnlyDraftChange(before, after, ' PO 123 '), true);
+  const changed = structuredClone(after); changed.modelData.roomtype = 'OTHER';
+  assert.equal(billingOnlyDraftChange(before, changed, ' PO 123 '), false);
+  const wrongSubmit = nativeCreateDraftPage();
+  wrongSubmit.components.billingreference.getSubmitData = () => ({ billingreference: 'unexpected' });
+  assert.equal((await run(wrongSubmit)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
+  const otherBlank = nativeCreateDraftPage(); otherBlank.components.billingreference.allowBlank = false;
+  otherBlank.components.bacontract.allowBlank = false;
+  assert.equal((await run(otherBlank)).draftCheck, 'DRAFT_REQUIRED_FIELDS');
+  const duplicate = nativeCreateDraftPage();
+  duplicate.elements.push({ ...duplicate.elements.find((field) => field.name === 'billingreference') });
+  assert.equal((await run(duplicate)).draftCheck, 'DRAFT_VISIBLE_FIELDS');
+  const readonly = nativeCreateDraftPage(); readonly.components.billingreference.readOnly = true;
+  assert.equal((await run(readonly)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
+  const missingNative = nativeCreateDraftPage(); missingNative.components.billingreference.getValue = () => undefined;
+  assert.equal((await run(missingNative)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
+  const invalid = nativeCreateDraftPage(); invalid.values.billingreference = 'invalid';
+  invalid.elements.find((field) => field.name === 'billingreference').value = 'invalid';
+  invalid.components.billingreference.getActiveErrors = () => ['invalid'];
+  assert.equal((await run(invalid)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
+});
+
+test('billing snapshot rejects unrelated form, model, identity and visible control drift', () => {
+  const before = { session: 's', arProfileId: 'p', track: 'x', partyValues: { araccountname: 'A' },
+    modelData: { billingreference: '', roomtype: 'A', nested: { value: 1 } },
+    formData: { billingreference: '', roomtype: 'A' },
+    visibleFields: [{ name: 'billingreference', value: '' }, { name: 'roomtype', value: 'A' }] };
+  const after = structuredClone(before); after.formData.billingreference = ' ref '; after.visibleFields[0].value = ' ref ';
+  assert.equal(billingOnlyDraftChange(before, after, ' ref '), true);
+  for (const mutate of [
+    (s) => { s.formData.roomtype = 'B'; }, (s) => { s.modelData.nested.value = 2; },
+    (s) => { s.visibleFields[1].value = 'B'; }, (s) => { s.arProfileId = 'other'; },
+    (s) => { s.modelData.billingreference = 'different'; }, (s) => { s.formData.billingreference = 'ref'; },
+  ]) { const changed = structuredClone(after); mutate(changed); assert.equal(billingOnlyDraftChange(before, changed, ' ref '), false); }
+  const body = createSaveBody({ billingreference: ' ref ', roomtype: 'A' });
+  assert.equal(matchesFullCreateBody(body, { billingreference: ' ref ', roomtype: 'A' }), true);
+  body.set('billingreference', 'ref');
+  assert.equal(matchesFullCreateBody(body, { billingreference: ' ref ', roomtype: 'A' }), false);
 });

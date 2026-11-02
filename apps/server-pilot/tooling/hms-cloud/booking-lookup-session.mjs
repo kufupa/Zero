@@ -353,7 +353,7 @@ async function viewQuoteSnapshot(page, request) {
 }
 
 /** Execute one call; the caller retains the page and memory between calls. */
-export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage } = {}, request = {}) {
+export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot } = {}, request = {}) {
   const id = request?.id ?? null;
   const tool = request?.tool ?? null;
   try {
@@ -437,6 +437,9 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     } else if (tool === 'selectPrimaryBookingAgency' || tool === 'selectOrganization' || tool === 'selectArAccount') {
       const selection = request.selection ?? { nativeId: request.nativeId, searchId: request.searchId };
       result = await action(page, selection, request.options);
+    } else if (tool === 'saveNewLabtestStay') {
+      result = await action(page, request, { ...request.options,
+        ...(beforeSaveScreenshot ? { beforeSaveScreenshot } : {}) });
     } else if ([
       'searchGuestProfiles', 'inspectGuestProfileCandidates', 'selectGuestProfile',
       'readGuestStayForm', 'setGuestStayText', 'setGuestStayDate', 'listGuestStayDropdown',
@@ -444,7 +447,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
       'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
-      'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness', 'saveNewLabtestStay',
+      'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
       result = await action(page, request, request.options);
     } else {
@@ -475,6 +478,25 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
 
 export const runPartyTool = runBookingLookupTool;
 
+// One page has one current picker/form. Clone requests before queueing, so
+// callers cannot mutate them later or smuggle callbacks through the tool API.
+export function createBookingToolQueue(context) {
+  let queue = Promise.resolve(), accepting = true;
+  return {
+    runTool(request) {
+      let input;
+      try { input = structuredClone(request); }
+      catch { return Promise.resolve({ id: null, tool: null, outcome: 'input_gap', issue: 'invalid_request' }); }
+      if (!accepting) return Promise.resolve({ id: input?.id ?? null, tool: input?.tool ?? null,
+        outcome: 'refused', issue: 'SESSION_CLOSED' });
+      const pending = queue.then(() => runBookingLookupTool(context, input));
+      queue = pending.catch(() => {});
+      return pending;
+    },
+    async close() { accepting = false; await queue; },
+  };
+}
+
 /** Own one guarded page for the callback; the page is closed when it returns. */
 export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false } = {}) {
   if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
@@ -482,7 +504,8 @@ export function bookingSessionPageOptions({ headless = true, blockServiceWorkers
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
-  blockServiceWorkers = false } = {}) {
+  blockServiceWorkers = false, beforeSaveScreenshot } = {}) {
+  if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
   const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
@@ -509,26 +532,14 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     }
     // Keep a page interceptor installed when a form action removes its temporary route.
     await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
-    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage };
+    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
-    // A single HMS page has one current picker/form; concurrent tool calls would race it.
-    let queue = Promise.resolve(), accepting = true;
-    const runTool = (request) => {
-      let input;
-      try { input = structuredClone(request); }
-      catch { return Promise.resolve({ id: null, tool: null, outcome: 'input_gap', issue: 'invalid_request' }); }
-      if (!accepting) return Promise.resolve({ id: input?.id ?? null, tool: input?.tool ?? null,
-        outcome: 'refused', issue: 'SESSION_CLOSED' });
-      const pending = queue.then(() => runBookingLookupTool(context, input));
-      queue = pending.catch(() => {});
-      return pending;
-    };
+    const queue = createBookingToolQueue(context);
     try {
-      return await operation({ ...context, memoryStatus: loaded.status, runTool });
+      return await operation({ ...context, memoryStatus: loaded.status, runTool: queue.runTool });
     } finally {
-      accepting = false;
-      await queue;
+      await queue.close();
       page.off('dialog', onDialog);
       unexpectedNativeDialogs.delete(page);
     }

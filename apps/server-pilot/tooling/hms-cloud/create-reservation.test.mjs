@@ -44,6 +44,7 @@ function harness(options = {}) {
       profileProofToken: 'token', ...options.partySelections?.[kind] };
   };
   const runTool = async (request) => {
+    request = structuredClone(request);
     calls.push(request);
     switch (request.tool) {
       case 'searchGuestProfiles': return { outcome: 'matches', searchId: 'g', candidates: options.profiles || [profile],
@@ -82,7 +83,10 @@ function harness(options = {}) {
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
       case 'setGuestStayText': return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
-      case 'saveNewLabtestStay': return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501' };
+      case 'saveNewLabtestStay':
+        if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
+        return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
+          ...(request.billingReference != null ? { billingReferenceStaged: true } : {}) };
       case 'readSavedLabtestRecord': return { outcome: 'read_back_verified', organization: { nativeId: '41', name: 'Example Company' } };
       default: throw new Error(`unexpected call ${request.tool}`);
     }
@@ -608,4 +612,56 @@ test('guarded create requests blocked workers before opening its booking session
   const prepare = harness();
   await createReservation({ ...input, mode: 'prepare' }, prepare.options);
   assert.equal(prepare.sessionOptions.blockServiceWorkers, undefined);
+});
+
+test('explicit billing reference with selected A/R is passed exactly to the guarded writer and fresh readback', async (t) => {
+  let checked;
+  const fake = harness({ partyReadback: (request) => { checked = request; return { outcome: 'verified' }; } });
+  const reference = '  PO 123  ';
+  const result = await createReservation({ ...input, parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example' }, billingReference: reference }, fake.options);
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(result.outcome, 'saved');
+  assert.equal(fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay').billingReference, reference);
+  assert.equal(checked.billingReference, reference);
+});
+
+test('billing reference is commit-only, explicit, nonblank and requires a selected A/R account', async () => {
+  let sessions = 0;
+  const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
+  for (const value of ['', '   ', 'bad\nreference', 1]) {
+    const result = await createReservation({ ...input, billingReference: value }, { withSession: noSession });
+    assert.equal(result.outcome, 'needs_input');
+  }
+  const withoutAccount = await createReservation({ ...input, billingReference: 'PO-123' }, { withSession: noSession });
+  assert.equal(withoutAccount.outcome, 'needs_input');
+  const clear = await createReservation({ ...input, billingReference: null }, { withSession: noSession });
+  assert.equal(clear.outcome, 'unsupported');
+  assert.equal(sessions, 0);
+});
+
+
+test('billing create cannot report saved without staged screenshot and fresh exact proof', async (t) => {
+  const request = { ...input, parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example' }, billingReference: 'PO-123' };
+  const dirs = new Set(); t.after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
+  for (const options of [{ partyReadback: () => ({ outcome: 'unverified' }) },
+    { save: { outcome: 'saved_same_form', confirmation: '123456-1', arProfileId: '501' } }]) {
+    const result = await createReservation(request, harness(options).options);
+    if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+    assert.equal(result.outcome, 'uncertain');
+  }
+  const unknown = harness({ save: { outcome: 'uncertain', confirmation: null } });
+  const result = await createReservation(request, unknown.options);
+  if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.reconciliation.billingReferenceVerification, 'not_checked');
+  assert.equal(result.reconciliation.candidates[0].billingAndPartyProof.outcome, 'unverified');
+});
+
+
+test('prepare reports billing reference unsupported without sending a save', async () => {
+  const fake = harness();
+  const result = await createReservation({ ...input, mode: 'prepare', billingReference: 'PO-123' }, fake.options);
+  assert.equal(result.outcome, 'unsupported');
+  assert.ok(result.unsupportedFields.some(({ field, issue }) => field === 'billingReference' && issue === 'commit_only'));
+  assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
