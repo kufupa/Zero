@@ -9,6 +9,7 @@ import type { WorkstationInfo } from './use-outlook-bridge';
 import type { PaneBridge } from './pane-bridge-types';
 import { useThread } from '@/hooks/use-threads';
 import { useMemo } from 'react';
+import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
 
 /**
  * Web stand-in for the Outlook bridge, used by the /nava-preview viewer. It serves one
@@ -99,6 +100,21 @@ export function activeEmailFromMessage(
   };
 }
 
+/** An exact self-mail source is openable even when Outlook stored it as sent. */
+function isSelfAddressedPreStay(message: ThreadMessage, mailboxEmail: string): boolean {
+  return (
+    Boolean(mailboxEmail.trim()) &&
+    [...message.to, ...(message.cc ?? []), ...(message.bcc ?? [])].some((recipient) =>
+      sameAddress(recipient.email, mailboxEmail),
+    ) &&
+    isSelfSentPreStayInformationMail({
+      fromAddress: message.sender.email,
+      mailboxAddress: mailboxEmail,
+      subject: message.subject,
+    })
+  );
+}
+
 /** Select the exact source when supplied; never replace a missing source with a newer message. */
 export function selectPreviewMessage(
   messages: readonly ThreadMessage[],
@@ -111,12 +127,16 @@ export function selectPreviewMessage(
     ? messages.filter((message) => message.threadId === sourceThreadId)
     : messages;
   const exactMatches = sourceMessageId !== undefined
-    ? sourceMessages.filter((message) => message.id === sourceMessageId && !message.isDraft && isInboundMessage(message, mailboxEmail))
+    ? sourceMessages.filter((message) => message.id === sourceMessageId)
     : undefined;
-  if (exactMatches && exactMatches.length !== 1) return { status: 'unsynced', reason: 'source_message_unavailable' };
-  const inbound = exactMatches ? exactMatches[0] : latestInboundMessage(sourceMessages, mailboxEmail);
-  if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
-  const email = activeEmailFromMessage(inbound, transportId);
+  if (exactMatches && (!sourceMessageId?.trim() || exactMatches.length !== 1 || exactMatches[0]!.isDraft ||
+    (!isInboundMessage(exactMatches[0]!, mailboxEmail) &&
+      !isSelfAddressedPreStay(exactMatches[0]!, mailboxEmail)))) {
+    return { status: 'unsynced', reason: 'source_message_unavailable' };
+  }
+  const selected = exactMatches ? exactMatches[0] : latestInboundMessage(sourceMessages, mailboxEmail);
+  if (!selected) return { status: 'unsynced', reason: 'no_inbound' };
+  const email = activeEmailFromMessage(selected, transportId);
   if (!email) return { status: 'unsynced', reason: 'no_message_id' };
   return { status: 'ready', email };
 }
