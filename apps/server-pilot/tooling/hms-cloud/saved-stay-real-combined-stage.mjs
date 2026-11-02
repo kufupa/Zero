@@ -1,5 +1,9 @@
-// Real-stay diagnostic staging only. HTTP requests are denied; no Save route exists.
-// Caller must establish a pre-navigation WebSocket fence, property lock and verified context closure.
+// Real-stay diagnostic only; this module installs no Save exception.
+// Deny-all routes start after the identity snapshot. Earlier or in-flight requests
+// are not contained by the heuristic guard and may escape those later routes.
+// Do not use live without a trusted pre-navigation HTTP allowlist, request
+// quiescence, exclusive routing, WebSocket fencing, property lock and verified
+// context/process closure. A stop signal does not prove closure.
 import { isDeepStrictEqual } from 'node:util';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { snapshotLabtestRecord } from './labtest-record.mjs';
@@ -93,7 +97,7 @@ async function selectRealAdultOption(frame, baseline, requested, commit, assertA
 }
 
 
-/** Stage exact dates and adult occupancy on a fresh guarded page. Caller must close its context. */
+/** Diagnostic only. Live use remains held until the containment and closure requirements above are proven. */
 export async function stageRealStayCombinedWithoutSave(page, expectedInput, changesInput, options = {}) {
   if (!object(expectedInput) || !object(changesInput) || !object(options) ||
       Object.keys(options).some((key) => key !== 'timeoutMs') ||
