@@ -167,6 +167,7 @@ export async function runLabtestAmendSave(page, {
       ...diagnostics(),
       blockedRequestsAfterDispatch: blockedAfterDispatch,
       ...details(),
+      visibleDialogCount: dialogs,
     });
   } catch (error) {
     armed = false;

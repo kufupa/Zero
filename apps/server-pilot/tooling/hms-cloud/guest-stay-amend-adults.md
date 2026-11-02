@@ -52,5 +52,34 @@ There is no adult amendment Save path here. Guarded availability recalculation,
 approval and persistence are not implemented here. Any future save requires
 independent readback in a fresh session; staging does not establish persistence.
 
+## Isolated save observation
+
+On 2026-11-02, a one-off experimental copy of this adapter used the shared
+one-save lifecycle on an exclusive fake HRCEN stay. It staged adults from two
+to three and sent one exactly matched Save request without an availability
+recalculation. HMS returned HTTP 200, but the outcome was `uncertain`. A later
+screenshot showed the native prompt “Retain the current rates?” with Yes, No
+and Cancel. No option was selected. The runner did not capture the response
+body or the dialog count, so it did not establish the server response or the
+meaning of either option.
+
+A separate fresh session found the clean saved form and model unchanged apart
+from session identifiers, including the original adult count. This is a
+point-in-time readback, not proof that the earlier request cannot complete
+later. No retry was made. Pricing, tax and inventory correctness remain
+unknown. This experiment does not add a Save path to the adapter.
+
+A second isolated fake-stay attempt returned a question response with
+`pageData.success: false`, `questiontype: YesNoCancel` and handler
+`confirmRetainRates`. The prompt was visible, but the probe could not verify
+its exact DOM text selector and left every option untouched. It therefore did
+not capture or dispatch a continuation request. A separate fresh readback found
+the original clean form and model, apart from session identifiers. The target
+remained Reserved. Both possible writes remain uncertain and must not be retried
+blindly. The private response and screenshots are under
+`/tmp/hms-retain-choice-kIle9B/`. A separate client-only synthetic Ext message
+box on a guarded blank stay rendered the question in `.x-form-display-field`,
+not `.ext-mb-text`; this does not prove the real modal's DOM or continuation.
+
 The result and preview can contain private guest, stay, rate, note and party
 information. Keep them in private storage and never put them in logs or Git.
