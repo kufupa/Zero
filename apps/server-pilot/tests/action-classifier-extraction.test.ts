@@ -11,7 +11,7 @@ import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-sele
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { orderThreadContext } from '../src/ai/quote-workflow-synced-selection.js';
 import { inboundPropertyCodeForTransport } from '../src/ai/extraction/inbound-run.js';
-import { AE1_OUTPUT, selectionFor } from './fixtures/inbound-extraction.js';
+import { AE1_OUTPUT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 import { describe, expect, it, vi } from 'vitest';
 
 const signal = new AbortController().signal;
@@ -342,6 +342,19 @@ describe('extraction persist of MAIL_ACTIONS', () => {
     expect(result.action).toBe('quote_availability');
     expect(result.payload.action).toBe('quote_availability');
     expect(result.kind).toBe('quote');
+  });
+
+  it('stores separate requests only when they appear in the selected source', async () => {
+    const model = fakeModel(() => ({
+      ...ACTION_OUTPUT,
+      secondaryAsks: ['Could you arrange a transfer?', 'Please send the invoice.', 'Invented request'],
+    }));
+    const selection = selectionFor('Please quote. Could you arrange a transfer?');
+    selection.preceding = [{ bodyText: 'Please send the invoice.' }];
+    const result = await extractInboundMail({ adapter: model.adapter, selection, messageId: 'second-ask' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.secondaryAsks).toEqual(['Could you arrange a transfer?']);
   });
 
   it('fails closed when needsAction mismatches no_action', async () => {

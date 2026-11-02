@@ -55,6 +55,9 @@ const mailExtractionObjectSchema = z.object({
     email: nullableText,
     phone: nullableText,
   }),
+  secondaryAsks: z.array(z.string()).optional().describe(
+    'Exact excerpts for separate current actionable requests, distinct from the stay itself. Never include resolved work or routine pre-arrival information.',
+  ),
   confirmationNumbers: z
     .array(z.string())
     .describe('Existing booking or confirmation numbers exactly as written, e.g. 57291630-1.'),
@@ -200,6 +203,7 @@ export const mailExtractionPayloadSchema = z.object({
   agency: mailExtractionObjectSchema.shape.agency,
   endClient: mailExtractionObjectSchema.shape.endClient,
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
+  secondaryAsks: z.array(z.string()).optional(),
   stays: z.array(storedExtractionStaySchema),
   missing: z.array(z.object({ field: z.string(), question: z.string(), stayId: z.string().optional() })),
 });
@@ -330,7 +334,7 @@ function rowStableId(
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext },
+  input: { messageId: string; sourceText: string; secondarySourceText?: string; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -428,6 +432,11 @@ export function sanitizeExtraction(
     }))
     .filter((item) => item.question);
   const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';
+  const normalize = (text: string) => maskCardNumbers(text).replace(/\s+/g, ' ').trim().toLowerCase();
+  const secondarySource = normalize(input.secondarySourceText ?? input.sourceText);
+  const secondaryAsks = [...new Set((output.secondaryAsks ?? [])
+    .map((ask) => cleanText(ask))
+    .filter((ask): ask is string => Boolean(ask) && secondarySource.includes(normalize(ask!))))].slice(0, 8);
   return {
     kind: output.kind,
     needsAction: output.needsAction,
@@ -451,6 +460,7 @@ export function sanitizeExtraction(
       agency: cleanText(output.agency),
       endClient: cleanText(output.endClient),
       confirmationNumbers,
+      ...(secondaryAsks.length ? { secondaryAsks } : {}),
       stays,
       missing,
     },

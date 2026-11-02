@@ -70,6 +70,16 @@ function lunaOutput(overrides: Record<string, unknown> = {}) {
 }
 
 describe('analyseQuoteSources', () => {
+  it('retains complete separate requests, not topic keywords', () => {
+    const analysis = analyseQuoteSources({
+      subject: 'Room request',
+      bodyText: 'Please quote a room. Could you arrange airport transport? Please send the invoice.',
+    });
+    expect(analysis.secondaryAsks).toEqual(['Could you arrange airport transport?', 'Please send the invoice.']);
+    expect(analyseQuoteSources({ subject: 'Request', bodyText: 'Could you arrange airport transport?' }).secondaryAsks)
+      .toEqual(['Could you arrange airport transport?']);
+  });
+
   it('does not treat attachment filenames as document bytes', () => {
     const analysis = analyseQuoteSources({
       subject: 'Availability',

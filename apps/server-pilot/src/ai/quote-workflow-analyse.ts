@@ -163,8 +163,13 @@ function boardAlternativesIn(text: string): string[] {
   return alternatives;
 }
 
+/** Conservative fallback: keep complete request clauses, not a guessed topic keyword. */
 function secondaryAsksIn(text: string): string[] {
-  return /\bparking\b/i.test(text) ? ['parking'] : [];
+  const clauses = text.split(/(?<=[?!])\s+|\n+|(?<=\.)\s+|\b(?:and\s+also|also|additionally)\b/i);
+  return [...new Set(clauses.map((clause) => clause.replace(/\s+/g, ' ').trim()).filter((clause) => {
+    if (clause.length < 8 || /\b(?:quote|quotation|availability|booking|reservation|rates?)\b/i.test(clause)) return false;
+    return clause.endsWith('?') || /^(?:please|kindly|could|can|would|will|how|what|where|when|is|are|do|does)\b/i.test(clause);
+  }))];
 }
 
 /**
@@ -188,7 +193,7 @@ export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWork
     admittedText: Boolean(part.bytesPresent || part.text),
   }));
   if (!input.treatAs && !looksLikeQuote([note, emailText].join('\n'))) {
-    return { intent: 'other', groups: [], secondaryAsks: [], alternatives: [], attachmentAdmissions };
+    return { intent: 'other', groups: [], secondaryAsks: secondaryAsksIn([note, emailText].join('\n')), alternatives: [], attachmentAdmissions };
   }
   // The note is parsed on its own so its dates never shift the email's positional dates.
   const emailDates = dateMentions(emailText).map((mention) => mention.iso);

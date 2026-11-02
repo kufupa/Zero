@@ -874,9 +874,12 @@ export function storedAnalysis(
         };
       }),
       missingQuoteReplyFields,
-      secondaryAsks: mapped.secondaryAsks,
+      secondaryAsks: payload.secondaryAsks ?? mapped.secondaryAsks,
       alternatives: mapped.alternatives,
-      reviewItems: [...failures, ...numberReviews, ...questionItems(mappedMissing)],
+      reviewItems: [
+        ...failures, ...numberReviews, ...questionItems(mappedMissing),
+        ...questionItems((payload.secondaryAsks ?? []).map((question) => ({ field: 'This email', question }))),
+      ],
       requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,
