@@ -249,6 +249,33 @@ export type TrpcDecision = {
 
 const TRPC_PREFIX = '/api/trpc/';
 
+/** Analysis with a staff note persists a work-item event; never allow it in replay. */
+export function analysisInputsSafe(url: string, method: string, body: string | null, procedures: readonly string[]): boolean {
+  const indexes = procedures.flatMap((name, index) => name === 'quoteWorkflow.analyseSelection' ? [index] : []);
+  if (!indexes.length) return true;
+  if (method !== 'POST' || !body) return false;
+  try {
+    const wire: unknown = JSON.parse(body);
+    if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return false;
+    const batch = new URL(url).searchParams.get('batch') === '1';
+    if (!batch && procedures.length !== 1) return false;
+    const record = wire as Record<string, unknown>;
+    if (batch && (Object.keys(record).length !== procedures.length ||
+      !procedures.every((_, index) => Object.hasOwn(record, String(index))))) return false;
+    return indexes.every((index) => {
+      const envelope = batch ? record[String(index)] : record;
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
+      const serialized = envelope as Record<string, unknown>;
+      if (Object.keys(serialized).some((key) => key !== 'json')) return false;
+      const input = serialized.json;
+      return !!input && typeof input === 'object' && !Array.isArray(input) &&
+        !Object.hasOwn(input, 'staffNote');
+    });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Classifies one request by the procedure names in its /api/trpc/ path, batched or not.
  * The HTTP method is not an input: a query sent as POST is still a read.
@@ -680,6 +707,10 @@ export async function installWriteGuard(page: Page, blocked: BlockedWrite[], all
   await page.route('**/api/trpc/**', async (route: Route) => {
     const request = route.request();
     const decision = classifyTrpcRequest(request.url(), { allowHmsReads });
+    if (!analysisInputsSafe(request.url(), request.method(), request.postData(), decision.procedures)) {
+      decision.allowed = false;
+      decision.blocked.push({ procedure: 'quoteWorkflow.analyseSelection', reason: 'write' });
+    }
     if (decision.allowed) {
       await route.continue();
       return;
@@ -947,7 +978,7 @@ export function gateFailures(
   if (counts.error > 0) failures.push(`${counts.error} thread(s) showed a pane error`);
   // Only named writes are a pane failure. An unclassified block is a configuration error (configFailures).
   const blocked = [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)];
-  const writes = blocked.filter((name) => (KNOWN_WRITE_PROCEDURES.has(name) || NEVER_COMMIT_OR_SEND.has(name)) && !BLOCKED_BY_DESIGN.has(name)).length;
+  const writes = blocked.filter((name) => (KNOWN_WRITE_PROCEDURES.has(name) || NEVER_COMMIT_OR_SEND.has(name) || ANALYSIS_PROCEDURES.has(name)) && !BLOCKED_BY_DESIGN.has(name)).length;
   if (writes > 0) failures.push(`${writes} write request(s) were blocked`);
   return failures;
 }
@@ -962,7 +993,7 @@ export function configFailures(
 ): string[] {
   const unclassified = new Set<string>();
   for (const name of [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)]) {
-    if (!KNOWN_WRITE_PROCEDURES.has(name) && !NEVER_COMMIT_OR_SEND.has(name)) unclassified.add(name);
+    if (!KNOWN_WRITE_PROCEDURES.has(name) && !NEVER_COMMIT_OR_SEND.has(name) && !ANALYSIS_PROCEDURES.has(name)) unclassified.add(name);
   }
   if (unclassified.size === 0) return [];
   return [

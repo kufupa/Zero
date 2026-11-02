@@ -1,5 +1,6 @@
 import {
   ANALYSING_TEXT,
+  analysisInputsSafe,
   BLOCKED_BY_DESIGN,
   buildGalleryHtml,
   classifyTrpcRequest,
@@ -546,10 +547,22 @@ describe('browser replay guard', () => {
       expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(true);
       expect(await send('workstation.prepareBookingDraft', 'message-2')).toBe(false);
       expect(await send('workstation.prepareBookingDraft,quoteWorkflow.commitStay', 'message-1')).toBe(false);
+      const analyse = (note: boolean) => page.evaluate(async (note) => {
+        try {
+          const response = await fetch('/api/trpc/quoteWorkflow.analyseSelection?batch=1', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ 0: { json: { selectionEpoch: 1, ...(note ? { staffNote: 'save this' } : {}) } } }),
+          });
+          return response.ok;
+        } catch { return false; }
+      }, note);
+      expect(await analyse(false)).toBe(true);
+      expect(await analyse(true)).toBe(false);
       await context.clearCookies();
       await context.addCookies([{ name: 'session', value: 'staff-2', url: origin }]);
       expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(false);
-      expect(forwarded).toEqual(['/api/trpc/workstation.prepareBookingDraft?batch=1']);
+      expect(forwarded).toEqual(['/api/trpc/workstation.prepareBookingDraft?batch=1', '/api/trpc/quoteWorkflow.analyseSelection?batch=1']);
+      expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.analyseSelection');
       expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.commitStay');
       await context.close();
     } finally {
@@ -557,6 +570,37 @@ describe('browser replay guard', () => {
       await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     }
   }, 30_000);
+});
+
+describe('analysis payload write fence', () => {
+  const prefix = 'https://pilot.example/api/trpc/';
+  const safe = { json: { internetMessageId: '<mail@example.org>', selectionEpoch: 1 } };
+  const allows = (path: string, body: unknown, method = 'POST') => {
+    const procedures = path.split(',');
+    return analysisInputsSafe(`${prefix}${path}?batch=1`, method, JSON.stringify(body), procedures);
+  };
+
+  it('allows a plain selected-mail analysis, including inside a read-only batch', () => {
+    expect(allows('quoteWorkflow.analyseSelection', { 0: safe })).toBe(true);
+    expect(allows('mail.get,quoteWorkflow.analyseSelection', { 0: { json: {} }, 1: safe })).toBe(true);
+  });
+
+  it('rejects notes, metadata, missing envelopes and non-POST requests', () => {
+    for (const body of [
+      { 0: { json: { ...safe.json, staffNote: 'remember this' } } },
+      { 0: { json: { ...safe.json, staffNote: '' } } },
+      { 0: { ...safe, meta: { values: { staffNote: ['undefined'] } } } },
+      { 1: safe }, { 0: safe, 1: safe }, {}, null,
+    ]) expect(allows('quoteWorkflow.analyseSelection', body)).toBe(false);
+    expect(allows('quoteWorkflow.analyseSelection', { 0: safe }, 'GET')).toBe(false);
+    expect(allows('mail.get,quoteWorkflow.analyseSelection', { 0: safe, 1: { json: { staffNote: 'x' } } })).toBe(false);
+  });
+
+  it('reports a blocked analysis as a write, not an unclassified procedure', () => {
+    const blocked = [result({ blockedWrites: ['quoteWorkflow.analyseSelection'] })];
+    expect(gateFailures(blocked)).toEqual(['1 write request(s) were blocked']);
+    expect(configFailures(blocked)).toEqual([]);
+  });
 });
 
 describe('classifyTrpcRequest: opt-in HMS reads', () => {
