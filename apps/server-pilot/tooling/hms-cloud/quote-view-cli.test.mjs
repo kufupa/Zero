@@ -125,6 +125,20 @@ test('row pagination and restrictions survive the offline projection', () => {
   assert.equal(nextPage.view.coverage.page.nextOffset, null);
 });
 
+test('same-code rate rows with different promotions remain distinct and verified', () => {
+  const saved = snapshot();
+  const rates = saved.response.availabilitydata.children[0].children[0].children;
+  rates[0].promotioncode = 'PROMO-A';
+  const second = structuredClone(rates[0]);
+  second.promotioncode = 'PROMO-B';
+  rates.push(second);
+
+  const result = getQuoteView(saved, { roomQuantity: 2, limit: 10 });
+  assert.equal(result.coverage.duplicateRateRows, 0);
+  assert.deepEqual(result.options.map((option) => option.rate.promotioncode), ['PROMO-A', 'PROMO-B']);
+  assert.ok(result.options.every((option) => !option.reasons.includes('unknown')));
+});
+
 test('CLI accepts its exact input cap and promptly rejects one byte more', () => {
   const max = 32 * 1024 * 1024;
   const valid = Buffer.from('{"snapshot":{"outcome":"criteria_unavailable"}}');
