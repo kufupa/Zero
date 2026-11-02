@@ -1,7 +1,7 @@
 // Offline transition classifier only. No page, request, stage or Save authority.
 import { isDeepStrictEqual } from 'node:util';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
-import { matchesSavedChildEditorOpen, planSavedChildOccupancy, savedChildDraftDelta } from './guest-stay-amend-children.mjs';
+import { matchesSavedChildEditorOpen, planSavedChildOccupancy, savedChildDraftDelta, savedChildOccupancy } from './guest-stay-amend-children.mjs';
 import { labtestAdultAmendDraftDelta } from './guest-stay-amend-adults.mjs';
 
 const same = isDeepStrictEqual;
@@ -11,9 +11,11 @@ const uniqueNames = (value) => Array.isArray(value) && value.every((name) => typ
   new Set(value).size === value.length;
 const isCount = (value, wanted) => (typeof value === 'number' && value === wanted) ||
   (typeof value === 'string' && value === String(wanted));
-const childEvidenceMatches = (evidence, plan) => {
+const childEvidenceMatches = (evidence, plan, baseline, childDraft) => {
   if (!isRecord(evidence) || evidence.outcome !== 'applied_to_unsaved_draft' || evidence.nativeValidationVerified !== true ||
-      !same(evidence.requested, plan) || !same(evidence.nativeResponseAges, plan.childAges) || !isRecord(evidence.draftVisible)) return false;
+      !same(evidence.requested, plan) || !same(evidence.nativeResponseAges, plan.childAges) || !isRecord(evidence.draftVisible) ||
+      !same(evidence.saved, savedChildOccupancy(baseline)) ||
+      !same(evidence.draftOccupancy, savedChildOccupancy(childDraft).fields)) return false;
   const counts = { children:plan.childCount, ...plan.derivedBands };
   return Object.entries(counts).every(([name, wanted]) => isRecord(evidence.draftVisible[name]) &&
     isCount(evidence.draftVisible[name].visible, wanted) && isCount(evidence.draftVisible[name].component, wanted));
@@ -35,11 +37,16 @@ export function classifyPairedOccupancyDelta({ expected, state, baseline, bindin
     if (!currentBinding || !same(currentBinding, binding) || plan.outcome !== 'planned' || plan.childAges === null ||
         !isRecord(native) || native.propertyCode !== 'HRCEN' || native.reservationStayId !== state.native.reservationstayid ||
         !same(native.childAges, expected.childAges) || !matchesSavedChildEditorOpen(baseline, opened, native) ||
-        !savedChildDraftDelta(opened, childDraft, plan).ok || !childEvidenceMatches(childEvidence, plan)) return invalid();
+        !savedChildDraftDelta(opened, childDraft, plan).ok || !childEvidenceMatches(childEvidence, plan, baseline, childDraft)) return invalid();
+    // Conservative offline contract: retain the child fields observed as dirty.
     if (!isRecord(adultDraft) || !same(Object.keys(childDraft).sort(), Object.keys(adultDraft).sort()) ||
         adultDraft.formDirty !== true || adultDraft.recordDirty !== true ||
         !uniqueNames(childDraft.dirtyFields) || !uniqueNames(childDraft.modifiedFields) ||
         !uniqueNames(adultDraft.dirtyFields) || !uniqueNames(adultDraft.modifiedFields) ||
+        !childDraft.dirtyFields.length ||
+        !['childages', 'updatechildcategories', 'enablecheckavailability'].every((name) => childDraft.modifiedFields.includes(name)) ||
+        ['children', 'child1', 'child2', 'child3'].some((name) =>
+          !same(opened.values[name], childDraft.values[name]) && !childDraft.dirtyFields.includes(name)) ||
         childDraft.dirtyFields.includes('adults') || childDraft.modifiedFields.includes('adults') ||
         childDraft.dirtyFields.some((name) => !adultDraft.dirtyFields.includes(name)) ||
         childDraft.modifiedFields.some((name) => !adultDraft.modifiedFields.includes(name)) ||
