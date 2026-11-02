@@ -68,6 +68,19 @@ describe('Labtest batch native census proof', () => {
       expect(consumeLabtestPreimage(page, { ...dates, preimageId: result.preimageId, batchBinding: binding })).toBe(false);
     }
   });
+  it('rejects a proof if the clock moves behind the census start', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    const page = makePage({ firstName: 'Someone' });
+    const result = await searchLabtestPreimage(page, dates);
+    vi.setSystemTime(new Date('2026-11-02T11:59:00Z'));
+    expect(consumeLabtestPreimage(page, { ...dates, preimageId: result.preimageId })).toBe(false);
+  });
+  it('holds a census that expires while response and grid are correlated', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    const page = makePage({ duringGrid: () => vi.setSystemTime(new Date('2026-11-02T12:06:00Z')) });
+    const result = await searchLabtestBatchPreimage(page, dates, { binding, authorizeSiblings: vi.fn() });
+    expect(result).toMatchObject({ outcome: 'incomplete', issue: 'SEARCH_EXPIRED_DURING_OBSERVATION' });
+  });
   it('invalidates a pending verifier if the page closes', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
     let started; const running = new Promise((resolve) => { started = resolve; });

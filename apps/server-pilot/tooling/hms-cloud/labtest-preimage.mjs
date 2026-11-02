@@ -224,6 +224,7 @@ async function search(page, { arrival, departure } = {}, batch) {
       if (b && Math.abs(b.y - box.y) <= 10 && b.x >= box.x + box.width && b.x <= box.x + box.width + 100) adjacent.push(runs.nth(i));
     }
     if (adjacent.length !== 1) throw new Error('RUN_NOT_UNIQUE');
+    const censusStartedAt = Date.now();
     let response = page.waitForResponse((item) => searchRequest(item.request()), { timeout: 30_000 }).catch(() => null);
     await adjacent[0].click();
     let observed = await response, found = await panel(page, box), window = await range(found.popup);
@@ -258,9 +259,10 @@ async function search(page, { arrival, departure } = {}, batch) {
     const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
     if (sameArrival.length && !batch) return result;
-    const observedAt = Date.now();
+    const observedAt = censusStartedAt;
+    if (Date.now() < observedAt || Date.now() >= observedAt + 5 * 60_000) throw new Error('SEARCH_EXPIRED_DURING_OBSERVATION');
     const controller = batch ? new AbortController() : null;
-    const proof = { id: randomUUID(), arrival, departure, expiresAt: observedAt + 5 * 60_000,
+    const proof = { id: randomUUID(), arrival, departure, observedAt, expiresAt: observedAt + 5 * 60_000,
       state: batch ? 'pending' : 'ready', batchBinding: batch?.binding ?? null, controller };
     const invalidate = () => {
       controller?.abort();
@@ -283,7 +285,7 @@ async function search(page, { arrival, departure } = {}, batch) {
       ]);
       clearTimeout(timer);
       const matches = verified?.matches;
-      const valid = proofs.get(page) === proof && !controller.signal.aborted && Date.now() < proof.expiresAt &&
+      const valid = proofs.get(page) === proof && !controller.signal.aborted && Date.now() >= proof.observedAt && Date.now() < proof.expiresAt &&
         verified?.authorized === true && Array.isArray(matches) && matches.length === sameArrival.length &&
         matches.every((match) => match && typeof match.confirmation === 'string' && /^[a-f0-9]{64}$/.test(match.recordDigest ?? '') &&
           sameArrival.filter((row) => row.confirmation === match.confirmation).length === 1) &&
@@ -319,5 +321,5 @@ export function consumeLabtestPreimage(page, { preimageId, arrival, departure, b
     typeof batchBinding === 'object' && !Array.isArray(batchBinding) && Object.keys(batchBinding).length === 3 &&
     ['manifestDigest', 'childId', 'childDigest'].every((key) => batchBinding[key] === proof?.batchBinding?.[key]));
   return Boolean(proof && proof.state === 'ready' && sameBinding && proof.id === preimageId &&
-    proof.arrival === arrival && proof.departure === departure && Date.now() < proof.expiresAt);
+    proof.arrival === arrival && proof.departure === departure && Date.now() >= proof.observedAt && Date.now() < proof.expiresAt);
 }
