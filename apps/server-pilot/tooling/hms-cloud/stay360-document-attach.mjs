@@ -100,9 +100,9 @@ export function matchesDocumentUpload(request, frame, expected, file, token) {
 // An intent is exclusive and is written before the one permitted continuation.
 export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError }) {
   let consumed = false;
-  return (route, { candidate, armed, checkStatus }) => {
+  return (route, { candidate, armed, checkStatus, blocked }) => {
     const request = route.request();
-    if (consumed || request !== candidate || !armed || checkStatus !== 200 ||
+    if (consumed || request !== candidate || !armed || blocked || checkStatus !== 200 ||
         !matchesDocumentUpload(request, frame, fields, file, token)) return null;
     consumed = true;
     try {
@@ -155,6 +155,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   let notifyStop;
   const interrupted = new Promise((resolve) => { notifyStop = resolve; });
   const stop = (reason) => { stopped ||= reason; armed = false; fence?.quarantine(); notifyStop(stopped); };
+  const rejectRequest = () => { blocked++; if (!possible) stop('DOCUMENT_REQUEST_BLOCKED'); };
   const bounded = async (action) => {
     const result = await Promise.race([Promise.resolve(action).then((value) => ({ value })), interrupted.then((reason) => ({ reason }))]);
     if (result.reason) throw new Error(result.reason);
@@ -206,11 +207,11 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     const sameFrame = (request) => { try { return request.frame() === frame; } catch { return false; } };
     await context.route('**/*', async (route) => {
       const request = route.request(); let url;
-      try { url = new URL(request.url()); } catch { blocked++; return route.abort(); }
+      try { url = new URL(request.url()); } catch { rejectRequest(); return route.abort(); }
       if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) { initAllowed = true; return route.fallback(); }
       if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, expectedFields)) return route.fallback();
       if (!stopped && uploadGate) {
-        const release = uploadGate(route, { candidate: uploadCandidate, armed, checkStatus });
+        const release = uploadGate(route, { candidate: uploadCandidate, armed, checkStatus, blocked });
         if (release) return release.result;
       }
       if (!stopped && dispatched && !refreshCandidate && sameFrame(request) && matchesForm(request, REFRESH, frame, refresh.body)) {
@@ -219,18 +220,18 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && url.origin === ORIGIN &&
           !/save|delete|cancel|send|email|mail|upload|checkin|checkout/i.test(url.pathname) &&
           !shouldAbortReadOnlyRequest({ method: request.method(), url: request.url(), postData: request.postData?.() })) return route.fallback();
-      blocked++; return route.abort();
+      rejectRequest(); return route.abort();
     });
     await page.route('**/*', async (route) => {
       const request = route.request(); let path;
-      try { path = new URL(request.url()).pathname; } catch { blocked++; return route.abort(); }
-      if (path === CHECK || path === UPLOAD) {
+      try { path = new URL(request.url()).pathname; } catch { rejectRequest(); return route.abort(); }
+      if ([CHECK.toLowerCase(), UPLOAD.toLowerCase()].includes(path.toLowerCase())) {
         const match = !stopped && armed && (path === CHECK
           ? !checkCandidate && matchesForm(request, CHECK, frame, expectedFields)
           : !uploadCandidate && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token));
         if (match && scope.allow(request)) {
           if (path === CHECK) checkCandidate = request; else uploadCandidate = request;
-        } else blocked++;
+        } else rejectRequest();
       }
       return route.fallback();
     });

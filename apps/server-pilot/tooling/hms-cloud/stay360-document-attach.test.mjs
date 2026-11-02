@@ -103,6 +103,7 @@ test('upload gate releases only the exact candidate once, after exclusive intent
     assert.equal(gate(route(request), { ...ready, candidate: upload({ bytes }) }), null);
     assert.equal(gate(route(request), { ...ready, armed: false }), null);
     assert.equal(gate(route(request), { ...ready, checkStatus: 500 }), null);
+    assert.equal(gate(route(request), { ...ready, blocked: 1 }), null);
     for (const altered of [
       upload({ bytes, frame: { ...child, parentFrame: () => ({}) } }),
       upload({ bytes, query: q => q.set('requestToken', 'different') }),
