@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
-import { attachLabtestDocument, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
+import { installPageRequestFence } from './page-request-fence.mjs';
+import { attachLabtestDocument, createDocumentUploadGate, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
   matchesDocumentUpload } from './stay360-document-attach.mjs';
 
 const fields = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg', 'typecode',
@@ -77,6 +82,77 @@ test('exact upload bytes may contain text that resembles a form action', () => {
   assert.equal(matchesDocumentUpload(request, frame, payload, { ...file, bytes }, token), true);
   assert.equal(shouldAbortReadOnlyRequest({ method: request.method(), url: request.url(),
     postData: request.postDataBuffer().toString('utf8') }), true);
+});
+
+test('upload gate releases only the exact candidate once, after exclusive intent', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+  try {
+    let dispatched = 0, failed = 0, continued = 0, aborted = 0;
+    const bytes = Buffer.from('Synthetic &pageaction=SAVE& bytes'), gatedFile = { ...file, bytes };
+    const gate = createDocumentUploadGate({ frame, fields: payload, file: gatedFile, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => { failed++; } });
+    const request = upload({ bytes });
+    const route = (req) => ({ request: () => req, continue: () => {
+      const intent = JSON.parse(readFileSync(join(dir, 'dispatch-intent.json'), 'utf8'));
+      assert.equal(intent.confirmation, '456-1'); assert.equal(intent.documentCode, file.documentCode);
+      assert.equal(intent.filename, file.name); assert.equal(intent.sha256, createHash('sha256').update(bytes).digest('hex'));
+      continued++; return 'continued';
+    }, abort: () => { aborted++; return 'aborted'; } });
+    const ready = { candidate: request, armed: true, checkStatus: 200 };
+    assert.equal(gate(route(request), { ...ready, candidate: upload({ bytes }) }), null);
+    assert.equal(gate(route(request), { ...ready, armed: false }), null);
+    assert.equal(gate(route(request), { ...ready, checkStatus: 500 }), null);
+    for (const altered of [
+      upload({ bytes, frame: { ...child, parentFrame: () => ({}) } }),
+      upload({ bytes, query: q => q.set('requestToken', 'different') }),
+      upload({ bytes, query: q => q.set('browserTabID', 'different') }),
+      upload({ bytes, query: q => q.set('daeCode', 'different') }),
+      upload({ bytes, values: new Map([...payload, ['description', 'different']]) }),
+      upload({ bytes: Buffer.from('different') }),
+      upload({ bytes, filename: 'different.txt' }),
+    ]) assert.equal(gate(route(altered), { ...ready, candidate: altered }), null);
+    assert.equal(gate(route(request), ready).result, 'continued');
+    assert.equal(gate(route(request), ready), null);
+    assert.equal(dispatched, 1); assert.equal(continued, 1); assert.equal(failed, 0); assert.equal(aborted, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('page fence blocks unapproved and quarantined uploads before the release gate', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+  try {
+    let pageRoute, continued = 0, aborted = 0, dispatched = 0;
+    const page = { route: async (_pattern, handler) => { pageRoute = handler; } };
+    const fence = await installPageRequestFence(page, ['/web/base/BSUPLD.upload']);
+    const scope = fence.open(), request = upload();
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => assert.fail('intent failed') });
+    const route = { request: () => request, abort: () => { aborted++; return 'aborted'; },
+      continue: () => { continued++; return 'continued'; },
+      fallback: () => gate(route, { candidate: request, armed: true, checkStatus: 200 })?.result };
+    assert.equal(await pageRoute(route), 'aborted');
+    assert.equal(scope.allow(request), true);
+    assert.equal(await pageRoute(route), 'continued');
+    fence.quarantine();
+    assert.equal(scope.allow(request), false);
+    assert.equal(await pageRoute(route), 'aborted');
+    assert.equal(dispatched, 1); assert.equal(continued, 1); assert.equal(aborted, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('upload gate aborts if exclusive dispatch intent already exists', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+  try {
+    const path = join(dir, 'dispatch-intent.json'); writeFileSync(path, 'existing');
+    let dispatched = 0, failed = 0, continued = 0, aborted = 0;
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => { failed++; } });
+    const request = upload(), route = { request: () => request, continue: () => { continued++; },
+      abort: () => { aborted++; return 'aborted'; } };
+    const ready = { candidate: request, armed: true, checkStatus: 200 };
+    assert.equal(gate(route, ready).result, 'aborted'); assert.equal(gate(route, ready), null);
+    assert.equal(readFileSync(path, 'utf8'), 'existing');
+    assert.equal(dispatched, 0); assert.equal(continued, 0); assert.equal(failed, 1); assert.equal(aborted, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('multipart compares UTF-8 field bytes without accepting a changed description', () => {

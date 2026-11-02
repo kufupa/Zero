@@ -96,6 +96,25 @@ export function matchesDocumentUpload(request, frame, expected, file, token) {
   } catch { return false; }
 }
 
+// Called only after the lifetime page fence has approved this same Request.
+// An intent is exclusive and is written before the one permitted continuation.
+export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError }) {
+  let consumed = false;
+  return (route, { candidate, armed, checkStatus }) => {
+    const request = route.request();
+    if (consumed || request !== candidate || !armed || checkStatus !== 200 ||
+        !matchesDocumentUpload(request, frame, fields, file, token)) return null;
+    consumed = true;
+    try {
+      writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation,
+        documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }),
+      { flag: 'wx', mode: 0o600 });
+    } catch { onIntentError(); return { result: route.abort() }; }
+    onDispatch();
+    return { result: route.continue() };
+  };
+}
+
 function matchesForm(request, path, frame, expected) {
   try {
     const url = new URL(request.url());
@@ -130,7 +149,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   usedPages.add(page);
   let frame, fence, scope, refresh, refreshInvalid = false, refreshResponse, initAllowed = false, checkCandidate, uploadCandidate;
   let armed = false, possible = false, dispatched = false, checkStatus = null, uploadStatus = null, refreshCandidate, refreshStatus = null;
-  let stopped = null, blocked = 0, evidenceDir = null, token, expectedFields, baseline;
+  let stopped = null, blocked = 0, evidenceDir = null, token, expectedFields, baseline, uploadGate;
   let notifyResponses;
   const responsesObserved = new Promise((resolve) => { notifyResponses = resolve; });
   let notifyStop;
@@ -190,15 +209,9 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       try { url = new URL(request.url()); } catch { blocked++; return route.abort(); }
       if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) { initAllowed = true; return route.fallback(); }
       if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, expectedFields)) return route.fallback();
-      if (!stopped && request === uploadCandidate && armed && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token)) {
-        try {
-          writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation: expected.confirmation,
-            documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }), { flag: 'wx', mode: 0o600 });
-        } catch { stop('DISPATCH_INTENT_FAILED'); return route.abort(); }
-        possible = true; dispatched = true; armed = false;
-        // The page fence already consumed this exact request. Do not let the
-        // generic guard parse arbitrary multipart bytes as URL-encoded actions.
-        return route.continue();
+      if (!stopped && uploadGate) {
+        const release = uploadGate(route, { candidate: uploadCandidate, armed, checkStatus });
+        if (release) return release.result;
       }
       if (!stopped && dispatched && !refreshCandidate && sameFrame(request) && matchesForm(request, REFRESH, frame, refresh.body)) {
         refreshCandidate = request; return route.fallback();
@@ -255,6 +268,10 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     token = new URLSearchParams(`requestToken=${await bounded(frame.evaluate(() => EAM.AppData.generateRequestToken()))}`);
     if ([...token.keys()].length !== 2 || token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');
+    uploadGate = createDocumentUploadGate({ frame, fields: expectedFields, file, token, evidenceDir,
+      confirmation: expected.confirmation,
+      onDispatch: () => { possible = true; dispatched = true; armed = false; },
+      onIntentError: () => stop('DISPATCH_INTENT_FAILED') });
     const before = join(evidenceDir, `${randomUUID()}-before.png`);
     await bounded(writeFile(before, await bounded(page.screenshot({ fullPage: true })), { flag: 'wx', mode: 0o600 }));
     const submit = popup.getByText('Submit', { exact: true });
