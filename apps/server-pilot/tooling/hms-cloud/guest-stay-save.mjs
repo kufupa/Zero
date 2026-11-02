@@ -1,5 +1,6 @@
 // One narrowly authorized save on a verified, unsaved HRCEN Labtest draft.
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './guest-profile.mjs';
 import { consumeLabtestPreimage } from './labtest-preimage.mjs';
 import { blankPartyFields } from './labtest-party-fields.mjs';
@@ -20,6 +21,7 @@ const draftChecks = new Set([
   'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
   'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
   'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_AGENCY_COMMISSION_VALUE', 'DRAFT_REQUIRED_FIELDS',
+  'DRAFT_BILLING_REFERENCE_VALUE', 'DRAFT_OPEN_MODAL',
 ]);
 const safeDraftCheck = (value) => draftChecks.has(value) ? value : null;
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
@@ -34,6 +36,26 @@ function matchesCreateModelFieldSchema(formData) {
   const keys = Object.keys(formData).sort();
   return keys.length === CREATE_MODEL_FIELD_COUNT &&
     createHash('sha256').update(keys.join('\n')).digest('hex') === CREATE_MODEL_FIELD_KEYS_SHA256;
+}
+
+export function validCreateBillingReference(value) {
+  return typeof value === 'string' && value.length <= 4000 && Boolean(value.trim()) &&
+    ![...value].some((char) => char.charCodeAt(0) <= 31 || char.charCodeAt(0) === 127);
+}
+
+// Only the explicit billing field may change in the full native model, submitted
+// form snapshot, or rendered controls while the unarmed request fence is active.
+export function billingOnlyDraftChange(before, after, requested) {
+  if (!before || !after || !validCreateBillingReference(requested)) return false;
+  const withoutBilling = (data) => Object.fromEntries(Object.entries(data || {}).filter(([key]) => key !== 'billingreference'));
+  if (!isDeepStrictEqual(withoutBilling(before.modelData), withoutBilling(after.modelData)) ||
+      !isDeepStrictEqual(withoutBilling(before.formData), withoutBilling(after.formData)) ||
+      ![before.modelData?.billingreference, requested].some((value) => isDeepStrictEqual(value, after.modelData?.billingreference)) ||
+      after.formData?.billingreference !== requested || before.session !== after.session || before.arProfileId !== after.arProfileId ||
+      !isDeepStrictEqual(before.partyValues, after.partyValues) || before.track !== after.track) return false;
+  const otherControls = (state) => (state.visibleFields || []).filter((field) => field.name !== 'billingreference');
+  return Array.isArray(before.visibleFields) && Array.isArray(after.visibleFields) &&
+    isDeepStrictEqual(otherControls(before), otherControls(after));
 }
 
 function numericZero(value) {
@@ -169,6 +191,8 @@ async function draft(page, expected) {
   return page.evaluate(({ origin, expected, blankPartyFields, childBands }) => {
     if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return 'DRAFT_PROPERTY_CONTEXT';
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    if ([...document.querySelectorAll('.x-window:not(.x-menu)')].some((el) =>
+      Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden'))) return 'DRAFT_OPEN_MODAL';
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote',
       ...(expected.strictCreateProof ? ['revenuevalue', 'nightsvalue'] : []), 'udfchkbox04', 'udfchar13', 'emailaddress',
@@ -176,7 +200,8 @@ async function draft(page, expected) {
       ...(expected.createFieldProof?.childAges != null ? ['children', ...childBands] : []),
       ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : []),
       ...(expected.createFieldProof?.cmsMessage != null ? ['udfchar09'] : []),
-      ...(expected.createFieldProof?.reason ? ['reasonforstay'] : [])];
+      ...(expected.createFieldProof?.reason ? ['reasonforstay'] : []),
+      ...(expected.billingPhase ? ['billingreference'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return 'DRAFT_VISIBLE_FIELDS';
@@ -186,7 +211,7 @@ async function draft(page, expected) {
     if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return 'DRAFT_FORM_RECORD';
     const exact = (key, value) => Object.hasOwn(data, key) && keys.filter((k) => k.toLowerCase() === key.toLowerCase()).length === 1 &&
       String(data[key] ?? '').trim() === value;
-    const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
+    const value = (name) => ['reservationnote', 'billingreference'].includes(name) ? fields[name][0].value : fields[name][0].value.trim();
     const partyValues = expected.partyValues || {};
     const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
       visible(el) && blankPartyFields.includes(el.name.toLowerCase()));
@@ -253,6 +278,21 @@ async function draft(page, expected) {
         return [input.value, component.getValue(), submitted[submittedKeys[0]]].every((item) => String(item ?? '') === value)
           ? current : null;
       };
+      if (expected.billingPhase) {
+        const input = fields.billingreference[0], component = cmp('billingreference');
+        const current = nativeFormValue('billingreference'), submitted = component?.getSubmitData?.();
+        const maxLengths = [input.maxLength, component?.maxLength].filter((n) => Number.isFinite(n) && n >= 0);
+        const errors = component?.getActiveErrors?.();
+        const invalid = input.getAttribute?.('aria-invalid') === 'true' || (Array.isArray(errors) && errors.length > 0);
+        if (!current || typeof current.value !== 'string' || component?.up?.('form') !== form ||
+            component.getValue() !== current.value || input.value !== current.value ||
+            !Object.hasOwn(submitted || {}, 'billingreference') || submitted.billingreference !== current.value ||
+            component.disabled || component.isDisabled?.() || component.readOnly || input.disabled || input.readOnly ||
+            maxLengths.some((n) => expected.billingReference.length > n) ||
+            (invalid && (expected.billingPhase === 'after' || Boolean(current.value.trim()))) ||
+            (expected.billingPhase === 'after' && current.value !== expected.billingReference) ||
+            !copyCurrentFormValue('billingreference', current)) return 'DRAFT_BILLING_REFERENCE_VALUE';
+      }
       // Agency selection can update native form controls without updating the model.
       // Bind only the two current commission controls, not unrelated form fields.
       if (expected.agencySelection) {
@@ -332,7 +372,8 @@ async function draft(page, expected) {
     }
     const blankRequired = [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).some((el) => {
       const component = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
-      return component?.allowBlank === false && !String(el.value ?? '').trim();
+      return component?.allowBlank === false && !String(el.value ?? '').trim() &&
+        !(expected.billingPhase === 'before' && el === fields.billingreference?.[0]);
     });
     if (blankRequired) return 'DRAFT_REQUIRED_FIELDS';
     const verifiedPartyValues = { ...partyValues };
@@ -340,6 +381,9 @@ async function draft(page, expected) {
     return { session: String(data.bookingsessionid).trim(), track: value('track'),
       ...(expected.arSelection ? { arProfileId: String(data.arprofileid).trim() } : {}),
       ...(expected.strictCreateProof ? { ...(expected.createFieldProof?.childAges != null ? { activeChildCategories } : {}),
+        ...(expected.billingPhase ? { visibleFields: [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).map((el) => ({
+          id: el.id, name: el.name, type: el.type, value: el.value, checked: el.checked, disabled: el.disabled, readOnly: el.readOnly,
+        })) } : {}),
         modelData: Object.fromEntries(Object.keys(modelData).map((key) => [key, modelData[key]])),
         formData: Object.fromEntries(Object.keys(formData).map((key) => [key, formData[key]])), partyValues: verifiedPartyValues } : {}) };
   }, { origin: ORIGIN, expected, blankPartyFields, childBands: CHILD_BANDS });
@@ -440,6 +484,7 @@ function matchesSave(page, request, expected, onFullCreateBodyMismatch) {
       departuredate: expected.departureWire, roomtype: expected.roomType, rateplan: expected.ratePlan, track: expected.track,
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: '0', udfchar13: '', emailaddress: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
+      ...(expected.billingReference !== undefined ? { billingreference: expected.billingReference } : {}),
       arprofileid: expected.arProfileId ?? '', araccountid: expected.arSelection?.nativeId ?? '', guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
       ...(proof?.adults != null ? { adults: proof.adults } : {}),
       ...childAgeFields,
@@ -479,8 +524,8 @@ function safeCreateContext(page) {
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note,
-  createFieldProof, agencySelection, organizationSelection, arSelection,
-} = {}, { timeoutMs = 20_000 } = {}) {
+  createFieldProof, agencySelection, organizationSelection, arSelection, billingReference,
+} = {}, { timeoutMs = 20_000, beforeSaveScreenshot } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || guaranteeType !== 'NGI' || typeof note !== 'string' || !note.trim() || note.length > 200 ||
@@ -497,13 +542,20 @@ export async function saveNewLabtestStay(page, {
   const arSelectionProvided = arSelection !== undefined && arSelection !== null;
   const ar = arSelectionProvided ? normalizeArSelection(arSelection) : null;
   if (arSelectionProvided && !ar) return { outcome: 'input_gap', issue: 'AR_SELECTION_UNVERIFIED' };
+  const hasBillingReference = billingReference !== undefined;
+  if (hasBillingReference && (!validCreateBillingReference(billingReference) || !ar)) {
+    return { outcome: 'input_gap', issue: 'BILLING_REFERENCE_OR_AR_INVALID' };
+  }
+  if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') {
+    return { outcome: 'input_gap', issue: 'SCREENSHOT_CALLBACK_INVALID' };
+  }
   const strictCreateProof = Boolean(createFields || agency || organization || ar);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
-  let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest;
+  let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest, billingAttempted = false, billingStaged = false;
   const observedBlocked = new WeakSet();
   const createBodyMismatches = new WeakMap();
   const stopped = new Promise((resolve) => { signalStop = resolve; });
@@ -512,6 +564,9 @@ export async function saveNewLabtestStay(page, {
     armed = false;
     routeChain?.disarm();
     fence?.quarantine();
+    if (billingAttempted && !possiblyDispatched) {
+      try { Promise.resolve(page.close({ runBeforeUnload: false })).catch(() => {}); } catch { /* Discard page. */ }
+    }
     signalStop({ issue: stopReason });
   };
   const bounded = async (action) => {
@@ -533,8 +588,9 @@ export async function saveNewLabtestStay(page, {
     const expected = { ...formatted, guestId: clean(guestId), roomType, ratePlan, guaranteeType, note,
       ...(createFields ? { createFieldProof: createFields } : {}),
       ...(agency ? { agencySelection: agency } : {}), ...(organization ? { organizationSelection: organization } : {}),
-      ...(ar ? { arSelection: ar } : {}), strictCreateProof, partyValues };
-    const state = await bounded(draft(page, expected));
+      ...(ar ? { arSelection: ar } : {}), ...(hasBillingReference ? { billingReference, billingPhase: 'before' } : {}),
+      strictCreateProof, partyValues };
+    let state = await bounded(draft(page, expected));
     if (typeof state === 'string') throw Object.assign(new Error('LABTEST_DRAFT_UNVERIFIED'), { draftCheck: state });
     if (!state) throw new Error('LABTEST_DRAFT_UNVERIFIED');
     if (strictCreateProof && !matchesCreateModelFieldSchema(state.modelData)) throw new Error('CREATE_FORM_FIELD_SCHEMA_CHANGED');
@@ -573,6 +629,7 @@ export async function saveNewLabtestStay(page, {
         if (observedBlocked.has(request)) return;
         observedBlocked.add(request);
         blocked += 1;
+        if (hasBillingReference && !possiblyDispatched) stop('BILLING_UNEXPECTED_REQUEST_BLOCKED');
         const fullCreateBodyMismatch = createBodyMismatches.get(request);
         if (!blockedRequest && fullCreateBodyMismatch) {
           blockedRequest = { method: 'POST', path: 'reservation_save', matcher: 'full_create_body', fullCreateBodyMismatch };
@@ -595,9 +652,62 @@ export async function saveNewLabtestStay(page, {
     routeChain = await bounded(routeSetup);
     if (!routeChain) throw new Error(stopReason || 'SAVE_TIMEOUT');
     usedPages.add(page);
+    if (hasBillingReference) {
+      const requireCurrent = () => {
+        if (stopReason) throw new Error(stopReason);
+        if (!safeCreateContext(page) || !isVerifiedLabtestProfileCurrent(page, {
+          nativeId: expected.guestId, session: expected.session, token: profileToken,
+        }) || !isVerifiedArSelectionCurrent(page, { session: expected.session, accountId: ar.nativeId,
+          profileId: state.arProfileId, token: arToken })) {
+          stop('BILLING_DRAFT_PROOF_STALE'); throw new Error('BILLING_DRAFT_PROOF_STALE');
+        }
+      };
+      const verifyRecords = async () => {
+        requireCurrent();
+        const currentProfile = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: expected.session }));
+        requireCurrent();
+        const currentAr = await bounded(verifiedArSelectionToken(page, { session: expected.session, accountId: ar.nativeId,
+          profileId: state.arProfileId }));
+        requireCurrent();
+        if (currentProfile !== profileToken || currentAr !== arToken) {
+          stop('BILLING_DRAFT_PROOF_STALE'); throw new Error('BILLING_DRAFT_PROOF_STALE');
+        }
+      };
+      const before = state;
+      requireCurrent();
+      const control = page.locator('input[name="billingreference"]:visible, textarea[name="billingreference"]:visible');
+      if (await bounded(control.count()) !== 1 || !await bounded(control.isEditable())) throw new Error('BILLING_FIELD_NOT_EDITABLE');
+      requireCurrent();
+      billingAttempted = true;
+      await bounded(control.fill(billingReference, { timeout: 5_000 }));
+      requireCurrent();
+      await bounded(control.press('Tab', { timeout: 5_000 }));
+      requireCurrent();
+      await bounded(page.waitForTimeout(1000));
+      requireCurrent();
+      expected.billingPhase = 'after';
+      state = await bounded(draft(page, expected));
+      if (typeof state === 'string') throw Object.assign(new Error('LABTEST_DRAFT_UNVERIFIED'), { draftCheck: state });
+      if (!state || !matchesCreateModelFieldSchema(state.modelData) || !billingOnlyDraftChange(before, state, billingReference)) {
+        throw new Error('BILLING_DRAFT_CHANGED');
+      }
+      await verifyRecords();
+      if (beforeSaveScreenshot) await bounded(beforeSaveScreenshot());
+      requireCurrent();
+      const finalState = await bounded(draft(page, expected));
+      if (!finalState || typeof finalState === 'string' || !billingOnlyDraftChange(state, finalState, billingReference)) {
+        throw new Error('BILLING_DRAFT_CHANGED');
+      }
+      await verifyRecords();
+      Object.assign(expected, finalState);
+      billingStaged = true;
+    }
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
     const save = page.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
     if (await bounded(save.count()) !== 1) throw new Error('SAVE_CONTROL_NOT_UNIQUE');
+    if (hasBillingReference && await bounded(page.locator('.x-window:visible:not(.x-menu)').count())) {
+      throw new Error('UNEXPECTED_DIALOG');
+    }
     armed = true;
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
     response = await bounded(pending);
@@ -622,10 +732,12 @@ export async function saveNewLabtestStay(page, {
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
       browserSendRequests: sendRequests, nativeDialog, dialogs, ...(ar ? { arProfileId: state.arProfileId } : {}),
+      ...(billingStaged ? { billingReferenceStaged: true } : {}),
       ...(blockedRequest ? { blockedRequest } : {}) };
   } catch (error) {
     armed = false;
-    if (possiblyDispatched) fence?.quarantine();
+    if (possiblyDispatched || billingAttempted) fence?.quarantine();
+    if (billingAttempted && !possiblyDispatched && !stopReason) stop('BILLING_ACTION_UNCERTAIN');
     const draftCheck = safeDraftCheck(error?.draftCheck);
     return { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue: safeIssue(error),
       ...(draftCheck ? { draftCheck } : {}),

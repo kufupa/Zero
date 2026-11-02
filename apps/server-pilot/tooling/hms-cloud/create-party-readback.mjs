@@ -13,13 +13,13 @@ export function extractCreatePartySnapshot() {
   const data = form?.getRecord?.()?.data, keys = data && Object.keys(data);
   if (!form?.el?.dom || !data || !form.el.dom.contains(anchors[0])) return null;
   const value = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1
-    ? String(data[key] ?? '').trim() : null;
+    ? (key === 'billingreference' ? (typeof data[key] === 'string' ? data[key] : null) : String(data[key] ?? '').trim()) : null;
   const modelNames = ['propertycode', 'confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'taid1', 'ta1',
-    'companyid', 'company', 'araccountid', 'araccountname', 'arprofileid'];
-  const names = ['ta1', 'company', 'araccountname'];
+    'companyid', 'company', 'araccountid', 'araccountname', 'arprofileid', 'billingreference'];
+  const names = ['ta1', 'company', 'araccountname', 'billingreference'];
   const visibleValues = Object.fromEntries(names.map((name) => {
     const fields = input(name);
-    return [name, fields.length === 1 && form.el.dom.contains(fields[0]) ? fields[0].value.trim() : null];
+    return [name, fields.length === 1 && form.el.dom.contains(fields[0]) ? (name === 'billingreference' ? fields[0].value : fields[0].value.trim()) : null];
   }));
   return { model: Object.fromEntries(modelNames.map((name) => [name, value(name)])), visible: visibleValues };
 }
@@ -37,11 +37,16 @@ export function compareCreatePartyRecord(snapshot, expected) {
   for (const name of ['ta1', 'company', 'araccountname']) {
     if (snapshot.visible[name] !== values[name]) mismatches.push(`${name}_visible`);
   }
+  if (expected.billingReference !== undefined) {
+    if (snapshot.model.billingreference !== expected.billingReference) mismatches.push('billingreference');
+    if (snapshot.visible.billingreference !== expected.billingReference) mismatches.push('billingreference_visible');
+  }
   return mismatches.length ? { outcome: 'unverified', issue: 'PARTY_READBACK_MISMATCH', fields: mismatches }
-    : { outcome: 'verified', verified: ['agency', 'organization', 'arAccount'] };
+    : { outcome: 'verified', verified: ['agency', 'organization', 'arAccount',
+      ...(expected.billingReference !== undefined ? ['billingReference'] : [])] };
 }
 
-export async function readCreateParties({ confirmation, arrival, guestId, agency, organization, arAccount }) {
+export async function readCreateParties({ confirmation, arrival, guestId, agency, organization, arAccount, billingReference }) {
   if (!/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') ||
       !/^\d{4}-\d{2}-\d{2}$/.test(arrival || '') || arrival < '2027-01-01') {
     return { outcome: 'unverified', issue: 'PARTY_READBACK_INPUT_INVALID' };
@@ -49,7 +54,9 @@ export async function readCreateParties({ confirmation, arrival, guestId, agency
   const validParty = (party) => !party || (typeof party.nativeId === 'string' && /^\d+$/.test(party.nativeId) &&
     typeof party.name === 'string' && party.name.trim() === party.name && party.name.length > 0);
   if (![agency, organization, arAccount].every(validParty) ||
-      (arAccount && (typeof arAccount.profileId !== 'string' || !arAccount.profileId.trim()))) {
+      (arAccount && (typeof arAccount.profileId !== 'string' || !arAccount.profileId.trim())) ||
+      (billingReference !== undefined && (!arAccount || typeof billingReference !== 'string' || !billingReference.trim() ||
+        billingReference.length > 4000 || [...billingReference].some((char) => char.charCodeAt(0) <= 31 || char.charCodeAt(0) === 127)))) {
     return { outcome: 'unverified', issue: 'PARTY_READBACK_INPUT_INVALID' };
   }
   try {
@@ -63,7 +70,7 @@ export async function readCreateParties({ confirmation, arrival, guestId, agency
       const frame = await (await frames.elementHandle())?.contentFrame();
       if (!frame || new URL(frame.url()).origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com') throw new Error('RECORD_FRAME_UNAVAILABLE');
       const snapshot = await frame.evaluate(extractCreatePartySnapshot);
-      return compareCreatePartyRecord(snapshot, { confirmation, guestId, agency, organization, arAccount });
+      return compareCreatePartyRecord(snapshot, { confirmation, guestId, agency, organization, arAccount, billingReference });
     }, { headless: true });
   } catch { return { outcome: 'unverified', issue: 'PARTY_READBACK_FAILED' }; }
 }
