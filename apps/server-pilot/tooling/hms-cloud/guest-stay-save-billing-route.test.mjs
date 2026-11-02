@@ -49,7 +49,7 @@ test('unarmed billing staging permits no POST; quarantine blocks delayed and exa
   }
 });
 
-test('after staging only one exact native-body save passes the retained fence', { timeout: 30000 }, async () => {
+test('only one exact approved native-body save passes the retained fence', { timeout: 30000 }, async () => {
   const received = [];
   const server = createServer((req, res) => { received.push({ method: req.method, url: req.url });
     res.writeHead(200, { 'content-type': 'text/html' }); res.end('<input name="billingreference">'); });
@@ -62,10 +62,16 @@ test('after staging only one exact native-body save passes the retained fence', 
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}/ready`);
     const fence = await installPageRequestFence(page, [path]), scope = fence.open();
-    let armed = false, dispatched = 0;
+    let armed = false, dispatched = 0, authorizations = 0, attempts = 0;
     const expected = { billingreference: ' PO 123 ', roomtype: 'STQN' };
     const chain = await installLabtestSaveRouteChain(page, { frame: page.mainFrame(), fence, scope,
       isArmed: () => armed, matches: (request) => matchesFullCreateBody(new URLSearchParams(request.postData()), expected),
+      authorizeCandidate: async () => {
+        authorizations += 1;
+        if (authorizations === 2) throw new Error('authorization unavailable');
+        return authorizations > 2;
+      },
+      onAuthorizationAttempt: () => { attempts += 1; },
       onDispatch: () => { dispatched += 1; armed = false; },
     });
     await page.locator('input[name="billingreference"]').fill(expected.billingreference);
@@ -76,10 +82,16 @@ test('after staging only one exact native-body save passes the retained fence', 
       try { return (await fetch(`${path}?pageaction=SAVE`, { method: 'POST', body })).status; } catch { return 'blocked'; }
     }, { path, reference });
     assert.equal(await send('PO 123'), 'blocked');
+    assert.equal(attempts, 0);
+    assert.equal(await send(expected.billingreference), 'blocked');
+    assert.equal(await send(expected.billingreference), 'blocked');
+    assert.equal(attempts, 2);
+    assert.equal(dispatched, 0);
     assert.equal(await send(expected.billingreference), 200);
     armed = true;
     assert.equal(await send(expected.billingreference), 'blocked');
     assert.equal(dispatched, 1);
+    assert.equal(attempts, 3);
     assert.equal(received.filter((item) => item.method === 'POST').length, 1);
     scope.close(); await chain.close(); await context.close();
   } finally {
