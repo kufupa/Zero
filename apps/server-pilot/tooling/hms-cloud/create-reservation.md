@@ -97,10 +97,11 @@ A fully staged unsaved draft returns `prepared` with `approvalReady: false`.
 When eligible, `requestBinding` contains a versioned canonical request and digest.
 The digest helper accepts either its raw input or returned canonical request; it
 is not authorization and does not prove equality to the native save body.
-This does not claim approval, a save, or persistence. NGI is staged only when
-an eligible verified Proof Labtest profile and valid 2027+ dates are present.
-Other drafts retain their staged fields but report `guaranteeType.staging` as
-missing. Non-NGI guarantees remain unsupported. Exact child ages are checked
+This does not claim approval, a save, or persistence. NGI and Guaranteed By
+Agent (`GTDAGT`) are staged only with an eligible verified Proof Labtest profile
+and valid 2027+ dates. Other drafts retain their staged fields but report
+`guaranteeType.staging` as missing. Other guarantees remain unsupported; an
+agent-guarantee save has not yet been proved in HMS. Exact child ages are checked
 at selection, but fresh saved-record readback exposes age bands rather than
 exact ages. Party IDs are checked at selection only on the unsaved draft. Selected party IDs require separate saved verification. Neither a
 visible label nor a selection proves persistence.

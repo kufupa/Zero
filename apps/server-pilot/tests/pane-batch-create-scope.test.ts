@@ -87,6 +87,20 @@ describe('batch create scope reconciliation', () => {
     f.manifest.rooms.pop();
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
   });
+  it('does not inherit a total of two after removing the other one-room source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.totalRooms = 2;
+    stay.rows[0]!.rooms = null as never;
+    stay.rows[1]!.rooms = 1;
+    f.state['stays[s1].rows[r2].removed'] = true;
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[0]!.identity })).toBe(false);
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
   it('retains total-room defaults for a genuinely sole source row', () => {
     const f = fixture(), stay = f.payload.stays[0]!;
     stay.rows = [{ ...stay.rows[0]!, rooms: null as never }];

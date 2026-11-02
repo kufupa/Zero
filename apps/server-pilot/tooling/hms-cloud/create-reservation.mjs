@@ -6,7 +6,7 @@ import { withBookingLookupSession } from './booking-lookup-session.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
-import { validCreateBillingReference } from './guest-stay-save.mjs';
+import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
 import { digestCloudCreateRequest } from './create-request-binding.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
@@ -35,12 +35,12 @@ function validate(input) {
   if (input.reasonForStay != null && !code(input.reasonForStay, 100)) fidelity.invalid.push('reasonForStay');
   if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
   if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
-  if (input.guaranteeType != null && input.guaranteeType !== 'NGI') {
+  if (input.guaranteeType != null && !isSupportedLabtestGuarantee(input.guaranteeType)) {
     fidelity.unsupported.push({ field: 'guaranteeType', issue: 'guarantee_not_supported_yet' });
   }
   if (fidelity.invalid.length) return { outcome: 'needs_input', issue: 'invalid_field_type', invalidFields: fidelity.invalid, unsupportedFields: fidelity.unsupported };
   const unsupportedIssue = !fidelity.unsupported.length ? null : input.cms?.send === true ? 'sending_not_supported' :
-    input.guaranteeType != null && input.guaranteeType !== 'NGI' ? 'guarantee_not_supported_yet' : 'requested_fields_not_supported';
+    input.guaranteeType != null && !isSupportedLabtestGuarantee(input.guaranteeType) ? 'guarantee_not_supported_yet' : 'requested_fields_not_supported';
   if (unsupportedIssue && input.mode === 'commit') {
     return { outcome: unsupportedIssue === 'guarantee_not_supported_yet' ? 'refused' : 'unsupported',
       issue: unsupportedIssue, unsupportedFields: fidelity.unsupported };
@@ -382,7 +382,7 @@ export async function createReservation(input, { withSession = withBookingLookup
       // a verified fake draft. Other prepares retain their useful staged fields.
       const labtestDraft = state.guest?.guest.firstName === 'Proof' && state.guest?.guest.lastName === 'Labtest' &&
         date(stay.arrival) && stay.arrival >= '2027-01-01' && date(stay.departure) && stay.arrival < stay.departure;
-      if (input.guaranteeType === 'NGI' && (commit || labtestDraft)) {
+      if (isSupportedLabtestGuarantee(input.guaranteeType) && (commit || labtestDraft)) {
         const result = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'guaranteeType', value: input.guaranteeType },
           ['updated_unsaved', 'unchanged_unsaved', 'selected_unsaved', 'ok', 'unsupported']);
         if (!commit && result.outcome === 'unsupported' && result.issue === 'GUARANTEE_DRAFT_UNSUPPORTED') {
@@ -391,10 +391,13 @@ export async function createReservation(input, { withSession = withBookingLookup
         } else {
           if (result.outcome === 'unsupported') stop('needs_input', result.issue || 'selectGuestStayDropdown_failed', { stage: 'selectGuestStayDropdown', detail: result });
           state.guarantee = result;
-          if (state.guarantee.actual?.value !== input.guaranteeType) stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
+          if (state.guarantee.actual?.value !== input.guaranteeType ||
+              (input.guaranteeType === 'GTDAGT' && (state.guarantee.actual?.submitted !== input.guaranteeType || !text(state.guarantee.actual?.display)))) {
+            stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
+          }
           output.applied.guaranteeType = state.guarantee.actual.display;
         }
-      } else if (!commit && input.guaranteeType === 'NGI') {
+      } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
         missing.push('guaranteeType.staging');
         output.warnings.push({ field: 'guaranteeType', issue: 'requires_verified_labtest_draft' });
       }
@@ -484,6 +487,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         state.save = await runTool({ tool: 'saveNewLabtestStay', preimageId: labtestPreimage.preimageId,
           arrival: stay.arrival, departure: stay.departure, guestId: state.guest.selected.nativeId,
           roomType: room.roomType, ratePlan: room.ratePlan, guaranteeType: input.guaranteeType, note,
+          ...(input.guaranteeType === 'GTDAGT' ? { guaranteeSelection: state.guarantee } : {}),
           createFieldProof: { adultSelection: state.adult, childAgeSelection: state.children,
             ...(state.source ? { sourceSelection: state.source } : {}),
             ...(state.cms ? { cmsMessageSelection: state.cms } : {}),
@@ -515,7 +519,8 @@ export async function createReservation(input, { withSession = withBookingLookup
   const expected = { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, children: stay.childAges.length,
     childBands: state.children.ageBandCounts, roomType: room.roomType, ratePlan: room.ratePlan, note: output.applied.note,
     guestId: state.guest.selected.nativeId, source: state.source?.candidate.description,
-    organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display };
+    organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display,
+    ...(input.guaranteeType === 'GTDAGT' ? { guaranteeCode: input.guaranteeType } : {}) };
   if (!output.confirmation) {
     const reconciliation = await reconcileLabtestCreate({ stay, expected }, { withSavedSession, ...(census ? { census } : {}) });
     if (input.billingReference != null) {

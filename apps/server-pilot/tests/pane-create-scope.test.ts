@@ -87,6 +87,23 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, payload: two, state: { 'stays[s1].rows[r1].count': null } })).toBe(false);
     expect(reconcilePaneCreateScope({ ...base, payload: { ...payload, stays: [{ ...extractedStay, totalRooms: null, rows: [{ ...row, rooms: null }] }] } })).toBe(false);
   });
+  it('does not apply a stay-wide total to an unknown row after a sibling is removed', () => {
+    const unknown = { ...row, rooms: null };
+    const multi = { ...payload, stays: [{ ...extractedStay, rows: [unknown, { ...row, id: 'r2' }] }] };
+    const removed = { 'stays[s1].rows[r2].removed': true };
+    expect(reconcilePaneCreateScope({ ...base, payload: multi, state: removed })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: multi,
+      state: { ...removed, 'stays[s1].rows[r1].count': 1 } })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, payload: multi,
+      state: { ...removed, 'stays[s1].rows[r1].count': null } })).toBe(false);
+    const known = { ...payload, stays: [{ ...extractedStay, rows: [row, { ...row, id: 'r2' }] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: known, state: removed })).toBe(true);
+    const single = { ...payload, stays: [{ ...extractedStay, rows: [unknown] }] };
+    expect(reconcilePaneCreateScope({ ...base, payload: single })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, payload: single, state: removed })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, payload: single,
+      state: { ...removed, 'stays[s1].rows[r1].count': 1 } })).toBe(true);
+  });
   it('requires saved rowless extraction provenance when a reread introduces another row', () => {
     const ownRow = 'stays[s1].rows[s1_row]';
     const state = { 'stays[s1].rows[r1].removed': true, [`${ownRow}.count`]: 1,

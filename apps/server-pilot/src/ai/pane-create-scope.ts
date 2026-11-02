@@ -127,6 +127,8 @@ export function reconcilePaneCreateScope(input: {
       matchRoomType(roomType, input.stay.propertyCode).code !== input.stay.roomType) return false;
   const hasStaffCount = Object.hasOwn(input.state, `${rowPath}.count`);
   const rawCount = value(`${rowPath}.count`, row.rooms);
+  // A stay-wide total cannot identify an unknown row after any sibling was removed.
+  if (rawCount === null && !hasStaffCount && (stay.rows.length !== 1 || removedRowStayIds.has(stay.id))) return false;
   const count = rawCount === null && !hasStaffCount ? stay.totalRooms : rawCount;
   // A persisted staff correction reconciles the extracted total, as in the pane projection.
   if (count !== 1 || (!hasStaffCount && stay.totalRooms !== null && stay.totalRooms !== 1)) return false;
