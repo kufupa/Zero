@@ -1,0 +1,261 @@
+{
+  "version": 1,
+  "source": "Local historical Centurion thread export, 2026-10-19; selected inbound and subsequent staff outbound per case.",
+  "limitations": [
+    "Historical source is not proof of current mailbox synchronization, current prices or availability, or HMS filing.",
+    "No expected native save or real email send is authorized by these cases.",
+    "Real guest create preflight must remain a refusal when Labtest-only guards apply."
+  ],
+  "cases": [
+    {
+      "id": "quote-single",
+      "workflow": "quote",
+      "threadId": "a933bab7-fe61-4806-b07b-7c350475ece3",
+      "messageId": "f0ad8779-2ea5-4093-872e-1045495045ef",
+      "staffReplyMessageId": "0782e5d3-85fb-4e6e-8999-a1430e71f415",
+      "expected": {
+        "readAs": "quote",
+        "staffEvidence": "Staff sent a quotation for one standard room.",
+        "coverage": "One stay and one room.",
+        "artifactPolicy": {
+          "quote_ready": {
+            "draft": true,
+            "attachment": true
+          },
+          "sold_out_decline": {
+            "draft": true,
+            "attachment": false
+          }
+        }
+      }
+    },
+    {
+      "id": "quote-shuttle",
+      "workflow": "quote",
+      "threadId": "29846e19-b485-48d6-bf85-aa7502a2800b",
+      "messageId": "e547b629-966b-4b6d-8da3-465495f5bba6",
+      "staffReplyMessageId": "3d4c193b-664e-4918-8e5c-7a087851070a",
+      "expected": {
+        "readAs": "quote",
+        "staffEvidence": "Staff sent a quotation.",
+        "coverage": "Four rooms; retain shuttle as a separate ask.",
+        "artifactPolicy": {
+          "quote_ready": {
+            "draft": true,
+            "attachment": true
+          },
+          "sold_out_decline": {
+            "draft": true,
+            "attachment": false
+          }
+        }
+      }
+    },
+    {
+      "id": "quote-dinner",
+      "workflow": "quote",
+      "threadId": "be77d6fc-494d-4e7d-a778-2d1bd69af71a",
+      "messageId": "b0b003f2-5980-4a0a-86a5-1483527a438f",
+      "staffReplyMessageId": "e8327dc4-9b3f-4e4e-8644-44e24b5f9b4b",
+      "expected": {
+        "readAs": "quote",
+        "staffEvidence": "Staff sent a quotation.",
+        "coverage": "One room with dinner and breakfast requested.",
+        "artifactPolicy": {
+          "quote_ready": {
+            "draft": true,
+            "attachment": true
+          },
+          "sold_out_decline": {
+            "draft": true,
+            "attachment": false
+          }
+        }
+      }
+    },
+    {
+      "id": "create-multiple-guests",
+      "workflow": "create",
+      "threadId": "119681c2-f435-4362-8ab3-c0c43db0252b",
+      "messageId": "05eb83eb-9464-462c-8a19-7ecaf54590ce",
+      "staffReplyMessageId": "46ccffc0-befe-4640-8880-fa5b39a2c4f8",
+      "expected": {
+        "readAs": "new_booking",
+        "staffEvidence": "Staff said bookings were done and requested a voucher.",
+        "coverage": "Keep multiple guest requests; no native save in replay.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "create-two-stays",
+      "workflow": "create",
+      "threadId": "2b5d4c99-bfbe-4c3f-aa31-3c388f257c64",
+      "messageId": "70c4531c-8327-46d2-8e12-109fb46010aa",
+      "staffReplyMessageId": "ba42c5d9-f2ad-4c4c-80b4-2036fb697a7d",
+      "expected": {
+        "readAs": "new_booking",
+        "staffEvidence": "Staff said booking was done and requested payment proof.",
+        "coverage": "Keep both stays and dinner request; no native save in replay.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "create-transfer",
+      "workflow": "create",
+      "threadId": "6a404136-e68e-4125-a1b2-19b0cbba138d",
+      "messageId": "11395b0a-ef1b-44cc-8752-360886bb3e4a",
+      "staffReplyMessageId": "e123200a-400f-4a32-8352-b0e4379bc2d9",
+      "expected": {
+        "readAs": "new_booking",
+        "staffEvidence": "Staff said booking was done but no airport transfer was booked.",
+        "coverage": "Keep transfer as a separate ask; do not claim it was booked.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "filing-voucher-a",
+      "workflow": "filing",
+      "threadId": "04669025-9d2f-4a32-ba51-a79e135d9af0",
+      "messageId": "36a7021d-dc35-4af1-8845-c19f6dc50298",
+      "staffReplyMessageId": "181e4596-3ccf-4084-83fd-3ea8903e4905",
+      "expected": {
+        "readAs": "payment",
+        "staffEvidence": "Staff acknowledged the travel voucher.",
+        "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
+        "artifactPolicy": {
+          "source_attachment_required": true,
+          "hms_filing_unproved": true
+        }
+      }
+    },
+    {
+      "id": "filing-voucher-b",
+      "workflow": "filing",
+      "threadId": "05578e5b-6b9b-4c7a-b3ff-cd7927b1645d",
+      "messageId": "a9e9a02b-9c1b-4cf0-81a8-0b5c1613af84",
+      "staffReplyMessageId": "41ea45dd-800a-4811-86fc-86b456befc44",
+      "expected": {
+        "readAs": "payment",
+        "staffEvidence": "Staff acknowledged the accommodation voucher.",
+        "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
+        "artifactPolicy": {
+          "source_attachment_required": true,
+          "hms_filing_unproved": true
+        }
+      }
+    },
+    {
+      "id": "filing-voucher-c",
+      "workflow": "filing",
+      "threadId": "064b0b57-23f1-486b-8859-6465574d8fff",
+      "messageId": "da9f5c60-1c6b-431b-8e64-d889f4382bee",
+      "staffReplyMessageId": "2df0d8d8-d927-4da6-8043-16fdea36ebe3",
+      "expected": {
+        "readAs": "payment",
+        "staffEvidence": "Staff acknowledged the voucher.",
+        "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
+        "artifactPolicy": {
+          "source_attachment_required": true,
+          "hms_filing_unproved": true
+        }
+      }
+    },
+    {
+      "id": "amend-dates",
+      "workflow": "amend",
+      "threadId": "ddd17120-c83a-4243-ae20-833b4237ac30",
+      "messageId": "4e7d8695-7de2-4db8-8c18-31ccd27e5011",
+      "staffReplyMessageId": "ae16bdb2-e02d-4719-813a-59d58b7fbb84",
+      "expected": {
+        "readAs": "amendment",
+        "staffEvidence": "Staff said the booking was amended.",
+        "coverage": "Date change; no native save in replay.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "amend-checkin",
+      "workflow": "amend",
+      "threadId": "e192295c-e528-4d2f-8ff8-d307791e89c6",
+      "messageId": "31389d3f-d696-4798-8aa8-0f715ba33fa4",
+      "staffReplyMessageId": "326905b3-19bd-4098-87a7-d139167768a2",
+      "expected": {
+        "readAs": "amendment",
+        "staffEvidence": "Staff sent a revised document and requested an updated voucher.",
+        "coverage": "Arrival change and voucher follow-up; no native save in replay.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "amend-approval",
+      "workflow": "amend",
+      "threadId": "6a404136-e68e-4125-a1b2-19b0cbba138d",
+      "messageId": "f2a24ae3-64ca-493d-8e2f-7ad5fb441653",
+      "staffReplyMessageId": "c2f7abce-5618-4ae8-88b1-feae9d1735ba",
+      "expected": {
+        "readAs": "amendment",
+        "staffEvidence": "Staff requested approval of charges before changing the booking.",
+        "coverage": "Do not infer an amendment was saved.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "triage-two-guests",
+      "workflow": "triage",
+      "threadId": "017dfadc-d8a3-42b8-9bcd-245248616fd2",
+      "messageId": "2d1302e2-ae00-4385-8e95-0f98b48071ad",
+      "staffReplyMessageId": "86e261aa-1c02-44f7-8b1d-5da0dce6ed3e",
+      "expected": {
+        "readAs": "new_booking",
+        "staffEvidence": "Staff said booking was done and invoice would follow.",
+        "coverage": "Keep two guests and invoice ask.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "triage-full",
+      "workflow": "triage",
+      "threadId": "06d82e13-4c12-4c10-a7af-e86bb46992c3",
+      "messageId": "7d394e1d-4869-4e0d-81ba-b1f9b4bae176",
+      "staffReplyMessageId": "5e743757-63ac-468a-8111-64c983461504",
+      "expected": {
+        "readAs": "quote",
+        "staffEvidence": "Staff declined the requested night and mentioned another date.",
+        "coverage": "Historical sold-out outcome is not current availability; alternative needs staff selection.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    },
+    {
+      "id": "triage-voucher",
+      "workflow": "triage",
+      "threadId": "01a377f6-0b95-43ab-b314-3719cae6c392",
+      "messageId": "0d8659fa-4319-41ca-8437-93b39bc037c2",
+      "staffReplyMessageId": "612235d0-6900-4229-89f0-c4025897f825",
+      "expected": {
+        "readAs": "payment",
+        "staffEvidence": "Staff acknowledged the accommodation voucher.",
+        "coverage": "One non-inline PDF in historical source; HMS filing unproved.",
+        "artifactPolicy": {
+          "requires_hms_write": false
+        }
+      }
+    }
+  ],
+  "sourceSha256": "2f20e2f1d03aefb0d5b2f8d4e7f88942e52e4b867b36f0a31f5208ea0f0b6980"
+}
