@@ -16,19 +16,24 @@ export async function installLabtestSaveRouteChain(page, {
   scope,
   isArmed,
   matches,
+  authorizeCandidate,
+  onAuthorizationAttempt,
   onCandidate,
   onDispatch,
   onBlocked,
 } = {}) {
   if (!page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
       typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
-      typeof isArmed !== 'function' || typeof matches !== 'function') {
+      typeof isArmed !== 'function' || typeof matches !== 'function' ||
+      (authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function')) {
     throw new Error('AMEND_ROUTE_CHAIN_INPUT_INVALID');
   }
 
   const context = page.context();
   let active = true;
   let candidateRequest = null;
+  let authorizing = false;
   let continuedRequest = null;
   const observeBlocked = (request) => {
     try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
@@ -93,10 +98,21 @@ export async function installLabtestSaveRouteChain(page, {
     if (safeRead) return route.fallback();
 
     if (url.pathname === SAVE_PATH) {
-      if (active && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) &&
+      if (active && !authorizing && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) &&
           matches(request, frame)) {
         let allowed = false;
-        try { allowed = scope.allow(request); } catch { /* The lifetime fence stays fail-closed. */ }
+        authorizing = true;
+        try {
+          if (authorizeCandidate) {
+            try { onAuthorizationAttempt?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
+            if (await authorizeCandidate(request) !== true || !active || !isArmed() || fence.isQuarantined()) {
+              observeBlocked(request);
+              return route.fallback();
+            }
+          }
+          allowed = scope.allow(request);
+        } catch { /* The lifetime fence stays fail-closed. */ }
+        finally { authorizing = false; }
         if (allowed) {
           candidateRequest = request;
           try { onCandidate?.(request); } catch { /* The authorized request is still fenced. */ }
