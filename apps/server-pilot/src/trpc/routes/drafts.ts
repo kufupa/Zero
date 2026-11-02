@@ -1238,7 +1238,7 @@ export async function enqueueHmsCandidateRefresh(input: {
  */
 const SAVED_REPLY_REVISION_PREFIX = 'saved-reply:';
 // Partial updates do not assert that omitted headers were intentionally cleared.
-const PARTIAL_HEADER_REVISION_PREFIX = 'partial-headers:';
+const PARTIAL_HEADER_REVISION_MARKER = ':partial-headers:';
 
 export const draftsRouter = tRouter({
   getArtifact: mailboxProcedure
@@ -1364,9 +1364,9 @@ export const draftsRouter = tRouter({
     }
     const { draft: r, editedRevisionIds } = rows[0]!;
     // Historical edited revisions have no per-field provenance; retain the prior full-snapshot interpretation.
-    const fullHeaders = r.origin === 'manual' || editedRevisionIds.some((id) => !id.startsWith(PARTIAL_HEADER_REVISION_PREFIX));
-    const partialFields = new Set(editedRevisionIds.filter((id) => id.startsWith(PARTIAL_HEADER_REVISION_PREFIX))
-      .flatMap((id) => (id.split(':')[1] ?? '').split(',')));
+    const fullHeaders = r.origin === 'manual' || editedRevisionIds.some((id) => !id.includes(PARTIAL_HEADER_REVISION_MARKER));
+    const partialFields = new Set(editedRevisionIds.filter((id) => id.includes(PARTIAL_HEADER_REVISION_MARKER))
+      .flatMap((id) => (id.split(PARTIAL_HEADER_REVISION_MARKER)[1] ?? '').split(',')));
     const savedHeaderFields = { to: fullHeaders || partialFields.has('to'), cc: fullHeaders || partialFields.has('cc'),
       bcc: fullHeaders || partialFields.has('bcc'), subject: fullHeaders || partialFields.has('subject') };
     return { ...toDraftWire(r, false, await loadDraftReviewSummary(db, r)),
@@ -2023,7 +2023,7 @@ export const draftsRouter = tRouter({
         const touchedHeaders = (['to', 'cc', 'bcc', 'subject'] as const).filter((field) => input[field] !== undefined);
         if (changed || touchedHeaders.length > 0) {
           await tx.insert(mailDraftRevision).values({
-            id: `${PARTIAL_HEADER_REVISION_PREFIX}${touchedHeaders.join(',')}:${randomUUID()}`,
+            id: `${randomUUID()}${PARTIAL_HEADER_REVISION_MARKER}${touchedHeaders.join(',')}`,
             draftId: input.id,
             generationId: merged.generationId,
             actorUserId: ctx.sessionUser.id,
