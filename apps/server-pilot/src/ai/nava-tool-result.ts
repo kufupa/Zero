@@ -17,7 +17,7 @@ export type NavaToolResult<T> = {
     requestDigest?: string;
     level?: 'readback_verified' | 'attributed_metadata' | 'none';
     /** Producer metadata is retained without claiming it is verified proof. */
-    legacy?: { runId?: string | null; screenshots?: string[]; shots?: { name: string; sha256: string; at?: string }[]; readback?: unknown; changedFieldsReadback?: unknown }[];
+    legacy?: Record<string, unknown>[];
   };
 };
 
@@ -85,14 +85,9 @@ function stableReason(value: string | undefined): string | undefined {
 }
 
 /** Preserve original observations; a filename or readback alone does not prove a write. */
-function normalizeExistingEvidence<T>(result: ExistingToolResult<T>): NavaToolResult<T>['evidence'] {
-  const legacy = {
-    ...(result.runId !== undefined ? { runId: result.runId } : {}),
-    ...(result.screenshots !== undefined ? { screenshots: result.screenshots } : {}),
-    ...(result.shots !== undefined ? { shots: result.shots } : {}),
-    ...(result.readback !== undefined ? { readback: result.readback } : {}),
-    ...(result.changedFieldsReadback !== undefined ? { changedFieldsReadback: result.changedFieldsReadback } : {}),
-  };
+function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, verified: boolean): NavaToolResult<T>['evidence'] {
+  const legacy = Object.fromEntries(Object.entries(result).filter(([key]) =>
+    existingControlFields.has(key as keyof ExistingToolResult<unknown>)));
   const hasLegacy = Object.keys(legacy).length > 0;
   if (!result.evidence && !hasLegacy) return undefined;
   const screenshots = result.runId && result.shots
@@ -102,13 +97,15 @@ function normalizeExistingEvidence<T>(result: ExistingToolResult<T>): NavaToolRe
   const existingShots = result.evidence?.screenshots ?? [];
   // Never attach an unverified producer observation to an unrelated verified level.
   const missingVerifiedReadback = result.evidence?.level === 'readback_verified' &&
-    result.evidence.readback === undefined;
+    result.evidence.readback == null;
+  const untrustedVerifiedLevel = result.evidence?.level === 'readback_verified' &&
+    (!verified || missingVerifiedReadback);
   const readback = result.evidence?.readback !== undefined ? result.evidence.readback
     : missingVerifiedReadback ? undefined
       : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
   return {
     ...result.evidence,
-    ...(missingVerifiedReadback ? { level: 'none' as const } : {}),
+    ...(untrustedVerifiedLevel ? { level: 'none' as const } : {}),
     ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
     ...(readback !== undefined ? { readback } : {}),
     ...(hasLegacy ? { legacy: [...(result.evidence?.legacy ?? []), legacy] } : {}),
@@ -137,14 +134,14 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.uploadSent === true || result.uploadSent === 'unknown' || result.clickedOk === true || result.clickedOk === 'unknown' ||
     result.saveDispatched === true || result.saveDispatched === 'unknown' || result.possiblyDispatched === true || result.dispatched === true;
   const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
-  let outcome: NavaToolResult<T>['outcome'];
+  let outcome: NavaToolResult<unknown>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!options.readbackVerified || !successful))) outcome = 'uncertain';
   else if (code === 'refused' || code === 'not_dispatched' || knownPreDispatchRefusal) outcome = 'refused';
   else if (code === 'needs_input' || code === 'input_gap') outcome = 'needs_input';
   else if (successful) {
     outcome = options.operation === 'write' && !options.readbackVerified ? 'uncertain' : 'ok';
   } else outcome = options.operation === 'write' ? 'uncertain' : 'refused';
-  const evidence = normalizeExistingEvidence(result);
+  const evidence = normalizeExistingEvidence(result, options.readbackVerified === true && outcome === 'ok');
   // Legacy tools put useful observations beside their outcome rather than in data.
   const legacyData = Object.fromEntries(Object.entries(result).filter(([key]) =>
     !existingControlFields.has(key as keyof ExistingToolResult<unknown>)));

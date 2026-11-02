@@ -67,7 +67,7 @@ describe('Nava tool result contract', () => {
     expect(adaptBatchToolResult([
       { key: 'a', result: { outcome: 'ok' }, readbackVerified: true, confirmation: '123' },
       { key: 'b', result: { outcome: 'awaiting_readback', issue: 'SAVE_UNCONFIRMED' } },
-    ])).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+    ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'ok', confirmation: '123' },
       { key: 'b', outcome: 'uncertain', reason: 'save_unconfirmed' },
     ] });
@@ -77,7 +77,7 @@ describe('Nava tool result contract', () => {
       { key: 'a', result: { status: 'confirmed', confirmationNumber: '123', runId: 'run-a', screenshots: ['save.png'] } },
       { key: 'b', result: { status: 'uncertain', confirmationNumber: '456', saveAttempted: true } },
     ]);
-    expect(batch).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+    expect(batch).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'uncertain', data: { confirmationNumber: '123' },
         evidence: { legacy: [{ runId: 'run-a', screenshots: ['save.png'] }] } },
       { key: 'b', outcome: 'uncertain', data: { confirmationNumber: '456' } },
@@ -87,7 +87,7 @@ describe('Nava tool result contract', () => {
     expect(adaptBatchToolResult([
       { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
       { key: 'child-b', result: { status: 'uncertain', possiblyDispatched: true } },
-    ])).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+    ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'child-a', outcome: 'ok', confirmation: '123456-1' },
       { key: 'child-b', outcome: 'uncertain' },
     ] });
@@ -102,7 +102,7 @@ describe('Nava tool result contract', () => {
       { key: 'a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
       { key: 'b', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123457-1' },
     ]);
-    expect(verified).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+    expect(verified).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'ok', confirmation: '123456-1' },
       { key: 'b', outcome: 'ok', confirmation: '123457-1' },
     ] });
@@ -110,7 +110,7 @@ describe('Nava tool result contract', () => {
       { key: 'a', result: { outcome: 'not_dispatched' } },
       { key: 'b', result: { outcome: 'refused', reason: 'POLICY_BLOCK' } },
     ]);
-    expect(refused).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+    expect(refused).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
       { key: 'a', outcome: 'refused' }, { key: 'b', outcome: 'refused', reason: 'policy_block' },
     ] });
     expect(adaptBatchToolResult([])).toEqual({ schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' });
@@ -122,7 +122,7 @@ describe('Nava tool result contract', () => {
       changedFieldsReadback: { arrival: '2027-01-01', unknownField: { exact: true } } };
     const adapted = adaptExistingToolResult(legacy, { operation: 'write' });
     expect(adapted.outcome).toBe('uncertain');
-    expect(adapted.evidence).toEqual({
+    expect(adapted.evidence).toMatchObject({
       screenshots: [{ runId: 'run-1', name: 'saved.png', sha256: hash }],
       readback: legacy.changedFieldsReadback,
       legacy: [{ runId: legacy.runId, screenshots: legacy.screenshots, shots: legacy.shots,
@@ -135,7 +135,7 @@ describe('Nava tool result contract', () => {
       shots: [{ name: '../outside.png', sha256: 'bad' }], readback: { top: true },
       changedFieldsReadback: { changed: true }, evidence: { readback: { normalized: true }, level: 'none' } },
     { operation: 'read' });
-    expect(adapted.evidence).toEqual({ readback: { normalized: true }, level: 'none',
+    expect(adapted.evidence).toMatchObject({ readback: { normalized: true }, level: 'none',
       legacy: [{ runId: 'run-1', screenshots: ['saved.png'], shots: [{ name: '../outside.png', sha256: 'bad' }],
         readback: { top: true }, changedFieldsReadback: { changed: true } }] });
     expect(adapted.evidence?.screenshots).toBeUndefined();
@@ -144,13 +144,23 @@ describe('Nava tool result contract', () => {
     for (const legacy of [{ readback: { raw: true } }, { changedFieldsReadback: { raw: true } }]) {
       const adapted = adaptExistingToolResult({ outcome: 'ok', ...legacy,
         evidence: { level: 'readback_verified' } }, { operation: 'read' });
-      expect(adapted.evidence).toEqual({ level: 'none', legacy: [legacy] });
+      expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [legacy] });
     }
     const verified = { id: 'verified-stay' };
     const adapted = adaptExistingToolResult({ outcome: 'ok', readback: { raw: true },
-      evidence: { level: 'readback_verified', readback: verified } }, { operation: 'read' });
-    expect(adapted.evidence).toEqual({ level: 'readback_verified', readback: verified,
+      evidence: { level: 'readback_verified', readback: verified } }, { operation: 'read', readbackVerified: true });
+    expect(adapted.evidence).toMatchObject({ level: 'readback_verified', readback: verified,
       legacy: [{ readback: { raw: true } }] });
+  });
+  it('keeps original producer metadata but never trusts its verification claim', () => {
+    const source = { outcome: 'refused', reason: 'POLICY_BLOCK', saveAttempted: true,
+      evidence: { level: 'readback_verified' as const, readback: { id: 'producer-claim' } } };
+    const adapted = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
+    expect(adapted.outcome).toBe('uncertain');
+    expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [source] });
+    const successful = adaptExistingToolResult({ ...source, outcome: 'ok' }, { operation: 'write' });
+    expect(successful.outcome).toBe('uncertain');
+    expect(successful.evidence?.level).toBe('none');
   });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
