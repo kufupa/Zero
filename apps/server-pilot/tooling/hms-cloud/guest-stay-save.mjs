@@ -750,6 +750,9 @@ export async function saveNewLabtestStay(page, {
     response = await bounded(pending);
     armed = false;
     if (response?.status() === 200 && !nativeDialog) {
+      // The native response can precede the server wrapper's commit. A late
+      // wrapper error is uncertain, not a successful Save.
+      if (!await bounded(routeChain.waitForDispatch())) throw new Error('SAVE_DISPATCH_UNCERTAIN');
       await bounded(page.waitForFunction(() => {
         const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
         const confirmations = [...document.querySelectorAll('input[name="confirmationnumber"]')].filter(visible);
