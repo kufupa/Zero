@@ -141,6 +141,38 @@ describe('latest inbound selection', () => {
   });
 });
 
+describe('exact source message selection', () => {
+  const messages = [
+    message({ id: 'source-a', threadId: 'thread-1', messageId: '<a@example.com>', receivedOn: '2026-10-08T09:00:00Z' }),
+    message({ id: 'source-b', threadId: 'thread-1', messageId: '<b@example.com>', receivedOn: '2026-10-08T10:00:00Z' }),
+  ];
+
+  it('selects A/B/A by stored message id instead of the newest message', () => {
+    for (const id of ['source-a', 'source-b', 'source-a']) {
+      expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT, 'thread-1', id))
+        .toMatchObject({ status: 'ready', email: { entryId: id } });
+    }
+  });
+
+  it('refuses missing, blank, wrong-thread, outbound, draft and duplicate source ids', () => {
+    for (const [rows, id] of [
+      [messages, 'absent'], [messages, ''],
+      [[message({ id: 'other', threadId: 'other-thread' })], 'other'],
+      [[staffReply({ id: 'outbound' })], 'outbound'],
+      [[message({ id: 'draft', isDraft: true })], 'draft'],
+      [[message({ id: 'duplicate' }), message({ id: 'duplicate' })], 'duplicate'],
+    ] as Array<[Message[], string]>) {
+      expect(selectPreviewMessage(rows, MAILBOX, TRANSPORT, 'thread-1', id))
+        .toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    }
+  });
+
+  it('refuses an exact source without an internet Message-ID', () => {
+    expect(selectPreviewMessage([message({ id: 'source-a', messageId: undefined })], MAILBOX, TRANSPORT, 'thread-1', 'source-a'))
+      .toEqual({ status: 'unsynced', reason: 'no_message_id' });
+  });
+});
+
 describe('mapping a stored message to the pane payload', () => {
   it('maps the DB message onto the pane payload and validates against the bridge schema', () => {
     const email = activeEmailFromMessage(

@@ -411,7 +411,7 @@ function MailLayoutContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
-  const [{ threadId }, setMailSelection] = useQueryStates({
+  const [{ threadId, sourceMessageId }, setMailSelection] = useQueryStates({
     threadId: parseAsString,
     sourceMessageId: parseAsString,
   });
@@ -754,9 +754,10 @@ function MailLayoutContent() {
                     }
                   >
                     <WebPanePanel
-                      key={threadId}
+                      key={JSON.stringify([threadId, sourceMessageId])}
                       threadId={threadId}
                       sourceThreadId={sourceThreadId}
+                      sourceMessageId={sourceMessageId ?? undefined}
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent

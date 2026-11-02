@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebPanePanel } from '../components/nava-pane/web-pane-panel';
 import NavaPreviewPage from '../app/(routes)/nava-preview/page';
@@ -14,6 +15,8 @@ import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
+  sourceMessageId: null as string | null,
+  navaMounts: 0,
   folder: 'inbox',
   searchListFolder: 'inbox',
   wide: true,
@@ -37,11 +40,14 @@ const readSource = (relativePath: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), relativePath), 'utf8');
 
 vi.mock('../lib/workstation/web-pane-bridge', () => ({
-  useWebPreview: (args: { threadId: string; sourceThreadId?: string }) => mocks.useWebPreview(args),
+  useWebPreview: (args: { threadId: string; sourceThreadId?: string; sourceMessageId?: string }) => mocks.useWebPreview(args),
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: () => <div data-testid="nava-pane" />,
+  NavaPane: () => {
+    const [mount] = useState(() => ++mocks.navaMounts);
+    return <div data-testid="nava-pane" data-mount={mount} />;
+  },
 }));
 
 vi.mock('../components/mail/thread-display', () => ({
@@ -114,7 +120,7 @@ vi.mock('nuqs', () => ({
   parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
   // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
-  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: mocks.sourceMessageId }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -174,6 +180,8 @@ const setNavaToggle = (open: boolean) => act(() => getDefaultStore().set(navaSid
 beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
+  mocks.sourceMessageId = null;
+  mocks.navaMounts = 0;
   mocks.folder = 'inbox';
   mocks.searchListFolder = 'inbox';
   mocks.wide = true;
@@ -197,6 +205,23 @@ describe('Nava pane beside the open thread', () => {
     expect(panelSize('mail-list-panel')).toBe('30.0');
     expect(panelSize('mail-thread-panel')).toBe('42.0');
     expect(panelSize('mail-nava-panel')).toBe('28.0');
+  });
+
+  it('remounts the pane on A/B/A source changes within one thread', async () => {
+    mocks.threadId = 'thread-42';
+    mocks.sourceMessageId = 'source-a';
+    const { rerender } = render(<MailLayout />);
+    const first = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-a' });
+    mocks.sourceMessageId = 'source-b';
+    rerender(<MailLayout />);
+    const second = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-b' });
+    mocks.sourceMessageId = 'source-a';
+    rerender(<MailLayout />);
+    const third = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-a' });
+    expect(new Set([first, second, third]).size).toBe(3);
   });
 
   it('is hidden when the toggle is off, and the two-pane layout is unchanged', () => {

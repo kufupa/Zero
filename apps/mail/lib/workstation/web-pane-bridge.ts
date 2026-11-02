@@ -29,7 +29,7 @@ type MailAddress = { name?: string; email: string };
 export type PreviewSelection =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' }
+  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' | 'source_message_unavailable' }
   | { status: 'ready'; email: WorkstationEmailPayload };
 
 function sameAddress(left: string, right: string): boolean {
@@ -99,17 +99,22 @@ export function activeEmailFromMessage(
   };
 }
 
-/** Selects the latest inbound message, optionally pinned to a workflow row's source thread. */
+/** Select the exact source when supplied; never replace a missing source with a newer message. */
 export function selectPreviewMessage(
   messages: readonly ThreadMessage[],
   mailboxEmail: string,
   transportId: string,
   sourceThreadId?: string,
+  sourceMessageId?: string,
 ): PreviewSelection {
   const sourceMessages = sourceThreadId
     ? messages.filter((message) => message.threadId === sourceThreadId)
     : messages;
-  const inbound = latestInboundMessage(sourceMessages, mailboxEmail);
+  const exactMatches = sourceMessageId !== undefined
+    ? sourceMessages.filter((message) => message.id === sourceMessageId && !message.isDraft && isInboundMessage(message, mailboxEmail))
+    : undefined;
+  if (exactMatches && exactMatches.length !== 1) return { status: 'unsynced', reason: 'source_message_unavailable' };
+  const inbound = exactMatches ? exactMatches[0] : latestInboundMessage(sourceMessages, mailboxEmail);
   if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
   const email = activeEmailFromMessage(inbound, transportId);
   if (!email) return { status: 'unsynced', reason: 'no_message_id' };
@@ -163,9 +168,11 @@ export function buildPreviewBridge(activeEmail: WorkstationEmailPayload | null):
 export function useWebPreview({
   threadId,
   sourceThreadId,
+  sourceMessageId,
 }: {
   threadId: string;
   sourceThreadId?: string;
+  sourceMessageId?: string;
 }): {
   selection: PreviewSelection;
   bridge: PaneBridge;
@@ -179,8 +186,8 @@ export function useWebPreview({
   const selection = useMemo<PreviewSelection>(() => {
     if (thread.isError) return { status: 'error' };
     if (!connection || !threadMessages) return { status: 'loading' };
-    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId);
-  }, [connection, mailboxEmail, sourceThreadId, thread.isError, threadMessages, transportId]);
+    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId, sourceMessageId);
+  }, [connection, mailboxEmail, sourceThreadId, sourceMessageId, thread.isError, threadMessages, transportId]);
 
   const stableKey = selection.status === 'ready' ? JSON.stringify(selection.email) : '';
   const activeEmail = useMemo(
