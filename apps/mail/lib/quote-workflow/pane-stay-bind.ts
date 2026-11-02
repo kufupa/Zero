@@ -44,6 +44,8 @@ const REFUSAL_COPY: Record<string, string> = {
   cloud_create_party_mismatch: 'The agency or company in HMS does not match this request. Check the details and preview again.',
   cloud_create_proof_invalid: 'Nava could not verify the HMS preview. Check the details and preview again.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
+  pane_create_dispatch_unavailable:
+    'Nava did not save this booking on this attempt. Check HMS before booking by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
   trusted_staff_create_authorization_unavailable:

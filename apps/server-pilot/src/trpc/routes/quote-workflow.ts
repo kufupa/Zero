@@ -39,13 +39,7 @@ import {
 import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
-import {
-  loadStayCommit,
-  recordStayCommit,
-  stayCommitFromPaneResult,
-  stayCommitGuard,
-  workItemIdForMail,
-} from '../../ai/work-items.js';
+import { workItemIdForMail } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
@@ -331,60 +325,7 @@ export const quoteWorkflowRouter = router({
         next,
       ),
     )
-    .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
-      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      const previewPersist =
-        workItemId && stayId
-          ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
-          : undefined;
-      let parentConfirmation: string | undefined;
-      if (parentStayId) {
-        const parent =
-          workItemId && stayId && parentStayId !== stayId
-            ? await loadStayCommit(getDb(), { transportId: ctx.activeTransportId, workItemId, stayId: parentStayId })
-            : undefined;
-        if (!parent?.confirmationNumber || parent.status !== 'booked') {
-          return { status: 'refused' as const, reason: 'pane_save_parent_not_booked' };
-        }
-        parentConfirmation = parent.confirmationNumber;
-      }
-      if (workItemId && stayId) {
-        const existing = await loadStayCommit(getDb(), {
-          transportId: ctx.activeTransportId,
-          workItemId,
-          stayId,
-        });
-        const guard = stayCommitGuard(existing);
-        if (guard.action === 'refuse') {
-          return { status: 'refused' as const, reason: guard.reason };
-        }
-      }
-      const result = await runPaneStay({
-        mode: 'commit',
-        stay,
-        previewDigest,
-        owner,
-        workItemId,
-        stayId,
-        previewPersist,
-        ...(parentConfirmation ? { parentConfirmation } : {}),
-      });
-      if (workItemId && stayId) {
-        const record = stayCommitFromPaneResult(result);
-        if (record) {
-          try {
-            await recordStayCommit(getDb(), {
-              transportId: ctx.activeTransportId,
-              workItemId,
-              stayId,
-              record,
-            });
-          } catch (error) {
-            console.warn('stay_commit_persist_failed', { stayId, workItemId, error });
-          }
-        }
-      }
-      return result;
-    }),
+    // Legacy preview grants do not prove a source-bound, fenced native dispatch.
+    // Keep pane creates closed until the server-owned grant bridge is wired.
+    .mutation(async () => ({ status: 'refused' as const, reason: 'pane_create_dispatch_unavailable' })),
 });

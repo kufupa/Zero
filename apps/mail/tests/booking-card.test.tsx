@@ -2423,6 +2423,7 @@ describe('pane save helpers', () => {
       'cloud_create_party_mismatch',
       'cloud_create_proof_invalid',
       'pane_save_flag_off',
+      'pane_create_dispatch_unavailable',
       'pane_save_labtest_required',
       'pane_save_arrival_2027_required',
       'trusted_staff_create_authorization_unavailable',
