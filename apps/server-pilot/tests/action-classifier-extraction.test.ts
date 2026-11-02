@@ -357,6 +357,16 @@ describe('extraction persist of MAIL_ACTIONS', () => {
     expect(result.payload.secondaryAsks).toEqual(['Could you arrange a transfer?']);
   });
 
+  it('retains every distinct source-grounded separate request', async () => {
+    const asks = Array.from({ length: 12 }, (_, index) => `Please arrange item ${index + 1}.`);
+    const model = fakeModel(() => ({ ...ACTION_OUTPUT, secondaryAsks: [...asks, asks[0]!, 'Not in the email.'] }));
+    const selection = selectionFor(`Please quote. ${asks.join(' ')}`);
+    const result = await extractInboundMail({ adapter: model.adapter, selection, messageId: 'many-asks' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.secondaryAsks).toEqual(asks);
+  });
+
   it('fails closed when needsAction mismatches no_action', async () => {
     const adapter: ModelAdapter = {
       invoke: async () => ({

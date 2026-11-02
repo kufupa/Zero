@@ -436,7 +436,7 @@ export function sanitizeExtraction(
   const secondarySource = normalize(input.secondarySourceText ?? input.sourceText);
   const secondaryAsks = [...new Set((output.secondaryAsks ?? [])
     .map((ask) => cleanText(ask))
-    .filter((ask): ask is string => Boolean(ask) && secondarySource.includes(normalize(ask!))))].slice(0, 8);
+    .filter((ask): ask is string => Boolean(ask) && secondarySource.includes(normalize(ask!))))];
   return {
     kind: output.kind,
     needsAction: output.needsAction,
