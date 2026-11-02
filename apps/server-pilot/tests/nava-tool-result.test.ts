@@ -84,6 +84,15 @@ describe('Nava tool result contract', () => {
       { key: 'b', outcome: 'uncertain', data: { confirmationNumber: '456' } },
     ] });
   });
+  it('uses each child trusted readback rather than its producer evidence', () => {
+    const claimed = { confirmation: '123', version: 'producer' };
+    const fresh = { confirmation: '123', version: 'fresh' };
+    const batch = adaptBatchToolResult([{ key: 'a', result: { status: 'confirmed',
+      evidence: { level: 'readback_verified' as const, readback: claimed } }, readbackVerified: true,
+      verifiedReadback: { readback: fresh } }]);
+    expect(batch.children?.[0]).toMatchObject({ outcome: 'ok', evidence: { level: 'readback_verified', readback: fresh,
+      legacy: [{ claimedLevel: 'readback_verified', claimedReadback: claimed }] } });
+  });
   it('preserves producer-style confirmed and uncertain batch children', () => {
     expect(adaptBatchToolResult([
       { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
@@ -149,7 +158,8 @@ describe('Nava tool result contract', () => {
     }
     const verified = { id: 'verified-stay' };
     const adapted = adaptExistingToolResult({ outcome: 'ok', readback: { raw: true },
-      evidence: { level: 'readback_verified', readback: verified } }, { operation: 'read', readbackVerified: true });
+      evidence: { level: 'readback_verified', readback: verified } },
+    { operation: 'read', readbackVerified: true, verifiedReadback: { readback: verified } });
     expect(adapted.evidence).toMatchObject({ level: 'readback_verified', readback: verified,
       legacy: [{ readback: { raw: true } }] });
   });
@@ -162,6 +172,24 @@ describe('Nava tool result contract', () => {
     const successful = adaptExistingToolResult({ ...source, outcome: 'ok' }, { operation: 'write' });
     expect(successful.outcome).toBe('uncertain');
     expect(successful.evidence?.level).toBe('none');
+  });
+  it('binds verified evidence to the exact trusted fresh read, not a producer claim', () => {
+    const claimed = { confirmation: '123', note: 'producer' };
+    const fresh = { confirmation: '123', note: 'fresh' };
+    const source = { outcome: 'committed', clickedSave: true,
+      evidence: { level: 'readback_verified' as const, readback: claimed } };
+    const withoutEvidence = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
+    expect(withoutEvidence.outcome).toBe('ok');
+    expect(withoutEvidence.evidence).toMatchObject({ level: 'none', readback: claimed,
+      legacy: [{ claimedLevel: 'readback_verified' }] });
+    const verified = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: fresh } });
+    expect(verified.evidence).toMatchObject({ level: 'readback_verified', readback: fresh,
+      legacy: [{ claimedLevel: 'readback_verified', claimedReadback: claimed }] });
+    const uncertain = adaptExistingToolResult({ ...source, outcome: 'uncertain' }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: fresh } });
+    expect(uncertain.outcome).toBe('uncertain');
+    expect(uncertain.evidence).toMatchObject({ level: 'none', readback: claimed });
   });
   it('does not expose raw error text or duplicate data through legacy evidence', () => {
     const adapted = adaptExistingToolResult({ outcome: 'refused', reason: 'sensitive failure details',

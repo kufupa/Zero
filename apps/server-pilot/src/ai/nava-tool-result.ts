@@ -87,19 +87,19 @@ function stableReason(value: string | undefined): string | undefined {
 }
 
 /** Preserve original observations; a filename or readback alone does not prove a write. */
-function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, verified: boolean): NavaToolResult<T>['evidence'] {
+function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, trustedReadback?: { readback: unknown }): NavaToolResult<T>['evidence'] {
   // Keep dispatch indicators and observations, but never echo raw errors or duplicate data.
   const legacyFields = new Set(['runId', 'screenshots', 'shots', 'readback', 'changedFieldsReadback',
-    'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched', 'possiblyDispatched', 'dispatched', 'claimedLevel']);
+    'clickedSave', 'saveAttempted', 'uploadSent', 'clickedOk', 'saveDispatched', 'possiblyDispatched', 'dispatched', 'claimedLevel', 'claimedReadback']);
   const keepEvidence = (source: Record<string, unknown>) => Object.fromEntries(
     Object.entries(source).filter(([key]) => legacyFields.has(key)),
   );
   const legacy = keepEvidence(result as Record<string, unknown>);
-  if (result.evidence?.level === 'readback_verified' && (!verified || result.evidence.readback == null))
-    legacy.claimedLevel = 'readback_verified';
+  if (result.evidence?.level === 'readback_verified') legacy.claimedLevel = 'readback_verified';
+  if (trustedReadback && result.evidence?.readback !== undefined) legacy.claimedReadback = result.evidence.readback;
   const hasLegacy = Object.keys(legacy).length > 0;
   const previousLegacy = (result.evidence?.legacy ?? []).map(keepEvidence).filter((item) => Object.keys(item).length > 0);
-  if (!result.evidence && !hasLegacy) return undefined;
+  if (!result.evidence && !hasLegacy && !trustedReadback) return undefined;
   const screenshots = result.runId && result.shots
     ? result.shots.filter((shot) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(shot.name) && /^[a-f0-9]{64}$/i.test(shot.sha256))
       .map((shot) => ({ runId: result.runId!, name: shot.name, sha256: shot.sha256 }))
@@ -108,14 +108,14 @@ function normalizeExistingEvidence<T>(result: ExistingToolResult<T>, verified: b
   // Never attach an unverified producer observation to an unrelated verified level.
   const missingVerifiedReadback = result.evidence?.level === 'readback_verified' &&
     result.evidence.readback == null;
-  const untrustedVerifiedLevel = result.evidence?.level === 'readback_verified' &&
-    (!verified || missingVerifiedReadback);
-  const readback = result.evidence?.readback !== undefined ? result.evidence.readback
-    : missingVerifiedReadback ? undefined
-      : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
+  const readback = trustedReadback ? trustedReadback.readback
+    : result.evidence?.readback !== undefined ? result.evidence.readback
+      : missingVerifiedReadback ? undefined
+        : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
   return {
     ...(result.evidence?.requestDigest !== undefined ? { requestDigest: result.evidence.requestDigest } : {}),
-    ...(result.evidence?.level !== undefined ? { level: untrustedVerifiedLevel ? 'none' as const : result.evidence.level } : {}),
+    ...(trustedReadback ? { level: 'readback_verified' as const }
+      : result.evidence?.level !== undefined ? { level: result.evidence.level === 'readback_verified' ? 'none' as const : result.evidence.level } : {}),
     ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
     ...(readback !== undefined ? { readback } : {}),
     ...(hasLegacy || previousLegacy.length ? { legacy: [...previousLegacy, ...(hasLegacy ? [legacy] : [])] } : {}),
@@ -129,9 +129,9 @@ const existingControlFields = new Set<keyof ExistingToolResult<unknown>>([
 type LegacyPayload<R> = Omit<R, keyof ExistingToolResult<unknown>>;
 type AdaptedData<R> = (R extends { data?: infer T } ? T : never) | LegacyPayload<R>;
 
-/** `readbackVerified` must be established by the trusted caller from a fresh, matching read. */
+/** The trusted caller must verify a fresh matching read; producer evidence is never that proof. */
 export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(result: R, options: {
-  operation: 'read' | 'write'; readbackVerified?: boolean;
+  operation: 'read' | 'write'; readbackVerified?: boolean; verifiedReadback?: { readback: unknown };
 }): NavaToolResult<AdaptedData<R>> {
   const code = result.outcome ?? result.status ?? '';
   // These amendment outcomes are produced before a runner can start. Unknown codes stay uncertain.
@@ -152,7 +152,9 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
   else if (successful) {
     outcome = options.operation === 'write' && !options.readbackVerified ? 'uncertain' : 'ok';
   } else outcome = options.operation === 'write' ? 'uncertain' : 'refused';
-  const evidence = normalizeExistingEvidence(result, options.readbackVerified === true && outcome === 'ok');
+  const trustedReadback = options.readbackVerified === true && outcome === 'ok' && options.verifiedReadback?.readback != null
+    ? options.verifiedReadback : undefined;
+  const evidence = normalizeExistingEvidence(result, trustedReadback);
   // Legacy tools put useful observations beside their outcome rather than in data.
   const legacyData = Object.fromEntries(Object.entries(result).filter(([key]) =>
     !existingControlFields.has(key as keyof ExistingToolResult<unknown>)));
@@ -170,13 +172,13 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
 
 /** Batch stays partial even when individual children have uncertain outcomes. Use this adapter, not the single-result adapter, for batches. */
 export function adaptBatchToolResult<R extends ExistingToolResult<unknown>>(children: Array<{
-  key: string; result: R; readbackVerified?: boolean; confirmation?: string;
+  key: string; result: R; readbackVerified?: boolean; verifiedReadback?: { readback: unknown }; confirmation?: string;
 }>): NavaToolResult<never> {
   if (children.length === 0) return { schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' };
   return {
     schema: 'nava.tool/v1', outcome: 'partial',
-    children: children.map(({ key, result, readbackVerified, confirmation }) => {
-      const adapted = adaptExistingToolResult(result, { operation: 'write', readbackVerified });
+    children: children.map(({ key, result, readbackVerified, verifiedReadback, confirmation }) => {
+      const adapted = adaptExistingToolResult(result, { operation: 'write', readbackVerified, verifiedReadback });
       return { key, outcome: adapted.outcome, ...(adapted.reason ? { reason: adapted.reason } : {}),
         ...(confirmation ? { confirmation } : {}), ...(adapted.data !== undefined ? { data: adapted.data } : {}),
         ...(adapted.legacyData !== undefined ? { legacyData: adapted.legacyData } : {}),
