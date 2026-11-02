@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reconcilePaneBatchCreateScope } from '../src/ai/pane-batch-create-scope.js';
+import { isActivePaneBatchChild, reconcilePaneBatchCreateScope } from '../src/ai/pane-batch-create-scope.js';
 import type { BatchManifest } from '../src/ai/hms-batch-manifest.js';
 
 function fixture() {
@@ -25,6 +25,19 @@ const ready = { status: 'ready' };
 const held = (reason: string) => ({ status: 'held', reason });
 
 describe('batch create scope reconciliation', () => {
+  it('proves each active child identity and count from the locked source projection', () => {
+    const f = fixture();
+    const check = (identity: unknown) => isActivePaneBatchChild({ payload: f.payload, state: f.state, identity });
+    expect(check(f.manifest.rooms[0]!.identity)).toBe(true);
+    expect(check({ ...f.manifest.rooms[0]!.identity, roomIndex: 2 })).toBe(false);
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(check({ ...f.manifest.rooms[0]!.identity, roomIndex: 2 })).toBe(true);
+    expect(check({ ...f.manifest.rooms[0]!.identity, rowId: 'other' })).toBe(false);
+    expect(check({ ...f.manifest.rooms[0]!.identity, roomIndex: 0 })).toBe(false);
+    f.state['stays[s1].rows[r1].removed'] = true;
+    expect(check(f.manifest.rooms[0]!.identity)).toBe(false);
+    expect(check(f.manifest.rooms[1]!.identity)).toBe(true);
+  });
   it('accepts distinct requested rows in their approved order and when reordered', () => {
     const f = fixture();
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
@@ -78,8 +91,10 @@ describe('batch create scope reconciliation', () => {
     f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 's1_row', roomIndex: 2 };
     f.manifest.rooms[1]!.roomType = 'STQN';
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_unverified'));
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(false);
     const historicalOwnRows = [{ eventId: '11111111-1111-4111-8111-111111111111',
       extractionId: '22222222-2222-4222-8222-222222222222', fieldPath: field, value: 2, extraction: historicalExtraction }];
+    expect(isActivePaneBatchChild({ ...f, historicalOwnRows, identity: f.manifest.rooms[1]!.identity })).toBe(true);
     expect(reconcilePaneBatchCreateScope({ ...f, historicalOwnRows })).toEqual(ready);
   });
   it('rejects duplicate identities, multiple arrivals, and unsupported party context', () => {

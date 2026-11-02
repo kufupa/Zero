@@ -1,11 +1,40 @@
 import { batchManifestSchema } from './hms-batch-manifest.js';
-import { paneCreatePartySchema, projectPaneCreateScope, type PaneCreateParty } from './pane-create-scope.js';
+import { paneCreateIdentitySchema, paneCreatePartySchema, projectPaneCreateScope,
+  type PaneCreateIdentity, type PaneCreateParty } from './pane-create-scope.js';
 import type { HistoricalOwnRow } from './pane-create-scope-origin.js';
 import { matchRoomType } from './room-types.js';
 import type { WorkState } from './work-items.js';
 
 export type BatchScopeResult = { status: 'ready' } | { status: 'held'; reason:
   'invalid_manifest' | 'party_unverified' | 'source_unverified' | 'source_room_changed' | 'occupancy_unverified' };
+
+type Projection = NonNullable<ReturnType<typeof projectPaneCreateScope>>;
+
+function activeRow(projection: Projection, state: WorkState, identity: PaneCreateIdentity) {
+  const stay = projection.stays.get(identity.stayId);
+  if (!stay || state[`stays[${identity.stayId}].removed`] === true) return null;
+  const rows = stay.rows.filter((row) => state[`stays[${stay.id}].rows[${row.id}].removed`] !== true);
+  const row = rows.find((item) => item.id === identity.rowId);
+  if (!row) return null;
+  const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+  const rawCount = Object.hasOwn(state, countPath) ? state[countPath] : row.rooms;
+  const count = rawCount === null && rows.length === 1 && !Object.hasOwn(state, countPath) ? stay.totalRooms : rawCount;
+  return Number.isInteger(count) && (count as number) >= 1 && identity.roomIndex <= (count as number) ? { stay, row } : null;
+}
+
+/**
+ * Check a selected child against a server-loaded extraction and locked item state.
+ * Historical rows must come from the durable same-message origin loader. This is
+ * not authentication, source-digest validation, a choice, approval or dispatch authority.
+ */
+export function isActivePaneBatchChild(input: {
+  payload: unknown; state: WorkState; identity: unknown; historicalOwnRows?: ReadonlyArray<HistoricalOwnRow>;
+}): boolean {
+  const identity = paneCreateIdentitySchema.safeParse(input.identity);
+  if (!identity.success) return false;
+  const projection = projectPaneCreateScope(input);
+  return projection !== null && activeRow(projection, input.state, identity.data) !== null;
+}
 
 /**
  * Reconcile every selected, ordered child against the same server-owned source projection.
@@ -27,20 +56,10 @@ export function reconcilePaneBatchCreateScope(input: {
   const value = (path: string, fallback: unknown): unknown => Object.hasOwn(input.state, path) ? input.state[path] : fallback;
   const touched = new Set<string>();
   for (const room of manifest.data.rooms) {
-    const stay = projection.stays.get(room.identity.stayId);
-    if (!stay || input.state[`stays[${room.identity.stayId}].removed`] === true) {
-      return { status: 'held', reason: 'source_room_changed' };
-    }
-    const rows = stay.rows.filter((item) => input.state[`stays[${stay.id}].rows[${item.id}].removed`] !== true);
-    const row = rows.find((item) => item.id === room.identity.rowId);
-    if (!row) return { status: 'held', reason: 'source_room_changed' };
+    const active = activeRow(projection, input.state, room.identity);
+    if (!active) return { status: 'held', reason: 'source_room_changed' };
+    const { stay, row } = active;
     const stayPath = `stays[${stay.id}]`, rowPath = `${stayPath}.rows[${row.id}]`;
-    const countPath = `${rowPath}.count`;
-    const rawCount = value(countPath, row.rooms);
-    const count = rawCount === null && rows.length === 1 && !Object.hasOwn(input.state, countPath) ? stay.totalRooms : rawCount;
-    if (!Number.isInteger(count) || (count as number) < 1 || room.identity.roomIndex > (count as number)) {
-      return { status: 'held', reason: 'source_room_changed' };
-    }
     const roomType = value(`${rowPath}.roomType`, row.roomType);
     if (typeof roomType !== 'string' || !roomType.trim() ||
         matchRoomType(roomType, manifest.data.propertyCode).code !== room.roomType) {
