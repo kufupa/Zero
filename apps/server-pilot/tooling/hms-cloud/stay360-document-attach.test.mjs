@@ -17,7 +17,7 @@ const token = new URLSearchParams({ requestToken: 'session-token', browserTabID:
 
 function multipart(values = payload, data = file.bytes, name = file.name, contentType = file.mimeType) {
   const boundary = 'test-boundary';
-  const parts = fields.map((key) => `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${values.get(key)}\r\n`);
+  const parts = fields.map((key) => `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${Buffer.from(values.get(key), 'utf8').toString('latin1')}\r\n`);
   parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="filename"; filename="${name}"\r\nContent-Type: ${contentType}\r\n\r\n${data.toString('latin1')}\r\n`);
   return { body: Buffer.from(parts.join('') + `--${boundary}--\r\n`, 'latin1'),
     contentType: `multipart/form-data; boundary=${boundary}` };
@@ -68,6 +68,17 @@ test('multipart and query bind the current frame, target, token, name and exact 
     upload({ query: (q) => q.set('unreviewed', 'true') }),
     upload({ contentType: 'multipart/form-data' }),
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);
+});
+
+test('multipart compares UTF-8 field bytes without accepting a changed description', () => {
+  const description = 'Café booking';
+  const values = new Map(payload); values.set('description', description);
+  const unicodeFile = { ...file, description };
+  const request = upload({ values, query: (q) => q.set('description', description) });
+  assert.equal(matchesDocumentUpload(request, frame, values, unicodeFile, token), true);
+  const tampered = new Map(values); tampered.set('description', 'Cafe booking');
+  assert.equal(matchesDocumentUpload(upload({ values: tampered, query: (q) => q.set('description', description) }),
+    frame, values, unicodeFile, token), false);
 });
 
 test('multipart fields cannot diverge from the validated form or repeat a field', () => {

@@ -72,7 +72,8 @@ export function matchesDocumentMultipart(request, expected, file) {
             lines.filter((line) => /^content-type:/i.test(line)).length !== 1 ||
             lines.find((line) => /^content-type:/i.test(line)).slice(13).trim().toLowerCase() !== file.mimeType.toLowerCase()) return false;
       } else {
-        if (!FIELD_NAMES.includes(name) || values.has(name) || payload !== expected.get(name)) return false;
+        if (!FIELD_NAMES.includes(name) || values.has(name) ||
+            !Buffer.from(payload, 'latin1').equals(Buffer.from(expected.get(name), 'utf8'))) return false;
         values.set(name, payload);
       }
     }
