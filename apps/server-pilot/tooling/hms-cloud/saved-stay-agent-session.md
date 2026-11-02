@@ -1,7 +1,9 @@
 # Saved-stay agent session
 
-`saved-stay-agent-session.mjs` owns one headless HRCEN page with the shared
-read-only guard. It serializes calls, including concurrent programmatic calls.
+`saved-stay-agent-session.mjs` owns a headless HRCEN saved-stay page with the
+shared read-only guard. Availability tools lazily open a second authenticated,
+guarded page. Service workers are blocked in both contexts. The session
+serializes calls, including concurrent programmatic calls.
 Start the JSONL runner with `node saved-stay-agent-session.mjs --jsonl`; it
 emits `ready`, one result per input line, and closes on `quit` or EOF. Each
 result echoes the optional `id` and `tool`. Set a restrictive shell umask and
@@ -13,6 +15,10 @@ contain guest data.
 | `read` | `confirmation`; optional `guestName`, `arrivalDate` (`YYYY-MM-DD`) and `view` (`record`, the default, or `shallow`) |
 | `prepareCancellation` | Optional `requestedScope` (`whole_stay`, `specific_room`, or `unspecified`); uses the current full read |
 | `prepareFinance` | Uses the current full read; returns only Record View and Folio-card balance/deposit displays, with ledger and payment clearance left unknown |
+| `readAmendmentAvailability` | `mode: "generic"` with `input` and `options`, or `mode: "labtest"` with `expected` and `options`; see below |
+| `searchHotelAvailabilityParty` | `kind` (`group`, `organization`, `bookingAgency`), `propertyCode`, `query`; optional `options.timeoutMs` |
+| `selectHotelAvailabilityParty` | Current `kind`, `searchId`, and explicitly chosen `nativeId` |
+| `cancelHotelAvailabilityParty` | Close the current availability party picker, not the stay |
 | `amendNote` | `expected` with `confirmation`, `guestId`, `arrival`, `departure`, `roomType`, `ratePlan`, `note` and `newNote` |
 | `amendContact` | The same saved `expected` record without `newNote`, plus either legacy `field` (`bookerName` or `bookerContact`) and synthetic `value`, or synthetic `bookerName` and/or `bookerContact` (one exact Save for the supplied fields) |
 | `openCancel` | The same `expected` record fields, without `newNote` |
@@ -27,7 +33,37 @@ possible; after opening Record View, start a new session to read another stay.
 A retry after an unverified single-candidate hint worked on one page. Retry
 after a multi-candidate ambiguity has not been verified; start a fresh session.
 A native dialog interrupts an in-progress read, seals the session, and is left
-untouched; reopen in a fresh session.
+untouched; reopen in a fresh session. If an availability read is interrupted,
+its underlying read can still write the caller-requested private snapshot after
+the interruption or session closure. Do not treat that file as a completed read;
+inspect the private path before retrying and use a new path for the fresh read.
+
+Availability tools retain the same separate page for the whole session. Search
+returns a current `searchId` and candidates; explicitly select a native ID from
+that search before reading with a nonblank party. A new search invalidates the
+previous token. An uncertain selection seals the session, so use a fresh session.
+
+For `readAmendmentAvailability`, the generic `input` contains `existing`
+(`propertyCode`, `arrival`, `departure`, `roomType`, `ratePlan`), `change`
+(one or more proposed fields), `occupancy` (`adults`, `childAges`),
+`partyContext` (`group`, `organization`, `bookingAgency`), and `roomQuantity`.
+Generic `options` contains `snapshotPath`. It can read without an open saved
+record; the existing values are caller-supplied and unverified. Each null party
+means an independently verified blank, not an unknown. The Labtest mode requires
+the matching current Reserved record, `expected` (`confirmation`, `guestId`,
+`arrival`, `departure`, `roomType`, `ratePlan`, `note`), and `options` with
+`change`, `occupancy`, `partyContext`, `roomQuantity`, and `snapshotPath`.
+The underlying reader checks the saved fake form before and after the read.
+Any refusal from the underlying Labtest reader seals the session. See
+[availability contract](guest-stay-amend-availability.md) and
+[Labtest adapter](guest-stay-amend-date-room-rate.md) for validation and limits.
+
+The snapshot path must be new and inside an existing private directory outside
+Git. Results retain the underlying outcome, coverage, and preimage label.
+Neither read stages or saves an amendment. Availability does not prove an
+inventory hold, combined-room availability, eligibility, repricing, tax, or an
+official total. No rate or room is selected on the saved stay. All writes remain
+Labtest-only.
 
 After a full `read`, `prepareCancellation` returns a timestamped projection
 for staff review. It keeps the requested scope separate from the room facts,

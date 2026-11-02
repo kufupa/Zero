@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One guarded page for reading an existing stay and explicitly requested Labtest actions.
+// A guarded saved-stay page and an optional separate Hotel Availability page.
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +12,11 @@ import { amendLabtestBookerContact, amendLabtestContact } from './guest-stay-ame
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs';
 import { projectFinanceDisplayPreflight } from './guest-stay-finance-preflight.mjs';
+import { readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
+import { readLabtestStayAmendmentAvailability } from './guest-stay-amend-date-room-rate.mjs';
+import {
+  searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
+} from './hotel-availability.mjs';
 
 const RETRYABLE_LOOKUPS = new Set([
   'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND', 'CONFIRMATION_HINT_MISMATCH',
@@ -34,7 +39,7 @@ function readFailure(error, stage, shallow) {
   return result;
 }
 
-/** Own a headless guarded page; calls submitted through runTool execute in order. */
+/** Own guarded pages; calls submitted through runTool execute in order. */
 export async function withSavedStayAgentSession(operation, { signal } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
   signal?.throwIfAborted();
@@ -44,19 +49,39 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
     let accepting = true, tail = Promise.resolve();
     let interruptRead;
     const readInterrupted = new Promise((resolve) => { interruptRead = resolve; });
-    page.on('dialog', (dialog) => {
+    const onNativeDialog = (dialog) => {
       nativeDialog = { type: dialog.type(), message: dialog.message() };
       sealed = true;
       interruptRead({ outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
         ? 'fee_dialog_pending' : 'unexpected_dialog', issue: 'NATIVE_DIALOG', nativeDialog, next: 'fresh_session' });
-    });
+    };
+    page.on('dialog', onNativeDialog);
+
+    // Keep native party search tokens on one separate page until this session ends.
+    let availabilityReady, availabilityTask, releaseAvailability;
+    const getAvailabilityPage = () => {
+      if (!availabilityReady) {
+        let resolveReady, rejectReady;
+        availabilityReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+        const released = new Promise((resolve) => { releaseAvailability = resolve; });
+        availabilityTask = withCenturionStay360Page(async (availabilityPage) => {
+          await installReadOnlyGuard(availabilityPage.context());
+          availabilityPage.on('dialog', onNativeDialog);
+          resolveReady(availabilityPage);
+          await released;
+        }, { headless: true, signal, blockServiceWorkers: true }).catch(rejectReady);
+      }
+      return availabilityReady;
+    };
 
     const execute = async (request) => {
       if (!request || typeof request !== 'object' || Array.isArray(request)) {
         return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
       }
       const { tool } = request;
-      if (!['read', 'prepareCancellation', 'prepareFinance', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel'].includes(tool)) {
+      if (!['read', 'prepareCancellation', 'prepareFinance', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel',
+        'readAmendmentAvailability', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
+        'cancelHotelAvailabilityParty'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
@@ -109,6 +134,49 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
           record: current.record,
         });
         return result.outcome === 'prepared_for_human_review' ? { ...result, observedAt: current.observedAt } : result;
+      }
+
+      if (['readAmendmentAvailability', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
+        'cancelHotelAvailabilityParty'].includes(tool)) {
+        if (tool === 'readAmendmentAvailability') {
+          if (!['generic', 'labtest'].includes(request.mode)) {
+            return { outcome: 'input_gap', issue: 'AMEND_AVAILABILITY_MODE_REQUIRED' };
+          }
+          if (request.mode === 'labtest') {
+            if (!current) return { outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED' };
+            if (current.status !== 'Reserved') return { outcome: 'refused', issue: 'RECORD_NOT_RESERVED' };
+            if (!request.expected || typeof request.expected !== 'object' || Array.isArray(request.expected)) {
+              return { outcome: 'input_gap', issue: 'EXPECTED_RECORD_REQUIRED' };
+            }
+            if (request.expected.confirmation !== current.confirmation) {
+              return { outcome: 'refused', issue: 'CURRENT_RECORD_MISMATCH' };
+            }
+          }
+        }
+        try {
+          const availabilityPage = await getAvailabilityPage();
+          if (sealed) return { outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' };
+          let result;
+          if (tool === 'searchHotelAvailabilityParty') {
+            result = await searchHotelAvailabilityParty(availabilityPage, request, request.options);
+          } else if (tool === 'selectHotelAvailabilityParty') {
+            result = await selectHotelAvailabilityParty(availabilityPage, request);
+          } else if (tool === 'cancelHotelAvailabilityParty') {
+            result = await cancelHotelAvailabilityParty(availabilityPage);
+          } else if (request.mode === 'labtest') {
+            result = await readLabtestStayAmendmentAvailability(page, availabilityPage, request.expected, request.options);
+          } else {
+            result = await readStayAmendmentAvailability(availabilityPage, request.input, request.options);
+          }
+          // A Labtest refusal can come from either pre-read or post-read checks;
+          // the adapter does not distinguish them, so the cached record is no longer safe.
+          if (result.outcome === 'selection_uncertain' ||
+              (tool === 'readAmendmentAvailability' && request.mode === 'labtest' && result.outcome === 'refused')) sealed = true;
+          return result;
+        } catch {
+          sealed = true;
+          return { outcome: 'execution_failure', issue: 'AVAILABILITY_SESSION_FAILED', next: 'fresh_session' };
+        }
       }
 
       if (tool === 'confirmCancel') {
@@ -168,15 +236,22 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
       const result = tail.then(() => {
         if (invalid) return { outcome: 'input_gap', issue: 'INVALID_REQUEST' };
         const operation = execute(input);
-        return input?.tool === 'read' ? Promise.race([operation, readInterrupted]) : operation;
+        const interruptible = ['read', 'readAmendmentAvailability', 'searchHotelAvailabilityParty',
+          'selectHotelAvailabilityParty', 'cancelHotelAvailabilityParty'].includes(input?.tool);
+        return interruptible ? Promise.race([operation, readInterrupted]) : operation;
       })
         .then((value) => ({ ...value, id, tool }));
       tail = result.then(() => undefined, () => undefined);
       return result;
     };
     try { return await operation({ runTool }); }
-    finally { accepting = false; await tail; }
-  }, { headless: true, signal });
+    finally {
+      accepting = false;
+      await tail;
+      releaseAvailability?.();
+      await availabilityTask;
+    }
+  }, { headless: true, signal, blockServiceWorkers: true });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {
@@ -186,7 +261,7 @@ const writeLine = (value) => new Promise((done, fail) => {
 export async function runSavedStayAgentSessionCli(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
     process.stdout.write('Usage: node saved-stay-agent-session.mjs --jsonl\n' +
-      'Tools: read, prepareCancellation, prepareFinance, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
+      'Tools: read, prepareCancellation, prepareFinance, readAmendmentAvailability, searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
     return;
   }
   if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');
