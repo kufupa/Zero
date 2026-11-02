@@ -13,6 +13,7 @@ export const PILOT_CAPABILITIES = {
   // Pane Preview/Book stay off until the server reports create mode lab or on.
   paneSave: false,
   paneSaveMode: 'off',
+  paneAttach: 'off',
   paneWrite: {
     create: 'off',
     amendUnpaid: 'off',

@@ -16,6 +16,7 @@ export const pilotCapabilities = {
   catchupUpload: false,
   paneSave: false,
   paneSaveMode: 'off',
+  paneAttach: 'off',
   paneWrite: {
     create: 'off',
     amendUnpaid: 'off',
@@ -26,11 +27,15 @@ export const pilotCapabilities = {
 } satisfies PilotCapabilities;
 
 export function getPilotCapabilities(): PilotCapabilities {
-  const paneWrite = paneWriteModes();
+  // No pane create route is enabled until the source-bound dispatch bridge exists.
+  // Keep amendment and cancellation capabilities independent of this hold.
+  const paneWrite = { ...paneWriteModes(), create: 'off' as const };
   return {
     ...pilotCapabilities,
     catchupUpload: isCatchupUploadEnabled(),
     paneWrite,
+    // Legacy filing and shared approval stay held until their dispatch guard is ready.
+    paneAttach: 'off',
     paneSave: paneWrite.create !== 'off',
     paneSaveMode: paneWrite.create,
   };

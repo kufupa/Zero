@@ -171,6 +171,8 @@ export interface PilotCapabilities {
   paneSave: boolean;
   /** The save mode behind paneSave. Alias of paneWrite.create. */
   paneSaveMode: 'off' | 'lab' | 'on';
+  /** Shared existing-write controls. Currently held off until the filing guard is ready. */
+  paneAttach: 'off' | 'lab';
   /** Per-workflow write switches. Create never enables attach/amend/cancel. */
   paneWrite: {
     create: 'off' | 'lab' | 'on';

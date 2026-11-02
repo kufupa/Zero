@@ -716,6 +716,21 @@ describe('voucher find card: attach to HMS', () => {
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
+  it('keeps the matched booking visible but hides Attach while writes are held', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId={WORK_ITEM}
+        writesEnabled={false}
+      />,
+    );
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+  });
+
   it('offers Attach to HMS booking when Find matches exactly one stay and the email has a PDF', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     render(

@@ -204,6 +204,11 @@ describe('driver type package contract', () => {
       gmailSearchGrammar: true,
       hotelCategories: true,
       staleDraftWarning: true,
+      catchupUpload: false,
+      paneSave: false,
+      paneSaveMode: 'off',
+      paneAttach: 'off',
+      paneWrite: { create: 'off', amendUnpaid: 'off', amendPaid: 'off', cancelUnpaid: 'off', cancelPaid: 'off' },
     } satisfies PilotCapabilities;
 
     expect(detail.drafts[0]?.id).toBe('draft-1');

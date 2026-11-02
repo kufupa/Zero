@@ -944,22 +944,16 @@ describe('tool-run ledger: route sites', () => {
     });
   });
 
-  it('quoteWorkflow.commitStay records a booked stay_commit, and an unconfirmed save as unconfirmed', async () => {
+  it('quoteWorkflow.commitStay records its closed route as refused without calling the writer', async () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     const previewDigest = 'c'.repeat(64);
-    mocks.runPaneStay.mockResolvedValueOnce({ status: 'ok', confirmationNumber: '57291630-1', outcome: 'booked' });
-    mocks.runPaneStay.mockResolvedValueOnce({ status: 'refused', reason: 'pane_save_unconfirmed' });
-    await caller().quoteWorkflow.commitStay({ ...stayInput, previewDigest });
-    await caller().quoteWorkflow.commitStay({ ...stayInput, previewDigest });
-    expect(sink.rows.map((row) => [row.kind, row.status])).toEqual([
-      ['stay_commit', 'ok'],
-      ['stay_commit', 'unconfirmed'],
-    ]);
+    await expect(caller().quoteWorkflow.commitStay({ ...stayInput, previewDigest }))
+      .resolves.toMatchObject({ status: 'refused', reason: 'pane_create_dispatch_unavailable' });
+    expect(mocks.runPaneStay).not.toHaveBeenCalled();
+    expect(sink.rows).toHaveLength(1);
     expect(sink.rows[0]).toMatchObject({
-      confirmationNo: '57291630-1',
-      inputDigest: previewDigest,
-      episodeOutcome: 'booked',
+      kind: 'stay_commit', status: 'refused', errorCode: 'pane_create_dispatch_unavailable', inputDigest: previewDigest,
     });
   });
 

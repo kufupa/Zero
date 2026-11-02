@@ -44,6 +44,8 @@ const REFUSAL_COPY: Record<string, string> = {
   cloud_create_party_mismatch: 'The agency or company in HMS does not match this request. Check the details and preview again.',
   cloud_create_proof_invalid: 'Nava could not verify the HMS preview. Check the details and preview again.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
+  pane_create_dispatch_unavailable:
+    'Nava did not save this booking on this attempt. Check HMS before booking by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
   trusted_staff_create_authorization_unavailable:
@@ -198,7 +200,7 @@ export type PaneStayClient = {
   commit: (stay: PaneStayInput, previewDigest: string) => Promise<PaneStayResult>;
   /** Screenshot as a PNG data URL, or null when the run is gone or not this owner's. */
   screenshot: (runId: string, name: string) => Promise<string | null>;
-  /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
+  /** The held create mode after this client's readPaneSaveFlag. null until that read has answered. */
   mode?: () => PaneSaveMode | null;
   readAvailability?: PaneStayAvailabilityReader;
 };
@@ -223,6 +225,7 @@ type PaneStayTrpc = {
       query: () => Promise<{
         paneSave?: boolean;
         paneSaveMode?: unknown;
+        paneAttach?: unknown;
         paneWrite?: { create?: unknown };
       }>;
     };
@@ -264,16 +267,10 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
       const status = row.paneStayLookup?.jobStatus;
       return status ? status.query(input) : null;
     },
-    preview: async (stay) => {
-      const previewStay = row.quoteWorkflow?.previewStay;
-      if (!previewStay) throw new Error('pane_save_client_missing');
-      return previewStay.mutate(stay);
-    },
-    commit: async (stay, previewDigest) => {
-      const commitStay = row.quoteWorkflow?.commitStay;
-      if (!commitStay) throw new Error('pane_save_client_missing');
-      return commitStay.mutate({ ...stay, previewDigest });
-    },
+    // A stale server can still expose the legacy writer, so neither operation
+    // may reach it while the source-bound create bridge is unavailable.
+    preview: async () => ({ status: 'refused', reason: 'pane_create_dispatch_unavailable' }),
+    commit: async () => ({ status: 'refused', reason: 'pane_create_dispatch_unavailable' }),
     screenshot: async (runId, name) => {
       const screenshot = row.paneStayCancel?.paneStayScreenshot;
       if (!screenshot) return null;
@@ -284,17 +281,16 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   };
 }
 
-// The server mode, read through the tRPC client. Any failure reads as off, so the card stays copy-only.
+// Create, legacy filing and shared approval stay off even against an old server.
+export async function readPaneSaveCapabilities(trpc: unknown): Promise<{
+  saveEnabled: boolean; attachWritesEnabled: boolean;
+}> {
+  if (isClientKey(trpc)) paneSaveModes.set(trpc, 'off');
+  return { saveEnabled: false, attachWritesEnabled: false };
+}
+
 export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
-  let mode: PaneSaveMode = 'off';
-  try {
-    const capabilities = await (trpc as PaneStayTrpc).brain?.getCapabilities.query();
-    mode = paneSaveModeOf(capabilities);
-  } catch {
-    mode = 'off';
-  }
-  if (isClientKey(trpc)) paneSaveModes.set(trpc, mode);
-  return mode !== 'off';
+  return (await readPaneSaveCapabilities(trpc)).saveEnabled;
 }
 
 export type PaneStayChoice = {
