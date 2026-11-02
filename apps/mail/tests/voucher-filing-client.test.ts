@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import type { AppRouter } from '@zero/server/trpc';
 import superjson from 'superjson';
+import * as mailScope from '../lib/mail/mail-cache-scope';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { filingPrepareClientFromTrpc } from '../lib/quote-workflow/voucher-filing-client';
 
@@ -10,13 +11,19 @@ const choice = { workItemId: 'work', messageId: 'message', attachmentId: 'attach
 const prepared = { status: 'prepared' as const, ...choice, filename: 'proof.pdf',
   stay: { ...choice.stay, firstName: 'Proof' }, formDigest: 'a'.repeat(64) };
 const transportId = 'transport-a';
-const clientScope = { transportId, messageId: choice.messageId, isCurrent: () => true };
 const ready = { status: 'ready', capability: 'voucher-filing/v1', messageId: choice.messageId, transportId };
-const mailbox = { context: { activeTransportId: transportId } };
+let lifecycle: AbortController;
+let clientScope: { transportId: string; messageId: string; isCurrent: () => boolean; signal: AbortSignal };
+let mailbox: { context: { activeTransportId: string }; signal: AbortSignal };
 const setScope = (activeTransportId: string | null, userId: string | null = 'staff-a') =>
   setMailCacheScope({ userId, activeTransportId });
-beforeEach(() => setScope(transportId));
-afterEach(() => setScope(null, null));
+beforeEach(() => {
+  lifecycle = new AbortController();
+  clientScope = { transportId, messageId: choice.messageId, isCurrent: () => true, signal: lifecycle.signal };
+  mailbox = { context: { activeTransportId: transportId }, signal: lifecycle.signal };
+  setScope(transportId);
+});
+afterEach(() => { lifecycle.abort(); setScope(null, null); vi.restoreAllMocks(); });
 const setup = async (reply: unknown = prepared) => {
   const prepare = vi.fn(async () => reply), go = vi.fn(async () => ({ status: 'queued', operationId: 'run' }));
   const api = await filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query: async () => ready }, prepare: { mutate: prepare }, go: { mutate: go } } }, clientScope);
@@ -162,6 +169,130 @@ describe('filing prepare client', () => {
       { ...clientScope, isCurrent: () => { throw new Error('stale'); } });
     expect(api).toBeNull();
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('invalidates pending readiness after an A-to-B-to-A mailbox transition', async () => {
+    let resolve!: (value: unknown) => void;
+    const query = vi.fn(() => new Promise<unknown>((done) => { resolve = done; }));
+    const pending = filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query }, prepare: { mutate: vi.fn() }, go: { mutate: vi.fn() } } }, clientScope);
+    setScope('transport-b'); setScope(transportId); resolve(ready);
+    expect(await pending).toBeNull();
+  });
+
+  it('invalidates an in-flight Prepare after an A-to-B-to-A transition', async () => {
+    let resolve!: (value: unknown) => void;
+    const prepare = vi.fn(() => new Promise<unknown>((done) => { resolve = done; }));
+    const api = await filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query: async () => ready }, prepare: { mutate: prepare }, go: { mutate: vi.fn() } } }, clientScope);
+    if (!api) throw new Error('missing client');
+    const pending = api.prepare(choice);
+    setScope('transport-b'); setScope(transportId);
+    expect(await pending).toEqual({ status: 'unavailable' });
+    resolve(prepared);
+    expect(await api.prepare(choice)).toEqual({ status: 'unavailable' });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('never permits a reviewed Go after an A-to-B-to-A actor change', async () => {
+    const { api, go } = await setup();
+    const result = await api.prepare(choice);
+    if (result.status !== 'prepared') throw new Error('prepare failed');
+    setScope(transportId, 'staff-b'); setScope(transportId);
+    expect(await api.go(result.value)).toEqual({ status: 'needs_check' });
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('treats in-flight Go as uncertain after an A-to-B-to-A mailbox transition', async () => {
+    let resolve!: (value: unknown) => void;
+    const go = vi.fn(() => new Promise<unknown>((done) => { resolve = done; }));
+    const api = await filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query: async () => ready }, prepare: { mutate: async () => prepared }, go: { mutate: go } } }, clientScope);
+    if (!api) throw new Error('missing client');
+    const result = await api.prepare(choice);
+    if (result.status !== 'prepared') throw new Error('prepare failed');
+    const pending = api.go(result.value);
+    setScope('transport-b'); setScope(transportId);
+    expect(await pending).toEqual({ status: 'needs_check' });
+    resolve({ status: 'queued', operationId: 'run' });
+    expect(await api.go(result.value)).toEqual({ status: 'needs_check' });
+    expect(go).toHaveBeenCalledTimes(1);
+  });
+
+  it('unsubscribes on rejection, invalidation, or explicit client disposal', async () => {
+    const realSubscribe = mailScope.subscribeMailCacheScope;
+    const unsubscribed = vi.fn();
+    vi.spyOn(mailScope, 'subscribeMailCacheScope').mockImplementation((listener) => {
+      const stop = realSubscribe(listener);
+      return () => { unsubscribed(); stop(); };
+    });
+    expect(await filingPrepareClientFromTrpc({}, clientScope)).toBeNull();
+    expect(unsubscribed).toHaveBeenCalledTimes(1);
+    const first = await setup();
+    first.api.dispose(); first.api.dispose();
+    expect(unsubscribed).toHaveBeenCalledTimes(2);
+    expect(await first.api.prepare(choice)).toEqual({ status: 'unavailable' });
+    const second = await setup();
+    setScope('transport-b');
+    expect(unsubscribed).toHaveBeenCalledTimes(3);
+    setScope(transportId);
+    second.api.dispose();
+    expect(unsubscribed).toHaveBeenCalledTimes(3);
+  });
+
+  it('releases its listener when selection aborts during pending readiness', async () => {
+    const realSubscribe = mailScope.subscribeMailCacheScope;
+    const unsubscribed = vi.fn();
+    vi.spyOn(mailScope, 'subscribeMailCacheScope').mockImplementation((listener) => {
+      const stop = realSubscribe(listener);
+      return () => { unsubscribed(); stop(); };
+    });
+    let resolve!: (value: unknown) => void;
+    const query = vi.fn(() => new Promise<unknown>((done) => { resolve = done; }));
+    const pending = filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query }, prepare: { mutate: vi.fn() }, go: { mutate: vi.fn() } } }, clientScope);
+    lifecycle.abort();
+    expect(unsubscribed).toHaveBeenCalledTimes(1);
+    expect(await pending).toBeNull();
+    resolve(ready);
+    expect(unsubscribed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not issue Prepare or Go after lifecycle abort', async () => {
+    const { api, prepare, go } = await setup();
+    const result = await api.prepare(choice);
+    if (result.status !== 'prepared') throw new Error('prepare failed');
+    lifecycle.abort();
+    expect(await api.go(result.value)).toEqual({ status: 'needs_check' });
+    expect(await api.prepare(choice)).toEqual({ status: 'unavailable' });
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('keeps an aborted in-flight Go uncertain, including after a late rejection', async () => {
+    let reject!: (error: Error) => void;
+    const go = vi.fn(() => new Promise<unknown>((_done, fail) => { reject = fail; }));
+    const api = await filingPrepareClientFromTrpc({ voucherFiling: { readiness: { query: async () => ready }, prepare: { mutate: async () => prepared }, go: { mutate: go } } }, clientScope);
+    if (!api) throw new Error('missing client');
+    const result = await api.prepare(choice);
+    if (result.status !== 'prepared') throw new Error('prepare failed');
+    const pending = api.go(result.value);
+    lifecycle.abort();
+    expect(await pending).toEqual({ status: 'needs_check' });
+    reject(new Error('late network error'));
+    await Promise.resolve();
+    expect(await api.go(result.value)).toEqual({ status: 'needs_check' });
+    expect(go).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up its scope listener on malformed routes and thrown readiness', async () => {
+    const realSubscribe = mailScope.subscribeMailCacheScope;
+    const stopped = vi.fn();
+    vi.spyOn(mailScope, 'subscribeMailCacheScope').mockImplementation((listener) => {
+      const stop = realSubscribe(listener);
+      return () => { stopped(); stop(); };
+    });
+    const throwingRoutes = Object.defineProperty({}, 'voucherFiling', { get: () => { throw new Error('bad proxy'); } });
+    const rejected = { voucherFiling: { readiness: { query: async () => { throw new Error('denied'); } },
+      prepare: { mutate: vi.fn() }, go: { mutate: vi.fn() } } };
+    for (const trpc of [undefined, throwingRoutes, rejected]) expect(await filingPrepareClientFromTrpc(trpc, clientScope)).toBeNull();
+    expect(stopped).toHaveBeenCalledTimes(3);
   });
 
   it('does not infer readiness from arbitrary paths on the real tRPC proxy', async () => {

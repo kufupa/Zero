@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
+import { getMailCacheScope, inMailbox, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 
 const id = z.string().min(1).max(200);
 const selectionSchema = z.object({
@@ -24,17 +24,19 @@ export type FilingSelection = z.infer<typeof selectionSchema>;
 export type FilingPrepared = Readonly<Omit<z.infer<typeof preparedSchema>, 'stay'> & {
   stay: Readonly<z.infer<typeof preparedSchema>['stay']>;
 }>;
-type MailboxOptions = ReturnType<typeof inMailbox>;
+type MailboxOptions = NonNullable<ReturnType<typeof inMailbox>> & { signal: AbortSignal };
 type Routes = { readiness: { query(input: { messageId: string }, options: MailboxOptions): Promise<unknown> };
   prepare: { mutate(input: FilingSelection, options: MailboxOptions): Promise<unknown> };
   go: { mutate(input: { workItemId: string; messageId: string; formDigest: string; expectedSessionId: string | null }, options: MailboxOptions): Promise<unknown> } };
 export type FilingPrepareClient = {
+  /** The pane must dispose this client when its selection or component lifetime ends. */
+  dispose(): void;
   prepare(input: FilingSelection): Promise<{ status: 'prepared'; value: FilingPrepared } | { status: 'unavailable' }>;
   go(prepared: FilingPrepared): Promise<{ status: 'queued'; operationId: string } | { status: 'needs_check' }>;
 };
 
-/** isCurrent must track the selection epoch and stay false after a selection changes. */
-export type FilingClientScope = { transportId: string; messageId: string; isCurrent: () => boolean };
+/** isCurrent tracks the selection epoch; signal must abort when the selection or pane lifetime ends. */
+export type FilingClientScope = { transportId: string; messageId: string; isCurrent: () => boolean; signal: AbortSignal };
 
 /**
  * The authenticated server must advertise readiness only when filing routes and policy are ready.
@@ -43,38 +45,64 @@ export type FilingClientScope = { transportId: string; messageId: string; isCurr
  */
 export async function filingPrepareClientFromTrpc(trpc: unknown, selection: FilingClientScope): Promise<FilingPrepareClient | null> {
   if (!selection || !id.safeParse(selection.transportId).success || !id.safeParse(selection.messageId).success ||
-      typeof selection.isCurrent !== 'function') return null;
-  const { transportId, messageId, isCurrent } = selection;
+      typeof selection.isCurrent !== 'function' || !selection.signal ||
+      typeof selection.signal.addEventListener !== 'function' || typeof selection.signal.removeEventListener !== 'function' ||
+      selection.signal.aborted) return null;
+  const { transportId, messageId, isCurrent, signal } = selection;
   const scope = getMailCacheScope();
   if (!scope.userId || scope.activeTransportId !== transportId) return null;
+  const userId = scope.userId;
   let invalidated = false;
+  let notifyInvalidated = () => {};
+  const invalidation = new Promise<null>((resolve) => { notifyInvalidated = () => resolve(null); });
+  let unsubscribe = () => {};
+  const dispose = () => {
+    if (invalidated) return;
+    invalidated = true;
+    unsubscribe();
+    signal.removeEventListener('abort', dispose);
+    notifyInvalidated();
+  };
+  // Subscribe before the first await so A→B→A cannot revive an old preparation.
+  try {
+    unsubscribe = subscribeMailCacheScope(() => {
+      const current = getMailCacheScope();
+      if (current.userId !== userId || current.activeTransportId !== transportId) dispose();
+    });
+    signal.addEventListener('abort', dispose, { once: true });
+  } catch { dispose(); return null; }
   const currentScope = () => {
     if (invalidated) return false;
     const current = getMailCacheScope();
-    try { invalidated = current.userId !== scope.userId || current.activeTransportId !== transportId || isCurrent() !== true; }
-    catch { invalidated = true; }
+    try {
+      if (signal.aborted || current.userId !== userId || current.activeTransportId !== transportId || isCurrent() !== true) dispose();
+    } catch { dispose(); }
     return !invalidated;
   };
-  if (!currentScope()) return null;
-  const mailbox = inMailbox(transportId);
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
-  const routes = (trpc as { voucherFiling?: Partial<Routes> }).voucherFiling;
-  if (typeof routes?.readiness?.query !== 'function' || typeof routes.prepare?.mutate !== 'function' ||
-      typeof routes.go?.mutate !== 'function') return null;
+  const unavailable = () => { dispose(); return null; };
+  if (!currentScope()) return unavailable();
+  const mailbox = { ...inMailbox(transportId)!, signal };
+  let prepare: Routes['prepare'], go: Routes['go'];
   try {
-    const readiness = readinessSchema.safeParse(await routes.readiness.query({ messageId }, mailbox));
+    if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return unavailable();
+    const routes = (trpc as { voucherFiling?: Partial<Routes> }).voucherFiling;
+    if (typeof routes?.readiness?.query !== 'function' || typeof routes.prepare?.mutate !== 'function' ||
+        typeof routes.go?.mutate !== 'function') return unavailable();
+    const readiness = readinessSchema.safeParse(await Promise.race([routes.readiness.query({ messageId }, mailbox), invalidation]));
     if (!readiness.success || readiness.data.messageId !== messageId ||
-        readiness.data.transportId !== transportId || !currentScope()) return null;
-  } catch { return null; }
-  const prepare = routes.prepare, go = routes.go;
+        readiness.data.transportId !== transportId || !currentScope()) return unavailable();
+    prepare = routes.prepare;
+    go = routes.go;
+  } catch { return unavailable(); }
   // Local latch improves UX only. The server still owns approval, fencing and single dispatch.
   const issued = new WeakMap<object, { workItemId: string; messageId: string; formDigest: string; expectedSessionId: string | null; used: boolean }>();
   return {
+    dispose,
     async prepare(input) {
       const selected = selectionSchema.safeParse(input);
       if (!selected.success || selected.data.messageId !== messageId || !currentScope()) return { status: 'unavailable' };
       try {
-        const parsed = preparedSchema.safeParse(await prepare.mutate(selected.data, mailbox));
+        const parsed = preparedSchema.safeParse(await Promise.race([prepare.mutate(selected.data, mailbox), invalidation]));
         if (!parsed.success || !currentScope()) return { status: 'unavailable' };
         const view = parsed.data, choice = selected.data;
         if (view.workItemId !== choice.workItemId || view.messageId !== choice.messageId ||
@@ -95,8 +123,8 @@ export async function filingPrepareClientFromTrpc(trpc: unknown, selection: Fili
       if (!token || token.used || !currentScope()) return { status: 'needs_check' };
       token.used = true;
       try {
-        const parsed = queuedSchema.safeParse(await go.mutate({ workItemId: token.workItemId,
-          messageId: token.messageId, formDigest: token.formDigest, expectedSessionId: token.expectedSessionId }, mailbox));
+        const parsed = queuedSchema.safeParse(await Promise.race([go.mutate({ workItemId: token.workItemId,
+          messageId: token.messageId, formDigest: token.formDigest, expectedSessionId: token.expectedSessionId }, mailbox), invalidation]));
         return parsed.success && currentScope() ? parsed.data : { status: 'needs_check' };
       } catch { return { status: 'needs_check' }; }
     },
