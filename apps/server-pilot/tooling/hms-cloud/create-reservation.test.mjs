@@ -396,6 +396,10 @@ test('prepare stages supported partial fields while retaining unsupported values
     assert.equal(result.appliedVerification.visibleFields, true);
     assert.equal(result.applied.guest.nativeId, '123');
     assert.deepEqual(result.unsupportedFields.map(({ field }) => field).sort(), unsupported.sort());
+    if (change.note === null) {
+      assert.equal(Object.hasOwn(result.applied, 'note'), false);
+      assert.equal(fake.calls.some(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote'), false);
+    }
     assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'GTDCC');
     assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay' || tool === 'setCmsSendCheckbox'), false);
     assert.equal(fake.freshReads, 0);

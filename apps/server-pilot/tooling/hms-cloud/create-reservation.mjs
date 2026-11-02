@@ -421,7 +421,8 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (commit && missing.length) return;
       if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
       // Only verified Labtest prepares get a synthetic note. Commit reuses its input.
-      const note = input.note ?? (!commit && labtestDraft ? `Proof Labtest create ${randomUUID()}` : null);
+      const note = input.note === undefined && !commit && labtestDraft
+        ? `Proof Labtest create ${randomUUID()}` : input.note;
       if (note != null && typeof note === 'string' && note.trim() && note.length <= 200) {
         const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'reservationNote', value: note });
         if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });
