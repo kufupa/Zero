@@ -16,8 +16,9 @@ ENV_FILE="${ENV_FILE:-${REPO_ROOT}/apps/server-pilot/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
-REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
-REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
+# Preserve the same absolute runtime source through PM2 and resurrection.
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$PWD/$ENV_FILE" ;; esac
+export ENV_FILE
 
 QUIESCED=0
 SKIP_INSTALL=0
@@ -86,33 +87,36 @@ invalidate_hms_proofs() {
 }
 
 validate_remote_env_files() {
-  bash "${SERVER_PILOT}/deploy/write-ec2-remote-env.sh" --validate
+  bash "${SERVER_PILOT}/deploy/write-ec2-remote-env.sh" --validate || return 1
+  if [ "$QUIESCED" != "1" ]; then
+    bash "${SERVER_PILOT}/deploy/write-ec2-remote-env.sh" --ensure-model || return 1
+  fi
 }
 
 start_remote_http() {
+  # PM2 receives no remote auth or model credentials; the child wrapper loads them.
   env -i \
     HOME="$HOME" \
     PATH="$PATH" \
     NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    ENV_FILE="$ENV_FILE" \
     SERVER_PILOT="$SERVER_PILOT" \
-    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
-    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
     bash -ceu '
-      set -a
-      source "$REMOTE_COMMON_ENV"
-      source "$REMOTE_ADMIN_ENV"
-      set +a
       pm2 delete remote-http 2>/dev/null || true
       pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
     '
 }
 
 start_legacy_processes() {
+  local launch_build_commit="$NAVA_BUILD_COMMIT"
+  local launch_env_file="$ENV_FILE"
   local transport_mode
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+  # Runtime env may contain an older SHA; every PM2 app uses the launch identity.
+  export NAVA_BUILD_COMMIT="$launch_build_commit" ENV_FILE="$launch_env_file"
   : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
   transport_mode="${MAIL_TRANSPORT_MODE:-fixture}"
   if [ "$transport_mode" = "fixture" ]; then
@@ -650,8 +654,11 @@ ensure_hms_absent || {
   echo "HMS process cleanup failed" >&2
   exit 20
 }
+# Legacy env may contain an older build identity; retain the launch identity for remote-http.
+remote_launch_build_commit="$NAVA_BUILD_COMMIT"
 start_legacy_processes
-start_remote_http
+NAVA_BUILD_COMMIT="$remote_launch_build_commit" start_remote_http
+unset remote_launch_build_commit
 pm2 save
 bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
 pm2 status

@@ -29,9 +29,10 @@ module.exports = {
       },
     },
     {
-      // Started only by isolated remote env shells in deploy/restart/boot.
+      // Wrapper validates isolated remote env on every start, including resurrection.
       name: 'remote-http',
-      script: 'dist/main.js',
+      script: 'deploy/start-remote-http.sh',
+      interpreter: '/bin/bash',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
@@ -43,6 +44,7 @@ module.exports = {
         PORT: '8789',
         NAVA_AUTH_SESSION_PROFILE: 'remote',
         NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+        ENV_FILE: process.env.ENV_FILE ?? '',
       },
     },
     {

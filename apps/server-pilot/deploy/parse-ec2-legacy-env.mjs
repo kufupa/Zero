@@ -54,6 +54,16 @@ try {
   const lines = ["NODE_ENV='production'"];
   for (const key of allowlist) {
     const value = values.get(key);
+    if (key === 'PANE_BRAIN' && value && !['agent', 'classifier'].includes(value)) {
+      throw new Error('invalid');
+    }
+    if (key === 'QUOTE_WORKFLOW_LLM' && value !== undefined && !['on', 'off'].includes(value)) {
+      throw new Error('invalid');
+    }
+    if (['AZURE_OPENAI_BASE_URL', 'AZURE_FOUNDRY_API_KEY'].includes(key) &&
+      value !== undefined && value.trim().length === 0) {
+      throw new Error('invalid');
+    }
     if (value !== undefined && value.length > 0) {
       lines.push(`${key}=${quote(value)}`);
     }

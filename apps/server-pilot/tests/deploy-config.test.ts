@@ -5228,7 +5228,7 @@ if (!realMailGate) {
         /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
       );
       expect(pm2).toMatch(
-        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
+        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]deploy\/start-remote-http\.sh['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
       );
       expect(pm2).toMatch(
         /name:\s*['"]remote-http['"][\s\S]*?instances:\s*1[\s\S]*?exec_mode:\s*['"]fork['"]/,
@@ -5522,6 +5522,59 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('validates quote flag only when explicitly allowlisted by the legacy parser', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const parser = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-legacy-quote-'));
+      const legacy = join(temp, 'legacy');
+      const output = join(temp, 'rendered');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const invoke = (quote: boolean) => spawnSync(process.execPath, [
+        parser, legacy, output, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET',
+        ...(quote ? ['QUOTE_WORKFLOW_LLM'] : []),
+      ], { encoding: 'utf8' });
+      try {
+        // Existing callers that do not request the key keep their prior behavior.
+        writeFileSync(legacy, [...base, "QUOTE_WORKFLOW_LLM='maybe'", "GOOGLE_CLIENT_SECRET='fake'", ''].join('\n'));
+        expect(invoke(false).status).toBe(0);
+        expect(readFileSync(output, 'utf8')).toBe([...base, ''].join('\n'));
+        for (const flag of ['on', 'off']) {
+          writeFileSync(legacy, [...base, `QUOTE_WORKFLOW_LLM=${flag}`, ''].join('\n'));
+          const result = invoke(true);
+          expect(result.status).toBe(0);
+          expect(result.stdout).toBe('');
+          expect(readFileSync(output, 'utf8')).toBe([...base, `QUOTE_WORKFLOW_LLM='${flag}'`, ''].join('\n'));
+        }
+        writeFileSync(legacy, [...base, ''].join('\n'));
+        expect(invoke(true).status).toBe(0);
+        expect(readFileSync(output, 'utf8')).toBe([...base, ''].join('\n'));
+        for (const row of ["QUOTE_WORKFLOW_LLM=''", "QUOTE_WORKFLOW_LLM='maybe'"]) {
+          writeFileSync(legacy, [...base, row, ''].join('\n'));
+          writeFileSync(output, 'unchanged');
+          const result = invoke(true);
+          expect(result.status).toBe(2);
+          expect(result.stdout).toBe('');
+          expect(result.stderr).toBe('legacy runtime env malformed\n');
+          expect(readFileSync(output, 'utf8')).toBe('unchanged');
+        }
+        writeFileSync(legacy, [...base, "PANE_BRAIN='invalid'", ''].join('\n'));
+        writeFileSync(output, 'unchanged');
+        const invalidBrain = spawnSync(process.execPath, [parser, legacy, output, 'PANE_BRAIN'], { encoding: 'utf8' });
+        expect(invalidBrain.status).toBe(2);
+        expect(invalidBrain.stderr).toBe('legacy runtime env malformed\n');
+        expect(readFileSync(output, 'utf8')).toBe('unchanged');
+        writeFileSync(legacy, [...base, "PANE_BRAIN=''", ''].join('\n'));
+        expect(spawnSync(process.execPath, [parser, legacy, output, 'PANE_BRAIN']).status).toBe(0);
+        expect(readFileSync(output, 'utf8')).toBe("NODE_ENV='production'\n");
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
       const { isInboundTriageClassifierEnabled } = await import('../src/env.js');
@@ -5696,6 +5749,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('PANE_BRAIN');
+      expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
@@ -5929,6 +5984,122 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('preflights current source and detects launch snapshot drift without touching old overlays', async () => {
+      if (process.platform === 'win32') return;
+      const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-model-snapshot-'));
+      const repo = join(temp, 'repo');
+      const server = join(repo, 'apps', 'server-pilot');
+      const copiedDeploy = join(server, 'deploy');
+      const bin = join(temp, 'bin');
+      const legacy = join(server, '.env.production');
+      const common = join(server, '.env.remote-common');
+      const admin = join(server, '.env.remote-admin');
+      const oldModel = join(server, '.env.remote-azure');
+      const oldBrain = join(server, '.env.remote-pane-brain');
+      const marker = join(temp, 'pm2-mutated');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const pair = ["AZURE_OPENAI_BASE_URL='https://fake.example/v1'", "AZURE_FOUNDRY_API_KEY='fake-key-a'"];
+      const commonText = [...base, "PANE_WRITE_CREATE='lab'", ''].join('\n');
+      const adminText = "BETTER_AUTH_URL='https://nava-admin.trynava.io'\nBETTER_AUTH_SECRET='remote-fake'\n";
+      const source = (model: string[], brain = '', quote = '') => [...base, ...model, ...(brain ? [brain] : []), ...(quote ? [quote] : []), "GOOGLE_CLIENT_SECRET='unrelated-fake'", ''].join('\n');
+      let snapshot = '';
+      try {
+        mkdirSync(copiedDeploy, { recursive: true });
+        mkdirSync(bin);
+        for (const file of ['write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ "$3" = "${FAKE_BAD_PATH:-}" ]; then echo 644:ubuntu:ubuntu; elif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'pm2'), '#!/usr/bin/env bash\nprintf called >"$HOME/pm2-mutated"\n', { mode: 0o755 });
+        writeFileSync(common, commonText);
+        writeFileSync(admin, adminText);
+        writeFileSync(oldModel, 'old model overlay untouched\n', { mode: 0o600 });
+        writeFileSync(oldBrain, 'old routing overlay untouched\n', { mode: 0o600 });
+        writeFileSync(legacy, source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'"));
+        const env = { ...process.env, HOME: toBashPath(temp), PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`, REPO_ROOT: toBashPath(repo), SERVER_PILOT: toBashPath(server), ENV_FILE: toBashPath(legacy), QUIESCED: '0' };
+        const writer = toBashPath(join(copiedDeploy, 'write-ec2-remote-env.sh'));
+        const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => runBash({ args: [writer, ...args], env: { ...env, ...extra } });
+        const prepared = await run(['--prepare-model']);
+        expect(prepared.status).toBe(0);
+        snapshot = prepared.stdout.trim();
+        expect(snapshot.startsWith(toBashPath(server) + '/.env.remote-launch.')).toBe(true);
+        expect(statSync(snapshot).mode & 0o777).toBe(0o700);
+        for (const name of ['model', 'brain', 'common', 'admin']) expect(statSync(join(snapshot, name)).mode & 0o777).toBe(0o600);
+        expect(readFileSync(join(snapshot, 'model'), 'utf8')).toBe([...pair, ''].join('\n'));
+        expect((await run(['--check-model', snapshot])).status).toBe(0);
+        expect((await run(['--check-model', snapshot], { FAKE_BAD_PATH: snapshot })).status).not.toBe(0);
+        expect((await run(['--ensure-model'], { FAKE_BAD_PATH: toBashPath(legacy) })).status).not.toBe(0);
+        const sourceLink = join(server, '.env.source-link');
+        symlinkSync(legacy, sourceLink);
+        expect((await run(['--ensure-model'], { ENV_FILE: toBashPath(sourceLink) })).status).not.toBe(0);
+        rmSync(sourceLink);
+        for (const [path, changed, original] of [
+          [legacy, source([pair[0], "AZURE_FOUNDRY_API_KEY='fake-key-b'"], "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'"), source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'")],
+          [legacy, source(pair, "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='off'"), source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'")],
+          [legacy, source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='on'"), source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'")],
+          [common, `${commonText}PANE_WRITE_ATTACH='lab'\n`, commonText],
+          [admin, adminText.replace('remote-fake', 'other-fake'), adminText],
+        ]) {
+          writeFileSync(path, changed);
+          const result = await run(['--check-model', snapshot]);
+          expect(result.status).not.toBe(0);
+          expect(result.stdout + result.stderr).not.toContain('fake-key');
+          writeFileSync(path, original);
+        }
+        const link = join(server, '.env.remote-launch.symlink');
+        symlinkSync(snapshot, link);
+        expect((await run(['--check-model', toBashPath(link)])).status).not.toBe(0);
+        rmSync(link);
+        rmSync(snapshot, { recursive: true });
+        snapshot = '';
+
+        for (const rows of [
+          source([pair[0], "AZURE_FOUNDRY_API_KEY='fake-key-b'"], "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'"),
+          source(pair, '', "QUOTE_WORKFLOW_LLM='off'"),
+          source([], '', ''),
+        ]) {
+          writeFileSync(legacy, rows);
+          expect((await run(['--ensure-model'])).status).toBe(0);
+        }
+        for (const rows of [
+          source([pair[0]]), source([pair[1]]), source(["AZURE_OPENAI_BASE_URL=''", "AZURE_FOUNDRY_API_KEY=''"]),
+          source([pair[0], "AZURE_FOUNDRY_API_KEY=' '"]), source(["AZURE_OPENAI_BASE_URL='http://fake.example'", pair[1]]),
+          source(pair, "PANE_BRAIN='unsupported'"), source(pair, '', "QUOTE_WORKFLOW_LLM='maybe'"),
+        ]) {
+          writeFileSync(legacy, rows);
+          const result = await run(['--ensure-model']);
+          expect(result.status).not.toBe(0);
+          expect(result.stdout + result.stderr).not.toContain('fake-key');
+        }
+        writeFileSync(legacy, source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'"));
+        for (const override of ["PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'"]) {
+          writeFileSync(common, `${commonText}${override}\n`);
+          expect((await run(['--ensure-model'])).status).not.toBe(0);
+        }
+        writeFileSync(common, commonText);
+        writeFileSync(legacy, source([pair[0]]));
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const script = readFileSync(join(deploy, file), 'utf8');
+          const preflight = script.match(/validate_remote_env_files\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          expect(preflight, file).toBeTruthy();
+          const result = await runBash({ args: ['-c', `${preflight}\nvalidate_remote_env_files || exit 2\npm2 start`], env });
+          expect(result.status, file).not.toBe(0);
+          expect(existsSync(marker), file).toBe(false);
+        }
+        expect(readFileSync(oldModel, 'utf8')).toBe('old model overlay untouched\n');
+        expect(readFileSync(oldBrain, 'utf8')).toBe('old routing overlay untouched\n');
+        expect(readFileSync(common, 'utf8')).toBe(commonText);
+        expect(readFileSync(admin, 'utf8')).toBe(adminText);
+      } finally {
+        if (snapshot) rmSync(snapshot, { recursive: true, force: true });
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it('validates remote files before PM2 mutation and isolates remote startup', async () => {
       const { readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -5944,8 +6115,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect(validation, `${file} remote validation`).toBeGreaterThanOrEqual(0);
         expect(firstPm2Mutation, `${file} PM2 mutation`).toBeGreaterThanOrEqual(0);
         expect(firstPm2Mutation, `${file} validates before PM2`).toBeGreaterThan(0);
-        expect(source).toContain('.env.remote-common');
-        expect(source).toContain('.env.remote-admin');
+        expect(source).toContain('--ensure-model');
         expect(source).toContain('start_remote_http');
 
         const remoteStart = source.match(
@@ -5953,11 +6123,250 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         )?.[1];
         expect(remoteStart, `${file} remote startup body`).toBeTruthy();
         expect(remoteStart).toContain('env -i');
-        expect(remoteStart).toContain('source "$REMOTE_COMMON_ENV"');
-        expect(remoteStart).toContain('source "$REMOTE_ADMIN_ENV"');
+        expect(remoteStart).not.toContain('source ');
         expect(remoteStart).not.toContain('.env.production');
         expect(remoteStart).toContain('--only remote-http');
       }
+    });
+
+    it('starts PM2 without passing remote credentials or workflow switches to its CLI', async () => {
+      if (process.platform === 'win32') return;
+      const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-remote-cli-'));
+      const bin = join(temp, 'bin');
+      const marker = join(temp, 'pm2-result');
+      try {
+        mkdirSync(bin);
+        writeFileSync(join(bin, 'pm2'), [
+          '#!/usr/bin/env bash',
+          'if [ "${UNRELATED_SECRET+x}${AZURE_FOUNDRY_API_KEY+x}${AZURE_OPENAI_BASE_URL+x}${BETTER_AUTH_SECRET+x}${DATABASE_URL+x}${PANE_BRAIN+x}${PANE_WRITE_CREATE+x}" != "" ]; then exit 3; fi',
+          'if [ "$1" = delete ]; then exit 0; fi',
+          'printf "%s\\n" "$NAVA_BUILD_COMMIT" >"$HOME/pm2-result"',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const source = readFileSync(join(deploy, file), 'utf8');
+          const start = source.match(/start_remote_http\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          expect(start, file).toBeTruthy();
+          const env = {
+            ...process.env,
+            HOME: toBashPath(temp),
+            PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+            NAVA_BUILD_COMMIT: 'a'.repeat(40),
+            SERVER_PILOT: toBashPath(temp),
+            ENV_FILE: toBashPath(join(temp, 'legacy')),
+            UNRELATED_SECRET: 'fake-unrelated',
+            AZURE_FOUNDRY_API_KEY: 'fake-model-key',
+            AZURE_OPENAI_BASE_URL: 'https://fake.example/v1',
+            BETTER_AUTH_SECRET: 'fake-auth-key',
+            DATABASE_URL: 'fake-db',
+            PANE_BRAIN: 'agent',
+            PANE_WRITE_CREATE: 'lab',
+          };
+          const result = await runBash({ args: ['-c', `${start}\nstart_remote_http`], env });
+          expect(result.status, file).toBe(0);
+          expect(readFileSync(marker, 'utf8')).toBe(`${'a'.repeat(40)}\n`);
+          rmSync(marker);
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('retains the launch SHA across legacy env sourcing for every PM2 process', async () => {
+      if (process.platform === 'win32') return;
+      const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-launch-sha-'));
+      const bin = join(temp, 'bin');
+      const legacy = join(temp, 'legacy');
+      const marker = join(temp, 'pm2-sha');
+      try {
+        mkdirSync(bin);
+        writeFileSync(join(bin, 'pm2'), [
+          '#!/usr/bin/env bash',
+          'if [ "$1" = start ]; then',
+          '  for process in http worker ai-worker remote-http; do',
+          '    if [[ " $* " = *" --only $process "* ]]; then',
+          '      printf "%s %s\\n" "$process" "$NAVA_BUILD_COMMIT" >>"$HOME/pm2-sha"',
+          '    fi',
+          '  done',
+          'fi',
+          '',
+        ].join('\n'), { mode: 0o755 });
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const source = readFileSync(join(deploy, file), 'utf8');
+          const remote = source.match(/start_remote_http\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const legacyStart = source.match(/start_legacy_processes\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const sequence = source.match(/remote_launch_build_commit="\$NAVA_BUILD_COMMIT"\nstart_legacy_processes\nNAVA_BUILD_COMMIT="\$remote_launch_build_commit" start_remote_http\nunset remote_launch_build_commit/)?.[0];
+          expect(remote, file).toBeTruthy();
+          expect(legacyStart, file).toBeTruthy();
+          expect(sequence, file).toBeTruthy();
+          const env = {
+            ...process.env,
+            HOME: toBashPath(temp),
+            PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+            NAVA_BUILD_COMMIT: 'a'.repeat(40),
+            ENV_FILE: toBashPath(legacy),
+            SERVER_PILOT: toBashPath(temp),
+          };
+          for (const mode of ['fixture', 'live']) {
+            writeFileSync(legacy, `BETTER_AUTH_URL='https://fake.example'\nNAVA_BUILD_COMMIT='${'b'.repeat(40)}'\nMAIL_TRANSPORT_MODE='${mode}'\n`);
+            const result = await runBash({ args: ['-c', `${remote}\n${legacyStart}\n${sequence}`], env });
+            expect(result.status, `${file} ${mode}`).toBe(0);
+            const names = mode === 'fixture' ? ['http', 'ai-worker', 'remote-http'] : ['http', 'worker', 'ai-worker', 'remote-http'];
+            expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(names.map((name) => `${name} ${'a'.repeat(40)}`));
+            rmSync(marker);
+          }
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('uses fresh guarded snapshots and the same alternate env across launch entrypoints', async () => {
+      if (process.platform === 'win32') return;
+      const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-remote-wrapper-'));
+      const repo = join(temp, 'repo');
+      const server = join(repo, 'apps', 'server-pilot');
+      const copiedDeploy = join(server, 'deploy');
+      const bin = join(temp, 'bin');
+      const legacy = join(server, '.env.production');
+      const alternate = join(server, '.env.alternate');
+      const common = join(server, '.env.remote-common');
+      const admin = join(server, '.env.remote-admin');
+      const marker = join(temp, 'app-result');
+      const oldModel = join(server, '.env.remote-azure');
+      const oldBrain = join(server, '.env.remote-pane-brain');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const pair = ["AZURE_OPENAI_BASE_URL='https://fake.example/v1'", "AZURE_FOUNDRY_API_KEY='fake-key-a'"];
+      const source = (model: string[], brain = '', quote = '') => [...base, ...model, ...(brain ? [brain] : []), ...(quote ? [quote] : []), "GOOGLE_CLIENT_SECRET='unrelated-fake'", ''].join('\n');
+      const commonBase = [...base, "PANE_WRITE_CREATE='lab'", `NAVA_BUILD_COMMIT='${'b'.repeat(40)}'`];
+      try {
+        mkdirSync(copiedDeploy, { recursive: true });
+        mkdirSync(join(server, 'dist'));
+        mkdirSync(bin);
+        for (const file of ['start-remote-http.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'pm2'), '#!/usr/bin/env bash\nif [ "$1" = start ] && [[ " $* " = *" --only remote-http "* ]]; then exec /bin/bash "$SERVER_PILOT/deploy/start-remote-http.sh"; fi\n', { mode: 0o755 });
+        writeFileSync(legacy, source([pair[0]])); // An incorrect fallback source would fail.
+        writeFileSync(alternate, source(pair, "PANE_BRAIN='agent'", "QUOTE_WORKFLOW_LLM='off'") + "BETTER_AUTH_URL='https://legacy.fake'\nENV_FILE='/invalid-from-legacy'\n");
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        writeFileSync(admin, "BETTER_AUTH_URL='https://nava-admin.trynava.io'\nBETTER_AUTH_SECRET='remote-fake'\n");
+        writeFileSync(oldModel, 'pre-existing model overlay\n');
+        writeFileSync(oldBrain, 'pre-existing brain overlay\n');
+        writeFileSync(join(server, 'dist', 'main.js'), [
+          "const fs = require('node:fs');",
+          "const keys = ['HOME','PATH','NODE_ENV','PORT','NAVA_AUTH_SESSION_PROFILE','NAVA_BUILD_COMMIT','PANE_BRAIN','PANE_WRITE_CREATE','QUOTE_WORKFLOW_LLM','AZURE_FOUNDRY_API_KEY','BETTER_AUTH_SECRET','UNRELATED_SECRET','GOOGLE_CLIENT_SECRET','REPO_ROOT','ENV_FILE'];",
+          "fs.writeFileSync(process.env.HOME + '/app-result', JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key] ?? null]))));",
+          '',
+        ].join('\n'));
+        const env = {
+          ...process.env, HOME: toBashPath(temp), PATH: `${toBashPath(bin)}${delimiter}${process.env.PATH ?? ''}`,
+          REPO_ROOT: toBashPath(repo), SERVER_PILOT: toBashPath(server), ENV_FILE: toBashPath(alternate), QUIESCED: '0',
+          NAVA_BUILD_COMMIT: 'a'.repeat(40), UNRELATED_SECRET: 'fake-unrelated', GOOGLE_CLIENT_SECRET: 'fake-google',
+          PORT: '9999', NAVA_AUTH_SESSION_PROFILE: 'legacy', PANE_WRITE_CREATE: 'on', QUOTE_WORKFLOW_LLM: 'on',
+          BETTER_AUTH_SECRET: 'wrong-fake', AZURE_FOUNDRY_API_KEY: 'wrong-fake',
+        };
+        const wrapper = toBashPath(join(copiedDeploy, 'start-remote-http.sh'));
+        const run = () => runBash({ args: [wrapper], env });
+        const inspect = () => JSON.parse(readFileSync(marker, 'utf8'));
+        for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+          const script = readFileSync(join(deploy, file), 'utf8');
+          const preflight = script.match(/validate_remote_env_files\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const startRemote = script.match(/start_remote_http\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          const startLegacy = script.match(/start_legacy_processes\(\)\s*\{[\s\S]*?^\}/m)?.[0];
+          expect(preflight, file).toBeTruthy();
+          expect(startRemote, file).toBeTruthy();
+          expect(startLegacy, file).toBeTruthy();
+          const result = await runBash({ args: ['-c', `${preflight}\n${startLegacy}\n${startRemote}\nvalidate_remote_env_files && start_legacy_processes && start_remote_http`], env });
+          expect(result.status, file).toBe(0);
+          expect(inspect()).toMatchObject({ PANE_BRAIN: 'agent', QUOTE_WORKFLOW_LLM: 'off', AZURE_FOUNDRY_API_KEY: 'fake-key-a' });
+          rmSync(marker);
+        }
+        writeFileSync(alternate, source([pair[0], "AZURE_FOUNDRY_API_KEY='fake-key-b'"], "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'"));
+        expect((await run()).status).toBe(0);
+        expect(inspect()).toMatchObject({ HOME: toBashPath(temp), PATH: env.PATH, NODE_ENV: 'production', PORT: '8789', NAVA_AUTH_SESSION_PROFILE: 'remote', NAVA_BUILD_COMMIT: 'a'.repeat(40), PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on', PANE_WRITE_CREATE: 'lab', AZURE_FOUNDRY_API_KEY: 'fake-key-b', BETTER_AUTH_SECRET: 'remote-fake', UNRELATED_SECRET: null, GOOGLE_CLIENT_SECRET: null, REPO_ROOT: null, ENV_FILE: null });
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
+        expect((await run()).status).toBe(0);
+        expect(inspect()).toMatchObject({ PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on' });
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        writeFileSync(alternate, source([], '', "QUOTE_WORKFLOW_LLM='off'"));
+        expect((await run()).status).toBe(0);
+        expect(inspect()).toMatchObject({ PANE_BRAIN: null, QUOTE_WORKFLOW_LLM: 'off', AZURE_FOUNDRY_API_KEY: null });
+        rmSync(marker);
+        writeFileSync(alternate, source([], '', ''));
+        expect((await run()).status).toBe(0);
+        expect(inspect()).toMatchObject({ PANE_BRAIN: null, QUOTE_WORKFLOW_LLM: null, AZURE_FOUNDRY_API_KEY: null });
+        rmSync(marker);
+        writeFileSync(common, [...commonBase, "PANE_BRAIN='agent'", ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(common, [...commonBase, "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(common, [...commonBase, ''].join('\n'));
+        for (const rows of [source([pair[0]]), source([pair[0], "AZURE_FOUNDRY_API_KEY=''"])]) {
+          writeFileSync(alternate, rows);
+          const result = await run();
+          expect(result.status).not.toBe(0);
+          expect(result.stdout + result.stderr).not.toContain('fake-key');
+          expect(existsSync(marker)).toBe(false);
+        }
+        expect(readFileSync(oldModel, 'utf8')).toBe('pre-existing model overlay\n');
+        expect(readFileSync(oldBrain, 'utf8')).toBe('pre-existing brain overlay\n');
+        expect(readdirSync(server).filter((name) => name.startsWith('.env.remote-launch.'))).toEqual([]);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it('registers the guarded wrapper as the remote PM2 process', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { createRequire } = await import('node:module');
+      const { dirname, join } = await import('node:path');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const require = createRequire(import.meta.url);
+      const config = require(join(deploy, 'pm2.config.cjs')) as {
+        apps: Array<{ name: string; [key: string]: unknown }>;
+      };
+      const remote = config.apps.find((app) => app.name === 'remote-http');
+      expect(remote).toMatchObject({
+        script: 'deploy/start-remote-http.sh',
+        interpreter: '/bin/bash',
+        cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
+        instances: 1,
+        exec_mode: 'fork',
+        env: {
+          NODE_ENV: 'production',
+          PORT: '8789',
+          NAVA_AUTH_SESSION_PROFILE: 'remote',
+          NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+          ENV_FILE: process.env.ENV_FILE ?? '',
+        },
+      });
+      const wrapper = readFileSync(join(deploy, 'start-remote-http.sh'), 'utf8');
+      expect(wrapper).toContain('env -i');
+      expect(wrapper).toContain('--prepare-model');
+      expect(wrapper).toContain('--check-model');
+      expect(wrapper.indexOf('--check-model')).toBeLessThan(wrapper.indexOf('exec node'));
+      expect(wrapper).toContain('exec node "$SERVER_PILOT/dist/main.js"');
     });
 
     it('keeps normal deploy, restart, and boot remote-aware without starting HMS', async () => {

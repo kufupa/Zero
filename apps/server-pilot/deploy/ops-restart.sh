@@ -30,40 +30,41 @@ export NVM_DIR=/home/ubuntu/.nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 export PATH="$HOME/.local/share/pnpm:$PATH"
 cd /home/ubuntu/repos/zero
-ENV_FILE=apps/server-pilot/.env.production
-[ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
 SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
-REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
-REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
+ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
+[ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$PWD/$ENV_FILE" ;; esac
+export ENV_FILE
 export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}"
 
 validate_remote_env_files() {
-  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate || return 1
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --ensure-model || return 1
 }
 
 start_remote_http() {
+  # PM2 receives no remote auth or model credentials; the child wrapper loads them.
   env -i \
     HOME="$HOME" \
     PATH="$PATH" \
     NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    ENV_FILE="$ENV_FILE" \
     SERVER_PILOT="$SERVER_PILOT" \
-    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
-    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
     bash -ceu '
-      set -a
-      source "$REMOTE_COMMON_ENV"
-      source "$REMOTE_ADMIN_ENV"
-      set +a
       pm2 delete remote-http 2>/dev/null || true
       pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
     '
 }
 
 start_legacy_processes() {
+  local launch_build_commit="$NAVA_BUILD_COMMIT"
+  local launch_env_file="$ENV_FILE"
   local mode
   set -a
   source "$ENV_FILE"
   set +a
+  # Runtime env may contain an older SHA; every PM2 app uses the launch identity.
+  export NAVA_BUILD_COMMIT="$launch_build_commit" ENV_FILE="$launch_env_file"
   : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
   mode="${MAIL_TRANSPORT_MODE:-fixture}"
   if [ "$mode" = "fixture" ]; then
@@ -125,8 +126,11 @@ for path in \
   [ ! -e "$path" ] && [ ! -L "$path" ]
 done
 
+# Legacy env may contain an older build identity; retain the launch identity for remote-http.
+remote_launch_build_commit="$NAVA_BUILD_COMMIT"
 start_legacy_processes
-start_remote_http
+NAVA_BUILD_COMMIT="$remote_launch_build_commit" start_remote_http
+unset remote_launch_build_commit
 pm2 save
 for health_url in http://127.0.0.1:8788/health http://127.0.0.1:8789/health; do
   curl -fsS "$health_url"

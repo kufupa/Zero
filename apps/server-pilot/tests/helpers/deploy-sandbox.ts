@@ -45,7 +45,7 @@ export function deploymentSandbox(url: string) {
   script(join(deploy, 'vpn-health-assert.sh'), ':');
   script(
     join(deploy, 'write-ec2-remote-env.sh'),
-    `if [ "\x24{1:-}" != --validate ]; then\n  printf common > "$REMOTE_TEST_SERVER/.env.remote-common"\n  printf admin > "$REMOTE_TEST_SERVER/.env.remote-admin"\n  printf '%s\\n' bootstrap >> "$EVENTS"\nfi`,
+    `case "\x24{1:-}" in\n  --validate|--validate-model|--ensure-model) : ;;\n  '') printf common > "$REMOTE_TEST_SERVER/.env.remote-common"; printf admin > "$REMOTE_TEST_SERVER/.env.remote-admin"; printf '%s\\n' bootstrap >> "$EVENTS" ;;\n  *) exit 2 ;;\nesac`,
   );
   script(
     join(deploy, 'ssm-run-command.sh'),
