@@ -71,7 +71,8 @@ describe('batch manifest', () => {
     expect(() => parseLabBatch(wrongHotel, 'lab')).toThrow('batch_property_not_hrcen');
     const realGuest = manifest(); realGuest.rooms[0]!.guest.lastName = 'Guest';
     expect(() => parseLabBatch(realGuest, 'lab')).toThrow('batch_labtest_required');
-    const oldDate = manifest(); oldDate.rooms[0]!.stay.arrival = '2026-12-29';
+    const oldDate = manifest();
+    for (const room of oldDate.rooms) room.stay.arrival = '2026-12-29';
     expect(() => parseLabBatch(oldDate, 'lab')).toThrow('batch_labtest_required');
     const email = structuredClone(manifest());
     email.rooms[0]!.cmsSend = true;
