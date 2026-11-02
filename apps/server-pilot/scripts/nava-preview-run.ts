@@ -657,7 +657,7 @@ function threadFromReferer(referer: string | undefined): string | null {
   }
 }
 
-async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsReads = false, preparePolicy?: ReplayPreparePolicy): Promise<void> {
+export async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsReads = false, preparePolicy?: ReplayPreparePolicy): Promise<void> {
   await page.route('**/api/trpc/**', async (route: Route) => {
     const request = route.request();
     const decision = classifyTrpcRequest(request.url(), { allowHmsReads });
@@ -668,16 +668,27 @@ async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsRe
     // Do not split mixed batches: forwarding one allowed prepare could forward a commit too.
     const procedure = decision.procedures.length === 1 ? decision.procedures[0] : undefined;
     if (preparePolicy && procedure && preparePolicy.procedures.has(procedure)) {
+      const headers = await request.allHeaders();
+      // Validate the credentials carried by this request, not the browser's potentially newer session.
+      // A selection or sign-in switch while a request is in flight must not authorize another user.
+      const credentials = {
+        ...(headers.cookie ? { cookie: headers.cookie } : {}),
+        ...(headers.authorization ? { authorization: headers.authorization } : {}),
+      };
       let sessionUserId: string | null = null;
-      try {
-        const response = await page.context().request.get(`${preparePolicy.origin}/api/auth/get-session`, { timeout: 5_000 });
-        if (response.ok()) {
-          const session = await response.json() as { user?: { id?: unknown } } | null;
-          sessionUserId = typeof session?.user?.id === 'string' ? session.user.id : null;
-        }
-      } catch { /* A failed session check must never authorize a prepare. */ }
+      if (new URL(request.url()).origin === preparePolicy.origin && headers.cookie) {
+        try {
+          const response = await page.context().request.get(`${preparePolicy.origin}/api/auth/get-session`, {
+            headers: credentials, timeout: 5_000, maxRedirects: 0,
+          });
+          if (response.ok()) {
+            const session = await response.json() as { user?: { id?: unknown } } | null;
+            sessionUserId = typeof session?.user?.id === 'string' ? session.user.id : null;
+          }
+        } catch { /* A failed session check must never authorize a prepare. */ }
+      }
       if (replayPrepareAllowed({ url: request.url(), procedure, policy: preparePolicy, sessionUserId,
-        requestTransportId: request.headers()['x-zero-active-transport'] ?? null, body: request.postData() })) {
+        requestTransportId: headers['x-zero-active-transport'] ?? null, body: request.postData() })) {
         await route.continue();
         return;
       }

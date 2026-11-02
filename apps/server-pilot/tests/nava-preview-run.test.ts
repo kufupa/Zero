@@ -6,6 +6,7 @@ import {
   configFailures,
   gateFailures,
   isPiiField,
+  installWriteGuard,
   KNOWN_WRITE_PROCEDURES,
   MARK_PII_JS,
   NEVER_COMMIT_OR_SEND,
@@ -30,6 +31,8 @@ import {
 } from '../scripts/nava-preview-run';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -479,6 +482,54 @@ describe('identity-bound replay prepare', () => {
     }
     expect(classifyTrpcRequest(`${origin}/api/trpc/${procedure},quoteWorkflow.commitStay?batch=1`).allowed).toBe(false);
   });
+});
+
+describe('browser replay guard', () => {
+  it.skipIf(!chromiumBinary)('verifies the intercepted session and never forwards mixed batches', async () => {
+    const forwarded: string[] = [];
+    const server = createServer((req, res) => {
+      if (req.url === '/api/auth/get-session') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ user: { id: req.headers.cookie?.includes('session=staff-1') ? 'staff-1' : 'other' } }));
+      } else if (req.url?.startsWith('/api/trpc/')) {
+        forwarded.push(req.url);
+        res.setHeader('content-type', 'application/json');
+        res.end('{}');
+      } else res.end('<html></html>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+    try {
+      const context = await browser.newContext({ extraHTTPHeaders: { 'x-zero-active-transport': 'mailbox-1' } });
+      await context.addCookies([{ name: 'session', value: 'staff-1', url: origin }]);
+      const page = await context.newPage();
+      const blocked: Array<{ thread: string | null; procedure: string }> = [];
+      await installWriteGuard(page, blocked, false, { origin, userId: 'staff-1', transportId: 'mailbox-1',
+        messageId: 'message-1', procedures: new Set(['workstation.prepareBookingDraft']) });
+      await page.goto(origin);
+      const send = (path: string, messageId: string) => page.evaluate(async ({ path, messageId }) => {
+        try {
+          const response = await fetch(`/api/trpc/${path}?batch=1`, { method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ 0: { json: { messageId } } }) });
+          return response.ok;
+        } catch { return false; }
+      }, { path, messageId });
+      expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(true);
+      expect(await send('workstation.prepareBookingDraft', 'message-2')).toBe(false);
+      expect(await send('workstation.prepareBookingDraft,quoteWorkflow.commitStay', 'message-1')).toBe(false);
+      await context.clearCookies();
+      await context.addCookies([{ name: 'session', value: 'staff-2', url: origin }]);
+      expect(await send('workstation.prepareBookingDraft', 'message-1')).toBe(false);
+      expect(forwarded).toEqual(['/api/trpc/workstation.prepareBookingDraft?batch=1']);
+      expect(blocked.map((item) => item.procedure)).toContain('quoteWorkflow.commitStay');
+      await context.close();
+    } finally {
+      await browser.close();
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  }, 30_000);
 });
 
 describe('classifyTrpcRequest: opt-in HMS reads', () => {
