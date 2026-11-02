@@ -33,8 +33,18 @@ export type HmsCloudReservationObservations = {
   bookerContact: HmsCloudFieldObservation;
 };
 
+/** Observation from one clean, identity-matched Record View, not a write grant. */
+export type HmsCloudNativePreimage = {
+  source: 'record_view_ext_model'; propertyCode: string; confirmation: string;
+  reservationStayId: string; reservationId: string; recordId: string; guestId: string;
+  status: string; firstName: string; lastName: string; arrival: string; departure: string;
+  roomType: string; ratePlan: string; adults: number; children: number; childAges: number[] | 'unknown';
+};
+
 export type HmsCloudFindResult = PaneStayFindResult & {
   source: 'hms_cloud_saved_stay';
+  /** Unknown unless native model and visible fields agree on this selected stay. */
+  nativePreimage?: HmsCloudNativePreimage | null;
   /** Full name is kept intact; no heuristic split into first/last name. */
   guestName: string | null;
   /** Record View exposes party display names here, but does not expose native party IDs. */
@@ -219,6 +229,28 @@ function paneStayFields(confirmation: string, fields: Array<RecordValue>): PaneS
   };
 }
 
+function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<RecordValue>): HmsCloudNativePreimage | null {
+  const native = record(raw);
+  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== CENTURION_HMS_READ_TARGET.propertyCode ||
+      native.confirmation !== stay.confirmation || native.status !== stay.status || native.firstName !== stay.firstName ||
+      native.lastName !== stay.lastName || native.arrival !== stay.arrival || native.departure !== stay.departure ||
+      native.roomType !== stay.roomType || native.ratePlan !== stay.ratePlan || native.adults !== stay.adults ||
+      native.children !== stay.children || native.guestId !== fieldText(fields, ['guestid'])) return null;
+  const ids = ['reservationStayId', 'reservationId', 'recordId', 'guestId'] as const;
+  if (ids.some((key) => typeof native[key] !== 'string' || !/^\d{1,100}$/.test(native[key] as string)) ||
+      !Number.isInteger(native.children) || (native.children as number) < 0 || (native.children as number) > 9 ||
+      !Number.isInteger(native.adults) || (native.adults as number) < 1 || (native.adults as number) > 16) return null;
+  const ages = native.childAges;
+  if (ages !== 'unknown' && (!Array.isArray(ages) || ages.length !== native.children ||
+      !Array.from(ages).every((age) => Number.isInteger(age) && age >= 0 && age <= 17))) return null;
+  return { source: 'record_view_ext_model', propertyCode: native.propertyCode as string, confirmation: native.confirmation as string,
+    reservationStayId: native.reservationStayId as string, reservationId: native.reservationId as string,
+    recordId: native.recordId as string, guestId: native.guestId as string, status: native.status as string,
+    firstName: native.firstName as string, lastName: native.lastName as string, arrival: native.arrival as string,
+    departure: native.departure as string, roomType: native.roomType as string, ratePlan: native.ratePlan as string,
+    adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages] };
+}
+
 function paneStayCommercial(stay: PaneStayFields): PaneStayCommercial | undefined {
   const company = stay.organization?.trim();
   const agency = stay.bookingAgency?.trim();
@@ -250,7 +282,7 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
     const commercial = paneStayCommercial(stay);
     return {
-      outcome: 'found', reason: null, stay,
+      outcome: 'found', reason: null, stay, nativePreimage: nativePreimage(details?.nativePreimage, stay, fields),
       ...(commercial ? { commercial } : {}),
       financialObservations: financialObservations(fields),
       reservationObservations: reservationObservations(fields),
@@ -328,13 +360,13 @@ export async function readCloudStayForPane(
 ): Promise<unknown> {
   const first = await session.runTool({
     tool: 'read', confirmation: request.confirmation,
-    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record',
+    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record', includeNativePreimage: true,
   });
   const failure = record(first);
   if (!request.arrival || failure?.outcome !== 'read_failed' || failure.issue !== 'CONFIRMATION_HINT_MISMATCH') {
     return first;
   }
-  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record' });
+  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true });
   if (record(second)?.outcome !== 'ok') return second;
   const checked = projectCloudStayFind(request, second);
   if (checked.outcome !== 'found' || !checked.arrivalMismatch) {
