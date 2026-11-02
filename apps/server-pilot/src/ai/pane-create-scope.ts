@@ -3,6 +3,7 @@ import { mailExtractionPayloadSchema, type ExtractionRow, type ExtractionStay } 
 import { parseFieldPath, validFieldValue, type WorkState } from './work-items.js';
 import type { PaneStay } from './pane-stay-save.js';
 import { matchRoomType } from './room-types.js';
+import type { HistoricalOwnRow } from './pane-create-scope-origin.js';
 
 const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 export const paneCreatePartySchema = z.discriminatedUnion('kind', [
@@ -19,6 +20,9 @@ export type PaneCreateParty = z.infer<typeof paneCreatePartySchema>;
 /** Strictly project the linked extraction plus its persisted pane edits. Never guess missing occupancy. */
 export function reconcilePaneCreateScope(input: {
   payload: unknown; state: WorkState; identity: PaneCreateIdentity; party: PaneCreateParty; stay: PaneStay;
+  /** Server-owned evidence only: the caller must derive these from this item's durable user field events
+   * and the same linked source message's extraction recorded by each event. Never accept browser claims. */
+  historicalOwnRows?: ReadonlyArray<HistoricalOwnRow>;
 }): boolean {
   const parsed = mailExtractionPayloadSchema.safeParse(input.payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(input.identity).success ||
@@ -37,6 +41,23 @@ export function reconcilePaneCreateScope(input: {
     if (original.rows.length === 0) originallyRowless.add(original.id);
     stays.set(original.id, { ...original, rows: original.rows.map((row) => ({ ...row })) });
   }
+  // A later extraction can add rows after a rowless stay's own row was edited. The prior
+  // extraction and its still-persisted field event prove origin; the generated name alone does not.
+  const hasHistoricalOwnRow = (stayId: string, rowId: string): boolean => {
+    if (rowId !== `${stayId}_row` || !Array.isArray(input.historicalOwnRows)) return false;
+    return input.historicalOwnRows.some((proof) => {
+      if (!proof || !z.string().uuid().safeParse(proof.eventId).success ||
+          !z.string().uuid().safeParse(proof.extractionId).success) return false;
+      const path = parseFieldPath(proof.fieldPath);
+      if (!path || path.stayId !== stayId || path.rowId !== rowId || path.field === 'removed' ||
+          !Object.hasOwn(input.state, proof.fieldPath) || !validFieldValue(path.field, proof.value) ||
+          JSON.stringify(input.state[proof.fieldPath]) !== JSON.stringify(proof.value)) return false;
+      const prior = mailExtractionPayloadSchema.safeParse(proof.extraction);
+      if (!prior.success) return false;
+      const matches = prior.data.stays.filter((stay) => stay.id === stayId);
+      return matches.length === 1 && matches[0]!.rows.length === 0;
+    });
+  };
   for (const [key, value] of Object.entries(input.state)) {
     if (!key.startsWith('stays[')) continue;
     const path = parseFieldPath(key);
@@ -55,7 +76,8 @@ export function reconcilePaneCreateScope(input: {
     if (path.rowId && !stay.rows.some((row) => row.id === path.rowId)) {
       const marker = `stays[${path.stayId}].rows[${path.rowId}].removed`;
       // The UI also gives an initially rowless extraction a deterministic own-row id.
-      if (input.state[marker] !== null && !(originallyRowless.has(path.stayId) && path.rowId === `${path.stayId}_row`)) return false;
+      if (input.state[marker] !== null && !(originallyRowless.has(path.stayId) && path.rowId === `${path.stayId}_row`) &&
+          !hasHistoricalOwnRow(path.stayId, path.rowId)) return false;
       stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
     }
   }

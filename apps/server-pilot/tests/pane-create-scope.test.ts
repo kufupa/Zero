@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reconcilePaneCreateScope } from '../src/ai/pane-create-scope.js';
+import { paneOwnRowsFromEvents } from '../src/ai/pane-create-scope-origin.js';
 
 const stay = { firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01', departure: '2027-03-03',
   adults: 1, childAges: [], sourceOfBusiness: 'Walk in', roomType: 'STQN', ratePlan: 'BAR',
@@ -61,6 +62,41 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, payload: two, state: { 'stays[s1].rows[r1].count': 1 } })).toBe(true);
     expect(reconcilePaneCreateScope({ ...base, payload: two, state: { 'stays[s1].rows[r1].count': null } })).toBe(false);
     expect(reconcilePaneCreateScope({ ...base, payload: { ...payload, stays: [{ ...extractedStay, totalRooms: null, rows: [{ ...row, rooms: null }] }] } })).toBe(false);
+  });
+  it('requires saved rowless extraction provenance when a reread introduces another row', () => {
+    const ownRow = 'stays[s1].rows[s1_row]';
+    const state = { 'stays[s1].rows[r1].removed': true, [`${ownRow}.count`]: 1,
+      [`${ownRow}.adults`]: 1, [`${ownRow}.childAges`]: [] };
+    const historicalExtraction = { ...payload, stays: [{ ...extractedStay, rows: [] }] };
+    const historicalOwnRows = [{ eventId: '11111111-1111-4111-8111-111111111111',
+      extractionId: '22222222-2222-4222-8222-222222222222', fieldPath: `${ownRow}.count`, value: 1, extraction: historicalExtraction }];
+    const input = { ...base, state, identity: { ...base.identity, rowId: 's1_row' } };
+    expect(reconcilePaneCreateScope(input)).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, value: 2 }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, eventId: '' }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, extractionId: '' }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, fieldPath: 'stays[s1].rows[r1].count' }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, extraction: payload }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, extraction: { ...historicalExtraction, stays: [] } }] })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...input, historicalOwnRows: [{ ...historicalOwnRows[0]!, extraction: null }] })).toBe(false);
+  });
+  it('reconciles a saved own row from a matching durable event and extraction', () => {
+    const fieldPath = 'stays[s1].rows[s1_row].count';
+    const identity = { stayId: 's1', rowId: 's1_row', roomIndex: 1 };
+    const extractionId = '22222222-2222-4222-8222-222222222222';
+    const historicalExtraction = { ...payload, stays: [{ ...extractedStay, rows: [] }] };
+    const row = { eventId: '11111111-1111-4111-8111-111111111111', workItemId: 'item', transportId: 'transport',
+      sourceMessageId: 'message', eventWorkItemId: 'item', actorKind: 'user', eventType: 'field.edit', fieldPath, value: 1,
+      aiSource: 'v1', evidence: { extractionId, paneSeq: 1, paneState: { [fieldPath]: 1 } },
+      extractionId, extractionMessageId: 'message', extractorVersion: 'v1', extractionStatus: 'succeeded', extraction: historicalExtraction };
+    const historicalOwnRows = paneOwnRowsFromEvents({ workItemId: 'item', transportId: 'transport', identity, rows: [row] });
+    const state = { 'stays[s1].rows[r1].removed': true, [fieldPath]: 1,
+      'stays[s1].rows[s1_row].adults': 1, 'stays[s1].rows[s1_row].childAges': [] };
+    expect(reconcilePaneCreateScope({ ...base, identity, state, historicalOwnRows })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, identity, state, historicalOwnRows: paneOwnRowsFromEvents({
+      workItemId: 'item', transportId: 'transport', identity, rows: [{ ...row, extractionMessageId: 'other' }],
+    }) })).toBe(false);
   });
   it('refuses ambiguous child occupancy, duplicate identities and unsupported fields', () => {
     const ambiguous = { ...payload, missing: [{ field: 'children', question: 'What are the child ages?' }],
