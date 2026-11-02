@@ -49,6 +49,42 @@ describe('disconnected Labtest serial executor contract', () => {
     expect(vi.mocked(f.readPreimage).mock.calls[1]![1]).toHaveLength(1);
     expect(f.rows.map(({ value }) => (value as { kind: string }).kind)).toEqual(['claimed', 'outcome', 'claimed', 'outcome']);
   });
+  it('records evidence while ignoring adapter metadata and binding event identity server-side', async () => {
+    const f = fixture(), original = f.dispatch.getMockImplementation()!;
+    f.dispatch.mockImplementation(async (input) => ({ ...await original(input), durationMs: 42,
+      kind: 'claimed', childId: 'f'.repeat(64), runId: 'other-run', digest: 'e'.repeat(64) }));
+    const states = await executeLabBatchSerial(f.deps);
+    expect(states.map((state) => state.status)).toEqual(['confirmed', 'confirmed']);
+    expect(f.dispatch).toHaveBeenCalledTimes(2);
+    for (const index of [0, 1]) {
+      const event = f.rows[index * 2 + 1]!.value;
+      expect(event).toMatchObject({ kind: 'outcome', childId: batchChildId(f.manifest, f.manifest.rooms[index]!),
+        runId: 'run-1', digest: batchDigest(f.manifest), status: 'confirmed' });
+      expect(event).not.toHaveProperty('durationMs');
+    }
+  });
+  it('holds unapproved Save evidence and ignores adapter metadata', async () => {
+    const f = fixture();
+    f.dispatch.mockImplementationOnce(async () => ({ status: 'confirmed', confirmation: 'C1',
+      recordDigest: 'a'.repeat(64), screenshotRef: 'shot-1', readbackRef: 'read-1',
+      childId: 'f'.repeat(64), runId: 'other-run', durationMs: 42 }));
+    expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['uncertain', 'unattempted']);
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    expect(f.rows[1]!.value).toMatchObject({ kind: 'outcome', status: 'uncertain', confirmation: 'C1',
+      childId: batchChildId(f.manifest, f.manifest.rooms[0]!), runId: 'run-1', screenshotRef: 'shot-1', readbackRef: 'read-1' });
+    expect(f.rows[1]!.value).not.toHaveProperty('durationMs');
+  });
+  it('omits undefined evidence so outcome verification survives a JSON round trip', async () => {
+    const f = fixture();
+    f.deps.append = async (event) => { f.rows.push({ sequence: f.rows.length + 1, value: JSON.parse(JSON.stringify(event)) }); };
+    f.dispatch.mockImplementationOnce(async ({ beforeSave }) => {
+      await beforeSave({ signal: new AbortController().signal });
+      return { status: 'uncertain', confirmation: 'C1', durationMs: 42 };
+    });
+    expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['uncertain', 'unattempted']);
+    expect(f.rows[1]!.value).toMatchObject({ status: 'uncertain', confirmation: 'C1' });
+    expect(f.rows[1]!.value).not.toHaveProperty('screenshotRef');
+  });
   it('stops at the first uncertain result and never dispatches later rooms', async () => {
     const f = fixture();
     f.dispatch.mockImplementationOnce(async ({ beforeSave }) => { await beforeSave({ signal: new AbortController().signal }); return { status: 'uncertain' }; });

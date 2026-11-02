@@ -3,7 +3,7 @@ import { validateBatchTransition } from './hms-batch-transition.js';
 import { batchChildId, batchDigest, batchRoomDigest, parseLabBatch, verifyBatchRoomProfile,
   type BatchManifest, type BatchProfileLookup, type BatchRoom } from './hms-batch-manifest.js';
 import { checkBatchPreimage, type BatchPreimage, type ConfirmedBatchSibling } from './hms-batch-preimage.js';
-import { batchEventSchema, batchStates, parseBatchEvents, type BatchEvent, type BatchEventRow, type BatchChildState } from './hms-batch-state.js';
+import { batchEventSchema, batchStates, parseBatchEvents, type BatchEvent, type BatchEventRow, type BatchChildOutcome, type BatchChildState } from './hms-batch-state.js';
 
 type Context = { manifest: BatchManifest; manifestDigest: string; childId: string; childDigest: string; runId: string };
 type DispatchResult = { status: 'confirmed' | 'not_dispatched' | 'failed' | 'uncertain'; confirmation?: string;
@@ -126,17 +126,23 @@ export async function executeLabBatchSerial(deps: LabBatchSerialDependencies): P
       } catch {
         outcome = { status: enteredDispatch ? 'uncertain' : 'not_dispatched' };
       }
-      const candidate = batchEventSchema.parse({ kind: 'outcome', childId: context.childId,
-        runId: context.runId, digest, ...outcome });
+      // Adapter metadata is not event authority. Copy only declared evidence,
+      // omitting undefined fields so a durable JSON round trip stays identical.
+      let candidate: BatchChildOutcome = { kind: 'outcome', childId: context.childId,
+        runId: context.runId, digest, status: outcome.status,
+        ...(outcome.confirmation === undefined ? {} : { confirmation: outcome.confirmation }),
+        ...(outcome.recordDigest === undefined ? {} : { recordDigest: outcome.recordDigest }),
+        ...(outcome.screenshotRef === undefined ? {} : { screenshotRef: outcome.screenshotRef }),
+        ...(outcome.readbackRef === undefined ? {} : { readbackRef: outcome.readbackRef }) };
+      batchEventSchema.parse(candidate);
       try { validateBatchTransition(manifest, rows, candidate); }
       catch {
         // Retain valid observations even if they conflict with another child. A
         // shared confirmation must also invalidate the earlier sibling's state.
-        outcome = { ...outcome, status: 'uncertain' };
+        candidate = { ...candidate, status: 'uncertain' };
       }
-      rows = await append(rows, batchEventSchema.parse({ kind: 'outcome', childId: context.childId,
-        runId: context.runId, digest, ...outcome }));
-      if (outcome.status !== 'confirmed') break;
+      rows = await append(rows, candidate);
+      if (candidate.status !== 'confirmed') break;
     }
     return batchStates(manifest, rows);
   });
