@@ -15,16 +15,29 @@ type Props = {
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
   result?: SavedStayAmendResult | null;
+  /** The current source and the proposal actually submitted, not values copied from the result. */
+  resultContext?: {
+    source: { threadId: string; messageId: string; mailboxEmail: string; sourceHash: string };
+    submittedProposal: SavedStayAmendProposal;
+  } | null;
   screenshot?: ReactNode;
   onDraftChange?: (input: { proposal: SavedStayAmendProposal | null; errors: string[] }) => void;
 };
+
+function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStayAmendProposal | null | undefined): boolean {
+  if (!a || !b || !a.changes || !b.changes || a.confirmation !== b.confirmation) return false;
+  const left = a.changes as Record<string, unknown>, right = b.changes as Record<string, unknown>;
+  const keys = Object.keys(left).sort(), otherKeys = Object.keys(right).sort();
+  return keys.length === otherKeys.length && keys.every((key, index) =>
+    key === otherKeys[index] && JSON.stringify(left[key]) === JSON.stringify(right[key]));
+}
 
 /** Local request only. Nothing here approves or writes to HMS. */
 export function SavedStayAmendEditor(props: Props) {
   return <SavedStayAmendEditorContent key={props.confirmation} {...props} />;
 }
 
-function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, requestedDeparture, result, screenshot, onDraftChange }: Props) {
+function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, requestedDeparture, result, resultContext, screenshot, onDraftChange }: Props) {
   const [draft, setDraft] = useState(() => initialSavedStayAmendDraft(stay, {
     arrival: requestedArrival, departure: requestedDeparture,
   }));
@@ -45,13 +58,18 @@ function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, req
   };
   const field = (name: 'arrival' | 'departure' | 'adults' | 'children' | 'childAges', value: string) =>
     update({ ...draft, [name]: value });
-  const visibleResult = result?.confirmation === confirmation && result.proposal?.confirmation === confirmation ? result : null;
+  const sourceMatches = !!result && !!resultContext && (['threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
+    .every((key) => typeof resultContext.source[key] === 'string' && resultContext.source[key].trim() !== '' &&
+      result[key] === resultContext.source[key]);
+  const visibleResult = sourceMatches && result?.confirmation === confirmation &&
+    sameProposal(result.proposal, resultContext?.submittedProposal) && result.proposal.confirmation === confirmation ? result : null;
+  const resultMatchesDraft = visibleResult ? sameProposal(visibleResult.proposal, validation.proposal) : false;
   const readback = visibleResult?.state === 'verified' && visibleResult.screenshotRef ? visibleResult.readback : null;
   const differences = readback && visibleResult ? amendmentReadbackDifferences(visibleResult) : [];
   return (
     <div data-testid="amend-form" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       <p className={labelClass}>Requested change</p>
-      <p className={smallClass}>These entries stay only while this panel is open and are not saved to HMS. Save the change in HMS for now.</p>
+      <p className={smallClass}>These entries stay only while this panel is open and are not saved to HMS.</p>
       <div className="grid grid-cols-2 gap-2">
         {(['arrival', 'departure', 'adults', 'children'] as const).map((name) => {
           const title = { arrival: 'Arrival', departure: 'Departure', adults: 'Adults', children: 'Children' }[name];
@@ -78,6 +96,7 @@ function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, req
         {validation.errors.map((error) => <li key={error}>{error}</li>)}
       </ul> : null}
       {visibleResult ? <div aria-live="polite" className={smallClass}>
+        {!resultMatchesDraft ? <p>Previous HMS attempt. Its result describes the submitted change, not the current entries.</p> : null}
         {readback ? <>
           <p>Last HMS read-back after save</p>
           <p>Dates: {readback.arrival || 'Not shown'} to {readback.departure || 'Not shown'}</p>
@@ -86,7 +105,7 @@ function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, req
           <p>HMS average rate: {readback.averageRate || 'Not shown'} · HMS grand total: {readback.grandTotal || 'Not shown'}</p>
           {differences.map((difference) => <p key={difference}>{difference}</p>)}
           {screenshot}
-        </> : <p>{visibleResult.state === 'not_dispatched' ? 'No change was sent to HMS.' : 'Outcome needs checking in HMS before another attempt.'}</p>}
+        </> : <p>{visibleResult.state === 'not_dispatched' ? 'No change was sent to HMS.' : 'The HMS outcome is not confirmed. Do not make another change to this booking until Nava confirms the booking and previous session are safe.'}</p>}
       </div> : null}
     </div>
   );

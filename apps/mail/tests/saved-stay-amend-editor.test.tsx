@@ -51,22 +51,54 @@ describe('saved stay amendment request', () => {
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Choose a change to the booking.'] }));
   });
-  it('reports readback discrepancies without treating requested changes as saved', () => {
+  it('reports readback discrepancies and distinguishes a previous proposal from current entries', () => {
     const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
       confirmation: stay.confirmation!, state: 'verified' as const,
       proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } },
       readback: { arrival: stay.arrival, departure: stay.departure, adults: 2, children: 0, childAges: null, averageRate: '100.00', grandTotal: null },
       screenshotRef: { runId: 'r', name: 'after.png' } };
+    const resultContext = { source: { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' },
+      submittedProposal: result.proposal };
     expect(amendmentReadbackDifferences(result)).toHaveLength(1);
-    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} />);
+    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
     expect(screen.getByText(/HMS read-back differs/)).toBeTruthy();
+    expect(screen.getByText(/Previous HMS attempt/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
+    expect(screen.queryByText(/Previous HMS attempt/)).toBeNull();
     expect(screen.queryByText('Saved in HMS.')).toBeNull();
   });
-  it('treats a verified label without screenshot and fresh readback as needing a check', () => {
+  it('hides results for a different source or submitted proposal even when confirmation matches', () => {
+    const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
+      confirmation: stay.confirmation!, state: 'needs_check' as const,
+      proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } } };
+    const source = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' };
+    const contexts = [
+      null,
+      ...(['threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const).map((key) =>
+        ({ source: { ...source, [key]: 'different' }, submittedProposal: result.proposal })),
+      { source: { ...source, sourceHash: '' }, submittedProposal: result.proposal },
+      { source, submittedProposal: { confirmation: stay.confirmation!, changes: { adults: 4 } } },
+    ];
+    for (const resultContext of contexts) {
+      const view = render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
+      expect(screen.queryByText(/HMS outcome is not confirmed/)).toBeNull();
+      view.unmount();
+    }
+  });
+  it('keeps an uncertain prior result visible without suggesting another save', () => {
     const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
       confirmation: stay.confirmation!, state: 'verified' as const,
       proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } } };
-    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} />);
-    expect(screen.getByText(/Outcome needs checking/)).toBeTruthy();
+    const resultContext = { source: { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' },
+      submittedProposal: result.proposal };
+    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
+    expect(screen.getByText(/HMS outcome is not confirmed/)).toBeTruthy();
+    expect(screen.getByText(/Do not make another change to this booking/)).toBeTruthy();
+    expect(screen.getByText(/previous session are safe/)).toBeTruthy();
+    expect(screen.getByText(/Previous HMS attempt/)).toBeTruthy();
+    expect(screen.queryByText(/Save the change in HMS for now/)).toBeNull();
+    fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '4' } });
+    expect(screen.getByText(/HMS outcome is not confirmed/)).toBeTruthy();
+    expect(screen.getByText(/Previous HMS attempt/)).toBeTruthy();
   });
 });
