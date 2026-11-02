@@ -415,10 +415,11 @@ function nativeCreateDraftPage() {
     getSubmitData: () => ({ [element.name]: values[element.name] }),
     getFieldLabel: () => element.name === 'nightsvalue' ? 'Lifetime Nights' : '',
   }]));
+  const windows = [];
   const env = { location: { origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' },
-    document: { title: 'Infor HMS - HRCEN', querySelectorAll: () => elements },
+    document: { title: 'Infor HMS - HRCEN', querySelectorAll: (selector) => selector === '.x-window:not(.x-menu)' ? windows : elements },
     getComputedStyle: () => ({ visibility: 'visible' }), Ext: { getCmp: (name) => components[name] } };
-  const page = { data, values, elements, components, on() {}, off() {},
+  const page = { data, values, elements, components, windows, on() {}, off() {},
     context: () => ({ _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }),
     locator: () => ({ count: async () => 0 }),
     async evaluate(fn, arg) {
@@ -541,6 +542,8 @@ test('billing draft exempts only its own blank required control and verifies nat
   assert.equal((await run(duplicate)).draftCheck, 'DRAFT_VISIBLE_FIELDS');
   const readonly = nativeCreateDraftPage(); readonly.components.billingreference.readOnly = true;
   assert.equal((await run(readonly)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
+  const modal = nativeCreateDraftPage(); modal.windows.push({ offsetWidth: 1, offsetHeight: 1 });
+  assert.equal((await run(modal)).draftCheck, 'DRAFT_OPEN_MODAL');
   const missingNative = nativeCreateDraftPage(); missingNative.components.billingreference.getValue = () => undefined;
   assert.equal((await run(missingNative)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
   const invalid = nativeCreateDraftPage(); invalid.values.billingreference = 'invalid';

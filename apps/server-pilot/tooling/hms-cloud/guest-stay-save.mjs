@@ -21,7 +21,7 @@ const draftChecks = new Set([
   'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
   'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
   'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_AGENCY_COMMISSION_VALUE', 'DRAFT_REQUIRED_FIELDS',
-  'DRAFT_BILLING_REFERENCE_VALUE',
+  'DRAFT_BILLING_REFERENCE_VALUE', 'DRAFT_OPEN_MODAL',
 ]);
 const safeDraftCheck = (value) => draftChecks.has(value) ? value : null;
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
@@ -191,6 +191,8 @@ async function draft(page, expected) {
   return page.evaluate(({ origin, expected, blankPartyFields, childBands }) => {
     if (location.origin !== origin || !/Infor HMS\s*-\s*HRCEN/i.test(document.title)) return 'DRAFT_PROPERTY_CONTEXT';
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    if ([...document.querySelectorAll('.x-window:not(.x-menu)')].some((el) =>
+      Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden'))) return 'DRAFT_OPEN_MODAL';
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote',
       ...(expected.strictCreateProof ? ['revenuevalue', 'nightsvalue'] : []), 'udfchkbox04', 'udfchar13', 'emailaddress',
@@ -703,6 +705,9 @@ export async function saveNewLabtestStay(page, {
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
     const save = page.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
     if (await bounded(save.count()) !== 1) throw new Error('SAVE_CONTROL_NOT_UNIQUE');
+    if (hasBillingReference && await bounded(page.locator('.x-window:visible:not(.x-menu)').count())) {
+      throw new Error('UNEXPECTED_DIALOG');
+    }
     armed = true;
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
     response = await bounded(pending);
