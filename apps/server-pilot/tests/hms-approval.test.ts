@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as schema from '../src/db/schema/index.js';
+import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
@@ -554,26 +558,74 @@ describe('HMS write approvals', () => {
     });
   });
 
-  it('serializes consumption with NEEDS_CHECK termination', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedItem(db);
-      await approve(db, workItemId);
-      const claim = await claimWrite(db);
-      const [consumption, termination] = await Promise.allSettled([
-        consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW }),
-        endHmsWriteRun({ db, fence: claim.fence, failureClass: 'NEEDS_CHECK', reason: 'race' }),
-      ]);
-      expect(termination).toMatchObject({ status: 'fulfilled', value: true });
-      if (consumption.status === 'fulfilled') {
-        await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
-          .rejects.toMatchObject({ refusal: 'needs_check_open' });
-      } else {
-        expect(consumption.reason).toMatchObject({ refusal: 'lease_lost' });
-        await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
-          .resolves.toHaveProperty('runId');
-      }
-    });
-  });
+  it.each(['consume', 'terminate'] as const)(
+    'serializes overlapping consumption and NEEDS_CHECK with %s holding the run lock first',
+    async (first) => {
+      await withIngestionDb(async ({ db, url }) => {
+        const workItemId = await seedItem(db);
+        await approve(db, workItemId);
+        const claim = await claimWrite(db);
+        const parsed = new URL(url);
+        const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+        const connection = postgres(url, { max: 2, connect_timeout: 5,
+          ssl: local || parsed.searchParams.get('sslmode') === 'disable' ? false : getPostgresSslOptions() });
+        const racingDb = drizzle(connection, { schema });
+        let release = () => {};
+        let held: Promise<void> | undefined;
+        let other: Promise<unknown> | undefined;
+        try {
+          let acquired!: (pid: number) => void;
+          const locked = new Promise<number>((resolve) => { acquired = resolve; });
+          const unlock = new Promise<void>((resolve) => { release = resolve; });
+          held = racingDb.transaction(async (tx) => {
+            const [session] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+            // The nested transaction is a savepoint. Its run-row lock remains held until this outer commit.
+            if (first === 'consume') {
+              await consumeHmsWriteApproval({ db: tx as unknown as DB, runId: claim.runId, fence: claim.fence, now: NOW });
+            } else {
+              expect(await endHmsWriteRun({ db: tx as unknown as DB, fence: claim.fence, failureClass: 'NEEDS_CHECK', reason: 'race' })).toBe(true);
+            }
+            acquired(session!.pid);
+            await unlock;
+          });
+          const holderPid = await Promise.race([locked, held.then(() => { throw new Error('lock holder ended early'); })]);
+          other = first === 'consume'
+            ? endHmsWriteRun({ db: racingDb, fence: claim.fence, failureClass: 'NEEDS_CHECK', reason: 'race' })
+            : consumeHmsWriteApproval({ db: racingDb, runId: claim.runId, fence: claim.fence, now: NOW });
+          // Attach a rejection handler immediately while observing the real blocked session.
+          const outcome = Promise.allSettled([other]);
+          let blocked = false;
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const [state] = await db.execute(sql<{ blocked: boolean }>`select exists (
+              select 1 from pg_stat_activity a where a.datname = current_database()
+                and a.wait_event_type = 'Lock' and ${holderPid} = any(pg_blocking_pids(a.pid))
+            ) as blocked`);
+            if (state!.blocked) { blocked = true; break; }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          expect(blocked).toBe(true);
+          release();
+          await held;
+          const [result] = await outcome;
+          if (first === 'consume') {
+            expect(result).toMatchObject({ status: 'fulfilled', value: true });
+            await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
+              .rejects.toMatchObject({ refusal: 'needs_check_open' });
+          } else {
+            expect(result).toMatchObject({ status: 'rejected', reason: { refusal: 'lease_lost' } });
+            await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
+              .resolves.toHaveProperty('runId');
+          }
+        } finally {
+          release();
+          if (held) await held.catch(() => undefined);
+          if (other) await other.catch(() => undefined);
+          await connection.end();
+        }
+      });
+    },
+    15_000,
+  );
 
   it('a consumed write that ends outside needs-check blocks a new approval until it is read back', async () => {
     await withIngestionDb(async ({ db }) => {
