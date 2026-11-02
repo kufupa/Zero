@@ -19,7 +19,7 @@ const draftChecks = new Set([
   'DRAFT_ADULT_MODEL', 'DRAFT_CHILD_MODEL', 'DRAFT_CHILD_AGES_MODEL', 'DRAFT_CHILD_CATEGORY_MODEL',
   'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
   'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
-  'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_REQUIRED_FIELDS',
+  'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_AGENCY_COMMISSION_VALUE', 'DRAFT_REQUIRED_FIELDS',
 ]);
 const safeDraftCheck = (value) => draftChecks.has(value) ? value : null;
 const CHILD_BANDS = Object.freeze(['child1', 'child2', 'child3']);
@@ -253,6 +253,23 @@ async function draft(page, expected) {
         return [input.value, component.getValue(), submitted[submittedKeys[0]]].every((item) => String(item ?? '') === value)
           ? current : null;
       };
+      // Agency selection can update native form controls without updating the model.
+      // Bind only the two current commission controls, not unrelated form fields.
+      if (expected.agencySelection) {
+        const controls = form.getForm?.()?.getFields?.()?.items;
+        if (!Array.isArray(controls)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+        for (const name of ['bookingagencycommissionpricing', 'bookingagencycommissiontype']) {
+          const current = currentFormValue(name);
+          const matches = controls.filter((control) => control.getName?.() === name || control.name === name);
+          if (!current.found || typeof current.value !== 'string' || matches.length !== 1) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+          const control = matches[0], submitted = control.getSubmitData?.();
+          const keys = Object.keys(submitted || {}).filter((key) => key.toLowerCase() === name.toLowerCase());
+          if (control.up?.('form') !== form || control.disabled || control.isDisabled?.() ||
+              typeof control.getValue !== 'function' || control.getValue() !== current.value ||
+              keys.length !== 1 || !Object.hasOwn(submitted, name) || submitted[name] !== current.value ||
+              !copyCurrentFormValue(name, current)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+        }
+      }
       const proof = expected.createFieldProof;
       if (proof && proof.adults !== null && !override('adults', proof.adults)) return 'DRAFT_ADULT_MODEL';
       if (proof && proof.childAges !== null) {

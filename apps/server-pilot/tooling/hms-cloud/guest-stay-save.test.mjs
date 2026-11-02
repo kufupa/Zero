@@ -395,19 +395,21 @@ function nativeCreateDraftPage() {
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', roomtype: 'STQN',
     rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
     revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
-    udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account' };
+    udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account',
+    bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' };
   const data = { ...Object.fromEntries(blanks.map((key) => [key, ''])), ...visible, propertycode: 'HRCEN',
     PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', reservationid: '', reservationstayid: '', recordid: '',
     guaranteecreditcardid: '', leaseguaranteecreditcardid: '', araccountid: '75', arprofileid: '501',
-    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS' };
-  const values = { ...data }, elements = Object.entries(visible).map(([name, value]) => ({ name, value,
+    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS',
+    bookingagencycommissionpricing: '', bookingagencycommissiontype: '' };
+  const values = { ...data, bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' }, elements = Object.entries(visible).map(([name, value]) => ({ name, value,
     id: `${name}-inputEl`, offsetWidth: 1, offsetHeight: 1, readOnly: ['revenuevalue', 'nightsvalue'].includes(name),
     closest: () => null }));
   const root = { contains: (element) => elements.includes(element), querySelectorAll: () => elements };
   const form = { el: { dom: root }, getRecord: () => ({ data, getData: () => ({ ...data }) }),
-    getForm: () => ({ getValues: () => ({ ...values }) }) };
+    getForm: () => ({ getValues: () => ({ ...values }), getFields: () => ({ items: Object.values(components) }) }) };
   const components = Object.fromEntries(elements.map((element) => [element.name, {
-    up: () => form,
+    up: () => form, getName: () => element.name,
     getValue: () => element.name === 'udfchkbox04' ? false : values[element.name],
     getSubmitData: () => ({ [element.name]: values[element.name] }),
     getFieldLabel: () => element.name === 'nightsvalue' ? 'Lifetime Nights' : '',
@@ -422,7 +424,7 @@ function nativeCreateDraftPage() {
       const previous = Object.fromEntries(Object.keys(env).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
       try {
         for (const [key, value] of Object.entries(env)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-        return await fn(arg);
+        const result = await fn(arg); page.lastDraft = result; return result;
       } finally {
         for (const key of Object.keys(env)) {
           if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
@@ -463,4 +465,39 @@ test('save refuses a context that does not block service workers', async () => {
     assert.equal(result.outcome, 'refused');
     assert.equal(result.issue, 'BROWSER_CONTEXT_UNSAFE');
   }
+});
+
+
+test('agency commission defaults are bound from unique native submit controls', async () => {
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.taid1 = '77'; page.data.ta1 = 'Test Agency'; page.data.bookingagency1iatanumber = '123456';
+    page.values.ta1 = 'Test Agency';
+    page.elements.find((element) => element.name === 'ta1').value = 'Test Agency';
+    return page;
+  };
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
+    nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, agencySelection: agencySelection(), arSelection,
+    createFieldProof: { adultSelection: adultSelection(2) } });
+  const valid = makePage();
+  assert.equal((await run(valid)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal(valid.lastDraft.formData.bookingagencycommissionpricing, 'FLAT');
+  assert.equal(valid.lastDraft.formData.bookingagencycommissiontype, 'PERCNT');
+  const body = createSaveBody(valid.lastDraft.formData);
+  assert.equal(matchesFullCreateBody(body, valid.lastDraft.formData), true);
+  body.set('bookingagencycommissiontype', 'OTHER');
+  assert.equal(matchesFullCreateBody(body, valid.lastDraft.formData), false);
+  const badSubmit = makePage();
+  badSubmit.components.bookingagencycommissiontype.getSubmitData = () => ({ bookingagencycommissiontype: 'OTHER' });
+  assert.equal((await run(badSubmit)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const badControl = makePage();
+  badControl.components.bookingagencycommissionpricing.getValue = () => 'OTHER';
+  assert.equal((await run(badControl)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const duplicate = makePage();
+  duplicate.components.extraCommission = { ...duplicate.components.bookingagencycommissiontype };
+  assert.equal((await run(duplicate)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
+  const missing = makePage(); delete missing.components.bookingagencycommissionpricing;
+  assert.equal((await run(missing)).draftCheck, 'DRAFT_AGENCY_COMMISSION_VALUE');
 });

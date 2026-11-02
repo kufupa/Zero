@@ -98,7 +98,9 @@ The live Ext `form.getForm().getValues()` can reflect explicitly selected adult
 and child counts/bands while `record.data` and `record.getData()` remain stale.
 Strict proof starts with `record.getData()` and substitutes only selected
 occupancy values plus the current reservation note, revenue and lifetime nights
-values. The note must match the synthetic input and the visible control, Ext
+values. With a verified agency selection, it also binds the two native agency
+commission controls after their unique form, control and submit values agree.
+It does not infer an agency commission value or substitute unrelated fields. The note must match the synthetic input and the visible control, Ext
 value and submit data. Revenue must be read-only zero; its current native form
 value must agree with the visible control, Ext value and submit data. The
 read-only `Lifetime Nights` value must be nonnegative, match the model, and
