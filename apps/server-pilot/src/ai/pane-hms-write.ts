@@ -22,7 +22,6 @@ import {
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
 import { canonicalJson } from './draft-approval.js';
-import { assertNoCreateDispatchFence, CreateFenceError } from './pane-create-dispatch-fence.js';
 import {
   assertHmsUnchangedBeforeSave,
   consumeHmsWriteApproval,
@@ -80,7 +79,6 @@ const ATTACH_DOCUMENT = fileURLToPath(
 const AMEND_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/amend-stay.mjs', import.meta.url),
 );
-const ATTACH_TIMEOUT_MS = 10 * 60_000;
 const READ_ATTACHMENT_TIMEOUT_MS = 60_000;
 /** Attach reads the bytes through the read path, so the cap is the read path's cap. A test pins the equality. */
 export const PANE_ATTACH_MAX_BYTES = ARTIFACT_MAX_INPUT_BYTES;
@@ -244,20 +242,12 @@ function pdfBytesHash(body: Buffer): string {
   return createHash('sha256').update(body).digest('hex');
 }
 
-function attachDocumentName(filename: string): string | null {
-  const base = filename.split(/[\\/]/).pop()?.trim() ?? '';
-  return isPdfDocumentName(base) ? base : null;
-}
-
 export type BindAttachDocumentResult =
   | { status: 'bound'; form: AttachForm }
   | { status: 'refused'; reason: string };
 
-/**
- * Stores the existing attach form on the work item, bound to one stay and the PDF's sha256. Approval and the
- * hms-attach-once runner then use that form. Nothing is uploaded here.
- */
-export async function bindAttachDocumentForm(input: {
+/** Legacy attach binding is disabled. This does not reconcile earlier attempts. */
+export async function bindAttachDocumentForm(_input: {
   db?: DB;
   transportId: string;
   workItemId: string;
@@ -267,84 +257,7 @@ export async function bindAttachDocumentForm(input: {
   attachmentId: string;
   env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
-  const db = input.db ?? getDb();
-  const writeKeys = [
-    'action',
-    'confirmation',
-    'arrival',
-    'lastName',
-    'attachmentId',
-    'documentName',
-    'pdfSha256',
-    'reason',
-    'fields',
-    'previewDigest',
-  ] as const;
-  return db.transaction(async (tx) => {
-    const [item] = await tx
-      .select({
-        id: workItem.id,
-        state: workItem.state,
-        status: workItem.status,
-        sourceMessageId: workItem.sourceMessageId,
-      })
-      .from(workItem)
-      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
-      .limit(1)
-      .for('update');
-    if (!item) return { status: 'refused' as const, reason: 'not_found' };
-    try {
-      await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: item.id });
-    } catch (error) {
-      if (error instanceof CreateFenceError && error.reason === 'active') {
-        return { status: 'refused' as const, reason: 'write_in_flight' };
-      }
-      throw error;
-    }
-    if (item.status === 'done' || item.status === 'dismissed') {
-      return { status: 'refused' as const, reason: 'not_open' };
-    }
-    if (!item.sourceMessageId) return { status: 'refused' as const, reason: 'source_mail_missing' };
-    const [row] = await tx
-      .select({
-        messageId: attachment.messageId,
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        sha256: attachment.sha256,
-      })
-      .from(attachment)
-      .innerJoin(message, eq(message.id, attachment.messageId))
-      .where(and(eq(attachment.id, input.attachmentId), eq(message.transportId, input.transportId)))
-      .limit(1);
-    if (!row || row.messageId !== item.sourceMessageId) {
-      return { status: 'refused' as const, reason: 'attachment_not_found' };
-    }
-    const namedPdf = row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
-    if (!namedPdf) return { status: 'refused' as const, reason: 'attachment_not_pdf' };
-    const pdfSha256 = row.sha256?.toLowerCase() ?? '';
-    if (!PDF_SHA256.test(pdfSha256)) return { status: 'refused' as const, reason: 'attachment_hash_missing' };
-    const documentName = attachDocumentName(row.filename);
-    if (!documentName) return { status: 'refused' as const, reason: 'form_invalid' };
-    const parsed = attachFormSchema.safeParse({
-      action: 'attach_document',
-      confirmation: input.confirmation,
-      arrival: input.arrival,
-      lastName: squash(input.lastName),
-      attachmentId: input.attachmentId,
-      documentName,
-      pdfSha256,
-    });
-    if (!parsed.success) return { status: 'refused' as const, reason: 'form_invalid' };
-    const refusal = formRefusal(parsed.data, {
-      allowRealGuest: paneHmsWriteMode(input.env ?? process.env) === 'on',
-    });
-    if (refusal) return { status: 'refused' as const, reason: refusal };
-    const state: Record<string, unknown> = { ...item.state };
-    for (const key of writeKeys) delete state[key];
-    Object.assign(state, parsed.data);
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, item.id));
-    return { status: 'bound' as const, form: parsed.data };
-  });
+  return { status: 'refused', reason: 'legacy_attach_disabled' };
 }
 
 export type PaneHmsPrepareResult =
@@ -526,55 +439,9 @@ export function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: str
   return args;
 }
 
-/**
- * The pane CLI env, plus ATTACH_VERIFIED=true only when this process has it. The worker never sets it. The U28-H2 ops
- * run sets it for its own process, which arms the driver for that one run.
- */
-function attachSpawnEnv(target: HmsReadTarget, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out = paneStaySpawnEnv(env, undefined, target);
-  if (env.ATTACH_VERIFIED === 'true') out.ATTACH_VERIFIED = 'true';
-  return out;
-}
-
-/** Runs attach-document.mjs. A refusal or failure still writes result.json, and that is read first. */
-export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
-  const dir = await mkdtemp(join(tmpdir(), 'pane-attach-'));
-  let runError: unknown = null;
-  try {
-    if (!input.target) throw new Error('pane_stay_target_required');
-    await execFileAsync('node', buildAttachDocumentArgs(input, dir), {
-      timeout: ATTACH_TIMEOUT_MS,
-      env: attachSpawnEnv(input.target),
-    });
-  } catch (error) {
-    runError = error;
-  }
-  let result: {
-    outcome?: string;
-    uploadSent?: boolean;
-    listed?: boolean;
-    screenshots?: string[];
-    blocked?: { method: string; path: string; code: string }[];
-  };
-  try {
-    result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result;
-  } catch {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-    throw runError ?? new Error('pane_attach_no_result');
-  }
-  const outcome = result.outcome ?? 'execution_failure';
-  if (outcome === 'execution_failure') {
-    warnPaneStaySpawnFailed('attach', runError ?? new Error('pane_attach_execution_failure'));
-  }
-  // Method, path and guard code only, so H2 can see what the allowlist stopped.
-  if (result.blocked?.length) console.warn('pane_attach_blocked_requests', { blocked: result.blocked });
-  return {
-    outcome,
-    uploadSent: result.uploadSent === true,
-    listed: result.listed === true,
-    screenshots: result.screenshots ?? [],
-    runDir: dir,
-  };
+/** The legacy attach driver is not an authorized Cloud filing path. */
+export async function spawnAttachDocument(_input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
+  return { outcome: 'refused_legacy_attach_disabled', uploadSent: false, listed: false, screenshots: [] };
 }
 
 const AMEND_TIMEOUT_MS = 10 * 60_000;
@@ -993,7 +860,6 @@ async function runClaimed(
   if (runId !== fence.runId) return { status: 'lease_lost' };
   const attachMode = paneHmsWriteMode(env);
   const legacyLab = env.RESERVATIONIST_PANE_SAVE === 'lab';
-  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const [run] = await db
     .select({ workItemId: aiWorkflowRun.workItemId, transportId: aiWorkflowRun.transportId })
     .from(aiWorkflowRun)
@@ -1008,6 +874,10 @@ async function runClaimed(
     .from(workItem)
     .where(eq(workItem.id, workItemId))
     .limit(1);
+  // Inspect the raw action first, including malformed legacy forms and flag-off runs. A prior holder of this
+  // claim may have dispatched, so the durable terminal outcome stays unknown until independently reconciled.
+  if (item?.state.action === 'attach_document') return endRun(db, fence, 'UNKNOWN', 'legacy_attach_disabled');
+  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const form = item ? parseHmsWriteForm(item.state) : null;
   if (!form) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   if (form.action === 'attach_document') {
@@ -1056,8 +926,8 @@ async function runClaimed(
 /**
  * One claimed hms_write run (U26). Order: policy and the attachment read, both before consume. Then, under the property
  * lock, the consume, the stay read, the identity check and the pre-Save check. Only then does the CLI run send Save.
- * Each refusal before Save ends the run with nothing written. An unexpected error propagates, and the sweep turns the
- * stale claim into LEASE_LOST, which blocks approval.
+ * This invocation refuses legacy attachment before dispatch. A previous holder may already have dispatched, so its
+ * outcome remains unknown. An unexpected error propagates, and the sweep turns the stale claim into LEASE_LOST.
  */
 export async function runPaneHmsWriteOnce(input: {
   runId: string;

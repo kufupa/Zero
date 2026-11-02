@@ -450,6 +450,24 @@ describe('hms-proof-run refusals', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it('refuses legacy attach through the proof entry even when armed', async () => {
+    vi.stubEnv('ATTACH_VERIFIED', 'true');
+    const { createLock } = createLockSpy();
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-attach-disabled-'));
+    try {
+      const result = await hmsProofRun(
+        parseProofRunArgs(argv('attach', { ...LAB, file: '/missing.pdf', documentName: 'lab.pdf' },
+          { mode: 'commit', out: outDir })),
+        { ...WRITE_LAB, ATTACH_VERIFIED: 'true', NAVA_RUN_HOLD_FILE: join(outDir, 'no-hold') },
+        createLock,
+      );
+      expect(result).toMatchObject({ command: 'attach', outcome: 'refused_legacy_attach_disabled',
+        uploadSent: false, listed: false, screenshots: [] });
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses attach preview before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();

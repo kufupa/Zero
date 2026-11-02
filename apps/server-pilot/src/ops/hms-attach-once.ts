@@ -1,22 +1,7 @@
 /**
- * U28-H2 ops entry: one live attach on our Labtest booking through the U26 write runner. It is the runner the worker
- * will call, run once by hand. No retries: a run that ends in anything but succeeded is read back in HMS before any
- * new approval.
- *
- * On EC2 (via SSM), with the prod env loaded, the hms executor lane paused for the session and idle:
- *
- *   1. The work item's state is the attach form: {action:'attach_document', confirmation, arrival, lastName:'Labtest',
- *      attachmentId, documentName}. attachmentId names a PDF on the item's source message, or any id when --file is used.
- *   2. Snapshot:  RESERVATIONIST_PANE_SAVE=lab node --import tsx src/ops/hms-attach-once.ts prepare \
- *                   --transport <transportId> --work-item <workItemId>
- *   3. Approve in the pane (hmsApproval.approve, actor = session user) within 30 minutes. It prints the runId.
- *   4. Attach:    RESERVATIONIST_PANE_SAVE=lab ATTACH_VERIFIED=true HMS_LANE_PAUSED= \
- *                   node --import tsx src/ops/hms-attach-once.ts run --transport <transportId> --work-item <workItemId> \
- *                   --run <runId> --confirmation <conf> [--file <local test.pdf>]
- *
- * ATTACH_VERIFIED=true arms attach-document.mjs for this process only; nothing else sets it. HMS_LANE_PAUSED is empty
- * here so this process can claim its own run while the worker lane stays paused. --file uploads a local test PDF in place
- * of the stored attachment; the %PDF- and size checks still apply. Output is one JSON line: the runner result.
+ * Legacy U28-H2 entry. Prepare can still read a snapshot, but the server write runner refuses legacy attachment
+ * execution even when ATTACH_VERIFIED is set. A previously claimed operation may have dispatched before this guard;
+ * disabling new calls does not close an old browser or replace reconciliation of an uncertain outcome.
  */
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
