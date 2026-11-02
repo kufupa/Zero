@@ -17,7 +17,7 @@ than guessing the offset anchor; retry when the dates agree.
 The legacy core-only save call remains available for existing callers. It does
 not claim explicit occupancy or Source of Business coverage and cannot save a
 linked agency or organization. For stricter create-field proof, pass any
-combination of these selector results; each option is independent:
+combination of these selector results:
 
 - `createFieldProof.adultSelection`: the result of selecting `adults` with
   `selectGuestStayDropdown`.
@@ -26,11 +26,14 @@ combination of these selector results; each option is independent:
   multiple ages and native age-band counts.
 - `createFieldProof.sourceSelection`: the result of selecting a current Source
   of Business candidate.
+- `createFieldProof.cmsMessageSelection`: the optional current CMS picker result.
+- `createFieldProof.reasonSelection`: the optional current reason-for-stay dropdown result.
 - Top-level `agencySelection` and `organizationSelection`: results from the
-  matching current party selectors. Either may be supplied alone or with any
-  occupancy/source combination.
+  matching current party selectors. `arSelection` accepts the current A/R selector result.
+  Parties can be supplied independently or together with occupancy/source selections.
+  CMS and reason proofs require an adult, child or source proof on the same draft.
 
-All supplied selections must carry the same current Proof Labtest draft token.
+Adult, child, source, agency and organization proofs must carry the current Proof Labtest draft token. The A/R proof is independently bound to the current page and native account/profile identity. CMS is matched against its native control and the same verified draft.
 The current agency picker may expose `iatanumber` and
 `referencenumbertype`. Each value is usable only when the selected response and
 grid row both contain that property and the values correlate; an absent or
@@ -75,7 +78,7 @@ const saved = await saveNewLabtestStay(page, {
 ```
 
 The draft and save request must match every supplied selection: adult count;
-exact child age array, count and bands; and/or source code and description.
+exact child age array, count and bands; source code and description; and optional CMS and reason values.
 Strict proof snapshots the full native `record.getData()` key set and requires
 the one outgoing form payload to match every expected value, alongside the
 three fixed OSRESV/HDR controls. A read-only comparison found 985 unique
@@ -130,12 +133,13 @@ preserved as evidence but is not claimed to be a separate save field. A blank
 is not inferred when the picker omits either property.
 `organizationSelection` may likewise be the current, search-bound
 `selectOrganization` result; the draft and request must match its native ID and
-displayed name. Unselected party fields (group, secondary agency, contract,
-A/R and card) remain blank.
+displayed name. Unselected party fields (group, secondary agency, contract, A/R and card) remain blank.
+A selected A/R account must carry the matching current page-bound account/profile proof.
+The draft and full outgoing payload must match that identity and account name.
 
 The save also requires the current verified Proof Labtest profile, a new HRCEN
 stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
-no A/R or guarantee card, CMS Send unchecked, and blank CMS recipient and guest
+no guarantee card, CMS Send unchecked, and blank CMS recipient and guest
 email. The save action and core identity/party fields are exact-matched on the
 legacy path; strict proof mode also exact-matches whichever occupancy, source
 and party selections were supplied, plus the full serialized model. One exact request from the current main frame may
@@ -160,3 +164,5 @@ them in approved private storage, not logs or Git. The browser send-request
 count covers only observed browser traffic; it does not prove what HMS may
 have queued server-side. The census is a point-in-time observation, not a lock
 against another session creating a matching stay afterward.
+
+Optional CMS codes and reason-for-stay selections are checked against the current native control and the exact outgoing request. The tool does not send; a browser fence cannot prove absence of server-side queued messages. A/R and CMS persistence require independent fresh readback.

@@ -115,6 +115,14 @@ test('matches every supplied model value and the three fixed controls', () => {
 test('rejects create-body drift, omissions, duplicates, extras, and unsupported values', () => {
   const formData = createModelData();
 
+  const selectedAccounts = { ...formData, araccountid: '75', arprofileid: '501', araccountname: 'Test Account', udfchar09: '03' };
+  assert.equal(matchesFullCreateBody(createSaveBody(selectedAccounts), selectedAccounts), true);
+  for (const key of ['araccountid', 'arprofileid', 'araccountname', 'udfchar09']) {
+    const changed = createSaveBody(selectedAccounts);
+    changed.set(key, 'other');
+    assert.equal(matchesFullCreateBody(changed, selectedAccounts), false);
+  }
+
   const changedSideEffect = createSaveBody(formData);
   changedSideEffect.set('emailaddress', 'unexpected@example.invalid');
   assert.equal(matchesFullCreateBody(changedSideEffect, formData), false);
@@ -336,4 +344,42 @@ test('reports only a confirmed, unblocked request as saved', () => {
     blockedAfterDispatch: 1 }), 'uncertain');
   assert.equal(outcome({ possiblyDispatched: true }), 'uncertain');
   assert.equal(outcome(), 'not_dispatched');
+});
+
+
+test('requires A/R selection response identity and current draft verification', async () => {
+  const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75',
+    displayedArAccount: 'Test Account', nativeIdEvidence: 'form_change_response',
+    selectedField: { name: 'araccountname', value: 'Test Account' },
+    nativeReadback: { araccountid: '75', araccountname: 'Test Account' } };
+  const pending = await saveNewLabtestStay(pageStub(), { ...saveInputs, arSelection });
+  assert.equal(pending.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  for (const bad of [{ ...arSelection, nativeReadback: { araccountid: 'other', araccountname: 'Test Account' } },
+    { ...arSelection, nativeIdEvidence: 'unknown' }, { ...arSelection, searchId: '' }]) {
+    const result = await saveNewLabStayForTest(bad);
+    assert.equal(result.issue, 'AR_SELECTION_UNVERIFIED');
+  }
+  async function saveNewLabStayForTest(selection) { return saveNewLabtestStay(pageStub(), { ...saveInputs, arSelection: selection }); }
+});
+
+test('CMS code proof must match selected native value and another current selection', async () => {
+  const cms = { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' };
+  const good = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), cmsMessageSelection: cms } });
+  assert.equal(good.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  for (const proof of [{ cmsMessageSelection: cms }, { adultSelection: adultSelection(2), cmsMessageSelection: { ...cms, actual: '01' } }]) {
+    const result = await saveNewLabtestStay(pageStub(), { ...saveInputs, createFieldProof: proof });
+    assert.equal(result.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
+  }
+});
+
+
+test('reason for stay proof binds the selected code and display', async () => {
+  const reason = { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } };
+  const good = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), reasonSelection: reason } });
+  assert.equal(good.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  const bad = await saveNewLabtestStay(pageStub(), { ...saveInputs,
+    createFieldProof: { adultSelection: adultSelection(2), reasonSelection: { ...reason, actual: { value: 'OTHER', display: 'Business' } } } });
+  assert.equal(bad.issue, 'CREATE_FIELD_PROOF_INVALID_OR_UNSUPPORTED');
 });
