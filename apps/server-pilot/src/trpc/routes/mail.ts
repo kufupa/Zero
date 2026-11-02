@@ -114,6 +114,11 @@ import {
 export { MAIL_FOLDER_VALUES, type MailFolderValue };
 export type { MailUnreadCounts, MailUnreadFolderId };
 
+/** Exact source from the same workflow membership snapshot as the list row. */
+export function workflowListSourceSql(membership: ReturnType<typeof latestWorkflowThreads>, folder: string) {
+  return sql<string | null>`(select ${membership.sourceMessageId} from ${membership} where ${membership.threadId} = ${mailThread.id} and ${membership.folder} = ${folder})`;
+}
+
 /** FE bulk mutations send `{ ids }`; normalize to internal `threadIds`. */
 export const bulkIdsInput = z.union([
   z.object({ ids: z.array(z.string()) }).transform(({ ids }) => ({ threadIds: ids })),
@@ -470,6 +475,10 @@ export const mailRouter = tRouter({
       trashedAt: mailThread.trashedAt,
       latestMessageAt: mailThread.latestMessageAt,
       updatedAt: mailThread.updatedAt,
+      // Select from the same membership snapshot that admitted this row.
+      workflowSourceMessageId: workflowMembership && input.workflowFolder
+        ? workflowListSourceSql(workflowMembership, input.workflowFolder)
+        : sql<string | null>`null`,
     };
     const listQuery = workflowMembership
       ? db
@@ -537,6 +546,7 @@ export const mailRouter = tRouter({
           snoozedUntil: r.snoozedUntil,
           trashedAt: r.trashedAt,
           latestMessageAt: r.latestMessageAt,
+          workflowSourceMessageId: r.workflowSourceMessageId,
           historyId: null as string | null,
           categoryIds: categoryIdsByThread.get(r.id) ?? [],
           hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,

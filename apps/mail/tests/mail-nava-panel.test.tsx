@@ -212,15 +212,15 @@ describe('Nava pane beside the open thread', () => {
     mocks.sourceMessageId = 'source-a';
     const { rerender } = render(<MailLayout />);
     const first = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
-    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-a' });
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-a' });
     mocks.sourceMessageId = 'source-b';
     rerender(<MailLayout />);
     const second = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
-    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-b' });
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-b' });
     mocks.sourceMessageId = 'source-a';
     rerender(<MailLayout />);
     const third = (await screen.findByTestId('nava-pane')).getAttribute('data-mount');
-    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'source-a' });
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: 'source-a' });
     expect(new Set([first, second, third]).size).toBe(3);
   });
 
@@ -317,6 +317,7 @@ describe('workflow folder mail routing', () => {
     expect(mocks.useWebPreview).toHaveBeenCalledWith({
       threadId: 'thread-42',
       sourceThreadId: 'thread-42',
+      sourceMessageId: '',
     });
   });
 });

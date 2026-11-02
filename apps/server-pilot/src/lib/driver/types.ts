@@ -123,6 +123,8 @@ export interface ThreadListItem {
   categoryIds: string[];
   hasDraft: boolean;
   draftCount: number;
+  /** Source used to assign a workflow folder; null outside workflow lists. */
+  workflowSourceMessageId?: string | null;
   conversationId?: string;
   linkedThreadIds?: readonly string[];
   conversationResponded?: boolean;

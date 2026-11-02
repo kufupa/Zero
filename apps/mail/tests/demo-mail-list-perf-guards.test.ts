@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
-import { MailList, areMailLabelsEqual } from '../components/mail/mail-list';
+import { MailList, areMailLabelsEqual, listThreadSelection } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 
 const mocks = vi.hoisted(() => ({
@@ -146,6 +146,18 @@ vi.mock('@/components/icons/empty-state-svg', () => ({
   EmptyStateIcon: () => null,
 }));
 
+vi.mock('@/components/context/thread-context', () => ({
+  ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('@/components/ui/bimi-avatar', () => ({ BimiAvatar: () => null }));
+vi.mock('@/components/ui/tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+  TooltipContent: () => null,
+}));
+vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
+
+
 type MemoExoticComponent = typeof MailList & {
   compare: null | ((prev: unknown, next: unknown) => boolean);
 };
@@ -191,6 +203,48 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('keeps exact workflow IDs and refuses absent row sources', () => {
+    const rows = [
+      { id: 'thread-a', workflowSourceMessageId: 'source-a' },
+      { id: 'thread-b', workflowSourceMessageId: 'source-b' },
+      { id: 'missing-source' },
+    ];
+    expect(listThreadSelection('thread-a', true, rows)).toEqual({ threadId: 'thread-a', sourceMessageId: 'source-a' });
+    expect(listThreadSelection('thread-b', true, rows)).toEqual({ threadId: 'thread-b', sourceMessageId: 'source-b' });
+    expect(listThreadSelection('missing-source', true, rows)).toEqual({ threadId: 'missing-source', sourceMessageId: '' });
+    expect(listThreadSelection('missing-row', true, rows)).toEqual({ threadId: 'missing-row', sourceMessageId: '' });
+    expect(listThreadSelection('thread-a', false, rows)).toEqual({ threadId: 'thread-a', sourceMessageId: null });
+  });
+
+  it('opens the workflow source for keyboard and pointer selection, not the latest message', async () => {
+    mocks.folder = 'quotes';
+    const latest = { id: 'newer-message', threadId: 'thread-a', sender: { name: 'Guest', email: 'guest@example.com' },
+      subject: 'Request', body: '', tags: [], to: [], unread: false };
+    mocks.useThread.mockReturnValue({ data: { latest, messages: [latest], labels: [], totalReplies: 0 }, isGroupThread: false, latestDraft: null });
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-a', workflowSourceMessageId: 'classified-source' }], false, vi.fn(),
+      { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'classified-source' }));
+    mocks.setMailSelection.mockClear();
+    fireEvent.click(screen.getByText('Guest'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: 'classified-source' }));
+  });
+
+  it('does not infer a missing workflow source for keyboard navigation', async () => {
+    mocks.folder = 'quotes';
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false, hasNextPage: false, isError: false, error: null },
+      [], true, vi.fn(), { isValid: true, folder: 'quotes', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-without-row'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-without-row', sourceMessageId: '' }));
+  });
+
   it('clears the old source message when keyboard navigation opens another thread', async () => {
     render(createElement(MailList));
     expect(mocks.onNavigate).not.toBeNull();

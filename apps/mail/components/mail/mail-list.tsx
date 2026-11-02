@@ -20,7 +20,8 @@ import { focusedIndexAtom, useMailNavigation } from '@/hooks/use-mail-navigation
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSidebar } from '@/components/ui/sidebar';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
-import type { MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
+import type { MailListThreadRow, MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import { ThreadContextMenu } from '@/components/context/thread-context';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -129,6 +130,16 @@ export const areMailLabelsEqual = (
   return true;
 };
 
+/** Missing workflow sources stay explicit so the pane refuses rather than guessing. */
+export function listThreadSelection(
+  threadId: string | null,
+  workflowScoped: boolean,
+  rows: readonly MailListThreadRow[],
+): { threadId: string | null; sourceMessageId: string | null } {
+  if (!threadId || !workflowScoped) return { threadId, sourceMessageId: null };
+  return { threadId, sourceMessageId: rows.find((row) => row.id === threadId)?.workflowSourceMessageId ?? '' };
+}
+
 const Thread = memo(
   function Thread({
     message,
@@ -140,7 +151,8 @@ const Thread = memo(
     const [searchValue] = useSearchValue();
     const timezone = useTimezone();
     const { folder } = useParams<{ folder: string }>();
-    const [, threads] = useThreads();
+    const [, threads, , , searchList] = useThreads();
+    const workflowScoped = isWorkflowFolderNavId(folder) && searchList?.isValid === true && searchList.folder !== 'all';
     const { userLabels } = useLabels();
     const reservedSpamLabelIds = useMemo(
       () => buildReservedSpamLabelIdSet(userLabels ?? []),
@@ -292,13 +304,13 @@ const Thread = memo(
         if (focusedIndex < threads.length - 1) {
           const nextThread = threads[focusedIndex];
           if (nextThread) {
-            setMailSelection({ threadId: nextThread.id, sourceMessageId: null });
+            setMailSelection(listThreadSelection(nextThread.id, workflowScoped, threads));
             // Don't clear activeReplyId - let ThreadDisplay handle Reply All auto-opening
             setFocusedIndex(focusedIndex);
           }
         }
       },
-      [threads, focusedIndex, setMailSelection, setFocusedIndex],
+      [threads, focusedIndex, setMailSelection, setFocusedIndex, workflowScoped],
     );
 
     const moveThreadTo = useCallback(
@@ -351,7 +363,7 @@ const Thread = memo(
               'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
             isDragging && 'opacity-40',
           )}
-          onClick={onClick ? onClick(latestMessage) : undefined}
+          onClick={onClick ? onClick(latestMessage, message) : undefined}
           {...dragListeners}
           {...dragAttributes}
         >
@@ -705,6 +717,7 @@ const Thread = memo(
       threadLabels,
       optimisticLabels,
       emailContent,
+      message,
       message.centurionCategory,
       message.categoryIds,
       idToSlug,
@@ -729,7 +742,8 @@ const Thread = memo(
     return latestMessage ? (
       !optimisticState.shouldHide && idToUse ? (
         <ThreadContextMenu
-          threadId={idToUse}
+          threadId={workflowScoped ? message.id : idToUse}
+          sourceMessageId={listThreadSelection(message.id, workflowScoped, [message]).sourceMessageId}
           isInbox={isFolderInbox}
           isSpam={isFolderSpam}
           isSent={isFolderSent}
@@ -748,6 +762,7 @@ const Thread = memo(
       prevCategoryIds.every((id, index) => id === nextCategoryIds[index]);
     const isSameMessage =
       prev.message.id === next.message.id &&
+      prev.message.workflowSourceMessageId === next.message.workflowSourceMessageId &&
       prev.message.centurionCategory === next.message.centurionCategory &&
       prev.message.conversationResponded === next.message.conversationResponded &&
       (prev.message.linkedThreadIds ?? []).join(',') === (next.message.linkedThreadIds ?? []).join(',') &&
@@ -944,6 +959,7 @@ export const MailList = memo(function MailList() {
     }, [setAnchorIndex]);
 
     const [threadsQuery, items, , loadMore, searchList] = useThreads();
+    const workflowScoped = isWorkflowFolderNavId(folder) && searchList?.isValid === true && searchList.folder !== 'all';
     const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
@@ -971,9 +987,9 @@ export const MailList = memo(function MailList() {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setMailSelection({ threadId, sourceMessageId: null }));
+        }).then(() => setMailSelection(listThreadSelection(threadId, workflowScoped, itemsRef.current)));
       },
-      [setMode, setActiveReplyId, setDraftId, setMailSelection],
+      [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -1056,7 +1072,7 @@ export const MailList = memo(function MailList() {
 
     const { optimisticMarkAsRead } = useOptimisticActions();
     const handleMailClick = useCallback(
-      (message: ParsedMessage) => async () => {
+      (message: ParsedMessage, row: MailListThreadRow) => async () => {
         const mode = getSelectMode();
 
         if (mode !== 'single') {
@@ -1071,7 +1087,7 @@ export const MailList = memo(function MailList() {
 
         handleMouseEnter(message.id);
 
-        const messageThreadId = message.threadId ?? message.id;
+        const messageThreadId = workflowScoped ? row.id : (message.threadId ?? message.id);
         const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
         setFocusedIndex(clickedIndex);
         if (message.unread && autoReadEnabled) optimisticMarkAsRead([messageThreadId], true);
@@ -1080,7 +1096,7 @@ export const MailList = memo(function MailList() {
           setActiveReplyId(null);
           setDraftId(null);
         });
-        setMailSelection({ threadId: messageThreadId, sourceMessageId: null });
+        setMailSelection(listThreadSelection(messageThreadId, workflowScoped, [row]));
       },
       [
         getSelectMode,
@@ -1093,6 +1109,7 @@ export const MailList = memo(function MailList() {
         setMode,
         setActiveReplyId,
         autoReadEnabled,
+        workflowScoped,
       ],
     );
 
@@ -1174,9 +1191,9 @@ export const MailList = memo(function MailList() {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setMailSelection({ threadId, sourceMessageId: null }));
+        }).then(() => setMailSelection(listThreadSelection(threadId, workflowScoped, itemsRef.current)));
       },
-      [setMode, setActiveReplyId, setDraftId, setMailSelection],
+      [setMode, setActiveReplyId, setDraftId, setMailSelection, workflowScoped],
     );
 
     const vListRenderer = useCallback(

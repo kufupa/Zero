@@ -328,6 +328,7 @@ describe('existing context-menu and keyboard reply surfaces', () => {
       expect(action).toContain(`id: '${id}'`);
       expect(action).toContain(`label: ${label},`);
       expect(action).toContain(`action: ${handler},`);
+      expect(handlerSource).toContain('setMailSelection({ threadId, sourceMessageId });');
       expect(handlerSource).toContain('void openReplyComposeContext({');
       expect(handlerSource).toContain(`mode: '${mode}',`);
       expect(handlerSource).toContain('messageId: threadData?.latest?.id ?? null,');

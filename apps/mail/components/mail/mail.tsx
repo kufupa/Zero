@@ -415,10 +415,9 @@ function MailLayoutContent() {
     threadId: parseAsString,
     sourceMessageId: parseAsString,
   });
-  const sourceThreadId =
-    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all'
-      ? threadId ?? undefined
-      : undefined;
+  const workflowScoped =
+    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all';
+  const sourceThreadId = workflowScoped || sourceMessageId !== null ? threadId ?? undefined : undefined;
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -757,7 +756,7 @@ function MailLayoutContent() {
                       key={JSON.stringify([threadId, sourceMessageId])}
                       threadId={threadId}
                       sourceThreadId={sourceThreadId}
-                      sourceMessageId={sourceMessageId ?? undefined}
+                      sourceMessageId={sourceMessageId ?? (workflowScoped ? '' : undefined)}
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent

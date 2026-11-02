@@ -123,6 +123,7 @@ export async function createLabelInThreadContext(input: ThreadLabelCreateContext
 interface EmailContextMenuProps {
   children: ReactNode;
   threadId: string;
+  sourceMessageId?: string | null;
   isInbox?: boolean;
   isSpam?: boolean;
   isSent?: boolean;
@@ -213,6 +214,7 @@ const LabelsList = ({ threadId, bulkSelected, onCreateLabel }: { threadId: strin
 export function ThreadContextMenu({
   children,
   threadId,
+  sourceMessageId = null,
   isInbox = true,
   isSpam = false,
   isSent = false,
@@ -232,7 +234,7 @@ export function ThreadContextMenu({
   const effectiveIsSpam = isSpam || isReservedSpamFolder;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
-  const [, setThreadId] = useQueryState('threadId');
+  const [, setMailSelection] = useQueryStates({ threadId: parseAsString, sourceMessageId: parseAsString });
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -351,7 +353,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReply = () => {
-    setThreadId(threadId);
+    setMailSelection({ threadId, sourceMessageId });
     void openReplyComposeContext({
       mode: 'reply',
       messageId: threadData?.latest?.id ?? null,
@@ -363,7 +365,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReplyAll = () => {
-    setThreadId(threadId);
+    setMailSelection({ threadId, sourceMessageId });
     void openReplyComposeContext({
       mode: 'replyAll',
       messageId: threadData?.latest?.id ?? null,
@@ -375,7 +377,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadForward = () => {
-    setThreadId(threadId);
+    setMailSelection({ threadId, sourceMessageId });
     void openReplyComposeContext({
       mode: 'forward',
       messageId: threadData?.latest?.id ?? null,
@@ -387,7 +389,9 @@ export function ThreadContextMenu({
   };
 
   const handleOpenInNewTab = () => {
-    window.open(`/mail/${folder}?threadId=${threadId}`, '_blank');
+    const query = new URLSearchParams({ threadId });
+    if (sourceMessageId !== null) query.set('sourceMessageId', sourceMessageId);
+    window.open(`/mail/${folder}?${query.toString()}`, '_blank');
   };
 
   const primaryActions: EmailAction[] = useMemo(

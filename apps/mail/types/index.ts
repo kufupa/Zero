@@ -143,6 +143,7 @@ export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 export type MailListThreadRow = {
   id: string;
   historyId?: string | null;
+  workflowSourceMessageId?: string | null;
   categoryIds?: string[];
   centurionCategory?: CenturionMailCategory;
   latestMessageAt?: string | Date | null;
@@ -166,7 +167,7 @@ export type MailListThreadRow = {
 
 export type ThreadProps = {
   message: MailListThreadRow;
-  onClick?: (message: ParsedMessage) => () => void;
+  onClick?: (message: ParsedMessage, row: MailListThreadRow) => () => void;
   isKeyboardFocused?: boolean;
   isKeyboardNavigationActive?: boolean;
 };
