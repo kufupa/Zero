@@ -57,6 +57,18 @@ describe('draft persistence', () => {
       initialHtml: '', html: '', text: '', to: [], subject: '', aiBlocked: false })).toBe(false);
   });
 
+  it('persists body reverted to its original text after a different body was saved', () => {
+    expect(shouldPersistDraft({ hasUnsavedChanges: true, lastSavedHtml: '<p>Edited</p>',
+      initialHtml: '<p>Quote</p>', html: '<p>Quote</p>', text: 'Quote', to: [], subject: '', aiBlocked: false })).toBe(true);
+    expect(shouldPersistDraft({ hasUnsavedChanges: true, lastSavedHtml: '<p>Quote</p>',
+      initialHtml: '<p>Quote</p>', html: '<p>Quote</p>', text: 'Quote', to: [], subject: '', aiBlocked: false })).toBe(false);
+  });
+
+  it('persists clearing an existing body even when all other fields are empty', () => {
+    expect(shouldPersistDraft({ hasUnsavedChanges: true, lastSavedHtml: '<p>Existing</p>',
+      initialHtml: '<p>Existing</p>', html: '', text: '', to: [], subject: '', aiBlocked: false })).toBe(true);
+  });
+
   it('includes thread and reply parent when saving a reply draft', () => {
     expect(
       buildDraftMutationInput({

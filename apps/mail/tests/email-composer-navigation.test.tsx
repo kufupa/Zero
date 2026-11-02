@@ -4,13 +4,14 @@ import { useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useController } from 'react-hook-form';
 import { EmailComposer } from '../components/create/email-composer';
-import { registerComposeFlush, registerComposeUnsavedCheck, runComposeSwitch } from '../lib/mail/compose-flush-registry';
+import { flushComposeBeforeLeave, registerComposeFlush, registerComposeUnsavedCheck, runComposeSwitch } from '../lib/mail/compose-flush-registry';
 
 const mocks = vi.hoisted(() => ({
-  save: vi.fn(), navigate: vi.fn(), toast: vi.fn(),
-  editor: { getHTML: () => '<p>Quoted</p>', getText: () => 'Quoted', commands: { focus: vi.fn(), setContent: vi.fn(), clearContent: vi.fn() } },
+  save: vi.fn(), navigate: vi.fn(), toast: vi.fn(), bodyChanged: null as null | (() => void),
+  editorHtml: '<p>Quoted</p>',
+  editor: { getHTML: () => mocks.editorHtml, getText: () => 'Quoted', commands: { focus: vi.fn(), setContent: vi.fn(), clearContent: vi.fn() } },
 }));
-vi.mock('@/hooks/use-compose-editor', () => ({ default: () => mocks.editor }));
+vi.mock('@/hooks/use-compose-editor', () => ({ default: (options: { onLengthChange: () => void }) => { mocks.bodyChanged = options.onLengthChange; return mocks.editor; } }));
 vi.mock('@tiptap/react', () => ({ EditorContent: () => <div>Editor</div> }));
 vi.mock('@/hooks/use-settings', () => ({ useSettings: () => ({ data: { settings: {} } }) }));
 vi.mock('@/hooks/use-threads', () => ({ useThread: () => ({ data: undefined }) }));
@@ -57,16 +58,17 @@ vi.mock('../components/create/toolbar', () => ({ Toolbar: () => null }));
 vi.mock('../components/create/quote-history-expander', () => ({ QuoteHistoryExpander: () => null }));
 vi.mock('../components/create/image-compression-settings', () => ({ ImageCompressionSettings: () => null }));
 
-function Harness({ initialSubject = 'Original', initialAttachments = [] }: { initialSubject?: string; initialAttachments?: File[] }) {
+function Harness({ initialSubject = 'Original', initialAttachments = [], initialTo = ['guest@example.com'] }: { initialSubject?: string; initialAttachments?: File[]; initialTo?: string[] }) {
   const [open, setOpen] = useState(true);
   return <>
     {open && <EmailComposer initialMessage="<p>Quoted</p>" initialSubject={initialSubject}
-      initialTo={['guest@example.com']} initialAttachments={initialAttachments} onSendEmail={async () => false} />}
+      initialTo={initialTo} initialAttachments={initialAttachments} onSendEmail={async () => false} />}
     <button onClick={() => { void runComposeSwitch(() => { mocks.navigate(); setOpen(false); }); }}>Open another</button>
   </>;
 }
 
 beforeEach(() => {
+  mocks.editorHtml = '<p>Quoted</p>'; mocks.bodyChanged = null;
   mocks.save.mockReset().mockResolvedValue({ id: 'draft-1' });
   mocks.navigate.mockReset(); mocks.toast.mockReset();
   registerComposeFlush(null); registerComposeUnsavedCheck(null);
@@ -95,6 +97,28 @@ describe('real composer draft handoff', () => {
     expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
       [field]: field === 'subject' || field === 'to' ? '' : `${field}@example.com`, body: '<p>Quoted</p>',
     }));
+  });
+
+  it('saves a body reverted to its initial quote after an earlier save', async () => {
+    render(<Harness />);
+    mocks.editorHtml = '<p>Edited</p>';
+    act(() => { mocks.bodyChanged?.(); });
+    await act(async () => { await flushComposeBeforeLeave(); });
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ body: '<p>Edited</p>' }));
+    mocks.editorHtml = '<p>Quoted</p>';
+    act(() => { mocks.bodyChanged?.(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledOnce());
+    expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({ body: '<p>Quoted</p>' }));
+  });
+
+  it('saves clearing the existing body even without recipients or subject', async () => {
+    render(<Harness initialSubject="" initialTo={[]} />);
+    mocks.editorHtml = '';
+    act(() => { mocks.bodyChanged?.(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledOnce());
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ body: '', to: '', subject: '' }));
   });
 
   it('keeps an unfinished recipient input open instead of discarding it', async () => {

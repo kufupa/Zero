@@ -4,6 +4,7 @@ let composeFlush: ComposeFlushFn | null = null;
 let composeUnsavedCheck: (() => boolean) | null = null;
 let composePendingRecipientCheck: (() => boolean) | null = null;
 let composeSwitchLock: ((locked: boolean) => void) | null = null;
+let composeSwitchInFlight = false;
 
 export function registerComposeFlush(fn: ComposeFlushFn | null): void {
   composeFlush = fn;
@@ -35,6 +36,7 @@ export function registerComposePendingRecipientCheck(fn: (() => boolean) | null)
 /** Keep the current editor non-interactive until the selection has committed. */
 export function registerComposeSwitchLock(fn: ((locked: boolean) => void) | null): void {
   composeSwitchLock = fn;
+  if (fn && composeSwitchInFlight) fn(true);
 }
 
 /** A row switch must not discard a reply when its save failed or it remains dirty. */
@@ -48,7 +50,6 @@ export async function flushComposeBeforeSwitch(): Promise<boolean> {
 }
 
 /** Only the first pending switch may save and commit a new selection. */
-let composeSwitchInFlight = false;
 export async function runComposeSwitch(commit: () => void | Promise<void>): Promise<'switched' | 'busy' | 'unfinished_recipient' | 'save_failed' | 'switch_failed'> {
   if (composeSwitchInFlight) return 'busy';
   composeSwitchInFlight = true;
@@ -64,6 +65,9 @@ export async function runComposeSwitch(commit: () => void | Promise<void>): Prom
       return 'switch_failed';
     }
   } finally {
-    try { lock?.(false); } finally { composeSwitchInFlight = false; }
+    try {
+      lock?.(false);
+      if (composeSwitchLock !== lock) composeSwitchLock?.(false);
+    } finally { composeSwitchInFlight = false; }
   }
 }

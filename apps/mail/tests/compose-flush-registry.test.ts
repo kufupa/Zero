@@ -80,6 +80,18 @@ describe('compose-flush-registry', () => {
     expect(lock.mock.calls).toEqual([[true], [false]]);
   });
 
+  it('locks a replacement composer mounted before the selection commit finishes', async () => {
+    const oldLock = vi.fn(); const newLock = vi.fn(); let finish!: () => void;
+    registerComposeSwitchLock(oldLock);
+    const pending = runComposeSwitch(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    registerComposeSwitchLock(newLock);
+    expect(newLock.mock.calls).toEqual([[true]]);
+    finish(); await pending;
+    expect(oldLock.mock.calls).toEqual([[true], [false]]);
+    expect(newLock.mock.calls).toEqual([[true], [false]]);
+  });
+
   it('keeps unfinished recipient text without attempting a save or switch', async () => {
     const save = vi.fn(); const commit = vi.fn();
     registerComposeFlush(save); registerComposePendingRecipientCheck(() => true);

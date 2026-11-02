@@ -168,6 +168,7 @@ export function EmailComposer({
   }, []);
   // A separate revision marks intentional header/file changes without saving untouched quoted content.
   const nonBodyEditedAtRef = useRef(0);
+  const lastSavedHtmlRef = useRef<string | undefined>(initialMessage);
   const markNonBodyChanges = useCallback(() => {
     markUnsavedChanges();
     nonBodyEditedAtRef.current = revisionRef.current.localRevision;
@@ -615,6 +616,7 @@ export function EmailComposer({
     });
 
     if (editorState.source !== 'server') return;
+    lastSavedHtmlRef.current = editorState.html;
 
     if (editorState.html !== editor.getHTML()) {
       editor.commands.setContent(editorState.html, false);
@@ -641,6 +643,7 @@ export function EmailComposer({
         hasPendingRecipientInput() || shouldPersistDraft({
           hasUnsavedChanges: hasSynchronousDraftChanges(),
           nonBodyChanges: hasNonBodyChanges(),
+          lastSavedHtml: lastSavedHtmlRef.current,
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -757,6 +760,7 @@ export function EmailComposer({
       setHasUnsavedChanges(false);
       revisionRef.current = { localRevision: 0, savedRevision: 0 };
       nonBodyEditedAtRef.current = 0;
+      lastSavedHtmlRef.current = undefined;
       editor.commands.clearContent(false);
       form.reset();
       clearAttachmentState();
@@ -809,6 +813,7 @@ export function EmailComposer({
         const snapshot = {
           hasUnsavedChanges: hasSynchronousDraftChanges(),
           nonBodyChanges: hasNonBodyChanges(),
+          lastSavedHtml: lastSavedHtmlRef.current,
           initialHtml: initialMessage ?? '',
           aiBlocked: false,
           draftId: activeDraftIdRef.current,
@@ -828,6 +833,7 @@ export function EmailComposer({
           !shouldPersistDraft({
             hasUnsavedChanges: snapshot.hasUnsavedChanges,
             nonBodyChanges: snapshot.nonBodyChanges,
+            lastSavedHtml: snapshot.lastSavedHtml,
             initialHtml: snapshot.initialHtml,
             html: snapshot.html,
             text: snapshot.text,
@@ -885,6 +891,7 @@ export function EmailComposer({
           ]);
         }
 
+        lastSavedHtmlRef.current = snapshot.html;
         revisionRef.current = reduceDraftRevision(revisionRef.current, {
           type: 'saved',
           capturedRevision,
@@ -942,6 +949,7 @@ export function EmailComposer({
     return {
       hasUnsavedChanges: hasSynchronousDraftChanges(),
       nonBodyChanges: hasNonBodyChanges(),
+      lastSavedHtml: lastSavedHtmlRef.current,
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -1017,6 +1025,7 @@ export function EmailComposer({
       const action = resolveComposeCloseAction({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
         nonBodyChanges: hasNonBodyChanges(),
+        lastSavedHtml: lastSavedHtmlRef.current,
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
