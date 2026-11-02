@@ -94,7 +94,7 @@ export function paneUnconfirmedMessage(stay?: PaneStayGuest): string {
 }
 
 export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGuest): string {
-  if (reason === PANE_SAVE_UNCONFIRMED_REASON) return paneUnconfirmedMessage(stay);
+  if (reason === PANE_SAVE_UNCONFIRMED_REASON || reason === 'write_in_flight') return paneUnconfirmedMessage(stay);
   return (reason && REFUSAL_COPY[reason]) || REFUSED_FALLBACK;
 }
 

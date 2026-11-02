@@ -2438,6 +2438,7 @@ describe('pane save helpers', () => {
       'refused_lock_busy',
       'refused_save_blank_required',
       'pane_save_unconfirmed',
+      'write_in_flight',
     ]) {
       expect(paneRefusalMessage(reason)).not.toBe(generic);
     }
@@ -2451,6 +2452,7 @@ describe('pane save helpers', () => {
       'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
     );
     expect(paneRefusalMessage(PANE_SAVE_UNCONFIRMED_REASON, johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
+    expect(paneRefusalMessage('write_in_flight', johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
     expect(PANE_SAVE_UNCONFIRMED_REASON).toBe('pane_save_unconfirmed');
   });
 
