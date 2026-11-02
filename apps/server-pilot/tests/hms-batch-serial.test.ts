@@ -88,6 +88,27 @@ describe('disconnected Labtest serial executor contract', () => {
     expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['confirmed', 'confirmed']);
     expect(f.dispatch.mock.calls[1]![0].context.runId).toBe('run-1');
   });
+  it('keeps callback context and prior-sibling snapshots immutable', async () => {
+    const f = fixture(), originalRead = f.deps.readPreimage, originalDispatch = f.dispatch.getMockImplementation()!;
+    f.deps.checkAuthority = async (context) => {
+      expect(Reflect.set(context, 'childId', 'f'.repeat(64))).toBe(false);
+      expect(Reflect.set(context.manifest.rooms[0]!.stay, 'adults', 7)).toBe(false);
+      return true;
+    };
+    f.deps.readPreimage = async (room, siblings) => {
+      if (siblings.length) {
+        expect(Reflect.set(siblings[0]!, 'confirmation', 'OTHER')).toBe(false);
+        expect(Reflect.set(siblings, 'length', 0)).toBe(false);
+      }
+      return originalRead(room, siblings);
+    };
+    f.dispatch.mockImplementation(async (input) => {
+      expect(Reflect.set(input.context, 'runId', 'OTHER')).toBe(false);
+      return originalDispatch(input);
+    });
+    expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['confirmed', 'confirmed']);
+    expect(f.dispatch).toHaveBeenCalledTimes(2);
+  });
   it('holds before claiming if the new approval or revision is invalid', async () => {
     const f = fixture(); f.checkAuthority.mockResolvedValue(false);
     expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['unattempted', 'unattempted']);

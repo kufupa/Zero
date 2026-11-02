@@ -75,17 +75,18 @@ export async function executeLabBatchSerial(deps: LabBatchSerialDependencies): P
     const proofIds = new Set<string>();
     for (let i = 0; i < manifest.rooms.length; i += 1) {
       const room = manifest.rooms[i]!;
-      const context: Context = { manifest, manifestDigest: digest, childId: batchChildId(manifest, room),
-        childDigest: batchRoomDigest(room), runId };
+      const context: Context = Object.freeze({ manifest, manifestDigest: digest, childId: batchChildId(manifest, room),
+        childDigest: batchRoomDigest(room), runId });
       const before = batchStates(manifest, rows);
       if (before[i]?.status === 'confirmed') continue;
       if (!current() || before[i]?.status !== 'unattempted' || before.slice(0, i).some((state) => state.status !== 'confirmed')) break;
       // A fresh grant must authorize continuation before even recording the claim.
       if (!(await deps.checkAuthority(context)) || !current()) break;
-      const siblings: ConfirmedBatchSibling[] = before.slice(0, i).map((state) => ({
+      const siblings: ConfirmedBatchSibling[] = before.slice(0, i).map((state) => Object.freeze({
         manifestDigest: state.manifestDigest!, childId: state.childId, status: state.status,
         confirmation: state.confirmation, recordDigest: state.recordDigest,
       }));
+      Object.freeze(siblings);
       rows = await append(rows, { kind: 'claimed', childId: context.childId, runId: context.runId,
         digest, childDigest: context.childDigest });
       let outcome: DispatchResult = { status: 'not_dispatched' };
