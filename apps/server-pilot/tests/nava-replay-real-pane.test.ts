@@ -21,7 +21,7 @@ const email = (id: string): FakeOutlookEmail => ({
 });
 
 describe('synthetic real Outlook pane', () => {
-  it.skipIf(!chromiumBinary)('mounts the real pane and follows A/B/A selection events', async () => {
+  it.skipIf(!chromiumBinary)('follows A/B/A and inserts the selected thread’s saved reply and PDF', async () => {
     const vitePath = pathToFileURL(join(mailRoot, 'node_modules/vite/dist/node/index.js')).href;
     const vite = await import(vitePath);
     const server = await vite.createServer({ configFile: join(mailRoot, 'vite.nava-replay-fixture.config.ts'),
@@ -33,6 +33,9 @@ describe('synthetic real Outlook pane', () => {
     const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
     try {
       const blocked: BlockedReplayNetwork[] = [], blockedTrpc: BlockedWrite[] = [];
+      const savedReplyReads: string[] = [];
+      const savedReply = { id: 'saved-A', html: '<p>Synthetic saved reply</p>',
+        attachments: [{ fileName: 'synthetic-quote.pdf', pdfBase64: 'JVBERi0xLjQKJSVFT0YK' }] };
       const { context, page } = await createReplayPage(browser, origin, blocked, blockedTrpc, { syntheticLoopback: true });
       await installFakeOutlookBridge(page, { origin, transportId: 'mailbox-1', storeId: 'fake-store', emails: [email('A'), email('B')] });
       await page.route('**/api/auth/get-session', async (route) => {
@@ -49,6 +52,13 @@ describe('synthetic real Outlook pane', () => {
         if (!READ_PROCEDURES.has(name) && !ANALYSIS_PROCEDURES.has(name)) return route.fallback();
         let input: Record<string, unknown> = {};
         try { input = (request.postDataJSON() as { 0?: { json?: Record<string, unknown> } })[0]?.json ?? {}; } catch { /* no input */ }
+        if (name === 'drafts.savedReply') {
+          const threadId = typeof input.threadId === 'string' ? input.threadId : '';
+          savedReplyReads.push(threadId);
+          const value = threadId === 'thread-A' ? savedReply : null;
+          await route.fulfill({ json: [{ result: { data: { json: value } } }] });
+          return;
+        }
         const id = input.internetMessageId === '<B@example.test>' ? 'B' : 'A';
         const ready = { status: 'ready', kind: id === 'A' ? 'quote' : 'booking', workItemId: `fixture-${id}`,
           workItemStatus: 'needs_you', extractionId: `extraction-${id}`, refs: {},
@@ -73,9 +83,40 @@ describe('synthetic real Outlook pane', () => {
           return selected?.textContent?.includes(subject) && document.querySelector('[data-read-as]')?.getAttribute('data-read-as') === readAs;
         }, { subject, readAs }, { timeout: 30_000 });
       }
-      const actions = await page.evaluate(() => (globalThis as unknown as { __navaFakeOutlook: { requests: Array<{ action?: string }> } }).__navaFakeOutlook.requests.map((item) => item.action));
+      const insert = page.getByRole('button', { name: 'Insert saved reply' });
+      await insert.waitFor({ state: 'visible', timeout: 30_000 });
+      const readsBeforeClick = savedReplyReads.filter((threadId) => threadId === 'thread-A').length;
+      expect(readsBeforeClick).toBeGreaterThanOrEqual(1);
+      const requestsBeforeClick = await page.evaluate(() => (globalThis as unknown as {
+        __navaFakeOutlook: { requests: unknown[] };
+      }).__navaFakeOutlook.requests.length);
+      await insert.click({ timeout: 30_000 });
+      await page.waitForFunction(() => {
+        const fake = (globalThis as unknown as { __navaFakeOutlook: {
+          drafts: Array<{ attachments: unknown[] }>;
+        } }).__navaFakeOutlook;
+        return fake.drafts.length === 1 && fake.drafts[0]?.attachments.length === 1;
+      }, null, { timeout: 30_000 });
+      expect(savedReplyReads.filter((threadId) => threadId === 'thread-A').length).toBeGreaterThan(readsBeforeClick);
+      const fake = await page.evaluate(() => (globalThis as unknown as { __navaFakeOutlook: {
+        requests: Array<{ action?: string }>;
+        drafts: Array<{ reply: Record<string, unknown>; location: Record<string, unknown>; attachments: Array<Record<string, unknown>> }>;
+        forbidden: string[];
+      } }).__navaFakeOutlook);
+      const actions = fake.requests.map((item) => item.action);
       expect(actions).toContain('REGISTER_NAVIGATION');
-      expect(actions.filter((action) => action === 'GET_ACTIVE_EMAIL').length).toBeGreaterThanOrEqual(3);
+      expect(actions.filter((action) => action === 'GET_ACTIVE_EMAIL').length).toBeGreaterThanOrEqual(4);
+      const insertedActions = actions.slice(requestsBeforeClick);
+      expect(insertedActions.indexOf('GET_ACTIVE_EMAIL')).toBeGreaterThanOrEqual(0);
+      expect(insertedActions.indexOf('CREATE_REPLY_DRAFT')).toBeGreaterThan(insertedActions.indexOf('GET_ACTIVE_EMAIL'));
+      expect(insertedActions.indexOf('ADD_ATTACHMENT_TO_DRAFT')).toBeGreaterThan(insertedActions.indexOf('CREATE_REPLY_DRAFT'));
+      expect(fake.drafts).toHaveLength(1);
+      expect(fake.drafts[0]).toMatchObject({
+        reply: { entryId: 'A', storeId: 'fake-store', folderEntryId: 'fake-inbox', htmlBody: savedReply.html },
+        attachments: [{ entryId: 'fake-draft-1', storeId: 'fake-store', folderEntryId: 'fake-drafts',
+          fileName: savedReply.attachments[0]!.fileName, base64Data: savedReply.attachments[0]!.pdfBase64 }],
+      });
+      expect(fake.forbidden).toEqual([]);
       expect(blockedTrpc.map((item) => item.procedure)).not.toContain('mail.send');
       expect(blockedTrpc.map((item) => item.procedure)).not.toContain('quoteWorkflow.commitStay');
       expect(blocked.filter((item) => item.reason === 'origin')).toEqual([]);
