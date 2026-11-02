@@ -39,6 +39,33 @@ describe('linked Outlook voucher artifact', () => {
     expect(result?.receipt).toEqual(receipt);
   });
 
+  it('accepts one committed observation reusing the same retained artifact content', async () => {
+    const evidence = { contentIdentity: { sha256: hash, attachments: [{ role: 'attachment:1', stableId: 'stable',
+      modifiedAt: '2026-11-02T12:00:00Z', sizeBytes: 20 }] }, semantic: { subject: 'Voucher', isRead: false, categories: [] },
+      timestamps: { receivedAt: '2026-11-02T12:00:00Z', modifiedAt: '2026-11-02T12:00:00Z' },
+      direction: 'inbound', requiredArtifactRoles: ['attachment:1'] };
+    const origin = { ...observation, evidence };
+    const reused = { ...observation, id: 'reused', artifactOrigin: { sourceId: 'source', observationId: 'origin' },
+      evidence: { ...evidence, semantic: { ...evidence.semantic, isRead: true } } };
+    const variants = rows(); variants[3] = [origin]; variants[6] = [reused];
+    const result = await resolveLinkedVoucherSnapshot(input, dependencies(variants));
+    expect(result?.source).toMatchObject({ ...input, filename: 'voucher.pdf', sha256: hash });
+    const original = rows(); original[3] = [origin]; original[6] = [origin];
+    expect(result?.source.snapshotDigest).not.toEqual((await resolveLinkedVoucherSnapshot(input, dependencies(original)))?.source.snapshotDigest);
+
+    for (const [changedOrigin, witnesses] of [
+      [{ ...origin, exportState: 'pending' }, [reused]],
+      [origin, [{ ...reused, artifactOrigin: { sourceId: 'other', observationId: 'origin' } }]],
+      [origin, [{ ...reused, artifactOrigin: { sourceId: 'source', observationId: 'wrong' } }]],
+      [origin, [{ ...reused, sourceObservationId: 'different' }]],
+      [origin, [{ ...reused, evidence: { ...evidence, contentIdentity: { ...evidence.contentIdentity, sha256: 'b'.repeat(64) } } }]],
+      [origin, [reused, { ...reused, id: 'another' }]],
+    ] as Array<[typeof origin, unknown[]]>) {
+      const bad = rows(); bad[3] = [changedOrigin]; bad[6] = witnesses;
+      expect(await resolveLinkedVoucherSnapshot(input, dependencies(bad))).toBeNull();
+    }
+  });
+
   it('refuses missing or ambiguous attachment, artifact, source or observation', async () => {
     for (const [slot, value] of [
       [0, []], [1, []], [1, [{ id: 'attachment' }, { id: 'other' }]],
