@@ -11,6 +11,8 @@ const labelClass = 'text-[10px] font-semibold uppercase tracking-wide text-[#647
 const smallClass = 'text-[11.5px] text-[#64748b]';
 
 type Props = {
+  /** Keep one store in the owning workflow, outside any conditionally mounted editor. */
+  draftStore: SavedStayAmendDraftStore;
   identity: SavedStayAmendEditorIdentity;
   /** Caller-owned extraction revision, independent of the mail source hash. */
   extractionRevision: string;
@@ -41,23 +43,26 @@ function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStay
 
 type DraftField = keyof SavedStayAmendDraft;
 type StoredDraft = { draft: SavedStayAmendDraft; touched: DraftField[]; acceptedBasis: string };
+export type SavedStayAmendDraftStore = Map<string, StoredDraft>;
+export function createSavedStayAmendDraftStore(): SavedStayAmendDraftStore { return new Map(); }
 const changedDetails = 'Booking or email details changed. Update untouched entries, then review the request.';
 
 /** Local request only. Nothing here approves or writes to HMS. */
 export function SavedStayAmendEditor(props: Props) {
-  const drafts = useRef(new Map<string, StoredDraft>());
+  const drafts = useRef(props.draftStore);
   const onDraftRef = useRef(props.onDraftChange);
   onDraftRef.current = props.onDraftChange;
   const identity = props.identity;
   const parts = [identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
     identity?.sourceHash, props.confirmation];
-  const validIdentity = [...parts, props.extractionRevision].every((part) => typeof part === 'string' && part.trim() !== '');
+  const validIdentity = props.draftStore instanceof Map && drafts.current === props.draftStore &&
+    [...parts, props.extractionRevision].every((part) => typeof part === 'string' && part.trim() !== '');
   useEffect(() => {
     if (!validIdentity) onDraftRef.current?.({ identity, confirmation: props.confirmation,
       extractionRevision: props.extractionRevision, basis: null, proposal: null,
       errors: ['Select the property, email, booking and current request first.'] });
   }, [validIdentity, identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
-    identity?.sourceHash, props.confirmation, props.extractionRevision]);
+    identity?.sourceHash, props.confirmation, props.extractionRevision, props.draftStore]);
   if (!validIdentity) return <p aria-live="polite" className={smallClass}>Select the property, email, booking and current request first.</p>;
   const key = JSON.stringify(parts);
   return <SavedStayAmendEditorContent key={key} {...props} storedDraft={drafts.current.get(key)}
