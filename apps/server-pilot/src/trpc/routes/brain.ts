@@ -3,7 +3,6 @@ import { router as tRouter, privateProcedure } from '../trpc.js';
 import type { PilotCapabilities } from '../../lib/driver/types.js';
 import { isCatchupUploadEnabled } from '../../env.js';
 import { paneWriteModes } from '../../ai/pane-stay-save.js';
-import { paneHmsWriteMode } from '../../ai/pane-hms-write.js';
 
 export const pilotCapabilities = {
   ai: false,
@@ -35,7 +34,8 @@ export function getPilotCapabilities(): PilotCapabilities {
     ...pilotCapabilities,
     catchupUpload: isCatchupUploadEnabled(),
     paneWrite,
-    paneAttach: paneHmsWriteMode() === 'lab' ? 'lab' : 'off',
+    // Legacy filing and shared approval stay held until their dispatch guard is ready.
+    paneAttach: 'off',
     paneSave: paneWrite.create !== 'off',
     paneSaveMode: paneWrite.create,
   };

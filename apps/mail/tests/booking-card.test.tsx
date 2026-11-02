@@ -2604,12 +2604,12 @@ describe('pane save helpers', () => {
     await expect(readPaneSaveFlag({})).resolves.toBe(false);
   });
 
-  it('reads attachment capability independently of held create and fails closed', async () => {
+  it('keeps shared writes off even if a stale capability advertises lab', async () => {
     const trpc = { brain: { getCapabilities: { query: vi.fn() } } };
     trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: false, paneWrite: { create: 'off' }, paneAttach: 'lab' });
-    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: true });
+    await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: false, attachWritesEnabled: false });
     expect(paneStayFromTrpc(trpc).mode?.()).toBe('off');
-    for (const paneAttach of ['on', 'off', undefined, 'bogus']) {
+    for (const paneAttach of ['lab', 'on', 'off', undefined, 'bogus']) {
       trpc.brain.getCapabilities.query.mockResolvedValue({ paneSave: true, paneWrite: { create: 'lab' }, paneAttach });
       await expect(readPaneSaveCapabilities(trpc)).resolves.toEqual({ saveEnabled: true, attachWritesEnabled: false });
     }

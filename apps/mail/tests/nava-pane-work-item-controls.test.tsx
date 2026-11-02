@@ -437,10 +437,11 @@ describe('Nava pane work-item controls', () => {
     cleanup();
   });
 
-  it('passes independently enabled Labtest existing-write controls to the shared pane', async () => {
+  it('keeps shared write controls off even when a stale capability says lab', async () => {
     bridgeMockState.paneAttach = 'lab';
     await renderReadyPane();
-    await waitFor(() => expect(bookingVoucherModes.at(-1)).toBe(true));
+    await waitFor(() => expect(bookingVoucherModes.length).toBeGreaterThan(0));
+    expect(bookingVoucherModes.every((enabled) => enabled === false)).toBe(true);
   });
 
   it('keeps existing-write controls off when the attachment capability is off', async () => {

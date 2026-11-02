@@ -20,15 +20,15 @@ describe('held pane create capability', () => {
     for (const flag of writeFlags) vi.stubEnv(flag, undefined);
     vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'lab');
     expect(getPilotCapabilities()).toMatchObject({ paneSave: false, paneSaveMode: 'off',
-      paneWrite: { create: 'off', amendUnpaid: 'lab', cancelUnpaid: 'lab' }, paneAttach: 'lab' });
+      paneWrite: { create: 'off', amendUnpaid: 'lab', cancelUnpaid: 'lab' }, paneAttach: 'off' });
   });
 
-  it('advertises only the independently enabled Labtest attachment mode', () => {
+  it('keeps legacy filing and shared approval off for every attachment mode', () => {
     for (const flag of writeFlags) vi.stubEnv(flag, undefined);
     vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'off');
-    for (const [value, expected] of [['off', 'off'], ['lab', 'lab'], ['on', 'off'], ['invalid', 'off']] as const) {
+    for (const value of ['off', 'lab', 'on', 'invalid'] as const) {
       vi.stubEnv('PANE_WRITE_ATTACH', value);
-      expect(getPilotCapabilities()).toMatchObject({ paneSave: false, paneAttach: expected, paneWrite: { create: 'off' } });
+      expect(getPilotCapabilities()).toMatchObject({ paneSave: false, paneAttach: 'off', paneWrite: { create: 'off' } });
     }
     vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'lab');
     vi.stubEnv('PANE_WRITE_ATTACH', 'off');

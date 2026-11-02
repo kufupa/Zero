@@ -326,7 +326,7 @@ export function NavaPane({
   const [quotePaneConfig, setQuotePaneConfig] = useState<QuotePaneConfig | null>(null);
   // Preview/Book in HMS show only when create mode is lab or on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
-  // Attach stays Labtest-only. Create=on never enables it.
+  // Legacy filing and shared approval remain off until the guarded path is ready.
   const [attachWritesEnabled, setAttachWritesEnabled] = useState(false);
   // Staff's edit of the combined reply. It is used only while the completed options are the same ones.
   const [combinedEdit, setCombinedEdit] = useState<CombinedReplyEdit | null>(null);

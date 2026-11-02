@@ -286,21 +286,19 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   };
 }
 
-// Create and existing-write controls are independent. Missing or failed capabilities stay off.
+// Legacy filing and shared approval stay off, even if a stale server reports lab mode.
 export async function readPaneSaveCapabilities(trpc: unknown): Promise<{
   saveEnabled: boolean; attachWritesEnabled: boolean;
 }> {
   let mode: PaneSaveMode = 'off';
-  let attachWritesEnabled = false;
   try {
     const capabilities = await (trpc as PaneStayTrpc).brain?.getCapabilities.query();
     mode = paneSaveModeOf(capabilities);
-    attachWritesEnabled = capabilities?.paneAttach === 'lab';
   } catch {
     mode = 'off';
   }
   if (isClientKey(trpc)) paneSaveModes.set(trpc, mode);
-  return { saveEnabled: mode !== 'off', attachWritesEnabled };
+  return { saveEnabled: mode !== 'off', attachWritesEnabled: false };
 }
 
 export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
