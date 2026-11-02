@@ -31,6 +31,11 @@ describe('Nava tool result contract', () => {
     expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
     expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write' }).outcome).toBe('uncertain');
   });
+  it('adapts a legacy committed booking only after fresh readback', () => {
+    const result = { status: 'ok', outcome: 'committed', clickedSave: true, confirmationNumber: '123456-1' };
+    expect(adaptExistingToolResult(result, { operation: 'write' }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
+  });
   it('keeps batch child identity, confirmation and uncertainty', () => {
     expect(adaptBatchToolResult([
       { key: 'a', result: { outcome: 'ok' }, readbackVerified: true, confirmation: '123' },
