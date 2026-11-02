@@ -11,7 +11,8 @@ type Fixture = {
     threadId: string;
     messageId: string;
     staffReplyMessageId: string;
-    expected: { readAs: string; staffEvidence: string; coverage: string; artifactPolicy: Record<string, unknown> };
+    expected: { readAs: string; staffEvidence: string; coverage: string; artifactPolicy: Record<string, unknown>;
+      detailChecks: Array<Record<string, unknown>> };
   }>;
 };
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/nava-replay-staff.json', import.meta.url)), 'utf8')) as Fixture;
@@ -34,6 +35,16 @@ describe('historical replay fixture manifest', () => {
         expect(item.expected.staffEvidence).toBeTruthy();
         expect(item.expected.coverage).toBeTruthy();
         expect(item.expected.artifactPolicy).toBeTruthy();
+        expect(Array.isArray(item.expected.detailChecks)).toBe(true);
+        if (workflow !== 'filing' && item.id !== 'triage-voucher') expect(item.expected.detailChecks.length).toBeGreaterThan(0);
+        for (const check of item.expected.detailChecks) {
+          expect(['stay_count', 'room_count', 'stay_dates', 'dinner', 'guests', 'ask', 'amendment']).toContain(check.kind);
+          if (['stay_count', 'room_count'].includes(String(check.kind))) expect(Number.isInteger(check.count) && Number(check.count) > 0).toBe(true);
+          if (['room_count', 'stay_dates', 'dinner'].includes(String(check.kind))) expect(Number.isInteger(check.stay) && Number(check.stay) > 0).toBe(true);
+          if (check.kind === 'stay_dates') expect(Boolean(check.arrival || check.departure)).toBe(true);
+          if (check.kind === 'guests') expect(Array.isArray(check.names) && check.names.length > 0).toBe(true);
+          if (check.kind === 'ask' || check.kind === 'amendment') expect(Array.isArray(check.all) && check.all.length > 0).toBe(true);
+        }
       }
     }
   });
