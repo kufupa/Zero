@@ -13,6 +13,8 @@ export type NavaToolResult<T> = {
     readback?: unknown;
     requestDigest?: string;
     level?: 'readback_verified' | 'attributed_metadata' | 'none';
+    /** Producer metadata is retained without claiming it is verified proof. */
+    legacy?: { runId?: string | null; screenshots?: string[]; shots?: { name: string; sha256: string; at?: string }[]; readback?: unknown; changedFieldsReadback?: unknown }[];
   };
 };
 
@@ -52,6 +54,11 @@ export type ExistingToolResult<T> = {
   saveDispatched?: boolean | 'unknown';
   possiblyDispatched?: boolean;
   dispatched?: boolean;
+  runId?: string | null;
+  screenshots?: string[];
+  shots?: { name: string; sha256: string; at?: string }[];
+  readback?: unknown;
+  changedFieldsReadback?: unknown;
   evidence?: NavaToolResult<T>['evidence'];
 };
 
@@ -59,6 +66,32 @@ function stableReason(value: string | undefined): string | undefined {
   if (!value) return undefined;
   // Existing HMS issue codes are uppercase; never expose arbitrary error text as a reason.
   return /^[a-zA-Z][a-zA-Z0-9_]{0,99}$/.test(value) ? value.toLowerCase() : 'tool_result_unclassified';
+}
+
+/** Preserve original observations; a filename or readback alone does not prove a write. */
+function normalizeExistingEvidence<T>(result: ExistingToolResult<T>): NavaToolResult<T>['evidence'] {
+  const legacy = {
+    ...(result.runId !== undefined ? { runId: result.runId } : {}),
+    ...(result.screenshots !== undefined ? { screenshots: result.screenshots } : {}),
+    ...(result.shots !== undefined ? { shots: result.shots } : {}),
+    ...(result.readback !== undefined ? { readback: result.readback } : {}),
+    ...(result.changedFieldsReadback !== undefined ? { changedFieldsReadback: result.changedFieldsReadback } : {}),
+  };
+  const hasLegacy = Object.keys(legacy).length > 0;
+  if (!result.evidence && !hasLegacy) return undefined;
+  const screenshots = result.runId && result.shots
+    ? result.shots.filter((shot) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(shot.name) && /^[a-f0-9]{64}$/i.test(shot.sha256))
+      .map((shot) => ({ runId: result.runId!, name: shot.name, sha256: shot.sha256 }))
+    : [];
+  const existingShots = result.evidence?.screenshots ?? [];
+  const readback = result.evidence?.readback !== undefined ? result.evidence.readback
+    : result.readback !== undefined ? result.readback : result.changedFieldsReadback;
+  return {
+    ...result.evidence,
+    ...(existingShots.length || screenshots.length ? { screenshots: [...existingShots, ...screenshots] } : {}),
+    ...(readback !== undefined ? { readback } : {}),
+    ...(hasLegacy ? { legacy: [...(result.evidence?.legacy ?? []), legacy] } : {}),
+  };
 }
 
 /** `readbackVerified` must be established by the trusted caller from a fresh, matching read. */
@@ -79,12 +112,13 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
   else if (successful) {
     outcome = options.operation === 'write' && !options.readbackVerified ? 'uncertain' : 'ok';
   } else outcome = options.operation === 'write' ? 'uncertain' : 'refused';
+  const evidence = normalizeExistingEvidence(result);
   return {
     schema: 'nava.tool/v1', outcome,
     ...(reason ? { reason } : {}),
     ...(result.field ? { field: result.field } : {}),
     ...(result.data !== undefined ? { data: result.data } : {}),
-    ...(result.evidence !== undefined ? { evidence: result.evidence } : {}),
+    ...(evidence !== undefined ? { evidence } : {}),
   };
 }
 

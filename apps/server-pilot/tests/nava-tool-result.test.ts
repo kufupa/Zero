@@ -77,6 +77,31 @@ describe('Nava tool result contract', () => {
     ] });
     expect(adaptBatchToolResult([])).toEqual({ schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' });
   });
+  it('retains legacy hashed shots and readback without claiming verification', () => {
+    const hash = 'a'.repeat(64);
+    const legacy = { status: 'ok', outcome: 'committed', clickedSave: true, runId: 'run-1',
+      screenshots: ['saved.png', 'unhashed.png'], shots: [{ name: 'saved.png', sha256: hash, at: '2026-11-02T00:00:00Z' }],
+      changedFieldsReadback: { arrival: '2027-01-01', unknownField: { exact: true } } };
+    const adapted = adaptExistingToolResult(legacy, { operation: 'write' });
+    expect(adapted.outcome).toBe('uncertain');
+    expect(adapted.evidence).toEqual({
+      screenshots: [{ runId: 'run-1', name: 'saved.png', sha256: hash }],
+      readback: legacy.changedFieldsReadback,
+      legacy: [{ runId: legacy.runId, screenshots: legacy.screenshots, shots: legacy.shots,
+        changedFieldsReadback: legacy.changedFieldsReadback }],
+    });
+    expect(adapted.evidence?.level).toBeUndefined();
+  });
+  it('retains conflicting producer observations without fabricating shot hashes', () => {
+    const adapted = adaptExistingToolResult({ outcome: 'ok', runId: 'run-1', screenshots: ['saved.png'],
+      shots: [{ name: '../outside.png', sha256: 'bad' }], readback: { top: true },
+      changedFieldsReadback: { changed: true }, evidence: { readback: { normalized: true }, level: 'none' } },
+    { operation: 'read' });
+    expect(adapted.evidence).toEqual({ readback: { normalized: true }, level: 'none',
+      legacy: [{ runId: 'run-1', screenshots: ['saved.png'], shots: [{ name: '../outside.png', sha256: 'bad' }],
+        readback: { top: true }, changedFieldsReadback: { changed: true } }] });
+    expect(adapted.evidence?.screenshots).toBeUndefined();
+  });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
     expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);
