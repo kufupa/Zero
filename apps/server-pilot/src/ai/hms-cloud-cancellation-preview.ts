@@ -1,4 +1,4 @@
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 import type { PaneStayFindInput } from './pane-stay-lookup.js';
 
 type RecordValue = Record<string, unknown>;
@@ -114,6 +114,9 @@ export function projectCloudCancellationPreview(
     if (root.outcome === 'fee_dialog_pending' || root.outcome === 'unexpected_dialog') {
       return failure('refused_preview_unavailable');
     }
+    if (root.outcome === 'read_failed' && moduleStatus.issue === 'CONFIRMATION_HINT_MISMATCH') {
+      return failure('refused_identity_mismatch', 'CONFIRMATION_HINT_MISMATCH');
+    }
     if (root.outcome === 'read_failed' || root.outcome === 'execution_failure') {
       return failure('execution_failure');
     }
@@ -156,8 +159,18 @@ export function projectCloudCancellationPreview(
   };
 }
 
+function supportedCenturionTarget(target: HmsReadTarget): boolean {
+  const expected = CENTURION_HMS_READ_TARGET;
+  return Boolean(target) && target.propertyCode === expected.propertyCode &&
+    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
+    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+}
+
 /** Uses a runtime-restricted session; it exposes only exact read then pure cancellation preparation. */
 export async function runCloudCancellationPreview(input: CloudCancellationPreviewRunInput): Promise<unknown> {
+  if (!supportedCenturionTarget(input.target)) {
+    return { outcome: 'target_unverified', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' };
+  }
   const sessionUrl = new URL('../../tooling/hms-cloud/cancellation-preflight-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
     withCancellationPreflightSession: <T>(

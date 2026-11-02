@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { projectCloudCancellationPreview } from '../src/ai/hms-cloud-cancellation-preview.js';
+import { projectCloudCancellationPreview, runCloudCancellationPreview } from '../src/ai/hms-cloud-cancellation-preview.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 describe('Cloud cancellation preview projection', () => {
   it('projects a read-only cancellation preview and drops private record fields', () => {
@@ -37,6 +38,24 @@ describe('Cloud cancellation preview projection', () => {
     }));
     expect(JSON.stringify(result)).not.toContain('Private Agency');
     expect(JSON.stringify(result)).not.toContain('999.00');
+  });
+
+  it('maps native hint mismatch to identity refusal', () => {
+    const result = projectCloudCancellationPreview(
+      { confirmation: '123456-1', arrival: '2027-01-10' },
+      { outcome: 'read_failed', issue: 'CONFIRMATION_HINT_MISMATCH' },
+    );
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'refused_identity_mismatch', reason: 'CONFIRMATION_HINT_MISMATCH',
+    }));
+  });
+
+  it('refuses an unsupported target before opening a Cloud session', async () => {
+    const result = await runCloudCancellationPreview({
+      request: { confirmation: '123456-1' },
+      target: { ...CENTURION_HMS_READ_TARGET, browserSlot: 'davinci' },
+    });
+    expect(result).toEqual({ outcome: 'target_unverified', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' });
   });
 
   it('preserves preflight refusal status and blocks arrival mismatches', () => {
