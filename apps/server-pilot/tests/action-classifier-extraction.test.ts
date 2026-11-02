@@ -3,6 +3,7 @@ import {
   buildInboundPrompt,
   extractInboundMail,
   EXTRACTION_MIN_IMAGE_BYTES,
+  EXTRACTION_RULES,
   prepareExtractionVisionImages,
   type AttachmentRead,
 } from '../src/ai/extraction/extract.js';
@@ -109,6 +110,15 @@ describe('generic action-classifier prompt', () => {
     expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeLessThanOrEqual(
       10,
     );
+  });
+
+  it('distinguishes new-stay vouchers from vouchers for hotel-confirmed stays', () => {
+    expect(EXTRACTION_RULES).toMatch(/voucher for a new stay.*booking.*paid/i);
+    expect(EXTRACTION_RULES).toMatch(/voucher for a stay already confirmed by the hotel.*voucher_pop for filing/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(/voucher.*new stay.*new_booking/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(/voucher for a stay already confirmed by the hotel.*payment_proof for filing, not a new booking/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(/voucher alone is not proof that money moved/i);
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/voucher for the confirmed stay.*new_booking/i);
   });
 
   it('places subject before from and body, then filenames, then attachment text, then thread', () => {
