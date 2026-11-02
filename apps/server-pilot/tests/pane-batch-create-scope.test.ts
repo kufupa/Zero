@@ -167,9 +167,11 @@ describe('batch create scope reconciliation', () => {
   it('allows an explicit changed count while retaining complete active row counts', () => {
     const f = fixture(), stay = f.payload.stays[0]!;
     stay.totalAdults = null as never; stay.totalChildren = null as never;
+    f.payload.stays[0]!.rows.push({ ...f.payload.stays[0]!.rows[1]!, id: 'r3' });
     f.state['stays[s1].rows[r1].count'] = 2;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
-    f.state['stays[s1].rows[r2].count'] = null;
+    // An unselected row still contributes to the stay-wide composition.
+    f.state['stays[s1].rows[r3].count'] = null;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
   });
   it('holds cross-stay removal-ID collisions that hide an approved row in the pane', () => {
