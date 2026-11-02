@@ -37,6 +37,17 @@ describe('Nava tool result contract', () => {
         .toBe('uncertain');
     }
   });
+  it('keeps contradictory commit evidence uncertain without blocking ordinary pre-dispatch refusals', () => {
+    for (const status of ['saved', 'committed', 'confirmed', 'verified', 'readback_verified']) {
+      for (const outcome of ['not_dispatched', 'refused', 'refused_flag_off', 'needs_input']) {
+        expect(adaptExistingToolResult({ status, outcome }, { operation: 'write' }).outcome).toBe('uncertain');
+        expect(adaptExistingToolResult({ status, outcome }, { operation: 'write', readbackVerified: true,
+          verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+      }
+    }
+    expect(adaptExistingToolResult({ status: 'ok', outcome: 'refused' }, { operation: 'write' }).outcome).toBe('refused');
+    expect(adaptExistingToolResult({ status: 'ok', outcome: 'not_dispatched' }, { operation: 'write' }).outcome).toBe('refused');
+  });
   it('keeps unknown refusal-looking codes uncertain', () => {
     expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
   });

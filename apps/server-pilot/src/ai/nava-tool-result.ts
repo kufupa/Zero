@@ -140,7 +140,11 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
   const knownPreDispatchRefusal = ['refused_flag_off', 'amend_preview_required'].includes(code);
   const reason = stableReason(result.reason ?? result.issue ?? result.error ?? (knownPreDispatchRefusal ? code : undefined));
   const uncertainCodes = new Set(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_unconfirmed', 'save_failed', 'partial']);
-  const ambiguous = uncertainCodes.has(code) || uncertainCodes.has(result.status ?? '') ||
+  // Generic status 'ok' can accompany a refused outcome; strong commit statuses cannot.
+  const strongWriteStatuses = new Set(['saved', 'committed', 'confirmed', 'verified', 'readback_verified']);
+  const preDispatchCodes = new Set(['refused', 'not_dispatched', 'refused_flag_off', 'amend_preview_required', 'needs_input', 'input_gap']);
+  const contradictoryWrite = options.operation === 'write' && strongWriteStatuses.has(result.status ?? '') && preDispatchCodes.has(code);
+  const ambiguous = contradictoryWrite || uncertainCodes.has(code) || uncertainCodes.has(result.status ?? '') ||
     (result.reason === 'pane_save_unconfirmed' || result.issue === 'pane_save_unconfirmed');
   const possibleDispatch = result.clickedSave === true || result.clickedSave === 'unknown' ||
     result.saveAttempted === true || result.saveAttempted === 'unknown' || result.uploadSent === true || result.uploadSent === 'unknown' ||
