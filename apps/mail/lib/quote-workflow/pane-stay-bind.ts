@@ -74,6 +74,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_preview_required:
     'This preview has expired or was already used. Press Preview in HMS again.',
   pane_preview_persist_failed: PANE_PREVIEW_FAILED_COPY,
+  pane_preview_binding_required: 'Nava could not link this preview to the booking. Nothing was saved. Check the booking details and try again.',
   pane_save_digest_mismatch: 'The booking changed after the preview. Press Preview in HMS again.',
   pane_save_lock_unavailable: "Nava can't reach HMS right now. Nothing was saved. Tell the Nava team.",
   refused_lock_busy:
