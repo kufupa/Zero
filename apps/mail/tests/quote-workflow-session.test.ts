@@ -4531,6 +4531,17 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
     expect(stayAskAction(session, 'stay-a')).toBe('quote');
     expect(stayAskAction(session, 'stay-b')).toBe('amend');
+    const otherSession = {
+      ...session,
+      analysis: session.analysis && {
+        ...session.analysis,
+        luna: session.analysis.luna && {
+          ...session.analysis.luna,
+          tasks: [{ kind: 'other' as const, groupIndexes: [1], note: '' }],
+        },
+      },
+    };
+    expect(stayAskAction(otherSession, 'stay-b')).toBe('other');
     const removed = reduceQuoteSession(session, { type: 'remove_stay', stayId: 'stay-a' });
     expect(stayAskAction(removed, 'stay-b')).toBe('amend');
   });

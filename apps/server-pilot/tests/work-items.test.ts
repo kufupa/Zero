@@ -404,6 +404,21 @@ describe('stored read for the pane', () => {
     );
   });
 
+  it('binds extracted actions to every row of their own stay', () => {
+    const extracted = payload();
+    extracted.stays[0]!.action = 'quote_availability';
+    extracted.stays[1]!.action = 'amend';
+    const { analysis } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
+    expect(analysis.luna.tasks).toEqual([
+      { kind: 'quote', groupIndexes: [0, 1], note: '' },
+      { kind: 'amend', groupIndexes: [2], note: '' },
+    ]);
+    delete extracted.stays[0]!.action;
+    extracted.stays[1]!.action = 'other_actionable';
+    expect(storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.tasks)
+      .toEqual([{ kind: 'other', groupIndexes: [2], note: '' }]);
+  });
+
   it('puts each stay guest name and confirmation on that stay, then top-level, never only the first stay', () => {
     const extracted = payload();
     extracted.confirmationNumbers = ['57291630-1'];

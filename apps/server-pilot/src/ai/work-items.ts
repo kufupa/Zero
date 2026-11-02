@@ -758,7 +758,19 @@ export function storedAnalysis(
       ? [...payload.missing, { field: 'confirmationNumber', question: overlaid.reason }]
       : payload.missing,
     evidence: [],
-    tasks: [],
+    // A message summary can differ from an individual stay's action. Bind each
+    // action to all of that stay's room rows, never to a neighbouring stay.
+    tasks: stays.flatMap((stay) => {
+      const action = payload.stays.find((item) => item.id === stay.id)?.action;
+      if (!action) return [];
+      const kind = action === 'quote_availability' ? 'quote'
+        : action === 'new_booking' ? 'create_booking'
+        : action === 'amend' ? 'amend'
+        : action === 'cancel' ? 'cancel'
+        : 'other';
+      const groupIndexes = order.flatMap((slot, index) => slot.stayId === stay.id ? [index] : []);
+      return groupIndexes.length ? [{ kind, groupIndexes, note: '' }] : [];
+    }),
     confirmationNumber: overlaid.confirmation,
     guestLastName: null,
     // The booking as it stands comes from the booked dates only. A missing booked date stays null: the requested
