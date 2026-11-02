@@ -59,6 +59,15 @@ function pngFile(path: string): boolean {
   } catch { return false; }
 }
 
+/** A PDF signature is evidence of file type, not proof the whole PDF is valid. */
+function hasPdfSignature(attachment: ReplayDraftEvidence['attachments'][number]): boolean {
+  const { fileName, base64Data } = attachment;
+  if (typeof fileName !== 'string' || !/\.pdf$/i.test(fileName) || typeof base64Data !== 'string' ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64Data)) return false;
+  const bytes = Buffer.from(base64Data, 'base64');
+  return bytes.length > 5 && bytes.subarray(0, 5).toString('ascii') === '%PDF-' && bytes.toString('base64') === base64Data;
+}
+
 /** Missing synchronization or evidence is a failure, never an implied success. */
 export function replayGateFailures(expected: ReplayExpectation, observed: ReplayObservation): string[] {
   const failures: string[] = [];
@@ -77,10 +86,8 @@ export function replayGateFailures(expected: ReplayExpectation, observed: Replay
   const drafts = observed.drafts.filter((draft) => draft.messageId === expected.messageId &&
     Boolean(draft.location?.entryId && draft.location?.storeId && draft.location?.folderEntryId));
   if ((expected.requireDraft || expected.requireAttachment) && !drafts.length) failures.push('missing_draft');
-  if (expected.requireAttachment && !drafts.some((draft) => draft.attachments.some((attachment) =>
-    Boolean(attachment.fileName && attachment.base64Data &&
-      /^[A-Za-z0-9+/]+={0,2}$/.test(attachment.base64Data) &&
-      Buffer.from(attachment.base64Data, 'base64').length > 0)))) failures.push('missing_attachment');
+  if (expected.requireAttachment && !drafts.some((draft) => draft.attachments.some(hasPdfSignature)))
+    failures.push('missing_attachment');
   if (observed.screenshotPaths.length < 2 || new Set(observed.screenshotPaths).size < 2 ||
     observed.screenshotPaths.some((path) => !pngFile(path)))
     failures.push('missing_screenshot');

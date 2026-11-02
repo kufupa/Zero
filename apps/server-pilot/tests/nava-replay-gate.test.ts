@@ -18,7 +18,7 @@ beforeEach(() => {
   observed = {
     threadId: 'thread-a', messageId: 'message-a', synchronized: true, outcome: 'intent', readAs: 'quote',
     drafts: [{ messageId: 'message-a', location: { entryId: 'draft', storeId: 'store', folderEntryId: 'drafts' },
-      attachments: [{ fileName: 'quote.pdf', base64Data: 'UERG' }] }],
+      attachments: [{ fileName: 'quote.pdf', base64Data: 'JVBERi0xLjQKJSVFT0YK' }] }],
     forbiddenBatches: [], forbiddenNetwork: [], forbiddenBridgeActions: [], sourceAttachmentMetadata: null, screenshotPaths: [pane, page],
   };
 });
@@ -62,6 +62,19 @@ describe('replay evidence gate', () => {
     expect(replayGateFailures(expected, observed)).toEqual(expect.arrayContaining(['missing_draft', 'missing_attachment']));
     observed.drafts[0]!.messageId = 'message-a'; observed.drafts[0]!.attachments[0]!.base64Data = '';
     expect(replayGateFailures(expected, observed)).toContain('missing_attachment');
+  });
+  it('requires a canonical base64 attachment with a PDF name and signature', () => {
+    for (const attachment of [
+      { fileName: 'quote.pdf', base64Data: 'UERG' },
+      { fileName: 'quote.txt', base64Data: 'JVBERi0xLjQKJSVFT0YK' },
+      { fileName: 'quote.pdf', base64Data: 'JVBERi0' },
+      { fileName: 'quote.pdf', base64Data: 'JVBERi0=' },
+    ]) {
+      observed.drafts[0]!.attachments = [attachment];
+      expect(replayGateFailures(expected, observed)).toContain('missing_attachment');
+    }
+    observed.drafts[0]!.attachments = [{ fileName: 'QUOTE.PDF', base64Data: 'JVBERi0xLjQKJSVFT0YK' }];
+    expect(replayGateFailures(expected, observed)).not.toContain('missing_attachment');
   });
   it('requires actual nonempty screenshots', () => {
     writeFileSync(observed.screenshotPaths[0]!, '');
