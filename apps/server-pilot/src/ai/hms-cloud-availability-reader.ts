@@ -133,6 +133,8 @@ function stockStatus(
 ): 'available' | 'sold' | 'restricted' | 'unknown' {
   if (reasons.includes('unknown')) return 'unknown';
   if (reasons.some((reason) => /restrict|closed/i.test(reason))) return 'restricted';
+  // HMS conditions can include arrival closures and stay restrictions. Their applicability is not established here.
+  if (reasons.includes('conditions_present')) return 'unknown';
   if (availableCount === 0) return 'sold';
   if (availableCount !== null && availableCount >= requestedCount) return 'available';
   return 'unknown';

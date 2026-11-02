@@ -102,6 +102,17 @@ describe('Cloud HMS read result projection', () => {
     expect(suppressed.searchOutcome).toBe('partial');
   });
 
+  it('does not label conditional HMS stock available', () => {
+    const conditional = readView();
+    conditional.options[0]!.nights[0]!.reasons.push('conditions_present');
+    const result = projectCloudAvailability(request, [{ outcome: 'ok', view: conditional }]);
+    expect(result.outcome).toBe('read');
+    if (result.outcome !== 'read') throw new Error('expected read result');
+    expect(result.groups[0]?.options[0]?.nightly[0]).toEqual(expect.objectContaining({
+      availableCount: 3, stockStatus: 'unknown', reasons: ['conditions_present'],
+    }));
+  });
+
   it('refuses an unsupported target before opening a Cloud session', async () => {
     const result = await runCloudAvailability({
       request, target: { ...CENTURION_HMS_READ_TARGET, origin: 'https://wrong-origin.example' },

@@ -63,6 +63,13 @@ test('unknown quantity, inventory and conflicting criteria remain distinct', () 
   assert.ok(conflict.view.options[0].nights[1].reasons.includes('unknown'));
 });
 
+test('arrival closure is preserved as an HMS condition', () => {
+  const saved = snapshot();
+  saved.response.availabilitydata.children[0].children[0].children[0].columns.col1.combClosedToArrival = true;
+  const result = projectQuoteRequest({ snapshot: saved });
+  assert.ok(result.view.options[0].nights[0].reasons.includes('conditions_present'));
+});
+
 test('optional arithmetic is not an official price or joint availability', () => {
   const result = projectQuoteRequest({ snapshot: snapshot(), view: { includeNightlyValueSum: true } });
   const sum = result.view.options[0].nightlyValueSum;
