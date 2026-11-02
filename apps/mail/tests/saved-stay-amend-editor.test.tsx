@@ -39,7 +39,7 @@ describe('saved stay amendment request', () => {
     const onDraftChange = vi.fn();
     render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
-    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ identity, confirmation: stay.confirmation, proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
     expect(screen.getByText(/not saved to HMS/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /save|approve|preview/i })).toBeNull();
   });
@@ -50,7 +50,7 @@ describe('saved stay amendment request', () => {
     const other = { ...stay, confirmation: '87654321-1', adults: 1 };
     rerender(<SavedStayAmendEditor identity={identity} confirmation={other.confirmation} stay={other} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Choose a change to the booking.'] }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ identity, confirmation: other.confirmation, proposal: null, errors: ['Choose a change to the booking.'] }));
   });
   it('keeps distinct drafts for the same confirmation across sources and properties', async () => {
     const onDraftChange = vi.fn();
@@ -59,14 +59,15 @@ describe('saved stay amendment request', () => {
     const otherSource = { ...identity, messageId: 'other', sourceHash: 'other-hash' };
     rerender(<SavedStayAmendEditor identity={otherSource} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('2');
-    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Choose a change to the booking.'] }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ identity: otherSource, confirmation: stay.confirmation, proposal: null, errors: ['Choose a change to the booking.'] }));
+    expect(onDraftChange).toHaveBeenCalledWith({ identity, confirmation: stay.confirmation, proposal: null, errors: ['The booking selection changed.'] });
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '4' } });
     const otherProperty = { ...identity, propertyCode: 'HRDAV' };
     rerender(<SavedStayAmendEditor identity={otherProperty} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('2');
     rerender(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
-    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ identity, confirmation: stay.confirmation, proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
     rerender(<SavedStayAmendEditor identity={otherSource} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('4');
   });
@@ -75,7 +76,7 @@ describe('saved stay amendment request', () => {
     render(<SavedStayAmendEditor identity={{ ...identity, propertyCode: '' }} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     expect(screen.getByText(/Select the property, email and booking first/)).toBeTruthy();
     expect(screen.queryByLabelText('Requested adults')).toBeNull();
-    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Select the property, email and booking first.'] }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ identity: { ...identity, propertyCode: '' }, confirmation: stay.confirmation, proposal: null, errors: ['Select the property, email and booking first.'] }));
   });
   it('reports readback discrepancies and distinguishes a previous proposal from current entries', () => {
     const result = { propertyCode: 'HRCEN', threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',

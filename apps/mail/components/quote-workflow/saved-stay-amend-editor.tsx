@@ -26,7 +26,7 @@ type Props = {
     submittedProposal: SavedStayAmendProposal;
   } | null;
   screenshot?: ReactNode;
-  onDraftChange?: (input: { proposal: SavedStayAmendProposal | null; errors: string[] }) => void;
+  onDraftChange?: (input: { identity: EditorIdentity; confirmation: string; proposal: SavedStayAmendProposal | null; errors: string[] }) => void;
 };
 
 function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStayAmendProposal | null | undefined): boolean {
@@ -49,8 +49,10 @@ export function SavedStayAmendEditor(props: Props) {
     identity?.sourceHash, props.confirmation];
   const validIdentity = parts.every((part) => typeof part === 'string' && part.trim() !== '');
   useEffect(() => {
-    if (!validIdentity) onDraftRef.current?.({ proposal: null, errors: ['Select the property, email and booking first.'] });
-  }, [validIdentity]);
+    if (!validIdentity) onDraftRef.current?.({ identity, confirmation: props.confirmation, proposal: null,
+      errors: ['Select the property, email and booking first.'] });
+  }, [validIdentity, identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
+    identity?.sourceHash, props.confirmation]);
   if (!validIdentity) return <p aria-live="polite" className={smallClass}>Select the property, email and booking first.</p>;
   const key = JSON.stringify(parts);
   return <SavedStayAmendEditorContent key={key} {...props} storedDraft={drafts.current.get(key)}
@@ -67,18 +69,22 @@ function SavedStayAmendEditorContent({ identity, confirmation, stay, requestedAr
   const [touched, setTouched] = useState(storedDraft?.touched ?? false);
   const onDraftRef = useRef(onDraftChange);
   onDraftRef.current = onDraftChange;
+  const binding = useRef({ identity: { ...identity }, confirmation }).current;
   const validation = savedStayAmendProposal(confirmation, stay, draft);
   useEffect(() => {
-    onDraftRef.current?.(savedStayAmendProposal(confirmation, stay, draft));
-  }, [confirmation, stay, draft]);
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
+      ...savedStayAmendProposal(confirmation, stay, draft) });
+  }, [binding, confirmation, stay, draft]);
   useEffect(() => () => {
-    onDraftRef.current?.({ proposal: null, errors: ['The booking selection changed.'] });
-  }, []);
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
+      proposal: null, errors: ['The booking selection changed.'] });
+  }, [binding]);
   const update = (next: SavedStayAmendDraft) => {
     setTouched(true);
     setDraft(next);
     storeDraft(next);
-    onDraftRef.current?.(savedStayAmendProposal(confirmation, stay, next));
+    onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
+      ...savedStayAmendProposal(confirmation, stay, next) });
   };
   const field = (name: 'arrival' | 'departure' | 'adults' | 'children' | 'childAges', value: string) =>
     update({ ...draft, [name]: value });
