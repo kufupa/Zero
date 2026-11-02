@@ -79,7 +79,6 @@ const ATTACH_DOCUMENT = fileURLToPath(
 const AMEND_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/amend-stay.mjs', import.meta.url),
 );
-const ATTACH_TIMEOUT_MS = 10 * 60_000;
 const READ_ATTACHMENT_TIMEOUT_MS = 60_000;
 /** Attach reads the bytes through the read path, so the cap is the read path's cap. A test pins the equality. */
 export const PANE_ATTACH_MAX_BYTES = ARTIFACT_MAX_INPUT_BYTES;
@@ -517,55 +516,9 @@ export function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: str
   return args;
 }
 
-/**
- * The pane CLI env, plus ATTACH_VERIFIED=true only when this process has it. The worker never sets it. The U28-H2 ops
- * run sets it for its own process, which arms the driver for that one run.
- */
-function attachSpawnEnv(target: HmsReadTarget, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out = paneStaySpawnEnv(env, undefined, target);
-  if (env.ATTACH_VERIFIED === 'true') out.ATTACH_VERIFIED = 'true';
-  return out;
-}
-
-/** Runs attach-document.mjs. A refusal or failure still writes result.json, and that is read first. */
-export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
-  const dir = await mkdtemp(join(tmpdir(), 'pane-attach-'));
-  let runError: unknown = null;
-  try {
-    if (!input.target) throw new Error('pane_stay_target_required');
-    await execFileAsync('node', buildAttachDocumentArgs(input, dir), {
-      timeout: ATTACH_TIMEOUT_MS,
-      env: attachSpawnEnv(input.target),
-    });
-  } catch (error) {
-    runError = error;
-  }
-  let result: {
-    outcome?: string;
-    uploadSent?: boolean;
-    listed?: boolean;
-    screenshots?: string[];
-    blocked?: { method: string; path: string; code: string }[];
-  };
-  try {
-    result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result;
-  } catch {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-    throw runError ?? new Error('pane_attach_no_result');
-  }
-  const outcome = result.outcome ?? 'execution_failure';
-  if (outcome === 'execution_failure') {
-    warnPaneStaySpawnFailed('attach', runError ?? new Error('pane_attach_execution_failure'));
-  }
-  // Method, path and guard code only, so H2 can see what the allowlist stopped.
-  if (result.blocked?.length) console.warn('pane_attach_blocked_requests', { blocked: result.blocked });
-  return {
-    outcome,
-    uploadSent: result.uploadSent === true,
-    listed: result.listed === true,
-    screenshots: result.screenshots ?? [],
-    runDir: dir,
-  };
+/** The legacy attach driver is not an authorized Cloud filing path. */
+export async function spawnAttachDocument(_input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
+  return { outcome: 'refused_legacy_attach_disabled', uploadSent: false, listed: false, screenshots: [] };
 }
 
 const AMEND_TIMEOUT_MS = 10 * 60_000;
@@ -984,7 +937,6 @@ async function runClaimed(
   if (runId !== fence.runId) return { status: 'lease_lost' };
   const attachMode = paneHmsWriteMode(env);
   const legacyLab = env.RESERVATIONIST_PANE_SAVE === 'lab';
-  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const [run] = await db
     .select({ workItemId: aiWorkflowRun.workItemId, transportId: aiWorkflowRun.transportId })
     .from(aiWorkflowRun)
@@ -999,6 +951,10 @@ async function runClaimed(
     .from(workItem)
     .where(eq(workItem.id, workItemId))
     .limit(1);
+  // Inspect the raw action first, including malformed legacy forms and flag-off runs. A prior holder of this
+  // claim may have dispatched, so the durable terminal outcome stays unknown until independently reconciled.
+  if (item?.state.action === 'attach_document') return endRun(db, fence, 'UNKNOWN', 'legacy_attach_disabled');
+  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const form = item ? parseHmsWriteForm(item.state) : null;
   if (!form) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   if (form.action === 'attach_document') {
@@ -1047,8 +1003,8 @@ async function runClaimed(
 /**
  * One claimed hms_write run (U26). Order: policy and the attachment read, both before consume. Then, under the property
  * lock, the consume, the stay read, the identity check and the pre-Save check. Only then does the CLI run send Save.
- * Each refusal before Save ends the run with nothing written. An unexpected error propagates, and the sweep turns the
- * stale claim into LEASE_LOST, which blocks approval.
+ * This invocation refuses legacy attachment before dispatch. A previous holder may already have dispatched, so its
+ * outcome remains unknown. An unexpected error propagates, and the sweep turns the stale claim into LEASE_LOST.
  */
 export async function runPaneHmsWriteOnce(input: {
   runId: string;
