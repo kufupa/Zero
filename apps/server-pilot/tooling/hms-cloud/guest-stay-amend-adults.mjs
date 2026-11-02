@@ -243,10 +243,13 @@ export function matchesLabtestAdultAmendPreview(preview, expected, adults, befor
   return Boolean(current && same(preview, current));
 }
 
-async function selectAdultOption(frame, baseline, requested, commit) {
+async function selectAdultOption(frame, baseline, requested, commit, assertActive, deadlineAt) {
+  assertActive();
   const input = frame.locator('input[name="adults"]:visible');
   if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
-  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage }) => {
+  // The shared lifecycle can time out while the locator count is pending.
+  assertActive();
+  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage, deadline }) => {
     const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
     const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
       Boolean((item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden'));
@@ -301,6 +304,8 @@ async function selectAdultOption(frame, baseline, requested, commit) {
       return 'ADULT_PREIMAGE_UNVERIFIED';
     }
     if (!commitChange) return true;
+    // Compare in the browser's own monotonic clock, not Node's wall clock.
+    if (performance.now() >= deadline) return 'AMEND_TIMEOUT';
     component.setValue(target.record);
     component.fireEvent('select', component, target.record);
     form.updateRecord(record);
@@ -311,7 +316,7 @@ async function selectAdultOption(frame, baseline, requested, commit) {
     const actual = value && typeof value === 'object' ? read(value, valueField) : value;
     return String(actual ?? '') === String(adults) && element.value === target.label ? true : 'ADULT_EDIT_UNVERIFIED';
   }, { beforeAdult: adultValue(baseline), adults: requested, commitChange: commit,
-    preimage: { data: baseline.data, values: baseline.values } });
+    preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt });
   if (outcome !== true) throw new Error(typeof outcome === 'string' ? outcome : 'ADULT_EDIT_UNVERIFIED');
   return input;
 }
@@ -332,8 +337,16 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
   const { adults, timeoutMs = 20_000 } = options;
   if (!isAdultCount(expected?.adults)) return { outcome: 'input_gap', issue: 'ADULT_PREIMAGE_REQUIRED' };
   if (!isAdultCount(adults)) return { outcome: 'input_gap', issue: 'ADULT_COUNT_INVALID' };
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
-  return runLabtestAmendSave(page, {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
+  let active = true;
+  const deadlineAt = performance.now() + timeoutMs;
+  const assertActive = () => {
+    if (!active || performance.now() >= deadlineAt) throw new Error('AMEND_TIMEOUT');
+  };
+  const onDialog = () => { active = false; };
+  if (typeof page?.on === 'function') page.on('dialog', onDialog);
+  try {
+    return await runLabtestAmendSave(page, {
     timeoutMs,
     resultFields: { field: 'adults', adults },
     reportBlockedTargets: true,
@@ -350,16 +363,23 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
       if (adults === expected.adults) return { unchanged: true };
       if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
           await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count())) throw new Error('UNEXPECTED_DIALOG');
-      const control = await bounded(selectAdultOption(state.frame, baseline, adults, false));
+      // Sample the browser clock, then conservatively subtract the elapsed
+      // round trip from the remaining Node deadline. The clocks may have
+      // different origins when the browser runs on another host.
+      const browserNow = await bounded(state.frame.evaluate(() => performance.now()));
+      assertActive();
+      if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+      const browserDeadline = browserNow + Math.max(0, deadlineAt - performance.now());
+      const control = await bounded(selectAdultOption(state.frame, baseline, adults, false, assertActive, browserDeadline));
       const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
       if (await bounded(save.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
-      return { state, frame: state.frame, baseline, control, save };
+      return { state, frame: state.frame, baseline, control, save, browserDeadline };
     },
     // No Save request is authorized until the native availability recalculation is verified.
     matches: () => false,
     stage: async (bounded, prepared) => {
       await bounded(prepared.control.scrollIntoViewIfNeeded().catch(() => {}));
-      await bounded(selectAdultOption(prepared.frame, prepared.baseline, adults, true));
+      await bounded(selectAdultOption(prepared.frame, prepared.baseline, adults, true, assertActive, prepared.browserDeadline));
       const current = await bounded(currentLabtestRecord(page, expected, {
         allowBlankNote: true, allowUnchangedBusinessParties: true,
       }));
@@ -385,5 +405,9 @@ export async function stageLabtestAdultAmendment(page, expected = {}, options = 
       saveEligible: false,
       preview: staged.preview,
     } : {},
-  });
+    });
+  } finally {
+    active = false;
+    if (typeof page?.off === 'function') page.off('dialog', onDialog);
+  }
 }

@@ -39,7 +39,11 @@ also preserves absent versus blank child fields instead of assuming zero.
 A full-form update can copy unexpected values into the unsaved draft. If that
 happens, the adapter refuses the draft without rolling it back or saving it.
 The page is consumed after staging; use a fresh guarded session for further
-work, and reconcile unexpected or uncertain actions before any retry.
+work, and reconcile unexpected or uncertain actions before any retry. A
+bounded staging attempt rechecks its deadline before changing the control;
+a delayed control lookup cannot edit the draft after the operation returns.
+A queued browser evaluation also checks the deadline before mutation. An
+already-started browser action is not cancelled by the timeout.
 
 **No pricing, tax or inventory result is verified by staging.** The observed
 HMS side effects can clear pricing fields. The preview marks repricing,
