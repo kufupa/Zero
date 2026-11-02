@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createFilingRunner, prepareFilingContext } from '../src/ai/voucher-filing-runner.js';
+import { HmsApprovalError } from '../src/ai/hms-approval.js';
 import { createPropertyReadLock } from '../src/hms/property-read-lock.js';
 
 const pdf = Buffer.from('%PDF-synthetic');
@@ -100,9 +101,9 @@ describe('fenced voucher filing runner', () => {
 
   it('rejects client authority fields and a different grant before consuming', async () => {
     const f = await fixture();
-    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1', runId: 'client' } as any))).outcome).toBe('needs_input');
-    expect(f.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_input_invalid' }));
-    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'other' }))).outcome).toBe('refused');
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1', runId: 'client' } as any))).outcome).toBe('uncertain');
+    expect(f.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN', reason: 'filing_input_invalid' }));
+    expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'other' }))).outcome).toBe('uncertain');
     expect(f.consume).not.toHaveBeenCalled();
     expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
   });
@@ -133,7 +134,7 @@ describe('fenced voucher filing runner', () => {
       if (variant === 'pages') f.context.pages = () => [];
       if (variant === 'websocket') f.context.routeWebSocket = undefined as any;
       if (variant === 'configuration') f.context._options.serviceWorkers = 'allow';
-      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('refused');
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('uncertain');
       expect(f.consume).not.toHaveBeenCalled();
     }
   });
@@ -154,7 +155,7 @@ describe('fenced voucher filing runner', () => {
     for (const deadline of [new Date(0), new Date(NaN)]) {
       const f = await fixture();
       f.deps.fence.deadlineAt = deadline;
-      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('refused');
+      expect((await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('uncertain');
       expect(f.consume).not.toHaveBeenCalled();
     }
   });
@@ -234,15 +235,18 @@ describe('fenced voucher filing runner', () => {
     expect(f.persistPreimage).toHaveBeenCalledOnce();
   });
 
-  it('ends claimed runs on grant and initial authority refusals before dispatch', async () => {
-    const grant = await fixture();
-    grant.consume.mockRejectedValueOnce(new Error('state changed'));
-    expect((await grant.lock.withLock(() => createFilingRunner(grant.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_grant_unavailable');
-    expect(grant.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_grant_unavailable' }));
+  it('ends pre-consume refusals as unknown because another invocation may have consumed', async () => {
+    for (const error of [new Error('commit response lost'), new HmsApprovalError('already_consumed')]) {
+      const grant = await fixture();
+      grant.consume.mockRejectedValueOnce(error);
+      expect((await grant.lock.withLock(() => createFilingRunner(grant.deps).run({ grantRef: 'grant-1' }))).outcome).toBe('uncertain');
+      expect(grant.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN', reason: 'filing_grant_unavailable' }));
+      expect(grant.fileLabtestVoucher).not.toHaveBeenCalled();
+    }
     const context = await fixture();
     context.context.pages = () => [];
     expect((await context.lock.withLock(() => createFilingRunner(context.deps).run({ grantRef: 'grant-1' }))).reason).toBe('filing_authority_unavailable');
-    expect(context.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_authority_unavailable' }));
+    expect(context.endRun).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN', reason: 'filing_authority_unavailable' }));
   });
 
   it('reports uncertainty when ending a claimed run fails', async () => {

@@ -92,7 +92,7 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
     Number.isFinite(fence.deadlineAt.getTime()) && Date.now() < fence.deadlineAt.getTime();
   const lockHeld = () => Boolean(propertyLock?.tenantId && propertyLock.propertyCode &&
     isPropertyReadConnectionHeld(propertyLock.connection, propertyReadLockKey(propertyLock.tenantId, propertyLock.propertyCode)));
-  const finish = async (outcome: 'needs_input' | 'refused' | 'uncertain', reason: string, marker?: string) => {
+  const finish = async (outcome: 'refused' | 'uncertain', reason: string, marker?: string) => {
     try {
       const ended = await endRun({ db, fence, failureClass: outcome === 'uncertain' ? 'UNKNOWN' : 'NEEDS_CHECK', reason });
       if (!ended) return result('uncertain', 'filing_needs_check', marker);
@@ -104,17 +104,19 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
       if (invoked) return result('refused', 'filing_run_already_invoked');
       invoked = true;
       if (!fence?.runId || !fence.claimOwner || !fence.claimToken) return result('refused', 'filing_authority_unavailable');
+      // Another invocation with this fence may already have consumed the grant. UNKNOWN blocks
+      // reapproval if consumed, while the approval layer permits it if no consume exists.
       const parsed = FilingRunnerInputSchema.safeParse(input);
-      if (!parsed.success) return finish('needs_input', 'filing_input_invalid');
+      if (!parsed.success) return finish('uncertain', 'filing_input_invalid');
       if (!serverGrantId || parsed.data.grantRef !== serverGrantId || !withinDeadline() || !safePage(page) || !lockHeld()) {
-        return finish('refused', 'filing_authority_unavailable');
+        return finish('uncertain', 'filing_authority_unavailable');
       }
       let form: ApprovedForm;
       try {
         const consumed = await consume({ db, runId: fence.runId, fence });
         if (consumed.grantId !== serverGrantId) return finish('refused', 'filing_grant_mismatch');
         form = structuredClone(consumed.form);
-      } catch { return finish('refused', 'filing_grant_unavailable'); }
+      } catch { return finish('uncertain', 'filing_grant_unavailable'); }
       if (!withinDeadline()) return finish('refused', 'filing_deadline_expired');
       if (form.propertyCode !== propertyLock.propertyCode) return finish('refused', 'filing_property_mismatch');
       const expectedHash = sourceHash(form);
