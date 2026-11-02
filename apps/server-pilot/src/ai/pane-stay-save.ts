@@ -23,6 +23,7 @@ import {
   type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
+import { CreateFenceError } from './pane-create-dispatch-fence.js';
 import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 
 const execFileAsync = promisify(execFile);
@@ -454,15 +455,17 @@ async function recordBoundPreview(input: {
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<void> {
-  recordPanePreview(input.owner, input.digest, input.now);
   const persist = boundPreviewPersist(input);
-  if (!persist || !input.workItemId || !input.stayId) return;
-  await persist.record({
-    workItemId: input.workItemId,
-    stayId: input.stayId,
-    digest: input.digest,
-    now: input.now,
-  });
+  if (persist && input.workItemId && input.stayId) {
+    await persist.record({
+      workItemId: input.workItemId,
+      stayId: input.stayId,
+      digest: input.digest,
+      now: input.now,
+    });
+  }
+  // A failed bound write must not leave a fresh memory-only grant behind.
+  recordPanePreview(input.owner, input.digest, input.now);
 }
 
 async function takeBoundPreview(input: {
@@ -780,6 +783,10 @@ export async function runPaneStay(input: {
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
+    if (error instanceof CreateFenceError && error.reason === 'active') {
+      takePanePreview(input.owner, digest, paneStayClock());
+      return { status: 'refused', reason: 'write_in_flight' };
+    }
     warnPaneStaySpawnFailed('save', error);
     throw error;
   }
@@ -826,6 +833,10 @@ export async function runPaneStay(input: {
         previewPersist: input.previewPersist,
       });
     } catch (error) {
+      if (error instanceof CreateFenceError && error.reason === 'active') {
+        takePanePreview(input.owner, digest, paneStayClock());
+        return { status: 'refused', reason: 'write_in_flight' };
+      }
       console.warn('stay_preview_persist_failed', {
         stayId: input.stayId,
         workItemId: input.workItemId,

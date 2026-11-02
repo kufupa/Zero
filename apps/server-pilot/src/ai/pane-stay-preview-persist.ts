@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workItem } from '../db/schema/work.js';
+import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
 
 const STAY_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -77,6 +78,7 @@ export async function recordStayPreview(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    await assertNoCreateDispatchFence(tx, input);
     const state = withStayPreview(item.state, input.stayId, input.record);
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const };
@@ -96,6 +98,7 @@ export async function takeStayPreview(
       .limit(1)
       .for('update');
     if (!item) return false;
+    await assertNoCreateDispatchFence(tx, input);
     const grant = stayPreviewGrantOf(stayPreviewOf(item.state, input.stayId), input.digest, input.now);
     await tx
       .update(workItem)
