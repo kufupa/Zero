@@ -9,7 +9,7 @@ import { flushComposeBeforeLeave, registerComposeFlush, registerComposeUnsavedCh
 const mocks = vi.hoisted(() => ({
   save: vi.fn(), navigate: vi.fn(), toast: vi.fn(), bodyChanged: null as null | (() => void),
   editorHtml: '<p>Quoted</p>',
-  editor: { getHTML: () => mocks.editorHtml, getText: () => 'Quoted', commands: { focus: vi.fn(), setContent: vi.fn(), clearContent: vi.fn() } },
+  editor: { getHTML: () => mocks.editorHtml, getText: () => mocks.editorHtml.replace(/<[^>]+>/g, ''), commands: { focus: vi.fn(), setContent: vi.fn(), clearContent: vi.fn() } },
 }));
 vi.mock('@/hooks/use-compose-editor', () => ({ default: (options: { onLengthChange: () => void }) => { mocks.bodyChanged = options.onLengthChange; return mocks.editor; } }));
 vi.mock('@tiptap/react', () => ({ EditorContent: () => <div>Editor</div> }));
@@ -114,11 +114,14 @@ describe('real composer draft handoff', () => {
 
   it('saves clearing the existing body even without recipients or subject', async () => {
     render(<Harness initialSubject="" initialTo={[]} />);
+    mocks.editorHtml = '<p>Edited</p>';
+    act(() => { mocks.bodyChanged?.(); });
+    await act(async () => { await flushComposeBeforeLeave(); });
     mocks.editorHtml = '';
     act(() => { mocks.bodyChanged?.(); });
     fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
     await waitFor(() => expect(mocks.navigate).toHaveBeenCalledOnce());
-    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ body: '', to: '', subject: '' }));
+    expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({ body: '', to: '', subject: '' }));
   });
 
   it('keeps an unfinished recipient input open instead of discarding it', async () => {
@@ -127,6 +130,15 @@ describe('real composer draft handoff', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open another' }));
     await act(async () => { await Promise.resolve(); });
     expect(mocks.navigate).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('pending-to') as HTMLInputElement).value).toBe('partial@example.com');
+  });
+
+  it('still flushes committed edits through the legacy leave path with a pending recipient', async () => {
+    render(<Harness />);
+    fireEvent.change(screen.getByPlaceholderText('Re: Design review feedback'), { target: { value: 'Changed' } });
+    fireEvent.change(screen.getByLabelText('pending-to'), { target: { value: 'partial@example.com' } });
+    await act(async () => { await flushComposeBeforeLeave(); });
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Changed' }));
     expect((screen.getByLabelText('pending-to') as HTMLInputElement).value).toBe('partial@example.com');
   });
 

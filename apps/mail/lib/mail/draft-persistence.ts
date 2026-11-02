@@ -17,6 +17,7 @@ export type PersistDecisionInput = {
   hasUnsavedChanges: boolean;
   nonBodyChanges?: boolean;
   lastSavedHtml?: string;
+  hasSavedDraft?: boolean;
   initialHtml: string;
   html: string;
   text: string;
@@ -69,13 +70,12 @@ type EnsureEditableDraftInput = {
 export function shouldPersistDraft(input: PersistDecisionInput): boolean {
   if (!input.hasUnsavedChanges || input.aiBlocked) return false;
   // Header and attachment edits, including removals, matter even with unchanged body.
-  if (input.nonBodyChanges || (input.lastSavedHtml !== undefined && input.lastSavedHtml.trim() !== input.html.trim())) return true;
+  if (input.nonBodyChanges) return true;
+  const hasContent = input.text.trim().length > 0 || input.subject.trim().length > 0 || input.to.length > 0;
+  if (input.lastSavedHtml !== undefined && input.lastSavedHtml.trim() !== input.html.trim() &&
+    (input.hasSavedDraft || hasContent)) return true;
   if (input.html.trim() === input.initialHtml.trim()) return false;
-  return (
-    input.text.trim().length > 0 ||
-    input.subject.trim().length > 0 ||
-    input.to.length > 0
-  );
+  return hasContent;
 }
 
 export function buildDraftMutationInput(input: DraftMutationInput) {

@@ -657,6 +657,7 @@ export function EmailComposer({
           hasUnsavedChanges: hasSynchronousDraftChanges(),
           nonBodyChanges: hasNonBodyChanges(),
           lastSavedHtml: lastSavedHtmlRef.current,
+          hasSavedDraft: Boolean(activeDraftIdRef.current),
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -847,6 +848,7 @@ export function EmailComposer({
             hasUnsavedChanges: snapshot.hasUnsavedChanges,
             nonBodyChanges: snapshot.nonBodyChanges,
             lastSavedHtml: snapshot.lastSavedHtml,
+            hasSavedDraft: Boolean(snapshot.draftId),
             initialHtml: snapshot.initialHtml,
             html: snapshot.html,
             text: snapshot.text,
@@ -963,6 +965,7 @@ export function EmailComposer({
       hasUnsavedChanges: hasSynchronousDraftChanges(),
       nonBodyChanges: hasNonBodyChanges(),
       lastSavedHtml: lastSavedHtmlRef.current,
+      hasSavedDraft: Boolean(activeDraftIdRef.current),
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -1027,7 +1030,6 @@ export function EmailComposer({
 
   useEffect(() => {
     const flush = async () => {
-      if (hasPendingRecipientInput()) return;
       if (needsSave()) {
         await saveDraft();
       }
@@ -1039,6 +1041,7 @@ export function EmailComposer({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
         nonBodyChanges: hasNonBodyChanges(),
         lastSavedHtml: lastSavedHtmlRef.current,
+        hasSavedDraft: Boolean(activeDraftIdRef.current),
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
