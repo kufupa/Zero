@@ -105,7 +105,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       }
       return result.complete === true ? matches[0]! : { ...matches[0]!, reviewed: null };
     }));
-    if (incomplete) setError('Some booking results are incomplete. Check HMS before trying again.');
+    if (incomplete) setError('Some booking results are incomplete. Check HMS. Do not try these bookings again.');
     else setRefreshEpoch(sequence);
   };
 
@@ -164,7 +164,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       acceptResults(result, submitted.source.workItemId, queued.runId, sequence);
     } catch {
       // Approval or dispatch may have reached the server. Do not offer another approval.
-      setError('The booking outcome needs checking. Check HMS before trying again.');
+      setError('The booking outcome needs checking. Check HMS. Do not try these bookings again.');
     } finally { setBusy(false); }
   }
 
@@ -173,7 +173,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     setBusy(true); setError('');
     const sequence = ++readSequence.current;
     try { acceptResults(await viewClient.read({ workItemId: viewInput.source.workItemId, runId }), viewInput.source.workItemId, runId, sequence); }
-    catch { setError('Could not read the booking result. Check HMS before trying again.'); }
+    catch { setError('Could not read the booking result. Check HMS. Do not try these bookings again.'); }
     finally { setBusy(false); }
   }
 

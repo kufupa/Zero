@@ -260,7 +260,18 @@ describe('batch booking review', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
     expect((await screen.findByRole('alert')).textContent).toContain('outcome needs checking');
+    expect(screen.getByRole('alert').textContent).toContain('Do not try these bookings again.');
     expect(screen.queryByRole('button', { name: /Approve|Review these rooms/ })).toBeNull();
+  });
+  it('does not suggest another booking attempt when a result refresh fails', async () => {
+    const api = client(); api.read = vi.fn(async () => { throw new Error('unavailable'); });
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Do not try these bookings again.');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh booking results' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Could not read the booking result.'));
+    expect(screen.getByRole('alert').textContent).toContain('Do not try these bookings again.');
   });
   it('holds unmeasured limits and real guests, regardless of single-create mode', async () => {
     const api = client(); api.prepare = vi.fn(async (request) => ({ ...review(request), batchLimit: null }));
@@ -477,7 +488,7 @@ describe('batch booking review', () => {
     ] }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh booking results' }));
     await waitFor(() => expect(api.read).toHaveBeenCalledTimes(1));
-    await screen.findByText('Some booking results are incomplete. Check HMS before trying again.');
+    await screen.findByText('Some booking results are incomplete. Check HMS. Do not try these bookings again.');
     expect(screen.getByText(/Review may have been saved/)).toBeTruthy();
     expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
     expect(api.reviewChild).toHaveBeenCalledTimes(1);
