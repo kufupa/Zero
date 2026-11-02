@@ -61,6 +61,7 @@ interface RecipientAutosuggestProps {
   inputId?: string;
   inputName?: string;
   onValueChange: () => void;
+  onPendingClear?: () => void;
 }
 
 export function RecipientAutosuggest({
@@ -72,6 +73,7 @@ export function RecipientAutosuggest({
   inputId,
   inputName,
   onValueChange,
+  onPendingClear,
 }: RecipientAutosuggestProps) {
 
   const {
@@ -86,6 +88,10 @@ export function RecipientAutosuggest({
   const [isOpen, setIsOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [isComposing, setIsComposing] = useState(false);
+  const setRecipientInput = useCallback((value: string) => {
+    setInputValue(value);
+    if (!value.trim()) onPendingClear?.();
+  }, [onPendingClear]);
   
   const inputDomRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -142,11 +148,11 @@ export function RecipientAutosuggest({
     const normalizedEmail = canonicalizeEmail(email);
     if (!canonicalRecipients.has(normalizedEmail) && isValidEmail(email)) {
       commitRecipients([...recipients, email]);
-      setInputValue('');
+      setRecipientInput('');
       setIsOpen(false);
       setSelectedIndex(-1);
     }
-  }, [canonicalRecipients, recipients, commitRecipients, isValidEmail]);
+  }, [canonicalRecipients, recipients, commitRecipients, isValidEmail, setRecipientInput]);
 
   const removeRecipient = useCallback((index: number) => {
     const newRecipients = recipients.filter((_: string, i: number) => i !== index);
@@ -155,11 +161,11 @@ export function RecipientAutosuggest({
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    setInputValue(value);
+    setRecipientInput(value);
     setSelectedIndex(-1);
     debouncedSetQuery(value);
     setIsOpen(value.trim().length > 0);
-  }, [debouncedSetQuery]);
+  }, [debouncedSetQuery, setRecipientInput]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (isComposing) return;
@@ -236,8 +242,8 @@ export function RecipientAutosuggest({
     if (emailsToAdd.length > 0) {
       commitRecipients([...recipients, ...emailsToAdd]);
     }
-    setInputValue(remainingInput.join(', '));
-  }, [canonicalRecipients, inputValue, recipients, commitRecipients, isValidEmail]);
+    setRecipientInput(remainingInput.join(', '));
+  }, [canonicalRecipients, inputValue, recipients, commitRecipients, isValidEmail, setRecipientInput]);
 
   const handleClickOutside = useCallback((event: MouseEvent) => {
     if (

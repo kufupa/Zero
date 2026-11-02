@@ -9,7 +9,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Command, ImagePlus, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import useComposeEditor from '@/hooks/use-compose-editor';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
@@ -62,7 +62,7 @@ import {
 } from '@/lib/compose-attachment-policy';
 import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
-import { registerComposeFlush, registerComposeUnsavedCheck } from '@/lib/mail/compose-flush-registry';
+import { registerComposeFlush, registerComposePendingRecipientCheck, registerComposeSwitchLock, registerComposeUnsavedCheck } from '@/lib/mail/compose-flush-registry';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
 import { TemplateButton } from './template-button';
@@ -100,6 +100,7 @@ interface EmailComposerProps {
   editorClassName?: string;
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
+  replyHeaderSeed?: string;
   replyToMessageId?: string | null;
   replyToMessage?: ParsedMessage | null;
   headerPreview?: HeaderDebugLine[];
@@ -143,6 +144,7 @@ export function EmailComposer({
   settingsLoading = false,
   editorClassName,
   syncReplyHeadersFromProps = false,
+  replyHeaderSeed,
   replyToMessageId = null,
   replyToMessage = null,
   headerPreview = [],
@@ -166,6 +168,45 @@ export function EmailComposer({
     setHasUnsavedChanges(true);
     setAutosaveSuppressedAfterFailure(false);
   }, []);
+  // A separate revision marks intentional header/file changes without saving untouched quoted content.
+  const nonBodyEditedAtRef = useRef(0);
+  const lastSavedHtmlRef = useRef<string | undefined>(initialMessage);
+  const markNonBodyChanges = useCallback(() => {
+    markUnsavedChanges();
+    nonBodyEditedAtRef.current = revisionRef.current.localRevision;
+  }, [markUnsavedChanges]);
+  const hasNonBodyChanges = useCallback(
+    () => nonBodyEditedAtRef.current > revisionRef.current.savedRevision,
+    [],
+  );
+  const [pendingRecipientRevision, setPendingRecipientRevision] = useState(0);
+  const handlePendingRecipientClear = useCallback(() => {
+    setPendingRecipientRevision((revision) => revision + 1);
+  }, []);
+  const editedHeadersRef = useRef(new Set<'to' | 'cc' | 'bcc' | 'subject'>());
+  const headerSeedRef = useRef(replyHeaderSeed);
+  const markHeaderChanges = useCallback((...fields: ('to' | 'cc' | 'bcc' | 'subject')[]) => {
+    fields.forEach((field) => editedHeadersRef.current.add(field));
+    markNonBodyChanges();
+  }, [markNonBodyChanges]);
+  const composerRef = useRef<HTMLDivElement>(null);
+  // A partially typed address is not yet in the form's recipient array.
+  const hasPendingRecipientInput = useCallback((section?: 'to' | 'cc' | 'bcc') => {
+    const selector = section
+      ? `[data-recipient-section="${section}"] input[type="email"]`
+      : 'input[type="email"]';
+    return Array.from(composerRef.current?.querySelectorAll<HTMLInputElement>(selector) ?? [])
+      .some((input) => input.value.trim().length > 0);
+  }, []);
+  const toggleRecipientSection = (section: 'cc' | 'bcc') => {
+    const visible = section === 'cc' ? showCc : showBcc;
+    if (visible && hasPendingRecipientInput(section)) {
+      toast.error('Finish adding the email address before hiding this field.');
+      return;
+    }
+    if (section === 'cc') setShowCc(!visible);
+    else setShowBcc(!visible);
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
@@ -260,11 +301,10 @@ export function EmailComposer({
 
   const hasSynchronousDraftChanges = useCallback(
     () =>
-      hasUnsavedChanges ||
       revisionRef.current.localRevision > revisionRef.current.savedRevision ||
       pendingAttachmentWorkRef.current > 0 ||
       pendingInlineImageWorkRef.current > 0,
-    [hasUnsavedChanges],
+    [],
   );
 
   const processAndSetAttachments = useCallback(
@@ -358,17 +398,36 @@ export function EmailComposer({
     [initialTo, initialCc, initialBcc, initialSubject],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!syncReplyHeadersFromProps) return;
 
-    setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
-    setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
-    setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
-    setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
-    setShowCc(initialCc.length > 0);
-    setShowBcc(initialBcc.length > 0);
+    const seedChanged = headerSeedRef.current !== replyHeaderSeed;
+    if (seedChanged) {
+      headerSeedRef.current = replyHeaderSeed;
+      // A mode/target change intentionally derives new recipients, but keeps an edited subject.
+      editedHeadersRef.current.delete('to');
+      editedHeadersRef.current.delete('cc');
+      editedHeadersRef.current.delete('bcc');
+    }
+    const pendingTo = hasPendingRecipientInput('to');
+    const pendingCc = hasPendingRecipientInput('cc');
+    const pendingBcc = hasPendingRecipientInput('bcc');
+    // A new mode must replace committed recipients before pending text can be committed.
+    // Keep its input mounted, while ordinary refreshes preserve local edits and pending text.
+    if (!editedHeadersRef.current.has('to') && (seedChanged || !pendingTo)) {
+      setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
+    }
+    if (!editedHeadersRef.current.has('cc') && (seedChanged || !pendingCc)) {
+      setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
+      setShowCc(initialCc.length > 0 || pendingCc);
+    }
+    if (!editedHeadersRef.current.has('bcc') && (seedChanged || !pendingBcc)) {
+      setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
+      setShowBcc(initialBcc.length > 0 || pendingBcc);
+    }
+    if (!editedHeadersRef.current.has('subject')) setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
-  }, [externalHeaderSyncKey, syncReplyHeadersFromProps, setValue]);
+  }, [externalHeaderSyncKey, hasPendingRecipientInput, pendingRecipientRevision, replyHeaderSeed, syncReplyHeadersFromProps, setValue]);
 
   const toEmails = watch('to');
   const ccEmails = watch('cc');
@@ -443,7 +502,7 @@ export function EmailComposer({
     ) => {
       if (marksDraftDirty) {
         pendingAttachmentWorkRef.current += 1;
-        markUnsavedChanges();
+        markNonBodyChanges();
       }
 
       const runTask = async () => {
@@ -463,7 +522,7 @@ export function EmailComposer({
       });
       return attachmentQueueRef.current;
     },
-    [markUnsavedChanges],
+    [markNonBodyChanges],
   );
 
   const queueAttachmentCandidates = useCallback(
@@ -601,14 +660,16 @@ export function EmailComposer({
     });
 
     if (editorState.source !== 'server') return;
+    lastSavedHtmlRef.current = editorState.html;
 
     if (editorState.html !== editor.getHTML()) {
       editor.commands.setContent(editorState.html, false);
     }
-    if (editorState.subject !== subjectInput) {
+    // ReplyCompose already resolves generated defaults versus intentionally saved subjects.
+    if (!syncReplyHeadersFromProps && editorState.subject !== subjectInput) {
       setValue('subject', editorState.subject, { shouldDirty: false });
     }
-  }, [editor, serverDraft, setValue, subjectInput]);
+  }, [editor, serverDraft, setValue, subjectInput, syncReplyHeadersFromProps]);
 
   // Remove the TRPC query - we'll use the component's internal logic instead
   useEffect(() => {
@@ -624,8 +685,11 @@ export function EmailComposer({
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       const values = getValues();
       if (
-        shouldPersistDraft({
+        hasPendingRecipientInput() || shouldPersistDraft({
           hasUnsavedChanges: hasSynchronousDraftChanges(),
+          nonBodyChanges: hasNonBodyChanges(),
+          lastSavedHtml: lastSavedHtmlRef.current,
+          hasSavedDraft: Boolean(activeDraftIdRef.current),
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -641,7 +705,7 @@ export function EmailComposer({
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [editor, getValues, hasSynchronousDraftChanges, initialMessage]);
+  }, [editor, getValues, hasNonBodyChanges, hasPendingRecipientInput, hasSynchronousDraftChanges, initialMessage]);
 
   const drainAttachmentWork = useCallback(async () => {
     for (;;) {
@@ -741,6 +805,8 @@ export function EmailComposer({
       void setDraftId(null);
       setHasUnsavedChanges(false);
       revisionRef.current = { localRevision: 0, savedRevision: 0 };
+      nonBodyEditedAtRef.current = 0;
+      lastSavedHtmlRef.current = undefined;
       editor.commands.clearContent(false);
       form.reset();
       clearAttachmentState();
@@ -792,6 +858,8 @@ export function EmailComposer({
         const values = getValues();
         const snapshot = {
           hasUnsavedChanges: hasSynchronousDraftChanges(),
+          nonBodyChanges: hasNonBodyChanges(),
+          lastSavedHtml: lastSavedHtmlRef.current,
           initialHtml: initialMessage ?? '',
           aiBlocked: false,
           draftId: activeDraftIdRef.current,
@@ -810,6 +878,9 @@ export function EmailComposer({
         if (
           !shouldPersistDraft({
             hasUnsavedChanges: snapshot.hasUnsavedChanges,
+            nonBodyChanges: snapshot.nonBodyChanges,
+            lastSavedHtml: snapshot.lastSavedHtml,
+            hasSavedDraft: Boolean(snapshot.draftId),
             initialHtml: snapshot.initialHtml,
             html: snapshot.html,
             text: snapshot.text,
@@ -867,6 +938,7 @@ export function EmailComposer({
           ]);
         }
 
+        lastSavedHtmlRef.current = snapshot.html;
         revisionRef.current = reduceDraftRevision(revisionRef.current, {
           type: 'saved',
           capturedRevision,
@@ -895,6 +967,7 @@ export function EmailComposer({
     drainComposeFileWork,
     getValues,
     hasSynchronousDraftChanges,
+    hasNonBodyChanges,
     initialMessage,
     queryClient,
     replyToMessageId,
@@ -922,6 +995,9 @@ export function EmailComposer({
     const values = getValues();
     return {
       hasUnsavedChanges: hasSynchronousDraftChanges(),
+      nonBodyChanges: hasNonBodyChanges(),
+      lastSavedHtml: lastSavedHtmlRef.current,
+      hasSavedDraft: Boolean(activeDraftIdRef.current),
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -929,19 +1005,27 @@ export function EmailComposer({
       subject: values.subject ?? '',
       aiBlocked: false,
     };
-  }, [hasSynchronousDraftChanges, initialMessage, editor, getValues]);
+  }, [hasNonBodyChanges, hasSynchronousDraftChanges, initialMessage, editor, getValues]);
 
   const handleClose = useCallback(() => {
+    if (hasPendingRecipientInput()) {
+      toast.error('Finish adding the email address before closing the draft.');
+      return;
+    }
     const action = resolveComposeCloseAction({ ...buildPersistInput(), intent: 'userClose' });
     if (action === 'closeSilent') {
       onClose?.();
       return;
     }
     setShowLeaveConfirmation(true);
-  }, [buildPersistInput, onClose]);
+  }, [buildPersistInput, hasPendingRecipientInput, onClose]);
 
   const handleEscapeClose = useCallback(
     (isComposing: boolean) => {
+      if (hasPendingRecipientInput()) {
+        if (!isComposing) toast.error('Finish adding the email address before closing the draft.');
+        return;
+      }
       const action = resolveComposeEscapeAction({ ...buildPersistInput(), isComposing });
       if (action === 'ignore') return;
       if (action === 'closeSilent') {
@@ -950,7 +1034,7 @@ export function EmailComposer({
       }
       setShowLeaveConfirmation(true);
     },
-    [buildPersistInput, onClose],
+    [buildPersistInput, hasPendingRecipientInput, onClose],
   );
 
   const handleDialogChoice = useCallback(
@@ -976,16 +1060,21 @@ export function EmailComposer({
     [buildPersistInput, draftId, onClose, optimisticDeleteDraft, saveDraft],
   );
 
-  useEffect(() => {
+  // Register before paint so a replacement composer inherits an in-flight switch lock.
+  useLayoutEffect(() => {
     const flush = async () => {
       if (needsSave()) {
         await saveDraft();
       }
     };
     const needsSave = () => {
+      if (hasPendingRecipientInput()) return true;
       const values = getValues();
       const action = resolveComposeCloseAction({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
+        nonBodyChanges: hasNonBodyChanges(),
+        lastSavedHtml: lastSavedHtmlRef.current,
+        hasSavedDraft: Boolean(activeDraftIdRef.current),
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
@@ -998,11 +1087,16 @@ export function EmailComposer({
     };
     registerComposeFlush(flush);
     registerComposeUnsavedCheck(needsSave);
+    registerComposePendingRecipientCheck(hasPendingRecipientInput);
+    const node = composerRef.current;
+    registerComposeSwitchLock((locked) => { if (node) node.toggleAttribute('inert', locked); });
     return () => {
       registerComposeFlush(null);
       registerComposeUnsavedCheck(null);
+      registerComposePendingRecipientCheck(null);
+      registerComposeSwitchLock(null);
     };
-  }, [hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
+  }, [hasNonBodyChanges, hasPendingRecipientInput, hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
 
   useEffect(() => {
     if (!editor) return;
@@ -1233,6 +1327,7 @@ export function EmailComposer({
 
   return (
     <div
+      ref={composerRef}
       onPasteCapture={handlePasteFiles}
       onDragEnter={handleFileDragEnter}
       onDragOver={handleFileDragOver}
@@ -1260,14 +1355,15 @@ export function EmailComposer({
         {/* To, Cc, Bcc */}
         <div className="shrink-0 overflow-visible border-b border-[#E7E7E7] pb-2 dark:border-[#252525]">
           <div className="flex min-w-0 justify-between px-3 pt-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div data-recipient-section="to" className="flex min-w-0 flex-1 items-center gap-2">
               <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">To:</p>
               <RecipientAutosuggest
                 control={form.control}
                 name="to"
                 placeholder="Enter email address"
                 disabled={isLoading}
-                onValueChange={markUnsavedChanges}
+                onValueChange={() => markHeaderChanges('to')}
+                onPendingClear={handlePendingRecipientClear}
               />
             </div>
 
@@ -1275,14 +1371,14 @@ export function EmailComposer({
               <button
                 type="button"
                 className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
-                onClick={() => setShowCc(!showCc)}
+                onClick={() => toggleRecipientSection('cc')}
               >
                 <span>Cc</span>
               </button>
               <button
                 type="button"
                 className="flex h-full cursor-pointer items-center gap-2 rounded-sm px-1 py-0.5 text-sm font-medium text-[#8C8C8C] transition-colors hover:bg-gray-50 hover:text-[#A8A8A8] dark:hover:bg-[#404040]"
-                onClick={() => setShowBcc(!showBcc)}
+                onClick={() => toggleRecipientSection('bcc')}
               >
                 <span>Bcc</span>
               </button>
@@ -1302,28 +1398,30 @@ export function EmailComposer({
           <div className={`flex flex-col gap-2 ${showCc || showBcc ? 'pt-2' : ''}`}>
             {/* CC Section */}
             {showCc && (
-              <div className="flex min-w-0 items-center gap-2 px-3">
+              <div data-recipient-section="cc" className="flex min-w-0 items-center gap-2 px-3">
                 <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Cc:</p>
                 <RecipientAutosuggest
                   control={form.control}
                   name="cc"
                   placeholder="Enter email for Cc"
                   disabled={isLoading}
-                  onValueChange={markUnsavedChanges}
+                  onValueChange={() => markHeaderChanges('cc')}
+                  onPendingClear={handlePendingRecipientClear}
                 />
               </div>
             )}
 
             {/* BCC Section */}
             {showBcc && (
-              <div className="flex min-w-0 items-center gap-2 px-3">
+              <div data-recipient-section="bcc" className="flex min-w-0 items-center gap-2 px-3">
                 <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Bcc:</p>
                 <RecipientAutosuggest
                   control={form.control}
                   name="bcc"
                   placeholder="Enter email for Bcc"
                   disabled={isLoading}
-                  onValueChange={markUnsavedChanges}
+                  onValueChange={() => markHeaderChanges('bcc')}
+                  onPendingClear={handlePendingRecipientClear}
                 />
               </div>
             )}
@@ -1343,7 +1441,7 @@ export function EmailComposer({
               onChange={(e) => {
                 const value = replaceEmojiShortcodes(e.target.value);
                 setValue('subject', value);
-                markUnsavedChanges();
+                markHeaderChanges('subject');
               }}
             />
           </div>
@@ -1426,7 +1524,7 @@ export function EmailComposer({
               cc={ccEmails ?? []}
               bcc={bccEmails ?? []}
               setRecipients={(field, val) => setValue(field, val)}
-              onApply={markUnsavedChanges}
+              onApply={() => markHeaderChanges('to', 'cc', 'bcc', 'subject')}
             />
             <Input
               type="file"

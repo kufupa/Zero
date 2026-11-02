@@ -389,17 +389,20 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   }, [draftId, composeSeed]);
 
   const hasDraftRecipients = draftTo.length > 0 || draftCc.length > 0 || draftBcc.length > 0;
-  const shouldUseDraftRecipients =
-    hasDraftRecipients && Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
-  const initialToRecipients = shouldUseDraftRecipients
-    ? draftTo.length > 0
-      ? draftTo
-      : derivedReplyRecipients.to
-    : derivedReplyRecipients.to;
-  const initialCcRecipients = shouldUseDraftRecipients ? draftCc : derivedReplyRecipients.cc;
-  const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];
+  const savedHeaders = draft?.id === draftId && draft?.headersSaved === true;
+  const savedFields = draft?.id === draftId ? draft?.savedHeaderFields : undefined;
+  const sameRecipientSeed = Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
+  // Per-field provenance distinguishes an intentional empty value from an untouched default.
+  // Older servers lack that provenance, so retain their original recipient fallback.
+  const initialToRecipients = sameRecipientSeed && (savedHeaders || savedFields?.to || draftTo.length > 0)
+    ? draftTo : derivedReplyRecipients.to;
+  const initialCcRecipients = sameRecipientSeed && (savedHeaders || savedFields?.cc ||
+    (savedFields ? draftCc.length > 0 : hasDraftRecipients)) ? draftCc : derivedReplyRecipients.cc;
+  const initialBccRecipients = sameRecipientSeed && (savedHeaders || savedFields?.bcc ||
+    (savedFields ? draftBcc.length > 0 : hasDraftRecipients)) ? draftBcc : [];
 
   const replyComposeInitialSubject = useMemo(() => {
+    if (savedHeaders || savedFields?.subject) return draft?.subject ?? '';
     if (draft?.subject) return draft.subject;
     const raw = replyToMessage?.subject?.trim() ?? '';
     if (!raw) return '';
@@ -412,7 +415,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       return `Re: ${raw}`;
     }
     return raw;
-  }, [draft?.subject, mode, replyToMessage?.subject]);
+  }, [draft?.subject, mode, replyToMessage?.subject, savedFields?.subject, savedHeaders]);
 
   const headerPreview = useMemo(() => {
     if (!canShowHeaderDebug(activeConnection?.id) || !isHeaderDebugEnabled()) return [];
@@ -450,6 +453,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         initialBcc={initialBccRecipients}
         initialSubject={replyComposeInitialSubject}
         syncReplyHeadersFromProps
+        replyHeaderSeed={composeSeed}
         autofocus={true}
         settingsLoading={settingsLoading}
         replyToMessageId={replyToMessage?.id ?? null}

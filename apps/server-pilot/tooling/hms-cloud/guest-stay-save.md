@@ -18,6 +18,12 @@ The search checks that the request's date offsets match the displayed range.
 If the property's calendar date and UTC differ, it refuses the preimage rather
 than guessing the offset anchor; retry when the dates agree.
 
+The fake writer supports `NGI` and `GTDAGT` only. An agent-guarantee save
+requires the current page's `selectGuestStayDropdown` result as
+`guaranteeSelection`, including matching code, submitted value and display.
+The current form and outgoing native body are checked again with full schema
+proof. The agent-guarantee save itself has not yet been proved in HMS.
+
 The legacy core-only save call remains available for existing callers. It does
 not claim explicit occupancy or Source of Business coverage and cannot save a
 linked agency or organization. For stricter create-field proof, pass any
@@ -162,9 +168,10 @@ page-lifetime no-POST fence remains unchanged. No billing-reference save has
 been proven in live HMS.
 
 The save also requires the current verified Proof Labtest profile, a new HRCEN
-stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
-no guarantee card, CMS Send unchecked, and blank CMS recipient and guest
-email. The save action and core identity/party fields are exact-matched on the
+stay, dates in 2027 or later, an `NGI` or `GTDAGT` guarantee, no guarantee
+card, CMS Send unchecked, and blank CMS recipient and guest email. A `GTDAGT`
+save also requires the current verified `guaranteeSelection` described above.
+The save action and core identity/party fields are exact-matched on the
 legacy path; strict proof mode also exact-matches whichever occupancy, source
 and party selections were supplied, plus the full serialized model. One exact request from the current main frame may
 pass through the page fence and writer-local context guard. Every other

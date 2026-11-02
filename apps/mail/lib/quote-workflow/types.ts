@@ -73,11 +73,18 @@ export type QuoteSelectionBinding = {
   scopeEpoch: number;
 };
 
+export type StayAction = 'no_action' | 'quote_availability' | 'new_booking' | 'amend' | 'cancel' | 'payment_proof' | 'billing' | 'group_event' | 'other_actionable';
+export type MixedStayAction = Exclude<StayAction, 'no_action'>;
+
 export type StayGroupRequirement = {
   /** One row of a stay. Each row is still one server group. */
   id: string;
   /** The stay this row belongs to. Rows with the same stayId are one stay. Missing: the row's dates make its stay. */
   stayId?: string;
+  /** Explicit extracted action for this stay; absent on legacy reads. */
+  stayAction?: StayAction;
+  /** Dates and identity for this specific existing stay, not a message-wide guess. */
+  stayAmendment?: QuoteAmendment;
   arrivalDate?: string;
   departureDate?: string;
   quantity?: number;
