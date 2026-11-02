@@ -122,3 +122,44 @@ test('a concurrent invocation cannot authorize the candidate twice', async () =>
 test('invalid dispatch callback is refused during installation', async () => {
   await assert.rejects(harness('not-a-function'), /AMEND_ROUTE_CHAIN_INPUT_INVALID/);
 });
+
+test('dispatch completion stays pending after native continuation until the wrapper finishes', async () => {
+  const continued = deferred(), release = deferred();
+  const h = await harness(async (_request, proceed) => { await proceed(); continued.resolve(); await release.promise; });
+  const route = h.contextHandler(h.route);
+  await continued.promise;
+  let settled = false;
+  const result = h.chain.waitForDispatch().then((value) => { settled = true; return value; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  release.resolve();
+  await route;
+  assert.equal(await result, true);
+});
+
+test('wrapper failure after native continuation reports failed completion', async () => {
+  const continued = deferred(), release = deferred();
+  const h = await harness(async (_request, proceed) => {
+    await proceed(); continued.resolve(); await release.promise; throw new Error('commit_failed');
+  });
+  const route = h.contextHandler(h.route);
+  await continued.promise;
+  const result = h.chain.waitForDispatch();
+  release.resolve();
+  await assert.rejects(route, /commit_failed/);
+  assert.equal(await result, false);
+});
+
+test('refusal before native continuation reports failed completion', async () => {
+  const h = await harness(async () => {});
+  assert.equal(await h.contextHandler(h.route), 'abort');
+  assert.equal(await h.chain.waitForDispatch(), false);
+});
+
+test('a wrapper cannot hide a failed native continuation', async () => {
+  const h = await harness(async (_request, proceed) => { try { await proceed(); } catch { /* Swallowed by caller. */ } });
+  h.route.continue = async () => { throw new Error('network_failed'); };
+  await assert.rejects(h.contextHandler(h.route), /SAVE_DISPATCH_UNCERTAIN/);
+  assert.equal(await h.chain.waitForDispatch(), false);
+  assert.equal(h.chain.continued(), h.request);
+});

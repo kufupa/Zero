@@ -38,6 +38,8 @@ export async function installLabtestSaveRouteChain(page, {
   let authorizing = false;
   let dispatching = false;
   let continuedRequest = null;
+  let finishDispatch;
+  const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
   const observeBlocked = (request) => {
     try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
   };
@@ -72,6 +74,8 @@ export async function installLabtestSaveRouteChain(page, {
       let wrapperFinished = false;
       let attempted = false;
       let continuationSettled = false;
+      let continuationSucceeded = false;
+      let wrapperSucceeded = false;
       // The server wrapper must await this function while holding any source locks.
       // A delayed or repeated call cannot dispatch after it has returned.
       const continueOnce = () => {
@@ -82,8 +86,11 @@ export async function installLabtestSaveRouteChain(page, {
           attempted = true;
           continuedRequest = request;
           onDispatch?.(request);
-          try { return await route.continue(); }
-          finally { continuationSettled = true; }
+          try {
+            const result = await route.continue();
+            continuationSucceeded = true;
+            return result;
+          } finally { continuationSettled = true; }
         })();
         // A buggy wrapper may fail to await the continuation. Its rejection is
         // still returned to a correct caller without becoming unhandled.
@@ -98,6 +105,8 @@ export async function installLabtestSaveRouteChain(page, {
           return route.abort();
         }
         if (!continuationSettled) throw new Error('SAVE_DISPATCH_NOT_AWAITED');
+        if (!continuationSucceeded) throw new Error('SAVE_DISPATCH_UNCERTAIN');
+        wrapperSucceeded = true;
         return result;
       } catch (error) {
         wrapperFinished = true;
@@ -106,6 +115,9 @@ export async function installLabtestSaveRouteChain(page, {
         return route.abort();
       } finally {
         dispatching = false;
+        // A native response can arrive before the server wrapper completes.
+        // Surface its eventual result without an unhandled rejection.
+        finishDispatch(wrapperSucceeded);
       }
     }
     // Deny unexpected mutations and send/email paths throughout this context,
@@ -182,6 +194,7 @@ export async function installLabtestSaveRouteChain(page, {
   return {
     candidate: () => candidateRequest,
     continued: () => continuedRequest,
+    waitForDispatch: () => dispatchFinished,
     disarm: () => { active = false; },
     async close() {
       active = false;
