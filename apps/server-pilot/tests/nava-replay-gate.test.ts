@@ -11,7 +11,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'nava-replay-gate-'));
   const pane = join(dir, 'pane.png');
   const page = join(dir, 'page.png');
-  const png = Buffer.from('89504e470d0a1a0a00', 'hex');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX8AAAAASUVORK5CYII=', 'base64');
   writeFileSync(pane, png);
   writeFileSync(page, png);
   expected = { threadId: 'thread-a', messageId: 'message-a', readAs: 'quote', requireDraft: true, requireAttachment: true, requireSourceAttachment: false };
@@ -65,6 +65,8 @@ describe('replay evidence gate', () => {
   });
   it('requires actual nonempty screenshots', () => {
     writeFileSync(observed.screenshotPaths[0]!, '');
+    expect(replayGateFailures(expected, observed)).toContain('missing_screenshot');
+    writeFileSync(observed.screenshotPaths[0]!, Buffer.from('89504e470d0a1a0a00', 'hex'));
     expect(replayGateFailures(expected, observed)).toContain('missing_screenshot');
   });
 });

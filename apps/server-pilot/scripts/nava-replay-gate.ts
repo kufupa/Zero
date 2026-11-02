@@ -1,5 +1,5 @@
 /** Fail-closed checks for one replay fixture. Observations must come from the actual pane. */
-import { closeSync, openSync, readSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 
 export type ReplayExpectation = {
   threadId: string;
@@ -36,14 +36,27 @@ export type ReplayObservation = {
 };
 
 function pngFile(path: string): boolean {
-  let fd: number | undefined;
   try {
-    if (!path || !statSync(path).isFile() || statSync(path).size <= 8) return false;
-    fd = openSync(path, 'r');
-    const signature = Buffer.alloc(8);
-    return readSync(fd, signature, 0, 8, 0) === 8 && signature.equals(Buffer.from('89504e470d0a1a0a', 'hex'));
+    const size = statSync(path).size;
+    if (!path || !statSync(path).isFile() || size < 57 || size > 32 * 1024 * 1024) return false;
+    const data = readFileSync(path);
+    if (!data.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return false;
+    let offset = 8, first = true, hasImageData = false;
+    while (offset + 12 <= data.length) {
+      const length = data.readUInt32BE(offset);
+      const end = offset + 12 + length;
+      if (end > data.length) return false;
+      const type = data.toString('ascii', offset + 4, offset + 8);
+      if (first) {
+        if (type !== 'IHDR' || length !== 13 || !data.readUInt32BE(offset + 8) || !data.readUInt32BE(offset + 12)) return false;
+        first = false;
+      } else if (type === 'IHDR') return false;
+      if (type === 'IDAT' && length > 0) hasImageData = true;
+      if (type === 'IEND') return length === 0 && hasImageData && end === data.length;
+      offset = end;
+    }
+    return false;
   } catch { return false; }
-  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 /** Missing synchronization or evidence is a failure, never an implied success. */
