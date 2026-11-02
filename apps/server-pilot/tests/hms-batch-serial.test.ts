@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { batchDigest, type BatchManifest } from '../src/ai/hms-batch-manifest.js';
+import { batchChildId, batchDigest, batchRoomDigest, type BatchManifest } from '../src/ai/hms-batch-manifest.js';
 import { batchStates, type BatchEventRow } from '../src/ai/hms-batch-state.js';
 import { executeLabBatchSerial, type LabBatchSerialDependencies } from '../src/ai/hms-batch-serial.js';
 
@@ -128,6 +128,21 @@ describe('disconnected Labtest serial executor contract', () => {
     expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['uncertain', 'unattempted']);
     expect(f.dispatch).toHaveBeenCalledTimes(1);
   });
+  it('refuses a delayed Save check after dispatch rejects and the lock is released', async () => {
+    const f = fixture();
+    let release!: () => void;
+    let late: Promise<'allowed' | 'refused'> | undefined;
+    f.checkSaveAuthority.mockImplementation(() => new Promise((resolve) => { release = () => resolve(true); }));
+    f.dispatch.mockImplementationOnce(async ({ beforeSave }) => {
+      late = beforeSave({ signal: new AbortController().signal }).then(() => 'allowed' as const, () => 'refused' as const);
+      throw new Error('adapter_failed');
+    });
+    expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['uncertain', 'unattempted']);
+    expect(late).toBeDefined();
+    release();
+    expect(await late).toBe('refused');
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+  });
   it('does not dispatch when the independent sibling census is incomplete', async () => {
     const f = fixture();
     f.deps.readPreimage = vi.fn(async (room) => ({ proofId: 'p', arrival: room.stay.arrival, departure: room.stay.departure,
@@ -143,6 +158,41 @@ describe('disconnected Labtest serial executor contract', () => {
       return { status: 'uncertain', confirmation, screenshotRef: 'second-shot', readbackRef: 'second-read' }; });
     expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['uncertain', 'uncertain']);
     expect(f.rows.at(-1)?.value).toMatchObject({ status: 'uncertain', confirmation });
+  });
+  it('does not dispatch when a claim append resolves without a durable event', async () => {
+    const f = fixture(); f.deps.append = async () => {};
+    await expect(executeLabBatchSerial(f.deps)).rejects.toThrow('batch_serial_commit_unverified');
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+  it('does not dispatch when the prior durable prefix changes after a new claim', async () => {
+    const f = fixture(), originalDispatch = f.dispatch.getMockImplementation()!;
+    f.dispatch.mockImplementationOnce(async (input) => {
+      const result = await originalDispatch(input); f.setNow(new Date('2026-11-02T12:00:31Z')); return result;
+    });
+    expect((await executeLabBatchSerial(f.deps)).map((state) => state.status)).toEqual(['confirmed', 'unattempted']);
+    f.deps.runId = 'run-2'; f.deps.deadline = new Date('2026-11-02T12:01:00Z');
+    const read = f.deps.readHistory; let calls = 0;
+    f.deps.readHistory = async () => {
+      const rows = await read();
+      if (++calls === 2) (rows[1]!.value as { confirmation: string }).confirmation = 'CHANGED';
+      return rows;
+    };
+    await expect(executeLabBatchSerial(f.deps)).rejects.toThrow('batch_serial_commit_unverified');
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+  });
+  it('rejects wrong-run and out-of-order history before dispatch', async () => {
+    const wrongRun = fixture(), first = wrongRun.manifest.rooms[0]!;
+    const claim = { kind: 'claimed', childId: batchChildId(wrongRun.manifest, first), runId: 'r1',
+      digest: batchDigest(wrongRun.manifest), childDigest: batchRoomDigest(first) };
+    wrongRun.rows.push({ sequence: 1, value: claim }, { sequence: 2, value: { kind: 'outcome', childId: claim.childId,
+      runId: 'r2', digest: claim.digest, status: 'uncertain' } });
+    await expect(executeLabBatchSerial(wrongRun.deps)).rejects.toThrow('batch_transition_invalid');
+    expect(wrongRun.dispatch).not.toHaveBeenCalled();
+    const outOfOrder = fixture(), second = outOfOrder.manifest.rooms[1]!;
+    outOfOrder.rows.push({ sequence: 1, value: { ...claim, childId: batchChildId(outOfOrder.manifest, second),
+      childDigest: batchRoomDigest(second) } });
+    await expect(executeLabBatchSerial(outOfOrder.deps)).rejects.toThrow('batch_transition_invalid');
+    expect(outOfOrder.dispatch).not.toHaveBeenCalled();
   });
   it('leaves a claim uncertain if recording an outcome fails after possible dispatch', async () => {
     const f = fixture(), append = f.deps.append;

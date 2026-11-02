@@ -103,19 +103,24 @@ export async function executeLabBatchSerial(deps: LabBatchSerialDependencies): P
         if (!(await deps.checkAuthority(context)) || !valid()) throw new Error('batch_authority_refused');
         let started = false, checked = false, invalidated = false, finished = false;
         enteredDispatch = true;
-        const result = await deps.dispatch({ context, room, preimage, cmsSend: false,
-          beforeSave: async ({ signal }) => {
-            if (started || finished) { invalidated = true; throw new Error('batch_pre_save_refused'); }
-            started = true;
-            const acceptable = () => !finished && !invalidated && signal && !signal.aborted && valid();
-            if (!acceptable()) throw new Error('batch_pre_save_refused');
-            const allowed = await deps.checkSaveAuthority({ ...context, signal });
-            if (allowed !== true || !acceptable()) throw new Error('batch_pre_save_refused');
-            checked = true;
-            return true;
-          },
-        });
-        finished = true;
+        let result: DispatchResult;
+        try {
+          result = await deps.dispatch({ context, room, preimage, cmsSend: false,
+            beforeSave: async ({ signal }) => {
+              if (started || finished) { invalidated = true; throw new Error('batch_pre_save_refused'); }
+              started = true;
+              const acceptable = () => !finished && !invalidated && signal && !signal.aborted && valid();
+              if (!acceptable()) throw new Error('batch_pre_save_refused');
+              const allowed = await deps.checkSaveAuthority({ ...context, signal });
+              if (allowed !== true || !acceptable()) throw new Error('batch_pre_save_refused');
+              checked = true;
+              return true;
+            },
+          });
+        } finally {
+          // Reject any authority check that outlives dispatch, including rejection paths.
+          finished = true;
+        }
         // Once the adapter is entered, any non-confirmed outcome is ambiguous.
         outcome = result.status === 'confirmed' && checked && !invalidated ? result : { ...result, status: 'uncertain' };
       } catch {
