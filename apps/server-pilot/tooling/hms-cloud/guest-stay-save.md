@@ -110,8 +110,10 @@ the visible form and outgoing request define stay length (for example,
 2027-12-11 through 2027-12-13 is two nights). Every request must still match
 the full 985-key expected snapshot; all other values stay pinned to the model.
 
-The current path has not yet been proven by a dispatched create request. In a
-fresh 2027+ Proof Labtest draft, the intercepted 988-key POST matched the
+One strict full-body Proof Labtest create dispatched successfully with an agency,
+organization, no A/R account, zero children and CMS message `03`; fresh saved
+record and party readback matched. This does not prove other combinations.
+Earlier, in a fresh 2027+ Proof Labtest draft, the intercepted 988-key POST matched the
 selected two-night dates and every reported field check except the
 `revenuevalue` comparison; the route refused it before network dispatch. The
 diagnostic retained only a mismatch flag, not the request value, so it does
@@ -122,8 +124,8 @@ also prove zero; every other key and value remains exact. A historical
 successful one-child POST carried selected adults, child count/band, age CSV
 and source; its captured 988-key body had one `revenuevalue` serialized as `0`
 and an exact two-night date pair. It predates this strict full-body guard and
-does not explain the blocked request or prove the current path or
-zero/multiple-child payloads.
+does not explain the blocked request or by itself prove the strict current path
+or zero/multiple-child payloads.
 The selected source's native code is checked in its current model and outgoing
 request, but persisted native-code readback is unsupported; the independent
 saved-record reader currently exposes only the description and child
