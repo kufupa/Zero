@@ -1470,6 +1470,11 @@ export function BookingCards({
     ...(!propertyCode ? ['hotel'] : []),
     ...(!workItemId || !session?.binding?.transportId || !batchSource?.threadId || batchSource.messageId !== draft.messageId ? ['email source'] : []),
     ...(selectedRooms.some((item) => !sourceIdentity(item)) ? ['room source'] : []),
+    // A single-room create can still be pending when another draft joins this batch.
+    // Do not let excluding that room bypass the hold while its outcome is uncertain.
+    ...(stayBooking || Object.values(saves).some(({ commit }) => commit?.status === 'running' ||
+      (commit?.status === 'refused' && commit.statusChip === 'check') ||
+      (commit?.status === 'booked' && commit.unverified === true)) ? ['a booking is still being checked'] : []),
     ...(selectedRooms.some(({ room }) => savedOutcomeBlocksRoom(roomKeyOf(room))) ? ['existing booking outcome must be checked'] : []),
   ])];
   const batchInput: BatchReviewInput | null = batchMode && propertyCode && workItemId && session?.binding?.transportId &&

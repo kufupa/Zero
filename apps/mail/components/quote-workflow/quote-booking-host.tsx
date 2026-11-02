@@ -11,12 +11,19 @@ import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 export type BookingBatchReview = Omit<NonNullable<ComponentProps<typeof BookingCards>['batchReview']>, 'aggregate'>;
 
 /** Joins proposals only. Source, manifest, approval and execution are still server authority. */
-function CoordinatedDrafts({ keys, review, renderCard, onStart }: {
+function CoordinatedDrafts({ keys, review, enabled, priorWriteUncertain, renderCard, onStart }: {
   keys: string[];
-  review: BookingBatchReview;
-  renderCard: (key: string, aggregate: BatchDraftAggregation) => ReactNode;
+  review?: BookingBatchReview;
+  enabled: boolean;
+  priorWriteUncertain: boolean;
+  renderCard: (key: string, aggregate?: BatchDraftAggregation) => ReactNode;
   onStart: () => void;
 }) {
+  // Keep the parent stable when draft membership changes. Once coordinated, hold
+  // batch mode even if rooms or the client disappear, until the host is remounted.
+  const wasCoordinated = useRef(false);
+  if (enabled) wasCoordinated.current = true;
+  const coordinated = enabled || wasCoordinated.current;
   const [snapshots, setSnapshots] = useState<Record<string, BatchDraftSnapshot>>({});
   const [locked, setLocked] = useState(false);
   const update = useCallback((key: string, snapshot: BatchDraftSnapshot | null) => {
@@ -39,15 +46,16 @@ function CoordinatedDrafts({ keys, review, renderCard, onStart }: {
   const input = compatible && first ? { ...first, rooms: inputs.flatMap((item) => item?.rooms ?? []) } : null;
   const missing = [...new Set([
     ...parts.flatMap((part) => part?.missing ?? ['booking details']),
+    ...(priorWriteUncertain ? ['a booking is still being checked'] : []),
     ...(parts.every(Boolean) && inputs.every(Boolean) && !compatible ? ['email source'] : []),
   ])];
   const revisionKey = JSON.stringify(keys.map((key) => [key, snapshots[key]?.revisionKey ?? null]));
   return <>
-    {keys.map((key) => renderCard(key, { key, locked, update }))}
-    <BatchBookingReview client={review.client} input={input} missing={missing} onLock={(value) => {
+    {keys.map((key) => renderCard(key, coordinated ? { key, locked, update } : undefined))}
+    {coordinated ? <BatchBookingReview client={review?.client} input={input} missing={missing} onLock={(value) => {
       setLocked(value);
       if (value) onStart();
-    }} hideInclusion revisionKey={revisionKey} />
+    }} hideInclusion revisionKey={revisionKey} /> : null}
   </>;
 }
 
@@ -109,6 +117,13 @@ export function QuoteBookingHost({
     ),
   );
   const uncoveredStays = Object.entries(savedStays ?? {}).filter(([stayId]) => !coveredStayIds.has(stayId));
+  // A prior unknown result can belong to a hidden or no-longer-matching draft.
+  // Keep it held if a refresh omits it; only server recovery may release the hold.
+  // The server must still fence all source writes, including ones not yet loaded here.
+  const unknownSeenByWorkItem = useRef<Record<string, true>>({});
+  const hasUnknownSavedStay = Object.values(savedStays ?? {}).some((saved) => saved.status === 'unknown' || !saved.confirmationNumber);
+  if (workItemId && hasUnknownSavedStay) unknownSeenByWorkItem.current[workItemId] = true;
+  const priorWriteUncertain = hasUnknownSavedStay || Boolean(workItemId && unknownSeenByWorkItem.current[workItemId]);
 
   const renderCard = (key: string, aggregate?: BatchDraftAggregation) => {
     const draft = session.bookingDrafts[key];
@@ -125,12 +140,12 @@ export function QuoteBookingHost({
 
   return (
     <>
-      {[...arrivals.entries()].flatMap(([arrival, keys]) => effectiveBatchReview &&
-        (keys.length > 1 || active?.arrival === arrival || keys.some((key) => (session.bookingDrafts[key]?.draft.rooms.length ?? 0) > 1))
-        ? [<CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
-            review={writeHeld ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
-            onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />]
-        : keys.map((key) => renderCard(key)))}
+      {[...arrivals.entries()].map(([arrival, keys]) => <CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
+        enabled={Boolean(effectiveBatchReview && (keys.length > 1 || active?.arrival === arrival ||
+          keys.some((key) => (session.bookingDrafts[key]?.draft.rooms.length ?? 0) > 1)))}
+        priorWriteUncertain={priorWriteUncertain}
+        review={effectiveBatchReview && writeHeld ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
+        onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />)}
       {uncoveredStays.map(([stayId, saved]) => (
         <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />
       ))}
