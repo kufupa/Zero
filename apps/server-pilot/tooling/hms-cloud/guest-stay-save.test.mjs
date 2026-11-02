@@ -460,6 +460,34 @@ function nativeCreateDraftPage() {
   return page;
 }
 
+test('native draft checks agent guarantee display, native value and submitted value', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
+    page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
+    page.elements.find((element) => element.name === 'araccountname').value = '';
+    page.data.guaranteetype = 'GTDAGT'; page.values.guaranteetype = 'GTDAGT';
+    page.elements.find((element) => element.name === 'guaranteetype').value = 'Guaranteed By Agent';
+    return page;
+  };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  // Synthetic form intentionally lacks the complete native schema; no Save may dispatch.
+  const valid = await run(makePage());
+  assert.equal(valid.outcome, 'not_dispatched');
+  assert.equal(valid.issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  const wrongDisplay = makePage();
+  wrongDisplay.elements.find((element) => element.name === 'guaranteetype').value = 'Non-Guaranteed Individual';
+  const wrongValue = makePage(); wrongValue.components.guaranteetype.getValue = () => 'NGI';
+  const wrongSubmit = makePage(); wrongSubmit.components.guaranteetype.getSubmitData = () => ({ guaranteetype: 'NGI' });
+  for (const page of [wrongDisplay, wrongValue, wrongSubmit]) {
+    const result = await run(page);
+    assert.equal(result.outcome, 'not_dispatched');
+    assert.equal(result.draftCheck, 'DRAFT_GUARANTEE');
+  }
+});
+
 test('native draft binds A/R, CMS and reason controls before any save route', async () => {
   const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
     nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
