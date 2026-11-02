@@ -277,14 +277,17 @@ export async function readLabtestStayAmendmentAvailability(recordPage, availabil
     if (!unchangedLabtestBusinessParties(state.partyPreimage, baseline)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
     const formAdult = field(baseline, 'values', 'adults'), modelAdult = field(baseline, 'data', 'adults');
     const children = savedChildOccupancy(baseline);
+    const formAges = field(baseline, 'values', 'childages');
     // A verified zero count with a genuinely blank age value means there are no ages to supply.
     const blankZeroAges = children.valid && children.count === 0 && children.ages === null &&
       children.fields.childages.model.present && children.fields.childages.model.value === '' &&
-      (!children.fields.childages.form.present || children.fields.childages.form.value === '') &&
-      options.occupancy.childAges.length === 0;
+      (formAges.state === 'absent' || formAges.state === 'blank') && options.occupancy.childAges.length === 0;
+    const knownAgesMatch = children.ages !== null && equal(children.ages, options.occupancy.childAges) &&
+      (formAges.state === 'absent' || (children.ages.length === 0 ? formAges.state === 'blank' :
+        formAges.state === 'value' && typeof formAges.value === 'string' && formAges.value === children.ages.join(',')));
     if (formAdult.state !== 'value' || modelAdult.state !== 'value' ||
         String(formAdult.value) !== String(options.occupancy.adults) || String(modelAdult.value) !== String(options.occupancy.adults) ||
-        !children.valid || (!blankZeroAges && (children.ages === null || !equal(children.ages, options.occupancy.childAges)))) {
+        !children.valid || (!blankZeroAges && !knownAgesMatch)) {
       throw new Error('AMEND_OCCUPANCY_UNVERIFIED');
     }
     const partyKeys = { group: 'groupid', organization: 'companyid', bookingAgency: 'taid1' };

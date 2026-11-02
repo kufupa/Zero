@@ -346,6 +346,24 @@ describe('availability for a verified saved Labtest stay', () => {
     expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
     expect(mocks.quote).not.toHaveBeenCalled();
   });
+  it('refuses present form ages that conflict with the native model, including ambiguous field names', async () => {
+    const { snap } = setup();
+    Object.assign(snap.values, { childages: '8,12' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'ok' });
+    mocks.quote.mockClear();
+    Object.assign(snap.values, { childages: '8,11' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    Object.assign(snap.values, { childages: '' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    delete (snap.values as Record<string, unknown>).childages;
+    Object.assign(snap.values, { ChildAges: '8,12' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    for (const part of [snap.values, snap.data]) Object.assign(part, { children: '0', child1: '0', child2: '0', child3: '0' });
+    Object.assign(snap.data, { childages: '' });
+    const zero = options(); zero.occupancy.childAges = [];
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    expect(mocks.quote).not.toHaveBeenCalled();
+  });
   it('requires separate record and availability pages', async () => {
     const page = {};
     expect(await readLabtestStayAmendmentAvailability(page, page, expected, options())).toMatchObject({ outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED' });
