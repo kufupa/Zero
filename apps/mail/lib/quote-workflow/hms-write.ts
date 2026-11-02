@@ -144,9 +144,9 @@ const RUN_LABEL: Record<string, string> = {
 };
 
 const NEEDS_CHECK_REASON: Record<string, string> = {
-  hms_changed: 'HMS changed after Nava read the booking. Nothing was written.',
-  form_changed: 'The values changed after you approved them. Nothing was written.',
-  reread_failed: 'Nava could not read HMS again before saving. Nothing was written.',
+  hms_changed: 'HMS changed after Nava read the booking. The outcome is not known. Check HMS.',
+  form_changed: 'The values changed after you approved them. The outcome is not known. Check HMS.',
+  reread_failed: 'Nava could not read HMS again before saving. The outcome is not known. Check HMS.',
   LEASE_LOST: 'Nava lost its hold on the write, so the outcome is not known.',
 };
 

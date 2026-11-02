@@ -282,7 +282,7 @@ describe('ApproveCard write states', () => {
       ),
     );
     expect(
-      await screen.findByText('HMS changed after Nava read the booking. Nothing was written.'),
+      await screen.findByText('HMS changed after Nava read the booking. The outcome is not known. Check HMS.'),
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'I checked in HMS' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
@@ -412,6 +412,21 @@ describe('BookingVoucherCard write card', () => {
       />,
     );
     expect(screen.queryByTestId('ota-booking-channel')).toBeNull();
+  });
+
+  // Both Outlook and webmail mount NavaPane, which mounts this same write card.
+  it.each([
+    ['hms_changed', 'HMS changed after Nava read the booking. The outcome is not known. Check HMS.'],
+    ['form_changed', 'The values changed after you approved them. The outcome is not known. Check HMS.'],
+    ['reread_failed', 'Nava could not read HMS again before saving. The outcome is not known. Check HMS.'],
+  ])('shows an unknown outcome in the shared pane for %s', async (lastError, copy) => {
+    paneWrite.view = viewWith({ form: attachForm, before: null, needsCheck: true,
+      run: runWith('dead_letter', { failureClass: 'NEEDS_CHECK', lastError }) });
+    render(<BookingVoucherCard session={initialQuoteSession()} internetMessageId={null}
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} writesEnabled />);
+    expect(await screen.findByText(copy)).toBeTruthy();
+    expect(screen.queryByText(/Nothing was written/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
   });
 
   it('shows the approve card for an attach on mail that is not an amend or cancel', async () => {
