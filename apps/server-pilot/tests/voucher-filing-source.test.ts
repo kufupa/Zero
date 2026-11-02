@@ -124,6 +124,20 @@ describe.skipIf(!ingestionDbAvailable)('voucher filing source with disposable da
       expect(prepared).toMatchObject({ status: 'ready', source: { filename: "O'Neil [Müller].pdf", mimeType: 'application/pdf' } });
     }));
 
+  it('resolves a linked Outlook variant by accepted artifact and committed canonical observation', async () =>
+    withIngestionDb(async ({ db }) => {
+      const s = await setup(db);
+      // POP3-first and older Outlook messages retain their existing message-level provenance.
+      await db.update(message).set({ sourceProvenance: { pop3: true } }).where(eq(message.id, s.messageId));
+      await db.update(outlookSyncArtifact).set({ metadata: { fileName: 'proof.pdf' } }).where(eq(outlookSyncArtifact.id, s.artifactId));
+      const prepared = await prepareVoucherFilingSource(s.input, s.deps);
+      expect(prepared.status).toBe('ready');
+      if (prepared.status !== 'ready') throw new Error('expected linked source');
+      expect(await readApprovedVoucherFilingSource(s.form(prepared), s.deps)).toEqual({ status: 'ready', bytes: original });
+      await db.update(outlookSyncObservation).set({ canonicalMessageId: 'other' }).where(eq(outlookSyncObservation.id, s.observationId));
+      expect((await readApprovedVoucherFilingSource(s.form(prepared), s.deps)).status).toBe('refused');
+    }));
+
   it('accepts an unversioned receipt only when fresh bytes still match the approved hash', async () =>
     withIngestionDb(async ({ db }) => {
       const s = await setup(db);
