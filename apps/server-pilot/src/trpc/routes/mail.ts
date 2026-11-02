@@ -116,7 +116,7 @@ export type { MailUnreadCounts, MailUnreadFolderId };
 
 /** Exact source from the same workflow membership snapshot as the list row. */
 export function workflowListSourceSql(membership: ReturnType<typeof latestWorkflowThreads>, folder: string) {
-  return sql<string | null>`(select ${membership.sourceMessageId} from ${membership} where ${membership.threadId} = ${mailThread.id} and ${membership.folder} = ${folder})`;
+  return sql<string | null>`(select "workflow_latest_threads"."latest_source_message_id" from ${membership} where "workflow_latest_threads"."thread_id" = "mail_thread"."id" and "workflow_latest_threads"."folder" = ${folder})`;
 }
 
 /** FE bulk mutations send `{ ids }`; normalize to internal `threadIds`. */

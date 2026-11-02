@@ -238,6 +238,7 @@ describe('workflow list source projection', () => {
       const query = db.with(membership).select({ id: mailThread.id, source: workflowListSourceSql(membership, 'quotes') }).from(mailThread).toSQL();
       expect(query.sql).toMatch(/select "workflow_latest_threads"\."latest_source_message_id" from "workflow_latest_threads"/);
       expect(query.sql).toContain('"workflow_latest_threads"."thread_id" = "mail_thread"."id"');
+      expect(query.sql).toContain('"workflow_latest_threads"."folder" =');
       expect(query.params).toContain('quotes');
     } finally {
       await conn.end({ timeout: 1 });
