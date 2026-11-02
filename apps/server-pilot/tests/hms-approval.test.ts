@@ -527,6 +527,54 @@ describe('HMS write approvals', () => {
     });
   });
 
+  it('a never-consumed NEEDS_CHECK cannot consume later and allows a fresh approval', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await expect(endHmsWriteRun({ db, fence: claim.fence, failureClass: 'NEEDS_CHECK',
+        reason: 'not_dispatched' })).resolves.toBe(true);
+      await expect(consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW }))
+        .rejects.toMatchObject({ refusal: 'lease_lost' });
+      const next = await approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE });
+      expect(next.runId).not.toBe(claim.runId);
+    });
+  });
+
+  it('a consumed NEEDS_CHECK blocks another approval even when a runner reports no dispatch', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
+      await expect(endHmsWriteRun({ db, fence: claim.fence, failureClass: 'NEEDS_CHECK',
+        reason: 'not_dispatched' })).resolves.toBe(true);
+      await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
+        .rejects.toMatchObject({ refusal: 'needs_check_open' });
+    });
+  });
+
+  it('serializes consumption with NEEDS_CHECK termination', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      const [consumption, termination] = await Promise.allSettled([
+        consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW }),
+        endHmsWriteRun({ db, fence: claim.fence, failureClass: 'NEEDS_CHECK', reason: 'race' }),
+      ]);
+      expect(termination).toMatchObject({ status: 'fulfilled', value: true });
+      if (consumption.status === 'fulfilled') {
+        await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
+          .rejects.toMatchObject({ refusal: 'needs_check_open' });
+      } else {
+        expect(consumption.reason).toMatchObject({ refusal: 'lease_lost' });
+        await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_BEFORE }))
+          .resolves.toHaveProperty('runId');
+      }
+    });
+  });
+
   it('a consumed write that ends outside needs-check blocks a new approval until it is read back', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedItem(db);
@@ -699,12 +747,15 @@ describe('HMS write approvals', () => {
         .then((rows) => rows.filter((row) => row.type === 'status.changed'));
       expect(event?.value).toMatchObject({ needsCheck: true, runId: claim.runId });
 
-      // HMS moved on, so the approved snapshot is gone: a fresh approval must re-read HMS first, and binds the new read.
+      // A consumed pre-Save failure cannot exclude another holder dispatching the same grant.
       const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
       expect(item?.state).not.toHaveProperty('hmsSnapshot');
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
-      // Nothing was written, so a fresh approval of the unchanged form is allowed after a pre-Save needs-check.
-      const again = await approve(db, workItemId, { rereadHmsState: async () => HMS_CHANGED });
+      await expect(approve(db, workItemId, { rereadHmsState: async () => HMS_CHANGED }))
+        .rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(resolveHmsNeedsCheck({ db, transportId: TRANSPORT_ID, actorUserId: USER,
+        workItemId, rereadHmsState: async () => HMS_CHANGED, now: NOW }))
+        .resolves.toEqual({ runId: claim.runId, resolution: 'hms_reread' });
+      const again = await approve(db, workItemId);
       expect((await grantRow(db, again.grantId)).value).toMatchObject({
         hmsBeforeDigest: hmsStateDigest(HMS_CHANGED),
       });

@@ -8,6 +8,7 @@ import { parseEnv } from '../env.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
 import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
+import { terminalWriteRequiresReconciliation } from './hms-approval-policy.js';
 import {
   HMS_WRITE_RUN_KIND,
   NONTERMINAL_AI_RUN_STATES,
@@ -34,8 +35,8 @@ import {
  * - resolveHmsNeedsCheck closes a blocking needs-check after an HMS re-read or a staff check with a note.
  *
  * Needs-check is derived from ai_workflow_run.failure_class and recorded as a work_event status.changed.
- * NEEDS_CHECK is for failures before Save, where nothing was written. LEASE_LOST means the outcome is unknown,
- * so approval stays blocked until someone reads the booking back.
+ * NEEDS_CHECK records a pre-Save failure, but a consumed grant may have another execution in flight. Consumed
+ * terminal runs and LEASE_LOST remain blocked until someone reconciles the outcome.
  */
 
 /** KTD11: a snapshot older than this is re-read before approval, and an approval ends with it. */
@@ -53,8 +54,6 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const HMS_SNAPSHOT_KEY = 'hmsSnapshot';
-/** Approval stays blocked while the outcome of the last write is unknown. */
-const BLOCKING_FAILURE_CLASSES: ReadonlySet<string> = new Set<AiFailureClass>(['LEASE_LOST']);
 
 export type HmsApprovalRefusal =
   | 'not_found'
@@ -205,11 +204,10 @@ async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<st
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
     .limit(1);
   if (!latest) return null;
-  if (!latest.failureClass || !BLOCKING_FAILURE_CLASSES.has(latest.failureClass)) {
-    // A run that never consumed its grant never reached HMS, so a new approval is safe. A consumed run that neither
-    // succeeded nor stopped at the pre-Save check may have written, so its outcome is unknown until read back.
-    if (latest.state === 'succeeded' || latest.failureClass === 'NEEDS_CHECK') return null;
-    const [consumed] = await db
+  // A pre-Save failure in one invocation cannot exclude dispatch by another holder of the fence.
+  const [consumed] = latest.state === 'succeeded' || latest.failureClass === 'LEASE_LOST'
+    ? []
+    : await db
       .select({ id: workEvent.id })
       .from(workEvent)
       .where(
@@ -220,8 +218,7 @@ async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<st
         ),
       )
       .limit(1);
-    if (!consumed) return null;
-  }
+  if (!terminalWriteRequiresReconciliation({ ...latest, consumed: Boolean(consumed) })) return null;
   const [resolved] = await db
     .select({ id: workEvent.id })
     .from(workEvent)
