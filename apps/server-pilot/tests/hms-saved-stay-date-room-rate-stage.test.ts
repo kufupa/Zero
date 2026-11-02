@@ -330,6 +330,22 @@ describe('availability for a verified saved Labtest stay', () => {
     mocks.snapshot.mockReset().mockResolvedValueOnce(current).mockResolvedValueOnce(changed);
     expect(await readLabtestStayAmendmentAvailability({}, {}, expected, options())).toMatchObject({ outcome: 'refused', issue: 'AMEND_PREIMAGE_CHANGED', saveEligible: false });
   });
+  it('accepts a verified zero-child count only with a genuinely blank native age value', async () => {
+    const { snap } = setup();
+    for (const part of [snap.values, snap.data]) Object.assign(part, { children: '0', child1: '0', child2: '0', child3: '0' });
+    Object.assign(snap.data, { childages: '' });
+    const zero = options(); zero.occupancy.childAges = [];
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'ok', savedPreimage: 'verified_labtest_form' });
+    mocks.quote.mockClear();
+    Object.assign(snap.data, { childages: 'bad' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    delete (snap.data as Record<string, unknown>).childages;
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    Object.assign(snap.data, { childages: '' });
+    Object.assign(snap.values, { childages: '8' });
+    expect(await readLabtestStayAmendmentAvailability({}, {}, expected, zero)).toMatchObject({ outcome: 'refused', issue: 'AMEND_OCCUPANCY_UNVERIFIED' });
+    expect(mocks.quote).not.toHaveBeenCalled();
+  });
   it('requires separate record and availability pages', async () => {
     const page = {};
     expect(await readLabtestStayAmendmentAvailability(page, page, expected, options())).toMatchObject({ outcome: 'input_gap', issue: 'SEPARATE_AVAILABILITY_PAGE_REQUIRED' });

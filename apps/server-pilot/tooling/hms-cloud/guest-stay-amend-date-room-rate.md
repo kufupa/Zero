@@ -173,8 +173,9 @@ and linked party IDs. Supply explicit `change`, `occupancy`, `partyContext`,
 [amendment availability](guest-stay-amend-availability.md). Select the native
 party on the separate availability page first when required by `readQuote`.
 The full form must remain identical across the read, or the result is refused.
-A saved stay with missing or ambiguous child ages remains unsupported, including
-an explicitly blank native ages field. Linked-party limitations of the existing
+A saved stay with missing or ambiguous child ages remains unsupported. A verified
+zero child count and matching zero age bands permit an empty age list only when
+the native age field is genuinely blank and no displayed age field conflicts. Linked-party limitations of the existing
 Labtest guard still apply. A page used for the saved Record View cannot also be
 the availability page.
 
@@ -184,3 +185,11 @@ authorize Save, or integrate the shared saved-stay agent session. Count and rate
 observations remain separate from native amendment availability, especially when
 the existing booking already occupies inventory. Real-guest writes remain out
 of scope.
+
+On 2026-11-02 the existing date adapter staged a one-day departure extension
+on a separately reserved HRCEN Proof Labtest stay. The visible date and native
+field date matched the requested day; the bound record still held the prior
+value. The adapter returned `updated_unsaved` with no blocked request and no
+Save. A fresh independent session reread the original clean record unchanged.
+This is staging evidence, not saved persistence, native repricing or inventory.
+Private screenshots and evidence: `/tmp/hms-date-alt-stage-OCvA0p/`.
