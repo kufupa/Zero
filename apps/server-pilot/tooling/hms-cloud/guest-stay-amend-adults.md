@@ -69,5 +69,17 @@ point-in-time readback, not proof that the earlier request cannot complete
 later. No retry was made. Pricing, tax and inventory correctness remain
 unknown. This experiment does not add a Save path to the adapter.
 
+A second isolated fake-stay attempt returned a question response with
+`pageData.success: false`, `questiontype: YesNoCancel` and handler
+`confirmRetainRates`. The prompt was visible, but the probe could not verify
+its exact DOM text selector and left every option untouched. It therefore did
+not capture or dispatch a continuation request. A separate fresh readback found
+the original clean form and model, apart from session identifiers. The target
+remained Reserved. Both possible writes remain uncertain and must not be retried
+blindly. The private response and screenshots are under
+`/tmp/hms-retain-choice-kIle9B/`. A separate client-only synthetic Ext message
+box on a guarded blank stay rendered the question in `.x-form-display-field`,
+not `.ext-mb-text`; this does not prove the real modal's DOM or continuation.
+
 The result and preview can contain private guest, stay, rate, note and party
 information. Keep them in private storage and never put them in logs or Git.
