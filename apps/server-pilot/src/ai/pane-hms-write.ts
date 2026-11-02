@@ -242,20 +242,12 @@ function pdfBytesHash(body: Buffer): string {
   return createHash('sha256').update(body).digest('hex');
 }
 
-function attachDocumentName(filename: string): string | null {
-  const base = filename.split(/[\\/]/).pop()?.trim() ?? '';
-  return isPdfDocumentName(base) ? base : null;
-}
-
 export type BindAttachDocumentResult =
   | { status: 'bound'; form: AttachForm }
   | { status: 'refused'; reason: string };
 
-/**
- * Stores the existing attach form on the work item, bound to one stay and the PDF's sha256. Approval and the
- * hms-attach-once runner then use that form. Nothing is uploaded here.
- */
-export async function bindAttachDocumentForm(input: {
+/** Legacy attach binding is disabled. This does not reconcile earlier attempts. */
+export async function bindAttachDocumentForm(_input: {
   db?: DB;
   transportId: string;
   workItemId: string;
@@ -265,76 +257,7 @@ export async function bindAttachDocumentForm(input: {
   attachmentId: string;
   env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
-  const db = input.db ?? getDb();
-  const writeKeys = [
-    'action',
-    'confirmation',
-    'arrival',
-    'lastName',
-    'attachmentId',
-    'documentName',
-    'pdfSha256',
-    'reason',
-    'fields',
-    'previewDigest',
-  ] as const;
-  return db.transaction(async (tx) => {
-    const [item] = await tx
-      .select({
-        id: workItem.id,
-        state: workItem.state,
-        status: workItem.status,
-        sourceMessageId: workItem.sourceMessageId,
-      })
-      .from(workItem)
-      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
-      .limit(1)
-      .for('update');
-    if (!item) return { status: 'refused' as const, reason: 'not_found' };
-    if (item.status === 'done' || item.status === 'dismissed') {
-      return { status: 'refused' as const, reason: 'not_open' };
-    }
-    if (!item.sourceMessageId) return { status: 'refused' as const, reason: 'source_mail_missing' };
-    const [row] = await tx
-      .select({
-        messageId: attachment.messageId,
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        sha256: attachment.sha256,
-      })
-      .from(attachment)
-      .innerJoin(message, eq(message.id, attachment.messageId))
-      .where(and(eq(attachment.id, input.attachmentId), eq(message.transportId, input.transportId)))
-      .limit(1);
-    if (!row || row.messageId !== item.sourceMessageId) {
-      return { status: 'refused' as const, reason: 'attachment_not_found' };
-    }
-    const namedPdf = row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
-    if (!namedPdf) return { status: 'refused' as const, reason: 'attachment_not_pdf' };
-    const pdfSha256 = row.sha256?.toLowerCase() ?? '';
-    if (!PDF_SHA256.test(pdfSha256)) return { status: 'refused' as const, reason: 'attachment_hash_missing' };
-    const documentName = attachDocumentName(row.filename);
-    if (!documentName) return { status: 'refused' as const, reason: 'form_invalid' };
-    const parsed = attachFormSchema.safeParse({
-      action: 'attach_document',
-      confirmation: input.confirmation,
-      arrival: input.arrival,
-      lastName: squash(input.lastName),
-      attachmentId: input.attachmentId,
-      documentName,
-      pdfSha256,
-    });
-    if (!parsed.success) return { status: 'refused' as const, reason: 'form_invalid' };
-    const refusal = formRefusal(parsed.data, {
-      allowRealGuest: paneHmsWriteMode(input.env ?? process.env) === 'on',
-    });
-    if (refusal) return { status: 'refused' as const, reason: refusal };
-    const state: Record<string, unknown> = { ...item.state };
-    for (const key of writeKeys) delete state[key];
-    Object.assign(state, parsed.data);
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, item.id));
-    return { status: 'bound' as const, form: parsed.data };
-  });
+  return { status: 'refused', reason: 'legacy_attach_disabled' };
 }
 
 export type PaneHmsPrepareResult =

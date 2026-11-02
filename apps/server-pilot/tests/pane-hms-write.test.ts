@@ -1045,57 +1045,16 @@ describe('pane HMS write property target', () => {
 });
 
 describe('pane HMS attach bridge (U9)', () => {
-  itDb('binds the attach form to the matched stay and the PDF hash', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: {} });
-      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      const bound = await bindAttachDocumentForm({
-        db,
-        transportId: TRANSPORT_ID,
-        workItemId,
-        confirmation: CONFIRMATION,
-        arrival: ARRIVAL,
-        lastName: 'Labtest',
-        attachmentId: 'att-1',
-      });
-      expect(bound).toEqual({
-        status: 'bound',
-        form: {
-          action: 'attach_document',
-          confirmation: CONFIRMATION,
-          arrival: ARRIVAL,
-          lastName: 'Labtest',
-          attachmentId: 'att-1',
-          documentName: 'Confirmation.pdf',
-          pdfSha256: sha256(PDF_BYTES),
-        },
-      });
-      expect(await stateOf(db, workItemId)).toMatchObject(
-        bound.status === 'bound' ? bound.form : {},
-      );
-    });
-  });
-
-  itDb('keeps staff corrections on the work item when binding the attach form', async () => {
+  itDb('refuses legacy binding without changing the work item', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: { 'contact.name': 'Desk' } });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      const bound = await bindAttachDocumentForm({
-        db,
-        transportId: TRANSPORT_ID,
-        workItemId,
-        confirmation: CONFIRMATION,
-        arrival: ARRIVAL,
-        lastName: 'Labtest',
-        attachmentId: 'att-1',
-      });
-      expect(bound.status).toBe('bound');
-      expect(await stateOf(db, workItemId)).toMatchObject({
-        'contact.name': 'Desk',
-        action: 'attach_document',
-        confirmation: CONFIRMATION,
-        pdfSha256: sha256(PDF_BYTES),
-      });
+      const before = await stateOf(db, workItemId);
+      await expect(bindAttachDocumentForm({
+        db, transportId: TRANSPORT_ID, workItemId, confirmation: CONFIRMATION,
+        arrival: ARRIVAL, lastName: 'Labtest', attachmentId: 'att-1', env: ENV,
+      })).resolves.toEqual({ status: 'refused', reason: 'legacy_attach_disabled' });
+      expect(await stateOf(db, workItemId)).toEqual(before);
     });
   });
 

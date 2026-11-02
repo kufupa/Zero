@@ -10,7 +10,7 @@ vi.mock('../src/ai/hms-approval.js', async (original) => ({
   ...await original<typeof import('../src/ai/hms-approval.js')>(),
   endHmsWriteRun: guards.end, consumeHmsWriteApproval: guards.consume,
 }));
-import { paneHmsWriteLoaders, runPaneHmsWriteOnce, spawnAttachDocument } from '../src/ai/pane-hms-write.js';
+import { bindAttachDocumentForm, paneHmsWriteLoaders, runPaneHmsWriteOnce, spawnAttachDocument } from '../src/ai/pane-hms-write.js';
 
 const fence: AiRunFence = { runId: 'run', claimOwner: 'owner', claimToken: 'token', deadlineAt: new Date('2099-01-01') };
 const item = { state: { action: 'attach_document', confirmation: '123-1', arrival: '2027-01-01',
@@ -25,6 +25,16 @@ beforeEach(() => { guards.running.mockReset().mockResolvedValue(true); guards.en
 afterEach(() => { paneHmsWriteLoaders.readAttachment = null; paneHmsWriteLoaders.spawnAttach = null; vi.unstubAllEnvs(); });
 
 describe('legacy attach server guard', () => {
+  it.each([{}, { PANE_WRITE_ATTACH: 'off' }, { PANE_WRITE_ATTACH: 'lab' }, { PANE_WRITE_ATTACH: 'on' },
+    { RESERVATIONIST_PANE_SAVE: 'lab' }])('refuses direct binding before any database access under %j', async (env) => {
+    const access = vi.fn(() => { throw new Error('unexpected database access'); });
+    const db = new Proxy({} as DB, { get: access });
+    await expect(bindAttachDocumentForm({ db, env, transportId: 'mailbox', workItemId: 'work',
+      confirmation: '123-1', arrival: '2027-01-01', lastName: 'Labtest', attachmentId: 'attachment',
+    })).resolves.toEqual({ status: 'refused', reason: 'legacy_attach_disabled' });
+    expect(access).not.toHaveBeenCalled();
+  });
+
   it('refuses direct server spawn even with the legacy arming flag', async () => {
     vi.stubEnv('ATTACH_VERIFIED', 'true');
     await expect(spawnAttachDocument({ confirmation: '123-1', arrival: '2027-01-01', file: '/missing',
