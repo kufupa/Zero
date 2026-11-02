@@ -1,6 +1,6 @@
 /** @vitest-environment happy-dom */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useState, type ReactNode } from 'react';
+import { useLayoutEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useController } from 'react-hook-form';
 import { EmailComposer } from '../components/create/email-composer';
@@ -265,6 +265,23 @@ describe('real composer draft handoff', () => {
     expect(subject.closest('[inert]')).not.toBeNull();
     await act(async () => { finish(); await pending; });
     expect(subject.closest('[inert]')).toBeNull();
+  });
+
+  it('locks a replacement composer before its parent layout effect', async () => {
+    let finish!: () => void;
+    const pending = runComposeSwitch(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    const observed = vi.fn();
+    function LayoutProbe() {
+      useLayoutEffect(() => {
+        observed(Boolean(screen.getByPlaceholderText('Re: Design review feedback').closest('[inert]')));
+      }, []);
+      return <Harness />;
+    }
+    render(<LayoutProbe />);
+    expect(observed).toHaveBeenCalledWith(true);
+    await act(async () => { finish(); await pending; });
+    expect(screen.getByPlaceholderText('Re: Design review feedback').closest('[inert]')).toBeNull();
   });
 
   it('saves a newer header revision made during an in-flight save', async () => {

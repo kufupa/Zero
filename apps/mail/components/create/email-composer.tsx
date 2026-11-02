@@ -1056,7 +1056,8 @@ export function EmailComposer({
     [buildPersistInput, draftId, onClose, optimisticDeleteDraft, saveDraft],
   );
 
-  useEffect(() => {
+  // Register before paint so a replacement composer inherits an in-flight switch lock.
+  useLayoutEffect(() => {
     const flush = async () => {
       if (needsSave()) {
         await saveDraft();
