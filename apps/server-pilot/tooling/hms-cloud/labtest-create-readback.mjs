@@ -58,7 +58,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   if (expected.guaranteeCode) {
     const native = read.record.nativePreimage;
     const verified = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
-      native.confirmation === confirmation && native.guestId === expected.guestId && native.status === 'Reserved' &&
+      native.confirmation === confirmation && native.guestId === String(expected.guestId) && native.status === 'Reserved' &&
       native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
       native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
       native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;

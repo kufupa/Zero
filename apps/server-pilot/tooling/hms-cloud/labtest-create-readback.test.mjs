@@ -95,13 +95,16 @@ test('requires fresh native guarantee and stay identity when a code is requested
     status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: stay.arrival, departure: stay.departure,
     roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
   let request;
-  const read = (preimage) => readLabtestCreate({ confirmation: '123-1', stay, expected: agentExpected }, {
+  const read = (preimage, wanted = agentExpected) => readLabtestCreate({ confirmation: '123-1', stay, expected: wanted }, {
     withSavedSession: async (operation) => operation({ runTool: async (input) => {
       request = input;
       return { outcome: 'ok', record: { nativePreimage: preimage, details: { fields: agentFields } } };
     } }),
   });
   assert.deepEqual((await read(native)).mismatches, []);
+  assert.deepEqual((await read(native, { ...agentExpected, guestId: 123 })).mismatches, []);
+  assert.deepEqual((await read({ ...native, guestId: '999' }, { ...agentExpected, guestId: 123 })).mismatches,
+    [{ field: 'guaranteeTypeCode', issue: 'native_code_unverified' }]);
   assert.equal(request.includeNativePreimage, true);
   for (const preimage of [null, { ...native, guaranteeCode: 'NGI' }, { ...native, guestId: '999' },
     { ...native, confirmation: '124-1' }, { ...native, propertyCode: 'HRDAV' },
