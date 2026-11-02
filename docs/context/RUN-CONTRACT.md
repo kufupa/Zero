@@ -1,5 +1,7 @@
 # Run contract (overnight or daytime autonomous run)
 
+Current `PRODUCT.md`, `AGENTS.md` and the owner's scoped direction take precedence over historical run examples and estimates below. This contract does not authorize a run by itself.
+
 Written in the 2026-10-14 retro: none of the 10 autonomous runs from Oct 6 to Oct 14 finished every planned item with live proof (best: 4 of 6 on Oct 14; the Oct 13 quote pilot: 0 of 7 at its target). Every run starts from this contract. The owner approves it; the agent may not widen it.
 
 ## 1. Pick the right kind of run
@@ -14,13 +16,12 @@ Written in the 2026-10-14 retro: none of the 10 autonomous runs from Oct 6 to Oc
 
 ```
 Outcome (staff terms): <what a reservationist no longer does>
-Workflow (WIP = 1): <one PRODUCT.md workflow>
-Pass bar: <metric ≥ target on <versioned set>>, from PRODUCT.md "Pass bars"
-Baseline: <score of the current prod build on the same set, measured before coding>
-Items (max 3, dependency order): <item → check → owner/lane>
+Workflow(s): <scoped PRODUCT.md workflows and their dependencies>
+Done: <deployed main + each workflow walked on the deployed pane + final fake booking, unless the owner sets another bar>
+Items: <scoped items, real dependencies, checks and owner/lanes>
 Not this run: <list>
 Critical path ETA: <ledger-scaled; longest chain incl. review + deploy + proof>
-Stop: pass bar met | <time> | score flat 2 rounds | blocked-with-file:line
+Stop: done | <time> | blocked-with-file:line
 Budget: $<n> by model; report actuals at the end
 ```
 
@@ -38,19 +39,19 @@ Sources: [goal](https://code.claude.com/docs/en/goal), [scheduled tasks](https:/
 `/goal` template:
 
 ```
-/goal <outcome>. Done when the last message prints, for the current prod SHA: `<score cmd>` → <metric> ≥ <target> on <set vN>, and each item is PASS (deployed SHA + live check after the last fix) or BLOCKED (file:line + reason). Or stop after 120 turns. Scope: only the items in docs/context/RUN-CONTRACT.md §2 of this run.
+/goal <outcome>. Done when the last message prints, for the current prod SHA: each item is PASS (deployed SHA + live check after the last fix) or BLOCKED (file:line + reason). Or stop after 120 turns. Scope: only the items in docs/context/RUN-CONTRACT.md §2 of this run.
 ```
 
 ## 4. During the run
 
 - Scoreboard after every step: measured numbers, PASS/BLOCKED with evidence, `$(date -u +%H:%M)` stamps.
-- Checkpoint at ~40% of the window: re-estimate the critical path; **cut** to fit; never add.
+- At a useful checkpoint, re-estimate the critical path. Scope changes to a running plan remain owner-approved trades; do not silently cut work to fit a clock.
 - One DB-backed test suite per test DB at a time; never pipe long runs into `head`.
-- Kill a lane silent > 20 min; resume it (`codex exec resume <id> "write the report now"`) instead of restarting from zero.
+- Check the progress of a quiet lane before deciding what to do. Do not kill or restart it solely because it has been silent; preserve its work.
 
 ## 5. Closing the run
 
 - Close every ledger row (`end`, `actual_min`, `ratio`, `outcome`, `mistake_class`); coordinator reuses each execution ID and does not open duplicate starts.
-- Update `docs/context/ACTIVE.md`; add `MISTAKES.md` rows for owner corrections and failed fixes. Preserve unrelated owner asks and dirty files.
+- Update `docs/context/START-HERE.md` pointers; add `MISTAKES.md` rows for owner corrections and failed fixes. Preserve unrelated owner asks and dirty files.
 - Automatically run `ce-compound mode:lane-close` for each merged/abandoned lane before spin-down. At whole overnight-run close, run `nightly-retro.sh` and write the evidence-backed dated context-ledger retro; link any material research report from the research index/catalog. No separate owner prompt is needed; this adds no cron or hook.
-- Report: pass bars before/after (same set), what is live, what is blocked (file:line), $ by model vs budget, and any unknown/unpriced spend.
+- Report: what is done (per the Done bar), what is live, what is blocked (file:line), $ by model vs budget, and any unknown/unpriced spend.
