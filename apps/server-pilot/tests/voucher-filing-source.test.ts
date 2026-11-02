@@ -8,8 +8,13 @@ import { outlookSyncArtifact, outlookSyncObservation, outlookSyncSource } from '
 import type { DB } from '../src/db/client.js';
 import { OutlookSyncStorage } from '../src/outlook-sync/storage.js';
 import { prepareVoucherFilingSource, readApprovedVoucherFilingSource } from '../src/ai/voucher-filing-source.js';
-import { withIngestionDb } from './helpers/ingestion-db.js';
 import { outlookSyncFixture } from './helpers/outlook-sync-fixture.js';
+
+const ingestionDbAvailable = Boolean(process.env.TEST_DATABASE_URL?.trim()) && process.env.CONFIRM_DISPOSABLE_TEST_DB === '1';
+async function withIngestionDb<T>(callback: (context: { db: DB }) => Promise<T>): Promise<T> {
+  const helper = await import('./helpers/ingestion-db.js');
+  return helper.withIngestionDb(callback);
+}
 
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const original = Buffer.from('%PDF-1.7 synthetic attachment');
@@ -64,7 +69,7 @@ async function setup(db: DB) {
   return { input, deps, form, state, receipt, key, sourceId, observationId, artifactId, messageId, attachmentId };
 }
 
-describe('voucher filing version-bound source', () => {
+describe.skipIf(!ingestionDbAvailable)('voucher filing source with disposable database', () => {
   it('reads the accepted version at prepare and execution, binding the private receipt into approval', async () =>
     withIngestionDb(async ({ db }) => {
       const s = await setup(db);
@@ -82,7 +87,7 @@ describe('voucher filing version-bound source', () => {
       expect(s.state.calls.every((call) => ['HeadObjectCommand', 'GetObjectCommand'].includes(call.name))).toBe(true);
     }));
 
-  it('refuses missing, null, altered or ambiguously attributed receipts without reading bytes', async () =>
+  it('refuses malformed or ambiguously attributed receipts without reading bytes', async () =>
     withIngestionDb(async ({ db }) => {
       const s = await setup(db);
       const originalProvenance = { version: 1, sourceId: s.sourceId, observationId: s.observationId, artifactOrigin: null,
