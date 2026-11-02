@@ -63,7 +63,9 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       /^[A-Za-z0-9_-]{1,40}$/.test(identity?.rowId ?? '') && Number.isInteger(identity?.roomIndex) &&
       identity.roomIndex >= 1 && identity.roomIndex <= 999) ?? false) && new Set(sourceIds).size === sourceIds.length;
   const countValid = !!selectedInput && selectedInput.rooms.length >= 2 && selectedInput.rooms.length <= 8;
-  const currentKey = JSON.stringify({ input, missing, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
+  const sameArrival = !!selectedInput && selectedInput.rooms.every((room) => room.stay.arrival === selectedInput.rooms[0]?.stay.arrival);
+  const mode = client?.mode() ?? null;
+  const currentKey = JSON.stringify({ input, missing, mode, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
   const keyRef = useRef(currentKey);
   const editGeneration = useRef(0);
   if (keyRef.current !== currentKey) editGeneration.current += 1;
@@ -75,7 +77,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     (approvalStarted || !expired) ? review : null;
   const labEligible = selectedInput?.propertyCode === 'HRCEN' && selectedInput.rooms.every(({ stay }) =>
     stay.firstName === 'Proof' && stay.lastName === 'Labtest' && stay.arrival >= '2027-01-01' && stay.confirmationSendMail === false);
-  const eligible = labEligible && identitiesValid && countValid;
+  const eligible = identitiesValid && countValid && sameArrival && (mode === 'on' || (mode === 'lab' && labEligible));
   const missingPricedAmount = fresh?.rooms.some((room) => pricedAmountMissing(room.amount)) ?? false;
   const safeResults = (rooms: BatchRoomResult[]) => rooms.map((room) => room.status === 'confirmed' &&
     (!room.confirmation || room.screenshotRecorded !== true || room.readbackRecorded !== true || !room.attempt?.runId ||
@@ -108,21 +110,37 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     setBusy(true); setError(''); setReview(null);
     try {
       const next = await client.prepare(selected);
-      if (keyRef.current !== key || editGeneration.current !== generation) return;
+      if (keyRef.current !== key || editGeneration.current !== generation || client.mode() !== mode) return;
       const sameSource = JSON.stringify(next.source) === JSON.stringify(selected.source);
       const ids = selected.rooms.map((room) => room.allocationId);
-      if (!sameSource || !Array.isArray(next.blockers) || next.propertyCode !== selected.propertyCode || next.rooms.length !== ids.length ||
-          next.rooms.some((room, index) => room.allocationId !== ids[index] || room.cmsSend !== false ||
-            room.identity?.stayId !== selected.rooms[index]?.identity.stayId || room.identity?.rowId !== selected.rooms[index]?.identity.rowId ||
-            room.identity?.roomIndex !== selected.rooms[index]?.identity.roomIndex ||
-            room.guest.firstName !== 'Proof' || room.guest.lastName !== 'Labtest')) throw new Error('invalid_review');
+      if (!sameSource || typeof next.reviewId !== 'string' || !next.reviewId.trim() ||
+          !/^[a-f0-9]{64}$/.test(next.manifestDigest ?? '') || !Array.isArray(next.blockers) ||
+          (next.batchLimit !== null && (!Number.isInteger(next.batchLimit) || next.batchLimit < 0 || next.batchLimit > 8)) ||
+          next.propertyCode !== selected.propertyCode || next.rooms.length !== ids.length ||
+          next.rooms.some((room, index) => {
+            const requested = selected.rooms[index];
+            if (!requested || room.allocationId !== ids[index] || room.identity?.stayId !== requested.identity.stayId ||
+                room.identity?.rowId !== requested.identity.rowId || room.identity?.roomIndex !== requested.identity.roomIndex ||
+                room.guest.firstName !== requested.stay.firstName || room.guest.lastName !== requested.stay.lastName ||
+                room.cmsSend !== (requested.stay.confirmationSendMail === true) ||
+                (room.cmsMessageId !== null && (typeof room.cmsMessageId !== 'string' || !room.cmsMessageId.trim())) ||
+                (room.cmsRecipient !== null && (!room.cmsRecipient || !['self', 'client', 'custom'].includes(room.cmsRecipient.mode) ||
+                  typeof room.cmsRecipient.address !== 'string' || !room.cmsRecipient.address.trim())) ||
+                (requested.stay.cmsMessageId !== undefined && room.cmsMessageId !== requested.stay.cmsMessageId) ||
+                (requested.stay.confirmationRecipient !== undefined &&
+                  (room.cmsRecipient?.mode !== requested.stay.confirmationRecipient.mode ||
+                   room.cmsRecipient?.address !== requested.stay.confirmationRecipient.address)) ||
+                (room.cmsSend && (!room.cmsMessageId || !room.cmsRecipient?.address)) ||
+                (mode === 'lab' && (room.cmsSend || room.guest.firstName !== 'Proof' || room.guest.lastName !== 'Labtest'))) return true;
+            return false;
+          })) throw new Error('invalid_review');
       setReview(next); setReviewKey(key); setReviewGeneration(generation);
     } catch { setError('Nava could not prepare these rooms. Nothing was saved.'); }
     finally { setBusy(false); }
   }
 
   async function approve() {
-    if (!client || !fresh || !selectedInput || !eligible || busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < selectedInput.rooms.length ||
+    if (!client || client.mode() !== mode || !fresh || !selectedInput || !eligible || busy || missing.length > 0 || missingPricedAmount || fresh.blockers.length > 0 || fresh.batchLimit === null || fresh.batchLimit < selectedInput.rooms.length ||
         !Number.isFinite(Date.parse(fresh.expiresAt)) || Date.parse(fresh.expiresAt) <= Date.now()) return;
     approvedRoomIds.current = fresh.rooms.map((room) => room.allocationId);
     setBusy(true); setApprovalStarted(true); onLock(true); setError('');
@@ -159,15 +177,20 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
       onChange={(ids) => { const included = new Set(ids); setExcluded({ source: sourceKey, ids: inputIds.filter((id) => !included.has(id)) }); }} /> : null}
     {client && input && !identitiesValid ? <p role="alert">Room details need checking before review.</p> : null}
     {client && input && !countValid ? <p className="text-[11.5px] text-[#475569]">Select between 2 and 8 rooms to review.</p> : null}
-    {client && selectedInput && countValid && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
+    {client && input && countValid && !sameArrival ? <p className="text-[11.5px] text-[#475569]">Rooms with different arrival dates need separate bookings.</p> : null}
+    {client && (mode === null || mode === 'off') ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
+    {client && selectedInput && countValid && mode === 'lab' && !labEligible ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is available for test bookings only.</p> : null}
     {missing.length ? <p className="text-[11.5px] text-[#475569]">Needed before review: {missing.join(', ')}.</p> : null}
     {review && !fresh && !runId ? <p role="status" className="text-[11.5px] text-amber-900">{expired ? 'Review expired. Review these rooms again.' : 'Booking details changed. Review again.'}</p> : null}
     {fresh ? <div data-pii className="flex flex-col gap-2 text-[11.5px] text-[#334155]">
-      <p>Hotel {fresh.propertyCode}. HMS confirmation email is off for every test booking.</p>
+      <p>Hotel {fresh.propertyCode}.{fresh.rooms.every((room) => !room.cmsSend) ? ' HMS confirmation email is off for these bookings.' : ''}</p>
       {fresh.rooms.map((room) => <div key={room.allocationId} className="border-t border-[#e2e8f0] pt-2">
         <p className="font-semibold">{rowRoomLabel({ roomPreference: room.roomType, quantity: 1 })} · {room.guest.firstName} {room.guest.lastName}</p>
         <p>{room.stay.arrival} – {room.stay.departure} · {room.stay.adults} adults · {room.stay.childAges.length} children{room.stay.childAges.length ? ` (ages ${room.stay.childAges.join(', ')})` : ''}</p>
         <p>Rate {room.ratePlan} · {amountLabel(room.amount)}</p>
+        {fresh.rooms.some((item) => item.cmsSend) ? <p>{room.cmsSend
+          ? `HMS will send confirmation to ${room.cmsRecipient?.address} · type ${room.cmsMessageId}`
+          : 'HMS confirmation email is off'}</p> : null}
         <p>Agency {room.agency?.name ?? 'none'} · Company {room.organization?.name ?? 'none'} · Guarantee {room.guaranteeType}</p>
         {room.sourceOfBusiness ? <p>Source {room.sourceOfBusiness}</p> : null}
         {room.track || room.marketSegment ? <p>Track {room.track ?? 'not set'} · Market segment {room.marketSegment ?? 'not set'}</p> : null}

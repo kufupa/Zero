@@ -19,19 +19,20 @@ function input(): BatchReviewInput {
       { allocationId: 'g:2', identity: { stayId: 's1', rowId: 'r2', roomIndex: 1 }, stay: { ...stay, roomType: 'STWN' }, amount: { minor: null, currency: null, basis: 'unknown', tax: 'unknown', status: 'unavailable' } }] };
 }
 function review(source = input()): BatchReview {
-  return { reviewId: 'review', manifestDigest: 'digest', expiresAt: '2099-01-01T00:00:00Z', batchLimit: 2, blockers: [],
+  return { reviewId: 'review', manifestDigest: 'd'.repeat(64), expiresAt: '2099-01-01T00:00:00Z', batchLimit: 2, blockers: [],
     propertyCode: source.propertyCode, source: source.source, rooms: source.rooms.map((room) => ({ allocationId: room.allocationId, identity: room.identity,
       roomType: room.stay.roomType, ratePlan: room.stay.ratePlan, guest: { firstName: room.stay.firstName, lastName: room.stay.lastName, profileId: '123' },
       stay: { arrival: room.stay.arrival, departure: room.stay.departure, adults: room.stay.adults, childAges: [] },
       agency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
-      track: 'BAR', marketSegment: null, guestOptIn: false, booker: null, cmsSend: false, amount: room.amount })) };
+      track: 'BAR', marketSegment: null, guestOptIn: false, booker: null, cmsSend: false, cmsMessageId: room.stay.cmsMessageId ?? null,
+      cmsRecipient: room.stay.confirmationRecipient ?? null, amount: room.amount })) };
 }
 const CHILD_A = 'a'.repeat(64);
 const CHILD_B = 'b'.repeat(64);
 const PNG = 'data:image/png;base64,aGVsbG8=';
 function client(): PaneBatchClient {
   let persisted: { workItemId: string; runId: string; childId: string; evidenceVersion: string; decision: 'ok' | 'flag' } | null = null;
-  return { prepare: vi.fn(async (request) => review(request)), approve: vi.fn(async () => ({ runId: 'run' })),
+  return { mode: () => 'lab', prepare: vi.fn(async (request) => review(request)), approve: vi.fn(async () => ({ runId: 'run' })),
     read: vi.fn(async (scope) => ({ ...scope, complete: true, rooms: [{ allocationId: 'g:1', status: 'confirmed' as const,
       confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true, attempt: { runId: 'run', childId: CHILD_A }, reviewed: persisted },
       { allocationId: 'g:2', status: 'unattempted' as const }] })),
@@ -43,6 +44,84 @@ function client(): PaneBatchClient {
 }
 
 describe('batch booking review', () => {
+  it('requires a separate batch capability and allows production reviews without sending test mail', async () => {
+    const api = client(), source = input();
+    source.rooms.forEach((room) => { room.stay.firstName = 'Example'; room.stay.lastName = 'Guest'; });
+    api.mode = () => 'off';
+    const { rerender } = render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    api.mode = () => 'lab';
+    rerender(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    api.mode = () => 'on';
+    rerender(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByRole('button', { name: 'Approve and book these rooms' })).toBeTruthy();
+    expect(screen.getByText(/confirmation email is off/)).toBeTruthy();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('shows the exact reviewed confirmation recipient and type without sending mail', async () => {
+    const api = client(), source = input();
+    api.mode = () => 'on';
+    source.rooms[0]!.stay.confirmationSendMail = true;
+    source.rooms[0]!.stay.cmsMessageId = 'confirmation';
+    source.rooms[0]!.stay.confirmationRecipient = { mode: 'client', address: 'guest@example.test' };
+    api.prepare = vi.fn(async (request) => { const result = review(request); result.rooms[0]!.cmsSend = true; return result; });
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByText('HMS will send confirmation to guest@example.test · type confirmation')).toBeTruthy();
+    expect(screen.getByText('HMS confirmation email is off')).toBeTruthy();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('rejects a changed reviewed recipient when confirmation is enabled', async () => {
+    const api = client(), source = input();
+    api.mode = () => 'on';
+    source.rooms[0]!.stay.confirmationSendMail = true;
+    source.rooms[0]!.stay.cmsMessageId = 'confirmation';
+    source.rooms[0]!.stay.confirmationRecipient = { mode: 'client', address: 'guest@example.test' };
+    api.prepare = vi.fn(async (request) => {
+      const result = review(request); result.rooms[0]!.cmsSend = true;
+      result.rooms[0]!.cmsRecipient = { mode: 'custom', address: 'other@example.test' }; return result;
+    });
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByText(/could not prepare these rooms/)).toBeTruthy();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('invalidates the prepared review when batch capability changes', async () => {
+    const api = client();
+    const { rerender } = render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByRole('button', { name: 'Approve and book these rooms' })).toBeTruthy();
+    api.mode = () => 'off';
+    rerender(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('rejects changed server confirmation settings', async () => {
+    const api = client(), source = input();
+    source.rooms[0]!.stay.cmsMessageId = 'selected';
+    api.prepare = vi.fn(async (request) => { const result = review(request); result.rooms[0]!.cmsMessageId = 'other'; return result; });
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByText(/could not prepare these rooms/)).toBeTruthy();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('rejects missing server confirmation fields even when sending is off', async () => {
+    const api = client();
+    api.prepare = vi.fn(async (request) => { const result = review(request); result.rooms[0]!.cmsRecipient = undefined as never; return result; });
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    expect(await screen.findByText(/could not prepare these rooms/)).toBeTruthy();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+  it('holds rooms with different arrivals before preparing', () => {
+    const api = client(), source = input(); source.rooms[1]!.stay.arrival = '2027-03-02';
+    render(<BatchBookingReview client={api} input={source} missing={[]} onLock={() => {}} />);
+    expect(screen.getByText(/different arrival dates need separate bookings/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled();
+  });
   it('reviews exact rooms without linked or atomic claims and reports partial outcomes', async () => {
     const api = client(), onLock = vi.fn();
     render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={onLock} />);
@@ -54,7 +133,7 @@ describe('batch booking review', () => {
     expect(await screen.findByText(/Booked · confirmation C1/)).toBeTruthy();
     expect(screen.getByText('Not attempted')).toBeTruthy();
     expect(onLock).toHaveBeenCalledWith(true);
-    expect(api.approve).toHaveBeenCalledWith({ workItemId: 'item', reviewId: 'review', manifestDigest: 'digest' });
+    expect(api.approve).toHaveBeenCalledWith({ workItemId: 'item', reviewId: 'review', manifestDigest: 'd'.repeat(64) });
   });
   it('offers a new review when the approval expires', async () => {
     const api = client();
