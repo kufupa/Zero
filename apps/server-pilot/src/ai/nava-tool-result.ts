@@ -37,7 +37,7 @@ export const BatchManifestGrantSchema = z.object({
   manifestId: z.string().min(1),
   revision: z.number().int().nonnegative(),
   expiresAt: z.string().datetime({ offset: true }),
-  children: z.array(z.object({ key: z.string().min(1), stayDigest: z.string().min(1), previewDigest: z.string().min(1) }).strict()),
+  children: z.array(z.object({ key: z.string().min(1), stayDigest: z.string().min(1), previewDigest: z.string().min(1) }).strict()).min(1),
 }).strict();
 export type BatchManifestGrant = z.infer<typeof BatchManifestGrantSchema>;
 
@@ -92,6 +92,7 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
 export function adaptBatchToolResult<T>(children: Array<{
   key: string; result: ExistingToolResult<T>; readbackVerified?: boolean; confirmation?: string;
 }>): NavaToolResult<never> {
+  if (children.length === 0) return { schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' };
   return {
     schema: 'nava.tool/v1', outcome: 'partial',
     children: children.map(({ key, result, readbackVerified, confirmation }) => {

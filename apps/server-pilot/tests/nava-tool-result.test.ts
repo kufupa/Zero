@@ -59,6 +59,24 @@ describe('Nava tool result contract', () => {
     }
     expect(adaptExistingToolResult({ outcome: 'partial' }, { operation: 'read' }).outcome).toBe('uncertain');
   });
+  it('keeps every nonempty batch partial, regardless of child outcomes', () => {
+    const verified = adaptBatchToolResult([
+      { key: 'a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
+      { key: 'b', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123457-1' },
+    ]);
+    expect(verified).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'ok', confirmation: '123456-1' },
+      { key: 'b', outcome: 'ok', confirmation: '123457-1' },
+    ] });
+    const refused = adaptBatchToolResult([
+      { key: 'a', result: { outcome: 'not_dispatched' } },
+      { key: 'b', result: { outcome: 'refused', reason: 'POLICY_BLOCK' } },
+    ]);
+    expect(refused).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'refused' }, { key: 'b', outcome: 'refused', reason: 'policy_block' },
+    ] });
+    expect(adaptBatchToolResult([])).toEqual({ schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' });
+  });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
     expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);
@@ -71,5 +89,7 @@ describe('Nava tool result contract', () => {
     expect(AmendStageInputSchema.safeParse({ occupancy: { adults: 2, childAges: [] } }).success).toBe(false);
     expect(BatchManifestGrantSchema.safeParse({ manifestId: 'm', revision: 1, expiresAt: '2027-01-01T00:00:00Z',
       children: [{ key: 'a', stayDigest: 's', previewDigest: 'p', extra: true }] }).success).toBe(false);
+    expect(BatchManifestGrantSchema.safeParse({ manifestId: 'm', revision: 1, expiresAt: '2027-01-01T00:00:00Z',
+      children: [] }).success).toBe(false);
   });
 });
