@@ -58,6 +58,23 @@ describe('Cloud pane create mapping', () => {
     for (const mismatch of mismatches) expect(digestPaneCloudCreateProof(stay, mismatch).outcome).toBe('refused');
   });
 
+  it('refuses proof for stays outside the supported mapping even when native proof matches', () => {
+    const unsupported = [
+      { ...stay, propertyCode: 'HRDAV' },
+      { ...stay, guaranteeType: 'GTD' },
+      { ...stay, firstName: 'Other' },
+      { ...stay, bookerName: 'Someone' },
+      { ...stay, marketSegment: 'CORP' },
+      { ...stay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } },
+    ];
+    for (const request of unsupported) {
+      expect(mapPaneStayToCloudCreateInput(request, 'prepare').outcome).toBe('refused');
+      expect(digestPaneCloudCreateProof(request, proof)).toEqual({
+        outcome: 'refused', reason: 'cloud_create_proof_mismatch',
+      });
+    }
+  });
+
   it('requires party identities and rejects different native selections', () => {
     expect(mapPaneStayToCloudCreateInput({ ...stay, organization: { name: 'Company' } }, 'prepare'))
       .toMatchObject({ outcome: 'refused', reason: 'organization_id_and_name_required' });

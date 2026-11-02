@@ -114,6 +114,11 @@ export function mapPaneStayToCloudCreateInput(
 export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown):
   | { outcome: 'ok'; normalizedRequestDigest: string; request: Record<string, unknown> }
   | { outcome: 'refused'; reason: string } {
+  // A matching native proof is not evidence for a stay this bridge cannot map.
+  // Apply the same limits independently, even when a caller skipped mapping.
+  if (mapPaneStayToCloudCreateInput(stay, 'prepare').outcome !== 'ok') {
+    return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { outcome: 'refused', reason: 'cloud_create_proof_invalid' };
   const proof = value as CloudCreateProof;
   const normalized = normalizeCloudCreateRequest(proof);
