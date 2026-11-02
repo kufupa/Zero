@@ -60,8 +60,11 @@ test('blocked service workers cannot bypass context request routes', async () =>
           assert.equal(context.serviceWorkers().length, 0);
           assert.equal(workerRequests, requestsBefore);
         } else {
-          await page.evaluate(() => navigator.serviceWorker.register('/sw.js'));
-          await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+          await page.evaluate(() => Promise.race([
+            navigator.serviceWorker.register('/sw.js'),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('WORKER_REGISTRATION_TIMEOUT')), 5000)),
+          ]));
+          await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 5000 });
           assert.equal(context.serviceWorkers().length, 1);
         }
         assert.equal(await page.evaluate(() => fetch('/protected').then((response) => response.text())),
