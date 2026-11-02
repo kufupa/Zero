@@ -17,25 +17,22 @@ export const paneCreateIdentitySchema = z.object({
 export type PaneCreateIdentity = z.infer<typeof paneCreateIdentitySchema>;
 export type PaneCreateParty = z.infer<typeof paneCreatePartySchema>;
 
-/** Strictly project the linked extraction plus its persisted pane edits. Never guess missing occupancy. */
-export function reconcilePaneCreateScope(input: {
-  payload: unknown; state: WorkState; identity: PaneCreateIdentity; party: PaneCreateParty; stay: PaneStay;
-  /** Server-owned evidence only: the caller must derive these from this item's durable user field events
-   * and the same linked source message's extraction recorded by each event. Never accept browser claims. */
+/** Strictly project server-linked extraction and persisted edits; not standalone write authority. */
+export function projectPaneCreateScope(input: {
+  payload: unknown; state: WorkState;
+  /** Server-owned only. Bind durable field events and their source extractions through dispatch. */
   historicalOwnRows?: ReadonlyArray<HistoricalOwnRow>;
-}): boolean {
+}): { payload: z.infer<typeof mailExtractionPayloadSchema>; stays: Map<string, ExtractionStay> } | null {
   const parsed = mailExtractionPayloadSchema.safeParse(input.payload);
-  if (!parsed.success || !paneCreateIdentitySchema.safeParse(input.identity).success ||
-      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind !== 'none' ||
-      input.stay.bookingAgency !== undefined || input.stay.organization !== undefined) return false;
+  if (!parsed.success) return null;
   const payload = parsed.data;
   const stays = new Map<string, ExtractionStay>();
   const originallyRowless = new Set<string>();
   for (const original of payload.stays) {
-    if (!stableId.safeParse(original.id).success || stays.has(original.id)) return false;
+    if (!stableId.safeParse(original.id).success || stays.has(original.id)) return null;
     const ids = new Set<string>();
     for (const row of original.rows) {
-      if (!stableId.safeParse(row.id).success || ids.has(row.id)) return false;
+      if (!stableId.safeParse(row.id).success || ids.has(row.id)) return null;
       ids.add(row.id);
     }
     if (original.rows.length === 0) originallyRowless.add(original.id);
@@ -61,14 +58,14 @@ export function reconcilePaneCreateScope(input: {
   for (const [key, value] of Object.entries(input.state)) {
     if (!key.startsWith('stays[')) continue;
     const path = parseFieldPath(key);
-    if (!path || !validFieldValue(path.field, value)) return false;
+    if (!path || !validFieldValue(path.field, value)) return null;
     // Deleted additions remain in history but cannot create an active stay or row.
     if (input.state[`stays[${path.stayId}].removed`] === true ||
         (path.rowId && input.state[`stays[${path.stayId}].rows[${path.rowId}].removed`] === true)) continue;
     let stay = stays.get(path.stayId);
     if (!stay) {
       // New stays must have an explicit add marker; orphan field paths are not proof of a request.
-      if (input.state[`stays[${path.stayId}].removed`] !== null) return false;
+      if (input.state[`stays[${path.stayId}].removed`] !== null) return null;
       stay = { id: path.stayId, hotel: null, requested: { arrival: null, departure: null },
         booked: null, totalRooms: null, rows: [] };
       stays.set(path.stayId, stay);
@@ -77,15 +74,10 @@ export function reconcilePaneCreateScope(input: {
       const marker = `stays[${path.stayId}].rows[${path.rowId}].removed`;
       // The UI also gives an initially rowless extraction a deterministic own-row id.
       if (input.state[marker] !== null && !(originallyRowless.has(path.stayId) && path.rowId === `${path.stayId}_row`) &&
-          !hasHistoricalOwnRow(path.stayId, path.rowId)) return false;
+          !hasHistoricalOwnRow(path.stayId, path.rowId)) return null;
       stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
     }
   }
-  // formStays also hides a rowless stay when its only projected row was removed.
-  const removedRowStayIds = new Set(Object.entries(input.state).flatMap(([key, value]) => {
-    const path = parseFieldPath(key);
-    return path?.rowId && path.field === 'removed' && value === true ? [path.stayId] : [];
-  }));
   // formStays uses one global removed-id set. A collision can hide a different stay or
   // row in the pane; never approve one that the pane could have hidden by that collision.
   const removedIds = new Set(Object.entries(input.state).flatMap(([key, value]) => {
@@ -95,8 +87,27 @@ export function reconcilePaneCreateScope(input: {
   for (const candidate of stays.values()) {
     if (input.state[`stays[${candidate.id}].removed`] === true) continue;
     if (removedIds.has(candidate.id) || candidate.rows.some((row) =>
-      input.state[`stays[${candidate.id}].rows[${row.id}].removed`] !== true && removedIds.has(row.id))) return false;
+      input.state[`stays[${candidate.id}].rows[${row.id}].removed`] !== true && removedIds.has(row.id))) return null;
   }
+  return { payload, stays };
+}
+
+/** Strict single-room guard; historical evidence must come from server-owned records. */
+export function reconcilePaneCreateScope(input: {
+  payload: unknown; state: WorkState; identity: PaneCreateIdentity; party: PaneCreateParty; stay: PaneStay;
+  historicalOwnRows?: ReadonlyArray<HistoricalOwnRow>;
+}): boolean {
+  if (!paneCreateIdentitySchema.safeParse(input.identity).success ||
+      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind !== 'none' ||
+      input.stay.bookingAgency !== undefined || input.stay.organization !== undefined) return false;
+  const projected = projectPaneCreateScope(input);
+  if (!projected) return false;
+  const { payload, stays } = projected;
+  // formStays also hides a rowless stay when its only projected row was removed.
+  const removedRowStayIds = new Set(Object.entries(input.state).flatMap(([key, value]) => {
+    const path = parseFieldPath(key);
+    return path?.rowId && path.field === 'removed' && value === true ? [path.stayId] : [];
+  }));
   const activeStays = [...stays.values()].filter((stay) => input.state[`stays[${stay.id}].removed`] !== true &&
     (stay.rows.some((row) => input.state[`stays[${stay.id}].rows[${row.id}].removed`] !== true) ||
       (stay.rows.length === 0 && !removedRowStayIds.has(stay.id))));
@@ -127,8 +138,6 @@ export function reconcilePaneCreateScope(input: {
   const ages = value(`${rowPath}.childAges`, row.childAges);
   const totalAdults = value(`${stayPath}.totalAdults`, stay.totalAdults ?? null);
   const totalChildren = value(`${stayPath}.totalChildren`, stay.totalChildren ?? null);
-  // The pane retains matching stay-scoped and unscoped occupancy warnings until staff correct the affected row.
-  // A numeric extraction alone does not confirm an explicitly questioned allocation.
   const scopedWarnings = payload.missing.filter((item) => !item.stayId || item.stayId === stay.id);
   if (scopedWarnings.some((item) => /adult|occupancy/i.test(`${item.field} ${item.question}`) &&
         !/total/i.test(item.field)) && !Object.hasOwn(input.state, `${rowPath}.adults`)) return false;
