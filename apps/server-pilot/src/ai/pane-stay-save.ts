@@ -682,6 +682,11 @@ export async function runPaneStay(input: {
   /** Room 1's HMS confirmation. The caller proves it belongs to this booking; the runner checks guest and dates. */
   parentConfirmation?: string;
 }): Promise<PaneStayResult> {
+  const hasBinding = input.workItemId !== undefined || input.stayId !== undefined;
+  if (hasBinding && (typeof input.workItemId !== 'string' || !input.workItemId.trim() ||
+      typeof input.stayId !== 'string' || !input.stayId.trim())) {
+    return { status: 'refused', reason: 'pane_preview_binding_required' };
+  }
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
   const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();

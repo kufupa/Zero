@@ -716,6 +716,7 @@ describe('pane stay screenshots', () => {
     const runId = randomUUID();
     const workItemId = randomUUID();
     const owner = freshOwner();
+    paneStaySaveLoaders.previewPersist = { record: () => undefined, take: () => false };
     let now = 9_000_000;
     paneStaySaveLoaders.now = () => now;
     paneStaySaveLoaders.spawn = async () => ({
@@ -731,6 +732,7 @@ describe('pane stay screenshots', () => {
       stay: labStay,
       owner,
       workItemId,
+      stayId: 's_1',
     });
     now += PANE_RUN_TTL_MS + 1;
     await expect(readPaneStayScreenshot({ runId, name: 'saved.png', owner })).resolves.toEqual({
@@ -1463,6 +1465,23 @@ describe('stay commit persist/reload', () => {
 });
 
 describe('pane stay preview persist', () => {
+  it('refuses partial or blank bound identity before any preview or commit', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const spawn = vi.fn(cliSpawn);
+    paneStaySaveLoaders.spawn = spawn;
+    for (const mode of ['preview', 'commit'] as const) {
+      for (const binding of [
+        { workItemId: randomUUID() }, { stayId: 's_1' },
+        { workItemId: '', stayId: 's_1' }, { workItemId: randomUUID(), stayId: '' },
+      ]) {
+        await expect(runPaneStay({ mode, stay: labStay, owner, ...binding, previewDigest: paneStayDigest(labStay) }))
+          .resolves.toEqual({ status: 'refused', reason: 'pane_preview_binding_required' });
+      }
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('refuses a failed bound preview and discards any earlier memory grant', async () => {
     enableSave();
     const owner = freshOwner();
