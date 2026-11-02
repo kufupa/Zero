@@ -353,12 +353,22 @@ async function viewQuoteSnapshot(page, request) {
 }
 
 /** Execute one call; the caller retains the page and memory between calls. */
-export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot } = {}, request = {}) {
+export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}, request = {}) {
   const id = request?.id ?? null;
   const tool = request?.tool ?? null;
   try {
     if (request?.options !== undefined && (!request.options || typeof request.options !== 'object' || Array.isArray(request.options))) {
       return { id, tool, outcome: 'input_gap', issue: 'invalid_options' };
+    }
+    if (tool === 'saveNewLabtestStay' && request.options &&
+        (Object.hasOwn(request.options, 'authorizeCandidate') || Object.hasOwn(request.options, 'dispatchCandidate'))) {
+      return { id, tool, outcome: 'input_gap', issue: 'SERVER_SAVE_GUARD_ONLY' };
+    }
+    if (tool === 'saveNewLabtestStay' &&
+        ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+         (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+         ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)))) {
+      return { id, tool, outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
     }
     if (tool === 'memory' || tool === 'queryBookingMemory') {
       if (!memory) return { id, tool, outcome: 'unavailable', issue: memoryIssue || 'memory_unavailable' };
@@ -439,7 +449,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       result = await action(page, selection, request.options);
     } else if (tool === 'saveNewLabtestStay') {
       result = await action(page, request, { ...request.options,
-        ...(beforeSaveScreenshot ? { beforeSaveScreenshot } : {}) });
+        ...(beforeSaveScreenshot ? { beforeSaveScreenshot } : {}),
+        ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}) });
     } else if ([
       'searchGuestProfiles', 'inspectGuestProfileCandidates', 'selectGuestProfile',
       'readGuestStayForm', 'setGuestStayText', 'setGuestStayDate', 'listGuestStayDropdown',
@@ -504,8 +515,11 @@ export function bookingSessionPageOptions({ headless = true, blockServiceWorkers
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
-  blockServiceWorkers = false, beforeSaveScreenshot } = {}) {
+  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
+  if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
   const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
@@ -532,7 +546,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     }
     // Keep a page interceptor installed when a form action removes its temporary route.
     await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
-    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot };
+    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
     const queue = createBookingToolQueue(context);
