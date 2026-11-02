@@ -29,7 +29,7 @@ vi.mock('../src/ai/work-events.js', async (importOriginal) => {
 
 const enqueueHmsRead = vi.fn();
 
-function mailboxCaller() {
+function mailboxCaller(transportId = 'transport-1') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -38,7 +38,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: transportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -521,6 +521,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       ],
       async () => ({ text: null }),
     );
+    expect(attachments).toMatchObject([{ id: 'rooming', bytesPresent: false, readFailure: 'no readable text' }]);
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Rooms',
       bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
@@ -548,7 +549,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         blocking: false,
-        text: "Nava can't read rooming.docx (not a PDF) — open it if it has booking details.",
+        text: "Nava can't read rooming.docx — open it if it has booking details.",
       });
     }
   });
@@ -1609,7 +1610,7 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
 });
 
 const paneStay = {
-  firstName: 'Pat',
+  firstName: 'Proof',
   lastName: 'Labtest',
   arrival: '2027-09-14',
   departure: '2027-09-16',
@@ -1675,7 +1676,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       bookerName: 'Ann Booker',
       bookerEmail: 'ann@example.invalid',
     };
-    await expect(mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
+    await expect(mailboxCaller('transport-centurion').quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
       status: 'ok',
       outcome: 'previewed',
     });
@@ -1708,14 +1709,15 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       modes.push(input.paneCommit);
       return { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
     };
-    const preview = await mailboxCaller().quoteWorkflow.previewStay(paneStay);
+    const caller = mailboxCaller('transport-centurion');
+    const preview = await caller.quoteWorkflow.previewStay(paneStay);
     expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
     const previewDigest = preview.previewDigest as string;
     expect(previewDigest).toMatch(/^[0-9a-f]{64}$/);
     for (const binding of [{}, {
       workItemId: '31b44b6e-ff0a-43c1-a6eb-82aa2771a235', stayId: 'stay-1', parentStayId: 'stay-2',
     }]) {
-      await expect(mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, ...binding, previewDigest }))
+      await expect(caller.quoteWorkflow.commitStay({ ...paneStay, ...binding, previewDigest }))
         .resolves.toMatchObject({ status: 'refused', reason: 'pane_create_dispatch_unavailable' });
     }
     expect(modes).toEqual([false]);
