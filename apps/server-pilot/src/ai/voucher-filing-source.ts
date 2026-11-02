@@ -1,6 +1,6 @@
 // Private source resolution for Cloud document filing. No client supplies an object key or receipt.
 import { createHash } from 'node:crypto';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
@@ -151,7 +151,7 @@ export async function resolveLinkedVoucherSnapshot(input: SourceIdentity, deps: 
       (metadata?.inline === true) !== row.isInline || receipt.data.key !== row.s3Key ||
       receipt.data.bytes !== row.sizeBytes || receipt.data.sha256 !== row.sha256) return null;
   const origins = await deps.db.select().from(outlookSyncObservation).where(eq(outlookSyncObservation.id, artifact.observationId)).limit(2);
-  if (origins.length !== 1) return null;
+  if (origins.length !== 1 || origins[0]?.id !== artifact.observationId) return null;
   const origin = origins[0]!;
   const latest = await deps.db.select({ id: outlookSyncArtifact.id }).from(outlookSyncArtifact)
     .where(and(eq(outlookSyncArtifact.observationId, origin.id), eq(outlookSyncArtifact.role, role)))
@@ -160,18 +160,23 @@ export async function resolveLinkedVoucherSnapshot(input: SourceIdentity, deps: 
   if (origin.artifactOrigin || row.s3Key !== `outlook-sync-originals/v1/${sha(JSON.stringify([origin.sourceId, origin.id, artifact.id]))}/${row.sha256}`) return null;
   const sources = await deps.db.select({ id: outlookSyncSource.id }).from(outlookSyncSource)
     .where(and(eq(outlookSyncSource.id, origin.sourceId), eq(outlookSyncSource.transportId, input.transportId))).limit(2);
-  if (sources.length !== 1) return null;
-  const observations = await deps.db.select().from(outlookSyncObservation).where(and(
-    eq(outlookSyncObservation.sourceId, origin.sourceId), eq(outlookSyncObservation.canonicalMessageId, input.messageId),
-    eq(outlookSyncObservation.direction, 'inbound'), eq(outlookSyncObservation.ingestionState, 'committed'),
-    sql`${outlookSyncObservation.requiredArtifactRoles} @> ${JSON.stringify([role])}::jsonb`,
-    or(eq(outlookSyncObservation.id, origin.id), and(
+  if (sources.length !== 1 || sources[0]?.id !== origin.sourceId) return null;
+  // The artifact's own committed origin is an unambiguous witness even when later
+  // read/category changes create additional committed observations reusing the same bytes.
+  let observation = origin;
+  if (origin.canonicalMessageId !== input.messageId || origin.direction !== 'inbound' ||
+      origin.ingestionState !== 'committed' || !origin.requiredArtifactRoles.includes(role)) {
+    const observations = await deps.db.select().from(outlookSyncObservation).where(and(
+      eq(outlookSyncObservation.sourceId, origin.sourceId), eq(outlookSyncObservation.canonicalMessageId, input.messageId),
+      eq(outlookSyncObservation.direction, 'inbound'), eq(outlookSyncObservation.ingestionState, 'committed'),
       eq(outlookSyncObservation.sourceObservationId, origin.sourceObservationId),
+      sql`${outlookSyncObservation.requiredArtifactRoles} @> ${JSON.stringify([role])}::jsonb`,
       sql`${outlookSyncObservation.artifactOrigin}->>'sourceId' = ${origin.sourceId}`,
-      sql`${outlookSyncObservation.artifactOrigin}->>'observationId' = ${origin.id}`)),
-  )).limit(2);
-  if (observations.length !== 1) return null;
-  const observation = observations[0]!;
+      sql`${outlookSyncObservation.artifactOrigin}->>'observationId' = ${origin.id}`,
+    )).limit(2);
+    if (observations.length !== 1 || observations[0]?.id === origin.id) return null;
+    observation = observations[0]!;
+  }
   if (observation.sourceId !== origin.sourceId || observation.canonicalMessageId !== input.messageId ||
       observation.direction !== 'inbound' || observation.ingestionState !== 'committed' ||
       !observation.requiredArtifactRoles.includes(role)) return null;

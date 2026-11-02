@@ -130,6 +130,21 @@ describe.skipIf(!ingestionDbAvailable)('voucher filing source with disposable da
       // POP3-first and older Outlook messages retain their existing message-level provenance.
       await db.update(message).set({ sourceProvenance: { pop3: true } }).where(eq(message.id, s.messageId));
       await db.update(outlookSyncArtifact).set({ metadata: { fileName: 'proof.pdf' } }).where(eq(outlookSyncArtifact.id, s.artifactId));
+      const [origin] = await db.select().from(outlookSyncObservation).where(eq(outlookSyncObservation.id, s.observationId));
+      if (!origin) throw new Error('expected origin');
+      const evidence = { contentIdentity: { sha256: sha(original), attachments: [{ role: 'attachment:1', stableId: 'stable',
+        modifiedAt: '2026-11-02T12:00:00Z', sizeBytes: original.length }] },
+        semantic: { subject: 'Voucher', isRead: false, categories: [] },
+        timestamps: { receivedAt: '2026-11-02T12:00:00Z', modifiedAt: '2026-11-02T12:00:00Z' },
+        direction: 'inbound', requiredArtifactRoles: ['attachment:1'] };
+      await db.update(outlookSyncObservation).set({ evidence }).where(eq(outlookSyncObservation.id, s.observationId));
+      await db.insert(outlookSyncObservation).values({ id: randomUUID(), sourceId: s.sourceId,
+        sourceObservationId: origin.sourceObservationId, semanticVersion: 2,
+        evidence: { ...evidence, semantic: { ...evidence.semantic, isRead: true, categories: ['Read'] } }, availability: 'available',
+        direction: 'inbound', canonicalMessageId: s.messageId, artifactOrigin: { sourceId: s.sourceId, observationId: s.observationId },
+        requiredArtifactRoles: ['attachment:1'], exportState: 'retained', ingestionState: 'committed' });
+      expect((await prepareVoucherFilingSource({ ...s.input, transportId: 'wrong' }, s.deps)).status).toBe('refused');
+      expect((await prepareVoucherFilingSource({ ...s.input, messageId: randomUUID() }, s.deps)).status).toBe('refused');
       const prepared = await prepareVoucherFilingSource(s.input, s.deps);
       expect(prepared.status).toBe('ready');
       if (prepared.status !== 'ready') throw new Error('expected linked source');

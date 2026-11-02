@@ -44,14 +44,17 @@ describe('linked Outlook voucher artifact', () => {
       modifiedAt: '2026-11-02T12:00:00Z', sizeBytes: 20 }] }, semantic: { subject: 'Voucher', isRead: false, categories: [] },
       timestamps: { receivedAt: '2026-11-02T12:00:00Z', modifiedAt: '2026-11-02T12:00:00Z' },
       direction: 'inbound', requiredArtifactRoles: ['attachment:1'] };
-    const origin = { ...observation, evidence };
+    const origin = { ...observation, canonicalMessageId: null, evidence };
     const reused = { ...observation, id: 'reused', artifactOrigin: { sourceId: 'source', observationId: 'origin' },
       evidence: { ...evidence, semantic: { ...evidence.semantic, isRead: true } } };
     const variants = rows(); variants[3] = [origin]; variants[6] = [reused];
     const result = await resolveLinkedVoucherSnapshot(input, dependencies(variants));
     expect(result?.source).toMatchObject({ ...input, filename: 'voucher.pdf', sha256: hash });
-    const original = rows(); original[3] = [origin]; original[6] = [origin];
-    expect(result?.source.snapshotDigest).not.toEqual((await resolveLinkedVoucherSnapshot(input, dependencies(original)))?.source.snapshotDigest);
+    const original = rows(); original[3] = [{ ...origin, canonicalMessageId: input.messageId }];
+    original[6] = [reused, { ...reused, id: 'another' }];
+    const direct = await resolveLinkedVoucherSnapshot(input, dependencies(original));
+    expect(direct?.source.snapshotDigest).toBeDefined();
+    expect(result?.source.snapshotDigest).not.toEqual(direct?.source.snapshotDigest);
 
     for (const [changedOrigin, witnesses] of [
       [{ ...origin, exportState: 'pending' }, [reused]],
@@ -59,6 +62,7 @@ describe('linked Outlook voucher artifact', () => {
       [origin, [{ ...reused, artifactOrigin: { sourceId: 'source', observationId: 'wrong' } }]],
       [origin, [{ ...reused, sourceObservationId: 'different' }]],
       [origin, [{ ...reused, evidence: { ...evidence, contentIdentity: { ...evidence.contentIdentity, sha256: 'b'.repeat(64) } } }]],
+      [origin, []],
       [origin, [reused, { ...reused, id: 'another' }]],
     ] as Array<[typeof origin, unknown[]]>) {
       const bad = rows(); bad[3] = [changedOrigin]; bad[6] = witnesses;
@@ -70,7 +74,7 @@ describe('linked Outlook voucher artifact', () => {
     for (const [slot, value] of [
       [0, []], [1, []], [1, [{ id: 'attachment' }, { id: 'other' }]],
       [2, []], [2, [artifact, artifact]], [3, []], [4, [{ id: 'newer' }]],
-      [5, []], [6, []], [6, [observation, observation]],
+      [5, []],
     ] as Array<[number, unknown[]]>) {
       const result = rows(); result[slot] = value;
       expect(await resolveLinkedVoucherSnapshot(input, dependencies(result))).toBeNull();
@@ -85,6 +89,10 @@ describe('linked Outlook voucher artifact', () => {
         artifacts: [{ role: 'attachment:1' }, { role: 'attachment:1' }] } }]],
       [2, [{ ...artifact, acceptedAt: null }]], [2, [{ ...artifact, role: 'attachment:2' }]],
       [2, [{ ...artifact, metadata: { fileName: 'other.pdf' } }]],
+      [2, [{ ...artifact, observationId: 'other' }]],
+      [2, [{ ...artifact, sha256: 'b'.repeat(64) }]],
+      [3, [{ ...observation, sourceId: 'other' }]],
+      [3, [{ ...observation, artifactOrigin: { sourceId: 'source', observationId: 'other' } }]],
       [2, [{ ...artifact, verifiedReceipt: { ...receipt, sha256: 'b'.repeat(64) } }]],
       [6, [{ ...observation, canonicalMessageId: 'other' }]],
       [6, [{ ...observation, sourceId: 'other' }]],
@@ -92,6 +100,7 @@ describe('linked Outlook voucher artifact', () => {
       [6, [{ ...observation, requiredArtifactRoles: ['attachment:2'] }]],
     ] as Array<[number, unknown[]]>) {
       const result = rows(); result[slot] = value;
+      if (slot === 6) result[3] = [{ ...observation, canonicalMessageId: null }];
       expect(await resolveLinkedVoucherSnapshot(input, dependencies(result))).toBeNull();
     }
   });
