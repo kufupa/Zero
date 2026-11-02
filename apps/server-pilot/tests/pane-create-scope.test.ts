@@ -29,6 +29,19 @@ describe('create scope reconciliation', () => {
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[other].count': 1 } })).toBe(false);
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r1].removed': true } })).toBe(false);
   });
+  it('refuses party fields when the reviewed party context is none', () => {
+    expect(reconcilePaneCreateScope({ ...base, stay: { ...stay, bookingAgency: { nativeId: '1', name: 'Agency' } } })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, stay: { ...stay, organization: { nativeId: '2', name: 'Company' } } })).toBe(false);
+  });
+  it('ignores deleted additions but still rejects active orphan paths', () => {
+    expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r2].count': 1,
+      'stays[s1].rows[r2].removed': true } })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s2].requested.arrival': '2027-04-01',
+      'stays[s2].rows[r2].count': 1, 'stays[s2].removed': true } })).toBe(true);
+    expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r2].count': 1 } })).toBe(false);
+    expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r2].unknown': 1,
+      'stays[s1].rows[r2].removed': true } })).toBe(false);
+  });
   it('binds the reviewed room choice to the correct extracted or staff-edited row', () => {
     const queen = { ...payload, stays: [{ ...extractedStay, rows: [{ ...row, roomType: 'Standard Queen' }] }] };
     expect(reconcilePaneCreateScope({ ...base, payload: queen })).toBe(true);

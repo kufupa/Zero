@@ -22,7 +22,8 @@ export function reconcilePaneCreateScope(input: {
 }): boolean {
   const parsed = mailExtractionPayloadSchema.safeParse(input.payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(input.identity).success ||
-      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind !== 'none') return false;
+      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind !== 'none' ||
+      input.stay.bookingAgency !== undefined || input.stay.organization !== undefined) return false;
   const payload = parsed.data;
   const stays = new Map<string, ExtractionStay>();
   const originallyRowless = new Set<string>();
@@ -40,6 +41,9 @@ export function reconcilePaneCreateScope(input: {
     if (!key.startsWith('stays[')) continue;
     const path = parseFieldPath(key);
     if (!path || !validFieldValue(path.field, value)) return false;
+    // Deleted additions remain in history but cannot create an active stay or row.
+    if (input.state[`stays[${path.stayId}].removed`] === true ||
+        (path.rowId && input.state[`stays[${path.stayId}].rows[${path.rowId}].removed`] === true)) continue;
     let stay = stays.get(path.stayId);
     if (!stay) {
       // New stays must have an explicit add marker; orphan field paths are not proof of a request.
