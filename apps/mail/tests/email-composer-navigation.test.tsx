@@ -49,15 +49,18 @@ vi.mock('@/lib/image-compression', () => ({ compressImages: async (files: File[]
 vi.mock('sonner', () => ({ toast: { error: mocks.toast, success: vi.fn() } }));
 vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
 vi.mock('@/components/ui/recipient-autosuggest', () => ({
-  RecipientAutosuggest: ({ control, name, onValueChange }: { control: any; name: string; onValueChange: () => void }) => {
+  RecipientAutosuggest: ({ control, name, onValueChange, onPendingClear }: { control: any; name: string; onValueChange: () => void; onPendingClear?: () => void }) => {
     const { field } = useController({ control, name });
     return <><input aria-label={name} value={(field.value ?? []).join(',')} onChange={(event) => {
       field.onChange(event.target.value ? event.target.value.split(',') : []); onValueChange();
-    }} /><input type="email" aria-label={`pending-${name}`} onKeyDown={(event) => {
+    }} /><input type="email" aria-label={`pending-${name}`} onChange={(event) => {
+      if (!event.currentTarget.value.trim()) onPendingClear?.();
+    }} onKeyDown={(event) => {
       if (event.key !== 'Enter' || !event.currentTarget.value.trim()) return;
       field.onChange([...(field.value ?? []), event.currentTarget.value.trim()]);
       onValueChange();
       event.currentTarget.value = '';
+      onPendingClear?.();
     }} /></>;
   },
 }));
@@ -128,6 +131,27 @@ describe('real composer draft handoff', () => {
     view.rerender(<Harness syncHeaders initialSubject="Updated" {...incoming} />);
     expect(screen.getByLabelText(`pending-${field}`)).toBe(pending);
     expect(pending.value).toBe('unfinished@example.com');
+  });
+
+  it.each(['to', 'cc', 'bcc'])('applies a delayed %s refresh after pending input is cleared', (field) => {
+    const initial = { [`initial${field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}`]: ['old@example.com'] };
+    const incoming = { [`initial${field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}`]: ['saved@example.com'] };
+    const view = render(<Harness syncHeaders {...initial} />);
+    const pending = screen.getByLabelText(`pending-${field}`) as HTMLInputElement;
+    fireEvent.change(pending, { target: { value: 'unfinished@example.com' } });
+    view.rerender(<Harness syncHeaders {...incoming} />);
+    expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('old@example.com');
+    fireEvent.change(pending, { target: { value: '' } });
+    expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('saved@example.com');
+  });
+
+  it('keeps a locally committed recipient instead of a delayed refresh', () => {
+    const view = render(<Harness syncHeaders initialTo={['old@example.com']} />);
+    const pending = screen.getByLabelText('pending-to') as HTMLInputElement;
+    fireEvent.change(pending, { target: { value: 'new@example.com' } });
+    view.rerender(<Harness syncHeaders initialTo={['saved@example.com']} />);
+    fireEvent.keyDown(pending, { key: 'Enter' });
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('old@example.com,new@example.com');
   });
 
   it.each(['to', 'cc', 'bcc'])('replaces committed %s on forward while keeping pending input', (field) => {

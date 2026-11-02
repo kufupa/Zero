@@ -179,6 +179,10 @@ export function EmailComposer({
     () => nonBodyEditedAtRef.current > revisionRef.current.savedRevision,
     [],
   );
+  const [pendingRecipientRevision, setPendingRecipientRevision] = useState(0);
+  const handlePendingRecipientClear = useCallback(() => {
+    setPendingRecipientRevision((revision) => revision + 1);
+  }, []);
   const editedHeadersRef = useRef(new Set<'to' | 'cc' | 'bcc' | 'subject'>());
   const headerSeedRef = useRef(replyHeaderSeed);
   const markHeaderChanges = useCallback((...fields: ('to' | 'cc' | 'bcc' | 'subject')[]) => {
@@ -423,7 +427,7 @@ export function EmailComposer({
     }
     if (!editedHeadersRef.current.has('subject')) setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
-  }, [externalHeaderSyncKey, hasPendingRecipientInput, replyHeaderSeed, syncReplyHeadersFromProps, setValue]);
+  }, [externalHeaderSyncKey, hasPendingRecipientInput, pendingRecipientRevision, replyHeaderSeed, syncReplyHeadersFromProps, setValue]);
 
   const toEmails = watch('to');
   const ccEmails = watch('cc');
@@ -1359,6 +1363,7 @@ export function EmailComposer({
                 placeholder="Enter email address"
                 disabled={isLoading}
                 onValueChange={() => markHeaderChanges('to')}
+                onPendingClear={handlePendingRecipientClear}
               />
             </div>
 
@@ -1401,6 +1406,7 @@ export function EmailComposer({
                   placeholder="Enter email for Cc"
                   disabled={isLoading}
                   onValueChange={() => markHeaderChanges('cc')}
+                  onPendingClear={handlePendingRecipientClear}
                 />
               </div>
             )}
@@ -1415,6 +1421,7 @@ export function EmailComposer({
                   placeholder="Enter email for Bcc"
                   disabled={isLoading}
                   onValueChange={() => markHeaderChanges('bcc')}
+                  onPendingClear={handlePendingRecipientClear}
                 />
               </div>
             )}
