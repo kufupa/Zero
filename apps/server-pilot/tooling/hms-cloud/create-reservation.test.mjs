@@ -665,3 +665,19 @@ test('prepare reports billing reference unsupported without sending a save', asy
   assert.ok(result.unsupportedFields.some(({ field, issue }) => field === 'billingReference' && issue === 'commit_only'));
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
+
+test('billing reports only absent A/R identity fields, without duplicates', async () => {
+  let sessions = 0;
+  const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
+  for (const [parties, wanted] of [
+    [{ arAccountId: '75' }, ['parties.arAccountName']],
+    [{ arAccountName: 'Example' }, ['parties.arAccountId']],
+    [{}, ['parties.arAccountId', 'parties.arAccountName']],
+    [{ arAccountId: '75', arAccountName: '   ' }, ['parties.arAccountName']],
+  ]) {
+    const result = await createReservation({ ...input, parties, billingReference: 'PO-123' }, { withSession: noSession });
+    assert.equal(result.outcome, 'needs_input');
+    assert.deepEqual(result.missing, wanted);
+  }
+  assert.equal(sessions, 0);
+});

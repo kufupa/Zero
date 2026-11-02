@@ -71,8 +71,9 @@ function validate(input) {
   }
   if (input.note != null && (typeof input.note !== 'string' || !input.note.trim() || input.note.length > 200)) missing.push('note');
   if (input.mode === 'commit') {
-    if (input.billingReference != null && (input.parties?.arAccountId == null || !text(input.parties?.arAccountName))) {
-      missing.push('parties.arAccountId', 'parties.arAccountName');
+    if (input.billingReference != null) {
+      if (input.parties?.arAccountId == null) missing.push('parties.arAccountId');
+      if (!text(input.parties?.arAccountName) && !missing.includes('parties.arAccountName')) missing.push('parties.arAccountName');
     }
     if ([room.roomType, room.ratePlan].some((value) => value && !/^[A-Z0-9]{1,12}$/.test(value))) return { outcome: 'refused', issue: 'native_code_not_supported_yet' };
     if (date(stay.arrival) && stay.arrival < '2027-01-01') return { outcome: 'refused', issue: 'labtest_arrival_required' };
