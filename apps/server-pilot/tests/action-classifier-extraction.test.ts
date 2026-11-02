@@ -316,6 +316,30 @@ describe('generic action-classifier prompt', () => {
 });
 
 describe('extraction persist of MAIL_ACTIONS', () => {
+  it.each([
+    { body: 'Please book this new stay; paid travel voucher attached.', kind: 'booking', action: 'new_booking' },
+    { body: 'Here is our travel voucher for the stay already confirmed by the hotel.', kind: 'voucher_pop', action: 'payment_proof' },
+  ] as const)('preserves the model classification for a paired voucher case: $action', async ({ body, kind, action }) => {
+    // This mock verifies prompt delivery and result handling, not live model accuracy.
+    const calls: ModelInvokeInput[] = [];
+    const adapter: ModelAdapter = {
+      invoke: async (input) => {
+        calls.push(input);
+        return {
+          modelId: input.modelId,
+          output: { ...ACTION_OUTPUT, kind, action, actionEvidence: body, stays: [], confirmationNumbers: [] },
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, latencyMs: 0, estimatedCostUsd: 0, rateTableVersion: 'test' },
+        };
+      },
+    };
+    const result = await extractInboundMail({ adapter, selection: selectionFor(body), messageId: `voucher-${action}`,
+      env: { EXTRACTION_VISION: 'off' } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.userPrompt).toContain(body);
+    expect(calls[0]?.systemPrompt).toContain('A voucher alone is not proof of payment.');
+    expect(result).toMatchObject({ ok: true, kind, action, payload: { action } });
+  });
+
   it('writes action into payload for a person quote body', async () => {
     const adapter: ModelAdapter = {
       invoke: async () => ({
