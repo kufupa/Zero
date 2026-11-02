@@ -43,6 +43,7 @@ export type SavedStayCloudWriteCandidate = {
 
 /** This result must come from a durable writer and an independently reopened, identity-checked stay. */
 export type SavedStayAmendResult = {
+  propertyCode: string;
   threadId: string;
   messageId: string;
   mailboxEmail: string;

@@ -9,7 +9,12 @@ const inputClass = 'h-8 min-w-0 w-full rounded-sm border border-[#cbd5e1] bg-whi
 const labelClass = 'text-[10px] font-semibold uppercase tracking-wide text-[#64748b]';
 const smallClass = 'text-[11.5px] text-[#64748b]';
 
+type EditorIdentity = {
+  propertyCode: string; threadId: string; messageId: string; mailboxEmail: string; sourceHash: string;
+};
+
 type Props = {
+  identity: EditorIdentity;
   confirmation: string;
   stay: StayRecordWire;
   requestedArrival?: string | null;
@@ -32,16 +37,34 @@ function sameProposal(a: SavedStayAmendProposal | null | undefined, b: SavedStay
     key === otherKeys[index] && JSON.stringify(left[key]) === JSON.stringify(right[key]));
 }
 
+type StoredDraft = { draft: SavedStayAmendDraft; touched: boolean };
+
 /** Local request only. Nothing here approves or writes to HMS. */
 export function SavedStayAmendEditor(props: Props) {
-  return <SavedStayAmendEditorContent key={props.confirmation} {...props} />;
+  const drafts = useRef(new Map<string, StoredDraft>());
+  const onDraftRef = useRef(props.onDraftChange);
+  onDraftRef.current = props.onDraftChange;
+  const identity = props.identity;
+  const parts = [identity?.propertyCode, identity?.threadId, identity?.messageId, identity?.mailboxEmail,
+    identity?.sourceHash, props.confirmation];
+  const validIdentity = parts.every((part) => typeof part === 'string' && part.trim() !== '');
+  useEffect(() => {
+    if (!validIdentity) onDraftRef.current?.({ proposal: null, errors: ['Select the property, email and booking first.'] });
+  }, [validIdentity]);
+  if (!validIdentity) return <p aria-live="polite" className={smallClass}>Select the property, email and booking first.</p>;
+  const key = JSON.stringify(parts);
+  return <SavedStayAmendEditorContent key={key} {...props} storedDraft={drafts.current.get(key)}
+    storeDraft={(draft) => drafts.current.set(key, { draft: { ...draft }, touched: true })} />;
 }
 
-function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, requestedDeparture, result, resultContext, screenshot, onDraftChange }: Props) {
-  const [draft, setDraft] = useState(() => initialSavedStayAmendDraft(stay, {
+function SavedStayAmendEditorContent({ identity, confirmation, stay, requestedArrival, requestedDeparture, result, resultContext,
+  screenshot, onDraftChange, storedDraft, storeDraft }: Props & {
+    storedDraft?: StoredDraft; storeDraft: (draft: SavedStayAmendDraft) => void;
+  }) {
+  const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, {
     arrival: requestedArrival, departure: requestedDeparture,
   }));
-  const [touched, setTouched] = useState(false);
+  const [touched, setTouched] = useState(storedDraft?.touched ?? false);
   const onDraftRef = useRef(onDraftChange);
   onDraftRef.current = onDraftChange;
   const validation = savedStayAmendProposal(confirmation, stay, draft);
@@ -54,13 +77,14 @@ function SavedStayAmendEditorContent({ confirmation, stay, requestedArrival, req
   const update = (next: SavedStayAmendDraft) => {
     setTouched(true);
     setDraft(next);
+    storeDraft(next);
     onDraftRef.current?.(savedStayAmendProposal(confirmation, stay, next));
   };
   const field = (name: 'arrival' | 'departure' | 'adults' | 'children' | 'childAges', value: string) =>
     update({ ...draft, [name]: value });
-  const sourceMatches = !!result && !!resultContext && (['threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
-    .every((key) => typeof resultContext.source[key] === 'string' && resultContext.source[key].trim() !== '' &&
-      result[key] === resultContext.source[key]);
+  const sourceMatches = !!result && !!resultContext && result.propertyCode === identity.propertyCode &&
+    (['threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
+      .every((key) => resultContext.source[key] === identity[key] && result[key] === identity[key]);
   const visibleResult = sourceMatches && result?.confirmation === confirmation &&
     sameProposal(result.proposal, resultContext?.submittedProposal) && result.proposal.confirmation === confirmation ? result : null;
   const resultMatchesDraft = visibleResult ? sameProposal(visibleResult.proposal, validation.proposal) : false;

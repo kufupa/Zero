@@ -9,6 +9,7 @@ const stay: StayRecordWire = { confirmation: '12345678-1', status: 'Reserved', f
   arrival: '2027-10-01', departure: '2027-10-03', nights: 2, adults: 2, children: 0, roomType: 'DLX', ratePlan: 'BAR',
   mealPlan: null, averageRate: '100.00', grandTotal: null, balance: null, sourceOfBusiness: null, guaranteeType: null,
   bookingAgency: null, organization: null };
+const identity = { propertyCode: 'HRCEN', threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' };
 afterEach(cleanup);
 
 describe('saved stay amendment request', () => {
@@ -36,7 +37,7 @@ describe('saved stay amendment request', () => {
   });
   it('emits edits as an unsaved proposal and does not offer a Save button', async () => {
     const onDraftChange = vi.fn();
-    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
     expect(screen.getByText(/not saved to HMS/)).toBeTruthy();
@@ -44,15 +45,40 @@ describe('saved stay amendment request', () => {
   });
   it('does not carry a draft onto a different confirmation', async () => {
     const onDraftChange = vi.fn();
-    const { rerender } = render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    const { rerender } = render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
     const other = { ...stay, confirmation: '87654321-1', adults: 1 };
-    rerender(<SavedStayAmendEditor confirmation={other.confirmation} stay={other} onDraftChange={onDraftChange} />);
+    rerender(<SavedStayAmendEditor identity={identity} confirmation={other.confirmation} stay={other} onDraftChange={onDraftChange} />);
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Choose a change to the booking.'] }));
   });
+  it('keeps distinct drafts for the same confirmation across sources and properties', async () => {
+    const onDraftChange = vi.fn();
+    const { rerender } = render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
+    const otherSource = { ...identity, messageId: 'other', sourceHash: 'other-hash' };
+    rerender(<SavedStayAmendEditor identity={otherSource} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('2');
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Choose a change to the booking.'] }));
+    fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '4' } });
+    const otherProperty = { ...identity, propertyCode: 'HRDAV' };
+    rerender(<SavedStayAmendEditor identity={otherProperty} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('2');
+    rerender(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] }));
+    rerender(<SavedStayAmendEditor identity={otherSource} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('4');
+  });
+  it('holds editing when property or source identity is missing', async () => {
+    const onDraftChange = vi.fn();
+    render(<SavedStayAmendEditor identity={{ ...identity, propertyCode: '' }} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    expect(screen.getByText(/Select the property, email and booking first/)).toBeTruthy();
+    expect(screen.queryByLabelText('Requested adults')).toBeNull();
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith({ proposal: null, errors: ['Select the property, email and booking first.'] }));
+  });
   it('reports readback discrepancies and distinguishes a previous proposal from current entries', () => {
-    const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
+    const result = { propertyCode: 'HRCEN', threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
       confirmation: stay.confirmation!, state: 'verified' as const,
       proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } },
       readback: { arrival: stay.arrival, departure: stay.departure, adults: 2, children: 0, childAges: null, averageRate: '100.00', grandTotal: null },
@@ -60,7 +86,7 @@ describe('saved stay amendment request', () => {
     const resultContext = { source: { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' },
       submittedProposal: result.proposal };
     expect(amendmentReadbackDifferences(result)).toHaveLength(1);
-    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
+    render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
     expect(screen.getByText(/HMS read-back differs/)).toBeTruthy();
     expect(screen.getByText(/Previous HMS attempt/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
@@ -68,7 +94,7 @@ describe('saved stay amendment request', () => {
     expect(screen.queryByText('Saved in HMS.')).toBeNull();
   });
   it('hides results for a different source or submitted proposal even when confirmation matches', () => {
-    const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
+    const result = { propertyCode: 'HRCEN', threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
       confirmation: stay.confirmation!, state: 'needs_check' as const,
       proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } } };
     const source = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' };
@@ -80,18 +106,21 @@ describe('saved stay amendment request', () => {
       { source, submittedProposal: { confirmation: stay.confirmation!, changes: { adults: 4 } } },
     ];
     for (const resultContext of contexts) {
-      const view = render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
+      const view = render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
       expect(screen.queryByText(/HMS outcome is not confirmed/)).toBeNull();
       view.unmount();
     }
+    render(<SavedStayAmendEditor identity={{ ...identity, propertyCode: 'HRDAV' }} confirmation={stay.confirmation!} stay={stay}
+      result={result} resultContext={{ source, submittedProposal: result.proposal }} />);
+    expect(screen.queryByText(/HMS outcome is not confirmed/)).toBeNull();
   });
   it('keeps an uncertain prior result visible without suggesting another save', () => {
-    const result = { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
+    const result = { propertyCode: 'HRCEN', threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a',
       confirmation: stay.confirmation!, state: 'verified' as const,
       proposal: { confirmation: stay.confirmation!, changes: { adults: 3 } } };
     const resultContext = { source: { threadId: 't', messageId: 'm', mailboxEmail: 'hotel@example.test', sourceHash: 'a' },
       submittedProposal: result.proposal };
-    render(<SavedStayAmendEditor confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
+    render(<SavedStayAmendEditor identity={identity} confirmation={stay.confirmation!} stay={stay} result={result} resultContext={resultContext} />);
     expect(screen.getByText(/HMS outcome is not confirmed/)).toBeTruthy();
     expect(screen.getByText(/Do not make another change to this booking/)).toBeTruthy();
     expect(screen.getByText(/previous session are safe/)).toBeTruthy();
