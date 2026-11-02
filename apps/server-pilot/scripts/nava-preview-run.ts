@@ -712,7 +712,7 @@ export async function installWriteGuard(page: Page, blocked: BlockedWrite[], all
       decision.blocked.push({ procedure: 'quoteWorkflow.analyseSelection', reason: 'write' });
     }
     if (decision.allowed) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     // Do not split mixed batches: forwarding one allowed prepare could forward a commit too.
@@ -739,7 +739,7 @@ export async function installWriteGuard(page: Page, blocked: BlockedWrite[], all
       }
       if (replayPrepareAllowed({ url: request.url(), procedure, policy: preparePolicy, sessionUserId,
         requestTransportId: headers['x-zero-active-transport'] ?? null, body: request.postData() })) {
-        await route.continue();
+        await route.fallback();
         return;
       }
     }
