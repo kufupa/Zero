@@ -229,7 +229,7 @@ export function isSupportedLabtestGuarantee(value) {
   return value === 'NGI' || value === 'GTDAGT';
 }
 
-function guaranteeDisplayForSave(guaranteeType, selection) {
+export function guaranteeDisplayForSave(guaranteeType, selection) {
   if (guaranteeType === 'NGI') return 'Non-Guaranteed Individual';
   if (guaranteeType !== 'GTDAGT' || !selection ||
       !['updated_unsaved', 'unchanged_unsaved'].includes(selection.outcome) ||
