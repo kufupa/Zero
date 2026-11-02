@@ -89,8 +89,8 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const safeResults = (rooms: BatchRoomResult[]) => rooms.map((room) => room.status === 'confirmed' &&
     (!room.confirmation || room.screenshotRecorded !== true || room.readbackRecorded !== true || !room.attempt?.runId ||
       !/^[a-f0-9]{64}$/.test(room.attempt?.childId ?? '') || rooms.filter((item) => item.allocationId === room.allocationId).length !== 1 ||
-      rooms.filter((item) => item.status === 'confirmed' && item.attempt?.childId === room.attempt?.childId).length !== 1 ||
-      rooms.filter((item) => item.status === 'confirmed' && item.confirmation === room.confirmation).length !== 1)
+      rooms.filter((item) => item.attempt?.childId === room.attempt?.childId).length !== 1 ||
+      rooms.filter((item) => item.confirmation === room.confirmation).length !== 1)
       ? { ...room, status: 'uncertain' as const } : room);
   const acceptResults = (result: Awaited<ReturnType<PaneBatchClient['read']>>, workItemId: string, expectedRunId: string, sequence: number) => {
     if (result.workItemId !== workItemId || result.runId !== expectedRunId || !Array.isArray(result.rooms) || !approvedRoomIds.current.length) throw new Error('batch_result_mismatch');
