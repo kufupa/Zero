@@ -20,25 +20,27 @@ const amount = z.discriminatedUnion('status', [
     tax: z.enum(['included', 'excluded', 'unknown']) }).strict(),
 ]);
 
+const batchRoomSchema = z.object({
+  // The allocation is display correlation; stable identity binds the underlying source room.
+  allocationId: text, identity: sourceIdentity,
+  guest: z.object({ firstName: text, lastName: text, profileId: z.string().regex(/^\d+$/) }).strict(),
+  stay: z.object({ arrival: date, departure: date, adults: z.number().int().min(1).max(16),
+    childAges: z.array(z.number().int().min(0).max(17)).max(16) }).strict(),
+  roomType: text, ratePlan: text, amount,
+  agency: party.nullable(), organization: party.nullable(),
+  guaranteeType: text, sourceOfBusiness: text.nullable(), note: z.string().max(200).nullable(),
+  track: text.nullable(), marketSegment: text.nullable(), guestOptIn: z.boolean(),
+  booker: z.object({ name: text.nullable(), email: text.nullable() }).strict().nullable(),
+  cmsSend: z.boolean(), cmsMessageId: text.nullable(),
+  cmsRecipient: z.object({ mode: z.enum(['self', 'client', 'custom']), address: text }).strict().nullable(),
+}).strict();
+
 // Every field here is covered by the approval. Never attach execution events to this object.
 export const batchManifestSchema = z.object({
   version: z.literal('hms-batch/1'),
   propertyCode: text,
   source: z.object({ transportId: text, threadId: text, messageId: text, workItemId: z.string().uuid() }).strict(),
-  rooms: z.array(z.object({
-    // Stable across re-approvals for this source and allocation, not the array index or a grant ID.
-    allocationId: text, identity: sourceIdentity,
-    guest: z.object({ firstName: text, lastName: text, profileId: z.string().regex(/^\d+$/) }).strict(),
-    stay: z.object({ arrival: date, departure: date, adults: z.number().int().min(1).max(16),
-      childAges: z.array(z.number().int().min(0).max(17)).max(16) }).strict(),
-    roomType: text, ratePlan: text, amount,
-    agency: party.nullable(), organization: party.nullable(),
-    guaranteeType: text, sourceOfBusiness: text.nullable(), note: z.string().max(200).nullable(),
-    track: text.nullable(), marketSegment: text.nullable(), guestOptIn: z.boolean(),
-    booker: z.object({ name: text.nullable(), email: text.nullable() }).strict().nullable(),
-    cmsSend: z.boolean(), cmsMessageId: text.nullable(),
-    cmsRecipient: z.object({ mode: z.enum(['self', 'client', 'custom']), address: text }).strict().nullable(),
-  }).strict()).min(2).max(8),
+  rooms: z.array(batchRoomSchema).min(2).max(8),
 }).strict().superRefine((manifest, ctx) => {
   const seen = new Set<string>();
   const identities = new Set<string>();
@@ -49,6 +51,7 @@ export const batchManifestSchema = z.object({
     if (identities.has(identity)) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'identity'], message: 'duplicate source room' });
     identities.add(identity);
     if (room.stay.arrival >= room.stay.departure) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'stay'], message: 'invalid date range' });
+    if (room.stay.arrival !== manifest.rooms[0]?.stay.arrival) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'stay', 'arrival'], message: 'multiple arrivals unsupported' });
   });
 });
 export type BatchManifest = z.infer<typeof batchManifestSchema>;
@@ -58,15 +61,18 @@ export function batchDigest(manifest: BatchManifest): string {
   return createHash('sha256').update(canonicalJson(batchManifestSchema.parse(manifest))).digest('hex');
 }
 
-/** Identity survives a new approval, but cannot be reused for another source message. */
+/** Identity survives allocation-label changes, but cannot be reused for another source message. */
 export function batchChildId(manifest: BatchManifest, room: BatchRoom): string {
-  return createHash('sha256').update(canonicalJson({ version: 'hms-batch-child/1',
-    source: manifest.source, allocationId: room.allocationId })).digest('hex');
+  const parsed = batchManifestSchema.parse(manifest);
+  const identity = sourceIdentity.parse(room.identity);
+  if (!parsed.rooms.some((item) => item.identity.stayId === identity.stayId && item.identity.rowId === identity.rowId &&
+      item.identity.roomIndex === identity.roomIndex)) throw new Error('batch_child_not_in_manifest');
+  return createHash('sha256').update(canonicalJson({ version: 'hms-batch-child/2', source: parsed.source, identity })).digest('hex');
 }
 
 /** A confirmed child is reusable only when all its approved fields still match. */
 export function batchRoomDigest(room: BatchRoom): string {
-  return createHash('sha256').update(canonicalJson(room)).digest('hex');
+  return createHash('sha256').update(canonicalJson(batchRoomSchema.parse(room))).digest('hex');
 }
 
 export function parseLabBatch(input: unknown, capability: 'off' | 'lab' | 'on'): BatchManifest {

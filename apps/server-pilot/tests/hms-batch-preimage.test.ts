@@ -51,6 +51,14 @@ describe('batch census validation', () => {
     duplicate.rooms[1]!.allocationId = duplicate.rooms[0]!.allocationId;
     expect(checkBatchPreimage(f.preimage, duplicate.rooms[1]!, [f.sibling], duplicate, 1, now)).toBe(false);
   });
+  it('uses the same canonical identity for parsed and unparsed manifests', () => {
+    const f = fixture();
+    f.manifest.source.messageId = ' message ';
+    f.manifest.rooms[1]!.roomType = ' STWN ';
+    f.sibling.manifestDigest = batchDigest(f.manifest);
+    f.sibling.childId = batchChildId(f.manifest, f.manifest.rooms[0]!);
+    expect(checkBatchPreimage(f.preimage, f.manifest.rooms[1]!, [f.sibling], f.manifest, 1, now)).toBe(true);
+  });
   it('rejects incomplete, stale, future-dated and overlong proofs', () => {
     const f = fixture(), check = (proof: BatchPreimage, clock = now) => checkBatchPreimage(proof, f.room, [f.sibling], f.manifest, 1, clock);
     expect(check({ ...f.preimage, complete: false })).toBe(false);

@@ -23,6 +23,12 @@ describe('batch manifest', () => {
     expect(batchDigest(reordered)).not.toBe(batchDigest(parsed));
     const changedIdentity = structuredClone(original); changedIdentity.rooms[1]!.identity.roomIndex = 2;
     expect(batchDigest(changedIdentity)).not.toBe(batchDigest(parsed));
+    expect(batchChildId(changedIdentity, changedIdentity.rooms[1]!)).not.toBe(batchChildId(parsed, parsed.rooms[1]!));
+    const changedAllocation = structuredClone(original); changedAllocation.rooms[1]!.allocationId = 'new-date-group:1';
+    expect(batchDigest(changedAllocation)).not.toBe(batchDigest(parsed));
+    expect(batchChildId(changedAllocation, changedAllocation.rooms[1]!)).toBe(batchChildId(parsed, parsed.rooms[1]!));
+    expect(() => batchChildId(parsed, { ...parsed.rooms[1]!, identity: { stayId: 's1', rowId: 'other', roomIndex: 1 } }))
+      .toThrow('batch_child_not_in_manifest');
     const changed = structuredClone(original); changed.rooms[1]!.roomType = 'DIFFERENT';
     expect(batchDigest(changed)).not.toBe(batchDigest(parsed));
     expect(batchRoomDigest(changed.rooms[1]!)).not.toBe(batchRoomDigest(parsed.rooms[1]!));
@@ -40,9 +46,23 @@ describe('batch manifest', () => {
     expect(batchManifestSchema.safeParse(malformedIdentity).success).toBe(false);
     const badDate = manifest(); badDate.rooms[0]!.stay.arrival = '2027-02-30';
     expect(batchManifestSchema.safeParse(badDate).success).toBe(false);
-    const tooMany = manifest(); tooMany.rooms = Array.from({ length: 9 }, (_, i) => ({ ...structuredClone(tooMany.rooms[0]!), allocationId: `room-${i}` }));
+    const multipleArrivals = manifest(); multipleArrivals.rooms[1]!.stay.arrival = '2027-03-02';
+    expect(batchManifestSchema.safeParse(multipleArrivals).success).toBe(false);
+    const tooMany = manifest(); tooMany.rooms = Array.from({ length: 9 }, (_, i) => ({ ...structuredClone(tooMany.rooms[0]!),
+      allocationId: `room-${i}`, identity: { stayId: 's1', rowId: 'r1', roomIndex: i + 1 } }));
     expect(batchManifestSchema.safeParse(tooMany).success).toBe(false);
     expect(batchManifestSchema.safeParse({ ...manifest(), extra: true }).success).toBe(false);
+  });
+
+  it('normalizes child and room hashes the same way as the approved manifest', () => {
+    const raw = manifest();
+    raw.source.messageId = ' message ';
+    raw.rooms[0]!.allocationId = ' group-a:1 ';
+    raw.rooms[0]!.roomType = ' STQN ';
+    const parsed = parseLabBatch(raw, 'lab');
+    expect(batchDigest(raw)).toBe(batchDigest(parsed));
+    expect(batchChildId(raw, raw.rooms[0]!)).toBe(batchChildId(parsed, parsed.rooms[0]!));
+    expect(batchRoomDigest(raw.rooms[0]!)).toBe(batchRoomDigest(parsed.rooms[0]!));
   });
 
   it('limits fake saves to HRCEN Proof Labtest 2027+, with CMS sending off', () => {
