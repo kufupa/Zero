@@ -164,11 +164,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)('workflow folder review set (disposable Post
       await withRouteDb(db, async () => {
         const workflow = await caller().mail.listThreads({ folder: 'all', workflowFolder: 'quotes', limit: 20 });
         expect(workflow.threads).toEqual(expect.arrayContaining([
-          expect.objectContaining({ id: threadId, workflowSourceMessageId: 'workflow-source' }),
+          expect.objectContaining({ id: threadId, workflowSourceMessageId: 'workflow-source', workflowSourceRequired: true }),
         ]));
         const ordinary = await caller().mail.listThreads({ folder: 'all', limit: 20 });
         expect(ordinary.threads).toEqual(expect.arrayContaining([
-          expect.objectContaining({ id: threadId, workflowSourceMessageId: null }),
+          expect.objectContaining({ id: threadId, workflowSourceMessageId: null, workflowSourceRequired: false }),
         ]));
       });
     });

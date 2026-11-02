@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual, listThreadSelection } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
+import { retainSameScopePlaceholder, selectionRequiresExactSource } from '../config/workflow-folders';
 
 const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
@@ -203,6 +204,33 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('retains placeholders only when their actual row scope matches the next list', () => {
+    const ordinary = { pages: [{ threads: [{ id: 'ordinary', workflowSourceRequired: false }] }] };
+    const workflow = { pages: [{ threads: [{ id: 'workflow', workflowSourceRequired: true, workflowSourceMessageId: null }] }] };
+    const unknown = { pages: [{ threads: [{ id: 'old-cache' }] }] };
+    expect(retainSameScopePlaceholder(ordinary, false)).toBe(ordinary);
+    expect(retainSameScopePlaceholder(workflow, true)).toBe(workflow);
+    expect(retainSameScopePlaceholder(ordinary, true)).toBeUndefined();
+    expect(retainSameScopePlaceholder(workflow, false)).toBeUndefined();
+    expect(retainSameScopePlaceholder(unknown, false)).toBeUndefined();
+    expect(retainSameScopePlaceholder({ pages: [{ threads: [] }] }, false)).toBeUndefined();
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, ordinary.pages[0]!.threads)).toBe(false);
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, workflow.pages[0]!.threads)).toBe(true);
+    expect(selectionRequiresExactSource('inbox', { isValid: true, folder: 'all' }, true, unknown.pages[0]!.threads)).toBe(true);
+  });
+
+  it('clears source for an ordinary retained row during search', async () => {
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: true, isFetchingNextPage: false,
+        hasNextPage: false, isError: false, error: null, isPlaceholderData: true },
+      [{ id: 'thread-a', workflowSourceRequired: false, workflowSourceMessageId: null }], false, vi.fn(),
+      { isValid: true, folder: 'all', useDraftsList: false },
+    ]);
+    render(createElement(MailList));
+    act(() => mocks.onNavigate?.('thread-a'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: null }));
+  });
+
   it('keeps exact workflow IDs and refuses absent row sources', () => {
     const rows = [
       { id: 'thread-a', workflowSourceMessageId: 'source-a' },

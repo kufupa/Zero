@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   searchListValid: true,
   searchListAvailable: true,
   placeholderData: false,
+  listRows: [] as Array<{ id: string; workflowSourceRequired?: boolean }>,
   wide: true,
   useWebPreview: vi.fn(),
 }));
@@ -73,7 +74,7 @@ vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../hooks/use-threads', () => ({
   useThreads: () => [
     { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
-    [],
+    mocks.listRows,
     false,
     vi.fn(),
     mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
@@ -82,7 +83,7 @@ vi.mock('../hooks/use-threads', () => ({
 vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => [
     { isFetching: false, refetch: vi.fn(), isPlaceholderData: mocks.placeholderData },
-    [],
+    mocks.listRows,
     false,
     vi.fn(),
     mocks.searchListAvailable ? { isValid: mocks.searchListValid, folder: mocks.searchListFolder } : undefined,
@@ -190,6 +191,7 @@ beforeEach(() => {
   mocks.searchListValid = true;
   mocks.searchListAvailable = true;
   mocks.placeholderData = false;
+  mocks.listRows = [];
   mocks.wide = true;
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
@@ -337,6 +339,17 @@ describe('workflow folder mail routing', () => {
     expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
       threadId: 'thread-42', sourceThreadId: 'thread-42', sourceMessageId: '',
     });
+  });
+
+  it('keeps ordinary retained search rows on latest-inbound behavior', async () => {
+    mocks.folder = 'inbox';
+    mocks.searchListFolder = 'all';
+    mocks.placeholderData = true;
+    mocks.listRows = [{ id: 'thread-42', workflowSourceRequired: false }];
+    mocks.threadId = 'thread-42';
+    render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42' });
   });
 
   it('renders the standard mail list, thread view, and Nava pane', async () => {

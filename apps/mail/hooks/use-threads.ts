@@ -1,5 +1,5 @@
 import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/backgroundQueue';
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { IGetThreadResponse, ThreadListItem } from '@zero/server/driver/types';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
@@ -30,7 +30,7 @@ import { resolveSearchListRequest } from '@/lib/mail/search-list';
 import { buildConversationPrimaryListRows } from '@/lib/mail/conversation-list';
 import { useCategorySettings } from './use-categories';
 import { useLabels } from './use-labels';
-import { isWorkflowFolderNavId } from '@/config/workflow-folders';
+import { isWorkflowFolderNavId, retainSameScopePlaceholder } from '@/config/workflow-folders';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
@@ -247,7 +247,7 @@ export const useThreads = () => {
       refetchInterval: threadPollingMs ?? false,
       refetchIntervalInBackground: false,
       refetchOnWindowFocus: true,
-      placeholderData: keepPreviousData,
+      placeholderData: (previousData) => retainSameScopePlaceholder(previousData, Boolean(workflowFolder)),
     },
   );
   const threadsQuery = useInfiniteQuery(

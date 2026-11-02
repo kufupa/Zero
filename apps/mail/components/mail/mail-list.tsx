@@ -21,7 +21,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useSidebar } from '@/components/ui/sidebar';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
 import type { MailListThreadRow, MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
-import { selectionRequiresExactSource } from '@/config/workflow-folders';
+import { listThreadSelection, selectionRequiresExactSource } from '@/config/workflow-folders';
+export { listThreadSelection } from '@/config/workflow-folders';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import { ThreadContextMenu } from '@/components/context/thread-context';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -130,16 +131,6 @@ export const areMailLabelsEqual = (
   return true;
 };
 
-/** Missing workflow sources stay explicit so the pane refuses rather than guessing. */
-export function listThreadSelection(
-  threadId: string | null,
-  workflowScoped: boolean,
-  rows: readonly MailListThreadRow[],
-): { threadId: string | null; sourceMessageId: string | null } {
-  if (!threadId || !workflowScoped) return { threadId, sourceMessageId: null };
-  return { threadId, sourceMessageId: rows.find((row) => row.id === threadId)?.workflowSourceMessageId ?? '' };
-}
-
 const Thread = memo(
   function Thread({
     message,
@@ -152,7 +143,7 @@ const Thread = memo(
     const timezone = useTimezone();
     const { folder } = useParams<{ folder: string }>();
     const [threadsQuery, threads, , , searchList] = useThreads();
-    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData);
+    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData, threads);
     const { userLabels } = useLabels();
     const reservedSpamLabelIds = useMemo(
       () => buildReservedSpamLabelIdSet(userLabels ?? []),
@@ -763,6 +754,7 @@ const Thread = memo(
     const isSameMessage =
       prev.message.id === next.message.id &&
       prev.message.workflowSourceMessageId === next.message.workflowSourceMessageId &&
+      prev.message.workflowSourceRequired === next.message.workflowSourceRequired &&
       prev.message.centurionCategory === next.message.centurionCategory &&
       prev.message.conversationResponded === next.message.conversationResponded &&
       (prev.message.linkedThreadIds ?? []).join(',') === (next.message.linkedThreadIds ?? []).join(',') &&
@@ -959,7 +951,7 @@ export const MailList = memo(function MailList() {
     }, [setAnchorIndex]);
 
     const [threadsQuery, items, , loadMore, searchList] = useThreads();
-    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData);
+    const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData, items);
     const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;

@@ -60,6 +60,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
+import { listThreadSelection, selectionRequiresExactSource } from '@/config/workflow-folders';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -209,7 +210,8 @@ export function ThreadDisplay() {
     latestDraft,
     aiDraftCandidates,
   } = useThread(id ?? null);
-  const [, items] = useThreads();
+  const [threadsQuery, items, , , searchList] = useThreads();
+  const workflowScoped = selectionRequiresExactSource(folder, searchList, threadsQuery.isPlaceholderData, items);
   const [isStarred, setIsStarred] = useState(false);
   const [navaSidePanelOpen, setNavaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const { data: session } = useSession();
@@ -378,7 +380,7 @@ export function ThreadDisplay() {
       const nextThread = items[nextIndex];
       if (nextThread) {
         await clearComposeContext();
-        setThreadSelection({ threadId: nextThread.id, sourceMessageId: null });
+        setThreadSelection(listThreadSelection(nextThread.id, workflowScoped, items));
         setFocusedIndex(focusedIndex + 1);
         if (animationsEnabled) {
           setNavigationDirection('next');
@@ -393,6 +395,7 @@ export function ThreadDisplay() {
     setFocusedIndex,
     clearComposeContext,
     animationsEnabled,
+    workflowScoped,
   ]);
 
   const handleUnsubscribeProcess = () => {

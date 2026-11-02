@@ -26,12 +26,31 @@ export function isWorkflowFolderNavId(value: string | undefined | null): value i
   return WORKFLOW_FOLDER_NAV_ITEMS.some((item) => item.id === value?.toLowerCase());
 }
 
-/** Previous rows can belong to a different list while a search or route changes. */
+type SourceScopedRow = { id: string; workflowSourceMessageId?: string | null; workflowSourceRequired?: boolean };
+
+/** A placeholder carries the scope of the rows it actually displays, not the destination route. */
 export function selectionRequiresExactSource(
   folder: string | null | undefined,
   search: { isValid: false } | { isValid: true; folder: string } | null | undefined,
   isPlaceholderData: boolean | undefined,
+  rows: readonly SourceScopedRow[] = [],
 ): boolean {
-  return isPlaceholderData === true ||
-    (isWorkflowFolderNavId(folder) && (search?.isValid !== true || search.folder !== 'all'));
+  if (isPlaceholderData) return rows.length === 0 || rows.some((row) => row.workflowSourceRequired !== false);
+  return isWorkflowFolderNavId(folder) && (search?.isValid !== true || search.folder !== 'all');
+}
+
+/** Never retain rows across workflow/ordinary scope changes or unknown provenance. */
+export function retainSameScopePlaceholder<T extends { pages: readonly { threads: readonly SourceScopedRow[] }[] }>(
+  previous: T | undefined, workflowScoped: boolean,
+): T | undefined {
+  const rows = previous?.pages.flatMap((page) => page.threads) ?? [];
+  return rows.length && rows.every((row) => row.workflowSourceRequired === workflowScoped) ? previous : undefined;
+}
+
+/** A missing workflow row or source remains explicit; it must not select another email. */
+export function listThreadSelection(
+  threadId: string | null, workflowScoped: boolean, rows: readonly SourceScopedRow[],
+): { threadId: string | null; sourceMessageId: string | null } {
+  if (!threadId || !workflowScoped) return { threadId, sourceMessageId: null };
+  return { threadId, sourceMessageId: rows.find((row) => row.id === threadId)?.workflowSourceMessageId ?? '' };
 }

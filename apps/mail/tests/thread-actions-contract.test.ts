@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { listThreadSelection } from '../config/workflow-folders';
 import {
   buildThreadFilingSnapshots,
   fileThreadsTo,
@@ -18,6 +21,15 @@ vi.mock('../providers/query-provider', () => ({
 }));
 
 describe('thread action contract', () => {
+  it('carries the next workflow row source after a reader move', () => {
+    const rows = [{ id: 'next', workflowSourceMessageId: 'exact-next' }, { id: 'missing' }];
+    expect(listThreadSelection('next', true, rows)).toEqual({ threadId: 'next', sourceMessageId: 'exact-next' });
+    expect(listThreadSelection('missing', true, rows)).toEqual({ threadId: 'missing', sourceMessageId: '' });
+    expect(listThreadSelection('next', false, rows)).toEqual({ threadId: 'next', sourceMessageId: null });
+    const display = readFileSync(fileURLToPath(new URL('../components/mail/thread-display.tsx', import.meta.url)), 'utf8');
+    expect(display).toContain('setThreadSelection(listThreadSelection(nextThread.id, workflowScoped, items))');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });

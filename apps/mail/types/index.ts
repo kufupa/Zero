@@ -144,6 +144,7 @@ export type MailListThreadRow = {
   id: string;
   historyId?: string | null;
   workflowSourceMessageId?: string | null;
+  workflowSourceRequired?: boolean;
   categoryIds?: string[];
   centurionCategory?: CenturionMailCategory;
   latestMessageAt?: string | Date | null;

@@ -547,6 +547,7 @@ export const mailRouter = tRouter({
           trashedAt: r.trashedAt,
           latestMessageAt: r.latestMessageAt,
           workflowSourceMessageId: r.workflowSourceMessageId,
+          workflowSourceRequired: Boolean(workflowMembership && input.workflowFolder),
           historyId: null as string | null,
           categoryIds: categoryIdsByThread.get(r.id) ?? [],
           hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
