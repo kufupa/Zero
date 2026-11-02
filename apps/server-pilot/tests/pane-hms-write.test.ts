@@ -46,14 +46,8 @@ import { parseAttachOnceArgs } from '../src/ops/hms-attach-once.js';
 import { ARTIFACT_MAX_INPUT_BYTES } from '../src/mail/artifacts/read-artifact.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
+import { withIngestionDb } from './helpers/ingestion-db.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
-
-type IngestionContext = Parameters<Parameters<typeof import('./helpers/ingestion-db.js').withIngestionDb>[0]>[0];
-const ingestionDbAvailable = Boolean(process.env.TEST_DATABASE_URL?.trim()) && process.env.CONFIRM_DISPOSABLE_TEST_DB === '1';
-const itDb = ingestionDbAvailable ? it : it.skip;
-async function withIngestionDb<T>(callback: (context: IngestionContext) => Promise<T>): Promise<T> {
-  return (await import('./helpers/ingestion-db.js')).withIngestionDb(callback);
-}
 
 // The attach CLI's cap is pinned to the read path's cap. The CLI is plain .mjs, so it is imported as the rules tests do.
 const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs' as string)) as {
@@ -470,7 +464,7 @@ describe('pane HMS write (U26)', () => {
     expect(buildAttachDocumentArgs({ ...base, allowRealGuest: true }, '/tmp/out')).toContain('--allow-real-guest');
   });
 
-  itDb('PANE_WRITE_ATTACH=on blocks a legacy real-guest attach', async () => {
+  it('PANE_WRITE_ATTACH=on blocks a legacy real-guest attach', async () => {
     await withIngestionDb(async ({ db }) => {
       const guestStay: PaneStayFields = { ...LAB_STAY, lastName: 'Smith', firstName: 'Pat' };
       hmsStay = guestStay;
@@ -500,7 +494,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('PANE_WRITE_ATTACH=lab blocks legacy attach before consume', async () => {
+  it('PANE_WRITE_ATTACH=lab blocks legacy attach before consume', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
       await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
@@ -534,7 +528,7 @@ describe('pane HMS write (U26)', () => {
     expect(() => parseAttachOnceArgs(['approve'])).toThrow(/usage/);
   });
 
-  itDb('holds legacy attach and refuses non-Labtest cancellation before HMS read or Save', async () => {
+  it('holds legacy attach and refuses non-Labtest cancellation before HMS read or Save', async () => {
     await withIngestionDb(async ({ db }) => {
       const attachId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
       await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId: attachId, readHmsState: async () => hmsStay });
@@ -594,7 +588,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('holds non-PDF legacy claims before consuming or reading bytes', async () => {
+  it('holds non-PDF legacy claims before consuming or reading bytes', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: Buffer.from('plain text, not a pdf') });
@@ -611,7 +605,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('holds legacy claims before reading oversized attachment bytes', async () => {
+  it('holds legacy claims before reading oversized attachment bytes', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
@@ -629,7 +623,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('holds an approved legacy PDF without upload or evidence', async () => {
+  it('holds an approved legacy PDF without upload or evidence', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -647,7 +641,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a form changed after approval is refused at consume, and no Save is sent', async () => {
+  it('a form changed after approval is refused at consume, and no Save is sent', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -663,11 +657,12 @@ describe('pane HMS write (U26)', () => {
         failureClass: 'NEEDS_CHECK',
         reason: 'state_changed',
       });
+      expect(amendCalls).toHaveLength(0);
       expect(attachCalls).toHaveLength(0);
     });
   });
 
-  itDb('an HMS change between approve and Save ends in needs-check and drops the stored snapshot', async () => {
+  it('an HMS change between approve and Save ends in needs-check and drops the stored snapshot', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -680,13 +675,14 @@ describe('pane HMS write (U26)', () => {
         failureClass: 'NEEDS_CHECK',
         reason: 'hms_changed',
       });
+      expect(amendCalls).toHaveLength(0);
       expect(attachCalls).toHaveLength(0);
       expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
       expect(await eventsOf(db, workItemId, 'status.changed')).toHaveLength(1);
     });
   });
 
-  itDb('holds legacy claims even if their approved snapshot is for another guest', async () => {
+  it('holds legacy claims even if their approved snapshot is for another guest', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -705,7 +701,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a cancellation penalty after OK ends unknown, and approval stays blocked until the booking is read back', async () => {
+  it('a cancellation penalty after OK ends unknown, and approval stays blocked until the booking is read back', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
       await prepare(db, workItemId);
@@ -734,7 +730,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a lease lost after cancellation Save blocks approval and sends no second Save', async () => {
+  it('a lease lost after cancellation Save blocks approval and sends no second Save', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -757,7 +753,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a cancel that is confirmed as cancelled succeeds and records its evidence', async () => {
+  it('a cancel that is confirmed as cancelled succeeds and records its evidence', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
       await prepare(db, workItemId);
@@ -787,7 +783,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a cancel whose record changed after the pre-Save read is refused by the CLI with no OK, and ends in needs-check', async () => {
+  it('a cancel whose record changed after the pre-Save read is refused by the CLI with no OK, and ends in needs-check', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
       await prepare(db, workItemId);
@@ -813,7 +809,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('prepare refuses without the amend flag and for a non-Labtest stay, storing no snapshot', async () => {
+  it('prepare refuses without the amend flag and for a non-Labtest stay, storing no snapshot', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       expect(
@@ -843,7 +839,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('amend prepare returns the current record beside the requested values and saves nothing', async () => {
+  it('amend prepare returns the current record beside the requested values and saves nothing', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       const prepared = await prepareAmend({
@@ -886,7 +882,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('dispatches a digest-bound amend only after approval and records screenshots', async () => {
+  it('dispatches a digest-bound amend only after approval and records screenshots', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
       await prepare(db, workItemId);
@@ -913,7 +909,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('refuses amend commit when the re-read stay is paid, guaranteed, or missing payment fields', async () => {
+  it('refuses amend commit when the re-read stay is paid, guaranteed, or missing payment fields', async () => {
     await withIngestionDb(async ({ db }) => {
       const cases: PaneStayFields[] = [
         { ...LAB_STAY, depositReceived: '500.00' },
@@ -937,7 +933,7 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  itDb('a flag drops the pre-write snapshot, and the reread procedure stores a fresh read the next approval binds (U18)', async () => {
+  it('a flag drops the pre-write snapshot, and the reread procedure stores a fresh read the next approval binds (U18)', async () => {
     await withIngestionDb(async ({ db, sql }) => {
       const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -1045,7 +1041,7 @@ describe('pane HMS write property target', () => {
 });
 
 describe('pane HMS attach bridge (U9)', () => {
-  itDb('refuses legacy binding without changing the work item', async () => {
+  it('refuses legacy binding without changing the work item', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: { 'contact.name': 'Desk' } });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
@@ -1058,7 +1054,7 @@ describe('pane HMS attach bridge (U9)', () => {
     });
   });
 
-  itDb('holds legacy claims before examining a changed attachment hash', async () => {
+  it('holds legacy claims before examining a changed attachment hash', async () => {
     await withIngestionDb(async ({ db }) => {
       const pdfSha256 = sha256(PDF_BYTES);
       const workItemId = await seedWriteItem(db, {
@@ -1079,7 +1075,7 @@ describe('pane HMS attach bridge (U9)', () => {
     });
   });
 
-  itDb('an approved legacy claim does not dispatch an upload', async () => {
+  it('an approved legacy claim does not dispatch an upload', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
