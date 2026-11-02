@@ -9,7 +9,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Command, ImagePlus, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import useComposeEditor from '@/hooks/use-compose-editor';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
@@ -394,25 +394,32 @@ export function EmailComposer({
     [initialTo, initialCc, initialBcc, initialSubject],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!syncReplyHeadersFromProps) return;
 
-    if (headerSeedRef.current !== replyHeaderSeed) {
+    const seedChanged = headerSeedRef.current !== replyHeaderSeed;
+    if (seedChanged) {
       headerSeedRef.current = replyHeaderSeed;
       // A mode/target change intentionally derives new recipients, but keeps an edited subject.
       editedHeadersRef.current.delete('to');
       editedHeadersRef.current.delete('cc');
       editedHeadersRef.current.delete('bcc');
     }
-    // A late draft refresh must not replace a header edited in this composer, even after save.
-    if (!editedHeadersRef.current.has('to') && !hasPendingRecipientInput('to')) setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
-    if (!editedHeadersRef.current.has('cc') && !hasPendingRecipientInput('cc')) {
-      setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
-      setShowCc(initialCc.length > 0);
+    const pendingTo = hasPendingRecipientInput('to');
+    const pendingCc = hasPendingRecipientInput('cc');
+    const pendingBcc = hasPendingRecipientInput('bcc');
+    // A new mode must replace committed recipients before pending text can be committed.
+    // Keep its input mounted, while ordinary refreshes preserve local edits and pending text.
+    if (!editedHeadersRef.current.has('to') && (seedChanged || !pendingTo)) {
+      setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
     }
-    if (!editedHeadersRef.current.has('bcc') && !hasPendingRecipientInput('bcc')) {
+    if (!editedHeadersRef.current.has('cc') && (seedChanged || !pendingCc)) {
+      setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
+      setShowCc(initialCc.length > 0 || pendingCc);
+    }
+    if (!editedHeadersRef.current.has('bcc') && (seedChanged || !pendingBcc)) {
       setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
-      setShowBcc(initialBcc.length > 0);
+      setShowBcc(initialBcc.length > 0 || pendingBcc);
     }
     if (!editedHeadersRef.current.has('subject')) setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
@@ -654,10 +661,11 @@ export function EmailComposer({
     if (editorState.html !== editor.getHTML()) {
       editor.commands.setContent(editorState.html, false);
     }
-    if (editorState.subject !== subjectInput) {
+    // ReplyCompose already resolves generated defaults versus intentionally saved subjects.
+    if (!syncReplyHeadersFromProps && editorState.subject !== subjectInput) {
       setValue('subject', editorState.subject, { shouldDirty: false });
     }
-  }, [editor, serverDraft, setValue, subjectInput]);
+  }, [editor, serverDraft, setValue, subjectInput, syncReplyHeadersFromProps]);
 
   // Remove the TRPC query - we'll use the component's internal logic instead
   useEffect(() => {

@@ -12,6 +12,7 @@ export type DraftLike = {
   content?: string | null;
   subject?: string | null;
   headersSaved?: boolean;
+  savedHeaderFields?: { to: boolean; cc: boolean; bcc: boolean; subject: boolean };
   updatedAt?: string;
   status?: 'active' | 'candidate' | 'discarded' | 'sent';
   origin?: 'manual' | 'ai';

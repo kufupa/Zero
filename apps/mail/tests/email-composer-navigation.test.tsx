@@ -53,7 +53,12 @@ vi.mock('@/components/ui/recipient-autosuggest', () => ({
     const { field } = useController({ control, name });
     return <><input aria-label={name} value={(field.value ?? []).join(',')} onChange={(event) => {
       field.onChange(event.target.value ? event.target.value.split(',') : []); onValueChange();
-    }} /><input type="email" aria-label={`pending-${name}`} /></>;
+    }} /><input type="email" aria-label={`pending-${name}`} onKeyDown={(event) => {
+      if (event.key !== 'Enter' || !event.currentTarget.value.trim()) return;
+      field.onChange([...(field.value ?? []), event.currentTarget.value.trim()]);
+      onValueChange();
+      event.currentTarget.value = '';
+    }} /></>;
   },
 }));
 vi.mock('@/components/ui/dialog', () => {
@@ -123,6 +128,20 @@ describe('real composer draft handoff', () => {
     view.rerender(<Harness syncHeaders initialSubject="Updated" {...incoming} />);
     expect(screen.getByLabelText(`pending-${field}`)).toBe(pending);
     expect(pending.value).toBe('unfinished@example.com');
+  });
+
+  it.each(['to', 'cc', 'bcc'])('replaces committed %s on forward while keeping pending input', (field) => {
+    const view = render(<Harness syncHeaders seed="reply" initialTo={['old-to@example.com']}
+      initialCc={['old-cc@example.com']} initialBcc={['old-bcc@example.com']} />);
+    const pending = screen.getByLabelText(`pending-${field}`) as HTMLInputElement;
+    fireEvent.change(pending, { target: { value: 'new@example.com' } });
+    view.rerender(<Harness syncHeaders seed="forward" initialTo={[]} initialCc={[]} initialBcc={[]} />);
+    expect(screen.getByLabelText(`pending-${field}`)).toBe(pending);
+    expect(pending.value).toBe('new@example.com');
+    expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('');
+    fireEvent.keyDown(pending, { key: 'Enter' });
+    expect((screen.getByLabelText(field) as HTMLInputElement).value).toBe('new@example.com');
+    if (field !== 'to') expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('');
   });
 
   it('does not save an untouched quoted draft', async () => {
@@ -292,6 +311,44 @@ describe('mounted reply header persistence', () => {
     render(<ReplyCompose />);
     expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('guest@example.com');
     expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('Re: Request');
+  });
+
+  it('preserves a partially cleared subject while deriving untouched AI recipients', () => {
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: false,
+      savedHeaderFields: { to: false, cc: false, bcc: false, subject: true },
+      to: [], cc: [], bcc: [], subject: '', content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('guest@example.com');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('');
+  });
+
+  it('preserves a partially cleared To while deriving an untouched subject', () => {
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: false,
+      savedHeaderFields: { to: true, cc: false, bcc: false, subject: false },
+      to: [], cc: [], bcc: [], subject: null, content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('');
+    expect((screen.getByPlaceholderText('Re: Design review feedback') as HTMLInputElement).value).toBe('Re: Request');
+  });
+
+  it('preserves a partially cleared Cc while deriving untouched reply-all To', () => {
+    mocks.mode = 'replyAll';
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: false,
+      savedHeaderFields: { to: false, cc: true, bcc: false, subject: false },
+      to: [], cc: [], bcc: [], subject: null, content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('guest@example.com');
+    expect(screen.queryByLabelText('cc')).toBeNull();
+  });
+
+  it('derives untouched reply-all Cc when a partial update supplies To', () => {
+    mocks.mode = 'replyAll';
+    mocks.draft = { id: 'draft-1', origin: 'ai', headersSaved: false,
+      savedHeaderFields: { to: true, cc: false, bcc: false, subject: false },
+      to: ['custom@example.com'], cc: [], bcc: [], subject: null, content: '<p>Quoted</p>' };
+    render(<ReplyCompose />);
+    expect((screen.getByLabelText('to') as HTMLInputElement).value).toBe('custom@example.com');
+    expect((screen.getByLabelText('cc') as HTMLInputElement).value).toBe('copy@example.com');
   });
 
   it('keeps an intentionally empty To even when saved Cc is populated', () => {

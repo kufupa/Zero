@@ -1237,6 +1237,8 @@ export async function enqueueHmsCandidateRefresh(input: {
  * without a migration, the same way follow-up drafts are told apart by their draft id.
  */
 const SAVED_REPLY_REVISION_PREFIX = 'saved-reply:';
+// Partial updates do not assert that omitted headers were intentionally cleared.
+const PARTIAL_HEADER_REVISION_PREFIX = 'partial-headers:';
 
 export const draftsRouter = tRouter({
   getArtifact: mailboxProcedure
@@ -1350,11 +1352,9 @@ export const draftsRouter = tRouter({
     const rows = await db
       .select({
         draft: mailDraft,
-        // A promoted candidate can have empty default fields. An edited revision records staff intent.
-        headersSaved: sql<boolean>`(${mailDraft.origin} = 'manual' OR EXISTS (
-          SELECT 1 FROM ${mailDraftRevision}
-          WHERE ${mailDraftRevision.draftId} = ${mailDraft.id} AND ${mailDraftRevision.kind} = 'edited'
-        ))`,
+        // Full snapshots and partial edits record distinct header intent without a schema migration.
+        editedRevisionIds: sql<string[]>`ARRAY(SELECT ${mailDraftRevision.id} FROM ${mailDraftRevision}
+          WHERE ${mailDraftRevision.draftId} = ${mailDraft.id} AND ${mailDraftRevision.kind} = 'edited')`,
       })
       .from(mailDraft)
       .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
@@ -1362,8 +1362,15 @@ export const draftsRouter = tRouter({
     if (rows.length === 0) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
     }
-    const { draft: r, headersSaved } = rows[0]!;
-    return { ...toDraftWire(r, false, await loadDraftReviewSummary(db, r)), headersSaved };
+    const { draft: r, editedRevisionIds } = rows[0]!;
+    // Historical edited revisions have no per-field provenance; retain the prior full-snapshot interpretation.
+    const fullHeaders = r.origin === 'manual' || editedRevisionIds.some((id) => !id.startsWith(PARTIAL_HEADER_REVISION_PREFIX));
+    const partialFields = new Set(editedRevisionIds.filter((id) => id.startsWith(PARTIAL_HEADER_REVISION_PREFIX))
+      .flatMap((id) => (id.split(':')[1] ?? '').split(',')));
+    const savedHeaderFields = { to: fullHeaders || partialFields.has('to'), cc: fullHeaders || partialFields.has('cc'),
+      bcc: fullHeaders || partialFields.has('bcc'), subject: fullHeaders || partialFields.has('subject') };
+    return { ...toDraftWire(r, false, await loadDraftReviewSummary(db, r)),
+      headersSaved: Object.values(savedHeaderFields).every(Boolean), savedHeaderFields };
   }),
 
   /** Staff review follows the latest completed analysis, not an edited draft's updatedAt. */
@@ -1797,8 +1804,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        // A staff snapshot can intentionally clear a derived To even when the AI row was already empty.
-        if (changed || (prior.origin === 'ai' && row.toAddresses.length === 0)) {
+        // A staff snapshot asserts every header, including clears that match generated defaults.
+        if (changed || prior.origin === 'ai') {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId,
@@ -1907,8 +1914,8 @@ export const draftsRouter = tRouter({
           prior.textBody !== row.textBody ||
           prior.htmlBody !== row.htmlBody ||
           JSON.stringify(prior.attachments ?? []) !== JSON.stringify(row.attachments);
-        // A staff snapshot can intentionally clear a derived To even when the AI row was already empty.
-        if (changed || (prior.origin === 'ai' && row.toAddresses.length === 0)) {
+        // A staff snapshot asserts every header, including clears that match generated defaults.
+        if (changed || prior.origin === 'ai') {
           await tx.insert(mailDraftRevision).values({
             id: randomUUID(),
             draftId: activeId,
@@ -2013,9 +2020,10 @@ export const draftsRouter = tRouter({
           JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
             JSON.stringify(merged.bccAddresses ?? []);
 
-        if (changed) {
+        const touchedHeaders = (['to', 'cc', 'bcc', 'subject'] as const).filter((field) => input[field] !== undefined);
+        if (changed || touchedHeaders.length > 0) {
           await tx.insert(mailDraftRevision).values({
-            id: randomUUID(),
+            id: `${PARTIAL_HEADER_REVISION_PREFIX}${touchedHeaders.join(',')}:${randomUUID()}`,
             draftId: input.id,
             generationId: merged.generationId,
             actorUserId: ctx.sessionUser.id,

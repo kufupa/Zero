@@ -69,17 +69,38 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30000);
 
-    it('records a staff header snapshot even when it matches empty generated values', async () => {
+    it('records partial header intent without treating untouched AI recipients as cleared', async () => {
       await withSeededTestDb(async (db) => {
         const caller = await callerFor('user-navaai', { db });
         const id = randomUUID();
         await db.insert(mailDraft).values({ id, transportId: caller.ctx.activeTransportId,
           createdByUserId: 'user-navaai', status: 'active', origin: 'ai',
-          toAddresses: [], ccAddresses: [], bccAddresses: [], subject: '',
+          toAddresses: [], ccAddresses: [], bccAddresses: [], subject: null,
+          textBody: 'Generated', htmlBody: '<p>Generated</p>' });
+        await caller.drafts.update({ id, html: '<p>Edited body</p>' });
+        expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: false,
+          savedHeaderFields: { to: false, cc: false, bcc: false, subject: false } });
+        await caller.drafts.update({ id, subject: '' });
+        expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: false, subject: '',
+          savedHeaderFields: { to: false, cc: false, bcc: false, subject: true } });
+        // Explicitly clearing an already-empty To is still staff intent.
+        await caller.drafts.update({ id, to: [] });
+        expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: false, to: [],
+          savedHeaderFields: { to: true, cc: false, bcc: false, subject: true } });
+      });
+    }, 30000);
+
+    it.each([{ to: [] }, { to: ['guest@example.com'] }])('records a matching staff snapshot with To $to', async ({ to }) => {
+      await withSeededTestDb(async (db) => {
+        const caller = await callerFor('user-navaai', { db });
+        const id = randomUUID();
+        await db.insert(mailDraft).values({ id, transportId: caller.ctx.activeTransportId,
+          createdByUserId: 'user-navaai', status: 'active', origin: 'ai',
+          toAddresses: to, ccAddresses: [], bccAddresses: [], subject: '',
           textBody: '<p>Reply</p>', htmlBody: '<p>Reply</p>' });
         expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: false });
-        await caller.drafts.create({ id, to: '', subject: '', message: '<p>Reply</p>' });
-        expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: true, to: [], subject: '' });
+        await caller.drafts.create({ id, to: to.join(', '), subject: '', message: '<p>Reply</p>' });
+        expect(await caller.drafts.get({ id })).toMatchObject({ headersSaved: true, to, cc: [], subject: '' });
       });
     }, 30000);
   },
