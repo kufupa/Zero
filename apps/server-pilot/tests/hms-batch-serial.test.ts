@@ -95,6 +95,12 @@ describe('disconnected Labtest serial executor contract', () => {
       expect(Reflect.set(context.manifest.rooms[0]!.stay, 'adults', 7)).toBe(false);
       return true;
     };
+    f.deps.checkSaveAuthority = async (context) => {
+      expect(Reflect.set(context, 'childId', 'f'.repeat(64))).toBe(false);
+      expect(Reflect.set(context, 'runId', 'OTHER')).toBe(false);
+      expect(Reflect.set(context, 'signal', new AbortController().signal)).toBe(false);
+      return true;
+    };
     f.deps.readPreimage = async (room, siblings) => {
       if (siblings.length) {
         expect(Reflect.set(siblings[0]!, 'confirmation', 'OTHER')).toBe(false);

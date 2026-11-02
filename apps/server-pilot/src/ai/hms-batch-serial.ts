@@ -111,7 +111,7 @@ export async function executeLabBatchSerial(deps: LabBatchSerialDependencies): P
               started = true;
               const acceptable = () => !finished && !invalidated && signal && !signal.aborted && valid();
               if (!acceptable()) throw new Error('batch_pre_save_refused');
-              const allowed = await deps.checkSaveAuthority({ ...context, signal });
+              const allowed = await deps.checkSaveAuthority(Object.freeze({ ...context, signal }));
               if (allowed !== true || !acceptable()) throw new Error('batch_pre_save_refused');
               checked = true;
               return true;
