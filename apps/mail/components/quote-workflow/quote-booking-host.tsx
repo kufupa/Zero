@@ -85,12 +85,11 @@ export function QuoteBookingHost({
     workItemId,
   ]);
 
-  // Selection epochs can change when returning to the same source. They must not release a Go hold.
-  const sourceKey = JSON.stringify([session.binding?.transportId, session.binding?.storeId,
-    session.binding?.folderEntryId, session.binding?.entryId, workItemId]);
+  // Outlook folders and selection epochs can change for the same work item; neither releases a Go hold.
   const batchWasEnabled = useRef(false);
   const [started, setStarted] = useState<Record<string, { arrival: string; keys: string[] }>>({});
-  const active = started[sourceKey] ?? null;
+  const active = workItemId ? started[workItemId] ?? null : null;
+  const writeHeld = Boolean(active) || (!workItemId && Object.keys(started).length > 0);
   if (batchReview) batchWasEnabled.current = true;
   // Losing the opt-in client must not expose the old single-room write controls.
   const effectiveBatchReview = batchReview ?? (batchWasEnabled.current ? { refs: {} } : undefined);
@@ -116,11 +115,11 @@ export function QuoteBookingHost({
     if (!draft) return null;
     return <Fragment key={`${requestKey}:${key}`}>
       {isMultiStay(session) ? <p className="text-[13px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p> : null}
-      <BookingCards draft={draft} groups={session.groups} paneSave={active ? null : paneSave} contact={contact} workItemId={workItemId}
+      <BookingCards draft={draft} groups={session.groups} paneSave={writeHeld ? null : paneSave} contact={contact} workItemId={workItemId}
         savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot} parties={session.staffHeader.parties}
         guestName={stayingGuestName(session, contact ?? null)} guestEditorKey={guestEditorKeyFor(session)} session={session}
         propertyCode={propertyCode} confirmation={confirmation} onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
-        batchReview={effectiveBatchReview ? { ...effectiveBatchReview, ...(active ? { client: undefined } : {}), aggregate } : undefined} />
+        batchReview={effectiveBatchReview ? { ...effectiveBatchReview, ...(writeHeld ? { client: undefined } : {}), aggregate } : undefined} />
     </Fragment>;
   };
 
@@ -128,8 +127,8 @@ export function QuoteBookingHost({
     <>
       {[...arrivals.entries()].map(([arrival, keys]) => effectiveBatchReview && keys.length > 1
         ? <CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
-            review={active ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
-            onStart={() => setStarted((previous) => ({ ...previous, [sourceKey]: { arrival, keys: [...keys] } }))} renderCard={renderCard} />
+            review={writeHeld ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
+            onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />
         : keys.map((key) => renderCard(key)))}
       {uncoveredStays.map(([stayId, saved]) => (
         <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />

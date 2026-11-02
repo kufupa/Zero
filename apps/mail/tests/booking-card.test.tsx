@@ -3188,7 +3188,12 @@ describe('batch booking card integration', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
     expect(api.approve).toHaveBeenCalledTimes(1);
     expect(session.binding).not.toBeNull();
-    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2 } }} {...props} />);
+    view.rerender(<QuoteBookingHost session={session} {...props} workItemId={undefined} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2, folderEntryId: 'archive' } }} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     view.rerender(<QuoteBookingHost session={session} {...props} />);
     expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
