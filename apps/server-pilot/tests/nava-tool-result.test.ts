@@ -24,6 +24,19 @@ describe('Nava tool result contract', () => {
     expect(adaptExistingToolResult({ outcome: 'ok', status: 'refused', clickedSave: true },
       { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
   });
+  it.each(['refused_flag_off', 'amend_preview_required'])('keeps known pre-dispatch refusal %s', (code) => {
+    expect(adaptExistingToolResult({ outcome: code }, { operation: 'write' }))
+      .toMatchObject({ outcome: 'refused', reason: code });
+    expect(adaptExistingToolResult({ status: 'uncertain', outcome: code }, { operation: 'write' }).outcome)
+      .toBe('uncertain');
+    for (const signal of [{ clickedSave: true }, { saveDispatched: 'unknown' as const }, { possiblyDispatched: true }]) {
+      expect(adaptExistingToolResult({ outcome: code, ...signal }, { operation: 'write', readbackVerified: true }).outcome)
+        .toBe('uncertain');
+    }
+  });
+  it('keeps unknown refusal-looking codes uncertain', () => {
+    expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
+  });
   it('requires verified readback for successful writes', () => {
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
     expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
