@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { VoucherFilingReview } from '../components/quote-workflow/voucher-filing-review';
 
@@ -12,7 +12,8 @@ const makeClient = () => ({
   review: vi.fn(async () => undefined),
 });
 const props = () => ({ client: makeClient(), workItemId: 'work', messageId: 'message', operation,
-  onRefresh: vi.fn(), reviewAttempts: { current: new Set<string>() } });
+  onRefresh: vi.fn(), scope: { signal: new AbortController().signal, isCurrent: () => true },
+  reviewAttempts: { current: new Set<string>() } });
 
 it('requires a successfully displayed screenshot before recording review', async () => {
   const p = props(); render(<VoucherFilingReview {...p} />);
@@ -226,4 +227,120 @@ it('ignores stale image events after a client A-to-B-to-A transition with identi
   fireEvent.error(oldImage);
   expect(screen.getByAltText('HMS filing screenshot')).toBe(currentImage);
   expect(screen.getByRole('button', { name: 'Confirm review' })).toBeTruthy();
+});
+
+
+it('shows a recorded review only for its exact screenshot event', () => {
+  const p = props();
+  const view = render(<VoucherFilingReview {...p} operation={{ ...operation,
+    review: { eventId: 'event-1', decision: 'ok' } }} />);
+  expect(screen.getByText('Screenshot review confirmed.')).toBeTruthy();
+  view.rerender(<VoucherFilingReview {...p} operation={{ ...operation,
+    evidence: { eventId: 'event-2', expired: false }, review: { eventId: 'event-1', decision: 'ok' } }} />);
+  expect(screen.queryByText('Screenshot review confirmed.')).toBeNull();
+  expect(screen.getByText(/Review does not match this screenshot/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+  expect(p.client.review).not.toHaveBeenCalled();
+});
+
+it('does not treat a run-only or malformed review status as evidence review', () => {
+  for (const review of ['ok', { eventId: 'event-1', decision: 'unknown' }, { decision: 'ok' }]) {
+    const p = props();
+    const view = render(<VoucherFilingReview {...p} operation={{ ...operation, review: review as never }} />);
+    expect(screen.queryByText('Screenshot review confirmed.')).toBeNull();
+    expect(screen.getByText(/Review does not match this screenshot/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+    view.unmount();
+  }
+});
+
+
+it('does not confirm an expired reviewed screenshot', () => {
+  const p = props();
+  render(<VoucherFilingReview {...p} operation={{ ...operation,
+    evidence: { eventId: 'event-1', expired: true }, review: { eventId: 'event-1', decision: 'ok' } }} />);
+  expect(screen.queryByText('Screenshot review confirmed.')).toBeNull();
+  expect(screen.getByText(/screenshot has expired/i)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+});
+
+it('hides screenshot and disables review when actor or selection lifetime aborts', async () => {
+  const p = props(); const controller = new AbortController();
+  p.scope = { signal: controller.signal, isCurrent: () => true };
+  render(<VoucherFilingReview {...p} />);
+  fireEvent.load(await screen.findByAltText('HMS filing screenshot'));
+  const button = screen.getByRole('button', { name: 'Confirm review' });
+  act(() => controller.abort());
+  expect(screen.queryByAltText('HMS filing screenshot')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+  expect(screen.getByText(/selected message changed/i)).toBeTruthy();
+  fireEvent.click(button);
+  expect(p.client.review).not.toHaveBeenCalled();
+});
+
+it('drops an evidence response after actor or selection lifetime aborts', async () => {
+  const p = props(); const controller = new AbortController();
+  p.scope = { signal: controller.signal, isCurrent: () => true };
+  let resolveEvidence!: (value: { status: 'ok'; dataUrl: string } & typeof evidenceScope) => void;
+  p.client.evidence.mockImplementation(() => new Promise((resolve) => { resolveEvidence = resolve; }));
+  render(<VoucherFilingReview {...p} />);
+  await waitFor(() => expect(p.client.evidence).toHaveBeenCalledTimes(1));
+  act(() => controller.abort());
+  await act(async () => { resolveEvidence({ status: 'ok', dataUrl: 'data:image/png;base64,YQ==', ...evidenceScope }); });
+  expect(screen.queryByAltText('HMS filing screenshot')).toBeNull();
+  expect(p.client.review).not.toHaveBeenCalled();
+});
+
+it('rechecks selection ownership when a review is clicked', async () => {
+  const p = props(); let current = true;
+  p.scope = { ...p.scope, isCurrent: () => current };
+  render(<VoucherFilingReview {...p} />);
+  fireEvent.load(await screen.findByAltText('HMS filing screenshot'));
+  const button = screen.getByRole('button', { name: 'Confirm review' });
+  current = false;
+  fireEvent.click(button);
+  expect(p.client.review).not.toHaveBeenCalled();
+});
+
+
+it('requires the new selection lifetime to load its own screenshot', async () => {
+  const p = props(); const first = new AbortController();
+  p.scope = { signal: first.signal, isCurrent: () => true };
+  const view = render(<VoucherFilingReview {...p} />);
+  const oldImage = await screen.findByAltText('HMS filing screenshot');
+  fireEvent.load(oldImage);
+  expect(screen.getByRole('button', { name: 'Confirm review' })).toBeTruthy();
+  act(() => first.abort());
+  const next = new AbortController();
+  view.rerender(<VoucherFilingReview {...p} scope={{ signal: next.signal, isCurrent: () => true }} />);
+  const newImage = await screen.findByAltText('HMS filing screenshot');
+  expect(newImage).not.toBe(oldImage);
+  fireEvent.load(oldImage);
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+  fireEvent.load(newImage);
+  expect(screen.getByRole('button', { name: 'Confirm review' })).toBeTruthy();
+  view.rerender(<VoucherFilingReview {...p} />);
+  expect(screen.queryByAltText('HMS filing screenshot')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+  expect(screen.getByText(/selected message changed/i)).toBeTruthy();
+});
+
+it('keeps a sent review latched after its selection lifetime is invalidated', async () => {
+  const p = props(); const first = new AbortController();
+  p.scope = { signal: first.signal, isCurrent: () => true };
+  let resolveReview!: () => void;
+  p.client.review.mockImplementation(() => new Promise((resolve) => { resolveReview = resolve; }));
+  const view = render(<VoucherFilingReview {...p} />);
+  fireEvent.load(await screen.findByAltText('HMS filing screenshot'));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm review' }));
+  expect(p.client.review).toHaveBeenCalledTimes(1);
+  act(() => first.abort());
+  await act(async () => { resolveReview(); });
+  expect(p.onRefresh).not.toHaveBeenCalled();
+  view.unmount();
+  const next = new AbortController();
+  render(<VoucherFilingReview {...p} scope={{ signal: next.signal, isCurrent: () => true }} />);
+  fireEvent.load(await screen.findByAltText('HMS filing screenshot'));
+  expect(screen.queryByRole('button', { name: 'Confirm review' })).toBeNull();
+  expect(p.client.review).toHaveBeenCalledTimes(1);
 });

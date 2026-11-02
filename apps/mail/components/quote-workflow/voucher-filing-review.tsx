@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Notice, PrimaryButton, SecondaryButton, paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { HMS_NOTE_MAX, HMS_NOTE_MIN } from '@/lib/quote-workflow/hms-write';
 
@@ -8,7 +8,8 @@ type ReviewOperation = {
   operationId: string;
   state: string;
   evidence: { eventId: string; expired: boolean } | null;
-  review: 'ok' | 'flag' | null;
+  /** Read from the stored review event, not inferred from the operation alone. */
+  review: { eventId: string; decision: 'ok' | 'flag' } | null;
 };
 type EvidenceScope = { workItemId: string; messageId: string; operationId: string; eventId: string };
 type ReviewClient = {
@@ -19,10 +20,17 @@ type ReviewClient = {
   review(input: { workItemId: string; messageId: string; operationId: string; eventId: string; decision: 'ok' | 'flag'; note?: string }): Promise<unknown>;
 };
 
+type ReviewScope = { signal: AbortSignal; isCurrent: () => boolean };
 type ReviewProps = {
   client: ReviewClient; workItemId: string; messageId: string; operation: ReviewOperation; onRefresh: () => void;
+  /** Abort synchronously when actor, mailbox, selection or pane ownership changes. */
+  scope: ReviewScope;
   reviewAttempts: { current: Set<string> };
 };
+
+function scopeIsCurrent(signal: AbortSignal, isCurrent: () => boolean): boolean {
+  try { return !signal.aborted && isCurrent() === true; } catch { return false; }
+}
 
 /** Reset the review when its exact operation or evidence changes. */
 export function VoucherFilingReview(props: ReviewProps) {
@@ -31,10 +39,17 @@ export function VoucherFilingReview(props: ReviewProps) {
   return <CurrentFilingReview key={key} {...props} />;
 }
 
-function CurrentFilingReview({ client, workItemId, messageId, operation, onRefresh, reviewAttempts }: ReviewProps) {
-  const [shot, setShot] = useState<{ status: 'loading' | 'ready' | 'shown' | 'unavailable'; client: ReviewClient; dataUrl?: string; imageToken?: object }>({ status: 'loading', client });
-  // Changing the evidence client invalidates the displayed image immediately, before effects run.
-  const visibleShot = shot.client === client ? shot : { status: 'loading' as const, client };
+function CurrentFilingReview({ client, workItemId, messageId, operation, onRefresh, reviewAttempts, scope }: ReviewProps) {
+  const { signal, isCurrent } = scope;
+  const subscribe = useCallback((notify: () => void) => {
+    signal.addEventListener('abort', notify);
+    return () => signal.removeEventListener('abort', notify);
+  }, [signal]);
+  const current = useCallback(() => scopeIsCurrent(signal, isCurrent), [signal, isCurrent]);
+  const scopeLive = useSyncExternalStore(subscribe, current, () => false);
+  const [shot, setShot] = useState<{ status: 'loading' | 'ready' | 'shown' | 'unavailable'; client: ReviewClient; signal: AbortSignal; dataUrl?: string; imageToken?: object }>({ status: 'loading', client, signal });
+  // A new client or lifetime cannot display the previous screenshot before effects run.
+  const visibleShot = shot.client === client && shot.signal === signal ? shot : { status: 'loading' as const, client, signal };
   const [note, setNote] = useState('');
   const [noteError, setNoteError] = useState(false);
   const [pending, setPending] = useState(() => reviewAttempts.current.has(operation.operationId));
@@ -46,25 +61,28 @@ function CurrentFilingReview({ client, workItemId, messageId, operation, onRefre
     ? evidence.eventId : null;
   const evidenceValid = eventId !== null;
   const expired = evidenceValid && evidence?.expired === true;
+  const review = operation.review;
+  const reviewMatchesEvidence = Boolean(eventId && !expired && review && review.eventId === eventId &&
+    (review.decision === 'ok' || review.decision === 'flag'));
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     let live = true;
-    if (!eventId || expired) { setShot({ status: 'unavailable', client }); return; }
-    setShot({ status: 'loading', client });
-    void Promise.resolve().then(() => client.evidence({ workItemId, messageId, operationId: operation.operationId, eventId })).then((result) => {
-      if (!live) return;
+    if (!eventId || expired || !current()) { setShot({ status: 'unavailable', client, signal }); return; }
+    setShot({ status: 'loading', client, signal });
+    void Promise.resolve().then(() => current() ? client.evidence({ workItemId, messageId, operationId: operation.operationId, eventId }) : { status: 'unavailable' as const }).then((result) => {
+      if (!live || !current()) return;
       if (result && result.status === 'ok' && result.workItemId === workItemId && result.messageId === messageId &&
           result.operationId === operation.operationId && result.eventId === eventId &&
           typeof result.dataUrl === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.dataUrl)) {
-        setShot({ status: 'ready', client, dataUrl: result.dataUrl, imageToken: {} });
-      } else setShot({ status: 'unavailable', client });
-    }, () => { if (live) setShot({ status: 'unavailable', client }); });
+        setShot({ status: 'ready', client, signal, dataUrl: result.dataUrl, imageToken: {} });
+      } else setShot({ status: 'unavailable', client, signal });
+    }, () => { if (live && current()) setShot({ status: 'unavailable', client, signal }); });
     return () => { live = false; };
-  }, [client, workItemId, messageId, operation.operationId, eventId, expired]);
+  }, [client, signal, current, workItemId, messageId, operation.operationId, eventId, expired]);
 
   const decide = async (decision: 'ok' | 'flag') => {
-    if (!eventId || operation.state !== 'filed' || operation.review !== null || visibleShot.status !== 'shown' || sent.current || reviewAttempts.current.has(operation.operationId)) return;
+    if (!current() || !eventId || operation.state !== 'filed' || operation.review !== null || visibleShot.status !== 'shown' || sent.current || reviewAttempts.current.has(operation.operationId)) return;
     const text = note.trim();
     if (decision === 'flag' && text.length < HMS_NOTE_MIN) { setNoteError(true); return; }
     sent.current = true;
@@ -73,10 +91,12 @@ function CurrentFilingReview({ client, workItemId, messageId, operation, onRefre
     try {
       await client.review({ workItemId, messageId, operationId: operation.operationId, eventId, decision,
         ...(decision === 'flag' ? { note: text } : {}) });
-    } catch { if (mounted.current) setReviewError(true); }
+    } catch { if (mounted.current && current()) setReviewError(true); }
     // A mutation reply is not a durable review: read the exact operation again before proceeding.
-    if (mounted.current) onRefresh();
+    if (mounted.current && current()) onRefresh();
   };
+
+  if (!scopeLive || !current()) return <Notice tone="warn">The selected message changed. Reopen it to review the screenshot.</Notice>;
 
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
@@ -86,12 +106,12 @@ function CurrentFilingReview({ client, workItemId, messageId, operation, onRefre
         visibleShot.status === 'loading' ? <p role="status" className="text-[11.5px] text-[#334155]">Loading the HMS screenshot…</p> :
         visibleShot.status === 'unavailable' ? <Notice tone="warn">The screenshot could not be loaded. Check in HMS before continuing.</Notice> :
         <img data-pii src={visibleShot.dataUrl} alt="HMS filing screenshot" className="w-full rounded-sm border border-[#cbd5e1] object-contain"
-          onLoad={() => setShot((current) => current.client === client && current.imageToken === visibleShot.imageToken && current.status === 'ready' ? { ...current, status: 'shown' } : current)}
-          onError={() => setShot((current) => current.client === client && current.imageToken === visibleShot.imageToken ? { status: 'unavailable', client } : current)} />}
-      {operation.review === 'ok' ? <p role="status" className="text-[11.5px] text-[#334155]">Screenshot review confirmed.</p> : null}
-      {operation.review === 'flag' ? <Notice tone="warn">Review flagged. Check this filing before continuing.</Notice> : null}
-      {operation.review !== null && operation.review !== 'ok' && operation.review !== 'flag' ?
-        <Notice tone="warn">Review status is unavailable. Check before continuing.</Notice> : null}
+          onLoad={() => setShot((previous) => current() && previous.client === client && previous.signal === signal && previous.imageToken === visibleShot.imageToken && previous.status === 'ready' ? { ...previous, status: 'shown' } : previous)}
+          onError={() => setShot((previous) => current() && previous.client === client && previous.signal === signal && previous.imageToken === visibleShot.imageToken ? { status: 'unavailable', client, signal } : previous)} />}
+      {reviewMatchesEvidence && review?.decision === 'ok' ? <p role="status" className="text-[11.5px] text-[#334155]">Screenshot review confirmed.</p> : null}
+      {reviewMatchesEvidence && review?.decision === 'flag' ? <Notice tone="warn">Review flagged. Check this filing before continuing.</Notice> : null}
+      {review !== null && !reviewMatchesEvidence && !expired ?
+        <Notice tone="warn">Review does not match this screenshot. Check this filing before continuing.</Notice> : null}
       {operation.state === 'filed' && operation.review === null && visibleShot.status === 'shown' && !pending ? <>
         <label className="text-[11.5px] text-[#334155]">Note for a flagged review
           <textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={HMS_NOTE_MAX} rows={2} className={`mt-1 ${paneFieldClass} h-auto`} />
@@ -105,7 +125,7 @@ function CurrentFilingReview({ client, workItemId, messageId, operation, onRefre
       {operation.review === null && pending ? <>
         <p role="status" className="text-[11.5px] text-[#334155]">Checking whether your review was saved…</p>
         {reviewError ? <Notice tone="warn">Could not confirm that your review was saved. Check before continuing.</Notice> : null}
-        <SecondaryButton onClick={onRefresh}>Check review status</SecondaryButton>
+        <SecondaryButton onClick={() => { if (current()) onRefresh(); }}>Check review status</SecondaryButton>
       </> : null}
     </div>
   );
