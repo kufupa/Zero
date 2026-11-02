@@ -5,7 +5,7 @@ import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mj
 import { snapshotLabtestRecord } from './labtest-record.mjs';
 import { matchesRealDateStagePreimage } from './saved-stay-real-preimage.mjs';
 import { labtestAdultAmendDraftDelta } from './guest-stay-amend-adults.mjs';
-import { matchesCombinedDateDraft } from './saved-stay-combined-date-delta.mjs';
+import { matchesRealDateDraft } from './saved-stay-real-date-delta.mjs';
 import { savedAmendDateParts, checkedSavedAmendControl, observeSavedAmendDate } from './guest-stay-amend-date-room-rate.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -14,13 +14,13 @@ const object = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const same = isDeepStrictEqual;
 const invalid = (issue) => ({ outcome:'input_gap', issue, saveEligible:false, saveDispatched:false });
 
-async function selectRealAdultOption(frame, baseline, requested, commit, assertActive, deadlineAt) {
+async function selectRealAdultOption(frame, baseline, requested, commit, assertActive, bounded, deadlineAt) {
   assertActive();
   const input = frame.locator('input[name="adults"]:visible');
-  if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
+  if (await bounded(() => input.count()) !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
   // The shared lifecycle can time out while the locator count is pending.
   assertActive();
-  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage, deadline }) => {
+  const outcome = await bounded(() => input.evaluate((element, { beforeAdult, adults, commitChange, preimage, deadline }) => {
     const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
     const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
       Boolean((item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden'));
@@ -87,7 +87,7 @@ async function selectRealAdultOption(frame, baseline, requested, commit, assertA
     const actual = value && typeof value === 'object' ? read(value, valueField) : value;
     return String(actual ?? '') === String(adults) && element.value === target.label ? true : 'ADULT_EDIT_UNVERIFIED';
   }, { beforeAdult: String(baseline.values.adults), adults: requested, commitChange: commit,
-    preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt });
+    preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt }));
   if (outcome !== true) throw new Error(typeof outcome === 'string' ? outcome : 'ADULT_EDIT_UNVERIFIED');
   return input;
 }
@@ -119,47 +119,65 @@ export async function stageRealStayCombinedWithoutSave(page, expectedInput, chan
   }
   if (usedPages.has(page)) return { outcome:'refused', issue:'PAGE_ALREADY_USED', saveEligible:false, saveDispatched:false };
   usedPages.add(page);
-  let blockedRequests = 0, dialog = false, editAttempted = false;
+  let blockedRequests = 0, editAttempted = false, stopReason = null, signalStop;
   const deadline = performance.now() + timeoutMs;
+  const stopped = new Promise((resolve) => { signalStop = resolve; });
+  const stop = (reason) => { stopReason ||= reason; signalStop({ reason:stopReason }); };
   const active = () => {
-    if (dialog || blockedRequests || performance.now() >= deadline) throw new Error('REAL_STAGE_STOPPED');
+    if (!stopReason && performance.now() >= deadline) stop('REAL_STAGE_TIMEOUT');
+    if (stopReason) throw new Error(stopReason);
   };
-  page.on('dialog', () => { dialog = true; });
+  // A raced browser operation can still be pending. The caller must close and
+  // positively verify closure of the entire context before releasing its lock.
+  const bounded = async (action) => {
+    active();
+    const result = await Promise.race([
+      Promise.resolve().then(() => { active(); return action(); }).then((value) => ({ value })),
+      stopped,
+    ]);
+    if (result.reason) throw new Error(result.reason);
+    active();
+    return result.value;
+  };
+  const timer = setTimeout(() => stop('REAL_STAGE_TIMEOUT'), timeoutMs);
+  // Keep the dialog listener for the page lifetime; never accept a dialog.
+  page.on('dialog', () => stop('UNEXPECTED_DIALOG'));
   try {
     const context = page.context();
     if (context?._options?.serviceWorkers !== 'block' || typeof context.serviceWorkers !== 'function' ||
         context.serviceWorkers().length || typeof context.pages !== 'function' || context.pages().length !== 1 ||
         context.pages()[0] !== page) throw new Error('BROWSER_CONTEXT_UNSAFE');
-    await installReadOnlyGuard(context);
-    if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+    await bounded(() => installReadOnlyGuard(context));
+    if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await bounded(() => page.title()))) {
       throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
     }
     const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
-    if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
-    const frame = await (await frames.elementHandle())?.contentFrame();
+    if (await bounded(() => frames.count()) !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
+    const frameHandle = await bounded(() => frames.elementHandle());
+    const frame = await bounded(() => frameHandle?.contentFrame());
     if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
-    const before = await snapshotLabtestRecord(frame);
+    const before = await bounded(() => snapshotLabtestRecord(frame));
     if (!matchesRealDateStagePreimage(before, identity) || String(before.data.adults ?? '') !== String(adults) ||
         String(before.values.adults ?? '') !== String(adults) ||
         ['data','values'].some((part) => Object.keys(before[part]).filter((key) => key.toLowerCase() === 'adults').length !== 1)) {
       throw new Error('REAL_PREIMAGE_UNVERIFIED');
     }
     // Neither a Save exception nor any other HTTP exception is installed.
-    const deny = (route) => { blockedRequests += 1; return route.abort(); };
-    await context.route('**/*', deny);
-    await page.route('**/*', deny);
+    const deny = (route) => { blockedRequests += 1; stop('REAL_STAGE_STOPPED'); return route.abort(); };
+    await bounded(() => context.route('**/*', deny));
+    await bounded(() => page.route('**/*', deny));
     active();
-    if (!same(before, await snapshotLabtestRecord(frame))) throw new Error('REAL_PREIMAGE_CHANGED');
-    const browserNow = await frame.evaluate(() => performance.now());
+    if (!same(before, await bounded(() => snapshotLabtestRecord(frame)))) throw new Error('REAL_PREIMAGE_CHANGED');
+    const browserNow = await bounded(() => frame.evaluate(() => performance.now()));
     active();
     if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
     const browserDeadline = browserNow + Math.max(0, deadline - performance.now());
-    await selectRealAdultOption(frame, before, changes.adults, false, active, browserDeadline);
+    await bounded(() => selectRealAdultOption(frame, before, changes.adults, false, active, bounded, browserDeadline));
     active();
     editAttempted = true;
-    await selectRealAdultOption(frame, before, changes.adults, true, active, browserDeadline);
+    await bounded(() => selectRealAdultOption(frame, before, changes.adults, true, active, bounded, browserDeadline));
     active();
-    const occupancy = await snapshotLabtestRecord(frame);
+    const occupancy = await bounded(() => snapshotLabtestRecord(frame));
     if (!labtestAdultAmendDraftDelta(before, occupancy, changes.adults).ok ||
         !same(before.partyControls, occupancy.partyControls) || before.partyInputsBlank !== occupancy.partyInputsBlank) {
       throw new Error('REAL_OCCUPANCY_UNVERIFIED');
@@ -170,27 +188,29 @@ export async function stageRealStayCombinedWithoutSave(page, expectedInput, chan
     for (const name of names) {
       active();
       const field = name === 'arrival' ? 'arrivaldate' : 'departuredate';
-      const input = await checkedSavedAmendControl(frame, occupancy, { name:field, type:'date' }, savedAmendDateParts(identity[name]).display);
+      const input = await bounded(() => checkedSavedAmendControl(frame, occupancy, { name:field, type:'date' }, savedAmendDateParts(identity[name]).display));
       active();
-      await input.fill(savedAmendDateParts(changes[name]).display, { timeout:Math.max(1, deadline - performance.now()) });
+      await bounded(() => input.fill(savedAmendDateParts(changes[name]).display, { timeout:Math.max(1, deadline - performance.now()) }));
       active();
-      await input.press('Tab', { timeout:Math.max(1, deadline - performance.now()) });
+      await bounded(() => input.press('Tab', { timeout:Math.max(1, deadline - performance.now()) }));
       controls.push({ name, field, input });
     }
-    await page.waitForTimeout(1500);
+    await bounded(() => page.waitForTimeout(1500));
     active();
-    const after = await snapshotLabtestRecord(frame);
-    if (!matchesCombinedDateDraft(occupancy, after, identity, changes)) throw new Error('REAL_DATE_DRAFT_UNVERIFIED');
+    const after = await bounded(() => snapshotLabtestRecord(frame));
+    if (!matchesRealDateDraft(occupancy, after, identity, changes)) throw new Error('REAL_DATE_DRAFT_UNVERIFIED');
     for (const { name, field, input } of controls) {
-      const native = await observeSavedAmendDate(input, field);
+      const native = await bounded(() => observeSavedAmendDate(input, field));
       active();
       if (native?.componentDate !== changes[name] || native?.formModelDate !== changes[name]) throw new Error('REAL_DATE_DRAFT_UNVERIFIED');
     }
     return { outcome:'updated_unsaved', fields:[...names, 'adults'], blockedRequests, saveEligible:false,
-      saveDispatched:false, pricing:'unknown', inventory:'unknown' };
+      saveDispatched:false, requiresContextClosure:true, pricing:'unknown', inventory:'unknown' };
   } catch (error) {
     const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'REAL_STAGE_UNVERIFIED';
     return { outcome:editAttempted ? 'stage_uncertain' : 'not_staged', issue,
-      blockedRequests, saveEligible:false, saveDispatched:false };
+      blockedRequests, saveEligible:false, saveDispatched:false, requiresContextClosure:true };
+  } finally {
+    clearTimeout(timer);
   }
 }
