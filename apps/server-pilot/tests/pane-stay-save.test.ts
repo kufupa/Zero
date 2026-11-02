@@ -14,6 +14,9 @@ import {
   type PaneStaySpawnInput,
   type PaneStaySpawnResult,
   paneStayDigest,
+  paneStayClock,
+  recordPanePreview,
+  takePanePreview,
   paneStayPropertyLock,
   paneStayPropertyRefusal,
   paneStayRequestBody,
@@ -713,6 +716,7 @@ describe('pane stay screenshots', () => {
     const runId = randomUUID();
     const workItemId = randomUUID();
     const owner = freshOwner();
+    paneStaySaveLoaders.previewPersist = { record: () => undefined, take: () => false };
     let now = 9_000_000;
     paneStaySaveLoaders.now = () => now;
     paneStaySaveLoaders.spawn = async () => ({
@@ -728,6 +732,7 @@ describe('pane stay screenshots', () => {
       stay: labStay,
       owner,
       workItemId,
+      stayId: 's_1',
     });
     now += PANE_RUN_TTL_MS + 1;
     await expect(readPaneStayScreenshot({ runId, name: 'saved.png', owner })).resolves.toEqual({
@@ -1460,6 +1465,23 @@ describe('stay commit persist/reload', () => {
 });
 
 describe('pane stay preview persist', () => {
+  it('refuses partial or blank bound identity before any preview or commit', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const spawn = vi.fn(cliSpawn);
+    paneStaySaveLoaders.spawn = spawn;
+    for (const mode of ['preview', 'commit'] as const) {
+      for (const binding of [
+        { workItemId: randomUUID() }, { stayId: 's_1' },
+        { workItemId: '', stayId: 's_1' }, { workItemId: randomUUID(), stayId: '' },
+      ]) {
+        await expect(runPaneStay({ mode, stay: labStay, owner, ...binding, previewDigest: paneStayDigest(labStay) }))
+          .resolves.toEqual({ status: 'refused', reason: 'pane_preview_binding_required' });
+      }
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('refuses a failed bound preview and discards any earlier memory grant', async () => {
     enableSave();
     const owner = freshOwner();
@@ -1612,7 +1634,7 @@ describe('pane stay preview persist', () => {
     expect(spawned).toEqual(['preview', 'commit', 'preview']);
   });
 
-  it('same-process commit with work-item ids still uses the in-memory preview grant', async () => {
+  it('does not let a memory-only preview authorize a bound commit', async () => {
     enableSave();
     paneStaySaveLoaders.previewPersist = {
       record: () => undefined,
@@ -1635,6 +1657,41 @@ describe('pane stay preview persist', () => {
         stayId: 's_1',
         previewDigest: preview.previewDigest as string,
       }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+  });
+
+  it('refuses a stale local grant after another process consumed the durable grant', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const workItemId = randomUUID(), stayId = 's_1';
+    let durableAvailable = false;
+    paneStaySaveLoaders.previewPersist = {
+      record: () => { durableAvailable = true; },
+      take: () => { const taken = durableAvailable; durableAvailable = false; return taken; },
+    };
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
+    // Simulate stale process A memory while process B consumed the durable record.
+    recordPanePreview(owner, preview.previewDigest as string, paneStayClock());
+    durableAvailable = false;
+    const spawn = vi.fn(cliSpawn);
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, workItemId, stayId,
+      previewDigest: preview.previewDigest as string })).resolves.toMatchObject({
+        status: 'refused', reason: 'pane_save_preview_required',
+      });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(takePanePreview(owner, preview.previewDigest as string, paneStayClock())).toBe(false);
+  });
+
+  it('refuses a bound preview when no durable persistence is available', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1' }))
+        .resolves.toMatchObject({ status: 'refused', reason: 'pane_preview_persist_failed' });
+      expect(takePanePreview(owner, paneStayDigest(labStay), paneStayClock())).toBe(false);
+    } finally { warn.mockRestore(); }
   });
 });
