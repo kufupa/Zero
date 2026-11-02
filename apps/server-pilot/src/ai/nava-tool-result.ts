@@ -155,7 +155,8 @@ export function adaptExistingToolResult<R extends ExistingToolResult<unknown>>(r
     result.possiblyDispatched === true || result.possiblyDispatched === 'unknown' || result.dispatched === true || result.dispatched === 'unknown';
   const successful = (['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) ||
     (options.operation === 'read' && code === 'found') ||
-    (options.operation === 'write' && ['amended', 'cancelled', 'attached'].includes(code))) && result.status !== 'refused';
+    (options.operation === 'write' && ['amended', 'cancelled', 'attached'].includes(code))) &&
+    !preDispatchCodes.has(result.status ?? '');
   const hasTrustedReadback = options.readbackVerified === true && options.verifiedReadback?.readback != null;
   let outcome: NavaToolResult<unknown>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!hasTrustedReadback || !successful))) outcome = 'uncertain';

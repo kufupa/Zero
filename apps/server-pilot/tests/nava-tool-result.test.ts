@@ -48,6 +48,21 @@ describe('Nava tool result contract', () => {
     expect(adaptExistingToolResult({ status: 'ok', outcome: 'refused' }, { operation: 'write' }).outcome).toBe('refused');
     expect(adaptExistingToolResult({ status: 'ok', outcome: 'not_dispatched' }, { operation: 'write' }).outcome).toBe('refused');
   });
+  it('does not turn a pre-dispatch status into success when outcome says ok', () => {
+    for (const status of ['not_dispatched', 'refused', 'refused_flag_off', 'amend_preview_required', 'needs_input', 'input_gap']) {
+      for (const success of ['ok', 'success']) {
+        const result = { status, outcome: success };
+        expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+          verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+        expect(adaptExistingToolResult(result, { operation: 'read' }).outcome).toBe('refused');
+        const reverse = { status: success, outcome: status };
+        const expected = status === 'needs_input' || status === 'input_gap' ? 'needs_input' : 'refused';
+        expect(adaptExistingToolResult(reverse, { operation: 'write' }).outcome).toBe(expected);
+        expect(adaptExistingToolResult(reverse, { operation: 'read' }).outcome).toBe(expected);
+      }
+    }
+  });
+
   it('keeps unknown refusal-looking codes uncertain', () => {
     expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
   });
