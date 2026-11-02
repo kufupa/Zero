@@ -50,6 +50,13 @@ describe('draft persistence', () => {
     ).toBe(false);
   });
 
+  it('persists edited headers or attachments, even when all values are cleared', () => {
+    expect(shouldPersistDraft({ hasUnsavedChanges: true, nonBodyChanges: true,
+      initialHtml: '<p>Quote</p>', html: '<p>Quote</p>', text: 'Quote', to: [], subject: '', aiBlocked: false })).toBe(true);
+    expect(shouldPersistDraft({ hasUnsavedChanges: false, nonBodyChanges: true,
+      initialHtml: '', html: '', text: '', to: [], subject: '', aiBlocked: false })).toBe(false);
+  });
+
   it('includes thread and reply parent when saving a reply draft', () => {
     expect(
       buildDraftMutationInput({

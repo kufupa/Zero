@@ -62,7 +62,7 @@ import {
 } from '@/lib/compose-attachment-policy';
 import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
-import { registerComposeFlush, registerComposeUnsavedCheck } from '@/lib/mail/compose-flush-registry';
+import { registerComposeFlush, registerComposePendingRecipientCheck, registerComposeSwitchLock, registerComposeUnsavedCheck } from '@/lib/mail/compose-flush-registry';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
 import { TemplateButton } from './template-button';
@@ -166,6 +166,21 @@ export function EmailComposer({
     setHasUnsavedChanges(true);
     setAutosaveSuppressedAfterFailure(false);
   }, []);
+  // A separate revision marks intentional header/file changes without saving untouched quoted content.
+  const nonBodyEditedAtRef = useRef(0);
+  const markNonBodyChanges = useCallback(() => {
+    markUnsavedChanges();
+    nonBodyEditedAtRef.current = revisionRef.current.localRevision;
+  }, [markUnsavedChanges]);
+  const hasNonBodyChanges = useCallback(
+    () => nonBodyEditedAtRef.current > revisionRef.current.savedRevision,
+    [],
+  );
+  const composerRef = useRef<HTMLDivElement>(null);
+  // A partially typed address is not yet in the form's recipient array.
+  const hasPendingRecipientInput = useCallback(() =>
+    Array.from(composerRef.current?.querySelectorAll<HTMLInputElement>('input[type="email"]') ?? [])
+      .some((input) => input.value.trim().length > 0), []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
@@ -260,11 +275,10 @@ export function EmailComposer({
 
   const hasSynchronousDraftChanges = useCallback(
     () =>
-      hasUnsavedChanges ||
       revisionRef.current.localRevision > revisionRef.current.savedRevision ||
       pendingAttachmentWorkRef.current > 0 ||
       pendingInlineImageWorkRef.current > 0,
-    [hasUnsavedChanges],
+    [],
   );
 
   const processAndSetAttachments = useCallback(
@@ -443,7 +457,7 @@ export function EmailComposer({
     ) => {
       if (marksDraftDirty) {
         pendingAttachmentWorkRef.current += 1;
-        markUnsavedChanges();
+        markNonBodyChanges();
       }
 
       const runTask = async () => {
@@ -463,7 +477,7 @@ export function EmailComposer({
       });
       return attachmentQueueRef.current;
     },
-    [markUnsavedChanges],
+    [markNonBodyChanges],
   );
 
   const queueAttachmentCandidates = useCallback(
@@ -624,8 +638,9 @@ export function EmailComposer({
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       const values = getValues();
       if (
-        shouldPersistDraft({
+        hasPendingRecipientInput() || shouldPersistDraft({
           hasUnsavedChanges: hasSynchronousDraftChanges(),
+          nonBodyChanges: hasNonBodyChanges(),
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -641,7 +656,7 @@ export function EmailComposer({
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [editor, getValues, hasSynchronousDraftChanges, initialMessage]);
+  }, [editor, getValues, hasNonBodyChanges, hasPendingRecipientInput, hasSynchronousDraftChanges, initialMessage]);
 
   const drainAttachmentWork = useCallback(async () => {
     for (;;) {
@@ -741,6 +756,7 @@ export function EmailComposer({
       void setDraftId(null);
       setHasUnsavedChanges(false);
       revisionRef.current = { localRevision: 0, savedRevision: 0 };
+      nonBodyEditedAtRef.current = 0;
       editor.commands.clearContent(false);
       form.reset();
       clearAttachmentState();
@@ -792,6 +808,7 @@ export function EmailComposer({
         const values = getValues();
         const snapshot = {
           hasUnsavedChanges: hasSynchronousDraftChanges(),
+          nonBodyChanges: hasNonBodyChanges(),
           initialHtml: initialMessage ?? '',
           aiBlocked: false,
           draftId: activeDraftIdRef.current,
@@ -810,6 +827,7 @@ export function EmailComposer({
         if (
           !shouldPersistDraft({
             hasUnsavedChanges: snapshot.hasUnsavedChanges,
+            nonBodyChanges: snapshot.nonBodyChanges,
             initialHtml: snapshot.initialHtml,
             html: snapshot.html,
             text: snapshot.text,
@@ -895,6 +913,7 @@ export function EmailComposer({
     drainComposeFileWork,
     getValues,
     hasSynchronousDraftChanges,
+    hasNonBodyChanges,
     initialMessage,
     queryClient,
     replyToMessageId,
@@ -922,6 +941,7 @@ export function EmailComposer({
     const values = getValues();
     return {
       hasUnsavedChanges: hasSynchronousDraftChanges(),
+      nonBodyChanges: hasNonBodyChanges(),
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -929,19 +949,27 @@ export function EmailComposer({
       subject: values.subject ?? '',
       aiBlocked: false,
     };
-  }, [hasSynchronousDraftChanges, initialMessage, editor, getValues]);
+  }, [hasNonBodyChanges, hasSynchronousDraftChanges, initialMessage, editor, getValues]);
 
   const handleClose = useCallback(() => {
+    if (hasPendingRecipientInput()) {
+      toast.error('Finish adding the email address before closing the draft.');
+      return;
+    }
     const action = resolveComposeCloseAction({ ...buildPersistInput(), intent: 'userClose' });
     if (action === 'closeSilent') {
       onClose?.();
       return;
     }
     setShowLeaveConfirmation(true);
-  }, [buildPersistInput, onClose]);
+  }, [buildPersistInput, hasPendingRecipientInput, onClose]);
 
   const handleEscapeClose = useCallback(
     (isComposing: boolean) => {
+      if (hasPendingRecipientInput()) {
+        if (!isComposing) toast.error('Finish adding the email address before closing the draft.');
+        return;
+      }
       const action = resolveComposeEscapeAction({ ...buildPersistInput(), isComposing });
       if (action === 'ignore') return;
       if (action === 'closeSilent') {
@@ -950,7 +978,7 @@ export function EmailComposer({
       }
       setShowLeaveConfirmation(true);
     },
-    [buildPersistInput, onClose],
+    [buildPersistInput, hasPendingRecipientInput, onClose],
   );
 
   const handleDialogChoice = useCallback(
@@ -978,14 +1006,17 @@ export function EmailComposer({
 
   useEffect(() => {
     const flush = async () => {
+      if (hasPendingRecipientInput()) return;
       if (needsSave()) {
         await saveDraft();
       }
     };
     const needsSave = () => {
+      if (hasPendingRecipientInput()) return true;
       const values = getValues();
       const action = resolveComposeCloseAction({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
+        nonBodyChanges: hasNonBodyChanges(),
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
@@ -998,11 +1029,16 @@ export function EmailComposer({
     };
     registerComposeFlush(flush);
     registerComposeUnsavedCheck(needsSave);
+    registerComposePendingRecipientCheck(hasPendingRecipientInput);
+    const node = composerRef.current;
+    registerComposeSwitchLock((locked) => { if (node) node.toggleAttribute('inert', locked); });
     return () => {
       registerComposeFlush(null);
       registerComposeUnsavedCheck(null);
+      registerComposePendingRecipientCheck(null);
+      registerComposeSwitchLock(null);
     };
-  }, [hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
+  }, [hasNonBodyChanges, hasPendingRecipientInput, hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
 
   useEffect(() => {
     if (!editor) return;
@@ -1233,6 +1269,7 @@ export function EmailComposer({
 
   return (
     <div
+      ref={composerRef}
       onPasteCapture={handlePasteFiles}
       onDragEnter={handleFileDragEnter}
       onDragOver={handleFileDragOver}
@@ -1267,7 +1304,7 @@ export function EmailComposer({
                 name="to"
                 placeholder="Enter email address"
                 disabled={isLoading}
-                onValueChange={markUnsavedChanges}
+                onValueChange={markNonBodyChanges}
               />
             </div>
 
@@ -1309,7 +1346,7 @@ export function EmailComposer({
                   name="cc"
                   placeholder="Enter email for Cc"
                   disabled={isLoading}
-                  onValueChange={markUnsavedChanges}
+                  onValueChange={markNonBodyChanges}
                 />
               </div>
             )}
@@ -1323,7 +1360,7 @@ export function EmailComposer({
                   name="bcc"
                   placeholder="Enter email for Bcc"
                   disabled={isLoading}
-                  onValueChange={markUnsavedChanges}
+                  onValueChange={markNonBodyChanges}
                 />
               </div>
             )}
@@ -1343,7 +1380,7 @@ export function EmailComposer({
               onChange={(e) => {
                 const value = replaceEmojiShortcodes(e.target.value);
                 setValue('subject', value);
-                markUnsavedChanges();
+                markNonBodyChanges();
               }}
             />
           </div>
@@ -1426,7 +1463,7 @@ export function EmailComposer({
               cc={ccEmails ?? []}
               bcc={bccEmails ?? []}
               setRecipients={(field, val) => setValue(field, val)}
-              onApply={markUnsavedChanges}
+              onApply={markNonBodyChanges}
             />
             <Input
               type="file"
