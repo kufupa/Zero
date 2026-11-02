@@ -315,6 +315,12 @@ export async function createReservation(input, { withSession = withBookingLookup
       const propertyCode = input.propertyCode;
       if (commit) {
         state.guest = await selectGuest(runTool, input.guest, true);
+        // Labtest's mandatory note must have been prepared and reviewed already.
+        // Do not require a note for other guests when a real-write path is added.
+        if (state.guest.guest.firstName === 'Proof' && state.guest.guest.lastName === 'Labtest' && input.note === undefined) {
+          missing.push('note');
+          return;
+        }
       }
       for (const [key, field] of [['arrival', 'arrivalDate'], ['departure', 'departureDate']]) {
         if (date(stay[key])) {
@@ -419,7 +425,9 @@ export async function createReservation(input, { withSession = withBookingLookup
       }
       if (commit && missing.length) return;
       if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
-      const note = input.note ?? (commit ? `Proof Labtest create ${randomUUID()}` : null);
+      // Only verified Labtest prepares get a synthetic note. Commit reuses its input.
+      const note = input.note === undefined && !commit && labtestDraft
+        ? `Proof Labtest create ${randomUUID()}` : input.note;
       if (note != null && typeof note === 'string' && note.trim() && note.length <= 200) {
         const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'reservationNote', value: note });
         if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });

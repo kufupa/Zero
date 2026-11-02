@@ -81,7 +81,9 @@ function harness(options = {}) {
       case 'closeCmsMessageIdPicker': return { outcome: 'closed_unsaved' };
       case 'selectCmsMessageId': partyFields.udfchar09 = request.code; return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: request.code, actual: request.code };
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
-      case 'setGuestStayText': return { outcome: 'updated_unsaved', actual: request.value };
+      case 'setGuestStayText':
+        if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
+        return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
@@ -394,6 +396,10 @@ test('prepare stages supported partial fields while retaining unsupported values
     assert.equal(result.appliedVerification.visibleFields, true);
     assert.equal(result.applied.guest.nativeId, '123');
     assert.deepEqual(result.unsupportedFields.map(({ field }) => field).sort(), unsupported.sort());
+    if (change.note === null) {
+      assert.equal(Object.hasOwn(result.applied, 'note'), false);
+      assert.equal(fake.calls.some(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote'), false);
+    }
     assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'GTDCC');
     assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay' || tool === 'setCmsSendCheckbox'), false);
     assert.equal(fake.freshReads, 0);
@@ -751,6 +757,41 @@ test('guest name lookup returns none, selects one, and refuses ambiguity without
   assert.equal(result.outcome, 'refused');
   assert.equal(result.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
   assert.equal(refused.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
+});
+
+test('prepares a synthetic Labtest note once and requires it explicitly at commit', async (t) => {
+  const { note: omitted, ...withoutNote } = input;
+  assert.equal(omitted, 'Synthetic proof');
+  const preparing = harness();
+  const prepared = await createReservation({ ...withoutNote, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.match(prepared.applied.note, /^Proof Labtest create [0-9a-f-]{36}$/);
+  assert.equal(prepared.requestBinding.request.note, prepared.applied.note);
+  assert.equal(preparing.calls.find((call) => call.tool === 'setGuestStayText' && call.field === 'reservationNote').value,
+    prepared.applied.note);
+
+  const missing = harness();
+  const refused = await createReservation(withoutNote, missing.options);
+  assert.equal(refused.outcome, 'needs_input');
+  assert.ok(refused.missing.includes('note'));
+  assert.equal(missing.calls.some((call) => call.tool === 'saveNewLabtestStay'), false);
+  assert.equal(missing.calls.some((call) => call.tool === 'setGuestStayText'), false);
+
+  const committing = harness({ save: { outcome: 'not_dispatched' } });
+  const result = await createReservation({ ...withoutNote, note: prepared.applied.note }, committing.options);
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(committing.calls.find((call) => call.tool === 'saveNewLabtestStay')?.note, prepared.applied.note);
+});
+
+test('does not invent a note for a real guest prepare', async () => {
+  const { note: omitted, ...withoutNote } = input;
+  assert.equal(omitted, 'Synthetic proof');
+  const realProfile = { ...profile, firstName: 'Real', lastName: 'Guest' };
+  const fake = harness({ profiles: [realProfile], draft: { ...values, firstname: 'Real', lastname: 'Guest', reservationnote: '' } });
+  const prepared = await createReservation({ ...withoutNote, mode: 'prepare' }, fake.options);
+  assert.equal(Object.hasOwn(prepared.applied, 'note'), false);
+  assert.equal(fake.calls.some((call) => call.tool === 'setGuestStayText' && call.field === 'reservationNote'), false);
+  assert.equal(fake.calls.some((call) => call.tool === 'saveNewLabtestStay'), false);
 });
 
 test('native guard callbacks travel only in server-owned commit session options', async (t) => {
