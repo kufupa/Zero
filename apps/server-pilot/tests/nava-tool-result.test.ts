@@ -18,6 +18,12 @@ describe('Nava tool result contract', () => {
     { possiblyDispatched: true }, { dispatched: true }])('keeps possible dispatch uncertain: %o', (signal) => {
     expect(adaptExistingToolResult({ outcome: 'refused', ...signal }, { operation: 'write' }).outcome).toBe('uncertain');
   });
+  it('never converts a dispatched refusal to a definite refusal even with claimed verification', () => {
+    expect(adaptExistingToolResult({ outcome: 'refused', clickedSave: true },
+      { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult({ outcome: 'ok', status: 'refused', clickedSave: true },
+      { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+  });
   it('requires verified readback for successful writes', () => {
     expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
     expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true }).outcome).toBe('ok');
