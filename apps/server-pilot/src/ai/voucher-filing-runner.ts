@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { isPropertyReadConnectionHeld, propertyReadLockKey, type PropertyReadConnection } from '../hms/property-read-lock.js';
-import { assertHmsUnchangedBeforeSave, consumeHmsWriteApproval, endHmsWriteRun } from './hms-approval.js';
+import { assertHmsUnchangedBeforeSave, consumeHmsWriteApproval, endHmsWriteRun, hmsStateDigest } from './hms-approval.js';
 import { FilingRunnerInputSchema, type FilingRunner, type NavaToolResult } from './nava-tool-result.js';
 import type { AiRunFence } from './run-ledger.js';
 
@@ -115,13 +115,16 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
         return finish('filing_authority_unavailable');
       }
       let form: ApprovedForm;
+      let approvedHmsDigest: string;
       try {
         const consumed = await consume({ db, runId: fence.runId, fence });
         if (consumed.grantId !== serverGrantId) return finish('filing_grant_mismatch');
         form = structuredClone(consumed.form);
+        approvedHmsDigest = consumed.hmsBeforeDigest;
       } catch { return finish('filing_grant_unavailable'); }
       if (!withinDeadline()) return finish('filing_deadline_expired');
       if (form.propertyCode !== propertyLock.propertyCode) return finish('filing_property_mismatch');
+      if (!/^[a-f0-9]{64}$/.test(approvedHmsDigest)) return finish('filing_needs_check');
       const expectedHash = sourceHash(form);
       if (!expectedHash) return finish('filing_source_unavailable');
       const readBytes = async (): Promise<Buffer | null> => {
@@ -140,8 +143,8 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
       try {
         const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
           readHmsState: async () => {
-            const snapshot = await deps.readApprovedSnapshot(structuredClone(form));
-            if (!deps.isEligibleSnapshot(snapshot, structuredClone(form))) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
+            const snapshot = structuredClone(await deps.readApprovedSnapshot(structuredClone(form)));
+            if (!deps.isEligibleSnapshot(snapshot, structuredClone(form)) || hmsStateDigest(snapshot) !== approvedHmsDigest) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
             preSubmitValidated = true;
             return snapshot;
           } });
@@ -157,8 +160,8 @@ export function createFilingRunner(deps: FilingRunnerDependencies): FilingRunner
           let freshReadValidated = false;
           const checked = await checkBeforeSave({ db, runId: fence.runId, fence,
             readHmsState: async () => {
-              const snapshot = await deps.readIndependentSnapshot(structuredClone(form));
-              if (!deps.isEligibleSnapshot(snapshot, structuredClone(form))) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
+              const snapshot = structuredClone(await deps.readIndependentSnapshot(structuredClone(form)));
+              if (!deps.isEligibleSnapshot(snapshot, structuredClone(form)) || hmsStateDigest(snapshot) !== approvedHmsDigest) throw new Error('FILING_SNAPSHOT_INCOMPLETE');
               freshReadValidated = true;
               return snapshot;
             } });

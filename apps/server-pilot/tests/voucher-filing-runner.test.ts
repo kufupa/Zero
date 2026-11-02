@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createFilingRunner, prepareFilingContext } from '../src/ai/voucher-filing-runner.js';
-import { assertHmsUnchangedBeforeSave, HmsApprovalError } from '../src/ai/hms-approval.js';
+import { assertHmsUnchangedBeforeSave, hmsStateDigest, HmsApprovalError } from '../src/ai/hms-approval.js';
 import { createPropertyReadLock } from '../src/hms/property-read-lock.js';
 
 const pdf = Buffer.from('%PDF-synthetic');
@@ -18,9 +18,9 @@ async function fixture() {
   const form = { propertyCode: 'HRCEN', payload: { source: { sha256 } } };
   const connection = { query: async () => [{ ok: true }], close: async () => {} } as any;
   const lock = createPropertyReadLock({ tenantId: 'tenant', propertyCode: 'HRCEN', connectionFactory: async () => connection });
-  const consume = vi.fn(async () => ({ grantId: 'grant-1', payloadHash: 'hash', hmsBeforeDigest: 'before', form }));
-  const readApprovedSource = vi.fn(async () => ({ status: 'ready' as const, bytes: pdf }));
   const expectedSnapshot = { identity: 'same-shape', coverage: { complete: true, refreshVerified: true } };
+  const consume = vi.fn(async () => ({ grantId: 'grant-1', payloadHash: 'hash', hmsBeforeDigest: hmsStateDigest(expectedSnapshot), form }));
+  const readApprovedSource = vi.fn(async () => ({ status: 'ready' as const, bytes: pdf }));
   const readApprovedSnapshot = vi.fn(async () => structuredClone(expectedSnapshot));
   const readIndependentSnapshot = vi.fn(async () => structuredClone(expectedSnapshot));
   const isEligibleSnapshot = vi.fn((snapshot: any) => snapshot.coverage.complete && snapshot.coverage.refreshVerified);
@@ -150,6 +150,15 @@ describe('fenced voucher filing runner', () => {
     }
   });
 
+  it('rejects an invalid approved HMS digest before any native action', async () => {
+    const f = await fixture();
+    f.consume.mockResolvedValueOnce({ grantId: 'grant-1', payloadHash: 'hash', hmsBeforeDigest: 'invalid', form: f.form });
+    const result = await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }));
+    expect(result.outcome).toBe('uncertain');
+    expect(f.readApprovedSnapshot).not.toHaveBeenCalled();
+    expect(f.fileLabtestVoucher).not.toHaveBeenCalled();
+  });
+
   it('refuses stale, incomplete, failed reads and lost leases before native dispatch', async () => {
     for (const failure of ['stale', 'incomplete', 'error', 'lease']) {
       const f = await fixture();
@@ -244,6 +253,19 @@ describe('fenced voucher filing runner', () => {
     const result = await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }));
     expect(result.outcome).toBe('uncertain');
     expect(f.readIndependentSnapshot).not.toHaveBeenCalled();
+    expect(f.persistPreimage).not.toHaveBeenCalled();
+  });
+
+  it('compares fresh HMS data with the consumed grant even if the checker says unchanged', async () => {
+    const f = await fixture();
+    f.readIndependentSnapshot.mockResolvedValueOnce({ identity: 'changed', coverage: { complete: true, refreshVerified: true } });
+    f.checkBeforeSave.mockImplementationOnce(async ({ readHmsState }: any) => {
+      await readHmsState(); return { status: 'unchanged' as const };
+    }).mockImplementationOnce(async ({ readHmsState }: any) => {
+      await readHmsState(); return { status: 'unchanged' as const };
+    });
+    const result = await f.lock.withLock(() => createFilingRunner(f.deps).run({ grantRef: 'grant-1' }));
+    expect(result.outcome).toBe('uncertain');
     expect(f.persistPreimage).not.toHaveBeenCalled();
   });
 
