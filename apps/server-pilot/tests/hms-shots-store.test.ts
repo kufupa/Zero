@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
-import { hmsShotsRoot, persistHmsShots, readStoredHmsShot } from '../src/ai/hms-shots-store.js';
+import { hmsShotsRoot, persistHmsShots, readStoredHmsShot, verifyStoredHmsPreview } from '../src/ai/hms-shots-store.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
 const SHA = createHash('sha256').update(PNG).digest('hex');
@@ -122,5 +122,59 @@ describe('hms shots store', () => {
     await expect(readStoredHmsShot({ runId, name: '../saved.png', owner, env })).resolves.toBeNull();
     await rm(source, { recursive: true, force: true });
     await rm(amendSource, { recursive: true, force: true });
+  });
+});
+
+
+describe('retained preview integrity', () => {
+  it('binds a structurally plausible PNG to its exact owner, hotel, work item and digest', async () => {
+    const dir = await makeRoot();
+    const source = await mkdtemp(join(tmpdir(), 'pane-preview-source-'));
+    try {
+      const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXcAAAAASUVORK5CYII=', 'base64');
+      await writeFile(join(source, 'filled.png'), image);
+      const propertyCode = PROPERTY!;
+      const workItemId = randomUUID();
+      const runId = randomUUID();
+      const owner = 'user-1:transport-sample';
+      const env = { HMS_SHOTS_DIR: dir };
+      const shots = await persistHmsShots({ propertyCode, workItemId, runId, sourceDir: source, owner, now: Date.now(), env });
+      const sha256 = shots?.[0]?.sha256;
+      expect(sha256).toBeTruthy();
+      const proof = { propertyCode, workItemId, runId, name: 'filled.png', owner, sha256: sha256!, env };
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(true);
+      for (const changed of [
+        { ...proof, owner: 'another-user:transport-sample' },
+        { ...proof, propertyCode: 'OTHER' },
+        { ...proof, workItemId: randomUUID() },
+        { ...proof, name: 'saved.png' },
+        { ...proof, sha256: '0'.repeat(64) },
+      ]) await expect(verifyStoredHmsPreview(changed)).resolves.toBe(false);
+      await writeFile(join(dir, propertyCode, workItemId, runId, 'filled.png'), Buffer.from('changed'));
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a digest-matching corrupt image and a missing run index', async () => {
+    const dir = await makeRoot();
+    const source = await mkdtemp(join(tmpdir(), 'pane-preview-source-'));
+    try {
+      const image = Buffer.from('not an image');
+      await writeFile(join(source, 'filled.png'), image);
+      const propertyCode = PROPERTY!;
+      const workItemId = randomUUID();
+      const runId = randomUUID();
+      const owner = 'user-1:transport-sample';
+      const env = { HMS_SHOTS_DIR: dir };
+      const shots = await persistHmsShots({ propertyCode, workItemId, runId, sourceDir: source, owner, now: Date.now(), env });
+      const proof = { propertyCode, workItemId, runId, name: 'filled.png', owner, sha256: shots![0]!.sha256, env };
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+      await rm(join(dir, 'by-run', `${runId}.json`));
+      await expect(verifyStoredHmsPreview(proof)).resolves.toBe(false);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 
@@ -8,6 +9,9 @@ const DEFAULT_ROOT = '/var/lib/nava/hms-shots';
 const PROPERTY_CODE = /^[A-Z][A-Z0-9]+$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHOT_NAME_PATTERN = /^(before|filled|saved)\.png$/;
+const INDEX_MAX_BYTES = 16 * 1024;
+const PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
 
 export type HmsShotMeta = { name: string; sha256: string; at: string };
 
@@ -74,12 +78,55 @@ function shotDir(root: string, index: Pick<RunIndex, 'property' | 'workItemId'>,
   return join(root, index.property, index.workItemId, runId);
 }
 
+// Bound allocation and reject special files, including a file that grows during the read.
+async function readBoundedFile(path: string, maxBytes: number): Promise<Buffer | null> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size < 1 || stat.size > maxBytes) return null;
+    const bytes = Buffer.alloc(stat.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    return offset === stat.size ? bytes.subarray(0, offset) : null;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+// Structural sanity check only: this is not a PNG decoder or CRC validation.
+function isPlausiblePng(bytes: Buffer): boolean {
+  if (!bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return false;
+  let offset = PNG_SIGNATURE.length;
+  let dataSeen = false;
+  while (offset + 12 <= bytes.length) {
+    const size = bytes.readUInt32BE(offset);
+    const end = offset + size + 12;
+    if (end > bytes.length) return false;
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (offset === PNG_SIGNATURE.length &&
+        (type !== 'IHDR' || size !== 13 || bytes.readUInt32BE(offset + 8) === 0 || bytes.readUInt32BE(offset + 12) === 0)) return false;
+    if (type === 'IDAT' && size > 0) dataSeen = true;
+    if (type === 'IEND') return dataSeen && size === 0 && end === bytes.length;
+    offset = end;
+  }
+  return false;
+}
+
 async function readIndex(root: string, runId: string): Promise<RunIndex | null> {
   if (!RUN_ID_PATTERN.test(runId)) return null;
   const path = indexPath(root, runId);
   if (!underRoot(root, path)) return null;
   try {
-    const raw = JSON.parse(await readFile(path, 'utf8')) as Partial<RunIndex>;
+    const bytes = await readBoundedFile(path, INDEX_MAX_BYTES);
+    if (!bytes) return null;
+    const raw = JSON.parse(bytes.toString('utf8')) as Partial<RunIndex>;
     if (
       typeof raw.property !== 'string' ||
       !PROPERTY_CODE.test(raw.property) ||
@@ -174,4 +221,21 @@ export async function readStoredHmsShot(input: ReadInput): Promise<Buffer | null
   } catch {
     return null;
   }
+}
+
+/** Verify retained preview bytes against their owner, property, work item and full recorded digest. */
+export async function verifyStoredHmsPreview(input: {
+  runId: string; name: string; sha256: string; owner: string; propertyCode: string; workItemId: string;
+  env?: ShotEnv;
+}): Promise<boolean> {
+  const root = hmsShotsRoot(input.env);
+  if (!root || !RUN_ID_PATTERN.test(input.runId) || input.name !== 'filled.png' ||
+      !/^[0-9a-f]{64}$/.test(input.sha256)) return false;
+  const index = await readIndex(root, input.runId);
+  if (!index || index.owner !== input.owner || index.property !== input.propertyCode ||
+      index.workItemId !== input.workItemId) return false;
+  const path = join(shotDir(root, index, input.runId), input.name);
+  if (!underRoot(root, path)) return false;
+  const bytes = await readBoundedFile(path, PREVIEW_MAX_BYTES);
+  return !!bytes && isPlausiblePng(bytes) && createHash('sha256').update(bytes).digest('hex') === input.sha256;
 }
