@@ -23,7 +23,7 @@ function rowCount(projection: Projection, state: WorkState, stay: ProjectedStay,
     path.startsWith(`stays[${stay.id}].rows[`) && path.endsWith('].removed'));
   const ownRowOfRowlessSource = source?.rows.length === 0 && row.id === `${stay.id}_row` &&
     stay.rows.length === 1 && !removedRow;
-  return soleSourceRow || ownRowOfRowlessSource ? stay.totalRooms : null;
+  return !removedRow && (soleSourceRow || ownRowOfRowlessSource) ? stay.totalRooms : null;
 }
 
 function activeRow(projection: Projection, state: WorkState, identity: PaneCreateIdentity) {

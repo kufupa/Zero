@@ -95,6 +95,18 @@ describe('batch create scope reconciliation', () => {
     expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
   });
+  it('requires an explicit count after a staff-added sibling is removed from a sole source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [{ ...stay.rows[0]!, rooms: null as never }];
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+    f.state['stays[s1].rows[added].removed'] = true;
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
   it('defaults an originally rowless stay only while its own row is the sole composition', () => {
     const f = fixture(), stay = f.payload.stays[0]!;
     stay.rows = [];
