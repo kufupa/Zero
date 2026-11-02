@@ -14,7 +14,7 @@ The owner asked for Pomerado's documented MCP workflow to build and publish a re
 | Trial window | 14:50:55–18:38:41 UTC, 3 h 47 min 46 s through verified pause. Includes planning, owner-directed pauses and interruptions, not continuous execution. The initial timebox was about one hour; later instructions permitted continued attempts and replanning. |
 | Latest pause evidence | At 18:38:41 UTC HRCEN and HRDAV slots were active, both guard status files said `RESTORED`, and named trial advisory-lock holders were zero. The guard11 systemd unit was `failed` despite its restoration status; do not conflate the two. This is a timestamped observation, not a current health check. |
 
-Sources: [trial evidence](../../research/2026-10-27-pomerado-readstay-test.md), [owner asks](../OWNER-ASKS.md), [active context](../ACTIVE.md). Raw guest information and logs remain private. No HMS reservation write was authorized or observed.
+Sources: [trial evidence](../../research/2026-10-27-pomerado-readstay-test.md), [owner asks](../OWNER-ASKS.md), [active context](../archive/ACTIVE-2026-10.md). Raw guest information and logs remain private. No HMS reservation write was authorized or observed.
 
 ## What went wrong
 

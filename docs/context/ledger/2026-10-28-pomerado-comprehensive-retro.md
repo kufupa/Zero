@@ -69,7 +69,7 @@ No defensible ETA for a successful full proof exists. Four older Pomerado-relate
 
 ## Extension and hold
 
-At 08:37:41 UK the owner selected a one-hour extension with the existing read-only, Guardian, privacy and lock boundaries. At 08:38:10 UK the owner interrupted for this retrospective. A conservative wall-clock interpretation ends at about 09:37:41 UK; whether retrospective time pauses that window was not stated. No new mint or hotel browser trial was launched after the selection. [Owner ask](../OWNER-ASKS.md) · [active context](../ACTIVE.md).
+At 08:37:41 UK the owner selected a one-hour extension with the existing read-only, Guardian, privacy and lock boundaries. At 08:38:10 UK the owner interrupted for this retrospective. A conservative wall-clock interpretation ends at about 09:37:41 UK; whether retrospective time pauses that window was not stated. No new mint or hotel browser trial was launched after the selection. [Owner ask](../OWNER-ASKS.md) · [active context](../archive/ACTIVE-2026-10.md).
 
 ## Correction after the retrospective
 

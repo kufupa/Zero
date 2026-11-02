@@ -51,4 +51,4 @@ Parallelize evidence gathering, extraction and pane design with provider trial, 
 
 No implementation, install, flag flip, deploy, send or live HMS action was launched by this prioritization.
 
-Sources: [owner asks](../context/OWNER-ASKS.md), [current state](../context/ACTIVE.md), [booking completeness](2026-10-27-001-booking-completeness-plan.md), [booking parity](../research/2026-10-27-next-run/booking-parity.md), [booking and cancellation reassessment](../research/2026-10-27-next-run/pomerado-delivery-reassessment.md), and the origin/main Da Vinci handoff in `docs/plans/2026-10-27-001-dv-run-007-handoff.md`.
+Sources: [owner asks](../context/OWNER-ASKS.md), [current state](../context/archive/ACTIVE-2026-10.md), [booking completeness](2026-10-27-001-booking-completeness-plan.md), [booking parity](../research/2026-10-27-next-run/booking-parity.md), [booking and cancellation reassessment](../research/2026-10-27-next-run/pomerado-delivery-reassessment.md), and the origin/main Da Vinci handoff in `docs/plans/2026-10-27-001-dv-run-007-handoff.md`.
