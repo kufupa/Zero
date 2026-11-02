@@ -1457,7 +1457,7 @@ export function BookingCards({
   const selectedRooms = batchRooms.filter(({ room }) => !excludedIds.has(roomKeyOf(room)));
   const stableId = /^[A-Za-z0-9_-]{1,40}$/;
   const sourceIdentity = ({ room, group }: typeof batchRooms[number]) => {
-    const stored = batchReview?.refs[room.groupId];
+    const stored = batchReview?.refs[room.groupId] ?? (group ? batchReview?.refs[group.id] : undefined);
     const ref = stored ?? (group?.stayId && stableId.test(group.stayId) && stableId.test(group.id)
       ? { stayId: group.stayId, rowId: group.id } : null);
     const rowId = ref?.rowId ?? (ref ? `${ref.stayId}_row` : '');

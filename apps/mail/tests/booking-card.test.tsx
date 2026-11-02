@@ -3201,6 +3201,58 @@ describe('batch booking card integration', () => {
     expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
   });
 
+  it('holds a single-draft batch after its draft disappears or selection changes', async () => {
+    const api = batchClient(), single = paneClient(), session = quotedSession(draftReady());
+    api.read = vi.fn(async ({ workItemId, runId }) => ({ workItemId, runId, complete: true, rooms: [
+      { allocationId: 'g1:1', status: 'confirmed' as const, confirmation: '123', screenshotRecorded: true,
+        readbackRecorded: true, attempt: { runId, childId: 'a'.repeat(64) } },
+      { allocationId: 'g1:2', status: 'uncertain' as const, attempt: { runId, childId: 'b'.repeat(64) } },
+    ] }));
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    await screen.findByText('Booked · confirmation 123');
+    view.rerender(<QuoteBookingHost session={{ ...session, bookingDrafts: {} }} {...props} />);
+    expect(screen.getByText('Booked · confirmation 123')).toBeDefined();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2 } }} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('resolves a rowless stored reference when an unquoted room uses its date key', async () => {
+    const api = batchClient(), draft = draftReady();
+    for (const room of draft.draft.rooms) room.groupId = '2026-11-12:2026-11-14';
+    const group = { ...g1, stayId: 's1' };
+    render(<BookingCards draft={draft} groups={[group]} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION}
+      session={quotedSession(draft)} propertyCode={HRCEN_PROPERTY_CODE} workItemId={itemId}
+      batchReview={{ client: api, refs: { g1: { stayId: 's1', rowId: null } } }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 's1_row', roomIndex: 1 } }),
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 's1_row', roomIndex: 2 } }),
+    ] }));
+  });
+
+  it('preserves an unrelated card edit when an earlier arrival disappears without batch mode', () => {
+    const session = crossDraftSession(), second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms[0]!.request.arrival = '2026-11-13';
+    const separate = { ...session, groups: [session.groups[0]!, { ...session.groups[1]!, arrivalDate: '2026-11-13' }],
+      bookingDrafts: { '2026-11-12:2026-11-14': session.bookingDrafts['2026-11-12:2026-11-14']!,
+        '2026-11-13:2026-11-15': second } };
+    const view = render(<QuoteBookingHost session={separate} contact={CARD_CONTACT} workItemId={itemId} />);
+    fireEvent.change(screen.getAllByLabelText('First name')[1]!, { target: { value: 'Edited guest' } });
+    view.rerender(<QuoteBookingHost session={{ ...separate, groups: [separate.groups[1]!],
+      bookingDrafts: { '2026-11-13:2026-11-15': second } }} contact={CARD_CONTACT} workItemId={itemId} />);
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Edited guest');
+  });
+
   it('invalidates a shared review when an excluded child in another draft is edited', async () => {
     const api = batchClient();
     render(<QuoteBookingHost session={crossDraftSession(2)} contact={CARD_CONTACT} propertyCode={HRCEN_PROPERTY_CODE}

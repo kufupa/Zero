@@ -125,10 +125,11 @@ export function QuoteBookingHost({
 
   return (
     <>
-      {[...arrivals.entries()].map(([arrival, keys]) => effectiveBatchReview && keys.length > 1
-        ? <CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
+      {[...arrivals.entries()].flatMap(([arrival, keys]) => effectiveBatchReview &&
+        (keys.length > 1 || active?.arrival === arrival || keys.some((key) => (session.bookingDrafts[key]?.draft.rooms.length ?? 0) > 1))
+        ? [<CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
             review={writeHeld ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
-            onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />
+            onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />]
         : keys.map((key) => renderCard(key)))}
       {uncoveredStays.map(([stayId, saved]) => (
         <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />
