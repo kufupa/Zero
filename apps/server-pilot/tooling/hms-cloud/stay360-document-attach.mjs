@@ -130,6 +130,8 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   let frame, fence, scope, refresh, refreshInvalid = false, refreshResponse, initAllowed = false, checkCandidate, uploadCandidate;
   let armed = false, possible = false, dispatched = false, checkStatus = null, uploadStatus = null, refreshCandidate, refreshStatus = null;
   let stopped = null, blocked = 0, evidenceDir = null, token, expectedFields, baseline;
+  let notifyResponses;
+  const responsesObserved = new Promise((resolve) => { notifyResponses = resolve; });
   let notifyStop;
   const interrupted = new Promise((resolve) => { notifyStop = resolve; });
   const stop = (reason) => { stopped ||= reason; armed = false; fence?.quarantine(); notifyStop(stopped); };
@@ -168,6 +170,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       if (response.request() === checkCandidate) checkStatus = response.status();
       if (response.request() === uploadCandidate) uploadStatus = response.status();
       if (response.request() === refreshCandidate) refreshStatus = response.status();
+      if (uploadStatus !== null && refreshStatus !== null) notifyResponses();
     };
     page.on('request', onRequest); page.on('response', onResponse);
     const docs = await bounded(readDocumentsFromStay360(page, expected.confirmation));
@@ -250,7 +253,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     const submit = popup.getByText('Submit', { exact: true });
     if (await submit.count() !== 1 || stopped || blocked) throw new Error('DOCUMENT_SUBMIT_UNVERIFIED');
     armed = true; await bounded(submit.click({ timeout: 5000, noWaitAfter: true }).catch(() => {}));
-    await bounded(page.waitForTimeout(3000));
+    await bounded(Promise.race([responsesObserved, page.waitForTimeout(10000)]));
     armed = false;
     const after = join(evidenceDir, `${randomUUID()}-after.png`);
     await bounded(writeFile(after, await bounded(page.screenshot({ fullPage: true })), { flag: 'wx', mode: 0o600 }));
