@@ -93,7 +93,15 @@ async function openCenturionStay360(page) {
   await stay360.click();
 }
 
-export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal } = {}) {
+// Callers relying on request routing can opt out of service workers before any page exists.
+export function centurionContextOptions(blockServiceWorkers = false) {
+  if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
+  return blockServiceWorkers ? { viewport: { ...viewport }, serviceWorkers: 'block' } : { viewport: { ...viewport } };
+}
+
+export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal,
+  blockServiceWorkers = false } = {}) {
+  const contextOptions = centurionContextOptions(blockServiceWorkers);
   let browser;
   let context;
   let page;
@@ -124,7 +132,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.throwIfAborted();
 
     phase = 'browser_context';
-    context = await browser.newContext({ viewport });
+    context = await browser.newContext(contextOptions);
     signal?.throwIfAborted();
 
     page = await context.newPage();
