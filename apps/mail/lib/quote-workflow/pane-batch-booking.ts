@@ -1,4 +1,4 @@
-import type { PaneStayInput } from './pane-stay-bind';
+import type { PaneSaveMode, PaneStayInput } from './pane-stay-bind';
 
 export type BatchSourceIdentity = { stayId: string; rowId: string; roomIndex: number };
 
@@ -17,7 +17,8 @@ export type BatchReviewedRoom = {
   organization: { name: string; nativeId: string } | null;
   guaranteeType: string; sourceOfBusiness: string | null; note: string | null;
   track: string | null; marketSegment: string | null; guestOptIn: boolean;
-  booker: { name: string | null; email: string | null } | null; cmsSend: false;
+  booker: { name: string | null; email: string | null } | null; cmsSend: boolean;
+  cmsMessageId: string | null; cmsRecipient: { mode: 'self' | 'client' | 'custom'; address: string } | null;
   amount: { status: 'unknown' | 'unavailable' | 'estimate' | 'confirmed'; minor?: number | null; currency?: string | null; basis?: string; tax?: string };
 };
 export type BatchReview = { reviewId: string; manifestDigest: string; expiresAt: string; batchLimit: number | null;
@@ -48,6 +49,7 @@ export type BatchReviewChildInput = BatchEvidenceScope & { evidenceVersion: stri
 export type BatchReviewChildReply = BatchChildReview & { status: 'recorded' };
 export type PaneBatchClient = {
   /** Only the separate server batch capability enables this client, never single-create mode. */
+  mode: () => PaneSaveMode | null;
   prepare: (input: BatchReviewInput) => Promise<BatchReview>;
   approve: (input: { workItemId: string; reviewId: string; manifestDigest: string }) => Promise<{ runId: string }>;
   /** Strongly consistent, owner-checked fresh read of persisted attempts and decisions for this exact batch run. Storage refs never leave the server. */
