@@ -78,54 +78,56 @@ export async function recoverBatchForDisplay(rawScope: unknown, deps: BatchRecov
     let result: BatchRecoveryResult | undefined;
     let called = false, invalid = false;
     await deps.withAuthenticatedSnapshot(scope, async (reader) => {
-      if (called || closed) { invalid = true; return; }
-      called = true;
-      const rawDiscovery = await reader.discover();
-      if (closed || invalid) return;
-      const discovery = discoverySchema.parse(structuredClone(rawDiscovery));
-      if (discovery.candidates.length !== 1) { result = held(); return; }
-      const candidate = discovery.candidates[0]!;
-      freeze(candidate);
-      const manifest = candidate.manifest, source = manifest.source;
-      if (manifest.propertyCode !== scope.propertyCode || source.transportId !== scope.transportId ||
-          source.threadId !== scope.threadId || source.messageId !== scope.messageId || source.workItemId !== scope.workItemId ||
-          batchDigest(manifest) !== candidate.manifestDigest) { result = held(); return; }
-      const parentVerified = await reader.verifyParent(Object.freeze({ scope, candidate }));
-      if (closed || invalid) return;
-      if (parentVerified !== true) { result = held(); return; }
-      const rows: BatchEventRow[] = candidate.history.map(({ sequence, value }) => ({ sequence, value }));
-      const events = parseBatchEvents(rows);
-      if (new Set(candidate.history.map((row) => row.eventId)).size !== rows.length) { result = held(); return; }
-      for (let index = 0; index < events.length; index += 1) {
-        const event = batchEventSchema.parse(events[index]), row = candidate.history[index]!;
-        freeze(event);
-        validateBatchTransition(manifest, rows.slice(0, index), event);
-        const eventVerified = await reader.verifyEvent(Object.freeze({ scope, candidate, row, event }));
+      try {
+        if (called || closed) { invalid = true; return; }
+        called = true;
+        const rawDiscovery = await reader.discover();
         if (closed || invalid) return;
-        if (eventVerified !== true) { result = held(); return; }
-        if (event.kind !== 'claimed') {
-          for (const [kind, ref] of [['screenshot', event.screenshotRef], ['readback', event.readbackRef]] as const) {
-            if (!ref) continue;
-            const evidenceVerified = await reader.verifyEvidence(Object.freeze({ scope, candidate, row, event, kind, ref }));
-            if (closed || invalid) return;
-            if (evidenceVerified !== true) { result = held(); return; }
+        const discovery = discoverySchema.parse(structuredClone(rawDiscovery));
+        if (discovery.candidates.length !== 1) { result = held(); return; }
+        const candidate = discovery.candidates[0]!;
+        freeze(candidate);
+        const manifest = candidate.manifest, source = manifest.source;
+        if (manifest.propertyCode !== scope.propertyCode || source.transportId !== scope.transportId ||
+            source.threadId !== scope.threadId || source.messageId !== scope.messageId || source.workItemId !== scope.workItemId ||
+            batchDigest(manifest) !== candidate.manifestDigest) { result = held(); return; }
+        const parentVerified = await reader.verifyParent(Object.freeze({ scope, candidate }));
+        if (closed || invalid) return;
+        if (parentVerified !== true) { result = held(); return; }
+        const rows: BatchEventRow[] = candidate.history.map(({ sequence, value }) => ({ sequence, value }));
+        const events = parseBatchEvents(rows);
+        if (new Set(candidate.history.map((row) => row.eventId)).size !== rows.length) { result = held(); return; }
+        for (let index = 0; index < events.length; index += 1) {
+          const event = batchEventSchema.parse(events[index]), row = candidate.history[index]!;
+          freeze(event);
+          validateBatchTransition(manifest, rows.slice(0, index), event);
+          const eventVerified = await reader.verifyEvent(Object.freeze({ scope, candidate, row, event }));
+          if (closed || invalid) return;
+          if (eventVerified !== true) { result = held(); return; }
+          if (event.kind !== 'claimed') {
+            for (const [kind, ref] of [['screenshot', event.screenshotRef], ['readback', event.readbackRef]] as const) {
+              if (!ref) continue;
+              const evidenceVerified = await reader.verifyEvidence(Object.freeze({ scope, candidate, row, event, kind, ref }));
+              if (closed || invalid) return;
+              if (evidenceVerified !== true) { result = held(); return; }
+            }
           }
         }
-      }
-      const states = batchStates(manifest, rows);
-      const children = manifest.rooms.map((room, index) => {
-        const state = states[index]!, childEvents = events.filter((event) => event.childId === state.childId);
-        return { allocationId: room.allocationId, childId: batchChildId(manifest, room), status: state.status,
-          ...(state.claimRunIds?.length === 1 ? { attemptRunId: state.claimRunIds[0] } : {}),
-          ...(state.status === 'confirmed' && state.confirmation ? { confirmation: state.confirmation } : {}),
-          screenshotRecorded: childEvents.some((event) => event.kind !== 'claimed' && Boolean(event.screenshotRef)),
-          readbackRecorded: childEvents.some((event) => event.kind !== 'claimed' && Boolean(event.readbackRef)) };
-      });
-      if (closed || invalid) return;
-      result = { status: 'recovered', canApprove: false, manifestId: candidate.manifestId,
-        manifestRevision: candidate.manifestRevision, manifestDigest: candidate.manifestDigest,
-        parentRunId: candidate.parentRunId, manifest, children };
-      freeze(result);
+        const states = batchStates(manifest, rows);
+        const children = manifest.rooms.map((room, index) => {
+          const state = states[index]!, childEvents = events.filter((event) => event.childId === state.childId);
+          return { allocationId: room.allocationId, childId: batchChildId(manifest, room), status: state.status,
+            ...(state.claimRunIds?.length === 1 ? { attemptRunId: state.claimRunIds[0] } : {}),
+            ...(state.status === 'confirmed' && state.confirmation ? { confirmation: state.confirmation } : {}),
+            screenshotRecorded: childEvents.some((event) => event.kind !== 'claimed' && Boolean(event.screenshotRef)),
+            readbackRecorded: childEvents.some((event) => event.kind !== 'claimed' && Boolean(event.readbackRef)) };
+        });
+        if (closed || invalid) return;
+        result = { status: 'recovered', canApprove: false, manifestId: candidate.manifestId,
+          manifestRevision: candidate.manifestRevision, manifestDigest: candidate.manifestDigest,
+          parentRunId: candidate.parentRunId, manifest, children };
+        freeze(result);
+      } catch { invalid = true; result = held(); }
     });
     closed = true;
     return invalid ? held() : result ?? held();

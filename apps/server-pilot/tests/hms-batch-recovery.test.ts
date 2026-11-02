@@ -139,6 +139,18 @@ describe('disconnected batch recovery projection', () => {
     expect(f.reader.verifyParent).not.toHaveBeenCalled();
     expect(f.reader.verifyEvent).not.toHaveBeenCalled();
   });
+  it('absorbs a detached reader failure after the snapshot has closed', async () => {
+    const f = fixture();
+    let reject!: (reason: Error) => void;
+    let detached: Promise<void> | undefined;
+    const waiting = new Promise<unknown>((_resolve, fail) => { reject = fail; });
+    f.reader.discover.mockImplementation(() => waiting);
+    f.deps.withAuthenticatedSnapshot = async (_scope, run) => { detached = run(f.reader); };
+    expect(await recoverBatchForDisplay(f.scope, f.deps)).toEqual(held);
+    reject(new Error('late_failure'));
+    await expect(detached).resolves.toBeUndefined();
+    expect(f.reader.verifyParent).not.toHaveBeenCalled();
+  });
   it('freezes the bound scope, manifest, history and event across callbacks', async () => {
     const f = fixture();
     f.deps.withAuthenticatedSnapshot = async (scope, run) => {
