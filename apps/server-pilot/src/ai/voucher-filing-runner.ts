@@ -10,8 +10,24 @@ type SourceRead = { status: 'ready'; bytes: Buffer } | { status: 'refused'; reas
 type NativeOutcome = { outcome?: string; issue?: string; marker?: string;
   possiblyDispatched?: boolean; dispatched?: boolean; saveDispatched?: boolean | 'unknown' };
 type FileData = { documentCode: string; documentId?: string };
-type Page = { context(): { _options?: { serviceWorkers?: string }; serviceWorkers(): unknown[];
-  pages(): unknown[]; routeWebSocket?: unknown } };
+type FilingContext = { _options?: { serviceWorkers?: string }; serviceWorkers(): unknown[];
+  pages(): unknown[]; routeWebSocket?: (url: string, handler: (socket: { close(): Promise<void> | void }) => void) => Promise<void> | void };
+type Page = { context(): FilingContext };
+
+const preparedContexts = new WeakSet<object>();
+const setupAttemptedContexts = new WeakSet<object>();
+
+/** The caller must supply a newly created dedicated context before exposing it or creating any page. */
+export async function prepareFilingContext(context: FilingContext): Promise<void> {
+  if (!context || setupAttemptedContexts.has(context) || context._options?.serviceWorkers !== 'block' ||
+      typeof context.serviceWorkers !== 'function' ||
+      context.serviceWorkers().length !== 0 || typeof context.pages !== 'function' || context.pages().length !== 0 ||
+      typeof context.routeWebSocket !== 'function') throw new Error('FILING_CONTEXT_UNSAFE');
+  setupAttemptedContexts.add(context);
+  await context.routeWebSocket('**/*', (socket) => { void Promise.resolve(socket.close()).catch(() => {}); });
+  if (context.serviceWorkers().length !== 0 || context.pages().length !== 0) throw new Error('FILING_CONTEXT_UNSAFE');
+  preparedContexts.add(context);
+}
 
 export type FilingRunnerDependencies = {
   /** All dependencies are supplied by trusted server composition, never by the pane. */
@@ -20,6 +36,7 @@ export type FilingRunnerDependencies = {
   serverGrantId: string;
   /** The trusted property lock must be held around this entire run. */
   propertyLock: { connection: PropertyReadConnection; tenantId: string; propertyCode: string };
+  /** Dedicated context must be prepared before its first page and no later socket route may override the fence. */
   page: Page;
   readApprovedSource(form: ApprovedForm): Promise<SourceRead>;
   /** Must return the exact same canonical snapshot shape used at Prepare. */
@@ -49,8 +66,9 @@ function safePage(page: Page): boolean {
   try {
     const context = page.context();
     const pages = context.pages();
-    return context._options?.serviceWorkers === 'block' && context.serviceWorkers().length === 0 &&
-      pages.length === 1 && pages[0] === page && typeof context.routeWebSocket === 'function';
+    return preparedContexts.has(context) && context._options?.serviceWorkers === 'block' &&
+      context.serviceWorkers().length === 0 && pages.length === 1 && pages[0] === page &&
+      typeof context.routeWebSocket === 'function';
   } catch { return false; }
 }
 
