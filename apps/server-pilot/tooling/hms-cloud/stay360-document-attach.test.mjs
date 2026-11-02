@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { attachLabtestDocument, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
   matchesDocumentUpload } from './stay360-document-attach.mjs';
 
@@ -68,6 +69,14 @@ test('multipart and query bind the current frame, target, token, name and exact 
     upload({ query: (q) => q.set('unreviewed', 'true') }),
     upload({ contentType: 'multipart/form-data' }),
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);
+});
+
+test('exact upload bytes may contain text that resembles a form action', () => {
+  const bytes = Buffer.from('Synthetic &pageaction=SAVE& bytes');
+  const request = upload({ bytes });
+  assert.equal(matchesDocumentUpload(request, frame, payload, { ...file, bytes }, token), true);
+  assert.equal(shouldAbortReadOnlyRequest({ method: request.method(), url: request.url(),
+    postData: request.postDataBuffer().toString('utf8') }), true);
 });
 
 test('multipart compares UTF-8 field bytes without accepting a changed description', () => {

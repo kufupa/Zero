@@ -196,7 +196,9 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
             documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }), { flag: 'wx', mode: 0o600 });
         } catch { stop('DISPATCH_INTENT_FAILED'); return route.abort(); }
         possible = true; dispatched = true; armed = false;
-        return route.fallback();
+        // The page fence already consumed this exact request. Do not let the
+        // generic guard parse arbitrary multipart bytes as URL-encoded actions.
+        return route.continue();
       }
       if (!stopped && dispatched && !refreshCandidate && sameFrame(request) && matchesForm(request, REFRESH, frame, refresh.body)) {
         refreshCandidate = request; return route.fallback();
@@ -223,9 +225,13 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if (await open.count() !== 1) throw new Error('DOCUMENT_OPEN_NOT_UNIQUE');
     await bounded(open.click({ timeout: 5000 }));
     const popup = frame.locator('.x-window:visible').filter({ hasText: 'Create/Upload Document' });
+    await bounded(popup.first().waitFor({ state: 'visible', timeout: 5000 }));
     if (await popup.count() !== 1) throw new Error('DOCUMENT_POPUP_NOT_UNIQUE');
     const code = popup.locator('input[name="documentcode"]'), description = popup.locator('input[name="description"]');
     const input = popup.locator('input[type="file"][name="filename"]');
+    await bounded(code.first().waitFor({ state: 'visible', timeout: 5000 }));
+    await bounded(description.first().waitFor({ state: 'visible', timeout: 5000 }));
+    await bounded(input.first().waitFor({ state: 'attached', timeout: 5000 }));
     if (await code.count() !== 1 || await description.count() !== 1 || await input.count() !== 1) throw new Error('DOCUMENT_FIELDS_NOT_UNIQUE');
     await bounded(code.fill(file.documentCode)); await bounded(description.fill(file.description));
     await bounded(input.setInputFiles({ name: file.name, mimeType: file.mimeType, buffer: file.bytes }));
