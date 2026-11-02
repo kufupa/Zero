@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname } from 'node:path';
 import { rm, stat } from 'node:fs/promises';
-import { createReservation } from './create-reservation.mjs';
+import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
 
 const input = {
   mode: 'commit', propertyCode: 'HRCEN', guest: { profileId: '123' },
   stay: { arrival: '2027-03-15', departure: '2027-03-17', adults: 2, childAges: [8, 12] },
   room: { roomType: 'DLXKNG', ratePlan: 'BAR' }, guaranteeType: 'NGI', sourceOfBusiness: 'EMA',
   parties: { organizationId: '41' }, note: 'Synthetic proof',
-  cms: { send: false }, approval: { by: 'Owner', at: '2026-11-01T12:00:00Z' },
+  cms: { send: false },
 };
 const profile = { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', email: 'response-only@example.test' };
 const values = { guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
@@ -116,6 +116,8 @@ test('unsupported commit requests, nested unknowns and explicit clears stop befo
     [{ note: null }, ['note']],
     [{ cms: { send: true, recipient: null }, price: 2 }, ['cms.send', 'cms.recipient', 'price']],
     [{ booker: { name: 'Example', surprise: 'x' } }, ['booker', 'booker.surprise']],
+    [{ approval: { by: 'Owner', at: '2026-11-01T12:00:00Z', grantId: 'spoofed' } },
+      ['approval.at', 'approval.by', 'approval.grantId']],
   ]) {
     const result = await createReservation({ ...input, ...change, mode: 'commit' }, { withSession: noSession });
     assert.equal(result.outcome, 'unsupported');
@@ -133,9 +135,8 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
     return { fake, result };
   };
   const { fake, result } = await run();
-  const { approval: _metadata, ...withoutApproval } = input;
   const noMetadata = harness();
-  const withoutMetadata = await createReservation(withoutApproval, noMetadata.options);
+  const withoutMetadata = await createReservation(input, noMetadata.options);
   if (withoutMetadata.screenshots?.before) dirs.add(dirname(withoutMetadata.screenshots.before));
   assert.equal(withoutMetadata.outcome, 'saved');
   assert.equal(noMetadata.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
@@ -181,9 +182,12 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
 
 test('real profiles and blocked preimages do not reach save', async () => {
   const fake = harness({ profiles: [{ ...profile, firstName: 'Real' }] });
-  const real = await createReservation(input, fake.options);
+  let consumeCalls = 0;
+  const real = await createReservation(input, { ...fake.options,
+    consumeApproval: async () => { consumeCalls += 1; return { consumed: true }; } });
   assert.equal(real.outcome, 'refused');
-  assert.equal(real.issue, 'real_guest_write_disabled');
+  assert.equal(real.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
+  assert.equal(consumeCalls, 0);
   assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
   const preimage = { outcome: 'existing_matches', sameArrival: [{ confirmation: '123456-1' }], coverage: { complete: true } };
   const blocked = await createReservation(input, { withSession: async () => {
@@ -191,6 +195,19 @@ test('real profiles and blocked preimages do not reach save', async () => {
   } });
   assert.equal(blocked.outcome, 'needs_input');
   assert.deepEqual(blocked.preimage, preimage);
+});
+
+test('real guest searches hold before any session without trusted create approval', async () => {
+  let sessions = 0, consumeCalls = 0;
+  const result = await createReservation({ ...input, guest: { search: { firstName: 'Real', lastName: 'Guest' } } }, {
+    withSession: async () => { sessions += 1; throw new Error('unexpected session'); },
+    consumeApproval: async () => { consumeCalls += 1; return { consumed: true }; },
+  });
+  assert.equal(result.outcome, 'refused');
+  assert.equal(result.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
+  assert.equal(result.approvalReady, false);
+  assert.equal(sessions, 0);
+  assert.equal(consumeCalls, 0);
 });
 
 test('supported inputs stage without claiming approval readiness', async () => {
@@ -206,10 +223,24 @@ test('supported inputs stage without claiming approval readiness', async () => {
   assert.equal(result.applied.organization.nativeId, '41');
   assert.equal(result.appliedVerification.visibleFields, true);
   assert.equal(result.applied.guaranteeType, 'Non-Guaranteed Individual');
+  assert.equal(result.requestBinding.request.guest.nativeId, '123');
+  assert.equal(result.requestBinding.request.room.ratePlan, 'BAR');
+  assert.equal(result.requestBinding.request.sendHmsConfirmation.kind, 'never');
+  assert.match(result.requestBinding.digest, /^[a-f0-9]{64}$/);
   assert.ok(result.warnings.some(({ field, issue }) => field === 'stay.childAges' && issue === 'saved_record_exposes_age_bands_not_exact_ages'));
   assert.ok(result.warnings.some(({ field, issue }) => field === 'sourceOfBusiness' && issue === 'native_code_not_exposed_on_form_or_saved_record'));
   assert.deepEqual(fake.calls.filter(({ tool }) => tool === 'inspectGuestStaySourceBusiness').map(({ offset }) => offset), [0, 100]);
   assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
+});
+
+test('prepare does not bind a billing reference before its guarded save-time staging and readback', async () => {
+  const fake = harness();
+  const result = await createReservation({ ...input, mode: 'prepare', billingReference: 'INV-123',
+    parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example Account' } }, fake.options);
+  assert.equal(result.outcome, 'unsupported');
+  assert.equal(result.requestBinding, undefined);
+  assert.ok(result.unsupportedFields.some(({ field, issue }) => field === 'billingReference' && issue === 'commit_only'));
+  assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 
 test('prepare reports an unstaged guarantee without claiming the draft is complete', async () => {
@@ -220,6 +251,7 @@ test('prepare reports an unstaged guarantee without claiming the draft is comple
   assert.ok(result.missing.includes('guaranteeType.staging'));
   assert.equal(result.applied.note, input.note);
   assert.equal(result.applied.guest.firstName, 'Real');
+  assert.equal(result.requestBinding, undefined);
   assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), false);
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
@@ -267,7 +299,7 @@ test('unsafe inputs and wrong staged values do not become approval ready', async
   for (const [change, outcome, issue] of [
     [{ cms: { send: true } }, 'unsupported', 'sending_not_supported'],
     [{ guaranteeType: 'GTDCC' }, 'refused', 'guarantee_not_supported_yet'],
-    [{ guest: { search: { lastName: 'Real' } } }, 'refused', 'real_guest_write_disabled'],
+    [{ guest: { search: { lastName: 'Real' } } }, 'refused', REAL_GUEST_CREATE_AUTHORIZATION_HOLD],
     [{ room: { ...input.room, ratePlan: 'BAR-1' } }, 'refused', 'native_code_not_supported_yet'],
     [{ guest: [] }, 'needs_input', 'invalid_field_type'],
   ]) {
