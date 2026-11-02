@@ -579,7 +579,7 @@ function safeCreateContext(page) {
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note, guaranteeSelection,
   createFieldProof, agencySelection, organizationSelection, arSelection, billingReference,
-} = {}, { timeoutMs = 20_000, beforeSaveScreenshot } = {}) {
+} = {}, { timeoutMs = 20_000, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || !isSupportedLabtestGuarantee(guaranteeType) || typeof note !== 'string' || !note.trim() || note.length > 200 ||
@@ -605,7 +605,12 @@ export async function saveNewLabtestStay(page, {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') {
     return { outcome: 'input_gap', issue: 'SCREENSHOT_CALLBACK_INVALID' };
   }
-  const strictCreateProof = Boolean(createFields || agency || organization || ar || guaranteeType === 'GTDAGT');
+  if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) {
+    return { outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
+  }
+  const strictCreateProof = Boolean(createFields || agency || organization || ar || authorizeCandidate || guaranteeType === 'GTDAGT');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
@@ -666,6 +671,7 @@ export async function saveNewLabtestStay(page, {
       fence,
       scope,
       isArmed: () => armed && !nativeDialog,
+      ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}),
       matches: (request) => matchesSave(page, request, expected, (diagnostic) => {
         createBodyMismatches.set(request, diagnostic);
       }),
