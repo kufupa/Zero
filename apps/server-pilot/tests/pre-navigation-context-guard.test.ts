@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { describe, expect, it, vi } from 'vitest';
@@ -137,8 +138,16 @@ describe('pre-navigation guarded context', () => {
   });
 });
 
+// Match the server's other optional Chromium integration tests.
+const chromiumBinary = [
+  process.env.HMS_TEST_CHROMIUM_PATH,
+  chromium.executablePath(),
+  '/home/ubuntu/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome',
+  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
+].find((candidate): candidate is string => typeof candidate === 'string' && existsSync(candidate));
+
 // This uses only a loopback HTTP/WebSocket endpoint. It never contacts HMS.
-it('blocks an actual browser WebSocket before it reaches the server', async () => {
+it.skipIf(!chromiumBinary)('blocks an actual browser WebSocket before it reaches the server', async () => {
   let upgrades = 0;
   const server = createServer((_request, response) => response.end('synthetic guard test'));
   server.on('upgrade', (_request, socket) => { upgrades += 1; socket.destroy(); });
@@ -150,7 +159,7 @@ it('blocks an actual browser WebSocket before it reaches the server', async () =
   try {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('LOCAL_TEST_SERVER_UNAVAILABLE');
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
     context = await browser.newContext({ serviceWorkers: 'block' });
     await prepareGuardedContext(context);
     const page = await context.newPage();
