@@ -22,7 +22,7 @@ function syntheticBody(): string {
 
 afterEach(() => vi.useRealTimers());
 describe('synthetic batch census browser', () => {
-  it('binds a real page response and invalidates a proof after a further search', async () => {
+  it.skipIf(!browserPath && process.env.HMS_BATCH_CENSUS_BROWSER_REQUIRED !== '1')('binds a real page response and invalidates a proof after a further search', async () => {
     // Offline plus an all-URL page route ensures no request can reach the real HMS.
     expect(browserPath, 'Chromium required for this test').toBeTruthy();
     vi.useFakeTimers({ toFake: ['Date'] });

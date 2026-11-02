@@ -120,6 +120,16 @@ describe('Labtest batch native census proof', () => {
     await running; page.emit('close');
     expect(await result).toMatchObject({ outcome: 'incomplete', issue: 'BATCH_SIBLINGS_UNVERIFIED' });
   });
+  it('expires a verifier that ignores abort and releases the page', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    let started; const running = new Promise((resolve) => { started = resolve; });
+    const authorizeSiblings = () => { started(); return new Promise(() => {}); };
+    const page = makePage(), result = searchLabtestBatchPreimage(page, dates, { binding, authorizeSiblings });
+    await running;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(await result).toMatchObject({ outcome: 'incomplete', issue: 'BATCH_SIBLINGS_UNVERIFIED' });
+    expect(await searchLabtestPreimage(page, dates)).toMatchObject({ outcome: 'existing_matches' });
+  });
   it('rejects sibling sets not matching the observed census', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
     const page = makePage();
