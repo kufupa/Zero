@@ -45,6 +45,17 @@ describe('Nava tool result contract', () => {
       { key: 'b', outcome: 'uncertain', reason: 'save_unconfirmed' },
     ] });
   });
+  it('preserves producer-style confirmed and uncertain batch children', () => {
+    expect(adaptBatchToolResult([
+      { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, confirmation: '123456-1' },
+      { key: 'child-b', result: { status: 'uncertain', possiblyDispatched: true } },
+    ])).toEqual({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'child-a', outcome: 'ok', confirmation: '123456-1' },
+      { key: 'child-b', outcome: 'uncertain' },
+    ] });
+    expect(adaptExistingToolResult({ outcome: 'partial', possiblyDispatched: true }, { operation: 'write' }).outcome)
+      .toBe('uncertain'); // The single-write adapter cannot preserve batch children.
+  });
   it('does not drop readback fields', () => {
     const readback = { id: 'stay', otherField: { exact: 'value' } };
     expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);

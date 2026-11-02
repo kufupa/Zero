@@ -71,7 +71,7 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
     (result.reason === 'pane_save_unconfirmed' || result.issue === 'pane_save_unconfirmed');
   const possibleDispatch = result.clickedSave === true || result.saveDispatched === true ||
     result.saveDispatched === 'unknown' || result.possiblyDispatched === true || result.dispatched === true;
-  const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed'].includes(code) && result.status !== 'refused';
+  const successful = ['ok', 'success', 'verified', 'readback_verified', 'saved', 'committed', 'confirmed'].includes(code) && result.status !== 'refused';
   let outcome: NavaToolResult<T>['outcome'];
   if (ambiguous || (options.operation === 'write' && possibleDispatch && (!options.readbackVerified || !successful))) outcome = 'uncertain';
   else if (code === 'partial') outcome = 'partial';
@@ -89,7 +89,7 @@ export function adaptExistingToolResult<T>(result: ExistingToolResult<T>, option
   };
 }
 
-/** Batch stays partial even when individual children have uncertain outcomes. */
+/** Batch stays partial even when individual children have uncertain outcomes. Use this adapter, not the single-write adapter, for batches. */
 export function adaptBatchToolResult<T>(children: Array<{
   key: string; result: ExistingToolResult<T>; readbackVerified?: boolean; confirmation?: string;
 }>): NavaToolResult<never> {
