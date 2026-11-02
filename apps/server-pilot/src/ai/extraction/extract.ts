@@ -64,6 +64,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - For each stay, guests is optional: that stay's named guests, each with name as written and confirmationNumber exactly as written for that guest, or null. Never invent or reformat a confirmation number.
 - For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.
+- secondaryAsks: include each separate current actionable non-stay request as an exact short excerpt from the target message or its readable attachments. Include questions and requests, not already handled work, signatures, stay details or the primary booking action. On self-sent pre-stay mail, exclude arrival preferences and information about the existing stay; include only a genuinely separate current request. Return [] when none.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
 - missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, child ages when needed for occupancy, guest names. Never ask for rates, room type or board.
@@ -676,6 +677,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    secondarySourceText: stayDateSourceText(input.selection),
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),

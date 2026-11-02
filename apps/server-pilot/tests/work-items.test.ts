@@ -404,6 +404,16 @@ describe('stored read for the pane', () => {
     );
   });
 
+  it('projects a stored separate request into review for non-quote work', () => {
+    const extracted = payload();
+    extracted.secondaryAsks = ['Please arrange airport transport.'];
+    const analysis = storedAnalysis({ kind: 'amendment', payload: extracted, attachments: [] }, {}).analysis;
+    expect(analysis.secondaryAsks).toEqual(['Please arrange airport transport.']);
+    expect(analysis.reviewItems).toContainEqual(expect.objectContaining({
+      kind: 'question', text: 'Please arrange airport transport.', blocking: false,
+    }));
+  });
+
   it('binds extracted actions to every row of their own stay', () => {
     const extracted = payload();
     extracted.stays[0]!.action = 'quote_availability';
