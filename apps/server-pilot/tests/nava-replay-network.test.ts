@@ -56,4 +56,54 @@ describe('replay page network fence', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   }, 30_000);
+
+  it.skipIf(!chromiumBinary)('blocks external redirects and 307/308 redirects of allowed POSTs', async () => {
+    const externalHits: string[] = [], sourceHits: string[] = [];
+    const external = createServer((req, res) => { externalHits.push(`${req.method} ${req.url}`); res.end('unexpected'); });
+    await new Promise<void>((resolve) => external.listen(0, '127.0.0.1', resolve));
+    const externalOrigin = `http://127.0.0.1:${(external.address() as AddressInfo).port}`;
+    const source = createServer((req, res) => {
+      sourceHits.push(`${req.method} ${req.url}`);
+      const url = new URL(req.url ?? '/', 'http://fixture');
+      const status = Number(url.searchParams.get('redirect'));
+      if (url.pathname === '/favicon.ico' && [301, 302, 303, 307, 308].includes(status)) {
+        res.writeHead(status, { location: `${externalOrigin}/never-reach` });
+      } else if (url.pathname === '/api/trpc/mail.get' && [307, 308].includes(status)) {
+        res.writeHead(status, { location: '/api/trpc/mail.send?batch=1' });
+      }
+      res.end('{}');
+    });
+    await new Promise<void>((resolve) => source.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(source.address() as AddressInfo).port}`;
+    const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+    try {
+      const blocked: BlockedReplayNetwork[] = [], blockedTrpc: BlockedWrite[] = [];
+      const { context, page } = await createReplayPage(browser, origin, blocked, blockedTrpc);
+      await page.goto(`${origin}/outlook-pane`);
+      const results = await page.evaluate(async () => {
+        const fetchOk = async (url: string, method = 'GET') => {
+          try { return (await fetch(url, { method })).ok; } catch { return false; }
+        };
+        const reads = await Promise.all([301, 302, 303, 307, 308].map((status) =>
+          fetchOk(`/favicon.ico?redirect=${status}`)));
+        const posts = await Promise.all([307, 308].map((status) =>
+          fetchOk(`/api/trpc/mail.get?batch=1&redirect=${status}`, 'POST')));
+        return [...reads, ...posts];
+      });
+      expect(results).toEqual([false, false, false, false, false, false, false]);
+      expect(sourceHits).toEqual(expect.arrayContaining([
+        ...[301, 302, 303, 307, 308].map((status) => `GET /favicon.ico?redirect=${status}`),
+        ...[307, 308].map((status) => `POST /api/trpc/mail.get?batch=1&redirect=${status}`),
+      ]));
+      expect(externalHits).toEqual([]);
+      expect(sourceHits.filter((hit) => hit.includes('mail.send'))).toEqual([]);
+      expect(blocked.filter((entry) => entry.reason === 'redirect')).toHaveLength(7);
+      expect(blockedTrpc).toEqual([]);
+      await context.close();
+    } finally {
+      await browser.close();
+      await new Promise<void>((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => external.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 30_000);
 });
