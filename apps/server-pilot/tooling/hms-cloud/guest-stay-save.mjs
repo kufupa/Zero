@@ -38,6 +38,43 @@ function matchesCreateModelFieldSchema(formData) {
     createHash('sha256').update(keys.join('\n')).digest('hex') === CREATE_MODEL_FIELD_KEYS_SHA256;
 }
 
+const EPHEMERAL_CREATE_SESSION_FIELDS = new Set(['sessionid', 'bookingsessionid']);
+const validSessionText = (value) => {
+  const text = typeof value === 'string' ? value : Number.isSafeInteger(value) ? String(value) : '';
+  return text.length > 0 && text.length <= 512 && text === text.trim() &&
+    ![...text].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
+};
+
+function validCreateSessionFields(formData) {
+  if (!formData || typeof formData !== 'object' || Array.isArray(formData)) return false;
+  const keys = Object.keys(formData);
+  const uniqueKey = (name) => {
+    const matches = keys.filter((key) => key.toLowerCase() === name.toLowerCase());
+    return matches.length === 1 && matches[0] === name;
+  };
+  if (!uniqueKey('bookingsessionid') || !uniqueKey('sessionID') || !validSessionText(formData.bookingsessionid)) return false;
+  const native = formData.sessionID;
+  const nativeValue = typeof native === 'string' ? native : native && typeof native === 'object' && !Array.isArray(native) &&
+    Object.keys(native).length === 1 && Object.hasOwn(native, 'sessionID') ? native.sessionID : null;
+  return validSessionText(nativeValue);
+}
+
+/** Fingerprint a native form without volatile session IDs. This does not validate its field schema. */
+export function stableNativeCreateFormDigest(formData) {
+  if (!validCreateSessionFields(formData)) return null;
+  const controls = [['SYSTEM_FUNCTION_NAME', 'OSRESV'], ['USER_FUNCTION_NAME', 'OSRESV'], ['CURRENT_TAB_NAME', 'HDR']];
+  const entries = [];
+  for (const [key, raw] of Object.entries(formData)) {
+    if (EPHEMERAL_CREATE_SESSION_FIELDS.has(key.toLowerCase())) continue;
+    if (raw != null && !['string', 'number', 'boolean'].includes(typeof raw)) return null;
+    const text = String(raw ?? '');
+    entries.push([key, key === 'revenuevalue' && numericZero(text) ? '0' : text]);
+  }
+  entries.push(...controls);
+  entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+}
+
 export function validCreateBillingReference(value) {
   return typeof value === 'string' && value.length <= 4000 && Boolean(value.trim()) &&
     ![...value].some((char) => char.charCodeAt(0) <= 31 || char.charCodeAt(0) === 127);
