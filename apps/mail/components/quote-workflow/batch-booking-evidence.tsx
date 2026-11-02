@@ -84,8 +84,8 @@ export function BatchBookingEvidence({ client, batchRunId, allocationId, approve
       const matches = result.rooms.filter((room) => room.allocationId === allocationId);
       const room = matches[0];
       if (matches.length !== 1 || room?.status !== 'confirmed' || room.screenshotRecorded !== true || room.readbackRecorded !== true ||
-          !room.confirmation || result.rooms.filter((item) => item.status === 'confirmed' && item.confirmation === room.confirmation).length !== 1 ||
-          result.rooms.filter((item) => item.status === 'confirmed' && item.attempt?.childId === scope.childId).length !== 1 ||
+          !room.confirmation || result.rooms.filter((item) => item.confirmation === room.confirmation).length !== 1 ||
+          result.rooms.filter((item) => item.attempt?.childId === scope.childId).length !== 1 ||
           room.attempt?.runId !== scope.runId || room.attempt?.childId !== scope.childId ||
           !sameDecision(matchingReview(scope, room.reviewed), expected)) throw new Error('review_read_mismatch');
       onVerified(expected); setFlagging(false);

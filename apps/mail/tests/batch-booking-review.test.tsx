@@ -390,6 +390,21 @@ describe('batch booking review', () => {
     expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'View HMS screenshot' })).toBeNull();
   });
+  it.each(['confirmation', 'childId'] as const)('holds a confirmed result when an uncertain sibling shares its %s', async (conflict) => {
+    const api = client();
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: true, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true,
+        attempt: { runId: 'run', childId: CHILD_A } },
+      { allocationId: 'g:2', status: 'uncertain' as const, confirmation: conflict === 'confirmation' ? 'C1' : 'C2',
+        attempt: { runId: 'run', childId: conflict === 'childId' ? CHILD_A : CHILD_B } },
+    ] }));
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    await waitFor(() => expect(screen.getAllByText('Outcome needs checking in HMS')).toHaveLength(2));
+    expect(screen.queryByText(/Booked · confirmation/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'View HMS screenshot' })).toBeNull();
+  });
   it.each(['workItemId', 'runId', 'childId'] as const)('does not display evidence with a different %s', async (field) => {
     const api = client();
     api.evidence = vi.fn(async (scope) => ({ ...scope, [field]: 'wrong', status: 'available' as const, evidenceVersion: 'v', dataUrl: PNG }));
@@ -410,6 +425,26 @@ describe('batch booking review', () => {
     expect(await screen.findByText(/screenshot has expired/)).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     expect(api.reviewChild).not.toHaveBeenCalled();
+  });
+  it.each(['confirmation', 'childId'] as const)('holds a review when its fresh read has an uncertain sibling sharing the %s', async (conflict) => {
+    const api = client();
+    render(<BatchBookingReview client={api} input={input()} missing={[]} onLock={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'View HMS screenshot' }));
+    fireEvent.load(await screen.findByRole('img', { name: 'Saved booking in HMS' }));
+    api.read = vi.fn(async (scope) => ({ ...scope, complete: true, rooms: [
+      { allocationId: 'g:1', status: 'confirmed' as const, confirmation: 'C1', screenshotRecorded: true, readbackRecorded: true,
+        attempt: { runId: 'run', childId: CHILD_A }, reviewed: { workItemId: 'item', runId: 'run', childId: CHILD_A,
+          evidenceVersion: 'private-version', decision: 'ok' as const } },
+      { allocationId: 'g:2', status: 'uncertain' as const, confirmation: conflict === 'confirmation' ? 'C1' : 'C2',
+        attempt: { runId: 'run', childId: conflict === 'childId' ? CHILD_A : CHILD_B } },
+    ] }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Review may have been saved/)).toBeTruthy();
+    expect(screen.queryByText('HMS booking reviewed.')).toBeNull();
+    expect(api.reviewChild).toHaveBeenCalledTimes(1);
   });
   it('does not mark review complete from an acknowledgement when fresh read lacks its matching decision', async () => {
     const api = client();
