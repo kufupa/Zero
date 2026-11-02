@@ -7,6 +7,7 @@ import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
 import { validCreateBillingReference } from './guest-stay-save.mjs';
+import { digestCloudCreateRequest } from './create-request-binding.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -17,6 +18,8 @@ const stop = (outcome, issue, extra = {}) => { throw Object.assign(new Error(iss
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || '') ? error.message : 'SESSION_FAILED';
 const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, country }) =>
   ({ nativeId, firstName, lastName, email, phoneNumber, city, country });
+
+export const REAL_GUEST_CREATE_AUTHORIZATION_HOLD = 'trusted_staff_create_authorization_unavailable';
 
 function validate(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'needs_input', issue: 'invalid_input' };
@@ -44,7 +47,7 @@ function validate(input) {
   }
   if (input.mode === 'commit' && input.guest?.search &&
       (!same(input.guest.search.lastName, 'Labtest') || (input.guest.search.firstName && !same(input.guest.search.firstName, 'Proof')))) {
-    return { outcome: 'refused', issue: 'real_guest_write_disabled' };
+    return { outcome: 'refused', issue: REAL_GUEST_CREATE_AUTHORIZATION_HOLD };
   }
   const stay = input.stay || {}, room = input.room || {}, guest = input.guest || {}, missing = [];
   if (stay.childCount != null && Array.isArray(stay.childAges) && stay.childCount !== stay.childAges.length) {
@@ -84,11 +87,11 @@ function validate(input) {
 // Only these request keys are understood by this wrapper. Presence is significant:
 // an explicit null is not the same request as an omitted optional field.
 const requestShape = {
-  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'approval', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
+  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
   guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
   stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
   room: ['roomType', 'ratePlan'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
-  cms: ['send', 'messageId', 'recipient'], approval: ['by', 'at'], booker: ['name', 'contact'],
+  cms: ['send', 'messageId', 'recipient'], booker: ['name', 'contact'],
 };
 const unsupportedPaths = new Set(['booker', 'cms.recipient',
   'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
@@ -166,7 +169,9 @@ async function selectGuest(runTool, guest, commit) {
       { guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
   const chosen = matches[0];
-  if (commit && (chosen.firstName !== 'Proof' || chosen.lastName !== 'Labtest')) stop('refused', 'real_guest_write_disabled');
+  if (commit && (chosen.firstName !== 'Proof' || chosen.lastName !== 'Labtest')) {
+    stop('refused', REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
+  }
   const selected = await call(runTool, 'selectGuestProfile', { searchId: found.searchId, nativeId: chosen.nativeId });
   if (selected.nativeId !== chosen.nativeId) stop('uncertain', 'requested_field_not_staged', { field: 'guest' });
   return { selected, guest: candidate(chosen) };
@@ -258,6 +263,34 @@ async function prepareParty(runTool, kind, parties, propertyCode, output, missin
 function formValue(fields, name) {
   const matches = (fields || []).filter((field) => field.name === name);
   return matches.length === 1 ? matches[0].value : null;
+}
+
+function draftRequestBinding(input, state, output, formFields) {
+  if (Object.hasOwn(input, 'billingReference') || input.cms?.send !== false || !state.guest || !state.adult || !state.children || !state.guarantee) return null;
+  const parties = {};
+  for (const [stateKey, key, displayKey] of [
+    ['agency', 'agency', 'displayedAgency'], ['organization', 'organization', 'displayedOrganization'],
+    ['arAccount', 'arAccount', 'displayedArAccount'],
+  ]) {
+    const selected = state[stateKey];
+    if (selected) parties[key] = { nativeId: String(selected.nativeId), name: selected[displayKey] };
+  }
+  const request = {
+    propertyCode: input.propertyCode,
+    guest: { nativeId: String(state.guest.selected.nativeId), firstName: formValue(formFields, 'firstname'),
+      lastName: formValue(formFields, 'lastname') },
+    stay: { arrival: input.stay.arrival, departure: input.stay.departure, adults: Number(state.adult.actual.value),
+      childAges: [...state.children.actualChildAges] },
+    room: { roomType: output.applied.roomType, ratePlan: output.applied.ratePlan },
+    guaranteeType: String(state.guarantee.actual.value),
+    ...(state.source ? { sourceOfBusiness: { nativeCode: state.source.nativeCode, description: state.source.candidate.description } } : {}),
+    ...(state.reason ? { reasonForStay: { value: String(state.reason.actual.value), display: state.reason.actual.display } } : {}),
+    ...(Object.keys(parties).length ? { parties } : {}),
+    ...(Object.hasOwn(output.applied, 'note') ? { note: output.applied.note } : {}),
+    ...(state.cms ? { cmsMessageId: state.cms.actual } : {}),
+    sendHmsConfirmation: { kind: 'never' },
+  };
+  return digestCloudCreateRequest(request);
 }
 
 /** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
@@ -415,6 +448,12 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (!commit) {
         output.outcome = checked.unsupportedFields.length ? 'unsupported' : missing.length ? 'needs_input' : 'prepared';
         if (checked.unsupportedIssue) output.issue ||= checked.unsupportedIssue;
+        if (output.outcome === 'prepared') {
+          const binding = draftRequestBinding(input, state, output, form.fields);
+          if (binding?.outcome === 'ok') {
+            output.requestBinding = { request: binding.request, digest: binding.normalizedRequestDigest };
+          } else if (binding) output.requestBindingIssue = binding.issue;
+        }
         return;
       }
       output.applied.guaranteeType = formValue(form.fields, 'guaranteetype');
