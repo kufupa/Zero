@@ -18,6 +18,12 @@ The search checks that the request's date offsets match the displayed range.
 If the property's calendar date and UTC differ, it refuses the preimage rather
 than guessing the offset anchor; retry when the dates agree.
 
+The fake writer supports `NGI` and `GTDAGT` only. An agent-guarantee save
+requires the current page's `selectGuestStayDropdown` result as
+`guaranteeSelection`, including matching code, submitted value and display.
+The current form and outgoing native body are checked again with full schema
+proof. The agent-guarantee save itself has not yet been proved in HMS.
+
 The legacy core-only save call remains available for existing callers. It does
 not claim explicit occupancy or Source of Business coverage and cannot save a
 linked agency or organization. For stricter create-field proof, pass any

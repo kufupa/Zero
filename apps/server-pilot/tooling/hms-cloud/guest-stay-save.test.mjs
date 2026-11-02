@@ -233,6 +233,29 @@ test('preserves padded synthetic reservation notes exactly', () => {
   assert.equal(matchesFullCreateBody(body, formData), false);
 });
 
+test('agent guarantee requires matching selector evidence and a current strict draft', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  for (const invalid of [undefined, { ...selection, requested: 'NGI' },
+    { ...selection, actual: { ...selection.actual, submitted: 'NGI' } },
+    { ...selection, actual: { ...selection.actual, display: '' } }]) {
+    const result = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: invalid });
+    assert.equal(result.outcome, 'input_gap');
+    assert.equal(result.issue, 'GUARANTEE_SELECTION_UNVERIFIED');
+  }
+  let expected;
+  const page = pageStub();
+  page.evaluate = async (_fn, args) => { expected = args.expected; return 'DRAFT_GUARANTEE'; };
+  const result = await saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  assert.equal(expected.guaranteeType, 'GTDAGT');
+  assert.equal(expected.guaranteeDisplay, 'Guaranteed By Agent');
+  assert.equal(expected.strictCreateProof, true);
+  const unsupported = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDCC' });
+  assert.equal(unsupported.issue, 'INVALID_LABTEST_SAVE_INPUT');
+});
+
 test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');

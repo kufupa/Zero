@@ -180,6 +180,35 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
   }
 });
 
+test('agent guarantee is selected, bound, saved once and independently read back in simulation', async (t) => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const agentValues = { ...values, guaranteetype: 'Guaranteed By Agent' };
+  const options = { guaranteeResult: selection, draft: agentValues, record: agentValues };
+  const preparing = harness(options);
+  const prepared = await createReservation({ ...input, mode: 'prepare', guaranteeType: 'GTDAGT' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.equal(prepared.applied.guaranteeType, 'Guaranteed By Agent');
+  assert.equal(prepared.requestBinding.request.guaranteeType, 'GTDAGT');
+  assert.equal(preparing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const committing = harness(options);
+  const saved = await createReservation({ ...input, guaranteeType: 'GTDAGT' }, committing.options);
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.deepEqual(saved.readback.mismatches, []);
+  const calls = committing.calls.filter(({ tool }) => tool === 'saveNewLabtestStay');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].guaranteeSelection, selection);
+  assert.ok(committing.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
+
+  const mismatch = harness({ ...options, guaranteeResult: { ...selection, actual: { ...selection.actual, submitted: 'NGI' } } });
+  const refused = await createReservation({ ...input, guaranteeType: 'GTDAGT' }, mismatch.options);
+  assert.equal(refused.outcome, 'uncertain');
+  assert.equal(refused.issue, 'requested_field_not_staged');
+  assert.equal(mismatch.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
+});
+
 test('real profiles and blocked preimages do not reach save', async () => {
   const fake = harness({ profiles: [{ ...profile, firstName: 'Real' }] });
   let consumeCalls = 0;
