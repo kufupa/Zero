@@ -64,7 +64,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
-| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` with any `adultSelection`, `childAgeSelection`, `sourceSelection` results, and independent top-level `agencySelection` / `organizationSelection` results |
+| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` and independent top-level `agencySelection`, `organizationSelection`, `arSelection` results |
 | `readSavedLabtestRecord` | `confirmation` returned by a successful organization-only create in this same session; opens a fresh guarded Record View |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
@@ -113,8 +113,10 @@ Each strict create option is independent. Pass the corresponding helper result
 directly: `adultSelection` from `selectGuestStayDropdown`, including its current
 profile token; `childAgeSelection` from `setGuestStayChildAges` (empty, one, or
 multiple ages); `sourceSelection` from Source of Business selection; and/or the
-top-level `agencySelection` and `organizationSelection` from their current
-search-bound selectors. The agency selector reports each reference field in
+top-level `agencySelection`, `organizationSelection` and `arSelection` from
+their current search-bound selectors. Optional CMS message and reason selections
+may also be supplied in `createFieldProof` alongside an adult, child or source
+selection. The agency selector reports each reference field in
 `agencyReferenceEvidence`. If the response and grid both expose the same value,
 including an explicit blank, that field is `response_grid_correlated`; a missing
 or mismatched field stays unverified and its value is omitted. This does not
@@ -123,8 +125,8 @@ stricter: it accepts an agency only when both reference fields are correlated,
 including a proven blank, and the outgoing request also proves that blank. None
 of the other selections implies an agency, source or child selection.
 
-The programmatic equivalent passes `{labtestDates: {arrival, departure}}` to
-`withBookingLookupSession`. The callback receives `labtestPreimage` and the
+The programmatic equivalent passes `{labtestDates: {arrival, departure},
+blockServiceWorkers: true}` to `withBookingLookupSession`. The callback receives `labtestPreimage` and the
 same sequential `runTool` function. If the search is not clear, the rejected
 error has `phase: 'labtest_preimage'` and its private result in
 `error.labtestPreimage`.

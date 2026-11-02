@@ -47,8 +47,9 @@ fields `response_grid_correlated`. The writer accepts that blank only when the
 current draft and exact outgoing request also prove a blank;
 nonblank values must match exactly. This does not assert a server-side IATA
 requirement, and agencies whose picker omits either reference property are not
-currently selectable through strict create proof. No agency save has yet
-proved either case. Organization selection binds its returned native ID and
+currently selectable through strict create proof. One guarded agency create
+verified correlated blank reference values; a nonblank-reference agency save
+remains unverified. Organization selection binds its returned native ID and
 displayed name. The writer checks the current `companyid` and `company` values,
 and permits `companyname` only when blank or equal to that same organization.
 It does not infer that selecting an agency requires a child or source. Do not

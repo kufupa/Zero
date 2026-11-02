@@ -4,7 +4,7 @@
 can commit only a guarded Proof Labtest fake stay. The owner authorizes
 Labtest writes, not real-guest writes. This standalone interface does not
 authenticate a staff approval; caller-supplied approval fields are untrusted
-metadata and do not grant authority. No live HMS run is implied by this change.
+metadata and do not grant authority. See the live proof and limitations below.
 
 ```sh
 umask 077
