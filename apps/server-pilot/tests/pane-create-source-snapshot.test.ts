@@ -78,8 +78,8 @@ describe('historical correction content binding', () => {
       { ...history, event: { ...history.event, type: 'field.accept' as const } },
       { ...history, event: { ...history.event, value: 2 } },
       { ...history, event: { ...history.event, aiSource: 'different' } },
-      { ...history, event: { ...history.event, evidence: { extractionId: 'other', paneSeq: 1, paneState: {} } } },
-      { ...history, event: { ...history.event, evidence: { extractionId: history.extraction.id, paneSeq: 0, paneState: {} } } },
+      { ...history, event: { ...history.event, evidence: { ...(history.event.evidence as object), extractionId: 'other' } } },
+      { ...history, event: { ...history.event, evidence: { ...(history.event.evidence as object), paneSeq: 0 } } },
       { ...history, extraction: { ...history.extraction, messageId: 'other' } },
       { ...history, extraction: { ...history.extraction, status: 'failed' } },
     ]) {
