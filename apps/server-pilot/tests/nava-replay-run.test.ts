@@ -15,6 +15,8 @@ describe('actual-pane replay expectations', () => {
     expect(replayExpectationForCase({ ...sample, workflow: 'filing' }, null)).toMatchObject({
       requireSourceAttachment: true, requireDraft: false, requireAttachment: false,
     });
+    expect(replayExpectationForCase({ ...sample, workflow: 'triage', expected: { readAs: 'payment',
+      artifactPolicy: { source_attachment_required: true } } }, null).requireSourceAttachment).toBe(true);
   });
 });
 
@@ -69,7 +71,7 @@ describe('replay runner composition', () => {
         res.setHeader('content-type', 'text/html');
         return res.end(`<!doctype html><html><body><div><header aria-label="Nava mailbox">Nava</header>
           <main class="nava-pane-scroll"><section id="quote-selected-message" aria-label="Selected email">Subject A</section>
-          <span data-read-as="quote">Quote</span></main></div><script>
+          <span data-read-as="quote">Quote</span><article aria-label="Stay 1 details"><header><p>1 room · 1 guest total</p></header></article></main></div><script>
           fetch('/api/trpc/workstation.staffQuoteSource?batch=1', {method:'POST',headers:{'content-type':'application/json'},
           body:JSON.stringify({0:{json:{internetMessageId:'<m@example.test>'}}})});
           </script></body></html>`);
@@ -84,12 +86,16 @@ describe('replay runner composition', () => {
     const browser = await chromium.launch({ executablePath: browserPath, headless: true });
     try {
       const base = { browser, origin, storageStatePath, userId: 'user', transportId: 'mailbox', timeoutMs: 5_000 };
-      const item: ReplayCase = { id: 'triage', workflow: 'triage', threadId: 'thread', messageId: 'message', expected: { readAs: 'quote' } };
+      const item: ReplayCase = { id: 'triage', workflow: 'triage', threadId: 'thread', messageId: 'message',
+        expected: { readAs: 'quote', detailChecks: [{ kind: 'stay_count', count: 1 }] } };
       const pass = await runOutlookReplayCase({ ...base, item, screenshotDir: join(dir, 'pass') });
       expect(pass.failures).toEqual([]);
       expect(pass.screenshotPaths).toHaveLength(2);
       const wrong = await runOutlookReplayCase({ ...base, item: { ...item, expected: { readAs: 'new_booking' } }, screenshotDir: join(dir, 'wrong') });
       expect(wrong.failures).toContain('wrong_outcome');
+      const dropped = await runOutlookReplayCase({ ...base, item: { ...item, expected: { ...item.expected,
+        detailChecks: [{ kind: 'stay_count', count: 2 }] } }, screenshotDir: join(dir, 'dropped') });
+      expect(dropped.failures).toContain('wrong_detail_0');
       const missingFile = await runOutlookReplayCase({ ...base, item: { ...item, workflow: 'filing' }, screenshotDir: join(dir, 'missing-file') });
       expect(missingFile.failures).toContain('missing_source_attachment_metadata');
       expect(missingFile.failures).not.toContain('fixture_unsynced');

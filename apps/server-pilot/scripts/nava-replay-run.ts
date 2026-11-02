@@ -4,6 +4,7 @@ import { createReplayPage, type BlockedReplayNetwork } from './nava-replay-netwo
 import { installFakeOutlookBridge } from './nava-replay-fake-outlook';
 import { loadReplayEmail, loadReplayVoucherAttachment } from './nava-replay-mailbox';
 import { captureOutlookPane, readOutlookPane } from './nava-replay-outlook-pane';
+import { readReplayDetails, replayDetailFailures, type ReplayDetails } from './nava-replay-details';
 import { replayGateFailures, type ReplayDraftEvidence, type ReplayExpectation, type ReplayObservation } from './nava-replay-gate';
 import { PREPARE_PREVIEW_PROCEDURES, type BlockedWrite, type ReplayPreparePolicy } from './nava-preview-run';
 
@@ -12,7 +13,7 @@ export type ReplayCase = {
   workflow: 'quote' | 'create' | 'filing' | 'amend' | 'triage';
   threadId: string;
   messageId: string;
-  expected: { readAs: string };
+  expected: { readAs: string; detailChecks?: unknown; artifactPolicy?: Record<string, unknown> };
 };
 
 export type ReplayCaseResult = {
@@ -34,7 +35,7 @@ export function replayExpectationForCase(item: ReplayCase, readyAction: string |
     readAs: item.expected.readAs,
     requireDraft: isQuote,
     requireAttachment: isQuote && readyAction !== 'Draft decline reply',
-    requireSourceAttachment: item.workflow === 'filing',
+    requireSourceAttachment: item.workflow === 'filing' || item.expected.artifactPolicy?.source_attachment_required === true,
   };
 }
 
@@ -93,6 +94,7 @@ export async function runOutlookReplayCase(input: {
       extraHTTPHeaders: { 'x-zero-active-transport': input.transportId } },
   });
   let readyAction: string | null = null;
+  let details: ReplayDetails | null = null;
   const observed: ReplayObservation = {
     threadId: item.threadId, messageId: item.messageId, synchronized: false, outcome: 'error', readAs: null,
     drafts: [], forbiddenBatches: [], forbiddenNetwork: [], forbiddenBridgeActions: [],
@@ -106,7 +108,7 @@ export async function runOutlookReplayCase(input: {
     const email = await loadReplayEmail({ request: context.request, origin: input.origin, transportId: input.transportId,
       threadId: item.threadId, messageId: item.messageId, fakeStoreId: 'nava-replay-store' });
     if (!email) throw new Error('Replay selected message or required source metadata is unavailable');
-    if (item.workflow === 'filing') {
+    if (replayExpectationForCase(item, null).requireSourceAttachment) {
       const sourceAttachment = await loadReplayVoucherAttachment({ request: context.request, origin: input.origin,
         transportId: input.transportId, threadId: item.threadId, messageId: item.messageId,
         internetMessageId: email.internetMessageId });
@@ -150,6 +152,15 @@ export async function runOutlookReplayCase(input: {
         if (!readyAction) await page.waitForTimeout(500);
       }
     }
+    // Wait for pane-owned structured facts, not raw source text. Missing facts fail the gate.
+    if (observed.synchronized && observed.outcome === 'intent') {
+      details = await readReplayDetails(page);
+      while (Date.now() < deadline &&
+        replayDetailFailures(item.expected.detailChecks, details, replayExpectationForCase(item, readyAction).requireSourceAttachment).length) {
+        await page.waitForTimeout(500);
+        details = await readReplayDetails(page);
+      }
+    }
     const fake = await page.evaluate(() => (globalThis as unknown as { __navaFakeOutlook?: {
       drafts: Array<{ reply: { entryId?: string }; location: ReplayDraftEvidence['location']; attachments: ReplayDraftEvidence['attachments'] }>;
       forbidden: string[];
@@ -167,7 +178,9 @@ export async function runOutlookReplayCase(input: {
     observed.forbiddenNetwork = blockedNetwork.map((item) => item.reason);
     await context.close();
   }
-  const failures = replayGateFailures(replayExpectationForCase(item, readyAction), observed);
+  const expected = replayExpectationForCase(item, readyAction);
+  const failures = [...replayGateFailures(expected, observed),
+    ...replayDetailFailures(item.expected.detailChecks, details, expected.requireSourceAttachment)];
   return { id: item.id, failures, outcome: observed.outcome, readAs: observed.readAs,
     screenshotPaths: observed.screenshotPaths, sourceAttachmentMetadataPresent: Boolean(observed.sourceAttachmentMetadata) };
 }
