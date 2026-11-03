@@ -8,6 +8,7 @@ import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { createEmlDownloadHandler } from './http/eml-download.js';
 import { resolveAuthSessionProfile } from './lib/auth-profile.js';
+import { createBackgroundDrain } from './lib/background-drain.js';
 import { getPublicAuthProviders } from './lib/auth-providers.js';
 import { startOutlookSyncDrain } from './outlook-sync/drain.js';
 import { OutlookSyncStorage } from './outlook-sync/storage.js';
@@ -152,35 +153,42 @@ const stopOutlookSyncDrain =
 const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
   console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
+const background = createBackgroundDrain();
 
 // Each hourly pass deletes at most 5,000 old records per table; no guest mail,
 // authentication keys or active approvals are touched. A maintenance failure
 // must never turn a denied native bridge request into an allowed one.
 const outlookRetentionTimer = setInterval(() => {
   if (resolveAuthSessionProfile() !== 'legacy') return;
-  void pruneOutlookAuthorizationHistory(getDb()).catch(() => {
+  void background.track(pruneOutlookAuthorizationHistory(getDb()).catch(() => {
     console.error('Outlook authorization retention maintenance failed');
-  });
+  }));
 }, 60 * 60_000);
 outlookRetentionTimer.unref();
 
 // Quote follow-up sweep (R10). Does nothing unless QUOTE_FOLLOWUPS=on. A failed pass is retried on the next tick.
 const quoteFollowupTimer = setInterval(() => {
-  void runQuoteFollowupSweep({ db: getDb() }).catch((error) => {
+  void background.track(runQuoteFollowupSweep({ db: getDb() }).catch((error) => {
     console.error('quote follow-up sweep failed', error);
-  });
+  }));
 }, 5 * 60_000);
 quoteFollowupTimer.unref();
 
+let shuttingDown = false;
 function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`${signal} received, shutting down`);
   clearInterval(outlookRetentionTimer);
   clearInterval(quoteFollowupTimer);
   server.close(() => {
-    void stopOutlookSyncDrain()
-      .then(() => closeDb())
+    void Promise.allSettled([Promise.resolve().then(stopOutlookSyncDrain), background.drain()])
+      .then(([sync]) => {
+        if (sync.status === 'rejected') throw sync.reason;
+        return closeDb();
+      })
       .then(() => {
-        console.log('shutdown complete');
+        console.log(`shutdown complete pid=${process.pid}`);
         process.exit(0);
       })
       .catch((err) => {
