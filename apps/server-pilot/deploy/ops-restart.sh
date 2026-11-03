@@ -152,7 +152,9 @@ curl --disable --noproxy '*' -fsS \
 assert_http_loopback_only
 REMOTE
 )"
-bash "${SCRIPT_DIR}/ssm-run-command.sh" "$REMOTE_COMMAND"
+# The remote restart can drain several PM2 processes for up to 30 minutes each.
+SSM_EXECUTION_TIMEOUT_SECONDS=10800 SSM_MAX_POLL_SECONDS=11100 \
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" "$REMOTE_COMMAND"
 
 echo "== ops-restart: remote-admin lifecycle readiness =="
 REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
