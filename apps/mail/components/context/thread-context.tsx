@@ -49,6 +49,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { beginMailSelectionIntent } from '@/lib/mail/source-message-navigation';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
@@ -232,7 +233,7 @@ export function ThreadContextMenu({
   const effectiveIsSpam = isSpam || isReservedSpamFolder;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
-  const [, setThreadId] = useQueryState('threadId');
+  const [selected, setThreadSelection] = useQueryStates({ threadId: parseAsString, sourceMessageId: parseAsString });
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -350,8 +351,12 @@ export function ThreadContextMenu({
     }
   };
 
+  const selectReplyThread = () => {
+    beginMailSelectionIntent();
+    void setThreadSelection({ threadId, sourceMessageId: selected.threadId === threadId ? selected.sourceMessageId : null });
+  };
   const handleThreadReply = () => {
-    setThreadId(threadId);
+    selectReplyThread();
     void openReplyComposeContext({
       mode: 'reply',
       messageId: threadData?.latest?.id ?? null,
@@ -363,7 +368,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReplyAll = () => {
-    setThreadId(threadId);
+    selectReplyThread();
     void openReplyComposeContext({
       mode: 'replyAll',
       messageId: threadData?.latest?.id ?? null,
@@ -375,7 +380,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadForward = () => {
-    setThreadId(threadId);
+    selectReplyThread();
     void openReplyComposeContext({
       mode: 'forward',
       messageId: threadData?.latest?.id ?? null,

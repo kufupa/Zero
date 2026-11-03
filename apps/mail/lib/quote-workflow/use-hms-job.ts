@@ -66,7 +66,7 @@ function resumedFor(
   lastName: string | null,
   partyName: string | null,
   partyKind: 'company' | 'agency' | null,
-  arrival: string | null,
+  arrival: string | null | undefined,
   departure: string | null | undefined,
 ): boolean {
   if (confirmation && !(request?.kind === 'find' && request.confirmation === confirmation)) return false;
@@ -78,7 +78,8 @@ function resumedFor(
     partyKind &&
     !(request?.kind === 'party' && (request.partyKind === partyKind || (prefetch && !request.partyKind)))
   ) return false;
-  if (arrival && (!request || !('arrival' in request) || request.arrival !== arrival)) return false;
+  if (arrival !== undefined &&
+    (!request || (request.kind !== 'find' && request.kind !== 'search_guest') || (request.arrival ?? null) !== arrival)) return false;
   if (
     departure !== undefined &&
     (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure)
@@ -99,7 +100,7 @@ export function useHmsJob(input: {
     lastName?: string;
     name?: string;
     partyKind?: 'company' | 'agency';
-    arrival?: string;
+    arrival?: string | null;
     departure?: string | null;
   } | null;
   /** Changes with the email or booking selection. The shown job is cleared and the read-back runs again. */
@@ -131,7 +132,8 @@ export function useHmsJob(input: {
   const resumeLastName = resume?.lastName ?? null;
   const resumeName = resume?.name ?? null;
   const resumePartyKind = resume?.partyKind ?? null;
-  const resumeArrival = resume?.arrival ?? null;
+  const resumeHasArrival = resume !== null && Object.hasOwn(resume, 'arrival');
+  const resumeArrival = resumeHasArrival ? (resume?.arrival ?? null) : undefined;
   const resumeHasDeparture = resume !== null && Object.hasOwn(resume, 'departure');
   const resumeDeparture = resumeHasDeparture ? (resume?.departure ?? null) : undefined;
   const [runId, setRunId] = useState<string | null>(null);
@@ -285,7 +287,7 @@ export function useHmsJob(input: {
       ...(resumeLastName ? { lastName: resumeLastName } : {}),
       ...(resumeName ? { name: resumeName } : {}),
       ...(resumePartyKind ? { partyKind: resumePartyKind } : {}),
-      ...(resumeArrival ? { arrival: resumeArrival } : {}),
+      ...(resumeHasArrival ? { arrival: resumeArrival } : {}),
       ...(resumeHasDeparture ? { departure: resumeDeparture } : {}),
     };
     activeNoticeJobId.current = `${noticeObserverId}:${++nextNoticeJobId.current}`;
@@ -317,14 +319,14 @@ export function useHmsJob(input: {
         if (!autoStartIfMissing) return;
         const autoRequest: HmsJobRequest | null =
           resumeKind === 'find' && resumeConfirmation
-            ? { kind: 'find', confirmation: resumeConfirmation }
+            ? { kind: 'find', confirmation: resumeConfirmation, ...(resumeArrival ? { arrival: resumeArrival } : {}) }
             : resumeKind === 'search_guest' && resumeLastName && resumeArrival
               ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
               : null;
         if (!autoRequest) return;
         const key =
           autoRequest.kind === 'find'
-            ? [scope ?? '', 'find', autoRequest.confirmation].join('\u0000')
+            ? [scope ?? '', 'find', autoRequest.confirmation, autoRequest.arrival ?? ''].join('\u0000')
             : [
                 scope ?? '',
                 autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
@@ -358,6 +360,7 @@ export function useHmsJob(input: {
     resumeLastName,
     resumeName,
     resumePartyKind,
+    resumeHasArrival,
     resumeArrival,
     resumeHasDeparture,
     resumeDeparture,

@@ -26,11 +26,10 @@ export function setMailCacheScope(scope: MailCacheScope): void {
   const changed =
     currentScope.userId !== scope.userId ||
     currentScope.activeTransportId !== scope.activeTransportId;
+  if (!changed) return;
   currentScope = scope;
-  if (changed) {
-    for (const listener of scopeListeners) {
-      listener();
-    }
+  for (const listener of scopeListeners) {
+    listener();
   }
 }
 

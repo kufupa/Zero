@@ -1,5 +1,15 @@
 import { useEffect, useRef } from 'react';
 
+// Thread, list and work-item controls can all await draft flushes. A newer choice
+// from any control must cancel an older one, even before the URL has changed.
+let latestSelectionIntent = 0;
+export function beginMailSelectionIntent(): number {
+  return ++latestSelectionIntent;
+}
+export function isCurrentMailSelectionIntent(intent: number): boolean {
+  return intent === latestSelectionIntent;
+}
+
 export function useExactSourceMessageSelection<T extends { id: string }>(
   sourceMessageId: string | null | undefined,
   messages: readonly T[],

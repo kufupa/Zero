@@ -73,6 +73,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     screenshotReads: [] as string[],
     // Replaces the default quote analysis for one test (an amendment email, for example).
     analysisOverride: null as null | Record<string, unknown>,
+    analyseMutation: null as null | ((input: { entryId: string }) => Promise<Record<string, unknown>>),
     analyseCalls: 0,
     staffQuoteSourceCalls: 0,
     storedWorkLookups: 0,
@@ -287,8 +288,9 @@ vi.mock('../providers/query-provider', () => ({
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
-        mutate: async () => {
+        mutate: async (input: { entryId: string }) => {
           bridgeMockState.analyseCalls += 1;
+          if (bridgeMockState.analyseMutation) return bridgeMockState.analyseMutation(input);
           if (bridgeMockState.analyseFails) throw new Error('Nava could not read this email.');
           return bridgeMockState.analysisOverride ?? ({
             status: 'ready' as const,
@@ -432,6 +434,7 @@ describe('NavaPane', () => {
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseMutation = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
@@ -789,6 +792,9 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionStorage.clear();
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseMutation = null;
+    bridgeMockState.staffQuoteSources = {};
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -843,6 +849,13 @@ describe('NavaPane', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
+  const resolveDavinciProperty = () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRDAV', roomTypes: [], ratePlans: [],
+      boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+  };
+
   /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
   const stabilizePaneSnapshot = (root: HTMLElement) => {
     root.querySelectorAll('*').forEach((el) => {
@@ -890,7 +903,7 @@ describe('NavaPane', () => {
     expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
-  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while Needs-you stays gated off', async (width) => {
+  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while mailbox scope is unavailable', async (width) => {
     const { container } = render(
       <div style={{ width: `${width}px`, maxWidth: `${width}px` }}>
         <NavaPane bridge={fakeBridge} />
@@ -914,7 +927,16 @@ describe('NavaPane', () => {
     expect(container.firstElementChild?.getAttribute('style')).toContain(`width: ${width}px`);
   });
 
+  it('opens the scoped Needs-you list from the Outlook pane header', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (0)' }));
+    expect(await screen.findByRole('heading', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.getByText('All caught up')).toBeDefined();
+  });
+
   it('booking: an amendment email shows the change card with the guest request and the confirmation number', async () => {
+    resolveDavinciProperty();
     bridgeMockState.analysisOverride = {
       status: 'ready',
       intent: 'other',
@@ -1117,6 +1139,7 @@ describe('NavaPane', () => {
   });
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
+    resolveDavinciProperty();
     bridgeMockState.storedWork = STORED_AMENDMENT;
     render(<NavaPane bridge={fakeBridge} />);
 
@@ -1630,6 +1653,38 @@ describe('NavaPane', () => {
   }, 15_000);
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
+  it('ignores a late read after webmail selects A, B, then A again', async () => {
+    let finishFirstRead!: (value: Record<string, unknown>) => void;
+    const firstRead = new Promise<Record<string, unknown>>((resolve) => { finishFirstRead = resolve; });
+    const ready = (adults: number) => ({
+      status: 'ready', sourceRevision: 1,
+      ...STORED_READY.analysis,
+      groups: STORED_READY.analysis.groups.map((group) => ({ ...group, adults })),
+    });
+    let aReads = 0;
+    bridgeMockState.analyseMutation = async ({ entryId }) => {
+      if (entryId === '001' && ++aReads === 1) return firstRead;
+      return ready(entryId === '002' ? 4 : 2);
+    };
+    const other = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail!, entryId: '002',
+        internetMessageId: '<other-quote@example.invalid>', subject: 'Other request',
+      },
+    } as unknown as PaneBridge;
+    const onOpenThread = vi.fn();
+    const { rerender } = render(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);
+    await waitFor(() => expect(aReads).toBe(1));
+    rerender(<NavaPane bridge={other} preview onOpenThread={onOpenThread} />);
+    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    rerender(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);
+    expect(await screen.findByText('2 adults per room')).toBeDefined();
+    await act(async () => { finishFirstRead(ready(9)); await firstRead; });
+    expect(screen.getByText('2 adults per room')).toBeDefined();
+    expect(screen.queryByText('9 adults per room')).toBeNull();
+  });
+
   it('keeps a stay edit after switching to two other mails and back', async () => {
     bridgeMockState.storedWork = STORED_READY;
     const other = {
@@ -3040,6 +3095,7 @@ describe('NavaPane', () => {
     return {
       runId: 'hms-job-found-amendment',
       sourceMessageId: 'mail-1',
+      sourceHash: 'ab'.repeat(32),
       request: { kind: 'find', confirmation, arrival: '2026-10-17' },
       prefetch: false,
       status: 'done',
@@ -3077,7 +3133,128 @@ describe('NavaPane', () => {
     };
   }
 
+  it('HRCEN mounts the local amendment review from the selected email and HMS lookup', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [],
+      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
+    };
+    const pane = render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    const adults = await within(card).findByLabelText('Requested adults');
+    expect(adults).toBeTruthy();
+    expect(within(card).getByText('Booking at last HMS lookup')).toBeTruthy();
+    expect(within(card).getAllByText(/^HMS at lookup:/)).toHaveLength(4);
+    expect(within(card).getByLabelText('Rate plan to review in HMS')).toBeTruthy();
+    expect(within(card).getByText(/has not checked availability or the new price/)).toBeTruthy();
+    expect(within(card).queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
+    fireEvent.change(adults, { target: { value: '3' } });
+    try {
+      // The new session's property catalogue is still unavailable after the old one is discarded.
+      bridgeMockState.quotePaneConfig = null;
+      bridgeMockState.userId = 'staff-2';
+      bridgeMockState.sessionId = 'session-2';
+      pane.rerender(<NavaPane bridge={fakeBridge} />);
+      await settle();
+      await settle();
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+    } finally {
+      bridgeMockState.userId = 'staff-1';
+      bridgeMockState.sessionId = 'session-1';
+    }
+  });
+
+  it('opens the HRCEN review only for a verified web message selection', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedChange: null },
+    };
+    const webBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      entryId: 'mail-1', storeId: 'transport-1', folderEntryId: 'thread' } };
+    const pane = render(<NavaPane bridge={webBridge} preview />);
+    expect(await screen.findByText('Select this guest email in webmail before reviewing the booking.')).toBeTruthy();
+    expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+
+    pane.rerender(<NavaPane bridge={webBridge} preview webSelectedMessageId="mail-1" />);
+    expect(await screen.findByLabelText('Requested adults')).toBeTruthy();
+
+    pane.rerender(<NavaPane bridge={webBridge} preview webSelectedMessageId="another-message" />);
+    expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+  });
+
+  it('refuses the HRCEN web review when the resolved source names a different message', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.staffQuoteSources['<quote-request@example.invalid>'] = {
+      messageId: 'another-message', threadId: 'thread-1', sourceHash: 'ab'.repeat(32),
+    };
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedChange: null },
+    };
+    const webBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      entryId: 'mail-1', storeId: 'transport-1', folderEntryId: 'thread' } };
+    render(<NavaPane bridge={webBridge} preview webSelectedMessageId="mail-1" />);
+    expect(await screen.findByText('Select this guest email in webmail before reviewing the booking.')).toBeTruthy();
+    expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+  });
+
+  it('does not mount an amendment lookup while the active property is unresolved', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedChange: null },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    await settle();
+    expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+    expect(screen.getByText('Nava cannot confirm the property yet. Open the booking in HMS.')).toBeTruthy();
+  });
+
+  it.each(['internetMessageId', 'subject', 'bodyText', 'bodyHtml'] as const)(
+    'hides the HRCEN review if the selected email changes its %s without changing its entry', async (field) => {
+      bridgeMockState.quotePaneConfig = {
+        transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+        boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      };
+      bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+      bridgeMockState.analysisOverride = {
+        status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+        amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+          arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
+      };
+      const pane = render(<NavaPane bridge={fakeBridge} />);
+      expect(await screen.findByLabelText('Requested adults')).toBeTruthy();
+      const changedBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, [field]: 'Changed content' } };
+      pane.rerender(<NavaPane bridge={changedBridge} />);
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+      if (field !== 'internetMessageId') {
+        expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
+      }
+      pane.rerender(<NavaPane bridge={fakeBridge} />);
+      await waitFor(() => expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy());
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+    },
+  );
+
   it('amendment: no requested change shows one plain line and each HMS date once', async () => {
+    resolveDavinciProperty();
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
       status: 'ready',
@@ -3110,6 +3287,7 @@ describe('NavaPane', () => {
   });
 
   it('amendment: right column shows only the requested departure difference', async () => {
+    resolveDavinciProperty();
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
       status: 'ready',

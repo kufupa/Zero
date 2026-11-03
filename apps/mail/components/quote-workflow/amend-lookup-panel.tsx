@@ -46,6 +46,7 @@ import {
   prefetchedNotFoundConfirmationCopy,
   searchRequestFor,
   searchRunFromJob,
+  sendableArrival,
   stayGuest,
   stayPickCaption,
   stayText,
@@ -61,10 +62,20 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
-import type { QuoteAmendment, QuoteSession } from '@/lib/quote-workflow/types';
+import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
+import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
+import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
+
+export type AmendReadOnlyContext = {
+  propertyCode: 'HRCEN';
+  ratePlans: RatePlanCatalogueEntry[];
+  selectionCurrent: boolean;
+  sourceContentChanged?: boolean;
+  sourceSelectionUnavailable?: boolean;
+};
 
 type SearchForm = { lastName: string; arrival: string; departure: string };
 
@@ -129,10 +140,12 @@ export function AmendLookupPanel({
   trpc,
   savedStays,
   onStayActionResult,
+  readOnlyAmend,
 }: {
   session: QuoteSession;
   trpc: unknown;
   savedStays?: Record<string, AmendSavedStay>;
+  readOnlyAmend?: AmendReadOnlyContext | null;
   onStayActionResult?: (input: {
     stayId: string;
     confirmationNumber: string;
@@ -140,7 +153,10 @@ export function AmendLookupPanel({
   }) => void;
 }) {
   const amendment = amendmentOf(session);
-  const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
+  const exactSource = Boolean(readOnlyAmend);
+  const selectedTransportId = exactSource && readOnlyAmend?.selectionCurrent
+    ? session.binding?.transportId?.trim() || null : null;
+  const client = useMemo(() => amendFindClientFromTrpc(trpc, selectedTransportId), [trpc, selectedTransportId]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
   const amendClient = useMemo(() => amendStayClientFromTrpc(trpc), [trpc]);
   const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
@@ -170,9 +186,11 @@ export function AmendLookupPanel({
   }, [loadCapabilities]);
   const threadId = session.staffSource?.threadId.trim() || null;
   const messageId = session.staffSource?.messageId.trim() || null;
+  const sourceHash = session.staffSource?.sourceHash.trim() || null;
   const transport = useMemo(
-    () => hmsJobTransport(client, threadId, messageId),
-    [client, threadId, messageId],
+    () => exactSource && (!selectedTransportId || !sourceHash) ? null
+      : hmsJobTransport(client, threadId, messageId, exactSource ? { exactSource: true, sourceHash: sourceHash! } : undefined),
+    [client, threadId, messageId, sourceHash, exactSource, selectedTransportId],
   );
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
@@ -207,7 +225,8 @@ export function AmendLookupPanel({
   // The find reads back the email's own number after a remount. A booking picked from a search is queued in this session.
   const find = useHmsJob({
     transport,
-    resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber } : null,
+    resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber,
+      ...(exactSource ? { arrival: sendableArrival(findArrival) } : {}) } : null,
     scope: key,
     autoStartIfMissing: Boolean(key && transport && hmsNumber),
     targetId: 'quote-booking',
@@ -223,6 +242,7 @@ export function AmendLookupPanel({
   if (!amendment) return null;
 
   const findView: HmsJobView | null = find.view;
+  const shownFindRequest = findView?.request?.kind === 'find' ? findView.request : null;
   const findRun = findRunFromJob(findView, find.queueFailed, find.queueFailureMessage);
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
@@ -416,6 +436,17 @@ export function AmendLookupPanel({
   const requestedRows = stay && amendment.kind === 'amend' ? requestedChangeRows(amendment, stay, diff) : [];
   const requestLine = requestSummary(amendment, requestedRows.length === 0);
   const ratePlan = stayText(stay?.ratePlan);
+  const source = session.staffSource;
+  const binding = session.binding;
+  const readOnlyIdentity: SavedStayAmendEditorIdentity | null =
+    readOnlyAmend?.selectionCurrent && source?.threadId.trim() && source.messageId.trim() &&
+    /^[a-f0-9]{64}$/.test(source.sourceHash) && binding?.mailboxEmail.trim() &&
+    binding.internetMessageId?.trim()
+      ? { propertyCode: readOnlyAmend.propertyCode, threadId: source.threadId, messageId: source.messageId,
+          mailboxEmail: binding.mailboxEmail, sourceHash: source.sourceHash }
+      : null;
+  // This is a local display revision, not an extraction id or authority to write.
+  const localReadRevision = JSON.stringify([session.inputRevision, amendment]);
   const matchWarningParts =
     stay && amendment.kind === 'amend'
       ? [
@@ -479,7 +510,7 @@ export function AmendLookupPanel({
           data-testid={stay ? 'amend-hms-result-card' : undefined}
           className="flex min-w-0 flex-col gap-2"
         >
-          <p className={headingClass}>Booking in HMS now</p>
+          <p className={headingClass}>{readOnlyAmend ? 'Booking at last HMS lookup' : 'Booking in HMS now'}</p>
           {stay ? (
             <>
               <dl data-testid="amend-hms-facts" className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
@@ -513,6 +544,13 @@ export function AmendLookupPanel({
                 />
               ) : null}
               {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
+              {readOnlyAmend && shownFindRequest && shownFindRequest.confirmation === foundNumber ? (
+                <button type="button" className={buttonClass} disabled={!key || !transport || busy}
+                  title="Refreshing clears the entries on this card."
+                  onClick={() => find.start(shownFindRequest)}>
+                  Refresh HMS lookup
+                </button>
+              ) : null}
             </>
           ) : (
             <>
@@ -642,7 +680,21 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
-      {amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
+      {amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend ? (
+        readOnlyIdentity && stayText(stay.confirmation) === foundNumber &&
+        findView?.request?.kind === 'find' && findView.request.confirmation === foundNumber ? (
+          <LocalAmendReview
+            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, foundNumber])}
+            identity={readOnlyIdentity}
+            revision={localReadRevision}
+            confirmation={foundNumber}
+            stay={stay}
+            requestedArrival={amendment.requestedArrival}
+            requestedDeparture={amendment.requestedDeparture}
+            ratePlans={readOnlyAmend.ratePlans}
+          />
+        ) : <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
         <AmendSection
           view={amendView}
           canPreview={canAmendWrite}
@@ -669,6 +721,8 @@ export function AmendLookupPanel({
             if (amendView?.kind === 'ready') void commitAmendStay(amendView);
           }}
         />
+      ) : amendment.kind === 'amend' && !(stay && foundNumber) && readOnlyAmend ? (
+        <p className={captionClass}>Find the booking to review the requested changes.</p>
       ) : amendment.kind === 'amend' && !(stay && foundNumber) ? (
         <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
           <button type="button" className={buttonClass} disabled title="Find the booking first">
@@ -964,6 +1018,73 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
       {`${label}: ${from} → ${to}`}
     </p>
   );
+}
+
+/** A local comparison against the dated HMS lookup, never an HMS prepare or approval. */
+function LocalAmendReview({ identity, revision, confirmation, stay, requestedArrival, requestedDeparture, ratePlans }: {
+  identity: SavedStayAmendEditorIdentity;
+  revision: string;
+  confirmation: string;
+  stay: StayRecordWire;
+  requestedArrival?: string | null;
+  requestedDeparture?: string | null;
+  ratePlans: RatePlanCatalogueEntry[];
+}) {
+  const [draftStore] = useState(createSavedStayAmendDraftStore);
+  const [draft, setDraft] = useState<SavedStayAmendDraftUpdate | null>(null);
+  const basis = savedStayAmendReviewBasis(stay, { arrival: requestedArrival, departure: requestedDeparture }, revision);
+  const currentDraft = draft?.basis === basis && draft.extractionRevision === revision &&
+    draft.confirmation === confirmation &&
+    (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
+      .every((field) => draft.identity[field] === identity[field]) ? draft : null;
+  const choiceKey = JSON.stringify([basis, ratePlans.map(({ code, name }) => [code, name])]);
+  return <>
+    <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
+      confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
+      requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
+    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft} />
+    <p className={infoNoteClass}>Nava has not checked availability or the new price. Complete the change in HMS; nothing has been saved.</p>
+  </>;
+}
+
+function LocalAmendChoices({ stay, ratePlans, draft }: {
+  stay: StayRecordWire;
+  ratePlans: RatePlanCatalogueEntry[];
+  draft: SavedStayAmendDraftUpdate | null;
+}) {
+  const [ratePlan, setRatePlan] = useState('');
+  const [retainRates, setRetainRates] = useState('');
+  const choiceValid = draft && draft.errors.every((error) => error === 'Choose a change to the booking.');
+  const changes = draft?.proposal?.changes;
+  const summary = changes || (choiceValid && (ratePlan || retainRates));
+  const changeRows = changes ? Object.entries(changes).map(([field, value]) => {
+    const labels: Record<string, string> = { arrival: 'Arrival', departure: 'Departure', adults: 'Adults',
+      children: 'Children', childAges: 'Child ages' };
+    return `${labels[field] ?? field}: ${Array.isArray(value) ? (value.join(', ') || 'None') : String(value)}`;
+  }) : [];
+  return <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+    <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      <span className="font-semibold">Rate plan to review in HMS</span>
+      <select className={selectClass} value={ratePlan} onChange={(event) => setRatePlan(event.target.value)}>
+        <option value="">Current rate plan{stay.ratePlan ? ` (${stay.ratePlan})` : ' (not shown)'}</option>
+        {ratePlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name} ({plan.code})</option>)}
+      </select>
+    </label>
+    <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      <span className="font-semibold">Retain the current rate?</span>
+      <select className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value)}>
+        <option value="">Not chosen</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    </label>
+    {summary ? <div data-testid="amend-local-summary" className={infoNoteClass}>
+      <p className="font-semibold">Review in HMS</p>
+      {changeRows.map((row) => <p key={row}>{row}</p>)}
+      <p>Rate plan: {ratePlan || stay.ratePlan || 'Not shown'}</p>
+      <p>Retain current rate: {retainRates === 'yes' ? 'Yes' : retainRates === 'no' ? 'No' : 'Not chosen'}</p>
+    </div> : null}
+  </div>;
 }
 
 function AmendSection({
