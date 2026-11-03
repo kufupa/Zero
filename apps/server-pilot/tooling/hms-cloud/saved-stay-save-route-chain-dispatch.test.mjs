@@ -163,3 +163,43 @@ test('a wrapper cannot hide a failed native continuation', async () => {
   assert.equal(await h.chain.waitForDispatch(), false);
   assert.equal(h.chain.continued(), h.request);
 });
+
+test('availability and second Save each require their exact guarded phase and primary completion', async () => {
+  const frame = {}, continued = [];
+  let pageHandler, contextHandler;
+  const context = { route: async (_pattern, handler) => { contextHandler = handler; } };
+  const page = { context: () => context, route: async (_pattern, handler) => { pageHandler = handler; } };
+  const phase = (name) => ({ isArmed: () => true, matches: (request) => request.tag === name,
+    dispatchCandidate: async (_request, proceed) => {
+      assert.equal(proceed.proveNeverDispatched(), null);
+      await proceed();
+    } });
+  const chain = await installLabtestSaveRouteChain(page, { frame, fence: { isQuarantined: () => false },
+    scope: { allow: () => true }, isArmed: () => true, matches: (request) => request.tag === 'primary',
+    availability: phase('availability'), secondSave: phase('second') });
+  const route = (tag, availability = false) => {
+    const request = { tag, frame: () => frame, method: () => 'POST',
+      url: () => `https://example.invalid/web/base/OSRESV.HDR${availability ? '.getcheckavailability' : '?pageaction=SAVE'}` };
+    return { request: () => request, fallback: async () => 'fallback', abort: async () => 'abort',
+      continue: async () => { continued.push(tag); return 'continued'; } };
+  };
+  const earlySecond = route('second');
+  assert.equal(await pageHandler(earlySecond), 'fallback');
+  assert.equal(await contextHandler(earlySecond), 'abort');
+  const availability = route('availability', true);
+  assert.equal(await pageHandler(availability), 'fallback');
+  await contextHandler(availability);
+  assert.equal(await chain.waitForAvailability(), true);
+  assert.equal(await pageHandler(route('availability', true)), 'abort');
+  const primary = route('primary');
+  await pageHandler(primary); await contextHandler(primary);
+  assert.equal(await chain.waitForDispatch(), true);
+  const wrong = route('unapproved');
+  await pageHandler(wrong);
+  assert.equal(await contextHandler(wrong), 'abort');
+  const second = route('second');
+  await pageHandler(second); await contextHandler(second);
+  assert.equal(await chain.waitForSecond(), true);
+  assert.equal(await contextHandler(second), 'abort');
+  assert.deepEqual(continued, ['availability', 'primary', 'second']);
+});

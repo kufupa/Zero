@@ -16,6 +16,7 @@ function recordPage({ companyId = organization.nativeId, company = organization.
     PKID: '11', bookingsessionid: '22', reservationid: '33', reservationstayid: '44', recordid: '55',
     propertycode: 'HRCEN', confirmationnumber: expected.confirmation, guestid: expected.guestId,
     status: 'Reserved', firstname: 'Proof', lastname: 'Labtest', reservationnote: expected.note,
+    arrivaldate: '01/25/2027', departuredate: '01/27/2027',
     track: 'COR', guaranteetype: 'NGI', udfchar13: '', emailaddress: '',
     companyid: companyId, company, companyname: '',
   });

@@ -25,6 +25,7 @@ import {
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
 import { CreateFenceError } from './pane-create-dispatch-fence.js';
 import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 
 const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
@@ -651,6 +652,20 @@ export function paneStayPropertyLock(target: HmsReadTarget): PaneStayLock | null
   return createPostgresPropertyReadLock({
     tenantId: paneStayTenantId(),
     propertyCode: code,
+    databaseUrl,
+  });
+}
+
+/** Caller must use an independently owned Cloud browser; borrowed sessions keep the property lock. */
+export function paneStayCloudTargetLock(target: HmsReadTarget, dispatchTarget: HmsDispatchTarget,
+  session: { kind: 'independent_cloud' }): PaneStayLock | null {
+  const databaseUrl = process.env.DATABASE_URL;
+  const parsed = hmsDispatchTargetSchema.safeParse(dispatchTarget);
+  if (!databaseUrl || session?.kind !== 'independent_cloud' || !parsed.success || target.propertyCode !== parsed.data.propertyCode ||
+      target.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion') return null;
+  return createPostgresPropertyReadLock({
+    tenantId: paneStayTenantId(),
+    propertyCode: `cloud-target:${hmsDispatchTargetKey(parsed.data)}`,
     databaseUrl,
   });
 }

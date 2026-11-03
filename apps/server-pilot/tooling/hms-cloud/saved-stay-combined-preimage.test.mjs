@@ -118,3 +118,30 @@ test('rejects sparse arrays even when extra properties mask missing indices', ()
   f.snapshot.data.unrelated = sparse;
   assert.equal(binding(f), null);
 });
+
+test('binds real expected identity and native guarantee in the complete saved baseline', () => {
+  const f = fixture();
+  Object.assign(f.expected, { firstName:'Alice', lastName:'Example' });
+  Object.assign(f.state, { allowRealGuest:true, expectedFirstName:'Alice', expectedLastName:'Example',
+    expectedGuarantee:{ code:'CC', display:'Credit Card' } });
+  for (const part of [f.snapshot.data, f.snapshot.values]) {
+    Object.assign(part, { firstname:'Alice', lastname:'Example', guaranteetype:'CC' });
+  }
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  f.snapshot.data.lastname = 'Other'; assert.equal(binding(f), null);
+  f.snapshot.data.lastname = 'Example'; f.snapshot.values.guaranteetype = 'NGI'; assert.equal(binding(f), null);
+  f.snapshot.values.guaranteetype = 'CC'; f.expected.firstName = 'Other'; assert.equal(binding(f), null);
+  f.expected.firstName = 'Alice'; f.expected.arrival = '2020-01-01'; assert.equal(binding(f), null);
+});
+
+test('binds preserved unsent recipient and verified model-only primary party', () => {
+  const f = fixture();
+  f.state.cmsRecipient = 'desk@example.invalid'; f.state.allowModelOnlyPrimaryPartyIds = true;
+  f.state.partyPreimage.taid1 = '42'; f.state.partyPreimage.ta1 = 'Agency';
+  f.snapshot.data.taid1 = '42'; f.snapshot.data.ta1 = 'Agency';
+  f.snapshot.values.ta1 = 'Agency'; f.snapshot.partyControls.push({ name:'ta1', value:'Agency' });
+  f.snapshot.data.udfchar13 = f.snapshot.values.udfchar13 = f.state.cmsRecipient;
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  f.snapshot.partyControls[0].value = 'Different'; assert.equal(binding(f), null);
+  f.snapshot.partyControls[0].value = 'Agency'; f.snapshot.values.udfchar13 = 'changed'; assert.equal(binding(f), null);
+});

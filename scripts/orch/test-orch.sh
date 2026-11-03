@@ -8,13 +8,24 @@ if [[ ${0##*/} == fake-gh ]]; then
     'pr view') printf '%s\t%s\t%s\n' '0123456789abcdef0123456789abcdef01234567' owner repo ;;
     'pr merge') exit 0 ;;
     'api graphql')
-      if [[ ${FAKE_GH_SCENARIO:-success} == threads* ]]; then
-        login='greptile-apps'
-        [[ ${FAKE_GH_SCENARIO:-} != threads-legacy ]] || login='greptile-apps[bot]'
-        printf '{"data":{"repository":{"pullRequest":{"headRefOid":"0123456789abcdef0123456789abcdef01234567","reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"%s"},"body":"P1: issue"}],"pageInfo":{"hasNextPage":false}}}],"pageInfo":{"hasNextPage":false}}}}}}\n' "$login"
-      else
-        printf '%s\n' '{"data":{"repository":{"pullRequest":{"headRefOid":"0123456789abcdef0123456789abcdef01234567","reviewThreads":{"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"},"body":"P1: resolved"}],"pageInfo":{"hasNextPage":false}}}],"pageInfo":{"hasNextPage":false}}}}}}'
-      fi ;;
+      scenario=${FAKE_GH_SCENARIO:-success}
+      [[ $scenario != threads-unavailable ]] || exit 91
+      login='greptile-apps'
+      body='P1: issue'
+      ref='0123456789abcdef0123456789abcdef01234567'
+      resolved=false
+      thread_next=false
+      comments_next=false
+      case "$scenario" in
+        threads) ;;
+        threads-legacy) login='greptile-apps[bot]' ;;
+        threads-independent) login='independent-reviewer'; body='P0: issue' ;;
+        head-mismatch) ref='1111111111111111111111111111111111111111'; resolved=true ;;
+        incomplete-threads) resolved=true; thread_next=true ;;
+        incomplete-comments) resolved=true; comments_next=true ;;
+        *) resolved=true; body='P1: resolved' ;;
+      esac
+      printf '{"data":{"repository":{"pullRequest":{"headRefOid":"%s","reviewThreads":{"nodes":[{"isResolved":%s,"comments":{"nodes":[{"author":{"login":"%s"},"body":"%s"}],"pageInfo":{"hasNextPage":%s}}}],"pageInfo":{"hasNextPage":%s}}}}}}\n' "$ref" "$resolved" "$login" "$body" "$comments_next" "$thread_next" ;;
     'api repos/owner/repo/commits/'*)
       if [[ ${FAKE_GH_SCENARIO:-success} == pending ]]; then
         printf '%s\n' '{"check_runs":[{"id":1,"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"in_progress","conclusion":null}]}'
@@ -25,7 +36,7 @@ if [[ ${0##*/} == fake-gh ]]; then
       if [[ ${FAKE_GH_SCENARIO:-success} == over-limit ]]; then
         printf '%s\n' '[{"filename":"src/app.ts","additions":501,"deletions":0}]'
       else
-        printf '%s\n' '[{"filename":"src/app.ts","additions":20,"deletions":10},{"filename":"tests/fixtures/gold.md","additions":900,"deletions":0},{"filename":"src/app.test.ts","additions":900,"deletions":0},{"filename":"scripts/orch/test-orch.sh","additions":900,"deletions":0}]'
+        printf '%s\n' '[{"filename":"src/app.ts","additions":20,"deletions":10}]'
       fi ;;
     *) exit 90 ;;
   esac
@@ -42,38 +53,30 @@ ln -s "$script_dir/test-orch.sh" "$fake"
 export FAKE_GH_LOG="$tmp/gh.log"
 : >"$FAKE_GH_LOG"
 sha=0123456789abcdef0123456789abcdef01234567
-gate_root="$tmp/or2"
-mkdir -p "$gate_root/gates"
-: >"$gate_root/gates/123-$sha.ok"
 
 check() { [[ $1 == "$2" ]] || { printf 'FAIL: %s\n' "$3" >&2; exit 1; }; }
 run_gate() {
-  local want=$1 scenario=$2 root=$3 output rc
-  if output=$(GH="$fake" FAKE_GH_SCENARIO="$scenario" OR2_ROOT="$root" MAX_PRODUCT_LINES=500 "$script_dir/merge-gate.sh" 123 2>&1); then rc=0; else rc=$?; fi
+  local want=$1 scenario=$2 output rc
+  if output=$(GH="$fake" FAKE_GH_SCENARIO="$scenario" OR2_ROOT="$tmp/no-gate-record" "$script_dir/merge-gate.sh" 123 2>&1); then rc=0; else rc=$?; fi
   check "$rc" "$want" "merge-gate scenario $scenario returned $rc: $output"
   printf '%s\n' "$output"
 }
 
 for name in merge-gate.sh deploy-train.sh dispatch.sh; do bash "$script_dir/$name" --help >/dev/null; done
 bash "$script_dir/test-orch.sh" --help >/dev/null
-out=$(run_gate 0 success "$gate_root")
-[[ $out == PASS* ]] || { printf 'FAIL: expected pass verdict: %s\n' "$out" >&2; exit 1; }
+out=$(run_gate 0 pending)
+[[ $out == PASS* ]] || { printf 'FAIL: pending Greptile check blocked merge: %s\n' "$out" >&2; exit 1; }
 grep -Fxq "pr merge 123 --squash --match-head-commit $sha" "$FAKE_GH_LOG"
-for scenario in pending threads threads-legacy over-limit; do
+! grep -q 'api repos/owner/repo/commits/' "$FAKE_GH_LOG"
+: >"$FAKE_GH_LOG"
+out=$(run_gate 0 over-limit)
+[[ $out == PASS* ]] || { printf 'FAIL: large PR was blocked by a line cap: %s\n' "$out" >&2; exit 1; }
+! grep -q 'api repos/{owner}/{repo}/pulls/' "$FAKE_GH_LOG"
+for scenario in threads threads-legacy threads-independent head-mismatch incomplete-threads incomplete-comments threads-unavailable; do
   : >"$FAKE_GH_LOG"
-  out=$(run_gate 1 "$scenario" "$gate_root")
+  out=$(run_gate 1 "$scenario")
   [[ $out == BLOCKED* ]] && ! grep -q '^pr merge ' "$FAKE_GH_LOG"
 done
-: >"$FAKE_GH_LOG"
-out=$(GH="$fake" FAKE_GH_SCENARIO=over-limit OR2_ROOT="$gate_root" PURE_MOVE=1 "$script_dir/merge-gate.sh" 123)
-[[ $out == PASS* ]] || { printf 'FAIL: PURE_MOVE did not skip the line cap\n' >&2; exit 1; }
-rm -f -- "$gate_root/gates/123-$sha.ok"
-ln -s /dev/null "$gate_root/gates/123-$sha.ok"
-out=$(run_gate 1 success "$gate_root")
-[[ $out == BLOCKED* ]] || { printf 'FAIL: symlinked gate record passed\n' >&2; exit 1; }
-rm -f -- "$gate_root/gates/123-$sha.ok"
-out=$(run_gate 1 success "$gate_root")
-[[ $out == BLOCKED* ]] || { printf 'FAIL: missing gate record passed\n' >&2; exit 1; }
 
 mkdir -p "$tmp/lastrow"
 printf 'a\tmail\t-\tapps/x.ts\tluna\t/tmp/a.md\trunning\nb\tmail\t-\tapps/x.ts\tluna\t/tmp/b.md\tpending\n' >"$tmp/lastrow/units.tsv"

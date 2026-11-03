@@ -16,6 +16,7 @@ function input() {
   return { workItemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', transportId: 'fake-mailbox', actorUserId: 'staff',
     grantId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', propertyCode: 'HRCEN' as const, firstName: 'Proof' as const,
     lastName: 'Labtest' as const, nativeGuestId: '12345', operation: 'create' as const, stayId: 's1_1',
+    target: { propertyCode: 'HRCEN' as const, kind: 'create' as const, firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' },
     sourceDigest: 'a'.repeat(64), approvedDigest: binding.normalizedRequestDigest, requestDigest: 'b'.repeat(64),
     recovery: { request: structuredClone(binding.request),
       previewShot: { runId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', sha256: 'c'.repeat(64) },
@@ -44,8 +45,44 @@ function historyDb() {
   return { rows, db: { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(tx) } as unknown as DB };
 }
 
+function savedClaim(confirmation: string, grantId = randomUUID()) {
+  const { stayId: _stayId, ...common } = input();
+  return { ...common, workItemId: randomUUID(), grantId, operation: 'attach_document' as const,
+    target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const, confirmation },
+    recovery: { confirmation, documentName: 'proof.pdf' } };
+}
+
+// Model transaction-scoped advisory locks so cross-target replay has a real interleaving.
+function concurrentDb() {
+  const rows: any[] = [], locks = new Map<string, Promise<void>>();
+  let grantAttempts = 0, secondGrantAttempt!: () => void;
+  const secondGrantWaiting = new Promise<void>((resolve) => { secondGrantAttempt = resolve; });
+  const db = { transaction: async (fn: (tx: any) => Promise<unknown>) => {
+    const releases: Array<() => void> = [];
+    const tx = {
+      execute: async (query: any) => {
+        const namespace = query.queryChunks[0].value.join('');
+        const key = `${namespace}:${query.queryChunks[1]}`;
+        if (namespace.includes('nava-hms-write-grant-v1') && ++grantAttempts === 2) secondGrantAttempt();
+        const previous = locks.get(key);
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        locks.set(key, held);
+        if (previous) await previous;
+        releases.push(() => { if (locks.get(key) === held) locks.delete(key); release(); });
+      },
+      select: () => ({ from: () => ({ where: async () => rows.map((row) => ({
+        id: row.id, itemId: row.workItemId, type: row.type, actorKind: row.actorKind, value: structuredClone(row.value),
+      })) }) }),
+      insert: () => ({ values: async (event: any) => { rows.push(structuredClone({ id: randomUUID(), ...event })); } }),
+    };
+    try { return await fn(tx); } finally { for (const release of releases.reverse()) release(); }
+  } } as unknown as DB;
+  return { db, secondGrantWaiting };
+}
+
 async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWithEpoch>[1], authorize: Parameters<typeof claimWithEpoch>[2]) {
-  return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db));
+  return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db, claim.target, claim.workItemId));
 }
 
 async function neverDispatchedRequest() {
@@ -104,7 +141,7 @@ describe('shared Labtest dispatch intent', () => {
   });
 
   it('rejects an intervening completed writer even when the preimage lock is lost', async () => {
-    const fake = historyDb(), staleEpoch = await captureHmsLabtestDispatchEpoch(fake.db);
+    const fake = historyDb(), staleEpoch = await captureHmsLabtestDispatchEpoch(fake.db, input().target);
     const handle = await claimWithEpoch(fake.db, input(), async () => {}, staleEpoch);
     await resolveHmsLabtestDispatch(fake.db, handle, { operation: 'create', confirmation: '123456-1',
       readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
@@ -112,7 +149,7 @@ describe('shared Labtest dispatch intent', () => {
     await expect(claimWithEpoch(fake.db, { ...input(), grantId: randomUUID() }, async () => { continued = true; }, staleEpoch))
       .rejects.toMatchObject({ reason: 'occupied' });
     expect(continued).toBe(false);
-    const nextEpoch = await captureHmsLabtestDispatchEpoch(fake.db);
+    const nextEpoch = await captureHmsLabtestDispatchEpoch(fake.db, input().target);
     expect(nextEpoch).not.toBe(staleEpoch);
     await claimWithEpoch(fake.db, { ...input(), grantId: randomUUID() }, async () => { continued = true; }, nextEpoch);
     expect(continued).toBe(true);
@@ -158,17 +195,23 @@ describe('shared Labtest dispatch intent', () => {
     expect(fake.rows.map((row) => row.value.kind)).toEqual(['intent', 'resolved', 'intent']);
   });
 
-  it('blocks another fake profile and refuses a resolution for the wrong operation', async () => {
+  it('admits an unrelated saved stay and refuses a resolution for the wrong operation', async () => {
     const fake = historyDb(), first = input();
     const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
     const { stayId: _stayId, ...shared } = input();
     const filing = { ...shared, workItemId: randomUUID(), grantId: randomUUID(), nativeGuestId: '99999',
-      operation: 'attach_document' as const, recovery: { confirmation: '123456-1', documentName: 'proof.pdf' } };
-    await expect(claimHmsLabtestDispatch(fake.db, filing, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
+      operation: 'attach_document' as const, target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const,
+        confirmation: '123456-1' }, recovery: { confirmation: '123456-1', documentName: 'proof.pdf' } };
+    const filingHandle = await claimHmsLabtestDispatch(fake.db, filing, async () => {});
     const proof = { operation: 'attach_document' as const, confirmation: '123456-1', readbackDigest: 'e'.repeat(64),
       savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } };
     await expect(resolveHmsLabtestDispatch(fake.db, handle, proof, async () => {})).rejects.toMatchObject({ reason: 'phase' });
-    expect(fake.rows.map((row) => row.value.kind)).toEqual(['intent']);
+    await expect(resolveHmsLabtestDispatch(fake.db, filingHandle, { ...proof, confirmation: '999999-1' }, async () => {}))
+      .rejects.toMatchObject({ reason: 'phase' });
+    await resolveHmsLabtestDispatch(fake.db, filingHandle, proof, async () => {});
+    expect(fake.rows.map((row) => row.value.kind)).toEqual(['intent', 'intent', 'resolved']);
+    await expect(claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID() }, async () => {}))
+      .rejects.toMatchObject({ reason: 'occupied' });
   });
 
   it('treats an orphaned or duplicate resolution as corrupt and fails closed', async () => {
@@ -183,5 +226,103 @@ describe('shared Labtest dispatch intent', () => {
     fake.rows[1].value.holdId = randomUUID();
     await expect(claimHmsLabtestDispatch(fake.db, { ...input(), grantId: randomUUID() }, async () => {}))
       .rejects.toMatchObject({ reason: 'corrupt' });
+  });
+
+  it('keeps epochs local and pairs completions with the exact active hold', async () => {
+    const fake = historyDb(), first = input(), other = savedClaim('765432-2');
+    const epoch = await captureHmsLabtestDispatchEpoch(fake.db, first.target);
+    const otherHandle = await claimHmsLabtestDispatch(fake.db, other, async () => {});
+    await resolveHmsLabtestDispatch(fake.db, otherHandle, { operation: 'attach_document', confirmation: '765432-2',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    expect(await captureHmsLabtestDispatchEpoch(fake.db, first.target)).toBe(epoch);
+    const firstHandle = await claimWithEpoch(fake.db, first, async () => {}, epoch);
+    const next = savedClaim('987654-1'), nextHandle = await claimHmsLabtestDispatch(fake.db, next, async () => {});
+    await resolveHmsLabtestDispatch(fake.db, nextHandle, { operation: 'attach_document', confirmation: '987654-1',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    await expect(claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID() }, async () => {}))
+      .rejects.toMatchObject({ reason: 'occupied' });
+    await resolveHmsLabtestDispatch(fake.db, firstHandle, { operation: 'create', confirmation: '123456-1',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+  });
+
+  it('excludes normalized same-guest arrivals regardless of requested departure or work item', async () => {
+    const fake = historyDb(), first = input();
+    await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    const same = structuredClone(first);
+    same.workItemId = randomUUID(); same.grantId = randomUUID();
+    same.target.firstName = ' PROOF '; same.target.lastName = 'labtest';
+    same.recovery.request.stay.departure = '2027-03-05';
+    same.recovery.preimage.departure = '2027-03-05';
+    await expect(claimHmsLabtestDispatch(fake.db, same, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
+  });
+
+  it('reads legacy targets from sealed recovery and confines unattributable holds to their work item', async () => {
+    const fake = historyDb(), first = input();
+    await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    delete fake.rows[0].value.target;
+    await expect(claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID(), workItemId: randomUUID() }, async () => {}))
+      .rejects.toMatchObject({ reason: 'occupied' });
+    const unrelated = savedClaim('654321-1');
+    await claimHmsLabtestDispatch(fake.db, unrelated, async () => {});
+    fake.rows[0].value.recovery = { opaque: true };
+    const sameItem = { ...savedClaim('654321-2'), workItemId: first.workItemId };
+    await expect(claimHmsLabtestDispatch(fake.db, sameItem, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
+    await claimHmsLabtestDispatch(fake.db, savedClaim('654321-3'), async () => {});
+  });
+
+  it('confines corrupt evidence to the attributed target and work item', async () => {
+    const fake = historyDb(), first = input();
+    await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    fake.rows[0].value.ownerDigest = 'corrupt';
+    await expect(captureHmsLabtestDispatchEpoch(fake.db, first.target)).rejects.toMatchObject({ reason: 'corrupt' });
+    await claimHmsLabtestDispatch(fake.db, savedClaim('345678-1'), async () => {});
+    fake.rows.push({ id: randomUUID(), workItemId: randomUUID(), type: 'write.evidence', actorKind: 'system',
+      value: { nonsense: true } });
+    await claimHmsLabtestDispatch(fake.db, savedClaim('345678-2'), async () => {});
+  });
+
+  it('serializes a reused grant across different target transactions', async () => {
+    const fake = concurrentDb(), first = input(), second = savedClaim('123456-1', first.grantId.toUpperCase());
+    const [firstEpoch, secondEpoch] = await Promise.all([
+      captureHmsLabtestDispatchEpoch(fake.db, first.target), captureHmsLabtestDispatchEpoch(fake.db, second.target),
+    ]);
+    let entered!: () => void, finish!: () => void, secondAuthorized = false;
+    const inAuthority = new Promise<void>((resolve) => { entered = resolve; });
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const one = claimWithEpoch(fake.db, first, async () => { entered(); await wait; }, firstEpoch);
+    await inAuthority;
+    const two = claimWithEpoch(fake.db, second, async () => { secondAuthorized = true; }, secondEpoch);
+    await fake.secondGrantWaiting;
+    finish();
+    await one;
+    await expect(two).rejects.toMatchObject({ reason: 'occupied' });
+    expect(secondAuthorized).toBe(false);
+  });
+
+  it('rejects a legacy uppercase grant replay across targets', async () => {
+    const fake = historyDb(), first = input();
+    const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    await resolveHmsLabtestDispatch(fake.db, handle, { operation: 'create', confirmation: '123456-1',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    fake.rows[0].value.grantId = first.grantId.toUpperCase();
+    await expect(claimHmsLabtestDispatch(fake.db, savedClaim('765432-1', first.grantId), async () => {}))
+      .rejects.toMatchObject({ reason: 'occupied' });
+  });
+
+  it('keeps a legacy wrong-confirmation completion corrupt only for its own target', async () => {
+    const fake = historyDb(), first = savedClaim('234567-1');
+    const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    await resolveHmsLabtestDispatch(fake.db, handle, { operation: 'attach_document', confirmation: '234567-1',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    fake.rows[1].value.confirmation = '999999-1';
+    await expect(captureHmsLabtestDispatchEpoch(fake.db, first.target)).rejects.toMatchObject({ reason: 'corrupt' });
+    await claimHmsLabtestDispatch(fake.db, savedClaim('345678-1'), async () => {});
+  });
+
+  it('refuses a target that disagrees with sealed request evidence and refuses missing targets', async () => {
+    const fake = historyDb(), first = input();
+    await expect(claimWithEpoch(fake.db, { ...first, target: { ...first.target, arrival: '2027-03-02' } }, async () => {},
+      await captureHmsLabtestDispatchEpoch(fake.db, first.target))).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(captureHmsLabtestDispatchEpoch(fake.db)).rejects.toMatchObject({ reason: 'invalid' });
   });
 });

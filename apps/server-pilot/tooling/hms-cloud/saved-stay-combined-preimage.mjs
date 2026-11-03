@@ -5,6 +5,7 @@ import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend
 
 const TRANSIENT = new Set(['bookingsessionid', 'sessionid', 'extid']);
 const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
+const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'childCount', 'childAges', 'ratePlan', 'retainRates'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -43,11 +44,11 @@ function canonical(value, ancestors = new Set()) {
 function stable(source) {
   return Object.fromEntries(Object.entries(source).filter(([key]) => !TRANSIENT.has(key.toLowerCase())));
 }
-function validChanges(expected, changes) {
+function validChanges(expected, changes, minimumArrival) {
   if (!only(changes, changeFields) || !Object.keys(changes).length) return false;
   const arrival = Object.hasOwn(changes, 'arrival') ? changes.arrival : expected.arrival;
   const departure = Object.hasOwn(changes, 'departure') ? changes.departure : expected.departure;
-  if (!date(arrival) || !date(departure) || arrival < '2027-01-01' || arrival >= departure ||
+  if (!date(arrival) || !date(departure) || arrival < minimumArrival || arrival >= departure ||
       (Object.hasOwn(changes, 'adults') && !adult(changes.adults)) ||
       (Object.hasOwn(changes, 'ratePlan') && (typeof changes.ratePlan !== 'string' || !/^[A-Z0-9]{1,12}$/.test(changes.ratePlan))) ||
       (Object.hasOwn(changes, 'retainRates') && !['yes', 'no'].includes(changes.retainRates))) return false;
@@ -63,16 +64,29 @@ function validChanges(expected, changes) {
 /** Bind a clean current HRCEN Labtest snapshot and explicit changes across fresh browser sessions. */
 export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, changes) {
   try {
-    if (!only(expected, identityFields) || !identityFields.every((key) => Object.hasOwn(expected, key)) ||
+    const allowRealGuest = state?.allowRealGuest === true;
+    const minimumArrival = allowRealGuest ? new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date()) : '2027-01-01';
+    const firstName = expected?.firstName ?? (allowRealGuest ? null : 'Proof');
+    const lastName = expected?.lastName ?? (allowRealGuest ? null : 'Labtest');
+    const guarantee = state?.expectedGuarantee ?? (allowRealGuest ? null : { code:'NGI' });
+    if (!only(expected, [...identityFields, ...optionalIdentityFields]) || !identityFields.every((key) => Object.hasOwn(expected, key)) ||
+        typeof firstName !== 'string' || !firstName.trim() || firstName !== firstName.trim() ||
+        typeof lastName !== 'string' || !lastName.trim() || lastName !== lastName.trim() ||
+        (allowRealGuest && (state.expectedFirstName !== firstName || state.expectedLastName !== lastName)) ||
+        (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) ||
+        !guarantee || typeof guarantee.code !== 'string' || !/^[A-Z0-9]{1,20}$/.test(guarantee.code) ||
         typeof expected.confirmation !== 'string' || !/^\d{6,}-\d+$/.test(expected.confirmation) ||
         typeof expected.guestId !== 'string' || !/^\d+$/.test(expected.guestId) ||
-        !date(expected.arrival) || !date(expected.departure) || expected.arrival < '2027-01-01' || expected.arrival >= expected.departure ||
+        !date(expected.arrival) || !date(expected.departure) || expected.arrival < minimumArrival || expected.arrival >= expected.departure ||
         typeof expected.roomType !== 'string' || !/^[A-Z0-9]{1,12}$/.test(expected.roomType) ||
         typeof expected.ratePlan !== 'string' || !/^[A-Z0-9]{1,12}$/.test(expected.ratePlan) ||
         typeof expected.note !== 'string' || expected.note.length > 200 || !adult(expected.adults) ||
         !state?.frame || !object(state.native) || !cleanLabtestRecord(snapshot) || !uniqueKeys(snapshot.data) ||
         !uniqueKeys(snapshot.values) || !Array.isArray(snapshot.partyControls) ||
-        !unchangedLabtestBusinessParties(state.partyPreimage, snapshot) || !validChanges(expected, changes)) return null;
+        !unchangedLabtestBusinessParties(state.partyPreimage, snapshot,
+          { allowModelOnlyPrimaryPartyIds: state.allowModelOnlyPrimaryPartyIds === true }) || !validChanges(expected, changes, minimumArrival)) return null;
     const prior = planSavedChildOccupancy({ childCount: expected.childCount, childAges: expected.childAges });
     const actual = savedChildOccupancy(snapshot);
     if (prior.outcome !== 'planned' || prior.childCount === null || !actual.valid || actual.count !== prior.childCount ||
@@ -86,18 +100,21 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
     } else if (!same(actual.bands, prior.derivedBands) || (formAges.present &&
         !((prior.childCount === 0 && formAges.value === '') ||
           (typeof formAges.value === 'string' && formAges.value === prior.childAges.join(','))))) return null;
-    const identity = { propertycode:'HRCEN', status:'Reserved', firstname:'Proof', lastname:'Labtest',
+    const identity = { propertycode:'HRCEN', status:'Reserved', firstname:firstName, lastname:lastName,
       confirmationnumber:expected.confirmation, guestid:expected.guestId, arrivaldate:date(expected.arrival),
       departuredate:date(expected.departure), roomtype:expected.roomType, rateplan:expected.ratePlan, reservationnote:expected.note };
     const formIdentity = { ...identity, arrivaldate:displayDate(expected.arrival), departuredate:displayDate(expected.departure) };
     delete formIdentity.propertycode;
     const sendOff = (source) => !Object.hasOwn(source, 'udfchkbox04') ||
       source.udfchkbox04 === '0' || source.udfchkbox04 === 0 || source.udfchkbox04 === false;
-    if (!Object.entries(identity).every(([key, value]) => exact(snapshot.data, key, value)) ||
+    const recipient = state.cmsRecipient ?? '';
+    if (typeof recipient !== 'string' || recipient.length > 1000 || /[\p{Cc}]/u.test(recipient) ||
+        !Object.entries(identity).every(([key, value]) => exact(snapshot.data, key, value)) ||
         !Object.entries(formIdentity).every(([key, value]) => exact(snapshot.values, key, value)) ||
-        !exact(snapshot.data, 'guaranteetype', 'NGI') || !exact(snapshot.values, 'guaranteetype', 'NGI') ||
+        !exact(snapshot.data, 'guaranteetype', guarantee.code) || !exact(snapshot.values, 'guaranteetype', guarantee.code) ||
         !exact(snapshot.data, 'udfchkbox04', '0') || !sendOff(snapshot.values) ||
-        !['udfchar13', 'emailaddress'].every((key) => exact(snapshot.data, key, '') && exact(snapshot.values, key, '')) ||
+        !exact(snapshot.data, 'udfchar13', recipient) || !exact(snapshot.values, 'udfchar13', recipient) ||
+        !exact(snapshot.data, 'emailaddress', '') || !exact(snapshot.values, 'emailaddress', '') ||
         !['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid'].every((key) =>
           typeof state.native[key] === 'string' && state.native[key] && exact(snapshot.data, key, state.native[key]))) return null;
     const controls = snapshot.partyControls.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
