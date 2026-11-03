@@ -109,6 +109,13 @@ function parseCount(value: unknown): number | null {
   return null;
 }
 
+// Record View's adult combo can render its count as "1 Adult" or "2 Adults".
+// Do not parse other free text or reuse this for child/night fields.
+function parseAdultCount(value: unknown): number | null {
+  const label = typeof value === 'string' ? /^(\d+)\s+adults?$/i.exec(value.trim()) : null;
+  return parseCount(label ? label[1] : value);
+}
+
 function recordFields(raw: unknown): Array<RecordValue> {
   const root = record(raw);
   const details = record(root?.details);
@@ -213,7 +220,7 @@ function paneStayFields(confirmation: string, fields: Array<RecordValue>): PaneS
     arrival: parseDate(fieldText(fields, ['arrivaldate'], ['arrival date'])),
     departure: parseDate(fieldText(fields, ['departuredate'], ['departure date'])),
     nights: parseCount(fieldText(fields, ['nights'], ['nights'])),
-    adults: parseCount(fieldText(fields, ['adults'], ['adults'])),
+    adults: parseAdultCount(fieldText(fields, ['adults'], ['adults'])),
     children: parseCount(fieldText(fields, ['children', 'childcount'], ['children'])),
     roomType: fieldText(fields, ['roomtype', 'roomtypecode'], ['room type']),
     ratePlan: fieldText(fields, ['rateplan', 'rateplancode'], ['rate plan']),

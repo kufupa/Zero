@@ -137,10 +137,11 @@ test('later generic reader guards cannot bypass the earlier strict fence', { tim
   let hits = 0;
   const server = createServer((_req, res) => { hits++; res.writeHead(200); res.end('unexpected'); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
-  const browser = await require('playwright').chromium.launch({ headless: true,
-    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  let browser;
   try {
+    const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
+    browser = await require('playwright').chromium.launch({ headless: true,
+      executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
     const context = await browser.newContext({ serviceWorkers: 'block' });
     await installSavedStayReadGuard(context, { confirmation: '123-1' });
     await installReadOnlyGuard(context);
@@ -150,7 +151,7 @@ test('later generic reader guards cannot bypass the earlier strict fence', { tim
     assert.equal(hits, 0);
     await context.close();
   } finally {
-    await browser.close();
-    await new Promise((resolve) => server.close(resolve));
+    try { await browser?.close(); }
+    finally { await new Promise((resolve) => server.close(resolve)); }
   }
 });
