@@ -40,7 +40,7 @@ const verifiedParty = (data, controls, idKey, nameKey) => {
 };
 
 /** Validates bounded observations from one clean, uniquely selected form. */
-export function projectNativeSavedStayPreimage(snapshot, expected) {
+export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnly = false } = {}) {
   if (!object(snapshot) || !object(expected) || snapshot.formDirty !== false || snapshot.recordDirty !== false ||
       !Array.isArray(snapshot.dirtyFields) || snapshot.dirtyFields.length ||
       !Array.isArray(snapshot.modifiedFields) || snapshot.modifiedFields.length) return null;
@@ -50,12 +50,18 @@ export function projectNativeSavedStayPreimage(snapshot, expected) {
   if (!expected.confirmation || !expected.propertyCode || field('confirmationnumber') !== expected.confirmation ||
       field('propertycode') !== expected.propertyCode || !/^\d+$/.test(field('guestid') ?? '') ||
       !['reservationstayid', 'reservationid', 'recordid'].every((key) => /^\d+$/.test(field(key) ?? ''))) return null;
-  const paired = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'roomtype', 'rateplan',
-    'adults', 'children', 'child1', 'child2', 'child3'];
-  if (paired.some((key) => !field(key) || field(key) !== value(form, key))) return null;
+  const identityFields = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname'];
+  if (identityFields.some((key) => !field(key) || field(key) !== value(form, key))) return null;
   const arrival = day(field('arrivaldate'), 'model'), departure = day(field('departuredate'), 'model');
   if (!arrival || !departure || arrival >= departure || day(value(form, 'arrivaldate'), 'form') !== arrival ||
       day(value(form, 'departuredate'), 'form') !== departure) return null;
+  const identity = { source: 'record_view_ext_model', propertyCode: expected.propertyCode, confirmation: expected.confirmation,
+    reservationStayId: field('reservationstayid'), reservationId: field('reservationid'), recordId: field('recordid'),
+    guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
+    arrival, departure };
+  if (identityOnly === true) return identity;
+  const paired = ['roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
+  if (paired.some((key) => !field(key) || field(key) !== value(form, key))) return null;
   const adults = count(field('adults'), 16), children = count(field('children'), 9);
   const bands = ['child1', 'child2', 'child3'].map((key) => count(field(key), 9));
   if (adults === null || adults < 1 || children === null || bands.some((band) => band === null) ||
@@ -78,16 +84,13 @@ export function projectNativeSavedStayPreimage(snapshot, expected) {
   const company = verifiedParty(data, snapshot.controls, 'companyid', 'company');
   const agency = verifiedParty(data, snapshot.controls, 'taid1', 'ta1');
   const commercial = { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
-  return { source: 'record_view_ext_model', propertyCode: expected.propertyCode, confirmation: expected.confirmation,
-    reservationStayId: field('reservationstayid'), reservationId: field('reservationid'), recordId: field('recordid'),
-    guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
-    arrival, departure, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
+  return { ...identity, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
     ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}),
     ...(company || agency ? { commercial } : {}) };
 }
 
 /** Observe only allowlisted fields, not the full model, which can contain credentials and card data. */
-export async function readNativeSavedStayPreimage(frame, expected) {
+export async function readNativeSavedStayPreimage(frame, expected, options = {}) {
   const snapshot = await frame.evaluate(({ keys, formKeys }) => {
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
       getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
@@ -133,5 +136,5 @@ export async function readNativeSavedStayPreimage(frame, expected) {
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}) };
   }, { keys: KEYS, formKeys: FORM_KEYS });
-  return projectNativeSavedStayPreimage(snapshot, expected);
+  return projectNativeSavedStayPreimage(snapshot, expected, options);
 }

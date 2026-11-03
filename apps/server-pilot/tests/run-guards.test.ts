@@ -179,6 +179,7 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     liveSha: string;
     canaryLine: string | null;
     quoteOn: boolean;
+    attachWorkerOn?: boolean;
     existingOn?: boolean;
   }): SpawnSyncReturns<string> {
     const root = scratch('u12-canary-');
@@ -196,6 +197,7 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
         "AWS_REGION='af-south-1'",
         "S3_BUCKET='nava-test-bucket'",
         ...(opts.quoteOn ? ["HMS_DAVINCI_MAKE_QUOTE='on'"] : []),
+        ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
         '',
       ].join('\n'),
     );
@@ -258,6 +260,14 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/CANARY PASS|stale/i);
     expect(result.stderr).toMatch(/HMS_DAVINCI_MAKE_QUOTE|quote/);
+  });
+
+  it('requires an attach canary before enabling the Labtest upload worker', () => {
+    const result = runWriter({ liveSha: 'abcdef1234567890abcdef1234567890abcdef12',
+      canaryLine: null, quoteOn: false, attachWorkerOn: true });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/PANE_HMS_LAB_ATTACH_WORKER|attach/);
+    expect(result.stderr).toMatch(/CANARY PASS/i);
   });
 
   it('does not treat an already-on flag as a flip', () => {

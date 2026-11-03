@@ -142,7 +142,7 @@ function fakeTrpc(options: {
   });
   return {
     trpc: {
-      quoteWorkflow: { voucherFind: { query: voucherFind } },
+      quoteWorkflow: { voucherFind: { query: voucherFind }, bindVoucherAttach: { mutate: vi.fn() } },
       hmsApproval: { writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } },
       paneStayLookup: {
         queueFind: { mutate: queueFind },
@@ -430,7 +430,7 @@ describe('voucher find card: the existing search', () => {
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() },
       writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="wi-1" propertyCode="HRCEN" />);
-    expect(await screen.findByText(VOUCHER_COPY.caption)).toBeTruthy();
+    expect(await screen.findByText('Find the booking and review the document before upload.')).toBeTruthy();
     await act(async () => {});
     expect(queueSearchGuest).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
@@ -813,6 +813,47 @@ describe('voucher find card: saving the file', () => {
 
 describe('voucher find card: attach to HMS', () => {
   const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
+
+  it('uses the scoped filing flag to prepare a reviewed upload even when create is off', async () => {
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const bind = vi.fn(async () => ({ status: 'bound' as const }));
+    const state = vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview },
+      bindAttach: { mutate: bind }, writeState: { query: state } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Prepare upload for approval' }));
+    await waitFor(() => expect(bind).toHaveBeenCalledWith({ workItemId: WORK_ITEM, sourceMessageId: 'm1',
+      attachmentId: 'att-1', confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
+      lastName: SMITH_ROW.lastName, internetMessageId: 'abc@host' }, MAILBOX));
+  });
+
+  it('holds preparation when the scoped filing flag is off, even if create is enabled', async () => {
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const bind = vi.fn(async () => ({ status: 'bound' as const }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview },
+      bindAttach: { mutate: bind }, writeState: { query: vi.fn(async () => ({ run: null, filingConfigured: false })) } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" writesEnabled />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect(await screen.findByText(/Upload is not available yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('shows the confirmed listing while a safety hold blocks another upload', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: vi.fn(async () => ({
+      filingConfigured: true, form: { action: 'attach_document' }, needsCheck: true,
+      run: { state: 'dead_letter', failureClass: 'UNKNOWN', lastError: 'confirmed_hold_unsettled', evidence: [] },
+    })) } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    expect(await screen.findByText(/HMS lists the document by code and name/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
+  });
 
   it('reviews the exact selected document and shows Go unavailable without enabling writes', async () => {
     const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,

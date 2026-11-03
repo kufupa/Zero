@@ -119,6 +119,32 @@ function renderCard(
 afterEach(() => { cleanup(); paneWrite.calls = []; });
 
 describe('ApproveCard approval', () => {
+  it('uses filing availability rather than the unrelated create flag and shows the selected document and booking', async () => {
+    const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf',
+      confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14',
+      sourceMessageId: 'internal-source-id', pdfSha256: 'a'.repeat(64) },
+      before: { confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14' }, filingAvailable: true }));
+    renderCard(client, { writesEnabled: false });
+    const list = await screen.findByRole('list', { name: 'Values to write' });
+    expect(list.textContent).toContain('voucher.pdf');
+    expect(list.textContent).toContain('123456-1');
+    expect(list.textContent).toContain('Labtest');
+    expect(list.textContent).not.toContain('internal-source-id');
+    expect(list.textContent).not.toContain('a'.repeat(64));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve these values' }));
+    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST }));
+  });
+
+  it('reports a verified listing while keeping an unresolved upload blocked', async () => {
+    const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
+      filingAvailable: true, manualResolve: false, needsCheck: true,
+      run: runWith('dead_letter', { failureClass: 'UNKNOWN', lastError: 'confirmed_hold_unsettled' }) }));
+    renderCard(client);
+    expect(await screen.findByText(/HMS lists the document by its code and name/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
+  });
+
   it('disables Go and hides note-based resolution for unavailable filing', async () => {
     const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
       filingAvailable: false, needsCheck: true, run: runWith('dead_letter', { failureClass: 'LEASE_LOST' }) }));

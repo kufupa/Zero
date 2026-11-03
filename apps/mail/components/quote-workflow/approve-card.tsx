@@ -152,9 +152,11 @@ function LiveWriteCard({
     </div>
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
+  // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
+  const effectiveWritesEnabled = view?.filingAvailable ?? writesEnabled;
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
-      {!writesEnabled ? <p className={writeClasses.note}>{PANE_SAVE_OFF_COPY}</p> : null}
+      {!effectiveWritesEnabled ? <p className={writeClasses.note}>{PANE_SAVE_OFF_COPY}</p> : null}
       {view ? (
         <>
           {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
@@ -164,7 +166,7 @@ function LiveWriteCard({
             workItemId={workItemId}
             view={view}
             onChanged={refresh}
-            writesEnabled={writesEnabled}
+            writesEnabled={effectiveWritesEnabled}
           />
         </>
       ) : failed ? (
@@ -224,9 +226,10 @@ function WriteBody({
   return (
     <>
       <div role="status" aria-live="polite" className="text-[12px] text-[#334155]">
-        {filingUnavailable ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
+        {filingUnavailable && view.run?.lastError !== 'confirmed_hold_unsettled'
+          ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
-      <WriteRows rows={rows} />
+      <WriteRows rows={rows} filing={view.form.action === 'attach_document'} />
       {filingUnavailable ? (
         <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
       ) : status.approve ? (
@@ -240,7 +243,7 @@ function WriteBody({
           writesEnabled={writesEnabled}
         />
       ) : null}
-      {status.phase === 'needs_check' && !filingUnavailable ? (
+      {status.phase === 'needs_check' && !filingUnavailable && view.manualResolve !== false ? (
         <NeedsCheckSection
           client={client}
           workItemId={workItemId}
@@ -261,17 +264,19 @@ function WriteBody({
   );
 }
 
-function WriteRows({ rows }: { rows: WriteRow[] }) {
+function WriteRows({ rows, filing }: { rows: WriteRow[]; filing: boolean }) {
   if (rows.length === 0) return <p className={writeClasses.note}>{HMS_WRITE_COPY.noChange}</p>;
   return (
     <ul aria-label="Values to write" className="flex flex-col gap-1.5 text-[12px]">
       {rows.map((row) => (
         <li key={row.key} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-medium text-[#334155]">{row.label}</span>
-          <span data-pii={isGuestWriteRow(row.key) || undefined} className="text-[#64748b] line-through">
-            {row.before}
-          </span>
-          <span>→</span>
+          {!filing ? <>
+            <span data-pii={isGuestWriteRow(row.key) || undefined} className="text-[#64748b] line-through">
+              {row.before}
+            </span>
+            <span>→</span>
+          </> : null}
           <span data-pii={isGuestWriteRow(row.key) || undefined} className="font-semibold text-[#1e293b]">
             {row.after}
           </span>

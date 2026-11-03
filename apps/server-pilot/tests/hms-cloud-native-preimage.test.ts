@@ -11,6 +11,21 @@ const snapshot = () => ({ data: { ...data }, values: { ...values }, formDirty: f
   dirtyFields: [] as string[], modifiedFields: [] as string[] });
 
 describe('bounded native saved-stay preimage', () => {
+  it('permits unrelated rate and occupancy differences only in the filing identity view', () => {
+    const row = snapshot();
+    const changed = { ...row, data: { ...row.data, roomtype: '', rateplan: 'OTHER', adults: '', children: '' },
+      values: { ...row.values, roomtype: 'DIFFERENT', rateplan: 'DIFFERENT' } };
+    expect(projectNativeSavedStayPreimage(changed, expected)).toBeNull();
+    expect(projectNativeSavedStayPreimage(changed, expected, { identityOnly: true })).toMatchObject({
+      propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '42', firstName: 'Proof', lastName: 'Labtest',
+      arrival: '2027-01-10', departure: '2027-01-12',
+    });
+    for (const bad of [{ ...changed, formDirty: true }, { ...changed, data: { ...changed.data, guestid: '43' } },
+      { ...changed, data: { ...changed.data, propertycode: 'HRDAV' } },
+      { ...changed, values: { ...changed.values, arrivaldate: '11-JAN-2027' } }]) {
+      expect(projectNativeSavedStayPreimage(bad, expected, { identityOnly: true })).toBeNull();
+    }
+  });
   it('keeps blank and missing child ages unknown, never inferred as empty', () => {
     const row = snapshot();
     expect(projectNativeSavedStayPreimage(row, expected)).toMatchObject({

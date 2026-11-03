@@ -3,6 +3,12 @@ import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind, stampClou
 import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 describe('Cloud saved-stay projection', () => {
+  it('requests the smaller identity observation only when explicitly selected for filing', async () => {
+    const runTool = vi.fn().mockResolvedValue({ outcome: 'ok' });
+    await readCloudStayForPane({ runTool }, { confirmation: '123456-1', arrival: '2027-01-10' }, true);
+    expect(runTool).toHaveBeenCalledWith({ tool: 'read', confirmation: '123456-1', arrivalDate: '2027-01-10',
+      view: 'record', includeNativePreimage: true, includeNativeIdentityOnly: true });
+  });
   it('retries only arrival-hint mismatch and verifies the resulting stay', async () => {
     const request = { confirmation: '123456-1', arrival: '2027-01-10' };
     const raw = {
