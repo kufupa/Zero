@@ -55,7 +55,10 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
   const actual = await original<typeof import('../src/ai/hms-labtest-dispatch.js')>();
   const { HmsLabtestDispatchError } = actual;
   return { ...actual,
-    captureHmsLabtestDispatchEpoch: async () => '0'.repeat(64),
+    captureHmsLabtestDispatchEpoch: async () => {
+      if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');
+      return '0'.repeat(64);
+    },
     claimHmsLabtestDispatch: async (_db: unknown, input: Record<string, unknown>, authorize: (tx: unknown, input: Record<string, unknown>) => Promise<void>) => {
       h.createMutexCalls += 1; h.onCreateMutex?.();
       if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');
@@ -668,6 +671,8 @@ describe('mounted Cloud create route', () => {
     const digest = await prepared();
     h.sharedHold = { operation: 'attach_document', workItemId: 'other-item' };
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest })).toMatchObject({ reason: 'cloud_create_recovery_required' });
+    expect(h.createMutexCalls).toBe(0);
+    expect(h.state).not.toHaveProperty('stays');
     expect(dispatches).toBe(0);
   });
 

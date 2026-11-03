@@ -531,6 +531,9 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (claimAttempted) return noClaimResult();
+    if (error instanceof HmsLabtestDispatchError && error.reason === 'occupied') {
+      return refused('cloud_create_recovery_required');
+    }
     return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'cloud_create_unavailable');
   }
 }
