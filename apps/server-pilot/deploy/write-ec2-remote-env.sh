@@ -66,6 +66,8 @@ REMOTE_COMMON_ALLOWLIST=(
   PANE_CLOUD_CREATE_DISPATCH
   PANE_WRITE_AMEND_UNPAID
   PANE_WRITE_AMEND_PAID
+  PANE_WRITE_AMEND
+  PANE_HMS_LAB_AMEND_WORKER
   PANE_WRITE_CANCEL_UNPAID
   PANE_WRITE_CANCEL_PAID
   PANE_WRITE_ATTACH
@@ -99,6 +101,7 @@ const common = new Set([
   "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV",
   "INBOUND_EXTRACTION", "INBOUND_TRIAGE_CLASSIFIER", "NEEDS_YOU_SINCE",
   "PANE_WRITE_CREATE", "PANE_CLOUD_CREATE_DISPATCH", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
+  "PANE_WRITE_AMEND", "PANE_HMS_LAB_AMEND_WORKER",
   "PANE_WRITE_CANCEL_UNPAID", "PANE_WRITE_CANCEL_PAID", "PANE_WRITE_ATTACH",
   "PANE_HMS_LAB_ATTACH_WORKER",
 ]);
@@ -123,6 +126,8 @@ try {
     if (values.has("QUOTE_WORKFLOW_LLM") && !["on", "off"].includes(values.get("QUOTE_WORKFLOW_LLM"))) {
       throw new Error("invalid");
     }
+    if (values.has("PANE_WRITE_AMEND") && !["off", "lab"].includes(values.get("PANE_WRITE_AMEND"))) throw new Error("invalid");
+    if (values.has("PANE_HMS_LAB_AMEND_WORKER") && !["off", "on"].includes(values.get("PANE_HMS_LAB_AMEND_WORKER"))) throw new Error("invalid");
     if (values.has("GOTENBERG_URL")) {
       const url = new URL(values.get("GOTENBERG_URL"));
       if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid");
@@ -325,6 +330,8 @@ const WORKFLOW = {
   PANE_CLOUD_CREATE_DISPATCH: "create",
   PANE_WRITE_AMEND_UNPAID: "amend",
   PANE_WRITE_AMEND_PAID: "amend",
+  PANE_WRITE_AMEND: "amend",
+  PANE_HMS_LAB_AMEND_WORKER: "amend",
   PANE_WRITE_CANCEL_UNPAID: "cancel",
   PANE_WRITE_CANCEL_PAID: "cancel",
   PANE_WRITE_ATTACH: "attach",
@@ -344,6 +351,9 @@ function parse(path) {
 function isOn(value) {
   return /^(on|true|1)$/i.test(String(value ?? ""));
 }
+function isEnabled(key, value) {
+  return key === "PANE_WRITE_AMEND" ? value === "lab" : isOn(value);
+}
 function isWorkflow(key) {
   return Object.prototype.hasOwnProperty.call(WORKFLOW, key) || key.endsWith("_ON");
 }
@@ -351,7 +361,7 @@ const next = parse(newPath);
 const prev = parse(oldPath);
 const flips = [];
 for (const [key, value] of next) {
-  if (!isWorkflow(key) || !isOn(value) || isOn(prev.get(key))) continue;
+  if (!isWorkflow(key) || !isEnabled(key, value) || isEnabled(key, prev.get(key))) continue;
   flips.push(key);
 }
 if (flips.length === 0) process.exit(0);
@@ -388,6 +398,8 @@ const FLAG_PROPERTY = {
   HMS_DAVINCI_CREATE: "HRDAV",
   HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
   HMS_DAVINCI_READS: "HRDAV",
+  PANE_WRITE_AMEND: "HRCEN",
+  PANE_HMS_LAB_AMEND_WORKER: "HRCEN",
   PANE_HMS_LAB_ATTACH_WORKER: "HRCEN",
 };
 for (const flag of flips) {

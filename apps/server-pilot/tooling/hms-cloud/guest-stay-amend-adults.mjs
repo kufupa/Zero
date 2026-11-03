@@ -7,7 +7,7 @@ import {
   unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
-import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { isLabtestAmendStageContext, runLabtestAmendSave } from './labtest-amend-save.mjs';
 
 const MAX_ADULTS = 16;
 const EFFECT_KIND = Object.freeze({
@@ -95,7 +95,7 @@ function normalizedAmount(value) {
   return decimals ? integer + '.' + decimals : integer;
 }
 
-function matchesObservedEffect(before, after, name) {
+export function matchesObservedAdultEffect(before, after, name) {
   const kind = Object.hasOwn(EFFECT_KIND, name) ? EFFECT_KIND[name] : null;
   const oldModel = field(before, 'data', name), newModel = field(after, 'data', name);
   const oldForm = field(before, 'values', name), newForm = field(after, 'values', name);
@@ -181,7 +181,7 @@ export function labtestAdultAmendDraftDelta(before, after, adults) {
     changed.add(name);
   }
   const changedFields = [...changed].sort();
-  const approved = changedFields.filter((name) => name === 'adults' || matchesObservedEffect(before, after, name));
+  const approved = changedFields.filter((name) => name === 'adults' || matchesObservedAdultEffect(before, after, name));
   const unapprovedFields = changedFields.filter((name) => !approved.includes(name));
   const formChanges = approved.filter((name) => {
     const oldForm = field(before, 'values', name), newForm = field(after, 'values', name);
@@ -319,6 +319,37 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
     preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt });
   if (outcome !== true) throw new Error(typeof outcome === 'string' ? outcome : 'ADULT_EDIT_UNVERIFIED');
   return input;
+}
+
+/** Stage an adult change inside the shared, still-active saved-stay request fence. */
+export async function stageSavedAdultForComposition(context, expected, adults) {
+  const active = () => {
+    if (!isLabtestAmendStageContext(context) || !context.isActive() || context.remainingMs() <= 0) {
+      throw new Error('AMEND_STAGE_NOT_ACTIVE');
+    }
+  };
+  active();
+  if (!isAdultCount(expected?.adults) || !isAdultCount(adults) || adults === expected.adults ||
+      !context.baseline || !context.frame) throw new Error('ADULT_COUNT_INVALID');
+  const before = await snapshotLabtestRecord(context.frame);
+  active();
+  if (!same(before, context.baseline) || !cleanLabtestRecord(before) ||
+      !previewTargetMatches(expected, before) || adultValue(before) !== String(expected.adults)) {
+    throw new Error('ADULT_PREIMAGE_UNVERIFIED');
+  }
+  const browserNow = await context.frame.evaluate(() => performance.now());
+  active();
+  if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+  const deadline = browserNow + context.remainingMs();
+  await selectAdultOption(context.frame, before, adults, false, active, deadline);
+  active();
+  await selectAdultOption(context.frame, before, adults, true, active, deadline);
+  active();
+  const after = await snapshotLabtestRecord(context.frame);
+  active();
+  const delta = labtestAdultAmendDraftDelta(before, after, adults);
+  if (!delta.ok || !same(before.partyControls, after.partyControls)) throw new Error('AMEND_DRAFT_CHANGED');
+  return { snapshot: after, delta };
 }
 
 /**

@@ -20,6 +20,7 @@ import { initialQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteAmendment, QuoteAnalysis, QuoteSession } from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
+import { publicCloudAmendFields } from '../../server-pilot/src/ai/cloud-amend-price-projection';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -161,6 +162,41 @@ describe('ApproveCard approval', () => {
     expect(client.approve).not.toHaveBeenCalled();
     expect(client.resolveNeedsCheck).not.toHaveBeenCalled();
   });
+  it('shows the bound nightly rate and stay total before allowing a retained-rate amend', async () => {
+    const field = (cents: string) => ({ data: { state:'amount', cents }, visible: { state:'amount', cents },
+      dataCurrency: { state:'currency', code:'ZAR' }, visibleCurrency: { state:'currency', code:'ZAR' } });
+    const names = ['averagenightly', 'averagerate', 'grandtotal', 'totalrate', 'totalratewithtax', 'guesttotal', 'tax', 'guesttax'];
+    const prices = Object.fromEntries(names.map((name) => [name, field(name === 'grandtotal' ? '135000' : '123450')]));
+    const form = { action:'amend', fields:{ adults:2, ratePlan:'BAR', retainRates:'yes' },
+      cloudAmend: publicCloudAmendFields({ preimage: { native: { guestId: 'private-native-id' } },
+        approvedPrices:{ version:1, currency:'ZAR', fields:prices }, preserved: { cmsRecipient:'desk@example.invalid',
+          agency:{ nativeId:'42', name:'Example Agency' }, organization:{ nativeId:'41', name:'Example Company' } } }) };
+    const client = fakeClient(viewWith({ form,
+    before: { fields:{ adults:1, ratePlan:'BAR' } } }));
+    renderCard(client);
+    const rows = await screen.findByRole('list', { name:'Values to write' });
+    expect(rows.textContent).toContain('Current nightly rate');
+    expect(rows.textContent).toContain('ZAR 1,234.50');
+    expect(rows.textContent).toContain('Current stay total');
+    expect(rows.textContent).toContain('ZAR 1,350.00');
+    expect(rows.textContent).toContain('desk@example.invalid');
+    expect(rows.textContent).toContain('Example Agency');
+    expect(rows.textContent).toContain('Example Company');
+    expect(rows.textContent).toContain('Send confirmation');
+    expect(screen.getByRole('button', { name:'Approve these values' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('does not let staff approve a Cloud amend with missing price evidence', async () => {
+    const client = fakeClient(viewWith({ form: { action:'amend', fields:{ adults:2, ratePlan:'BAR', retainRates:'yes' },
+      cloudAmend:{} }, before:{ fields:{ adults:1, ratePlan:'BAR' } } }));
+    renderCard(client);
+    expect((await screen.findByRole('alert')).textContent).toContain('current rate, total or booking details could not be verified');
+    const button = screen.getByRole('button', { name:'Approve these values' });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(button);
+    expect(client.approve).not.toHaveBeenCalled();
+  });
+
   it('lists each changed value as before to after, with one Approve button', async () => {
     renderCard(fakeClient(viewWith()));
     const list = await screen.findByRole('list', { name: 'Values to write' });
@@ -802,6 +838,19 @@ describe('hmsApprovalFromTrpc and refusals', () => {
 });
 
 describe('writeRowsOf and writeStatusOf', () => {
+  it('shows the Cloud amend choices, including the unchanged rate, without internal data', () => {
+    const rows = writeRowsOf({ form: { action: 'amend', confirmation: '12345678-1',
+      fields: { adults: 3, ratePlan: 'BAR', retainRates: 'yes' }, previewDigest: 'private-digest',
+      cloudAmend: { bound: true }, unrelated: 'private-state' },
+    before: { fields: { adults: 2, ratePlan: 'BAR' } } });
+    expect(rows).toEqual([
+      { key: 'fields.adults', label: 'Adults', before: '2', after: '3' },
+      { key: 'fields.ratePlan', label: 'Rate plan', before: 'BAR', after: 'BAR' },
+      { key: 'fields.retainRates', label: 'Retain current rates', before: 'None', after: 'Yes' },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('private');
+  });
+
   it('leaves out unchanged values, and reads a missing snapshot as not read', () => {
     expect(writeRowsOf({ form: { adults: 2 }, before: { adults: 2 } })).toEqual([]);
     expect(writeRowsOf({ form: { arrival: '2026-11-02' }, before: null })).toEqual([

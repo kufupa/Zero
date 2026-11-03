@@ -3,6 +3,7 @@ import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-gu
 import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 
 const SAVE_PATH = '/web/base/OSRESV.HDR';
+const AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
 const DANGEROUS_PATH = /save|delete|cancel|checkin|checkout|send|email|mail|crs/i;
 const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const neverDispatchedCreateProofs = new WeakMap();
@@ -32,6 +33,8 @@ export async function installLabtestSaveRouteChain(page, {
   onAuthorizationAttempt,
   childStageGate = null,
   isChildStageActive = () => false,
+  availability = null,
+  secondSave = null,
   onCandidate,
   onDispatch,
   onBlocked,
@@ -43,6 +46,9 @@ export async function installLabtestSaveRouteChain(page, {
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
       (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function') ||
       typeof isChildStageActive !== 'function' ||
+      [availability, secondSave].some((phase) => phase !== null && (!phase ||
+        typeof phase.isArmed !== 'function' || typeof phase.matches !== 'function' ||
+        typeof phase.dispatchCandidate !== 'function')) ||
       (childStageGate !== null && !isSavedChildStageRequestGate(childStageGate))) {
     throw new Error('AMEND_ROUTE_CHAIN_INPUT_INVALID');
   }
@@ -53,6 +59,8 @@ export async function installLabtestSaveRouteChain(page, {
   let authorizing = false;
   let dispatching = false;
   let continuedRequest = null;
+  let availabilityRequest = null, continuedAvailability = null;
+  let secondRequest = null, continuedSecond = null, primarySucceeded = false;
   const pendingCallbacks = new Set();
   const trackCallback = (callback) => {
     const pending = Promise.resolve().then(callback);
@@ -63,6 +71,9 @@ export async function installLabtestSaveRouteChain(page, {
   const childCandidates = new WeakSet(), continuedChildren = new WeakSet();
   let finishDispatch;
   const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
+  let finishAvailability, finishSecond;
+  const availabilityFinished = new Promise((resolve) => { finishAvailability = resolve; });
+  const secondFinished = new Promise((resolve) => { finishSecond = resolve; });
   const observeBlocked = (request) => {
     try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
   };
@@ -91,8 +102,12 @@ export async function installLabtestSaveRouteChain(page, {
   };
   const contextRoute = async (route) => {
     const request = route.request();
-    if (active && !dispatching && candidateRequest === request && continuedRequest !== request &&
-        isSameFrame(request) && isArmed() && !fence.isQuarantined()) {
+    const isAvailability = availability && availabilityRequest === request && continuedAvailability !== request;
+    const isSecond = secondSave && secondRequest === request && continuedSecond !== request;
+    const phase = isAvailability ? availability : isSecond ? secondSave : { isArmed, dispatchCandidate, onDispatch };
+    if (active && !dispatching && (isAvailability || isSecond ||
+        (candidateRequest === request && continuedRequest !== request)) &&
+        isSameFrame(request) && phase.isArmed() && !fence.isQuarantined()) {
       dispatching = true;
       let wrapperFinished = false;
       let attempted = false;
@@ -103,12 +118,16 @@ export async function installLabtestSaveRouteChain(page, {
       // A delayed or repeated call cannot dispatch after it has returned.
       const continueOnce = () => {
         const task = trackCallback(async () => {
-          if (wrapperFinished || attempted || !active || !isArmed() || fence.isQuarantined() || !isSameFrame(request)) {
+          if (wrapperFinished || attempted || !active || !phase.isArmed() || fence.isQuarantined() || !isSameFrame(request) ||
+              (isAvailability && !availability.matches(request, frame)) ||
+              (isSecond && (!primarySucceeded || !secondSave.matches(request, frame)))) {
             throw new Error('SAVE_DISPATCH_NOT_AUTHORIZED');
           }
           attempted = true;
-          continuedRequest = request;
-          onDispatch?.(request);
+          if (isAvailability) continuedAvailability = request;
+          else if (isSecond) continuedSecond = request;
+          else continuedRequest = request;
+          phase.onDispatch?.(request);
           try {
             const result = await route.continue();
             continuationSucceeded = true;
@@ -132,7 +151,7 @@ export async function installLabtestSaveRouteChain(page, {
         return proof;
       };
       try {
-        const result = dispatchCandidate ? await dispatchCandidate(request, continueOnce) : await continueOnce();
+        const result = phase.dispatchCandidate ? await phase.dispatchCandidate(request, continueOnce) : await continueOnce();
         wrapperFinished = true;
         if (!attempted) {
           observeBlocked(request);
@@ -151,7 +170,9 @@ export async function installLabtestSaveRouteChain(page, {
         dispatching = false;
         // A native response can arrive before the server wrapper completes.
         // Surface its eventual result without an unhandled rejection.
-        finishDispatch(wrapperSucceeded);
+        if (isAvailability) finishAvailability(wrapperSucceeded);
+        else if (isSecond) finishSecond(wrapperSucceeded);
+        else { primarySucceeded = wrapperSucceeded; finishDispatch(wrapperSucceeded); }
       }
     }
     if (active && childStageGate && childCandidates.has(request) && !continuedChildren.has(request) &&
@@ -174,6 +195,17 @@ export async function installLabtestSaveRouteChain(page, {
     }
     const method = String(request.method() || '').toUpperCase();
     const pageAction = url.searchParams.get('pageaction') || '';
+    if (url.pathname.toLowerCase() === AVAILABILITY_PATH.toLowerCase()) {
+      let allowed = false;
+      try {
+        allowed = Boolean(active && availability && availabilityRequest === null && availability.isArmed() &&
+          !fence.isQuarantined() && isSameFrame(request) && availability.matches(request, frame) && scope.allow(request));
+      } catch { /* The lifetime fence remains closed. */ }
+      if (!allowed) { observeBlocked(request); return route.abort(); }
+      availabilityRequest = request;
+      try { availability.onCandidate?.(request); } catch { /* The request stays fenced. */ }
+      return route.fallback();
+    }
     if (SAVED_CHILD_STAGE_PATHS.some((path) => path.toLowerCase() === url.pathname.toLowerCase())) {
       let allowed = false;
       try {
@@ -197,6 +229,16 @@ export async function installLabtestSaveRouteChain(page, {
     if (safeRead) return route.fallback();
 
     if (url.pathname === SAVE_PATH) {
+      if (active && secondSave && primarySucceeded && secondRequest === null && secondSave.isArmed() &&
+          !fence.isQuarantined() && isSameFrame(request) && secondSave.matches(request, frame)) {
+        let allowed = false;
+        try { allowed = scope.allow(request); } catch { /* The lifetime fence remains closed. */ }
+        if (allowed) {
+          secondRequest = request;
+          try { secondSave.onCandidate?.(request); } catch { /* The request stays fenced. */ }
+        } else observeBlocked(request);
+        return route.fallback();
+      }
       if (active && !authorizing && candidateRequest === null && isArmed() && !fence.isQuarantined() && isSameFrame(request) &&
           matches(request, frame)) {
         let allowed = false;
@@ -231,7 +273,8 @@ export async function installLabtestSaveRouteChain(page, {
     let path;
     try { path = new URL(route.request().url()).pathname.toLowerCase(); }
     catch { return handler(route); }
-    return path === SAVE_PATH.toLowerCase() || SAVED_CHILD_STAGE_PATHS.some((item) => item.toLowerCase() === path)
+    return path === SAVE_PATH.toLowerCase() || path === AVAILABILITY_PATH.toLowerCase() ||
+      SAVED_CHILD_STAGE_PATHS.some((item) => item.toLowerCase() === path)
       ? trackCallback(() => handler(route)) : handler(route);
   };
   const trackedContextRoute = trackEffectfulRoute(contextRoute);
@@ -256,6 +299,8 @@ export async function installLabtestSaveRouteChain(page, {
     candidate: () => candidateRequest,
     continued: () => continuedRequest,
     waitForDispatch: () => dispatchFinished,
+    waitForAvailability: () => availabilityFinished,
+    waitForSecond: () => secondFinished,
     disarm: () => { active = false; },
     async drain({ timeoutMs = 5_000 } = {}) {
       active = false;

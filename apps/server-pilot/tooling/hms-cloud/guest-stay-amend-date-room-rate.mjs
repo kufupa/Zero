@@ -5,7 +5,8 @@ import {
   snapshotLabtestRecord,
   unchangedLabtestBusinessParties,
 } from './labtest-record.mjs';
-import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { isLabtestAmendStageContext, runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { matchesObservedAdultEffect } from './guest-stay-amend-adults.mjs';
 import { savedChildOccupancy } from './guest-stay-amend-children.mjs';
 import { prepareStayAmendmentAvailability, readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
 
@@ -27,6 +28,63 @@ const IDENTITY_FIELDS = ['propertycode', 'confirmationnumber', 'guestid', 'statu
   'udfchkbox04', 'udfchar13', 'emailaddress', 'reservationnote'];
 const ownObject = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Check every field against the clean preimage after local date/adult edits. */
+export function matchesComposedDateAdultDraft(before, after, expected, changes, { synced = true, previous = null } = {}) {
+  if (!cleanLabtestRecord(before) || !ownObject(after?.data) || !ownObject(after?.values) ||
+      !ownObject(changes) || Object.keys(changes).some((key) => !['arrival', 'departure', 'adults'].includes(key)) ||
+      !Array.isArray(after.dirtyFields) || !Array.isArray(after.modifiedFields) ||
+      after.formDirty !== true || after.recordDirty !== true ||
+      new Set(after.dirtyFields).size !== after.dirtyFields.length ||
+      new Set(after.modifiedFields).size !== after.modifiedFields.length ||
+      !equal(Object.keys(before).sort(), Object.keys(after).sort()) ||
+      !equal(before.partyControls, after.partyControls) || before.partyInputsBlank !== after.partyInputsBlank) return false;
+  const arrival = changes.arrival ?? expected?.arrival, departure = changes.departure ?? expected?.departure;
+  const adults = changes.adults ?? expected?.adults;
+  if (!dateParts(expected?.arrival) || !dateParts(expected?.departure) || expected.arrival < '2027-01-01' ||
+      expected.arrival >= expected.departure || !Number.isInteger(expected.adults) || expected.adults < 1 || expected.adults > 16 ||
+      !dateParts(arrival) ||
+      !dateParts(departure) || arrival < '2027-01-01' || arrival >= departure ||
+      !Number.isInteger(adults) || adults < 1 || adults > 16) return false;
+  const dayName = (value) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(`${value}T00:00:00Z`).getUTCDay()];
+  const nights = (start, end) => String((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000);
+  const initial = { arrivaldate: dateParts(expected.arrival), departuredate: dateParts(expected.departure),
+    nights: nights(expected.arrival, expected.departure), arrivaldayofweek: dayName(expected.arrival),
+    departuredayofweek: dayName(expected.departure), adults: String(expected.adults) };
+  const target = { arrivaldate: dateParts(arrival), departuredate: dateParts(departure),
+    nights: nights(arrival, departure), arrivaldayofweek: dayName(arrival),
+    departuredayofweek: dayName(departure), adults: String(adults) };
+  const names = Object.keys(initial);
+  for (const name of names) {
+    for (const part of ['data', 'values']) {
+      const old = typeof initial[name] === 'object' ? initial[name][part === 'data' ? 'wire' : 'display'] : initial[name];
+      const wanted = typeof target[name] === 'object' ? target[name][part === 'data' ? 'wire' : 'display'] : target[name];
+      const source = before[part], next = after[part];
+      // Before updateRecord, a second date edit may still carry the already
+      // verified first edit's model (for example its intermediate night count).
+      const prior = part === 'data' && previous?.data && Object.hasOwn(previous.data, name)
+        ? String(previous.data[name]) : null;
+      if (!Object.hasOwn(source, name) || !Object.hasOwn(next, name) || String(source[name]) !== old ||
+          (String(next[name]) !== wanted && (synced || part !== 'data' ||
+            (String(next[name]) !== old && String(next[name]) !== prior)))) return false;
+    }
+  }
+  const changed = new Set();
+  for (const part of ['data', 'values']) {
+    const a = before[part], b = after[part], keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    if (new Set(Object.keys(a).map((key) => key.toLowerCase())).size !== Object.keys(a).length ||
+        new Set(Object.keys(b).map((key) => key.toLowerCase())).size !== Object.keys(b).length) return false;
+    for (const key of keys) {
+      if (!Object.hasOwn(a, key) || !Object.hasOwn(b, key)) return false;
+      if (equal(a[key], b[key])) continue;
+      changed.add(key);
+      if (!names.includes(key) && !matchesObservedAdultEffect(before, after, key)) return false;
+    }
+  }
+  if ([...after.dirtyFields, ...after.modifiedFields].some((key) => !changed.has(key)) ||
+      (after.formDirty && !after.dirtyFields.length) || (after.recordDirty && !after.modifiedFields.length)) return false;
+  return changed.size > 0 && String(after.data.enablecheckavailability) === '-1';
+}
 
 function dateParts(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -169,6 +227,81 @@ async function nativeDateObservation(input, name) {
     if (!modelData || Object.keys(modelData).length !== 1 || !Object.hasOwn(modelData, fieldName)) return null;
     return { componentDate: day(component.getValue()), formModelDate: day(modelData[fieldName]) };
   }, name);
+}
+
+/** Compose date edits only while the shared request fence is active. */
+export async function stageSavedDatesForComposition(context, expected, changes, precedingSnapshot = null) {
+  const active = () => {
+    if (!isLabtestAmendStageContext(context) || !context.isActive() || context.remainingMs() <= 0) {
+      throw new Error('AMEND_STAGE_NOT_ACTIVE');
+    }
+  };
+  active();
+  if (!context.baseline || !context.frame || !context.page || !ownObject(changes) ||
+      Object.keys(changes).some((key) => !['arrival', 'departure', 'adults'].includes(key))) {
+    throw new Error('AMEND_INPUT_INVALID');
+  }
+  const arrival = changes.arrival ?? expected.arrival, departure = changes.departure ?? expected.departure;
+  if (!dateParts(arrival) || !dateParts(departure) || arrival < '2027-01-01' || arrival >= departure) {
+    throw new Error('DATE_CHANGE_INVALID');
+  }
+  let snapshot = await snapshotLabtestRecord(context.frame);
+  active();
+  const applied = Object.hasOwn(changes, 'adults') ? { adults: changes.adults } : {};
+  if (precedingSnapshot ? !equal(snapshot, precedingSnapshot) ||
+      !matchesComposedDateAdultDraft(context.baseline, snapshot, expected, applied) :
+      !equal(snapshot, context.baseline) || Object.keys(applied).length > 0) {
+    throw new Error('AMEND_PREIMAGE_CHANGED');
+  }
+  const order = arrival >= expected.departure ? ['departure', 'arrival'] : ['arrival', 'departure'];
+  for (const name of order) {
+    const value = name === 'arrival' ? arrival : departure;
+    if (value === expected[name]) continue;
+    active();
+    const input = await checkedControl(context.frame, snapshot, SPECS[name], dateParts(expected[name]).display);
+    active();
+    await input.fill(dateParts(value).display);
+    await input.press('Tab');
+    await context.page.waitForTimeout(1500);
+    active();
+    const nativeDate = await nativeDateObservation(input, SPECS[name].name);
+    if (nativeDate?.componentDate !== value || nativeDate?.formModelDate !== value ||
+        await context.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0 ||
+        await context.page.locator('.x-window:visible:not(.x-menu)').count() !== 1) {
+      throw new Error('AMEND_NATIVE_DATE_UNVERIFIED');
+    }
+    applied[name] = value;
+    const draft = await snapshotLabtestRecord(context.frame);
+    active();
+    if (!matchesComposedDateAdultDraft(context.baseline, draft, expected, applied, { synced: false, previous: snapshot })) {
+      throw new Error('AMEND_DRAFT_CHANGED');
+    }
+    const browserNow = await context.frame.evaluate(() => performance.now());
+    active();
+    if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+    const synchronized = await input.evaluate((element, { before, deadline }) => {
+      const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
+        (item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden' && !item.closest('.x-window'));
+      const panel = guestInputs.length === 1 && guestInputs[0].id
+        ? globalThis.Ext?.getCmp?.(guestInputs[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      const form = panel?.getForm?.(), record = panel?.getRecord?.();
+      const cmp = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
+      if (!panel?.el?.dom?.contains(element) || cmp?.up?.('form') !== panel || !record?.data ||
+          typeof panel.updateRecord !== 'function' || !form?.getValues || performance.now() >= deadline ||
+          JSON.stringify(record.data) !== JSON.stringify(before.data) ||
+          JSON.stringify(form.getValues()) !== JSON.stringify(before.values)) return false;
+      panel.updateRecord(record);
+      return true;
+    }, { before: draft, deadline: browserNow + context.remainingMs() });
+    active();
+    if (!synchronized) throw new Error('AMEND_PREIMAGE_CHANGED');
+    snapshot = await snapshotLabtestRecord(context.frame);
+    active();
+    if (!matchesComposedDateAdultDraft(context.baseline, snapshot, expected, applied)) {
+      throw new Error('AMEND_DRAFT_CHANGED');
+    }
+  }
+  return snapshot;
 }
 
 // A saved-form combo is usable only if its own loaded records contain a unique exact ID/code.

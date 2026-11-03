@@ -87,7 +87,7 @@ export function BookingVoucherCard({
         <AmendLookupPanel
           key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,
             session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash]) : undefined}
-          session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend}
+          session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend} workItemId={workItemId}
         />
       )}
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}

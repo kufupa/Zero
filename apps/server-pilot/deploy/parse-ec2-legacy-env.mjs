@@ -60,6 +60,8 @@ try {
     if (key === 'QUOTE_WORKFLOW_LLM' && value !== undefined && !['on', 'off'].includes(value)) {
       throw new Error('invalid');
     }
+    if (key === 'PANE_WRITE_AMEND' && value !== undefined && !['off', 'lab'].includes(value)) throw new Error('invalid');
+    if (key === 'PANE_HMS_LAB_AMEND_WORKER' && value !== undefined && !['off', 'on'].includes(value)) throw new Error('invalid');
     if (['AZURE_OPENAI_BASE_URL', 'AZURE_FOUNDRY_API_KEY'].includes(key) &&
       value !== undefined && value.trim().length === 0) {
       throw new Error('invalid');

@@ -8,6 +8,9 @@ import {
   resolveHmsNeedsCheck,
   reviewHmsWrite,
 } from '../../ai/hms-approval.js';
+import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, cloudAmendWriteState } from '../../ai/pane-cloud-amend.js';
+import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
+import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
 import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { previewFiling } from '../../ai/pane-filing-preview.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
@@ -23,6 +26,14 @@ const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(100) }).strict();
+const cloudStateInput = z.object({ workItemId: uuid, source: cloudAmendSelectionSchema }).strict();
+const cloudApproveInput = cloudStateInput.extend({ formDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+const cloudEvidenceInput = cloudStateInput.extend({ eventId: uuid }).strict();
+const cloudReviewInput = z.discriminatedUnion('decision', [
+  z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema, decision: z.literal('ok') }).strict(),
+  z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema,
+    decision: z.literal('flag'), note: z.string().trim().min(3).max(500) }).strict(),
+]);
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, note: z.string().trim().min(3).max(500) }).strict();
@@ -54,6 +65,47 @@ export const hmsApprovalRouter = router({
   /** This preview makes no approval and never queues a write. */
   previewAttach: mailboxProcedure.input(filingPreviewInput).mutation(({ input, ctx }) =>
     previewFiling({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id })),
+  cloudAmendReady: mailboxProcedure.query(({ ctx }) => {
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+    const selected = target.ok ? target.target : null;
+    return { ready: labtestAmendWorkerEnabled() && selected !== null &&
+      targetKeys.every((key) => selected[key] === CENTURION_HMS_READ_TARGET[key]) };
+  }),
+  bindCloudAmend: mailboxProcedure.input(bindCloudAmendInput).mutation(({ input, ctx }) =>
+    bindCloudAmendForm({ ...input, transportId: ctx.activeTransportId }),
+  ),
+  cloudAmendState: mailboxProcedure.input(cloudStateInput).query(async ({ input, ctx }) => {
+    const view = await cloudAmendWriteState({ ...input, transportId: ctx.activeTransportId });
+    if (!view) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
+    return view;
+  }),
+  approveCloudAmend: mailboxProcedure.input(cloudApproveInput).mutation(async ({ input, ctx }) => {
+    try {
+      return await approveHmsWrite({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
+        sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+        workItemId: input.workItemId, formDigest: input.formDigest, cloudSelection: input.source });
+    } catch (err) { return refusal(err); }
+  }),
+  reviewCloudAmend: mailboxProcedure.input(cloudReviewInput).mutation(async ({ input, ctx }) => {
+    try {
+      return await reviewHmsWrite({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
+        workItemId: input.workItemId, runId: input.runId, cloudSelection: input.source,
+        decision: input.decision, note: input.decision === 'flag' ? input.note : undefined });
+    } catch (err) { return refusal(err); }
+  }),
+  cloudAmendEvidence: mailboxProcedure.input(cloudEvidenceInput).query(async ({ input, ctx }) => {
+    const selected = { transportId: ctx.activeTransportId, workItemId: input.workItemId, source: input.source };
+    const before = await cloudAmendWriteState(selected);
+    if (!before?.run?.evidence.some((row) => row.eventId === input.eventId)) {
+      return { status: 'unavailable' as const, reason: 'evidence_unavailable' };
+    }
+    const evidence = await readHmsWriteEvidence({ transportId: ctx.activeTransportId,
+      workItemId: input.workItemId, eventId: input.eventId });
+    const after = await cloudAmendWriteState(selected);
+    return after?.run?.runId === before.run.runId && after.run.evidence.some((row) => row.eventId === input.eventId)
+      ? evidence : { status: 'unavailable' as const, reason: 'evidence_unavailable' };
+  }),
   /** Binding prepares the reviewed PDF and booking; it never approves or sends the upload. */
   bindAttach: mailboxProcedure.input(bindAttachInput).mutation(async ({ input, ctx }) => {
     try {
@@ -122,6 +174,8 @@ export const hmsApprovalRouter = router({
         selectedInternetMessageId: input.internetMessageId,
       });
       if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
+      // A legacy reread cannot replace the source-bound Cloud preimage.
+      if (Object.hasOwn(view.form, 'cloudAmend')) return { status: 'refused' as const, reason: 'amend_refresh_required' };
       const form = parseHmsWriteForm(view.form);
       if (!form) return { status: 'refused' as const, reason: 'form_invalid' };
       const read = await prepareHmsWriteSnapshot({

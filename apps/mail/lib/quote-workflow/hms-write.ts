@@ -190,6 +190,8 @@ const REFUSAL_COPY: Record<string, string> = {
   no_executed_write: 'Nothing was written, so there is nothing to review.',
   already_reviewed: 'This write is already reviewed.',
   form_outdated: 'The values changed since this card loaded. Check them, then approve again.',
+  amend_save_unavailable: 'Nava cannot save this change yet. Complete it in HMS.',
+  amend_reconciliation_required: 'The previous HMS outcome needs a verified readback before another change.',
   run_changed: 'Another write ran since this one loaded. Check the latest write, then review it.',
 };
 
@@ -325,8 +327,11 @@ const LEAF_LABELS: Record<string, string> = {
   departure: 'Departure',
   count: 'Rooms',
   adults: 'Adults',
+  children: 'Children',
   childAges: 'Child ages',
   roomType: 'Room type',
+  ratePlan: 'Rate plan',
+  retainRates: 'Retain current rates',
   board: 'Board',
   removed: 'Removed',
   confirmation: 'Booking',
@@ -364,6 +369,7 @@ function valueText(key: string, value: unknown): string {
   if (Array.isArray(value)) return value.length > 0 ? value.map(scalarText).join(', ') : NONE;
   const text = scalarText(value);
   if (leafName(key) === 'board') return BOARD_LABELS[text] ?? text;
+  if (leafName(key) === 'retainRates' && (text === 'yes' || text === 'no')) return text === 'yes' ? 'Yes' : 'No';
   return ISO_DAY.test(text) ? formatStayDate(text) : text;
 }
 
@@ -386,11 +392,54 @@ function labelsOf(keys: readonly string[]): Map<string, string> {
 }
 
 /** Leaves that name the guest or their booking (a confirmation, a name, a file name). The preview gate masks them. */
-const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest/i;
+const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest|^cmsRecipient$/i;
 
 /** True when a write row shows a guest detail, so the pane marks it data-pii. */
 export function isGuestWriteRow(key: string): boolean {
   return GUEST_LEAF.test(leafName(key));
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** The narrow retain approval must show the server-bound nightly rate and total. */
+function retainedPriceRows(form: Record<string, unknown>): WriteRow[] {
+  const prices = record(record(form.cloudAmend)?.approvedPrices), fields = record(prices?.fields);
+  const currency = prices?.currency;
+  if (prices?.version !== 1 || typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency) || !fields) return [];
+  const rows: WriteRow[] = [];
+  for (const [key, label] of [['averagenightly', 'Current nightly rate'], ['grandtotal', 'Current stay total']] as const) {
+    const field = record(fields[key]), data = record(field?.data), visible = record(field?.visible);
+    const dc = record(field?.dataCurrency), vc = record(field?.visibleCurrency);
+    const cents = data?.cents;
+    if (data?.state !== 'amount' || visible?.state !== 'amount' || typeof cents !== 'string' ||
+        !/^\d{1,17}$/.test(cents) || visible.cents !== cents || dc?.state !== 'currency' || vc?.state !== 'currency' ||
+        dc.code !== currency || vc.code !== currency) return [];
+    const padded = cents.replace(/^0+(?=\d)/, '').padStart(3, '0');
+    const formatted = `${currency} ${padded.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${padded.slice(-2)}`;
+    rows.push({ key: `cloudAmend.approvedPrices.${key}`, label, before: formatted, after: formatted });
+  }
+  return rows;
+}
+
+export function cloudAmendApprovalHasPrices(form: Record<string, unknown>): boolean {
+  return !(form.action === 'amend' && record(form.cloudAmend)) ||
+    (retainedPriceRows(form).length === 2 && preservedAmendRows(form).length === 4);
+}
+
+/** The saved-record form also carries these unchanged values; show them before Go. */
+function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
+  const value = record(record(form.cloudAmend)?.preserved);
+  if (!value || typeof value.cmsRecipient !== 'string' ||
+      !(value.agency === null || typeof value.agency === 'string') ||
+      !(value.organization === null || typeof value.organization === 'string')) return [];
+  return [
+    ['cmsRecipient', 'CMS recipient', value.cmsRecipient || NONE],
+    ['cmsSend', 'Send confirmation', 'No'],
+    ['agency', 'Travel agency', value.agency || NONE],
+    ['organization', 'Company', value.organization || NONE],
+  ].map(([key, label, text]) => ({ key: `cloudAmend.preserved.${key}`, label, before: text, after: text }));
 }
 
 /**
@@ -398,9 +447,12 @@ export function isGuestWriteRow(key: string): boolean {
  * stored read, the before side reads "Not read", so approval still shows what would be written.
  */
 export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteRow[] {
+  // Only the reviewed amendment choices belong on this card. Source/native
+  // digests and unrelated work-item state are not staff decisions.
+  const cloudAmend = view.form.action === 'amend' && typeof view.form.cloudAmend === 'object' && view.form.cloudAmend !== null;
+  const after = leavesOf(cloudAmend ? { fields: view.form.fields } : view.form);
   const filing = view.form.action === 'attach_document';
   const filingFields = new Set(['documentName', 'confirmation', 'lastName', 'arrival']);
-  const after = leavesOf(view.form);
   const before = view.before ? leavesOf(view.before) : null;
   const labels = labelsOf([...after.keys()]);
   const rows: WriteRow[] = [];
@@ -409,9 +461,10 @@ export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteR
     const beforeText =
       before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : NONE;
     const afterText = valueText(key, value);
-    if (filing || beforeText !== afterText) {
+    if (filing || beforeText !== afterText || (cloudAmend && key === 'fields.ratePlan')) {
       rows.push({ key, label: labels.get(key) ?? key, before: beforeText, after: afterText });
     }
   }
+  if (cloudAmend) rows.push(...retainedPriceRows(view.form), ...preservedAmendRows(view.form));
   return rows;
 }

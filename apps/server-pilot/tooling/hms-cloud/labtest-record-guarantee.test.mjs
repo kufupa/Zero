@@ -14,7 +14,7 @@ const agentGuarantee = { code: 'GTDAGT', display: 'Guaranteed By Agent' };
 function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', note = expected.note, recipient = '', recipientModel = recipient,
   recipientForm = recipient, agency = null, companyId = organization.nativeId, companyName = organization.name,
   agencyId = agency?.nativeId, agencyName = agency?.name, send = false, guestEmail = '',
-  noteCount = 1, modelChanges = {}, visibleChanges = {} } = {}) {
+  noteCount = 1, modelChanges = {}, visibleChanges = {}, mutate = () => {} } = {}) {
   const values = { confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '12-NOV-2027', departuredate: '14-NOV-2027',
     roomtype: expected.roomType, rateplan: expected.ratePlan, track: 'BAR', guaranteetype: display,
@@ -32,9 +32,11 @@ function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', note = ex
     status: 'Reserved', firstname: 'Proof', lastname: 'Labtest', arrivaldate: '11/12/2027', departuredate: '11/14/2027',
     PKID: 'pk', bookingsessionid: 'session', reservationid: '41', reservationstayid: '42', recordid: 'record',
     udfchar13: recipientModel, ...modelChanges };
-  const form = { el: { dom: { contains: () => true, querySelectorAll: () => [company, ...(agencyInput ? [agencyInput] : [])] } },
-    getRecord: () => ({ data }), getForm: () => ({ getValues: () => ({ company: companyName, udfchar13: recipientForm,
-      ...(agency ? { ta1: agencyName } : {}) }) }) };
+  const partyInputs = [company, ...(agencyInput ? [agencyInput] : [])];
+  const formValues = { company: companyName, udfchar13: recipientForm, ...(agency ? { ta1: agencyName } : {}) };
+  mutate({ data, inputs, partyInputs, formValues });
+  const form = { el: { dom: { contains: () => true, querySelectorAll: () => partyInputs } },
+    getRecord: () => ({ data }), getForm: () => ({ getValues: () => formValues }) };
   const ext = { getCmp: (id) => ({ up: () => form,
     getValue: () => id === 'guaranteetype' ? code : id === 'udfchkbox04' ? send : null }) };
   const frame = { url: () => `${ORIGIN}/record`, evaluate: async (fn, arg) => {
@@ -90,6 +92,11 @@ test('the existing action guard remains NGI-only', async () => {
     { ...recordOptions, expectedGuarantee: agentGuarantee }), /LABTEST_RECORD_INPUT_INVALID/);
 });
 
+test('the default saved-action guard refuses an otherwise valid linked company', async () => {
+  await assert.rejects(records.currentLabtestRecord(savedPage({ code: 'NGI', display: 'Non-Guaranteed Individual' }),
+    expected, { allowBlankNote: true }), /LABTEST_LINKED_PARTY_UNVERIFIED/);
+});
+
 test('document-only guard permits unrelated stay details but binds fake identity and no-send', async () => {
   const agency = { nativeId: '99', name: 'Example Agency' };
   const context = { cmsSend: false };
@@ -124,4 +131,24 @@ test('create reconciliation rejects unsupported or malformed guarantee expectati
     await assert.rejects(records.readCreatedLabtestRecord(savedPage(), expected,
       { ...recordOptions, expectedGuarantee: bad }), /LABTEST_RECORD_INPUT_INVALID/);
   }
+});
+
+test('amend opt-in binds an unsent recipient and model-only primary IDs to visible names', async () => {
+  const agency = { nativeId:'42', name:'Example Agency' };
+  const options = { allowBlankNote:true, allowUnchangedBusinessParties:true,
+    preserveUnsentRecipient:true, allowModelOnlyPrimaryPartyIds:true };
+  const fake = { code:'NGI', display:'Non-Guaranteed Individual', recipient:'desk@example.invalid', agency };
+  const record = await records.currentLabtestRecord(savedPage(fake), expected, options);
+  assert.equal(record.cmsRecipient, fake.recipient);
+  assert.equal(record.partyPreimage.taid1, agency.nativeId);
+  assert.equal(record.partyPreimage.companyid, organization.nativeId);
+  await assert.rejects(records.currentLabtestRecord(savedPage(fake), expected, { allowBlankNote:true }), /LABTEST_RECORD_UNVERIFIED/);
+  for (const changed of [
+    { send:true },
+    { mutate:({ data }) => { data.udfchar13 = 'different@example.invalid'; } },
+    { mutate:({ formValues }) => { formValues.udfchar13 = 'different@example.invalid'; } },
+    { mutate:({ data }) => { data.taid1 = 'not-a-native-id'; } },
+    { mutate:({ partyInputs }) => { partyInputs.find((item) => item.name === 'ta1').value = 'Other Agency'; } },
+    { mutate:({ partyInputs }) => { partyInputs.splice(partyInputs.findIndex((item) => item.name === 'company'), 1); } },
+  ]) await assert.rejects(records.currentLabtestRecord(savedPage({ ...fake, ...changed }), expected, options));
 });
