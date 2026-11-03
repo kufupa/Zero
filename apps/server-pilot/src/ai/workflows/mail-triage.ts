@@ -639,21 +639,21 @@ function normalizeNovaOverlays(value: unknown): unknown {
       (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number])
         ? normalized
         : null);
-    if (!alias) return {};
+    if (!alias) throw new Error('Unknown triage overlay');
     return { [alias]: true };
   }
   if (!Array.isArray(value)) return value;
   const overlays: Record<string, boolean> = {};
   for (const overlay of value) {
-    if (typeof overlay === 'string') {
-      const normalized = overlay.trim().toLowerCase();
-      const alias =
-        NOVA_OVERLAY_ALIASES[normalized] ??
-        (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number])
-          ? normalized
-          : null);
-      if (alias) overlays[alias] = true;
-    }
+    if (typeof overlay !== 'string') throw new Error('Unknown triage overlay');
+    const normalized = overlay.trim().toLowerCase();
+    const alias =
+      NOVA_OVERLAY_ALIASES[normalized] ??
+      (TRIAGE_OVERLAYS.includes(normalized as (typeof TRIAGE_OVERLAYS)[number])
+        ? normalized
+        : null);
+    if (!alias) throw new Error('Unknown triage overlay');
+    overlays[alias] = true;
   }
   return overlays;
 }
@@ -690,13 +690,6 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   if (typeof structured.automationState === 'string') {
     structured.automationState =
       NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ?? structured.automationState;
-    if (
-      !TRIAGE_AUTOMATION_STATES.includes(
-        structured.automationState as (typeof TRIAGE_AUTOMATION_STATES)[number],
-      )
-    ) {
-      structured.automationState = 'unknown';
-    }
   }
   if (typeof structured.humanAction === 'boolean') {
     // Observed Nova dialect: boolean humanAction means "needs human?" rather
