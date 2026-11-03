@@ -3660,7 +3660,7 @@ describe('type changed after rates', () => {
     expect(after.treatAs).toBe('create_booking');
     expect(after.staffQuote).toBeNull();
     expect(after.bookingDrafts).toEqual({});
-    expect(after.phase).toBe('requirements');
+    expect(after.phase).toBe('analysing');
     expect(after.inputRevision).toBe(withRates.inputRevision + 1);
     expect(after.groups).toEqual(groups);
   });

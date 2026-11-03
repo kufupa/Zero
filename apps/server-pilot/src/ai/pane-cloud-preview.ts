@@ -529,7 +529,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
           ...(typeof row.city === 'string' && row.city ? { city: row.city } : {}),
           ...(typeof row.country === 'string' && row.country ? { country: row.country } : {}) }];
       }).slice(0, 50);
-      return { ...refused('guest_choice_required'), guestCandidates: candidates };
+      return { ...refused(native.issue === 'guest_not_found' ? 'guest_not_found' : 'guest_choice_required'), guestCandidates: candidates };
     }
     if (!input.selection.nativeGuestId) return refused('prepared_guest_identity_required');
     if (native.outcome !== 'prepared' || !native.requestBinding) return refused('cloud_preview_unavailable');

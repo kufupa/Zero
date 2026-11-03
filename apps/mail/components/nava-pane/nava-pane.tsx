@@ -1119,7 +1119,7 @@ export function NavaPane({
   ]);
 
   useEffect(() => {
-    if (isNonActionableMessage) return;
+    if (isNonActionableMessage || quoteSession.phase === 'analysing') return;
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
@@ -1418,7 +1418,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
+  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId, quoteSession.phase]);
 
   useStaffQuoteAutostart({
     isNonActionableMessage,

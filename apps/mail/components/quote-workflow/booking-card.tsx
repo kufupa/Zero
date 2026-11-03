@@ -1270,13 +1270,14 @@ export function BookingCards({
     try {
       const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
       const result = await pane.preview(previewInput);
-      if (result.reason === 'guest_choice_required' && Array.isArray(result.guestCandidates) &&
+      if ((result.reason === 'guest_choice_required' || result.reason === 'guest_not_found') &&
+          Array.isArray(result.guestCandidates) &&
           previewInputsRef.current[roomKey]?.key === key) {
         setGuestCandidates((current) => ({ ...current, [roomKey]: result.guestCandidates! }));
       }
       const outcome = previewOutcome(result);
       const noMatchingGuestProfile =
-        result.reason === 'guest_choice_required' &&
+        result.reason === 'guest_not_found' &&
         Array.isArray(result.guestCandidates) &&
         result.guestCandidates.length === 0;
       preview = outcome.ok
@@ -1287,7 +1288,7 @@ export function BookingCards({
             status: 'refused',
             key,
             message: noMatchingGuestProfile
-              ? 'No matching existing guest profile was found. Create the profile by hand in HMS, then preview again to choose it.'
+              ? 'HMS found no matching existing guest profile. Create the profile by hand in HMS, then preview again to choose it.'
               : outcome.message,
           };
     } catch {
