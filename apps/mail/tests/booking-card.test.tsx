@@ -1070,7 +1070,8 @@ describe('Cloud create controls', () => {
     const workItemId = '11111111-1111-4111-8111-111111111111';
     render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
-    expect(screen.getByText(/HMS testing is currently limited to Proof Labtest/)).toBeDefined();
+    expect(screen.getByText(mode === 'lab' ? /HMS testing is currently limited to Proof Labtest/
+      : /Booking from this pane is off/)).toBeDefined();
     expect(previewButton(0).disabled).toBe(false);
     fireEvent.click(previewButton(0));
     const selector = await screen.findByLabelText('Guest profile');
@@ -1103,15 +1104,18 @@ describe('Cloud create controls', () => {
     await expect(client.preview({} as PaneStayInput)).rejects.toThrow('pane_save_client_missing');
   });
 
-  it('uses one Go on a bound Labtest preview and keeps HMS sending off', async () => {
+  it.each([
+    { mode: 'lab' as const, firstName: 'Proof', lastName: 'Labtest' },
+    { mode: 'on' as const, firstName: 'Ada', lastName: 'Moyo' },
+  ])('uses one Go on a bound $mode preview and keeps HMS sending off', async ({ mode, firstName, lastName }) => {
     const preview = vi.fn<PaneStayClient['preview']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
-        { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', city: 'Pretoria' },
+        { nativeId: '123', firstName, lastName, city: 'Pretoria' },
       ] }).mockResolvedValueOnce(PREVIEW_OK);
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
-    const { client } = paneClient({ preview, commit, mode: () => 'lab', canPreview: () => true });
+    const { client } = paneClient({ preview, commit, mode: () => mode, canPreview: () => true });
     const draft = previewableDraft('BAR');
-    Object.assign(draft.draft.rooms[0]!.request, { firstName: 'Proof', lastName: 'Labtest',
+    Object.assign(draft.draft.rooms[0]!.request, { firstName, lastName,
       arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
     const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
@@ -1128,7 +1132,7 @@ describe('Cloud create controls', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1',
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1', firstName, lastName,
       confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
   });
 

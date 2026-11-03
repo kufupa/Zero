@@ -46,7 +46,8 @@ const REFUSAL_COPY: Record<string, string> = {
   guest_choice_required: 'Choose the matching guest profile below, then preview again.',
   cloud_create_runtime_unavailable: 'Nava cannot connect to HMS right now. Nothing was saved. Tell the Nava team.',
   cloud_preview_labtest_only: 'HMS preview is currently available only for Proof Labtest test stays in 2027 or later. Book real guests in HMS.',
-  cloud_create_recovery_required: 'A test booking needs checking in HMS before another test booking can be made. Ask the Nava team to resolve it; do not retry the uncertain booking.',
+  cloud_create_recovery_required: 'This booking needs checking in HMS before trying again. Ask the Nava team to resolve it; do not retry the uncertain booking.',
+  current_or_future_arrival_required: 'Choose today or a future arrival date, with departure after arrival.',
   pane_stay_already_booked: 'This room already has a confirmed booking. Open it in HMS.',
   pane_save_parent_unsupported: 'Nava cannot add a room to an existing booking from this card. Book it in HMS.',
   cloud_create_preview_only: 'Booking from Nava is not available yet. Nothing was saved.',
@@ -57,7 +58,7 @@ const REFUSAL_COPY: Record<string, string> = {
   trusted_staff_create_authorization_unavailable:
     'Nava cannot confirm approval for this booking yet. Nothing was saved. Book it by hand in HMS.',
   confirmation_email_writer_unavailable:
-    'Nava cannot send a confirmation for this test booking. Turn off HMS confirmation and preview again.',
+    'Nava cannot send a confirmation for this booking. Turn off HMS confirmation and preview again.',
   pane_save_children_unsupported: PANE_CHILDREN_COPY,
   pane_save_adults_required:
     'This booking needs at least one adult. Enter it in HMS for now.',

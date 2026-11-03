@@ -82,3 +82,19 @@ test('a slow sibling read cannot extend the original five-minute census expiry',
   assert.equal(result.outcome, 'existing_matches');
   assert.equal(consumeLabtestPreimage(page, { ...result, arrival, departure }), false);
 });
+
+test('a clear census still requires all earlier rooms to pass the independent verifier', async () => {
+  for (const verified of [false, true]) {
+    const { page, arrival, departure } = pageFixture();
+    const target = { firstName: 'Ada', lastName: 'Labtest', arrival, departure };
+    let called = false;
+    const result = await searchLabtestPreimage(page, target, { allowRealGuest: true, verifyExisting: async (census) => {
+      called = true;
+      assert.deepEqual(census.sameArrival, []);
+      return verified;
+    } });
+    assert.equal(called, true);
+    assert.equal(result.outcome, verified ? 'clear' : 'incomplete');
+    assert.equal(consumeLabtestPreimage(page, { ...result, ...target }), verified);
+  }
+});

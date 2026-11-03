@@ -577,7 +577,7 @@ test('unsafe inputs and wrong staged values do not become approval ready', async
   const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
   for (const [change, outcome, issue] of [
     [{ cms: { send: true } }, 'unsupported', 'sending_not_supported'],
-    [{ guaranteeType: 'GTDCC' }, 'refused', 'guarantee_not_supported_yet'],
+    [{ guaranteeType: 'CC' }, 'refused', 'guarantee_not_supported_yet'],
     [{ guest: { search: { lastName: 'Real' } } }, 'refused', REAL_GUEST_CREATE_AUTHORIZATION_HOLD],
     [{ room: { ...input.room, ratePlan: 'BAR-1' } }, 'refused', 'native_code_not_supported_yet'],
     [{ guest: [] }, 'needs_input', 'invalid_field_type'],
@@ -588,7 +588,7 @@ test('unsafe inputs and wrong staged values do not become approval ready', async
   }
   assert.equal(sessions, 0);
   const guaranteeDraft = harness();
-  const unsupportedGuarantee = await createReservation({ ...input, mode: 'prepare', guaranteeType: 'GTDCC' }, guaranteeDraft.options);
+  const unsupportedGuarantee = await createReservation({ ...input, mode: 'prepare', guaranteeType: 'CC' }, guaranteeDraft.options);
   assert.equal(unsupportedGuarantee.outcome, 'unsupported');
   assert.equal(unsupportedGuarantee.issue, 'guarantee_not_supported_yet');
   assert.equal(unsupportedGuarantee.applied.note, input.note);
@@ -655,7 +655,7 @@ test('ambiguous identity and unavailable rate retain useful preparation evidence
 
 test('prepare stages supported partial fields while retaining unsupported values and clears', async () => {
   for (const [change, unsupported] of [
-    [{ guaranteeType: 'GTDCC', price: 100, parties: { organizationId: '41', agencyId: '99' } },
+    [{ guaranteeType: 'CC', price: 100, parties: { organizationId: '41', agencyId: '99' } },
       ['guaranteeType', 'price']],
     [{ guest: { ...input.guest, searchExtra: { nested: { unknown: null } } } }, ['guest.searchExtra.nested.unknown']],
     [{ stay: { ...input.stay, occupancy: { other: 1 } } }, ['stay.occupancy.other']],
@@ -677,7 +677,7 @@ test('prepare stages supported partial fields while retaining unsupported values
       assert.equal(Object.hasOwn(result.applied, 'note'), false);
       assert.equal(fake.calls.some(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote'), false);
     }
-    assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'GTDCC');
+    assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'CC');
     assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay' || tool === 'setCmsSendCheckbox'), false);
     assert.equal(fake.freshReads, 0);
   }
@@ -686,7 +686,7 @@ test('prepare stages supported partial fields while retaining unsupported values
 test('prepare retains supported notes when required fields and an optional value are missing', async () => {
   const fake = harness();
   const result = await createReservation({ mode: 'prepare', propertyCode: 'HRCEN',
-    note: 'Synthetic proof', guaranteeType: 'GTDCC', billingReference: null }, fake.options);
+    note: 'Synthetic proof', guaranteeType: 'CC', billingReference: null }, fake.options);
   assert.equal(result.outcome, 'unsupported');
   assert.equal(result.approvalReady, false);
   assert.equal(result.applied.note, 'Synthetic proof');

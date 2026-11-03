@@ -1,6 +1,7 @@
-// A same-page, read-only census before creating a fake Labtest stay.
+// A same-page, read-only census before a guarded HRCEN create.
 import { randomUUID } from 'node:crypto';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
@@ -101,7 +102,7 @@ async function moveWindow(page, popup, arrival) {
     el.getBoundingClientRect().width > 0 && el.textContent.trim().startsWith(value)), prefix, { timeout: 10_000 });
 }
 
-function searchRequest(request) {
+function searchRequest(request, lastName) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     const exact = (key, value) => body.getAll(key).length === 1 && body.get(key) === value;
@@ -109,7 +110,7 @@ function searchRequest(request) {
       exact('MADDON_FILTER_ALIAS_NAME_1', 'departuredate') && exact('MADDON_FILTER_OPERATOR_1', '>=') &&
       exact('MADDON_FILTER_ALIAS_NAME_2', 'arrivaldate') && exact('MADDON_FILTER_OPERATOR_2', '<=') &&
       exact('MADDON_FILTER_ALIAS_NAME_5', 'lastname_filter') && exact('MADDON_FILTER_OPERATOR_5', 'BEGINS') &&
-      exact('MADDON_FILTER_VALUE_5', 'Labtest') && exact('GRID_NAME', 'OSRESS');
+      exact('MADDON_FILTER_VALUE_5', lastName) && exact('GRID_NAME', 'OSRESS');
   } catch { return false; }
 }
 
@@ -155,9 +156,14 @@ function forget(page) {
 }
 
 // Returns private candidate data. A clear result is usable once, on this page, for five minutes.
-export async function searchLabtestPreimage(page, { arrival, departure } = {}, { verifyExisting } = {}) {
+export async function searchLabtestPreimage(page, { arrival, departure, firstName = 'Proof', lastName = 'Labtest' } = {},
+  { verifyExisting, allowRealGuest = false, allowPast = false } = {}) {
   const start = date(arrival), end = date(departure);
-  if (!start || !end || arrival < '2027-01-01' || arrival >= departure) return { outcome: 'input_gap', issue: 'INVALID_LABTEST_DATES' };
+  const guest = { firstName, lastName };
+  if (!validCreateGuest(guest) || (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) ||
+      !start || !end || !validCreateDates(arrival, departure, allowRealGuest, allowPast)) {
+    return { outcome: 'input_gap', issue: 'INVALID_LABTEST_DATES' };
+  }
   if (verifyExisting !== undefined && typeof verifyExisting !== 'function') return { outcome: 'input_gap', issue: 'INVALID_EXISTING_VERIFIER' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'SEARCH_IN_PROGRESS' };
   busy.add(page);
@@ -172,18 +178,18 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}, {
     if (await search.count() !== 1) throw new Error('SEARCH_NOT_UNIQUE');
     const box = await search.boundingBox();
     if (!box) throw new Error('SEARCH_NOT_VISIBLE');
-    await search.fill('Labtest');
+    await search.fill(lastName);
     const runs = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ }), adjacent = [];
     for (let i = 0; i < await runs.count(); i += 1) {
       const b = await runs.nth(i).boundingBox().catch(() => null);
       if (b && Math.abs(b.y - box.y) <= 10 && b.x >= box.x + box.width && b.x <= box.x + box.width + 100) adjacent.push(runs.nth(i));
     }
     if (adjacent.length !== 1) throw new Error('RUN_NOT_UNIQUE');
-    let response = page.waitForResponse((item) => searchRequest(item.request()), { timeout: 30_000 }).catch(() => null);
+    let response = page.waitForResponse((item) => searchRequest(item.request(), lastName), { timeout: 30_000 }).catch(() => null);
     await adjacent[0].click();
     let observed = await response, found = await panel(page, box), window = await range(found.popup);
     if (arrival < window.from || arrival > window.to) {
-      response = page.waitForResponse((item) => searchRequest(item.request()), { timeout: 30_000 }).catch(() => null);
+      response = page.waitForResponse((item) => searchRequest(item.request(), lastName), { timeout: 30_000 }).catch(() => null);
       await moveWindow(page, found.popup, start);
       observed = await response;
       found = await panel(page, box);
@@ -202,13 +208,12 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}, {
           cells[3]?.map(displayDate).includes(row.arrival) && cells[3]?.map(displayDate).includes(row.departure)).length !== 1)) {
       throw new Error('SEARCH_RESULTS_INCOMPLETE');
     }
-    const sameArrival = candidates.filter((row) => row.firstName.toLowerCase() === 'proof' &&
-      row.lastName.toLowerCase() === 'labtest' && row.arrival === arrival);
-    const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', arrival, departure,
+    const sameArrival = candidates.filter((row) => sameCreateGuest(row, guest) && row.arrival === arrival);
+    const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', firstName, lastName, arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
     if (sameArrival.length && !verifyExisting) return result;
     const observedAt = Date.now();
-    const proof = { id: randomUUID(), arrival, departure, expiresAt: observedAt + 5 * 60_000 };
+    const proof = { id: randomUUID(), firstName, lastName, arrival, departure, expiresAt: observedAt + 5 * 60_000 };
     proof.invalidate = (request) => {
       try {
         const url = new URL(request.url());
@@ -221,15 +226,15 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}, {
     page.on('request', proof.invalidate);
     // Existing matches are never accepted from browser input. A trusted caller
     // must independently identify and read every earlier approved sibling.
-    if (sameArrival.length) {
+    if (verifyExisting) {
       let verified = false;
       try { verified = await verifyExisting(structuredClone(result)) === true; } catch { /* fail closed */ }
       if (!verified || proofs.get(page) !== proof || Date.now() >= proof.expiresAt) {
         forget(page);
-        return result;
+        return sameArrival.length ? result : { outcome: 'incomplete', issue: 'EXISTING_VERIFICATION_FAILED' };
       }
     }
-    return { ...result, outcome: 'clear', ...(sameArrival.length ? { verifiedExisting: true } : {}),
+    return { ...result, outcome: 'clear', ...(verifyExisting ? { verifiedExisting: true } : {}),
       preimageId: proof.id, observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(proof.expiresAt).toISOString() };
   } catch (error) {
     const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SEARCH_UNVERIFIED';
@@ -238,9 +243,10 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}, {
 }
 
 // Consuming a proof never asserts that another session cannot change HMS afterward.
-export function consumeLabtestPreimage(page, { preimageId, arrival, departure } = {}) {
+export function consumeLabtestPreimage(page, { preimageId, arrival, departure, firstName = 'Proof', lastName = 'Labtest' } = {}) {
   const proof = proofs.get(page);
   forget(page);
-  return Boolean(proof && proof.id === preimageId && proof.arrival === arrival && proof.departure === departure &&
+  return Boolean(proof && proof.id === preimageId && proof.firstName === firstName && proof.lastName === lastName &&
+    proof.arrival === arrival && proof.departure === departure &&
     Date.now() <= proof.expiresAt);
 }

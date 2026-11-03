@@ -4,6 +4,7 @@ import {
   validCreateNote,
 } from '../../tooling/hms-cloud/create-request-binding.mjs';
 import { normalizeCreateTrack } from '../../tooling/playwright-quote/create-request.mjs';
+import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, validCreateGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import type { PaneStay } from './pane-stay-save.js';
 
 // Cloud preparation permits an omitted track; legacy pane saves still require one.
@@ -38,18 +39,14 @@ const same = (left: unknown, right: unknown) => typeof left === 'string' && type
   left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
 const cleanText = (value: unknown): value is string => typeof value === 'string' && value === value.trim() && Boolean(value) &&
   ![...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
-// These two code/display pairs are the Cloud writer's verified Labtest subset.
-const guaranteeCode = (value: string): 'NGI' | 'GTDAGT' | null => {
-  if (value === 'NGI' || value === 'Non-Guaranteed Individual') return 'NGI';
-  if (value === 'GTDAGT' || value === 'Guaranteed By Agent') return 'GTDAGT';
-  return null;
-};
+const guaranteeCode = createGuaranteeCode;
 
 /** Exact supported subset. Unsupported pane properties are refused, never dropped. */
 export function mapPaneStayToCloudCreateInput(
   stay: PaneCloudStay,
   mode: CloudCreateMode,
   nativeGuestId?: string,
+  { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
 ): PaneCloudCreateMapping {
   for (const [field, value] of [
     ['marketSegment', stay.marketSegment],
@@ -78,12 +75,11 @@ export function mapPaneStayToCloudCreateInput(
   if (stay.propertyCode !== undefined && stay.propertyCode !== 'HRCEN') {
     return { outcome: 'refused', reason: 'property_mismatch', field: 'propertyCode' };
   }
-  if (!cleanText(stay.firstName) || !cleanText(stay.lastName)) {
+  if (!validCreateGuest(stay)) {
     return { outcome: 'refused', reason: 'guest_name_required', field: 'guest' };
   }
-  // Real guests may be searched and staged without saving. The existing commit
-  // hold remains until trusted write authority and native dispatch are integrated.
-  if (mode === 'commit' && (stay.firstName !== 'Proof' || stay.lastName !== 'Labtest')) {
+  // This option is supplied by the server's approved Cloud flow, never the pane.
+  if (mode === 'commit' && !allowRealGuest && !isLabtestGuest(stay)) {
     return { outcome: 'refused', reason: 'labtest_guest_required', field: 'guest' };
   }
   const guarantee = guaranteeCode(stay.guaranteeType);
@@ -156,7 +152,8 @@ export function mapPaneStayToCloudCreateInput(
 }
 
 /** Bind only server-observed final selections to the reviewed pane stay. */
-export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, visibleGuarantee?: unknown, selectedGuestId?: string):
+export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, visibleGuarantee?: unknown, selectedGuestId?: string,
+  requireVisibleGuarantee = false):
   | { outcome: 'ok'; normalizedRequestDigest: string; request: Record<string, unknown> }
   | { outcome: 'refused'; reason: string } {
   // A matching native proof is not evidence for a stay this bridge cannot map.
@@ -166,7 +163,9 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
   }
   // When staff selected a display label, a matching code alone does not prove
   // HMS showed that label. The bridge must supply its fresh form readback.
-  if (stay.guaranteeType !== guaranteeCode(stay.guaranteeType) && visibleGuarantee !== stay.guaranteeType) {
+  const code = guaranteeCode(stay.guaranteeType);
+  if (!code || ((requireVisibleGuarantee || stay.guaranteeType !== code || visibleGuarantee !== undefined) &&
+      visibleGuarantee !== CREATE_GUARANTEES[code])) {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { outcome: 'refused', reason: 'cloud_create_proof_invalid' };

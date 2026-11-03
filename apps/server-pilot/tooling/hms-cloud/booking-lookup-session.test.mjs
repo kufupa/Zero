@@ -26,6 +26,7 @@ test('booking session installs its read guard before the first page and preserve
   assert.equal(guardedOptions.blockServiceWorkers, true);
   assert.equal(typeof guardedOptions.prepareContext, 'function');
   assert.equal(guardedOptions.prepareContext, defaultOptions.prepareContext);
+  assert.equal(bookingSessionPageOptions({ cloudTargetKey: 'target' }).cloudTargetKey, 'target');
   let handler;
   await guardedOptions.prepareContext({ route: async (_pattern, installed) => { handler = installed; } });
   let aborted = false;
@@ -65,6 +66,7 @@ test('save guard authority stays in session context and wire options cannot supp
   const queue = createBookingToolQueue(context);
   assert.equal((await queue.runTool(request)).issue, 'BROWSER_CONTEXT_UNSAFE');
   for (const options of [{ authorizeCandidate: 'spoofed' }, { dispatchCandidate: 'spoofed' },
+    { allowRealGuest: true }, { expectedGuest: { firstName: 'Ada', lastName: 'Moyo' } }, { cloudTargetKey: 'spoofed' },
     { authorizeCandidate: 'spoofed', dispatchCandidate: 'spoofed' }]) {
     assert.equal((await queue.runTool({ ...request, options })).issue, 'SERVER_SAVE_GUARD_ONLY');
   }

@@ -64,6 +64,21 @@ test('fresh native and visible party evidence must all match the fake stay', () 
   assert.equal(compareCreatePartyRecord(null, expected).issue, 'PARTY_RECORD_UNVERIFIED');
 });
 
+test('real-guest party readback requires approved names and exact selected native IDs', async () => {
+  const identity = { confirmation: '123456-1', arrival: '2028-09-19', guestId: '123', firstName: 'Ada', lastName: 'Moyo',
+    agency: { nativeId: '99', name: 'Agency' }, organization: { nativeId: '41', name: 'Company' } };
+  const model = { propertycode: 'HRCEN', confirmationnumber: identity.confirmation, status: 'Reserved', guestid: '123',
+    firstname: 'Ada', lastname: 'Moyo', taid1: '99', ta1: 'Agency', companyid: '41', company: 'Company',
+    araccountid: '', araccountname: '', arprofileid: '' };
+  const visible = { ta1: 'Agency', company: 'Company', araccountname: '' };
+  assert.equal(compareCreatePartyRecord({ model, visible }, identity).outcome, 'verified');
+  for (const change of [{ firstname: 'Other' }, { lastname: 'Other' }, { taid1: '98' }, { companyid: '42' }]) {
+    assert.equal(compareCreatePartyRecord({ model: { ...model, ...change }, visible }, identity).outcome, 'unverified');
+  }
+  const result = await readCreateParties(identity, { openSession: async () => { throw new Error('must not open'); } });
+  assert.equal(result.issue, 'PARTY_READBACK_INPUT_INVALID');
+});
+
 // Exercise the same frame-side DOM/model extraction used for fresh readback.
 test('saved-frame extraction verifies native IDs and rejects missing or duplicate controls', async () => {
   const { extractCreatePartySnapshot } = await import('./create-party-readback.mjs');

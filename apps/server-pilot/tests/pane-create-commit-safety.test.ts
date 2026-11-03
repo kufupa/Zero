@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
-import { paneCloudPreviewLoaders } from '../src/ai/pane-cloud-preview.js';
+import { paneCloudPreviewLoaders, recordRecoveredCreate } from '../src/ai/pane-cloud-preview.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { readResolvedHmsLabtestCreates } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
+import { CREATE_GUARANTEES, hrcenToday } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 import { consumeNeverDispatchedCreateProof, installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 
 // No pilot DB or live HMS. Model only the transaction's observable result;
@@ -225,7 +226,7 @@ beforeEach(async () => {
     if (input.mode === 'prepare') {
       const binding = digestCloudCreateRequest(proof);
       if (binding.outcome !== 'ok') throw new Error('bad fixture');
-      return { outcome: 'prepared', applied: { guaranteeType: 'Non-Guaranteed Individual' },
+      return { outcome: 'prepared', applied: { guaranteeType: CREATE_GUARANTEES[String(input.guaranteeType)] },
         requestBinding: { request: proof, digest: binding.normalizedRequestDigest }, screenshots: { filled: join(dir, 'filled.png') } };
     }
     const candidate = { method: () => 'POST', url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
@@ -233,11 +234,10 @@ beforeEach(async () => {
     if (!await options.authorizeCandidate?.(candidate)) throw new Error('no authority');
     await options.dispatchCandidate?.(candidate, async () => { dispatches += 1; return true; }, {
       beforeScreenshot: join(dir, 'before.png'),
-      writer: { host: 'a'.repeat(64), bootId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', pidNamespace: 'pid:[123]',
-        node: { pid: 20, started: '10' }, browser: { pid: 21, started: '11' } },
-      guaranteeDisplay: 'Non-Guaranteed Individual',
-      preimage: { outcome: 'clear', arrival: stay.arrival, departure: stay.departure,
-        searchedDateRange: { from: '2027-02-01', to: '2027-04-01' },
+      guaranteeDisplay: CREATE_GUARANTEES[String(input.guaranteeType)],
+      preimage: { outcome: 'clear', firstName: (proof.guest as any).firstName, lastName: (proof.guest as any).lastName,
+        arrival: (proof.stay as any).arrival, departure: (proof.stay as any).departure,
+        searchedDateRange: { from: (proof.stay as any).arrival, to: (proof.stay as any).departure },
         coverage: { displayed: 0, total: 0, complete: true }, sameArrival: [], preimageId: 'transient-proof',
         expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() },
     });
@@ -265,13 +265,51 @@ async function prepared() {
 }
 
 describe('mounted Cloud create route', () => {
-  it('does not dispatch when the owned browser or writer identity cannot be verified', async () => {
+  it('does not require boot, PID namespace or process identity proof to dispatch', async () => {
     const digest = await prepared();
     h.writerCurrent = false;
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+      .toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect(h.sharedHoldResolved).toBe(true);
+    expect(dispatches).toBe(1);
+  });
+
+  it('requires the dedicated Create flag for a real guest and rechecks it at Go', async () => {
+    paneStaySaveLoaders.mode = () => 'on';
+    const selected = { ...request('123'), firstName: 'Ada', lastName: 'Moyo' };
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+    vi.stubEnv('PANE_WRITE_CREATE', 'off');
+    expect(await caller().quoteWorkflow.previewStay(selected)).toMatchObject({ status: 'refused' });
+    expect(calls).toHaveLength(0);
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    const preview = await caller().quoteWorkflow.previewStay(selected);
+    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
+    vi.stubEnv('PANE_WRITE_CREATE', 'off');
+    expect(await caller().quoteWorkflow.commitStay({ ...selected, previewDigest: preview.previewDigest! }))
       .toMatchObject({ status: 'refused' });
-    expect(h.sharedHold).toBeNull();
     expect(dispatches).toBe(0);
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    expect(await caller().quoteWorkflow.commitStay({ ...selected, previewDigest: preview.previewDigest! }))
+      .toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect(calls[1]?.options).toMatchObject({ allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' },
+      cloudTargetKey: '["HRCEN","create","ada","moyo","2027-03-01"]' });
+    expect(calls[1]?.input.cms).toEqual({ send: false, messageId: '03' });
+  });
+
+  it('admits a real arrival today and refuses yesterday at the mounted route', async () => {
+    paneStaySaveLoaders.mode = () => 'on';
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    const arrival = hrcenToday(), midnight = Date.parse(`${arrival}T00:00:00Z`);
+    const day = (offset: number) => new Date(midnight + offset * 86_400_000).toISOString().slice(0, 10);
+    const selected = { ...request('123'), firstName: 'Ada', lastName: 'Moyo', arrival, departure: day(1) };
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' },
+      stay: { ...nativeRequest.stay, arrival, departure: day(1) } };
+    expect(await caller().quoteWorkflow.previewStay({ ...selected, arrival: day(-1), departure: arrival }))
+      .toMatchObject({ status: 'refused', reason: 'current_or_future_arrival_required' });
+    const preview = await caller().quoteWorkflow.previewStay(selected);
+    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(await caller().quoteWorkflow.commitStay({ ...selected, previewDigest: preview.previewDigest! }))
+      .toMatchObject({ status: 'ok', outcome: 'committed' });
   });
   it('allows a saved rowless-group correction through preview and one Go', async () => {
     (h.payload.stays as any[])[0].rows = [];
@@ -824,7 +862,84 @@ describe('mounted Cloud create route', () => {
     } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
   });
 
-  it.each(['missing resolution', 'wrong confirmation', 'wrong digest', 'wrong item', 'wrong actor'])(
+  it('keeps the original batch closed after an UNKNOWN room is recovered', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared(), secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const batchId = randomUUID();
+    outcome = 'uncertain';
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: { kind: 'start', id: batchId,
+      rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }] } }))
+      .toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+    const intent = h.sharedHold;
+    expect(intent).not.toBeNull();
+    await recordRecoveredCreate(h.tx, intent as any, { confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [] });
+    h.sharedHoldResolved = true;
+    expect((h.state.cloudCreateBatchHolds as Record<string, string>)[batchId]).toBe(intent?.grantId);
+    const previousCalls = calls.length;
+    expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+      batch: { kind: 'continue', id: batchId, index: 1 } })).toMatchObject({ status: 'refused' });
+    expect(calls).toHaveLength(previousCalls);
+    expect(dispatches).toBe(1);
+  });
+
+  it('allows a separately approved unrelated batch to continue while an earlier batch is UNKNOWN', async () => {
+    paneStaySaveLoaders.mode = () => 'on';
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const laterStay = structuredClone((h.payload.stays as any)[0]);
+    laterStay.id = 's2'; laterStay.rows[0].id = 'r2';
+    (h.payload.stays as any[]).push(laterStay);
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared(), secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const oldBatchId = randomUUID();
+    outcome = 'uncertain';
+    await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: { kind: 'start', id: oldBatchId,
+      rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }] } });
+    expect(h.state).toMatchObject({ stays: { s1_1: { status: 'unknown' } } });
+    // The real ledger is target-scoped; this fixture keeps one synthetic hold at a time.
+    h.sharedHoldResolved = true;
+    outcome = 'saved';
+    const third = { ...request('123'), firstName: 'Ada', lastName: 'Moyo', stayId: 's2_1',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 } } };
+    const fourth = { ...third, stayId: 's2_2',
+      createSelection: { ...third.createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 2 } } };
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+    const thirdDigest = (await caller().quoteWorkflow.previewStay(third)).previewDigest!;
+    const fourthDigest = (await caller().quoteWorkflow.previewStay(fourth)).previewDigest!;
+    const newBatchId = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: { kind: 'start', id: newBatchId,
+      rooms: [{ ...third, previewDigest: thirdDigest }, { ...fourth, previewDigest: fourthDigest }] } }))
+      .toMatchObject({ status: 'ok', outcome: 'committed' });
+    const originalRun = paneCloudPreviewLoaders.run, originalVerify = paneCloudPreviewLoaders.verifySiblings;
+    paneCloudPreviewLoaders.verifySiblings = async () => true;
+    paneCloudPreviewLoaders.run = async (input, options) => {
+      const row = { confirmation: '123456-1', firstName: 'Ada', lastName: 'Moyo',
+        arrival: stay.arrival, departure: stay.departure, status: 'Reserved' };
+      if (input.mode === 'commit') expect(await options.verifyLabtestMatches?.({ outcome: 'existing_matches',
+        firstName: 'Ada', lastName: 'Moyo', arrival: stay.arrival, coverage: { complete: true }, sameArrival: [row] })).toBe(true);
+      const dispatch = options.dispatchCandidate;
+      const result = await originalRun(input, { ...options, dispatchCandidate: dispatch && ((request, next, evidence: any) =>
+        dispatch(request, next, { ...evidence, preimage: { ...evidence.preimage,
+          coverage: { displayed: 1, total: 1, complete: true }, sameArrival: [row], verifiedExisting: true } })) });
+      return input.mode === 'commit' ? { ...result, confirmation: '123456-2' } : result;
+    };
+    try {
+      expect(await caller().quoteWorkflow.commitStay({ ...fourth, previewDigest: fourthDigest,
+        batch: { kind: 'continue', id: newBatchId, index: 1 } })).toMatchObject({ status: 'ok', outcome: 'committed' });
+      expect(h.state).toMatchObject({ stays: { s1_1: { status: 'unknown' }, s2_1: { status: 'booked' }, s2_2: { status: 'booked' } },
+        cloudCreateBatchHolds: { [oldBatchId]: expect.any(String) } });
+    } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
+  });
+
+  it.each(['missing resolution', 'wrong confirmation', 'wrong digest', 'wrong item', 'wrong actor', 'recovered legacy room'])(
     'rejects %s before another Cloud session starts', async (variant) => {
     (h.payload.stays as any)[0].totalRooms = 2;
     (h.payload.stays as any)[0].rows[0].rooms = 2;
@@ -844,6 +959,7 @@ describe('mounted Cloud create route', () => {
     if (variant === 'wrong digest') intent.value.approvedDigest = '0'.repeat(64);
     if (variant === 'wrong item') intent.itemId = randomUUID();
     if (variant === 'wrong actor') resolution.actorKind = 'user';
+    if (variant === 'recovered legacy room') resolution.value.recovered = true;
     const callsBefore = calls.length;
     expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
       batch: { kind: 'continue', id, index: 1 } })).toMatchObject({ status: 'refused' });

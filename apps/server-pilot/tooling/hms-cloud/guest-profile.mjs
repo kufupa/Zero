@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { readUnsavedGuestStay } from './booking-lookup-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -71,7 +72,7 @@ async function profileDraft(page) {
 
 async function profileRecordMatches(page, proof) {
   try {
-    return await page.evaluate(({ origin, record, session, nativeId }) => {
+    return await page.evaluate(({ origin, record, session, nativeId, firstName, lastName }) => {
       if (location.origin !== origin) return false;
       const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
       const names = ['guaranteetype', 'guestid', 'firstname', 'lastname', 'confirmationnumber'];
@@ -87,9 +88,10 @@ async function profileRecordMatches(page, proof) {
       const current = (name, value) => fields[name][0].value.trim() === value &&
         typeof component(name)?.getValue === 'function' && String(component(name).getValue() ?? '').trim() === value;
       return Boolean(exact('propertycode', 'HRCEN') && exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status', 'New') &&
-        exact('bookingsessionid', session) && exact('guestid', nativeId) && exact('firstname', 'Proof') && exact('lastname', 'Labtest') &&
-        current('guestid', nativeId) && current('firstname', 'Proof') && current('lastname', 'Labtest'));
-    }, { origin: ORIGIN, record: proof.record, session: proof.session, nativeId: proof.nativeId });
+        exact('bookingsessionid', session) && exact('guestid', nativeId) && exact('firstname', firstName) && exact('lastname', lastName) &&
+        current('guestid', nativeId) && current('firstname', firstName) && current('lastname', lastName));
+    }, { origin: ORIGIN, record: proof.record, session: proof.session, nativeId: proof.nativeId,
+      firstName: proof.firstName, lastName: proof.lastName });
   } catch { return false; }
 }
 
@@ -539,7 +541,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     const candidates = state.result.candidates.filter((item) => item.nativeId === id);
     if (candidates.length !== 1 || (!candidates[0].firstName && !candidates[0].lastName) ||
         grid.records.filter((row) => clean(row.guestid) === id).length !== 1) throw new Error('GUEST_ID_NOT_UNIQUE');
-    if (candidates[0].firstName === 'Proof' && candidates[0].lastName === 'Labtest') draft = await profileDraft(page);
+    if (validCreateGuest(candidates[0])) draft = await profileDraft(page);
     const rows = win.locator('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row');
     const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
       const grid = Ext.ComponentQuery.query('grid,readonlygrid').find((item) => item.getEl?.()?.dom?.contains(element));
@@ -584,20 +586,20 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
         else if (Date.now() - stableSince >= 500 && uniqueField(form, 'firstname') !== undefined &&
             uniqueField(form, 'lastname') !== undefined && uniqueField(form, 'guestid') === id &&
             sameText(uniqueField(form, 'firstname'), values.firstname) && sameText(uniqueField(form, 'lastname'), values.lastname)) {
-          if (candidates[0].firstName === 'Proof' && candidates[0].lastName === 'Labtest' &&
-              values.firstname === 'Proof' && values.lastname === 'Labtest' &&
-              uniqueField(form, 'firstname') === 'Proof' && uniqueField(form, 'lastname') === 'Labtest') {
+          const { firstName, lastName } = candidates[0];
+          if (validCreateGuest(candidates[0]) && values.firstname === firstName && values.lastname === lastName &&
+              uniqueField(form, 'firstname') === firstName && uniqueField(form, 'lastname') === lastName) {
             const keys = Object.keys(values);
             const exact = (key, value) => Object.hasOwn(values, key) &&
               keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && clean(values[key]) === value;
             const responseBound = Boolean(draft && exact('bookingsessionid', draft.session) && exact('guestid', id) &&
-              exact('firstname', 'Proof') && exact('lastname', 'Labtest'));
+              exact('firstname', firstName) && exact('lastname', lastName));
             const bound = Boolean(draft && requestSessionBound && responseBound &&
-              await profileRecordMatches(page, { record: draft.record, session: draft.session, nativeId: id }));
+              await profileRecordMatches(page, { record: draft.record, session: draft.session, nativeId: id, firstName, lastName }));
             if (nativeDialog || blocked) throw new Error('GUEST_SELECTION_UNVERIFIED');
             verifiedLabtestProfiles.set(page, id);
             if (bound && profileRevisions.get(page) === revision) {
-              const proof = { nativeId: id, record: draft.record, session: draft.session, token: randomUUID() };
+              const proof = { nativeId: id, firstName, lastName, record: draft.record, session: draft.session, token: randomUUID() };
               proof.onRequest = (request) => {
                 try {
                   if (request.method() === 'POST' && new URL(request.url()).pathname === CHANGE_PATH &&

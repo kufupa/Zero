@@ -1520,7 +1520,9 @@ export function BookingCards({
     <section aria-label="Booking details" className="flex flex-col gap-2">
       <p className="text-[11px] text-[#64748b]">
         {cloudPreview
-          ? 'HMS testing is currently limited to Proof Labtest stays in 2027 or later.'
+          ? mode === 'on' ? 'Preview each room in HMS, then book when the preview is ready.'
+            : mode === 'lab' ? 'HMS testing is currently limited to Proof Labtest stays in 2027 or later.'
+              : 'HMS previews are available for test stays. Booking from this pane is off.'
           : savesOn ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
@@ -1530,7 +1532,7 @@ export function BookingCards({
             disabled={stayBooking || cloudPreview} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
-        {cloudPreview ? <p className="text-[11px] text-[#64748b]">Test previews cannot send HMS confirmations.</p> : null}
+        {cloudPreview ? <p className="text-[11px] text-[#64748b]">HMS confirmations are turned off for these bookings.</p> : null}
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
           <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
+import { isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -131,15 +132,17 @@ function wireDate(value) {
   if (!match) return null;
   const day = Number(match[1]), month = MONTHS.indexOf(match[2].toUpperCase()) + 1, year = Number(match[3]);
   const date = new Date(Date.UTC(year, month - 1, day));
-  if (year < 2027 || !month || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  if (!month || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   return { iso: `${year}-${String(month).padStart(2, '0')}-${match[1]}`,
     wire: `${String(month).padStart(2, '0')}/${match[1]}/${year}` };
 }
 
 // The current form's record holds the session ID even though it is not a form input.
-async function guaranteeDraft(page, propertyCode) {
+async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expectedGuest } = {}) {
   if (propertyCode !== 'HRCEN') return null;
-  const state = await page.evaluate(({ origin, blankIds }) => {
+  const identity = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
+  if (!validCreateGuest(identity) || (!allowRealGuest && !isLabtestGuest(identity))) return null;
+  const state = await page.evaluate(({ origin, blankIds, identity }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['guaranteetype', 'ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
@@ -159,20 +162,22 @@ async function guaranteeDraft(page, propertyCode) {
         !unique('bookingsessionid') || !String(data.bookingsessionid ?? '').trim() ||
         typeof guest?.getValue !== 'function' || String(guest.getValue() ?? '').trim() !== String(data.guestid ?? '').trim() ||
         fields.guestid[0].value.trim() !== String(data.guestid ?? '').trim() ||
-        fields.confirmationnumber[0].value.trim() || fields.firstname[0].value !== 'Proof' || fields.lastname[0].value !== 'Labtest') return null;
+        fields.confirmationnumber[0].value.trim() || fields.firstname[0].value !== identity.firstName ||
+        fields.lastname[0].value !== identity.lastName) return null;
     const profileId = String(data.arprofileid ?? '').trim();
     const accountId = unique('araccountid') ? String(data.araccountid ?? '').trim() : '';
     const guestId = String(data.guestid ?? '').trim();
     if (Boolean(profileId) !== Boolean(accountId)) return null;
     return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
       guestId, ar: profileId ? { accountId, profileId } : null };
-  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS });
+  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS, identity });
   if (!state) return null;
   const arrival = wireDate(state.arrival), departure = wireDate(state.departure);
-  if (!arrival || !departure || arrival.iso >= departure.iso) return null;
-  const identity = state.ar && { session: state.session, ...state.ar };
-  const token = identity && await verifiedArSelectionToken(page, identity);
-  if (identity && !token) return null;
+  if (!arrival || !departure || !validCreateDates(arrival.iso, departure.iso, allowRealGuest) ||
+      (allowRealGuest && !state.guestId)) return null;
+  const arIdentity = state.ar && { session: state.session, ...state.ar };
+  const token = arIdentity && await verifiedArSelectionToken(page, arIdentity);
+  if (arIdentity && !token) return null;
   let guest = null;
   if (state.guestId) {
     if (!isVerifiedLabtestProfile(page, state.guestId)) return null;
@@ -180,7 +185,8 @@ async function guaranteeDraft(page, propertyCode) {
     if (!guestToken) return null;
     guest = { nativeId: state.guestId, token: guestToken };
   }
-  return { session: state.session, arrival, departure, ar: identity ? { ...state.ar, token } : null, guest };
+  return { session: state.session, arrival, departure, firstName: identity.firstName, lastName: identity.lastName,
+    ar: arIdentity ? { ...state.ar, token } : null, guest };
 }
 
 function guaranteeRequest(page, request, expected) {
@@ -194,7 +200,8 @@ function guaranteeRequest(page, request, expected) {
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
     const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
     const fields = {
-      propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', firstname: 'Proof', lastname: 'Labtest',
+      propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New',
+      firstname: expected.draft.firstName, lastname: expected.draft.lastName,
       arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire, guaranteetype: expected.value,
       ONLY_DATA_REQUIRED: 'true', bookingsessionid: expected.draft.session,
       confirmationnumber: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
@@ -247,7 +254,8 @@ async function verifyGuaranteeResponse(response, expected) {
   const values = parseGuaranteeResponse(await bounded(response.text(), 5000, 'GUARANTEE_RESPONSE_TIMEOUT'));
   const ar = expected.draft.ar;
   const guest = expected.draft.guest;
-  const fields = { propertycode: 'HRCEN', status: 'New', firstname: 'Proof', lastname: 'Labtest',
+  const fields = { propertycode: 'HRCEN', status: 'New',
+    firstname: expected.draft.firstName, lastname: expected.draft.lastName,
     arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire,
     guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '',
     guaranteecreditcardid: '', leaseguaranteecreditcardid: '', ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
@@ -274,7 +282,8 @@ async function dialogs(page, nativeDialog, allowed) {
   if (allowed !== 'ages' && await page.locator('.x-window[id^="childagespopup"]:visible').count()) throw new Error('UNEXPECTED_DIALOG');
 }
 
-async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null, guaranteeFence = false } = {}, operation) {
+async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null, guaranteeFence = false,
+  createAuthority } = {}, operation) {
   if (typeof propertyCode !== 'string' || !/^[A-Z0-9]+$/.test(propertyCode)) return inputGap('PROPERTY_CODE_REQUIRED');
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return inputGap('PAGE_REQUIRED');
   if (busyPages.has(page)) return { outcome: 'execution_failure', issue: 'ACTION_IN_PROGRESS' };
@@ -348,7 +357,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
       const after = await readFields(page); ensureActive();
       await verifySettled(page, result, after); ensureActive();
       if (post === 'guarantee' && result.outcome === 'updated_unsaved') {
-        const current = await guaranteeDraft(page, propertyCode); ensureActive();
+        const current = await guaranteeDraft(page, propertyCode, createAuthority); ensureActive();
         if (JSON.stringify(current) !== JSON.stringify(guaranteeExpected?.draft)) throw new Error('GUARANTEE_DRAFT_CHANGED');
         await verifyGuaranteeResponse(guaranteeResponses[0], guaranteeExpected); ensureActive();
         await check();
@@ -455,13 +464,13 @@ export async function listGuestStayDropdown(page, { propertyCode, field } = {}) 
   });
 }
 
-export async function selectGuestStayDropdown(page, { propertyCode, field, value } = {}) {
+export async function selectGuestStayDropdown(page, { propertyCode, field, value } = {}, createAuthority = {}) {
   if (!Object.hasOwn(COMBOS, field || '')) return inputGap('DROPDOWN_FIELD_UNSUPPORTED');
   if (!['string', 'number'].includes(typeof value) || clean(value) === '') return inputGap('DROPDOWN_VALUE_REQUIRED');
   if (field === 'adults' && (!Number.isInteger(value) || value < 0)) return inputGap('ADULT_COUNT_INVALID');
   const guarantee = field === 'guaranteeType';
-  return run(page, propertyCode, { post: guarantee ? 'guarantee' : null }, async ({ check, mark, allowGuarantee }) => {
-    const draft = guarantee ? await guaranteeDraft(page, propertyCode) : null;
+  return run(page, propertyCode, { post: guarantee ? 'guarantee' : null, createAuthority }, async ({ check, mark, allowGuarantee }) => {
+    const draft = guarantee ? await guaranteeDraft(page, propertyCode, createAuthority) : null;
     if (guarantee && !draft) return { outcome: 'unsupported', issue: 'GUARANTEE_DRAFT_UNSUPPORTED', field, requested: value };
     const input = await uniqueInput(page, COMBOS[field]);
     await check(); mark();
@@ -482,7 +491,7 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
         return { value: cmp?.getValue?.(), display: el.value, submitted: cmp?.getSubmitData?.()?.guaranteetype };
       });
       await check();
-      const ready = await guaranteeDraft(page, propertyCode);
+      const ready = await guaranteeDraft(page, propertyCode, createAuthority);
       if (!ready || JSON.stringify(ready) !== JSON.stringify(draft)) throw new Error('GUARANTEE_DRAFT_CHANGED');
       if (clean(existing.value) === clean(value)) {
         if (clean(existing.display) !== clean(matches[0].label) || clean(existing.submitted) !== clean(value)) {

@@ -73,3 +73,22 @@ test('a no-party sibling still requires a fresh check that agency, company and A
   assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties: absent }), true);
   assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties: async () => ({ outcome: 'unverified' }) }), false);
 });
+
+test('a census covers its own guest while every prior room, including another guest, is read in order', async () => {
+  const { sibling } = fixture();
+  const other = structuredClone(sibling);
+  other.confirmation = '123457-1';
+  other.approvedRequest.guest = { nativeId: '13', firstName: 'Ada', lastName: 'Moyo' };
+  other.requestDigest = digestCloudCreateRequest(other.approvedRequest).normalizedRequestDigest;
+  const census = { outcome: 'existing_matches', firstName: 'Ada', lastName: 'Moyo', arrival: '2027-08-01',
+    coverage: { complete: true }, sameArrival: [{ confirmation: other.confirmation, firstName: 'Ada', lastName: 'Moyo',
+      arrival: '2027-08-01', departure: '2027-08-02', status: 'Reserved' }] };
+  const calls = [];
+  const options = { read: async (args) => { calls.push(`record:${args.confirmation}`); return read(args); },
+    readParties: async (args) => { calls.push(`parties:${args.confirmation}`); return readParties(args); } };
+  assert.equal(await verifyBatchSiblings(census, [sibling, other], options), true);
+  assert.deepEqual(calls, ['record:123456-1', 'parties:123456-1', 'record:123457-1', 'parties:123457-1']);
+  assert.equal(await verifyBatchSiblings(census, [sibling, other], { ...options,
+    read: async ({ confirmation }) => confirmation === sibling.confirmation ? { mismatches: [{ field: 'guest' }] } : read({}),
+  }), false);
+});

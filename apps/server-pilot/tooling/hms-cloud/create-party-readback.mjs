@@ -1,7 +1,8 @@
-// Independently reopen the just-created fake stay and inspect native party IDs.
+// Independently reopen the just-created stay and inspect native party IDs.
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
+import { isCreateDate, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
 
 // Runs inside the saved record frame; callers still verify the extracted evidence.
 export function extractCreatePartySnapshot() {
@@ -29,7 +30,8 @@ export function compareCreatePartyRecord(snapshot, expected) {
     return { outcome: 'unverified', issue: 'PARTY_RECORD_UNVERIFIED' };
   }
   const values = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
-    firstname: 'Proof', lastname: 'Labtest', taid1: expected.agency?.nativeId ?? '', ta1: expected.agency?.name ?? '',
+    firstname: expected.firstName ?? 'Proof', lastname: expected.lastName ?? 'Labtest',
+    taid1: expected.agency?.nativeId ?? '', ta1: expected.agency?.name ?? '',
     companyid: expected.organization?.nativeId ?? '', company: expected.organization?.name ?? '',
     araccountid: expected.arAccount?.nativeId ?? '', araccountname: expected.arAccount?.name ?? '',
     arprofileid: expected.arAccount?.profileId ?? '' };
@@ -46,10 +48,13 @@ export function compareCreatePartyRecord(snapshot, expected) {
       ...(expected.billingReference !== undefined ? ['billingReference'] : [])] };
 }
 
-export async function readCreateParties({ confirmation, arrival, guestId, agency, organization, arAccount, billingReference },
-  { openSession = withCenturionStay360Page } = {}) {
+export async function readCreateParties({ confirmation, arrival, guestId, agency, organization, arAccount, billingReference,
+  firstName = 'Proof', lastName = 'Labtest', allowRealGuest = false },
+  { openSession = withCenturionStay360Page, cloudTargetKey } = {}) {
   if (!/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(arrival || '') || arrival < '2027-01-01') {
+      typeof allowRealGuest !== 'boolean' || !validCreateGuest({ firstName, lastName }) ||
+      (!allowRealGuest && (!isLabtestGuest({ firstName, lastName }) || arrival < '2027-01-01')) ||
+      !isCreateDate(arrival)) {
     return { outcome: 'unverified', issue: 'PARTY_READBACK_INPUT_INVALID' };
   }
   const validParty = (party) => !party || (typeof party.nativeId === 'string' && /^\d+$/.test(party.nativeId) &&
@@ -62,7 +67,7 @@ export async function readCreateParties({ confirmation, arrival, guestId, agency
   }
   try {
     return await openSession(async (page) => {
-      const shallow = await readShallow(page, confirmation, { guestName: 'Proof Labtest', arrivalDate: arrival });
+      const shallow = await readShallow(page, confirmation, { guestName: `${firstName} ${lastName}`, arrivalDate: arrival });
       if (shallow.confirmation !== confirmation) throw new Error('CONFIRMATION_MISMATCH');
       await readRecord(page, confirmation);
       const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
@@ -70,8 +75,9 @@ export async function readCreateParties({ confirmation, arrival, guestId, agency
       const frame = await (await frames.elementHandle())?.contentFrame();
       if (!frame || new URL(frame.url()).origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com') throw new Error('RECORD_FRAME_UNAVAILABLE');
       const snapshot = await frame.evaluate(extractCreatePartySnapshot);
-      return compareCreatePartyRecord(snapshot, { confirmation, guestId, agency, organization, arAccount, billingReference });
-    }, { headless: true, blockServiceWorkers: true,
+      return compareCreatePartyRecord(snapshot, { confirmation, guestId, firstName, lastName,
+        agency, organization, arAccount, billingReference });
+    }, { headless: true, blockServiceWorkers: true, ...(cloudTargetKey ? { cloudTargetKey } : {}),
       prepareContext: (context) => installSavedStayReadGuard(context, { confirmation }) });
   } catch { return { outcome: 'unverified', issue: 'PARTY_READBACK_FAILED' }; }
 }
