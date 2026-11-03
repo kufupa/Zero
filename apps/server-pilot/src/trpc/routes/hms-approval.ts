@@ -22,7 +22,7 @@ const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEm
 const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
-  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(100) }).strict();
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200) }).strict();
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, note: z.string().trim().min(3).max(500) }).strict();
