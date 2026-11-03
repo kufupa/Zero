@@ -415,37 +415,6 @@ export function ThreadDisplay() {
     [optimisticState.optimisticImportant, emailData?.latest?.tags, emailData?.messages],
   );
 
-  const handleNext = useCallback(async () => {
-    const revision = ++selectionRevision.current;
-    const intent = beginMailSelectionIntent();
-    if (!id || !items.length || focusedIndex === null) {
-      return setThreadSelection({ threadId: null, sourceMessageId: null });
-    }
-    if (focusedIndex < items.length - 1) {
-      const nextIndex = Math.max(1, focusedIndex + 1);
-      //   console.log('nextIndex', nextIndex);
-
-      const nextThread = items[nextIndex];
-      if (nextThread) {
-        await clearComposeContext(revision, intent);
-        if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) return;
-        setThreadSelection({ threadId: nextThread.id, sourceMessageId: null });
-        setFocusedIndex(focusedIndex + 1);
-        if (animationsEnabled) {
-          setNavigationDirection('next');
-        }
-      }
-    }
-  }, [
-    items,
-    id,
-    focusedIndex,
-    setThreadSelection,
-    setFocusedIndex,
-    clearComposeContext,
-    animationsEnabled,
-  ]);
-
   const handleUnsubscribeProcess = () => {
     if (!emailData?.latest) return;
     toast.promise(handleUnsubscribe({ emailData: emailData.latest }), {
@@ -475,10 +444,19 @@ export function ThreadDisplay() {
       await clearComposeContext(revision, intent);
       if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) return;
 
+      const nextThread = focusedIndex !== null && focusedIndex < items.length - 1
+        ? items[Math.max(1, focusedIndex + 1)] : undefined;
+      // The optimistic move clears the old thread. Select its successor in the
+      // same turn, after the one draft flush, so that clear cannot cancel it.
       optimisticMoveThreadsTo([id], folder, destination);
-      await handleNext();
+      void setThreadSelection({ threadId: nextThread?.id ?? null, sourceMessageId: null });
+      if (nextThread && focusedIndex !== null) {
+        setFocusedIndex(focusedIndex + 1);
+        if (animationsEnabled) setNavigationDirection('next');
+      }
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, clearComposeContext],
+    [id, folder, optimisticMoveThreadsTo, clearComposeContext, focusedIndex, items,
+      setThreadSelection, setFocusedIndex, animationsEnabled],
   );
 
   const handleToggleStar = useCallback(async () => {
@@ -1136,6 +1114,7 @@ export function ThreadDisplay() {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
+                        aria-label={m['common.threadDisplay.archive']()}
                         onClick={() => moveThreadTo('archive')}
                         className="inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg bg-white transition-colors hover:bg-gray-100 dark:bg-[#313131] dark:hover:bg-[#404040]"
                       >
