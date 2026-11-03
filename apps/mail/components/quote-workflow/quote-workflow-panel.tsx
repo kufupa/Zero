@@ -54,7 +54,7 @@ import {
   StepState,
 } from '@/components/nava-pane/pane-ui';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PaneGuestProfileSearch, PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
@@ -466,6 +466,7 @@ export function QuoteWorkflowPanel({
   savedStays,
   screenshot,
   availabilityReader,
+  guestProfileSearch,
   partySuggestions,
   partyIndex,
   rates,
@@ -490,6 +491,7 @@ export function QuoteWorkflowPanel({
   screenshot?: PaneStayClient['screenshot'] | null;
   /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
   availabilityReader?: PaneStayAvailabilityReader | null;
+  guestProfileSearch?: PaneGuestProfileSearch | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
   contact?: StoredContact | null;
   /** Key keeps Contact corrections scoped to the selected request/work item. */
@@ -1636,6 +1638,7 @@ export function QuoteWorkflowPanel({
       <QuoteBookingHost
         session={session}
         paneSave={paneSave}
+        guestProfileSearch={guestProfileSearch}
         contact={contact}
         workItemId={workItemId}
         savedStays={savedStays}

@@ -21,6 +21,7 @@ import {
   registerPaneRun,
 } from '../../ai/pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
+import { lookupPaneGuestProfiles } from '../../ai/pane-guest-profiles.js';
 import {
   findStay,
   GUEST_SURNAME_PATTERN,
@@ -187,6 +188,11 @@ function paneStayRouteTarget(transportId: string) {
 
 export const paneStayLookupRouter = router({
   jobQueueEnabled: mailboxProcedure.query(() => hmsJobQueueEnabled()),
+  guestProfiles: mailboxProcedure.input(z.object({ workItemId: z.string().uuid(),
+    threadId: threadIdInput, sourceMessageId: messageIdInput, sourceHash: sourceHashInput,
+    lastName: searchGuestInput.shape.lastName }).strict())
+    .mutation(({ input, ctx }) => lookupPaneGuestProfiles({ ...input,
+      transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id })),
   findStay: mailboxProcedure
     .input(findStayInput)
     .use(({ input, ctx, next }) =>

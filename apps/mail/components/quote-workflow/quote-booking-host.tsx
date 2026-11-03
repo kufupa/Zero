@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PaneGuestProfileSearch, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
@@ -10,6 +10,7 @@ import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 export function QuoteBookingHost({
   session,
   paneSave,
+  guestProfileSearch,
   contact,
   workItemId,
   savedStays,
@@ -19,6 +20,7 @@ export function QuoteBookingHost({
 }: {
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
+  guestProfileSearch?: PaneGuestProfileSearch | null;
   contact?: StoredContact | null;
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
@@ -57,6 +59,7 @@ export function QuoteBookingHost({
               draft={session.bookingDrafts[key]!}
               groups={session.groups}
               paneSave={paneSave}
+              guestProfileSearch={guestProfileSearch}
               contact={contact}
               workItemId={workItemId}
               savedStays={savedStays}

@@ -2137,6 +2137,14 @@ export function NavaPane({
       quoteSession.binding?.scopeEpoch !== contextRevision.current.scopeEpoch
     ),
   );
+  const guestProfileSelectionCurrent = Boolean(!amendSourceChanged && activeEmail?.entryId && activeEmail.internetMessageId &&
+    (!preview || (webSelectedMessageId === activeEmail.entryId && webSelectedMessageId === quoteSession.staffSource?.messageId)) &&
+    quoteSession.binding?.transportId === activeConnection?.id && quoteSession.binding?.entryId === activeEmail.entryId &&
+    quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&
+    quoteSession.binding?.folderEntryId === (activeEmail.folderEntryId ?? '') &&
+    quoteSession.binding?.internetMessageId === activeEmail.internetMessageId &&
+    quoteSession.binding?.scopeEpoch === contextRevision.current.scopeEpoch &&
+    quoteSession.binding?.selectionEpoch === contextRevision.current.selectionEpoch);
   if (pendingWebSelection) return <p role="status" className="p-4">Loading selected email…</p>;
 
   return (
@@ -2443,6 +2451,7 @@ export function NavaPane({
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
               availabilityReader={PANE_STAY_CLIENT.readAvailability}
+              guestProfileSearch={guestProfileSelectionCurrent ? PANE_STAY_CLIENT.guestProfiles : null}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
               contactEditorKey={contactEditorKey}

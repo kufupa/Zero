@@ -17,6 +17,7 @@ import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { isSearchSurname } from '@/lib/quote-workflow/amend-find';
 import { subscribeStayingGuestName } from './quote-people-step';
 import { usePaneStayPreview } from './use-pane-stay-preview';
 import {
@@ -34,6 +35,7 @@ import {
   paneUnconfirmedMessage,
   previewOutcome,
   type PaneSaveMode,
+  type PaneGuestProfileSearch,
   type PaneStayChoice,
   type PaneStayClient,
   type PaneStayInput,
@@ -229,6 +231,46 @@ function CopyButton({ label, roomLabel, value }: { label: string; roomLabel: str
         </span>
       ) : null}
     </>
+  );
+}
+
+function GuestProfileLookup({ search, input, roomLabel }: { search: PaneGuestProfileSearch;
+  input: Parameters<PaneGuestProfileSearch>[0]; roomLabel: string }) {
+  const [result, setResult] = useState<Awaited<ReturnType<PaneGuestProfileSearch>> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const next = await search(input);
+      if (live.current) setResult(next);
+    } catch {
+      if (live.current) setResult({ status: 'refused', reason: 'unavailable' });
+    } finally { if (live.current) setBusy(false); }
+  };
+  return (
+    <div className="flex flex-col items-start gap-1 text-[11.5px] text-[#475569]">
+      <button type="button" disabled={!isSearchSurname(input.lastName) || busy} onClick={() => void run()}
+        className="font-semibold text-[#0066cc] underline disabled:text-[#94a3b8]">
+        {busy ? 'Searching HMS…' : 'Find guest profiles in HMS'}
+      </button>
+      <p>Search only. Check the profile in HMS; this does not make a booking.</p>
+      {input.lastName && !isSearchSurname(input.lastName) ? <p>Enter a surname with 2–40 letters, spaces, apostrophes or hyphens.</p> : null}
+      {result?.status === 'refused' ? <p role="status">Guest profiles unavailable. Try again.</p> : null}
+      {result?.status === 'ok' ? <div role="status" data-pii className="w-full">
+        {result.candidates.length === 0 && !result.moreAvailable ? <p>No matching profiles found.</p> : null}
+        {result.candidates.map((item, index) => <div key={`${item.nativeId ?? 'unknown'}:${index}`}
+          className="flex items-center gap-2 border-t border-[#e2e8f0] py-1">
+          <span className="min-w-0 flex-1">{[item.firstName, item.lastName].filter(Boolean).join(' ') || 'Name unavailable'}
+            {' · '}{item.nativeId ? `ID ${item.nativeId}` : 'ID unavailable'}
+            {[item.city, item.country].filter(Boolean).length ? ` · ${[item.city, item.country].filter(Boolean).join(', ')}` : ''}</span>
+          {item.nativeId ? <CopyButton label="guest profile ID" roomLabel={roomLabel} value={item.nativeId} /> : null}
+        </div>)}
+        {result.moreAvailable ? <p>More profiles may exist. Check HMS.</p> : null}
+      </div> : null}
+    </div>
   );
 }
 
@@ -857,6 +899,7 @@ export function BookingCards({
   draft,
   groups = [],
   paneSave = null,
+  guestProfileSearch,
   parties,
   contact = null,
   workItemId,
@@ -873,6 +916,7 @@ export function BookingCards({
   groups?: StayGroupRequirement[];
   /** Set only when create mode is lab or on (paneSave alias). Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
+  guestProfileSearch?: PaneGuestProfileSearch | null;
   /** The stored read's contact. Its name and company fill the HMS notes where the room card has none. */
   contact?: StoredContact | null;
   /** The company and agency picked for this quote. They fill only the fields the draft leaves empty. */
@@ -1708,6 +1752,13 @@ export function BookingCards({
                 setChoice({ lastName: value });
               }}
             />
+            {guestProfileSearch && propertyCode === 'HRCEN' && workItemId && session?.staffSource ? (
+              <GuestProfileLookup key={JSON.stringify([workItemId, session.binding?.transportId,
+                session.binding?.selectionEpoch, session.binding?.scopeEpoch, session.staffSource, choice.lastName])}
+                search={guestProfileSearch} roomLabel={roomLabel} input={{ workItemId,
+                  threadId: session.staffSource.threadId, sourceMessageId: session.staffSource.messageId,
+                  sourceHash: session.staffSource.sourceHash, lastName: choice.lastName.trim() }} />
+            ) : null}
             {selectedGuestName.trim() && guestSplit.ambiguous ? (
               <p role="status" className="text-[11px] text-[#64748b]">
                 {AMBIGUOUS_GUEST_NAME_COPY}

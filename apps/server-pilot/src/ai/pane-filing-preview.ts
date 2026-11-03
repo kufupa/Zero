@@ -1,11 +1,9 @@
-import { and, eq } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
-import { mailThread, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
-import { workItem } from '../db/schema/work.js';
 import { assertHmsReadOriginAllowed, CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { getS3Storage, type S3Storage } from '../storage/s3.js';
 import { findStay } from './pane-stay-lookup.js';
+import { currentPaneHmsSourceThread } from './pane-hms-source.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 
@@ -26,28 +24,6 @@ type PreviewResult =
   | { status: 'ready'; confirmation: string; arrival: string; documentName: string }
   | { status: 'refused'; reason: string };
 
-/** Recheck the selected message, work item and current mailbox access around the remote reads. */
-async function currentSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
-  const rows = await db.select({ itemThread: workItem.threadId, messageThread: message.threadId,
-    itemMessage: workItem.sourceMessageId, messageId: message.id, transportId: workItem.transportId,
-    actorUserId: mailboxAccess.userId, active: mailboxTransport.isActive, status: workItem.status,
-    direction: message.direction, messageHistoryOnly: message.historyOnly,
-    threadHistoryOnly: mailThread.historyOnly, threadTrashedAt: mailThread.trashedAt }).from(workItem)
-    .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, input.transportId)))
-    .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, input.transportId)))
-    .innerJoin(mailboxTransport, eq(mailboxTransport.id, workItem.transportId))
-    .innerJoin(mailboxAccess, and(eq(mailboxAccess.transportId, mailboxTransport.id),
-      eq(mailboxAccess.userId, input.actorUserId)))
-    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId),
-      eq(message.id, input.sourceMessageId), eq(mailboxTransport.isActive, true))).limit(2);
-  const row = rows.length === 1 ? rows[0] : null;
-  return row && row.itemThread && row.itemThread === row.messageThread && row.active &&
-    row.itemMessage === input.sourceMessageId && row.messageId === input.sourceMessageId &&
-    row.transportId === input.transportId && row.actorUserId === input.actorUserId && row.direction === 'inbound' &&
-    !row.messageHistoryOnly && !row.threadHistoryOnly && row.threadTrashedAt === null &&
-    row.status !== 'done' && row.status !== 'dismissed' ? row.itemThread : null;
-}
-
 /**
  * Read-only staff preview: verify the selected POP3 PDF and a fresh exact HMS
  * record, then revalidate the source. It creates no approval, run or write.
@@ -62,9 +38,9 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
     return { status: 'refused', reason: 'property_unavailable' };
   }
   const db = input.db ?? getDb();
-  const threadId = await currentSourceThread(db, input);
+  const threadId = await currentPaneHmsSourceThread(db, input);
   if (!threadId) return { status: 'refused', reason: 'source_unavailable' };
-  const checkAuthority = async () => (await currentSourceThread(db, input)) === threadId;
+  const checkAuthority = async () => (await currentPaneHmsSourceThread(db, input)) === threadId;
   const originAllowed = async () => {
     try {
       const target = await assertHmsReadOriginAllowed({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });

@@ -770,6 +770,64 @@ describe('booking cards', () => {
   });
 });
 
+describe('read-only guest profile lookup', () => {
+  const oneRoom = () => draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+  const profiles = { status: 'ok' as const, candidates: [{ nativeId: '42', firstName: 'John', lastName: 'Smith',
+    city: 'Pretoria', country: 'ZA' }], moreAvailable: false };
+
+  it('is reachable from the booking host with saving off and binds the selected source', async () => {
+    const draft = oneRoom();
+    const search = vi.fn().mockResolvedValue(profiles);
+    render(<QuoteBookingHost session={quotedSession(draft)} paneSave={null} guestProfileSearch={search}
+      propertyCode="HRCEN" workItemId="item-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Find guest profiles in HMS' }));
+    await screen.findByText(/John Smith · ID 42 · Pretoria, ZA/);
+    expect(search).toHaveBeenCalledWith({ workItemId: 'item-1', threadId: 'thread-1', sourceMessageId: 'mail-1',
+      sourceHash: STAFF_HASH, lastName: 'Smith' });
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    expect(screen.getByText(/Search only/)).toBeTruthy();
+  });
+
+  it('discards a late result after selection changes and does not show in another property', async () => {
+    const draft = oneRoom(), session = quotedSession(draft);
+    const pending = deferred<typeof profiles>();
+    const search = vi.fn().mockReturnValue(pending.promise);
+    const view = render(<BookingCards draft={draft} paneSave={null} guestProfileSearch={search}
+      propertyCode="HRCEN" workItemId="item-1" session={session} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Find guest profiles in HMS' }));
+    view.rerender(<BookingCards draft={draft} paneSave={null} guestProfileSearch={search}
+      propertyCode="HRCEN" workItemId="item-1" session={{ ...session,
+        binding: { ...session.binding!, selectionEpoch: 2 } }} />);
+    await act(async () => { pending.resolve(profiles); await pending.promise; });
+    expect(screen.queryByText(/John Smith · ID 42/)).toBeNull();
+    view.rerender(<BookingCards draft={draft} paneSave={null} guestProfileSearch={search}
+      propertyCode="HRDAV" workItemId="item-1" session={session} />);
+    expect(screen.queryByRole('button', { name: 'Find guest profiles in HMS' })).toBeNull();
+  });
+
+  it('binds the search to the existing tRPC client and reports partial coverage', async () => {
+    const mutate = vi.fn().mockResolvedValue({ ...profiles, moreAvailable: true });
+    const search = paneStayFromTrpc({ paneStayLookup: { guestProfiles: { mutate } } }).guestProfiles!;
+    const draft = oneRoom();
+    render(<BookingCards draft={draft} paneSave={null} guestProfileSearch={search} propertyCode="HRCEN"
+      workItemId="item-1" session={quotedSession(draft)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Find guest profiles in HMS' }));
+    await screen.findByText('More profiles may exist. Check HMS.');
+    expect(mutate).toHaveBeenCalledOnce();
+  });
+
+  it('does not search for a one-letter or wildcard surname', () => {
+    const draft = oneRoom(), search = vi.fn();
+    render(<BookingCards draft={draft} paneSave={null} guestProfileSearch={search} propertyCode="HRCEN"
+      workItemId="item-1" session={quotedSession(draft)} />);
+    for (const lastName of ['S', 'Sm%']) {
+      fireEvent.change(screen.getByLabelText('Last name'), { target: { value: lastName } });
+      expect((screen.getByRole('button', { name: 'Find guest profiles in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(search).not.toHaveBeenCalled();
+  });
+});
+
 describe('booking card staying-guest prefill', () => {
   afterEach(() => resetGuestNameCacheForTests());
 

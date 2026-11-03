@@ -193,6 +193,14 @@ export function paneStayAvailabilityRequestFor(
   return { threadId, kind: 'availability', arrival, departure, rooms };
 }
 
+export type PaneGuestProfile = { nativeId: string | null; firstName: string | null; lastName: string | null;
+  city: string | null; country: string | null };
+export type PaneGuestProfileSearch = (input: { workItemId: string; threadId: string; sourceMessageId: string;
+  sourceHash: string; lastName: string }) => Promise<
+    | { status: 'ok'; candidates: PaneGuestProfile[]; moreAvailable: boolean }
+    | { status: 'refused'; reason: string }
+  >;
+
 export type PaneStayClient = {
   preview: (stay: PaneStayInput) => Promise<PaneStayResult>;
   commit: (stay: PaneStayInput, previewDigest: string) => Promise<PaneStayResult>;
@@ -201,6 +209,7 @@ export type PaneStayClient = {
   /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
   mode?: () => PaneSaveMode | null;
   readAvailability?: PaneStayAvailabilityReader;
+  guestProfiles?: PaneGuestProfileSearch;
 };
 
 type PaneStayTrpc = {
@@ -229,6 +238,7 @@ type PaneStayTrpc = {
   };
   paneStayLookup?: {
     jobStatus?: { query: PaneStayAvailabilityReader };
+    guestProfiles?: { mutate: PaneGuestProfileSearch };
   };
 };
 
@@ -260,6 +270,11 @@ export function paneSaveModeOf(
 export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   const row = (trpc ?? {}) as PaneStayTrpc;
   return {
+    guestProfiles: async (input) => {
+      const lookup = row.paneStayLookup?.guestProfiles;
+      if (!lookup) throw new Error('guest_profile_lookup_missing');
+      return lookup.mutate(input);
+    },
     readAvailability: async (input) => {
       const status = row.paneStayLookup?.jobStatus;
       return status ? status.query(input) : null;
