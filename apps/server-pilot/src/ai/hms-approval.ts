@@ -13,7 +13,7 @@ import { canonicalJson } from './draft-approval.js';
 import { publicCloudAmendFields, retainedPricesForApproval } from './cloud-amend-price-projection.js';
 export { retainedPricesForApproval } from './cloud-amend-price-projection.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
-import { cloudAmendWriteReady, HMS_LABTEST_AMEND_PROMPT_VERSION, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
+import { HMS_LABTEST_AMEND_PROMPT_VERSION, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import {
   HMS_WRITE_RUN_KIND,
@@ -463,7 +463,7 @@ export async function approveHmsWrite(input: {
     await lockHmsSelectedMailbox(tx as DB, input);
     let cloudSourceBound = false;
     if (input.cloudSelection) {
-      if (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled(input.env)) {
+      if (!labtestAmendWorkerEnabled(input.env)) {
         throw new HmsApprovalError('amend_save_unavailable');
       }
       const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
@@ -486,10 +486,9 @@ export async function approveHmsWrite(input: {
       throw new HmsApprovalError('filing_unavailable');
     }
     const cloudAmend = item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend');
-    // A rate hold is a mutation. Until its rate/retain result, shared UNKNOWN
-    // recovery and action-scoped runner are proven, do not grant or enqueue a
-    // Cloud amendment (an unclaimed Go must never look like work in progress).
-    if (cloudAmend && (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled(input.env))) {
+    // A Cloud amendment requires its explicit action-scoped worker; a rate hold
+    // is a mutation and must be covered by the same one-use grant and UNKNOWN.
+    if (cloudAmend && (!labtestAmendWorkerEnabled(input.env))) {
       throw new HmsApprovalError('amend_save_unavailable');
     }
     if (cloudAmend !== cloudSourceBound || (cloudAmend && !input.formDigest)) {

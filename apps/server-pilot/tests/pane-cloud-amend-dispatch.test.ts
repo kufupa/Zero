@@ -10,6 +10,7 @@ import type { AiRunFence } from '../src/ai/run-ledger.js';
 const workItemId = '00000000-0000-4000-8000-000000000001';
 const grantId = '00000000-0000-4000-8000-000000000002';
 const holdId = '00000000-0000-4000-8000-000000000003';
+const expectedEpoch = '8'.repeat(64);
 const beforeEvidence = { eventId:'00000000-0000-4000-8000-000000000005', sha256:'9'.repeat(64) };
 const runId = '00000000-0000-4000-8000-000000000006';
 const writer = { host: '7'.repeat(64), bootId: '00000000-0000-4000-8000-000000000007',
@@ -28,7 +29,8 @@ const approvedPrices = { version: 1, currency: 'ZAR', fields: Object.fromEntries
     .map((key) => [key, price])) };
 const form = { action: 'amend', confirmation: native.confirmation, arrival: native.arrival,
   fields: { adults: 3, ratePlan: 'BAR', retainRates: 'yes' }, previewDigest: 'c'.repeat(64),
-  cloudAmend: { binding, nativeDigest: 'd'.repeat(64), preimage: { native }, approvedPrices } };
+  cloudAmend: { binding, nativeDigest: 'd'.repeat(64), preimage: { native }, approvedPrices,
+    preserved: { cmsRecipient: '', agency: null, organization: null } } };
 const consumed = { form, grantId, payloadHash: 'e'.repeat(64), hmsBeforeDigest: 'f'.repeat(64),
   authority: { actorUserId: 'staff', sessionId: 'session', sessionProfile: 'remote' as const } };
 const request = (phase: 'availability' | 'save') => ({ method: () => 'POST',
@@ -76,7 +78,8 @@ describe('cloud amend shared dispatch adapter', () => {
   });
   it('commits one recoverable shared hold after source and approval checks for the whole amend', async () => {
     const events: string[] = [], tx = {} as never, db = {} as DB, item = { id: workItemId } as never;
-    const claim: typeof claimHmsLabtestDispatch = async (_db, input, authorize) => {
+    const claim: typeof claimHmsLabtestDispatch = async (_db, input, authorize, epoch) => {
+      expect(epoch).toBe(expectedEpoch);
       expect(input).toMatchObject({ nativeGuestId: '000123', operation: 'amend', sourceDigest: binding.digest,
         recovery: { firstPhase:'amend.availability', confirmation:native.confirmation, approved:form.fields, beforeEvidence, writer } });
       events.push('claim-start'); await authorize(tx, input); events.push('claim-commit');
@@ -89,7 +92,7 @@ describe('cloud amend shared dispatch adapter', () => {
       events.push('evidence');
     });
     const callbacks = cloudAmendDispatchCallbacks({ db, fence: { runId } as AiRunFence, transportId: 'transport',
-      workItemId, consumed }, { claim, lockSource, lockApproval, checkEvidence, writerCurrent: () => true });
+      workItemId, consumed, expectedEpoch }, { claim, lockSource, lockApproval, checkEvidence, writerCurrent: () => true });
     const dispatcher = createLabtestAmendDispatch({ ...callbacks, requiresAvailability: true,
       authorizeFirst: (step: Omit<Parameters<typeof callbacks.authorizeFirst>[0], 'beforeEvidence' | 'writer'>) =>
         callbacks.authorizeFirst({ ...step, beforeEvidence, writer }) });
@@ -100,8 +103,9 @@ describe('cloud amend shared dispatch adapter', () => {
 
   it('refuses missing session, altered operation, stale source and revoked approval', async () => {
     const db = {} as DB, fence = {} as AiRunFence;
-    const input = { db, fence, transportId: 'transport', workItemId, consumed };
+    const input = { db, fence, transportId: 'transport', workItemId, consumed, expectedEpoch };
     expect(() => cloudAmendDispatchCallbacks({ ...input, consumed: { ...consumed, authority: null } })).toThrow();
+    expect(() => cloudAmendDispatchCallbacks({ ...input, expectedEpoch: 'missing' })).toThrow('CLOUD_AMEND_AUTHORITY_INVALID');
     for (const failure of ['source', 'approval', 'evidence']) {
       const claim: typeof claimHmsLabtestDispatch = async (_db, value, authorize) => {
         await authorize({} as never, value); return { holdId, ownerToken: 'a'.repeat(64) };
@@ -117,6 +121,22 @@ describe('cloud amend shared dispatch adapter', () => {
       await expect(callbacks.authorizeFirst({ operationDigest: callbacks.operationDigest, phase: 'amend.save',
         requestDigest: '1'.repeat(64), beforeEvidence, writer })).rejects.toThrow();
     }
+  });
+
+  it('does not continue a native request when an intervening write changes the epoch', async () => {
+    const claim = vi.fn(async (_db, _value, _authorize, epoch) => {
+      expect(epoch).toBe(expectedEpoch);
+      throw new Error('hms_labtest_dispatch_occupied');
+    });
+    const callbacks = cloudAmendDispatchCallbacks({ db: {} as DB, fence: { runId } as AiRunFence,
+      transportId: 'transport', workItemId, consumed, expectedEpoch }, { claim, writerCurrent: () => true });
+    const dispatcher = createLabtestAmendDispatch({ ...callbacks, requiresAvailability: true,
+      authorizeFirst: (step: Omit<Parameters<typeof callbacks.authorizeFirst>[0], 'beforeEvidence' | 'writer'>) =>
+        callbacks.authorizeFirst({ ...step, beforeEvidence, writer }) });
+    const proceed = vi.fn(async () => {});
+    await expect(dispatcher.availability(request('availability'), proceed)).rejects.toThrow('hms_labtest_dispatch_occupied');
+    expect(proceed).not.toHaveBeenCalled();
+    expect(claim).toHaveBeenCalledTimes(1);
   });
 
   it('requires the sealed before screenshot on the exact run before committing the claim', async () => {
@@ -143,7 +163,7 @@ describe('cloud amend shared dispatch adapter', () => {
         return { holdId, ownerToken: 'a'.repeat(64) };
       };
       const callbacks = cloudAmendDispatchCallbacks({ db: {} as DB, fence: { runId } as AiRunFence,
-        transportId: 'transport', workItemId, consumed }, { claim,
+        transportId: 'transport', workItemId, consumed, expectedEpoch }, { claim,
         lockSource: vi.fn(async () => ({ id: workItemId } as never)), lockApproval: vi.fn(async () => {}),
         writerCurrent: () => true });
       const result = callbacks.authorizeFirst({ operationDigest: callbacks.operationDigest, phase: 'amend.save',
@@ -163,7 +183,7 @@ describe('cloud amend shared dispatch adapter', () => {
       return { holdId, ownerToken: 'a'.repeat(64) };
     };
     const callbacks = cloudAmendDispatchCallbacks({ db: {} as DB, fence: { runId } as AiRunFence,
-      transportId:'transport', workItemId, consumed }, { claim,
+      transportId:'transport', workItemId, consumed, expectedEpoch }, { claim,
       lockSource:vi.fn(async () => ({ id:workItemId } as never)), lockApproval:vi.fn(async () => {}),
       checkEvidence:vi.fn(async () => {}), writerCurrent: () => true });
     const step = { operationDigest:callbacks.operationDigest, phase:'amend.availability' as const,
@@ -181,7 +201,7 @@ describe('cloud amend shared dispatch adapter', () => {
   it('does not repeat an ambiguously committed dispatch claim', async () => {
     const claim = vi.fn(async () => { throw new Error('connection lost after commit'); });
     const callbacks = cloudAmendDispatchCallbacks({ db:{} as DB, fence:{ runId } as AiRunFence,
-      transportId:'transport', workItemId, consumed }, { claim, writerCurrent: () => true });
+      transportId:'transport', workItemId, consumed, expectedEpoch }, { claim, writerCurrent: () => true });
     const step = { operationDigest:callbacks.operationDigest, phase:'amend.availability' as const,
       requestDigest:'1'.repeat(64), beforeEvidence, writer };
     await expect(callbacks.authorizeFirst(step)).rejects.toThrow('connection lost');
@@ -197,7 +217,7 @@ describe('cloud amend shared dispatch adapter', () => {
       return { holdId, ownerToken: 'a'.repeat(64) };
     };
     const make = (writerCurrent: (identity: typeof writer) => boolean) => cloudAmendDispatchCallbacks({
-      db: {} as DB, fence: { runId } as AiRunFence, transportId: 'transport', workItemId, consumed,
+      db: {} as DB, fence: { runId } as AiRunFence, transportId: 'transport', workItemId, consumed, expectedEpoch,
     }, { claim, writerCurrent, lockSource: vi.fn(async () => ({ id: workItemId } as never)),
       lockApproval: vi.fn(async () => {}), checkEvidence: vi.fn(async () => {}) });
     const unavailable = make(() => false);
@@ -219,6 +239,11 @@ describe('cloud amend shared dispatch adapter', () => {
     const result = { outcome:'amended', dispatchCallbacksDrained:true, writerSessionClosed:true,
       retainedPriceMatched:true, readback };
     expect(verifiedCloudAmendReadback(approved, result)).toEqual(readback);
+    const shifted = cloudAmendDispatchFormSchema.parse({ ...form, fields:{ arrival:'2027-05-03', departure:'2027-05-04',
+      ratePlan:'BAR', retainRates:'yes' } });
+    const shiftedResult = { ...result, readback:{ ...readback, arrival:'2027-05-03', departure:'2027-05-04', adults:native.adults } };
+    expect(verifiedCloudAmendReadback(shifted, shiftedResult)).toEqual(shiftedResult.readback);
+    expect(verifiedCloudAmendReadback(shifted, result)).toBeNull();
     for (const changed of [
       { ...result, outcome:'uncertain' }, { ...result, dispatchCallbacksDrained:false },
       { ...result, writerSessionClosed:false }, { ...result, retainedPriceMatched:false },
@@ -231,7 +256,7 @@ describe('cloud amend shared dispatch adapter', () => {
   });
 
   it('refuses a changed rate or child count before claiming a shared hold', () => {
-    const input = { db: {} as DB, fence: {} as AiRunFence, transportId: 'transport', workItemId, consumed };
+    const input = { db: {} as DB, fence: {} as AiRunFence, transportId: 'transport', workItemId, consumed, expectedEpoch };
     for (const fields of [
       { adults: 3, ratePlan: 'OTHER', retainRates: 'yes' },
       { children: 2, childAges: [8, 5], ratePlan: 'BAR', retainRates: 'yes' },

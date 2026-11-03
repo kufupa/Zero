@@ -387,7 +387,7 @@ function labelsOf(keys: readonly string[]): Map<string, string> {
 }
 
 /** Leaves that name the guest or their booking (a confirmation, a name, a file name). The preview gate masks them. */
-const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest/i;
+const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest|^cmsRecipient$/i;
 
 /** True when a write row shows a guest detail, so the pane marks it data-pii. */
 export function isGuestWriteRow(key: string): boolean {
@@ -419,7 +419,22 @@ function retainedPriceRows(form: Record<string, unknown>): WriteRow[] {
 }
 
 export function cloudAmendApprovalHasPrices(form: Record<string, unknown>): boolean {
-  return !(form.action === 'amend' && record(form.cloudAmend)) || retainedPriceRows(form).length === 2;
+  return !(form.action === 'amend' && record(form.cloudAmend)) ||
+    (retainedPriceRows(form).length === 2 && preservedAmendRows(form).length === 4);
+}
+
+/** The saved-record form also carries these unchanged values; show them before Go. */
+function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
+  const value = record(record(form.cloudAmend)?.preserved);
+  if (!value || typeof value.cmsRecipient !== 'string' ||
+      !(value.agency === null || typeof value.agency === 'string') ||
+      !(value.organization === null || typeof value.organization === 'string')) return [];
+  return [
+    ['cmsRecipient', 'CMS recipient', value.cmsRecipient || NONE],
+    ['cmsSend', 'Send confirmation', 'No'],
+    ['agency', 'Travel agency', value.agency || NONE],
+    ['organization', 'Company', value.organization || NONE],
+  ].map(([key, label, text]) => ({ key: `cloudAmend.preserved.${key}`, label, before: text, after: text }));
 }
 
 /**
@@ -442,6 +457,6 @@ export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteR
       rows.push({ key, label: labels.get(key) ?? key, before: beforeText, after: afterText });
     }
   }
-  if (cloudAmend) rows.push(...retainedPriceRows(view.form));
+  if (cloudAmend) rows.push(...retainedPriceRows(view.form), ...preservedAmendRows(view.form));
   return rows;
 }

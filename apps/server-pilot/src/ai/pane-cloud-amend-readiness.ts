@@ -10,12 +10,3 @@ export const HMS_LABTEST_AMEND_CLEANUP_RESERVE_MS = 2 * 60_000;
 export function labtestAmendWorkerEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return env.PANE_HMS_LAB_AMEND_WORKER === 'on' && env.PANE_WRITE_AMEND === 'lab';
 }
-
-/**
- * No switch may enable a rate hold while the native price/retain continuation,
- * cross-workflow recovery and owned-browser shutdown remain unverified.
- * Replace this hold only with evidence-backed implementation and live proof.
- */
-export function cloudAmendWriteReady(): boolean {
-  return false;
-}

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from './draft-approval.js';
+import { cloudAmendPreservedSchema } from './cloud-amend-price-projection.js';
 import { formDigest, hmsWriteEvidenceKey, lockConsumedCloudAmendApproval, retainedPricesForApproval, type consumeHmsWriteApproval } from './hms-approval.js';
 import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { cloudAmendChangesSchema, cloudAmendFirstPilotScopeSupported, cloudAmendSourceBindingSchema, lockBoundCloudAmendSource } from './pane-cloud-amend.js';
@@ -23,7 +24,7 @@ const native = z.object({
 export const cloudAmendDispatchFormSchema = z.object({
   action: z.literal('amend'), confirmation: z.string().regex(/^\d{6,}-\d+$/),
   arrival: z.string(), fields: cloudAmendChangesSchema, previewDigest: digest,
-  cloudAmend: z.object({ binding: cloudAmendSourceBindingSchema, nativeDigest: digest,
+  cloudAmend: z.object({ binding: cloudAmendSourceBindingSchema, nativeDigest: digest, preserved: cloudAmendPreservedSchema,
     preimage: z.object({ native }).passthrough(), approvedPrices: z.object({ version: z.literal(1),
       currency: z.string().regex(/^[A-Z]{3}$/), fields: z.record(z.string(), z.unknown()) }).strict() }).strict(),
 }).passthrough();
@@ -72,7 +73,7 @@ export async function requireCloudAmendEvidence(tx: DispatchTx, input: {
  * A caller must first match the immutable request and full approved draft.
  */
 export function cloudAmendDispatchCallbacks(input: {
-  db: DB; fence: AiRunFence; transportId: string; workItemId: string; consumed: Consumed;
+  db: DB; fence: AiRunFence; transportId: string; workItemId: string; consumed: Consumed; expectedEpoch: string;
 }, deps: {
   claim?: typeof claimHmsLabtestDispatch;
   lockSource?: typeof lockBoundCloudAmendSource;
@@ -81,7 +82,8 @@ export function cloudAmendDispatchCallbacks(input: {
   writerCurrent?: (identity: z.infer<typeof writerIdentity>) => boolean;
 } = {}) {
   const parsed = cloudAmendDispatchFormSchema.safeParse(input.consumed.form), authority = input.consumed.authority;
-  if (!parsed.success || !authority || !z.string().uuid().safeParse(input.workItemId).success ||
+  if (!parsed.success || !authority || !digest.safeParse(input.expectedEpoch).success ||
+      !z.string().uuid().safeParse(input.workItemId).success ||
       !z.string().uuid().safeParse(input.consumed.grantId).success ||
       parsed.data.confirmation !== parsed.data.cloudAmend.preimage.native.confirmation ||
       parsed.data.arrival !== parsed.data.cloudAmend.preimage.native.arrival ||
@@ -120,7 +122,7 @@ export function cloudAmendDispatchCallbacks(input: {
           before: { arrival: current.arrival, departure: current.departure, adults: current.adults,
             children: current.children, childAges: current.childAges, roomType: current.roomType, ratePlan: current.ratePlan },
           approved: parsed.data.fields, nativeDigest: parsed.data.cloudAmend.nativeDigest,
-          approvedPrices: parsed.data.cloudAmend.approvedPrices,
+          approvedPrices: parsed.data.cloudAmend.approvedPrices, preserved: parsed.data.cloudAmend.preserved,
           hmsBeforeDigest: input.consumed.hmsBeforeDigest, beforeEvidence: requested.beforeEvidence, writer: requested.writer },
       };
       const encoded = canonicalJson(claimInput);
@@ -132,7 +134,7 @@ export function cloudAmendDispatchCallbacks(input: {
         await checkEvidence(tx, { transportId: input.transportId, workItemId: input.workItemId, runId: input.fence.runId,
           eventId: requested.beforeEvidence.eventId, sha256: requested.beforeEvidence.sha256 });
         if (!writerCurrent(requested.writer)) throw new Error('CLOUD_AMEND_WRITER_UNVERIFIED');
-      });
+      }, input.expectedEpoch);
       approvedClaim = encoded;
       return handle;
     },

@@ -11,19 +11,20 @@ const stageContexts = new WeakSet();
 export const isLabtestAmendStageContext = (value) => Boolean(value && stageContexts.has(value));
 
 /** Check Availability holds a rate. Match the complete staged fake-stay model, not just a few fields. */
-export function matchesLabtestAvailability(request, frame, snapshot) {
+export function matchesLabtestAvailability(request, frame, snapshot, { recipient = '' } = {}) {
   try {
     const data = snapshot?.data, url = new URL(request.url());
     if (!data || typeof data !== 'object' || Array.isArray(data) || request.method() !== 'POST' ||
         request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== AVAILABILITY_PATH ||
-        url.search || url.hash || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
+        url.search || url.hash || typeof recipient !== 'string' || recipient.length > 1000 || /[\p{Cc}]/u.test(recipient) ||
+        !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
     const keys = Object.keys(data), body = new URLSearchParams(request.postData() || ''), names = [...body.keys()];
     if (new Set(keys.map((key) => key.toLowerCase())).size !== keys.length ||
         new Set(names.map((key) => key.toLowerCase())).size !== names.length ||
         names.length !== keys.length + 1 || !names.includes('ONLY_DATA_REQUIRED') ||
         body.get('ONLY_DATA_REQUIRED') !== 'true' || names.some((name) => name !== 'ONLY_DATA_REQUIRED' && !Object.hasOwn(data, name))) return false;
     const fixed = { propertycode: 'HRCEN', firstname: 'Proof', lastname: 'Labtest', status: 'Reserved',
-      guaranteetype: 'NGI', udfchkbox04: '0', udfchar13: '', emailaddress: '' };
+      guaranteetype: 'NGI', udfchkbox04: '0', udfchar13: recipient, emailaddress: '' };
     if (!Object.entries(fixed).every(([key, value]) => Object.hasOwn(data, key) && String(data[key]) === value) ||
         !/^\d{6,}-\d+$/.test(String(data.confirmationnumber ?? '')) || !/^\d+$/.test(String(data.guestid ?? ''))) return false;
     const day = (value) => {
@@ -205,7 +206,9 @@ export async function runLabtestAmendSave(page, {
   if (availability !== undefined && (!availability || typeof availability !== 'object' || prepareOnly ||
       typeof dispatchCandidate !== 'function' || typeof availability.dispatchCandidate !== 'function' ||
       typeof availability.snapshot !== 'function' || typeof availability.click !== 'function' ||
-      typeof availability.validate !== 'function')) {
+      typeof availability.validate !== 'function' ||
+      (availability.recipient !== undefined && (typeof availability.recipient !== 'string' ||
+        availability.recipient.length > 1000 || /[\p{Cc}]/u.test(availability.recipient))))) {
     return result('input_gap', { issue: 'AMEND_AVAILABILITY_CALLBACKS_INVALID' });
   }
   if (retainRate !== undefined && (!retainRate || typeof retainRate !== 'object' || prepareOnly ||
@@ -293,7 +296,8 @@ export async function runLabtestAmendSave(page, {
       dispatchCandidate,
       availability: availability ? {
         isArmed: () => availabilityArmed && withinDeadline(),
-        matches: (request, requestFrame) => matchesLabtestAvailability(request, requestFrame, availabilitySnapshot),
+        matches: (request, requestFrame) => matchesLabtestAvailability(request, requestFrame, availabilitySnapshot,
+          { recipient: availability.recipient ?? '' }),
         dispatchCandidate: availability.dispatchCandidate,
         onCandidate: (request) => { availabilityRequest = request; possiblyDispatched = true; },
         onDispatch: () => { availabilityDispatched = true; },

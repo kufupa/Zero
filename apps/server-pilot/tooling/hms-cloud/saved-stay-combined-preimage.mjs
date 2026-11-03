@@ -72,7 +72,8 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
         typeof expected.note !== 'string' || expected.note.length > 200 || !adult(expected.adults) ||
         !state?.frame || !object(state.native) || !cleanLabtestRecord(snapshot) || !uniqueKeys(snapshot.data) ||
         !uniqueKeys(snapshot.values) || !Array.isArray(snapshot.partyControls) ||
-        !unchangedLabtestBusinessParties(state.partyPreimage, snapshot) || !validChanges(expected, changes)) return null;
+        !unchangedLabtestBusinessParties(state.partyPreimage, snapshot,
+          { allowModelOnlyPrimaryPartyIds: state.allowModelOnlyPrimaryPartyIds === true }) || !validChanges(expected, changes)) return null;
     const prior = planSavedChildOccupancy({ childCount: expected.childCount, childAges: expected.childAges });
     const actual = savedChildOccupancy(snapshot);
     if (prior.outcome !== 'planned' || prior.childCount === null || !actual.valid || actual.count !== prior.childCount ||
@@ -93,11 +94,14 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
     delete formIdentity.propertycode;
     const sendOff = (source) => !Object.hasOwn(source, 'udfchkbox04') ||
       source.udfchkbox04 === '0' || source.udfchkbox04 === 0 || source.udfchkbox04 === false;
-    if (!Object.entries(identity).every(([key, value]) => exact(snapshot.data, key, value)) ||
+    const recipient = state.cmsRecipient ?? '';
+    if (typeof recipient !== 'string' || recipient.length > 1000 || /[\p{Cc}]/u.test(recipient) ||
+        !Object.entries(identity).every(([key, value]) => exact(snapshot.data, key, value)) ||
         !Object.entries(formIdentity).every(([key, value]) => exact(snapshot.values, key, value)) ||
         !exact(snapshot.data, 'guaranteetype', 'NGI') || !exact(snapshot.values, 'guaranteetype', 'NGI') ||
         !exact(snapshot.data, 'udfchkbox04', '0') || !sendOff(snapshot.values) ||
-        !['udfchar13', 'emailaddress'].every((key) => exact(snapshot.data, key, '') && exact(snapshot.values, key, '')) ||
+        !exact(snapshot.data, 'udfchar13', recipient) || !exact(snapshot.values, 'udfchar13', recipient) ||
+        !exact(snapshot.data, 'emailaddress', '') || !exact(snapshot.values, 'emailaddress', '') ||
         !['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid'].every((key) =>
           typeof state.native[key] === 'string' && state.native[key] && exact(snapshot.data, key, state.native[key]))) return null;
     const controls = snapshot.partyControls.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));

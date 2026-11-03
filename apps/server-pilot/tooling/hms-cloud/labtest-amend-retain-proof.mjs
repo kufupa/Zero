@@ -12,16 +12,20 @@ const date = (value) => {
   return Number.isFinite(day) && new Date(day).toISOString().slice(0, 10) === value ? day : null;
 };
 
-/** Only one night, an adult-count change, the same rate plan and explicit retain=yes. */
+/** Only one night before and after, the same rate plan and explicit retain=yes. */
 export function isOneNightRetainAmend(selected, changes) {
   if (!object(selected) || !object(changes) ||
-      Object.keys(changes).some((key) => !['adults', 'ratePlan', 'retainRates'].includes(key)) ||
-      !Number.isInteger(selected.adults) || !Number.isInteger(changes.adults) ||
-      selected.adults < 1 || selected.adults > 16 || changes.adults < 1 || changes.adults > 16 ||
-      selected.adults === changes.adults || !/^[A-Z0-9]{1,12}$/.test(selected.ratePlan || '') ||
+      Object.keys(changes).some((key) => !['arrival', 'departure', 'adults', 'ratePlan', 'retainRates'].includes(key)) ||
+      !Number.isInteger(selected.adults) || !Number.isInteger(changes.adults ?? selected.adults) ||
+      selected.adults < 1 || selected.adults > 16 || (changes.adults ?? selected.adults) < 1 ||
+      (changes.adults ?? selected.adults) > 16 || !/^[A-Z0-9]{1,12}$/.test(selected.ratePlan || '') ||
       changes.ratePlan !== selected.ratePlan || changes.retainRates !== 'yes') return false;
-  const arrival = date(selected.arrival), departure = date(selected.departure);
-  return arrival !== null && departure !== null && selected.arrival >= '2027-01-01' && departure - arrival === 86_400_000;
+  const arrival = date(selected.arrival), departure = date(selected.departure),
+    newArrival = date(changes.arrival ?? selected.arrival), newDeparture = date(changes.departure ?? selected.departure);
+  return arrival !== null && departure !== null && newArrival !== null && newDeparture !== null &&
+    selected.arrival >= '2027-01-01' && (changes.arrival ?? selected.arrival) >= '2027-01-01' &&
+    departure - arrival === 86_400_000 && newDeparture - newArrival === 86_400_000 &&
+    (newArrival !== arrival || newDeparture !== departure || (changes.adults ?? selected.adults) !== selected.adults);
 }
 
 // Normalize decimal amounts without floating-point or guessing a locale. HMS

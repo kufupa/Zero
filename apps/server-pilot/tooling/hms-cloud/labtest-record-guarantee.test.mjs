@@ -11,23 +11,28 @@ const recordOptions = { allowUnchangedBusinessParties: true, expectedOrganizatio
 const agentGuarantee = { code: 'GTDAGT', display: 'Guaranteed By Agent' };
 
 // Execute the actual saved-record browser predicate against a synthetic Ext form.
-function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent' } = {}) {
+function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', recipient = '', send = false,
+  agency = null, mutate = () => {} } = {}) {
   const values = { confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '12-NOV-2027', departuredate: '14-NOV-2027',
     roomtype: expected.roomType, rateplan: expected.ratePlan, track: 'BAR', guaranteetype: display,
-    reservationnote: expected.note, udfchkbox04: '', udfchar13: '', emailaddress: '' };
+    reservationnote: expected.note, udfchkbox04: '', udfchar13: recipient, emailaddress: '' };
   const inputs = Object.entries(values).map(([name, value]) => ({ name, value, id: `${name}-inputEl`,
     offsetWidth: 1, offsetHeight: 1, closest: () => null }));
   const company = { name: 'company', value: organization.name, offsetWidth: 1, offsetHeight: 1, closest: () => null };
   const party = Object.fromEntries(blankSavedPartyFields.map((key) => [key, '']));
   party.companyid = organization.nativeId; party.company = organization.name;
+  if (agency) { party.taid1 = agency.nativeId; party.ta1 = agency.name; }
+  const partyInputs = [company, ...(agency ? [{ name:'ta1', value:agency.name, offsetWidth:1, offsetHeight:1, closest:() => null }] : [])];
+  const formValues = { company: organization.name, udfchar13:recipient, ...(agency ? { ta1:agency.name } : {}) };
   const data = { ...party, propertycode: 'HRCEN', confirmationnumber: expected.confirmation, guestid: expected.guestId,
     status: 'Reserved', firstname: 'Proof', lastname: 'Labtest', PKID: 'pk', bookingsessionid: 'session',
-    reservationid: 'reservation', reservationstayid: 'stay', recordid: 'record' };
-  const form = { el: { dom: { contains: () => true, querySelectorAll: () => [company] } },
-    getRecord: () => ({ data }), getForm: () => ({ getValues: () => ({ company: organization.name }) }) };
+    reservationid: 'reservation', reservationstayid: 'stay', recordid: 'record', udfchar13:recipient };
+  mutate({ data, inputs, partyInputs, formValues });
+  const form = { el: { dom: { contains: () => true, querySelectorAll: () => partyInputs } },
+    getRecord: () => ({ data }), getForm: () => ({ getValues: () => formValues }) };
   const ext = { getCmp: (id) => ({ up: () => form,
-    getValue: () => id === 'guaranteetype' ? code : id === 'udfchkbox04' ? false : null }) };
+    getValue: () => id === 'guaranteetype' ? code : id === 'udfchkbox04' ? send : null }) };
   const frame = { url: () => `${ORIGIN}/record`, evaluate: async (fn, arg) => {
     const saved = new Map(['location', 'document', 'getComputedStyle', 'Ext'].map((key) =>
       [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -83,4 +88,24 @@ test('create reconciliation rejects unsupported or malformed guarantee expectati
     await assert.rejects(records.readCreatedLabtestRecord(savedPage(), expected,
       { ...recordOptions, expectedGuarantee: bad }), /LABTEST_RECORD_INPUT_INVALID/);
   }
+});
+
+test('amend opt-in binds an unsent recipient and model-only primary IDs to visible names', async () => {
+  const agency = { nativeId:'42', name:'Example Agency' };
+  const options = { allowBlankNote:true, allowUnchangedBusinessParties:true,
+    preserveUnsentRecipient:true, allowModelOnlyPrimaryPartyIds:true };
+  const fake = { code:'NGI', display:'Non-Guaranteed Individual', recipient:'desk@example.invalid', agency };
+  const record = await records.currentLabtestRecord(savedPage(fake), expected, options);
+  assert.equal(record.cmsRecipient, fake.recipient);
+  assert.equal(record.partyPreimage.taid1, agency.nativeId);
+  assert.equal(record.partyPreimage.companyid, organization.nativeId);
+  await assert.rejects(records.currentLabtestRecord(savedPage(fake), expected, { allowBlankNote:true }), /LABTEST_RECORD_UNVERIFIED/);
+  for (const changed of [
+    { send:true },
+    { mutate:({ data }) => { data.udfchar13 = 'different@example.invalid'; } },
+    { mutate:({ formValues }) => { formValues.udfchar13 = 'different@example.invalid'; } },
+    { mutate:({ data }) => { data.taid1 = 'not-a-native-id'; } },
+    { mutate:({ partyInputs }) => { partyInputs.find((item) => item.name === 'ta1').value = 'Other Agency'; } },
+    { mutate:({ partyInputs }) => { partyInputs.splice(partyInputs.findIndex((item) => item.name === 'company'), 1); } },
+  ]) await assert.rejects(records.currentLabtestRecord(savedPage({ ...fake, ...changed }), expected, options));
 });

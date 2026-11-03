@@ -6,9 +6,10 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { assertNoOpenWrite, formDigest, HmsApprovalError, hmsStateDigest, hmsWriteStateOf, retainedPricesForApproval } from './hms-approval.js';
+import { cloudAmendPreservedSchema } from './cloud-amend-price-projection.js';
 import { projectCloudStayFind, runCloudStayFind, type HmsCloudFindResult } from './hms-cloud-saved-stay-find.js';
 import { assertNoCreateDispatchFence, CreateFenceError } from './pane-create-dispatch-fence.js';
-import { cloudAmendWriteReady, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
+import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { createSourceSnapshotDigest } from './pane-create-source-snapshot.js';
 import { classifyAmendPayment } from './pane-stay-lookup.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -29,9 +30,11 @@ export const cloudAmendSourceBindingSchema = z.object({ selected: cloudAmendSour
   digest: z.string().regex(/^[a-f0-9]{64}$/), revision: cursor, revisionHead: cursor, revisionSeq: cursor,
 }).strict().refine((binding) => binding.revision <= binding.revisionHead);
 export const cloudAmendChangesSchema = z.object({
-  adults: z.number().int().min(1).max(16),
-  ratePlan: z.string().regex(/^[A-Z0-9]{1,12}$/), retainRates: z.literal('yes'),
-}).strict();
+  arrival: day.optional(), departure: day.optional(), adults: z.number().int().min(1).max(16).optional(),
+  children: z.number().int().min(0).max(9).optional(), childAges: z.array(z.number().int().min(0).max(17)).max(9).optional(),
+  ratePlan: z.string().regex(/^[A-Z0-9]{1,12}$/), retainRates: z.enum(['yes', 'no']),
+}).strict().refine((fields) => (fields.children === undefined) === (fields.childAges === undefined))
+  .refine((fields) => fields.children === undefined || fields.children === fields.childAges?.length);
 export const bindCloudAmendInput = z.object({
   workItemId: z.string().uuid(), source: cloudAmendSelectionSchema, confirmation: z.string().regex(/^\d{6,}-\d+$/),
   arrival: day, changes: cloudAmendChangesSchema,
@@ -97,13 +100,18 @@ export type CloudAmendPreimage = NonNullable<ReturnType<typeof cloudAmendPreimag
 type NativeAmendScope = Pick<CloudAmendPreimage['native'],
   'arrival' | 'departure' | 'ratePlan' | 'adults' | 'children' | 'childAges'>;
 
-/** The first proven slice is narrower than the full amendment editor. */
+/** First supervised Labtest slice; unsupported edits fail closed. */
 export function cloudAmendFirstPilotScopeSupported(current: NativeAmendScope, fields: CloudAmendChanges): boolean {
   const arrival = day.safeParse(current.arrival), departure = day.safeParse(current.departure);
-  return Boolean(arrival.success && departure.success && current.arrival >= '2027-01-01' &&
-    Date.parse(`${current.departure}T00:00:00Z`) - Date.parse(`${current.arrival}T00:00:00Z`) === 86_400_000 &&
-    Object.keys(fields).every((key) => ['adults', 'ratePlan', 'retainRates'].includes(key)) &&
-    fields.adults !== undefined && fields.adults !== current.adults && fields.ratePlan === current.ratePlan && fields.retainRates === 'yes');
+  const targetArrival = day.safeParse(fields.arrival ?? current.arrival), targetDeparture = day.safeParse(fields.departure ?? current.departure);
+  if (!arrival.success || !departure.success || !targetArrival.success || !targetDeparture.success ||
+      current.arrival < '2027-01-01' || targetArrival.data < '2027-01-01' ||
+      Date.parse(`${current.departure}T00:00:00Z`) - Date.parse(`${current.arrival}T00:00:00Z`) !== 86_400_000 ||
+      Date.parse(`${targetDeparture.data}T00:00:00Z`) - Date.parse(`${targetArrival.data}T00:00:00Z`) !== 86_400_000 ||
+      Object.keys(fields).some((key) => !['arrival', 'departure', 'adults', 'ratePlan', 'retainRates'].includes(key)) ||
+      fields.ratePlan !== current.ratePlan || fields.retainRates !== 'yes') return false;
+  return targetArrival.data !== current.arrival || targetDeparture.data !== current.departure ||
+    (fields.adults !== undefined && fields.adults !== current.adults);
 }
 
 async function readSource(db: DB, workItemId: string, transportId: string, selected: CloudAmendSource) {
@@ -197,7 +205,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const { db: supplied, transportId, ...request } = input;
   const parsed = bindCloudAmendInput.safeParse(request);
   if (!parsed.success) return { status: 'refused' as const, reason: 'form_invalid' };
-  if (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled()) {
+  if (!labtestAmendWorkerEnabled()) {
     return { status: 'refused' as const, reason: 'amend_save_unavailable' };
   }
   const db = supplied ?? getDb();
@@ -232,7 +240,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const nativeModule = await import(nativeUrl.href) as { prepareCloudPaneAmend(input: {
     target: typeof target.target; selected: typeof preimage.native; confirmation: string; arrival: string;
     changes: CloudAmendChanges; signal: AbortSignal;
-  }): Promise<{ outcome: string; nativeDigest?: string; approvedPrices?: unknown }>;
+  }): Promise<{ outcome: string; nativeDigest?: string; approvedPrices?: unknown; preserved?: unknown }>;
     oneNightRetainPricesMatchObservations(prices: unknown, financial: unknown): boolean };
   const native = await nativeModule.prepareCloudPaneAmend({ target: target.target, selected: preimage.native,
     confirmation: data.confirmation, arrival: data.arrival, changes: data.changes, signal: AbortSignal.timeout(5 * 60_000) });
@@ -241,12 +249,14 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   }
   // The first write path is narrowly limited to one night, unchanged rate and
   // explicit retain=yes. Both fresh HMS readers must agree before staff see Go.
-  if (!retainedPricesForApproval(native.approvedPrices) ||
+  const preserved = cloudAmendPreservedSchema.safeParse(native.preserved);
+  if (!preserved.success || !retainedPricesForApproval(native.approvedPrices) ||
       !nativeModule.oneNightRetainPricesMatchObservations(native.approvedPrices, preimage.financial)) {
     return { status: 'refused' as const, reason: 'amendment_unsupported' };
   }
   const nativeDigest = native.nativeDigest;
-  const previewDigest = hmsStateDigest({ binding, preimage, changes: data.changes, nativeDigest, approvedPrices: native.approvedPrices });
+  const previewDigest = hmsStateDigest({ binding, preimage, changes: data.changes, nativeDigest,
+    approvedPrices: native.approvedPrices, preserved: preserved.data });
   return db.transaction(async (tx) => {
     const item = await lockCloudAmendSource(tx, { workItemId: data.workItemId, transportId, binding });
     if (!item) {
@@ -264,7 +274,8 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
     for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
       'sourceMessageId', 'sourceSnapshotDigest', 'reason', 'fields', 'previewDigest', 'cloudAmend', 'hmsSnapshot']) delete state[key];
     Object.assign(state, { action: 'amend', confirmation: data.confirmation, arrival: data.arrival, lastName: 'Labtest',
-      fields: data.changes, previewDigest, cloudAmend: { binding, preimage, nativeDigest, approvedPrices: native.approvedPrices },
+      fields: data.changes, previewDigest, cloudAmend: { binding, preimage, nativeDigest,
+        approvedPrices: native.approvedPrices, preserved: preserved.data },
       hmsSnapshot: { digest: hmsStateDigest(preimage), readAt: readAt.toISOString(), values: {
         fields: { arrival: preimage.native.arrival, departure: preimage.native.departure, adults: preimage.native.adults,
           children: preimage.native.children, childAges: preimage.native.childAges, ratePlan: preimage.native.ratePlan },

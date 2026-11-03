@@ -18,8 +18,10 @@ function snapshot() {
   return { data, values };
 }
 
-test('only a one-night adult edit can use the narrow retain=yes proof', () => {
+test('only a one-night adult edit or one-night date shift can use the narrow retain=yes proof', () => {
   assert.equal(isOneNightRetainAmend(selected, changes), true);
+  assert.equal(isOneNightRetainAmend(selected,
+    { arrival:'2027-05-03', departure:'2027-05-04', ratePlan:'BAR', retainRates:'yes' }), true);
   for (const [stay, update] of [
     [{ ...selected, departure:'2027-05-04' }, changes],
     [{ ...selected, arrival:'2027-02-30' }, changes],

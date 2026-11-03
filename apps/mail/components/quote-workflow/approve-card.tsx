@@ -238,7 +238,7 @@ function WriteBody({
         {filingUnavailable ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
       <WriteRows rows={rows} />
-      {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate and total could not be verified. Check them in HMS.</p> : null}
+      {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate, total or booking details could not be verified. Check them in HMS.</p> : null}
       {filingUnavailable ? (
         <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
       ) : status.approve ? (

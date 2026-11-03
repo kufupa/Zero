@@ -4,7 +4,7 @@ import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { expectedLabtestAmendRecord, matchesCloudPaneAmendSave, prepareCloudPaneAmend, readCloudPaneAmend,
   cloudPaneAmendRunOptions, commitCloudPaneAmend, normalizeAmendDraftAfterAvailability, validAdultAmendDraft,
-  confirmedCloudAmendResult, bindCloudAmendWriter } from './pane-amend-session.mjs';
+  confirmedCloudAmendResult, bindCloudAmendWriter, admitsCloudPaneAmend } from './pane-amend-session.mjs';
 import { oneNightRetainPrices } from './labtest-amend-retain-proof.mjs';
 
 function fixture() {
@@ -25,12 +25,13 @@ function fixture() {
     adults:'1', children:'1', child1:'0', child2:'1', child3:'0', childages:'8' };
   const baseline = { data, values, partyControls:[], partyInputsBlank:true, formDirty:false,
     recordDirty:false, dirtyFields:[], modifiedFields:[] };
-  const state = { frame:{}, native, partyPreimage:parties };
+  const state = { frame:{}, native, partyPreimage:parties, cmsRecipient:'', allowModelOnlyPrimaryPartyIds:true };
   const record = { nativePreimage:{ ...selected, guaranteeCode:'NGI' },
     details:{ fields:[{ name:'reservationnote', rawValue:'' }] } };
   const input = { selected, confirmation:selected.confirmation, arrival:selected.arrival,
     target:{ propertyCode:'HRCEN', browserSlot:'centurion', origin:'https://hmsweb.hms.eu1.inforcloudsuite.com' },
-    changes:{ adults:2, ratePlan:'BAR', retainRates:'yes' } };
+    changes:{ adults:2, ratePlan:'BAR', retainRates:'yes' },
+    preserved:{ cmsRecipient:'', agency:null, organization:null } };
   const events = [], context = { _options:{ serviceWorkers:'block' }, serviceWorkers:() => [] };
   const deps = {
     openSession: async (operation, options) => { assert.equal(options.blockServiceWorkers, true);
@@ -40,7 +41,8 @@ function fixture() {
       assert.equal(options.confirmation, selected.confirmation); events.push('guard'); },
     shallow: async () => { events.push('shallow'); }, read: async () => { events.push('record'); return record; },
     current: async (_page, _expected, options) => {
-      assert.deepEqual(options, { allowBlankNote:true });
+      assert.deepEqual(options, { allowBlankNote:true, allowUnchangedBusinessParties:true,
+        preserveUnsentRecipient:true, allowModelOnlyPrimaryPartyIds:true });
       return state;
     }, snapshot: async () => baseline,
   };
@@ -54,6 +56,36 @@ function addPrices(snapshot) {
   }
 }
 
+function addPreserved(f) {
+  const agency = { nativeId:'42', name:'Example Agency' }, organization = { nativeId:'41', name:'Example Company' };
+  Object.assign(f.state.partyPreimage, { taid1:agency.nativeId, ta1:agency.name,
+    companyid:organization.nativeId, company:organization.name });
+  Object.assign(f.baseline.data, f.state.partyPreimage, { udfchar13:'desk@example.invalid' });
+  Object.assign(f.baseline.values, { ta1:agency.name, company:organization.name, udfchar13:'desk@example.invalid' });
+  f.baseline.partyControls = [{ name:'ta1', value:agency.name }, { name:'company', value:organization.name }];
+  f.baseline.partyInputsBlank = false;
+  f.state.cmsRecipient = 'desk@example.invalid';
+  f.input.preserved = { cmsRecipient:f.state.cmsRecipient, agency, organization };
+}
+
+test('approval binds an unsent recipient and both primary party identities to the complete native snapshot', async () => {
+  const f = fixture(); addPrices(f.baseline); addPreserved(f);
+  const first = await prepareCloudPaneAmend(f.input, f.deps);
+  assert.equal(first.outcome, 'prepared');
+  assert.deepEqual(first.preserved, f.input.preserved);
+  for (const edit of [
+    (v) => { v.baseline.data.udfchkbox04 = '1'; },
+    (v) => { v.baseline.values.udfchar13 = 'other@example.invalid'; },
+    (v) => { v.baseline.data.taid1 = '99'; },
+    (v) => { v.baseline.partyControls[1].value = 'Other Company'; },
+  ]) { const v = fixture(); addPrices(v.baseline); addPreserved(v); edit(v);
+    assert.equal((await prepareCloudPaneAmend(v.input, v.deps)).outcome, 'refused'); }
+  f.baseline.data.udfchar13 = f.baseline.values.udfchar13 = f.state.cmsRecipient = 'other@example.invalid';
+  const next = await prepareCloudPaneAmend(f.input, f.deps);
+  assert.equal(next.outcome, 'prepared');
+  assert.notEqual(next.nativeDigest, first.nativeDigest);
+});
+
 test('one-night retain approval binds price evidence and compares it on the independent read', async () => {
   const f = fixture();
   f.input.changes = { adults:2, ratePlan:'BAR', retainRates:'yes' };
@@ -63,7 +95,8 @@ test('one-night retain approval binds price evidence and compares it on the inde
   assert.equal(prepared.outcome, 'prepared');
   assert.equal(prepared.approvedPrices.fields.averagenightly.data.cents, '10000');
   f.input.approvedPrices = prepared.approvedPrices;
-  f.input.beforeNote = ''; f.input.beforeParties = f.state.partyPreimage; f.input.afterScreenshot = '/private/after.png';
+  f.input.beforeNote = ''; f.input.beforeParties = f.state.partyPreimage; f.input.beforeRecipient = '';
+  f.input.afterScreenshot = '/private/after.png';
   f.record.nativePreimage.adults = 2;
   f.baseline.data.adults = f.baseline.values.adults = '2';
   const samePrice = await readCloudPaneAmend(f.input, f.deps);
@@ -117,7 +150,7 @@ test('binds the full fresh native state and explicit choice without exposing the
   const f = fixture(); addPrices(f.baseline);
   const first = await prepareCloudPaneAmend(f.input, f.deps);
   assert.deepEqual(f.events, ['guard', 'login', 'shallow', 'record']);
-  assert.deepEqual(Object.keys(first).sort(), ['approvedPrices', 'nativeDigest', 'outcome']);
+  assert.deepEqual(Object.keys(first).sort(), ['approvedPrices', 'nativeDigest', 'outcome', 'preserved']);
   assert.equal(first.outcome, 'prepared'); assert.match(first.nativeDigest, /^[a-f0-9]{64}$/);
   f.baseline.data.bookingsessionid = f.state.native.bookingsessionid = 'new session';
   f.baseline.data.sessionID = { sessionID:'new session' }; f.baseline.data.extId = 'other';
@@ -224,6 +257,38 @@ test('a paused Save must match the entire approved Labtest model and visible rat
   ]) { const v = saveCandidate(); edit(v); assert.equal(matchesCloudPaneAmendSave(v.request, v.state.frame, v.baseline, v.input), false); }
 });
 
+test('a paused Save preserves the reviewed unsent recipient and both linked primary IDs', () => {
+  const make = () => {
+    const f = saveCandidate(); addPreserved(f);
+    f.input.beforeRecipient = f.state.cmsRecipient;
+    f.input.beforeParties = structuredClone(f.state.partyPreimage);
+    for (const key of ['udfchar13', 'taid1', 'ta1', 'companyid', 'company']) f.body.set(key, f.baseline.data[key]);
+    return f;
+  };
+  const f = make();
+  assert.equal(matchesCloudPaneAmendSave(f.request, f.state.frame, f.baseline, f.input), true);
+  for (const edit of [
+    (v) => { v.body.set('udfchar13', 'different@example.invalid'); },
+    (v) => { v.body.set('udfchkbox04', '1'); },
+    (v) => { v.body.set('taid1', '99'); },
+    (v) => { v.body.set('companyid', '99'); },
+    (v) => { v.baseline.data.taid1 = '99'; v.body.set('taid1', '99'); },
+    (v) => { v.baseline.values.udfchar13 = 'different@example.invalid'; },
+    (v) => { v.baseline.partyControls[0].value = 'Other Agency'; },
+  ]) { const v = make(); edit(v); assert.equal(matchesCloudPaneAmendSave(v.request, v.state.frame, v.baseline, v.input), false); }
+});
+
+test('a date-shift Save binds both requested dates and refuses an old or altered date', () => {
+  const f = saveCandidate();
+  f.input.changes = { arrival:'2027-10-13', departure:'2027-10-14', adults:2, ratePlan:'BAR', retainRates:'yes' };
+  Object.assign(f.baseline.data, { arrivaldate:'10/13/2027', departuredate:'10/14/2027' });
+  Object.assign(f.baseline.values, { arrivaldate:'13-OCT-2027', departuredate:'14-OCT-2027' });
+  f.body.set('arrivaldate', '10/13/2027'); f.body.set('departuredate', '10/14/2027');
+  assert.equal(matchesCloudPaneAmendSave(f.request, f.state.frame, f.baseline, f.input), true);
+  f.body.set('arrivaldate', '10/12/2027');
+  assert.equal(matchesCloudPaneAmendSave(f.request, f.state.frame, f.baseline, f.input), false);
+});
+
 test('a retain continuation must carry the approved Yes value', () => {
   const f = saveCandidate({ phase:'retain' });
   assert.equal(matchesCloudPaneAmendSave(f.request, f.state.frame, f.baseline, f.input), true);
@@ -237,14 +302,28 @@ test('a retain continuation must carry the approved Yes value', () => {
   assert.equal(matchesCloudPaneAmendSave(missing.request, missing.state.frame, missing.baseline, missing.input), false);
 });
 
-test('the real commit refuses before a browser, claim or rate hold while rate proof is missing', async () => {
+test('the native writer admits only a bound one-night fake retain case with evidence and authority', async () => {
   const f = fixture(), calls = [];
   const authorization = { operationDigest:'a'.repeat(64),
-    authorizeFirst: async () => { calls.push('claim'); }, authorizeContinuation: async () => { calls.push('continue'); } };
+    authorizeFirst: async () => { calls.push('claim'); }, sealBeforeEvidence: async () => ({}) };
   assert.deepEqual(await commitCloudPaneAmend(f.input, authorization),
-    { outcome:'not_dispatched', issue:'AMEND_RATE_UNVERIFIED' });
+    { outcome:'not_dispatched', issue:'AMEND_INPUT_INVALID' });
   assert.deepEqual(calls, []);
   assert.deepEqual(f.events, []);
+  Object.assign(f.input, { nativeDigest:'b'.repeat(64), approvedPrices:{ version:1 },
+    beforeScreenshot:'/private/before.png', afterScreenshot:'/private/after.png' });
+  assert.equal(admitsCloudPaneAmend(f.input, authorization), true);
+  for (const change of [
+    { ...f.input, selected:{ ...f.selected, lastName:'Guest' } },
+    { ...f.input, selected:{ ...f.selected, propertyCode:'HRDAV' } },
+    { ...f.input, changes:{ ...f.input.changes, retainRates:'no' } },
+    { ...f.input, changes:{ ...f.input.changes, ratePlan:'OTHER' } },
+    { ...f.input, changes:{ ...f.input.changes, children:2 } },
+    { ...f.input, confirmation:'other' }, { ...f.input, nativeDigest:'bad' },
+    { ...f.input, signal:AbortSignal.abort() },
+  ]) assert.equal(admitsCloudPaneAmend(change, authorization), false);
+  assert.equal(admitsCloudPaneAmend(f.input, { ...authorization, authorizeFirst:undefined }), false);
+  assert.equal(admitsCloudPaneAmend(f.input, { ...authorization, sealBeforeEvidence:undefined }), false);
 });
 
 test('the first dispatch uses the writer identity captured from the owned session', async () => {
@@ -399,7 +478,8 @@ test('fresh readback matches the adult change, retained price and a screenshot',
     f.input.approvedPrices = oneNightRetainPrices(f.baseline);
     f.record.nativePreimage.adults = 2;
     f.baseline.data.adults = f.baseline.values.adults = '2';
-    f.input.beforeNote = ''; f.input.beforeParties = f.state.partyPreimage; f.input.afterScreenshot = '/private/after.png';
+    f.input.beforeNote = ''; f.input.beforeParties = f.state.partyPreimage; f.input.beforeRecipient = '';
+    f.input.afterScreenshot = '/private/after.png';
     return f;
   };
   const f = saved();
@@ -414,6 +494,9 @@ test('fresh readback matches the adult change, retained price and a screenshot',
     (v) => { v.record.nativePreimage.guestId = '999'; },
     (v) => { v.record.details.fields[0].rawValue = 'changed'; },
     (v) => { v.baseline.data.companyid = 'unexpected'; },
+    (v) => { v.baseline.data.udfchar13 = 'changed@example.invalid'; },
+    (v) => { v.baseline.data.udfchkbox04 = '1'; },
+    (v) => { v.baseline.values.emailaddress = 'guest@example.invalid'; },
     (v) => { v.baseline.recordDirty = true; },
     (v) => { v.input.afterScreenshot = ''; },
     (v) => { v.deps.openSession = async (operation, options) => { await options.prepareContext(v.context);

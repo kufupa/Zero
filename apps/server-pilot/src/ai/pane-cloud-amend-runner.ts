@@ -12,8 +12,8 @@ import { assertHmsUnchangedBeforeSave, consumeHmsWriteApproval, endHmsWriteRun, 
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { cloudAmendPreimage } from './pane-cloud-amend.js';
 import { cloudAmendDispatchCallbacks, cloudAmendDispatchFormSchema, requireCloudAmendEvidence } from './pane-cloud-amend-dispatch.js';
-import { resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
-import { cloudAmendWriteReady, HMS_LABTEST_AMEND_CLEANUP_RESERVE_MS, HMS_LABTEST_AMEND_DISPATCH_RESERVE_MS,
+import { captureHmsLabtestDispatchEpoch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+import { HMS_LABTEST_AMEND_CLEANUP_RESERVE_MS, HMS_LABTEST_AMEND_DISPATCH_RESERVE_MS,
   HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_LABTEST_AMEND_RUN_DEADLINE_MS, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -33,8 +33,8 @@ export function verifiedCloudAmendReadback(form: z.infer<typeof cloudAmendDispat
   const actual = readbackSchema.safeParse(result.readback), before = form.cloudAmend.preimage.native, changes = form.fields;
   if (result.outcome !== 'amended' || result.dispatchCallbacksDrained !== true ||
       result.writerSessionClosed !== true || result.retainedPriceMatched !== true || !actual.success) return null;
-  const expected = { confirmation: form.confirmation, arrival: before.arrival,
-    departure: before.departure, adults: changes.adults,
+  const expected = { confirmation: form.confirmation, arrival: changes.arrival ?? before.arrival,
+    departure: changes.departure ?? before.departure, adults: changes.adults ?? before.adults,
     children: before.children, childAges: before.childAges,
     ratePlan: changes.ratePlan };
   return hmsStateDigest(actual.data) === hmsStateDigest(expected) ? actual.data : null;
@@ -85,8 +85,14 @@ async function executeClaim(input: { db: DB; fence: AiRunFence; workItemId: stri
   const parsed = cloudAmendDispatchFormSchema.safeParse(consumed.form);
   if (!parsed.success || !consumed.authority) return end(db, fence, 'NEEDS_CHECK', 'form_invalid');
   const form = parsed.data;
+  if (input.signal?.aborted) return end(db, fence, 'NEEDS_CHECK', 'worker_stopped');
+  // Take the shared epoch before opening the native session or reading its
+  // preimage. A completed intervening writer invalidates this whole attempt.
+  let expectedEpoch: string;
+  try { expectedEpoch = await captureHmsLabtestDispatchEpoch(db); }
+  catch { return end(db, fence, 'NEEDS_CHECK', 'labtest_write_in_flight'); }
   let callbacks: ReturnType<typeof cloudAmendDispatchCallbacks>;
-  try { callbacks = cloudAmendDispatchCallbacks({ db, fence, transportId, workItemId, consumed }); }
+  try { callbacks = cloudAmendDispatchCallbacks({ db, fence, transportId, workItemId, consumed, expectedEpoch }); }
   catch { return end(db, fence, 'NEEDS_CHECK', 'form_invalid'); }
 
   if (input.signal?.aborted) return end(db, fence, 'NEEDS_CHECK', 'worker_stopped');
@@ -132,6 +138,7 @@ async function executeClaim(input: { db: DB; fence: AiRunFence; workItemId: stri
       result = await native.commitCloudPaneAmend({ target, selected: form.cloudAmend.preimage.native,
         confirmation: form.confirmation, arrival: form.arrival, changes: form.fields,
         nativeDigest: form.cloudAmend.nativeDigest, approvedPrices: form.cloudAmend.approvedPrices,
+        preserved: form.cloudAmend.preserved,
         beforeScreenshot: join(work, screenshots[0]),
         afterScreenshot: join(work, screenshots[1]), signal: input.signal }, { ...callbacks, authorizeFirst, sealBeforeEvidence });
     } catch { result = { outcome: 'uncertain', issue: 'native_failed' }; }
@@ -200,7 +207,7 @@ export async function runCloudPaneAmendOnce(input: { runId: string; fence: AiRun
       eq(aiWorkflowRun.promptVersion, HMS_LABTEST_AMEND_PROMPT_VERSION), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
       eq(aiWorkflowRun.claimToken, fence.claimToken), inArray(aiWorkflowRun.state, ['claimed', 'running']))).limit(1);
   if (!run) return { status: 'lease_lost' };
-  if (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled(input.env) || input.signal?.aborted) {
+  if (!labtestAmendWorkerEnabled(input.env) || input.signal?.aborted) {
     return end(db, fence, 'POLICY_BLOCK', 'amend_save_unavailable');
   }
   if (!run.workItemId) return end(db, fence, 'POLICY_BLOCK', 'no_work_item');

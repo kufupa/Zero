@@ -14,6 +14,7 @@ import { isOneNightRetainAmend, oneNightRetainPrices, oneNightRetainAvailability
 export { oneNightRetainPricesMatchObservations } from './labtest-amend-retain-proof.mjs';
 import { stageSavedAdultForComposition, labtestAdultAmendDraftDelta, matchesObservedAdultEffect }
   from './guest-stay-amend-adults.mjs';
+import { matchesComposedDateAdultDraft, stageSavedDatesForComposition } from './guest-stay-amend-date-room-rate.mjs';
 
 const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStayId', 'reservationId',
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
@@ -21,6 +22,35 @@ const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStay
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const validTarget = (target) => target?.propertyCode === 'HRCEN' && target.browserSlot === 'centurion' &&
   target.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+const amendRecordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true,
+  preserveUnsentRecipient: true, allowModelOnlyPrimaryPartyIds: true };
+
+/** Values staff must review and the complete native digest must preserve. */
+export function cloudAmendPreserved(state) {
+  const party = state?.partyPreimage, cmsRecipient = state?.cmsRecipient ?? '';
+  const clean = (value, max) => typeof value === 'string' && value.length <= max && !/[\p{Cc}]/u.test(value);
+  if (!party || !clean(cmsRecipient, 1000)) return null;
+  const link = (id, name) => {
+    if (id === '' && name === '') return null;
+    if (!/^\d{1,30}$/.test(id || '') || !clean(name, 300) || !name.trim()) throw new Error('PARTY_UNVERIFIED');
+    return { nativeId: id, name };
+  };
+  try {
+    const agency = link(party.taid1, party.ta1);
+    const organization = link(party.companyid, party.company || party.companyname);
+    return { cmsRecipient, agency, organization };
+  } catch { return null; }
+}
+
+function preservesUnsentRecipient(snapshot, recipient) {
+  const data = snapshot?.data, values = snapshot?.values;
+  if (!data || !values || typeof recipient !== 'string' ||
+      [data, values].some((source) => new Set(Object.keys(source).map((key) => key.toLowerCase())).size !== Object.keys(source).length)) return false;
+  return ['data', 'values'].every((part) => Object.hasOwn(snapshot[part], 'udfchar13') &&
+      String(snapshot[part].udfchar13 ?? '') === recipient && Object.hasOwn(snapshot[part], 'emailaddress') &&
+      String(snapshot[part].emailaddress ?? '') === '') && String(data.udfchkbox04 ?? '') === '0' &&
+    (!Object.hasOwn(values, 'udfchkbox04') || ['0', 0, false].includes(values.udfchkbox04));
+}
 
 // Install the exact-confirmation read fence before any page or login request.
 // A session that skips the pre-login hook is unusable even for a rehearsal.
@@ -45,26 +75,29 @@ function guardedSession(input, guard, timeoutMs = 5 * 60_000) {
 }
 
 /** Match a full paused Save to the approved fake stay and the post-availability model. */
-export function matchesCloudPaneAmendSave(request, frame, snapshot, { selected, changes, beforeNote, beforeParties, phase } = {}) {
+export function matchesCloudPaneAmendSave(request, frame, snapshot,
+  { selected, changes, beforeNote, beforeParties, beforeRecipient = '', phase } = {}) {
   try {
     if (!isOneNightRetainAmend(selected, changes) || !['save', 'retain'].includes(phase) ||
         !/^[A-Z0-9]{1,12}$/.test(selected.roomType || '') ||
         !/^\d{6,}-\d+$/.test(selected.confirmation || '') || !/^\d+$/.test(selected.guestId || '') ||
         selected.propertyCode !== 'HRCEN' || selected.firstName !== 'Proof' || selected.lastName !== 'Labtest' ||
         selected.status !== 'Reserved' || typeof beforeNote !== 'string') return false;
-    const adults = changes.adults, arrival = selected.arrival, departure = selected.departure;
+    const adults = changes.adults ?? selected.adults, arrival = changes.arrival ?? selected.arrival,
+      departure = changes.departure ?? selected.departure;
     const wireDate = (value) => `${value.slice(5, 7)}/${value.slice(8, 10)}/${value.slice(0, 4)}`;
     const data = snapshot?.data, values = snapshot?.values;
     if (!data || !values || typeof data !== 'object' || typeof values !== 'object' ||
         Array.isArray(data) || Array.isArray(values) ||
         [data, values].some((source) => new Set(Object.keys(source).map((key) => key.toLowerCase())).size !== Object.keys(source).length) ||
-        !unchangedLabtestBusinessParties(beforeParties, snapshot)) return false;
+        typeof beforeRecipient !== 'string' ||
+        !unchangedLabtestBusinessParties(beforeParties, snapshot, { allowModelOnlyPrimaryPartyIds: true })) return false;
     const identity = { propertycode: 'HRCEN', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
       confirmationnumber: selected.confirmation, guestid: selected.guestId,
       reservationid: selected.reservationId, reservationstayid: selected.reservationStayId, recordid: selected.recordId,
       arrivaldate: wireDate(arrival), departuredate: wireDate(departure), roomtype: selected.roomType,
       rateplan: changes.ratePlan, adults: String(adults),
-      guaranteetype: 'NGI', reservationnote: beforeNote, udfchkbox04: '0', udfchar13: '', emailaddress: '' };
+      guaranteetype: 'NGI', reservationnote: beforeNote, udfchkbox04: '0', udfchar13: beforeRecipient, emailaddress: '' };
     if (!Object.entries(identity).every(([key, value]) => typeof value === 'string' && value !== undefined &&
         Object.hasOwn(data, key) && String(data[key] ?? '') === value)) return false;
     const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -72,7 +105,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot, { selected, 
     const displayed = { confirmationnumber: selected.confirmation, guestid: selected.guestId, status: 'Reserved',
       firstname: 'Proof', lastname: 'Labtest', arrivaldate: displayDate(arrival), departuredate: displayDate(departure),
       roomtype: selected.roomType, rateplan: changes.ratePlan, adults: String(adults),
-      guaranteetype: 'NGI', reservationnote: beforeNote, udfchar13: '', emailaddress: '' };
+      guaranteetype: 'NGI', reservationnote: beforeNote, udfchar13: beforeRecipient, emailaddress: '' };
     if (!Object.entries(displayed).every(([key, value]) => Object.hasOwn(values, key) && String(values[key] ?? '') === value) ||
         (Object.hasOwn(values, 'udfchkbox04') && !['0', 0, false].includes(values.udfchkbox04)) ||
         (phase === 'save' && Object.hasOwn(data, 'confirmretainrate') &&
@@ -127,14 +160,15 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
       const expected = expectedLabtestAmendRecord(record, selected);
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
-      const state = await current(page, expected, { allowBlankNote: true });
+      const state = await current(page, expected, amendRecordOptions);
       const baseline = await snapshot(state.frame);
       const bound = bind(expected, state, baseline, changes);
-      if (bound?.version !== 1 || !/^[a-f0-9]{64}$/.test(bound.digest)) {
+      const preserved = cloudAmendPreserved(state);
+      if (bound?.version !== 1 || !/^[a-f0-9]{64}$/.test(bound.digest) || !preserved) {
         return { outcome: 'refused', issue: 'NATIVE_PREIMAGE_UNVERIFIED' };
       }
       const approvedPrices = oneNightRetainPrices(baseline);
-      return approvedPrices ? { outcome: 'prepared', nativeDigest: bound.digest, approvedPrices }
+      return approvedPrices ? { outcome: 'prepared', nativeDigest: bound.digest, approvedPrices, preserved }
         : { outcome: 'refused', issue: 'RETAIN_PRICE_UNVERIFIED' };
     }, protectedSession.options);
   } catch {
@@ -142,13 +176,6 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
     return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE' };
   }
 }
-
-// Saved-stay availability may hold a rate. The observed request and a 200
-// response do not establish the selected rate, retain decision or final price.
-// No environment flag, caller callback or test fixture can waive this hold.
-function cloudAmendRateSemanticsProven() { return false; }
-function cloudAmendRateReadbackProven() { return false; }
-function cloudAmendRecoveryProven() { return false; }
 
 /** Return the exact staged draft if availability changed only observed effects back to baseline. */
 export function normalizeAmendDraftAfterAvailability(baseline, staged, after) {
@@ -215,7 +242,7 @@ export async function clickLabtestAmendAvailability(frame, bounded) {
  */
 export function cloudPaneAmendRunOptions({ page, input, expected, authorization, captureBefore = () => {} }, {
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord, bind = labtestCombinedAmendPreimageBinding,
-  stageAdults = stageSavedAdultForComposition, verifyDraft = validAdultAmendDraft,
+  stageAdults = stageSavedAdultForComposition, stageDates = stageSavedDatesForComposition, verifyDraft = null,
 } = {}) {
   const selected = input?.selected, changes = input?.changes;
   if (!page || !expected || !validTarget(input?.target) || !isOneNightRetainAmend(selected, changes) ||
@@ -223,15 +250,20 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       selected.arrival !== input.arrival) {
     throw new Error('AMEND_CHOICE_UNSUPPORTED');
   }
-  const proposed = { adults: changes.adults };
+  const proposed = Object.fromEntries(['arrival', 'departure', 'adults']
+    .filter((key) => Object.hasOwn(changes, key) && changes[key] !== selected[key]).map((key) => [key, changes[key]]));
+  const dateChanged = Object.hasOwn(proposed, 'arrival') || Object.hasOwn(proposed, 'departure');
+  const verifyStaged = verifyDraft ?? (dateChanged ? matchesComposedDateAdultDraft : validAdultAmendDraft);
   const dispatch = createLabtestAmendDispatch({ ...authorization, requiresAvailability: true });
   let postAvailability = null;
   return {
     timeoutMs: 7 * 60_000, signal: input.signal, reportDispatchDrain: true, dispatchDrainTimeoutMs: 5_000,
     prepare: async (bounded) => {
-      const state = await bounded(current(page, expected, { allowBlankNote: true }));
+      const state = await bounded(current(page, expected, amendRecordOptions));
       const baseline = await bounded(snapshot(state.frame));
-      if (bind(expected, state, baseline, changes)?.digest !== input.nativeDigest) throw new Error('AMEND_PREIMAGE_CHANGED');
+      const preserved = cloudAmendPreserved(state);
+      if (!preserved || !same(preserved, input.preserved) ||
+          bind(expected, state, baseline, changes)?.digest !== input.nativeDigest) throw new Error('AMEND_PREIMAGE_CHANGED');
       if (!oneNightRetainReadbackMatches(input.approvedPrices, baseline, selected, changes)) throw new Error('AMEND_PRICE_CHANGED');
       if (await bounded(page.locator('.x-window:visible:not(.x-menu)').count()) !== 1 ||
           await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count()) !== 0) throw new Error('UNEXPECTED_DIALOG');
@@ -247,21 +279,26 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (!evidence || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(evidence.eventId || '') ||
           !/^[a-f0-9]{64}$/.test(evidence.sha256 || '')) throw new Error('AMEND_EVIDENCE_REQUIRED');
       captureBefore({ beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
+        beforeRecipient: preserved.cmsRecipient,
         beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
       return { frame: state.frame, state, baseline, save, enableComposedStage: true };
     },
     stage: async (bounded, prepared, context) => {
-      const draft = (await bounded(stageAdults(context, expected, proposed.adults))).snapshot;
-      if (!draft || !verifyDraft(prepared.baseline, draft, expected, proposed) || !context.isActive()) {
+      let draft = null;
+      if (Object.hasOwn(proposed, 'adults')) draft = (await bounded(stageAdults(context, expected, proposed.adults))).snapshot;
+      if (dateChanged) draft = await bounded(stageDates(context, expected, proposed, draft));
+      if (!draft || !verifyStaged(prepared.baseline, draft, expected, proposed) || !context.isActive()) {
         throw new Error('AMEND_DRAFT_CHANGED');
       }
       return { draft };
     },
     validate: async (_bounded, _prepared, staged) => Boolean(staged?.draft),
     availability: {
+      // The CMS recipient is preserved, never newly chosen, and send remains off.
+      recipient: input.preserved.cmsRecipient,
       snapshot: async (bounded, prepared) => {
         const latest = await bounded(snapshot(prepared.frame));
-        if (!verifyDraft(prepared.baseline, latest, expected, proposed)) throw new Error('AMEND_DRAFT_CHANGED');
+        if (!verifyStaged(prepared.baseline, latest, expected, proposed)) throw new Error('AMEND_DRAFT_CHANGED');
         return latest;
       },
       click: async (bounded, prepared) => {
@@ -272,12 +309,11 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         const result = await bounded(response.json());
         const after = await bounded(snapshot(prepared.frame));
         const normalized = normalizeAmendDraftAfterAvailability(prepared.baseline, staged?.draft, after);
-        // This must become an evidence-backed comparison of the approved rate,
-        // price and availability. A mocked or missing result is never enough.
-        if (!normalized || !verifyDraft(prepared.baseline, normalized, expected, proposed) ||
+        // A 200 alone is insufficient: the native result, full staged model and
+        // every reviewed amount must still agree before Save can be armed.
+        if (!normalized || !verifyStaged(prepared.baseline, normalized, expected, proposed) ||
             !oneNightRetainAvailabilityMatches(result, prepared.baseline, after, selected, changes) ||
-            !oneNightRetainReadbackMatches(input.approvedPrices, after, selected, changes) ||
-            !cloudAmendRateSemanticsProven(result, prepared.baseline, after, selected, changes)) {
+            !oneNightRetainReadbackMatches(input.approvedPrices, after, selected, changes)) {
           return { ok: false, issue: 'AMEND_RATE_UNVERIFIED' };
         }
         postAvailability = after;
@@ -287,13 +323,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     dispatchCandidate: dispatch.save,
     matches: (request, frame, prepared) => postAvailability !== null &&
       matchesCloudPaneAmendSave(request, frame, postAvailability, { selected, changes, beforeNote: expected.note,
-        beforeParties: prepared.state.partyPreimage, phase: 'save' }),
+        beforeParties: prepared.state.partyPreimage, beforeRecipient: input.preserved.cmsRecipient, phase: 'save' }),
     retainRate: {
       choice: changes.retainRates,
       snapshot: async (bounded, prepared) => await bounded(snapshot(prepared.frame)),
       matches: (request, frame, prepared, _staged, retained) =>
         matchesCloudPaneAmendSave(request, frame, retained, { selected, changes, beforeNote: expected.note,
-          beforeParties: prepared.state.partyPreimage, phase: 'retain' }),
+          beforeParties: prepared.state.partyPreimage, beforeRecipient: input.preserved.cmsRecipient, phase: 'retain' }),
       dispatchCandidate: dispatch.retain,
     },
   };
@@ -309,12 +345,26 @@ export function bindCloudAmendWriter(page, authorization, capture = centurion.ce
   return { ...authorization, authorizeFirst: (step) => authorization.authorizeFirst({ ...step, writer }) };
 }
 
-/** Staff Go's native entry point. It cannot start a rate hold until proof exists. */
+/** Admit only the reviewed one-night Labtest case; all native effects still require the paused-request claim. */
+export function admitsCloudPaneAmend(input, authorization) {
+  const selected = input?.selected;
+  return Boolean(validTarget(input?.target) && isOneNightRetainAmend(selected, input?.changes) &&
+    selected?.source === 'record_view_ext_model' && selected.propertyCode === 'HRCEN' &&
+    selected.firstName === 'Proof' && selected.lastName === 'Labtest' && selected.status === 'Reserved' &&
+    /^\d{6,}-\d+$/.test(selected.confirmation || '') && /^\d{1,30}$/.test(selected.guestId || '') &&
+    input.confirmation === selected.confirmation && input.arrival === selected.arrival &&
+    /^[a-f0-9]{64}$/.test(input.nativeDigest || '') && input.approvedPrices?.version === 1 &&
+    typeof input.preserved?.cmsRecipient === 'string' &&
+    typeof input.beforeScreenshot === 'string' && input.beforeScreenshot &&
+    typeof input.afterScreenshot === 'string' && input.afterScreenshot &&
+    /^[a-f0-9]{64}$/.test(authorization?.operationDigest || '') &&
+    typeof authorization?.authorizeFirst === 'function' && typeof authorization?.sealBeforeEvidence === 'function' &&
+    !input.signal?.aborted);
+}
+
+/** Staff Go's native entry point; failures after an effect retain UNKNOWN. */
 export async function commitCloudPaneAmend(input, authorization) {
-  if (!cloudAmendRateSemanticsProven() || !cloudAmendRateReadbackProven() || !cloudAmendRecoveryProven()) {
-    return { outcome: 'not_dispatched', issue: 'AMEND_RATE_UNVERIFIED' };
-  }
-  if (!validTarget(input?.target) || !input.afterScreenshot) return { outcome: 'not_dispatched', issue: 'AMEND_INPUT_INVALID' };
+  if (!admitsCloudPaneAmend(input, authorization)) return { outcome: 'not_dispatched', issue: 'AMEND_INPUT_INVALID' };
   let attempted = false, before = null;
   try {
     const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
@@ -345,10 +395,12 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
   const changes = input?.changes, selected = input?.selected;
   if (!validTarget(input?.target) || !isOneNightRetainAmend(selected, changes) || typeof input.beforeNote !== 'string' ||
-      !input.beforeParties || typeof input.beforeParties !== 'object' || !input.afterScreenshot) {
+      !input.beforeParties || typeof input.beforeParties !== 'object' || typeof input.beforeRecipient !== 'string' ||
+      !input.preserved || !input.afterScreenshot) {
     return { outcome: 'unverified' };
   }
-  const after = { ...selected, adults: changes.adults };
+  const after = { ...selected, arrival: changes.arrival ?? selected.arrival, departure: changes.departure ?? selected.departure,
+    adults: changes.adults ?? selected.adults };
   try {
     const protectedSession = guardedSession(input, guard);
     return await openSession(async (page) => {
@@ -358,9 +410,12 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       const record = await read(page, after.confirmation, { nativePropertyCode: 'HRCEN' });
       const expected = expectedLabtestAmendRecord(record, after);
       if (!expected || expected.note !== input.beforeNote) return { outcome: 'unverified' };
-      const state = await current(page, expected, { allowBlankNote: true });
+      const state = await current(page, expected, amendRecordOptions);
       const saved = await snapshot(state.frame);
-      if (!cleanLabtestRecord(saved) || !unchangedLabtestBusinessParties(input.beforeParties, saved)) {
+      if (!cleanLabtestRecord(saved) || !same(cloudAmendPreserved(state), input.preserved) ||
+          state.cmsRecipient !== input.beforeRecipient ||
+          !preservesUnsentRecipient(saved, input.beforeRecipient) ||
+          !unchangedLabtestBusinessParties(input.beforeParties, saved, { allowModelOnlyPrimaryPartyIds: true })) {
         return { outcome: 'unverified' };
       }
       await page.screenshot({ path: input.afterScreenshot });

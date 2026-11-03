@@ -105,19 +105,19 @@ describe('source-bound saved-stay amendment', () => {
     }
   });
 
-  it('refuses Cloud Go before writing a grant or leaving an unclaimed job', async () => {
+  it('refuses Cloud Go before writing a grant when its worker is off', async () => {
     let inserts = 0;
     const row = { ...item, state: { action: 'amend', cloudAmend: { bound: true } } };
     const tx = { select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [row] }) }) }) }),
       insert: () => { inserts += 1; throw new Error('unexpected_insert'); } };
     const db = { transaction: async (fn: (value: unknown) => Promise<unknown>) => fn(tx) } as unknown as DB;
     await expect(approveHmsWrite({ db, transportId: 'transport', actorUserId: 'staff', workItemId: item.id,
-      sessionId: 'session', sessionProfile: 'remote', env: { PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_WRITE_AMEND: 'lab' },
+      sessionId: 'session', sessionProfile: 'remote', env: { PANE_HMS_LAB_AMEND_WORKER: 'off', PANE_WRITE_AMEND: 'lab' },
     })).rejects.toMatchObject({ refusal: 'amend_save_unavailable' });
     expect(inserts).toBe(0);
   });
 
-  it('refuses preparation before any DB or HMS read while the write path is unready', async () => {
+  it('refuses preparation before any DB or HMS read while the worker is off', async () => {
     const db = { select: () => { throw new Error('unexpected_db_read'); } } as unknown as DB;
     await expect(bindCloudAmendForm({ db, transportId: 'transport', workItemId: item.id,
       source: { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash },
@@ -150,25 +150,29 @@ describe('source-bound saved-stay amendment', () => {
     ]) expect(cloudAmendPreimage(bad)).toBeNull();
   });
 
-  it('refuses unsupported date, child and retain-rate choices before preparation', () => {
+  it('validates date, child and retain-rate input before checking supported save scope', () => {
     const selection = { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash };
     const base = { workItemId: item.id, source: selection, confirmation: native.confirmation, arrival: native.arrival };
     expect(bindCloudAmendInput.safeParse({ ...base, changes: { adults: 3, ratePlan: 'BAR', retainRates: 'yes' } }).success).toBe(true);
     expect(bindCloudAmendInput.safeParse({ ...base, source, changes: { adults: 3, ratePlan: 'BAR', retainRates: 'yes' } }).success).toBe(false);
     for (const changes of [
       { adults: 3, ratePlan: 'BAR' }, { adults: 3, ratePlan: 'BAR', retainRates: 'maybe' },
-      { adults: 3, ratePlan: 'BAR', retainRates: 'no' },
       { children: 2, childAges: [8], ratePlan: 'BAR', retainRates: 'yes' },
       { departure: '2027-02-30', ratePlan: 'BAR', retainRates: 'yes' },
-      { adults: 3, departure: '2027-05-05', ratePlan: 'BAR', retainRates: 'yes' },
-      { adults: 3, children: 1, childAges: [8], ratePlan: 'BAR', retainRates: 'yes' },
     ]) expect(bindCloudAmendInput.safeParse({ ...base, changes }).success).toBe(false);
+    for (const changes of [{ adults:3, ratePlan:'BAR', retainRates:'no' },
+      { arrival:'2027-05-03', departure:'2027-05-04', ratePlan:'BAR', retainRates:'yes' },
+      { children:1, childAges:[8], ratePlan:'BAR', retainRates:'yes' }]) {
+      expect(bindCloudAmendInput.safeParse({ ...base, changes }).success).toBe(true);
+    }
   });
 
-  it('limits the first approved save to one night, a changed adult count and retained price', () => {
+  it('limits the first approved save to one night before and after with a retained price', () => {
     const oneNight = { ...native, departure: '2027-05-03' };
     const adults = { adults: 3, ratePlan: 'BAR', retainRates: 'yes' as const };
     expect(cloudAmendFirstPilotScopeSupported(oneNight, adults)).toBe(true);
+    expect(cloudAmendFirstPilotScopeSupported(oneNight,
+      { arrival:'2027-05-03', departure:'2027-05-04', ratePlan:'BAR', retainRates:'yes' })).toBe(true);
     for (const [stay, changes] of [
       [native, adults],
       [oneNight, { ...adults, adults: oneNight.adults }],

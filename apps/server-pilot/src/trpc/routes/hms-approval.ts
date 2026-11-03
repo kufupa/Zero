@@ -9,7 +9,7 @@ import {
   reviewHmsWrite,
 } from '../../ai/hms-approval.js';
 import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, cloudAmendWriteState } from '../../ai/pane-cloud-amend.js';
-import { cloudAmendWriteReady, labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
+import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
 import { parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
@@ -68,7 +68,7 @@ export const hmsApprovalRouter = router({
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
     const selected = target.ok ? target.target : null;
-    return { ready: cloudAmendWriteReady() && labtestAmendWorkerEnabled() && selected !== null &&
+    return { ready: labtestAmendWorkerEnabled() && selected !== null &&
       targetKeys.every((key) => selected[key] === CENTURION_HMS_READ_TARGET[key]) };
   }),
   bindCloudAmend: mailboxProcedure.input(bindCloudAmendInput).mutation(({ input, ctx }) =>

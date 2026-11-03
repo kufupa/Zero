@@ -136,7 +136,8 @@ describe('ApproveCard approval', () => {
     const prices = Object.fromEntries(names.map((name) => [name, field(name === 'grandtotal' ? '135000' : '123450')]));
     const form = { action:'amend', fields:{ adults:2, ratePlan:'BAR', retainRates:'yes' },
       cloudAmend: publicCloudAmendFields({ preimage: { native: { guestId: 'private-native-id' } },
-        approvedPrices:{ version:1, currency:'ZAR', fields:prices } }) };
+        approvedPrices:{ version:1, currency:'ZAR', fields:prices }, preserved: { cmsRecipient:'desk@example.invalid',
+          agency:{ nativeId:'42', name:'Example Agency' }, organization:{ nativeId:'41', name:'Example Company' } } }) };
     const client = fakeClient(viewWith({ form,
     before: { fields:{ adults:1, ratePlan:'BAR' } } }));
     renderCard(client);
@@ -145,6 +146,10 @@ describe('ApproveCard approval', () => {
     expect(rows.textContent).toContain('ZAR 1,234.50');
     expect(rows.textContent).toContain('Current stay total');
     expect(rows.textContent).toContain('ZAR 1,350.00');
+    expect(rows.textContent).toContain('desk@example.invalid');
+    expect(rows.textContent).toContain('Example Agency');
+    expect(rows.textContent).toContain('Example Company');
+    expect(rows.textContent).toContain('Send confirmation');
     expect(screen.getByRole('button', { name:'Approve these values' }).hasAttribute('disabled')).toBe(false);
   });
 
@@ -152,7 +157,7 @@ describe('ApproveCard approval', () => {
     const client = fakeClient(viewWith({ form: { action:'amend', fields:{ adults:2, ratePlan:'BAR', retainRates:'yes' },
       cloudAmend:{} }, before:{ fields:{ adults:1, ratePlan:'BAR' } } }));
     renderCard(client);
-    expect((await screen.findByRole('alert')).textContent).toContain('current rate and total could not be verified');
+    expect((await screen.findByRole('alert')).textContent).toContain('current rate, total or booking details could not be verified');
     const button = screen.getByRole('button', { name:'Approve these values' });
     expect(button.hasAttribute('disabled')).toBe(true);
     fireEvent.click(button);

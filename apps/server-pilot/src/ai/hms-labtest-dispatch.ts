@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { centurionWriterQuiesced } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from './draft-approval.js';
@@ -25,10 +26,11 @@ const intentSchema = claimSchema.extend({ version: z.literal(1), kind: z.literal
   holdId: z.string().uuid(), ownerDigest: digest }).strict();
 const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('resolved'),
   holdId: z.string().uuid(), operation, confirmation: z.string().max(40).regex(/^\d+-\d+$/),
-  readbackDigest: digest, savedShot: shot }).strict();
+  readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
 const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema]);
 type Claim = z.infer<typeof claimSchema>;
 type Intent = z.infer<typeof intentSchema>;
+export type HmsLabtestIntent = Intent;
 type Resolution = Omit<z.infer<typeof resolutionSchema>, 'version' | 'kind' | 'holdId'>;
 export type HmsLabtestWriteHandle = { holdId: string; ownerToken: string };
 
@@ -82,6 +84,19 @@ async function readHistory(tx: CreateFenceTransaction) {
   return { active, grants };
 }
 
+const historyEpoch = (history: Awaited<ReturnType<typeof readHistory>>) =>
+  createHash('sha256').update([...history.grants].sort().join('\0')).digest('hex');
+
+/** Snapshot the append-only writer history before reading an HMS preimage. */
+export async function captureHmsLabtestDispatchEpoch(db: DB): Promise<string> {
+  return db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const history = await readHistory(tx);
+    if (history.active.length) throw new HmsLabtestDispatchError('occupied');
+    return historyEpoch(history);
+  }, { isolationLevel: 'read committed' });
+}
+
 /**
  * Atomic one-shot claim across all HRCEN Proof Labtest profiles. The caller must
  * independently verify the native profile and validate operation-specific
@@ -95,9 +110,10 @@ async function readHistory(tx: CreateFenceTransaction) {
  */
 export async function claimHmsLabtestDispatch(
   db: DB, raw: Claim, authorize: (tx: CreateFenceTransaction, input: Readonly<Claim>) => Promise<void>,
+  expectedEpoch: string,
 ): Promise<HmsLabtestWriteHandle> {
   const parsed = claimSchema.safeParse(raw);
-  if (!parsed.success || typeof authorize !== 'function' ||
+  if (!parsed.success || typeof authorize !== 'function' || !digest.safeParse(expectedEpoch).success ||
       (parsed.data.operation === 'create') !== Boolean(parsed.data.stayId)) throw new HmsLabtestDispatchError('invalid');
   const input = Object.freeze(parsed.data);
   let encoded: string;
@@ -110,13 +126,31 @@ export async function claimHmsLabtestDispatch(
   await db.transaction(async (tx) => {
     await lockProperty(tx);
     const history = await readHistory(tx);
-    if (history.active.length || history.grants.has(input.grantId)) throw new HmsLabtestDispatchError('occupied');
+    if (history.active.length || historyEpoch(history) !== expectedEpoch || history.grants.has(input.grantId)) {
+      throw new HmsLabtestDispatchError('occupied');
+    }
     await authorize(tx, input);
     if (canonicalJson(input) !== encoded) throw new HmsLabtestDispatchError('invalid');
     await tx.insert(workEvent).values({ id: holdId, workItemId: input.workItemId, actorKind: 'system',
       type: 'write.evidence', fieldPath: FIELD, value: intent });
   }, { isolationLevel: 'read committed' });
   return { holdId, ownerToken };
+}
+
+async function finishDispatch(db: DB, holdId: string, evidence: Resolution,
+  authorize: (intent: Intent) => void, record: (tx: CreateFenceTransaction, intent: Intent) => Promise<void>) {
+  await db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const [intent] = (await readHistory(tx)).active;
+    if (!intent || intent.holdId !== holdId) throw new HmsLabtestDispatchError('owner');
+    authorize(intent);
+    if (intent.operation !== evidence.operation) throw new HmsLabtestDispatchError('phase');
+    const immutableIntent = canonicalJson(intent);
+    await record(tx, intent);
+    if (canonicalJson(intent) !== immutableIntent) throw new HmsLabtestDispatchError('invalid');
+    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
+      fieldPath: FIELD, value: { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence } });
+  }, { isolationLevel: 'read committed' });
 }
 
 /**
@@ -134,18 +168,48 @@ export async function resolveHmsLabtestDispatch(db: DB, handle: HmsLabtestWriteH
     throw new HmsLabtestDispatchError('invalid');
   }
   const evidence = JSON.parse(canonicalJson(parsed.data)) as Resolution;
-  await db.transaction(async (tx) => {
-    await lockProperty(tx);
-    const [intent] = (await readHistory(tx)).active;
-    if (!intent || intent.holdId !== handle.holdId ||
-        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+  await finishDispatch(db, handle.holdId, evidence, (intent) => {
+    if (!timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
       throw new HmsLabtestDispatchError('owner');
     }
-    if (intent.operation !== evidence.operation) throw new HmsLabtestDispatchError('phase');
-    const immutableIntent = canonicalJson(intent);
-    await record(tx, intent);
-    if (canonicalJson(intent) !== immutableIntent) throw new HmsLabtestDispatchError('invalid');
-    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
-      fieldPath: FIELD, value: { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence } });
+  }, record);
+}
+
+// Only operation-specific wrappers below can choose a driver. Neither this
+// function nor its trusted reader accepts evidence or callbacks from clients.
+async function recoverPositiveDispatch<P extends { confirmation: string; readbackDigest: string;
+  savedShot: { runId: string; sha256: string } }>(db: DB, holdId: string, kind: z.infer<typeof operation>, driver: {
+    withLock: <T>(intent: Intent, action: () => Promise<T>) => Promise<T>;
+    prove: (intent: Intent) => Promise<P>;
+    record: (tx: CreateFenceTransaction, intent: Intent, proof: P) => Promise<void>;
+  }): Promise<void> {
+  if (!z.string().uuid().safeParse(holdId).success) throw new HmsLabtestDispatchError('invalid');
+  const original = await db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const [intent] = (await readHistory(tx)).active;
+    if (!intent || intent.holdId !== holdId || intent.operation !== kind) throw new HmsLabtestDispatchError('phase');
+    return intent;
   }, { isolationLevel: 'read committed' });
+  await driver.withLock(original, async () => {
+    if (!centurionWriterQuiesced(original.recovery.writer)) throw new HmsLabtestDispatchError('phase');
+    const proof = await driver.prove(original);
+    const result = resolutionSchema.omit({ version: true, kind: true, holdId: true }).safeParse({ operation: kind,
+      confirmation: proof.confirmation, readbackDigest: proof.readbackDigest, savedShot: proof.savedShot, recovered: true });
+    if (!result.success || (kind === 'create' && !/^\d{6,10}-\d{1,2}$/.test(proof.confirmation))) {
+      throw new HmsLabtestDispatchError('invalid');
+    }
+    await finishDispatch(db, holdId, result.data, (intent) => {
+      if (canonicalJson(intent) !== canonicalJson(original) || !centurionWriterQuiesced(intent.recovery.writer)) {
+        throw new HmsLabtestDispatchError('phase');
+      }
+    }, (tx, intent) => driver.record(tx, intent, proof));
+  });
+}
+
+/** Operator-only positive Create reconciliation; no negative read or client evidence can clear a hold. */
+export async function recoverHmsLabtestCreate(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-preview.js');
+  await recoverPositiveDispatch(db, holdId, 'create', {
+    withLock: driver.withRecoveryLock, prove: driver.proveCreateRecovery, record: driver.recordRecoveredCreate,
+  });
 }

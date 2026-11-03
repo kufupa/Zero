@@ -45,6 +45,19 @@ test('reprice request matches the full staged model and rejects alterations or i
   }
 });
 
+test('a reviewed unsent recipient must match the staged native request exactly', () => {
+  const state = snapshot();
+  state.data.udfchar13 = 'desk@example.invalid';
+  const request = checkRequest({ data: state.data });
+  assert.equal(matchesLabtestAvailability(request, frame, state), false);
+  assert.equal(matchesLabtestAvailability(request, frame, state, { recipient:'desk@example.invalid' }), true);
+  assert.equal(matchesLabtestAvailability(request, frame, state, { recipient:'other@example.invalid' }), false);
+  assert.equal(matchesLabtestAvailability(request, frame, state, { recipient:'desk@example.invalid\n' }), false);
+  const send = { data:{ ...state.data, udfchkbox04:'1' } };
+  assert.equal(matchesLabtestAvailability(checkRequest({ data:send.data }), frame, send,
+    { recipient:'desk@example.invalid' }), false);
+});
+
 function mockPage({ jsonFor = () => ({}) } = {}) {
   const pages = [], contexts = [], events = [], waiters = [];
   const emit = (request, status) => {

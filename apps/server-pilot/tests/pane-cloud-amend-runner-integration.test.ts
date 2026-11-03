@@ -4,13 +4,10 @@ import { dirname } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 
-// The live readiness hold remains intact. This test substitutes the native
-// session and database, so it cannot prove an HMS save or a real staff Go.
+// This test substitutes the native session and database; it cannot prove an
+// HMS save or a real staff Go.
 const stubs = vi.hoisted(() => ({ native: vi.fn(), consume: vi.fn(), unchanged: vi.fn(), end: vi.fn(), evidence: vi.fn(),
-  running: vi.fn(), heartbeat: vi.fn(), source: vi.fn(), approval: vi.fn(), claim: vi.fn(), resolve: vi.fn() }));
-vi.mock('../src/ai/pane-cloud-amend-readiness.js', async (original) => ({
-  ...(await original<typeof import('../src/ai/pane-cloud-amend-readiness.js')>()), cloudAmendWriteReady: () => true,
-}));
+  running: vi.fn(), heartbeat: vi.fn(), source: vi.fn(), approval: vi.fn(), epoch: vi.fn(), claim: vi.fn(), resolve: vi.fn() }));
 vi.mock('../src/ai/hms-approval.js', async (original) => ({
   ...(await original<typeof import('../src/ai/hms-approval.js')>()), consumeHmsWriteApproval: stubs.consume,
   assertHmsUnchangedBeforeSave: stubs.unchanged, endHmsWriteRun: stubs.end,
@@ -25,7 +22,7 @@ vi.mock('../src/ai/pane-cloud-amend.js', async (original) => ({
 }));
 vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => ({
   ...(await original<typeof import('../src/ai/hms-labtest-dispatch.js')>()),
-  claimHmsLabtestDispatch: stubs.claim, resolveHmsLabtestDispatch: stubs.resolve,
+  captureHmsLabtestDispatchEpoch: stubs.epoch, claimHmsLabtestDispatch: stubs.claim, resolveHmsLabtestDispatch: stubs.resolve,
 }));
 vi.mock('../src/ai/pane-stay-save.js', async (original) => ({
   ...(await original<typeof import('../src/ai/pane-stay-save.js')>()),
@@ -59,7 +56,7 @@ afterEach(async () => {
 });
 
 describe('queued Cloud amend worker to readback (synthetic)', () => {
-  it.each(['confirmed', 'after_seal_enoent', 'changed_preimage'] as const)(
+  it.each(['confirmed', 'after_seal_enoent', 'changed_preimage', 'epoch_occupied'] as const)(
     '%s: requires the claimed run, pre-effect evidence and a positive readback', async (scenario) => {
       const workItemId = randomUUID(), grantId = randomUUID(), runId = randomUUID(), holdId = randomUUID();
       const deadlineAt = new Date(Date.now() + 25 * 60_000), claimToken = randomUUID();
@@ -77,7 +74,8 @@ describe('queued Cloud amend worker to readback (synthetic)', () => {
           .map((key) => [key, price])) };
       const form = { action: 'amend', confirmation: native.confirmation, arrival: native.arrival,
         fields: { adults: 3, ratePlan: 'BAR', retainRates: 'yes' }, previewDigest: 'c'.repeat(64),
-        cloudAmend: { binding, nativeDigest: 'd'.repeat(64), preimage: { native }, approvedPrices } };
+        cloudAmend: { binding, nativeDigest: 'd'.repeat(64), preimage: { native }, approvedPrices,
+          preserved: { cmsRecipient: '', agency: null, organization: null } } };
       const consumed = { form, grantId, payloadHash: 'e'.repeat(64), hmsBeforeDigest: 'f'.repeat(64),
         authority: { actorUserId: 'staff', sessionId: 'session', sessionProfile: 'remote' as const } };
       const evidenceRows: Array<Record<string, unknown>> = [], ordered: string[] = [];
@@ -93,6 +91,11 @@ describe('queued Cloud amend worker to readback (synthetic)', () => {
         { workItemId, transportId: 'transport' },
       ] }) }) }) } as unknown as DB;
       stubs.consume.mockResolvedValue(consumed);
+      stubs.epoch.mockImplementation(async () => {
+        ordered.push('epoch');
+        if (scenario === 'epoch_occupied') throw new Error('hms_labtest_dispatch_occupied');
+        return '8'.repeat(64);
+      });
       stubs.running.mockResolvedValue(true); stubs.heartbeat.mockResolvedValue(true); stubs.end.mockResolvedValue(true);
       stubs.unchanged.mockResolvedValue(scenario === 'changed_preimage' ? { status: 'needs_check', reason: 'hms_changed' }
         : { status: 'unchanged' });
@@ -107,7 +110,8 @@ describe('queued Cloud amend worker to readback (synthetic)', () => {
         ordered.push(`seal:${name}`);
         return { eventId, sha256 };
       });
-      stubs.claim.mockImplementation(async (_db, value, authorize) => {
+      stubs.claim.mockImplementation(async (_db, value, authorize, epoch) => {
+        expect(epoch).toBe('8'.repeat(64));
         ordered.push('claim');
         await authorize(tx, value);
         intent = { ...structuredClone(value), version: 1, kind: 'intent', holdId, ownerDigest: 'a'.repeat(64) };
@@ -133,15 +137,20 @@ describe('queued Cloud amend worker to readback (synthetic)', () => {
       expect(await runLabtestAmendOnce({ ownerId: 'worker', db, env, claim })).toBe(true);
       expect(claim).toHaveBeenCalledWith(expect.objectContaining({ promptVersion: HMS_LABTEST_AMEND_PROMPT_VERSION }));
       if (scenario === 'confirmed') {
-        expect(ordered).toEqual(['seal:before.png', 'claim', 'native-effect', 'seal:after.png', 'resolve']);
+        expect(ordered).toEqual(['epoch', 'seal:before.png', 'claim', 'native-effect', 'seal:after.png', 'resolve']);
         expect(stubs.end).not.toHaveBeenCalled();
+      } else if (scenario === 'epoch_occupied') {
+        expect(ordered).toEqual(['epoch']);
+        expect(stubs.native).not.toHaveBeenCalled();
+        expect(stubs.claim).not.toHaveBeenCalled();
+        expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK' }));
       } else {
         expect(stubs.resolve).not.toHaveBeenCalled();
         expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN' }));
         if (scenario === 'after_seal_enoent') {
-          expect(ordered).toEqual(['seal:before.png', 'claim', 'native-effect']);
+          expect(ordered).toEqual(['epoch', 'seal:before.png', 'claim', 'native-effect']);
           await expect(access(`${privateDir}/after.png`)).resolves.toBeUndefined();
-        } else expect(ordered).toEqual(['seal:before.png']);
+        } else expect(ordered).toEqual(['epoch', 'seal:before.png']);
       }
     });
 });

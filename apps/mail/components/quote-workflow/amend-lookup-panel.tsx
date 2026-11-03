@@ -1076,10 +1076,14 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, wri
   const selectedRate = ratePlan || stay.ratePlan || '';
   const oneNight = Boolean(stay.arrival && stay.departure &&
     Date.parse(`${stay.departure}T00:00:00Z`) - Date.parse(`${stay.arrival}T00:00:00Z`) === 86_400_000);
+  const targetArrival = changes?.arrival ?? stay.arrival, targetDeparture = changes?.departure ?? stay.departure;
+  const targetOneNight = Boolean(targetArrival && targetDeparture &&
+    Date.parse(`${targetDeparture}T00:00:00Z`) - Date.parse(`${targetArrival}T00:00:00Z`) === 86_400_000);
   const canPrepare = Boolean(writeContext && changes && draft?.errors.length === 0 && stay.arrival &&
     stay.arrival >= '2027-01-01' && stay.firstName === 'Proof' && stay.lastName === 'Labtest' &&
-    selectedRate && selectedRate === stay.ratePlan && retainRates === 'yes' && oneNight &&
-    Object.keys(changes).length === 1 && Number.isInteger(changes.adults) && changes.adults !== stay.adults);
+    targetArrival && targetArrival >= '2027-01-01' && selectedRate && selectedRate === stay.ratePlan &&
+    retainRates === 'yes' && oneNight && targetOneNight && Object.keys(changes).length > 0 &&
+    Object.keys(changes).every((key) => ['arrival', 'departure', 'adults'].includes(key)));
   const request: CloudAmendRequest | null = canPrepare && writeContext && changes && stay.arrival &&
     (retainRates === 'yes' || retainRates === 'no') ? {
       workItemId: writeContext.workItemId, source: { threadId: identity.threadId, messageId: identity.messageId,
