@@ -186,6 +186,8 @@ append_env QUOTE_FOLLOWUPS_SINCE "${QUOTE_FOLLOWUPS_SINCE:-}"
 # Prefetch also needs HMS_PREFETCH_ENABLED=1; HMS_LANE_PAUSED=1 stops every hms lane claim.
 append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
+append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"
+append_env HMS_QUOTE_PREPARE_PER_HOUR "${HMS_QUOTE_PREPARE_PER_HOUR:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"
 append_env HMS_PREFETCH_PER_HOUR "${HMS_PREFETCH_PER_HOUR:-}"
 # Availability probe per quote stay (U10): off unless ops set HMS_AVAILABILITY_PREFETCH=on. Needs HMS_JOB_QUEUE=on.
