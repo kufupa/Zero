@@ -158,6 +158,22 @@ describe('server build identity', () => {
     }
   });
 
+  it('keeps restart SSM budgets above all sequential process drains', () => {
+    const require = createRequire(import.meta.url);
+    const config = require('../deploy/pm2.config.cjs') as { apps: Array<{ kill_timeout: number }> };
+    const drainSeconds = config.apps.reduce((sum, app) => sum + app.kill_timeout / 1000, 0);
+    for (const name of ['ops-deploy.sh', 'ops-restart.sh']) {
+      const path = fileURLToPath(new URL(`../deploy/${name}`, import.meta.url));
+      const script = readFileSync(path, 'utf8');
+      const budgets = /SSM_EXECUTION_TIMEOUT_SECONDS=(\d+)\s+SSM_MAX_POLL_SECONDS=(\d+)\s+(?:\\\s*)?(?:remote_bound|bash)/.exec(script);
+      expect(budgets, name).not.toBeNull();
+      const execution = Number(budgets?.[1]), polling = Number(budgets?.[2]);
+      expect(execution).toBeGreaterThanOrEqual(drainSeconds + 600);
+      expect(polling).toBeGreaterThanOrEqual(execution + 60);
+      expect(spawnSync('bash', ['-n', path]).status).toBe(0);
+    }
+  });
+
   it('binds HMS start to the built marker and allows status when identity is unknown', () => {
     const repo = repository();
     const server = join(repo.root, 'apps', 'server-pilot');
