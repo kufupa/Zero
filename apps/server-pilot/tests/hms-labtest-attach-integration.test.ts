@@ -76,6 +76,7 @@ afterEach(() => {
 
 describe('approved filing worker to Cloud upload fence', () => {
   it.each(['success', 'callback_missing', 'guest_changed', 'authority_refused', 'commit_unacknowledged',
+    'pre_native_expiry', 'rollback_unacknowledged', 'refusal_drain_unconfirmed', 'refusal_close_unconfirmed',
     'negative_readback', 'source_changed_at_claim', 'bytes_changed_before_check', 'bytes_changed_after_check'] as const)(
     '%s: claims the queued job and continues only after an acknowledged durable intent', async (scenario) => {
       const workItemId = randomUUID();
@@ -138,7 +139,8 @@ describe('approved filing worker to Cloud upload fence', () => {
           if (table === workItem) return [item];
           if (table === mailboxTransport) return [{ active: true }];
           if (table === mailboxAccess) return [{ userId: 'staff' }];
-          if (table === remoteSession) return [{ id: 'session-1' }];
+          if (table === remoteSession) return ['pre_native_expiry', 'rollback_unacknowledged', 'refusal_drain_unconfirmed',
+            'refusal_close_unconfirmed'].includes(scenario) ? [] : [{ id: 'session-1' }];
           if (table === aiWorkflowRun) return 'metrics' in fields ? [{ metrics: {}, deadlineAt: fence.deadlineAt }] : [run];
           if (table === workEvent && 'itemId' in fields) return events.map((event) => ({ ...event, itemId: event.workItemId }));
           if (table === workEvent && 'evidence' in fields) return [sealed[evidenceIndex++]];
@@ -164,7 +166,11 @@ describe('approved filing worker to Cloud upload fence', () => {
       },
         transaction: async (fn: (value: unknown) => Promise<unknown>) => {
           if (!approvalDone) { const approved = await fn(approvalTx); approvalDone = true; return approved; }
-          const result = await fn(tx);
+          let result;
+          try { result = await fn(tx); } catch (error) {
+            if (scenario === 'rollback_unacknowledged') throw new Error('rollback acknowledgement lost');
+            throw error;
+          }
           if (scenario === 'commit_unacknowledged') throw new Error('commit acknowledgement lost');
           return result;
         } } as unknown as DB;
@@ -209,7 +215,11 @@ describe('approved filing worker to Cloud upload fence', () => {
       stubs.project.mockReturnValue({ outcome: 'found', stay, arrivalMismatch: false, nativePreimage: {
         ...native, guestId: '123' } });
       paneHmsWriteLoaders.spawnAttach = async (input) => runCloudPaneAttach(input, {
-        openSession: async (fn: (page: object) => Promise<unknown>) => fn({}),
+        openSession: async (fn: (page: object) => Promise<unknown>) => {
+          const result = await fn({});
+          if (scenario === 'refusal_close_unconfirmed') throw new Error('browser close unconfirmed');
+          return result;
+        },
         shallow: async () => {}, read: async () => record,
         freshRead: async (_page: unknown, selected: { documentName: string }, code: string) => scenario === 'negative_readback' ? false :
           hasUniqueDocumentListing({ documents: [{ documentCode: code, name: selected.documentName }] }, code, selected.documentName),
@@ -235,7 +245,7 @@ describe('approved filing worker to Cloud upload fence', () => {
           const before = join(evidenceDir, 'before.png'), after = join(evidenceDir, 'after.png');
           await writeFile(before, png); await writeFile(after, png);
           return { outcome: sent ? 'awaiting_readback' : 'not_dispatched', evidenceDir,
-            screenshots: [before, after], dispatchCallbacksDrained: drained };
+            screenshots: [before, after], dispatchCallbacksDrained: drained && scenario !== 'refusal_drain_unconfirmed' };
         },
       });
       const claim = vi.fn(async () => run);
@@ -268,6 +278,12 @@ describe('approved filing worker to Cloud upload fence', () => {
       } else {
         expect(sent).toBe(0); expect(aborted).toBe(1); expect(updates.filter((row) => row.state === 'succeeded')).toHaveLength(0);
         expect(events).toHaveLength(scenario === 'commit_unacknowledged' ? 1 : 0);
+        if (scenario === 'pre_native_expiry' || scenario === 'source_changed_at_claim') {
+          expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK', reason: 'filing_authority_refused' }));
+        } else if (['authority_refused', 'commit_unacknowledged', 'rollback_unacknowledged',
+          'refusal_drain_unconfirmed', 'refusal_close_unconfirmed'].includes(scenario)) {
+          expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN' }));
+        }
       }
     },
   );

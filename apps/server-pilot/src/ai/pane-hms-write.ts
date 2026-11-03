@@ -1166,9 +1166,9 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     void heartbeatAiRun(fence, db).catch(() => false);
   }, HEARTBEAT_MS);
   let saved: SaveOutcome;
-  const dispatch: { handle: HmsLabtestWriteHandle | null; attempted: boolean; guestId: string | null;
+  const dispatch: { handle: HmsLabtestWriteHandle | null; attempted: boolean; provedAuthorityRefusal: boolean; guestId: string | null;
     stay: PaneStayFields | null; filingSnapshot: FilingSnapshot | null; code: string | null; requestDigest: string | null } =
-    { handle: null, attempted: false, guestId: null, stay: null, filingSnapshot: null, code: null, requestDigest: null };
+    { handle: null, attempted: false, provedAuthorityRefusal: false, guestId: null, stay: null, filingSnapshot: null, code: null, requestDigest: null };
   try {
     const cloud = filing && cloudStay ? {
       approvedStay: { ...stay, nativeGuestId: cloudStay.nativeGuestId },
@@ -1205,20 +1205,33 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, documentCode: code,
           documentName: filing.documentName, pdfSha256: filing.pdfSha256 };
         dispatch.attempted = true;
-        dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
-          actorUserId: consumed.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN', firstName: 'Proof',
-          lastName: 'Labtest', nativeGuestId, operation: 'attach_document', sourceDigest, approvedDigest, requestDigest, recovery },
-        async (tx, claim) => {
-          if (claim.requestDigest !== requestDigest || canonicalJson(claim.recovery) !== canonicalJson(recovery)) {
-            throw new Error('attachment_recovery_changed');
-          }
-          await authorizeConsumedLabtestAttach(tx, { fence, transportId: input.transportId, workItemId: input.workItemId,
-            grantId: consumed.grantId, actorUserId: consumed.actorUserId, sessionId, sessionProfile, sourceDigest, approvedDigest,
-            confirmation: filing.confirmation, arrival: filing.arrival, documentCode: code, documentName: filing.documentName,
-            pdfSha256: filing.pdfSha256, env: input.env,
-            lockSource: (lockedTx) => lockBoundFilingSource(lockedTx, { transportId: input.transportId,
-              workItemId: input.workItemId, form: filing }) });
-        });
+        let authorityRefusal: HmsApprovalError | null = null;
+        try {
+          dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
+            actorUserId: consumed.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN', firstName: 'Proof',
+            lastName: 'Labtest', nativeGuestId, operation: 'attach_document', sourceDigest, approvedDigest, requestDigest, recovery },
+          async (tx, claim) => {
+            if (claim.requestDigest !== requestDigest || canonicalJson(claim.recovery) !== canonicalJson(recovery)) {
+              throw new Error('attachment_recovery_changed');
+            }
+            try {
+              await authorizeConsumedLabtestAttach(tx, { fence, transportId: input.transportId, workItemId: input.workItemId,
+                grantId: consumed.grantId, actorUserId: consumed.actorUserId, sessionId, sessionProfile, sourceDigest, approvedDigest,
+                confirmation: filing.confirmation, arrival: filing.arrival, documentCode: code, documentName: filing.documentName,
+                pdfSha256: filing.pdfSha256, env: input.env,
+                lockSource: (lockedTx) => lockBoundFilingSource(lockedTx, { transportId: input.transportId,
+                  workItemId: input.workItemId, form: filing }) });
+            } catch (error) {
+              if (error instanceof HmsApprovalError) authorityRefusal = error;
+              throw error;
+            }
+          });
+        } catch (error) {
+          // Only the original, pre-insert refusal proves this claim never reached COMMIT.
+          // A lost transaction acknowledgement or a different error remains unknown.
+          dispatch.provedAuthorityRefusal = authorityRefusal !== null && error === authorityRefusal;
+          throw error;
+        }
         dispatch.code = code;
         dispatch.requestDigest = requestDigest;
         // A confirmed commit authorizes exactly this already-intercepted request.
@@ -1245,6 +1258,11 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   } else if (saved.runDir) input.runDirs.push(saved.runDir);
   const confirmedListing = saved.outcome === 'confirmed' && saved.listed === true;
   if (isCloudAttach && !confirmedListing && saved.uploadSent && !dispatch.handle) return endRun(db, fence, 'UNKNOWN', 'target_hold_missing');
+  if (isCloudAttach && !confirmedListing && dispatch.provedAuthorityRefusal && !dispatch.handle && !saved.uploadSent &&
+      saved.dispatchCallbacksDrained === true && saved.writerSessionClosed === true) {
+    // A fresh Go may follow after the refused run clears its stale snapshot.
+    return endRun(db, fence, 'NEEDS_CHECK', 'filing_authority_refused');
+  }
   if (isCloudAttach && !confirmedListing && dispatch.attempted && (!dispatch.handle || !saved.uploadSent)) {
     return endRun(db, fence, 'UNKNOWN', 'dispatch_claim_unresolved');
   }
