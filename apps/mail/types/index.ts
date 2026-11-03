@@ -110,6 +110,7 @@ export interface ParsedMessage {
   messageId?: string;
   threadId?: string;
   isDraft?: boolean;
+  direction?: 'inbound' | 'outbound';
   attachments?: Attachment[];
   debugHeaders?: HeaderDebugLine[];
   reactions?: MessageReactionGroup[];
