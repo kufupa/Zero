@@ -200,7 +200,7 @@ function matchesForm(request, path, frame, expected) {
 
 function validFile(file) {
   return file && typeof file === 'object' && typeof file.name === 'string' && file.name.length > 0 &&
-    file.name.length <= 150 && !/["\\/\p{Cc}]/u.test(file.name) &&
+    file.name.length <= 150 && file.name === file.name.replace(/\s+/g, ' ').trim() && !/["\\/\p{Cc}]/u.test(file.name) &&
     Buffer.from(file.name, 'utf8').toString('utf8') === file.name &&
     /^[A-Z0-9][A-Z0-9_-]{0,39}$/.test(file.documentCode || '') &&
     typeof file.description === 'string' && file.description.trim() === file.description && file.description.length > 0 &&

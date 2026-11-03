@@ -365,6 +365,11 @@ export async function bindAttachDocumentForm(input: {
       messageId: input.sourceMessageId, attachmentId: input.attachmentId, signal: AbortSignal.timeout(READ_ATTACHMENT_TIMEOUT_MS),
       checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId });
     if (!source) return { status: 'refused', reason: 'attachment_not_found' };
+    // The Documents reader collapses whitespace. Refuse before Go if its
+    // readback could not compare the exact approved filename.
+    if (source.source.filename !== source.source.filename.replace(/\s+/g, ' ').trim()) {
+      return { status: 'refused', reason: 'form_invalid' };
+    }
     const form: BoundFilingForm = { action: 'attach_document', confirmation: input.confirmation, arrival: input.arrival,
       lastName: squash(input.lastName), sourceMessageId: input.sourceMessageId, sourceInternetMessageId: selected,
       attachmentId: input.attachmentId, documentName: source.source.filename, pdfSha256: source.source.sha256,

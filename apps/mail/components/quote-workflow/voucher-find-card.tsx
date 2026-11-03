@@ -138,6 +138,10 @@ type VoucherFindCardProps = {
   workItemId?: string | null;
   /** Attach is a write. Hidden when the pane has writes off. */
   writesEnabled?: boolean;
+  /** An approval card for this same selected work item is mounted. */
+  approvalAvailable?: boolean;
+  /** Refresh the sibling approval card only after the reviewed form and snapshot are stored. */
+  onPrepared?: () => void;
   /** Registry-backed property for the active mailbox; unknown disables filing actions. */
   propertyCode?: string | null;
 };
@@ -157,6 +161,8 @@ function VoucherFindCardBody({
   syncPending = false,
   workItemId = null,
   writesEnabled = false,
+  approvalAvailable = false,
+  onPrepared,
   propertyCode = null,
 }: VoucherFindCardProps) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
@@ -165,7 +171,7 @@ function VoucherFindCardBody({
     [trpc, transportId, internetMessageId, propertyCode]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
-  const [attach, setAttach] = useState<'idle' | 'binding' | 'bound' | 'refused'>('idle');
+  const [attachState, setAttach] = useState<{ key: string; status: 'binding' | 'bound' | 'refused' } | null>(null);
   const [attachStatus, setAttachStatus] = useState<{
     workItemId: string; view: VoucherAttachWriteView | null; valid: boolean;
   } | null>(null);
@@ -222,11 +228,12 @@ function VoucherFindCardBody({
     normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(voucherGuest.lastName)
       ? searchRun.rows[0]!
       : null;
-  const previewKey = JSON.stringify([internetMessageId, workItemId, replyMessageId,
+  const previewKey = JSON.stringify([internetMessageId, workItemId, replyMessageId, approvalAvailable,
     reply?.status === 'voucher' ? reply.file : null,
     reply?.status === 'voucher' ? reply.guest : null, singleMatch]);
   previewKeyRef.current = previewKey;
   const previewStatus = preview?.key === previewKey ? preview.status : 'idle';
+  const attach = attachState?.key === previewKey ? attachState.status : 'idle';
   const detailRequest = singleMatch
     ? {
         kind: 'find' as const,
@@ -293,7 +300,7 @@ function VoucherFindCardBody({
       checkedFor.current = internetMessageId;
       setReply(null);
       setSave('idle');
-      setAttach('idle');
+      setAttach(null);
       setAttachStatus(null);
       setDetailsRequested(false);
       detailsStartedFor.current = null;
@@ -442,7 +449,7 @@ function VoucherFindCardBody({
   const attachSucceeded = listedWithHold || attachWrite?.run?.state === 'succeeded';
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
-  const filingEnabled = propertyCode === 'HRCEN' ? attachWrite?.filingConfigured === true : writesEnabled;
+  const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
   const canAttach = Boolean(propertyCode && singleMatch && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !unconfirmedAttach && !attachSucceeded &&
     (propertyCode !== 'HRCEN' || previewStatus === 'ready'));
@@ -467,7 +474,7 @@ function VoucherFindCardBody({
   const bindAttach = async () => {
     if (!singleMatch || !file || !workItemId || !reply.messageId || !attachClient?.bind || attach === 'binding') return;
     const key = previewKey;
-    setAttach('binding');
+    setAttach({ key, status: 'binding' });
     try {
       const result = await attachClient.bind({
         workItemId,
@@ -478,9 +485,10 @@ function VoucherFindCardBody({
         sourceMessageId: reply.messageId,
       });
       if (!mounted.current || previewKeyRef.current !== key) return;
-      setAttach(result.status === 'bound' ? 'bound' : 'refused');
+      setAttach({ key, status: result.status === 'bound' ? 'bound' : 'refused' });
+      if (result.status === 'bound') onPrepared?.();
     } catch {
-      if (mounted.current) setAttach('refused');
+      if (mounted.current && previewKeyRef.current === key) setAttach({ key, status: 'refused' });
     }
   };
 

@@ -90,7 +90,10 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
   attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord } = {}) {
   if (input.target?.propertyCode !== 'HRCEN' || input.allowRealGuest || typeof input.beforeDispatch !== 'function' ||
       typeof input.finalAuthority !== 'function' || typeof input.dispatchWithAuthority !== 'function' ||
-      !input.approvedSnapshot || !/^[a-f0-9]{64}$/.test(input.pdfSha256 || '')) return { outcome: 'refused_input', uploadSent: false, screenshots: [] };
+      !input.approvedSnapshot || !/^[a-f0-9]{64}$/.test(input.pdfSha256 || '') ||
+      typeof input.documentName !== 'string' || input.documentName !== input.documentName.replace(/\s+/g, ' ').trim()) {
+    return { outcome: 'refused_input', uploadSent: false, screenshots: [] };
+  }
   const bytes = await readFile(input.file);
   if (!bytes.length || bytes.length > 10 * 1024 * 1024 || !bytes.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
       createHash('sha256').update(bytes).digest('hex') !== input.pdfSha256) {

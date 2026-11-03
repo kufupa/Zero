@@ -383,6 +383,7 @@ const FLAG_PROPERTY = {
   HMS_DAVINCI_CREATE: "HRDAV",
   HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
   HMS_DAVINCI_READS: "HRDAV",
+  PANE_HMS_LAB_ATTACH_WORKER: "HRCEN",
 };
 for (const flag of flips) {
   const neededProperty = FLAG_PROPERTY[flag];

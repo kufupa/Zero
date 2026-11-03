@@ -93,6 +93,19 @@ test('fresh listing requires a unique exact code and filename', () => {
   assert.equal(matches([{ ...row, documentCode: 'NAVA456' }]), false);
 });
 
+test('filing refuses names that the Documents reader would normalize before opening HMS', async () => {
+  for (const documentName of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
+    let opened = 0;
+    const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, documentName,
+      approvedSnapshot: snapshot, pdfSha256: 'a'.repeat(64), beforeDispatch: async () => true,
+      finalAuthority: async () => true, dispatchWithAuthority: async () => {} },
+    { openSession: async () => { opened++; } });
+    assert.equal(result.outcome, 'refused_input');
+    assert.equal(result.uploadSent, false);
+    assert.equal(opened, 0);
+  }
+});
+
 test('a clean upload plus a fresh matching listing confirms metadata; uncertainty stays unknown', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pane-attach-test-'));
   try {

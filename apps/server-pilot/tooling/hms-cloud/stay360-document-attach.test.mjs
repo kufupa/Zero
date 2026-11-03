@@ -353,6 +353,10 @@ test('explicit blank note can be verified but an omitted note is refused', async
 test('refuses invalid files and contexts before any browser action', async () => {
   assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name: '../guest.txt' }, { evidenceRoot: '/tmp' }),
     { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
+  for (const name of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
+    assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name }, { evidenceRoot: '/tmp' }),
+      { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
+  }
   assert.deepEqual(await attachLabtestDocument(null, {}, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' });
   const page = { context: () => ({ _options: { serviceWorkers: 'allow' } }) };

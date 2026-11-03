@@ -818,16 +818,55 @@ describe('voucher find card: attach to HMS', () => {
     const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
     const bind = vi.fn(async () => ({ status: 'bound' as const }));
+    const onPrepared = vi.fn();
     const state = vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview },
       bindAttach: { mutate: bind }, writeState: { query: state } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN"
+      approvalAvailable onPrepared={onPrepared} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Prepare upload for approval' }));
     await waitFor(() => expect(bind).toHaveBeenCalledWith({ workItemId: WORK_ITEM, sourceMessageId: 'm1',
       attachmentId: 'att-1', confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
       lastName: SMITH_ROW.lastName, internetMessageId: 'abc@host' }, MAILBOX));
+    expect(onPrepared).toHaveBeenCalledOnce();
+  });
+
+  it('does not prepare HRCEN filing when no matching approval card is mounted', async () => {
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const bind = vi.fn(async () => ({ status: 'bound' as const }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect(await screen.findByText(/Upload is not available yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('discards a stale binding result and allows the new work item to be prepared', async () => {
+    let resolveBind!: (value: { status: 'bound' }) => void;
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const bind = vi.fn(() => new Promise<Parameters<typeof resolveBind>[0]>((done) => { resolveBind = done; }));
+    const onPrepared = vi.fn();
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) } };
+    const { rerender } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM}
+      propertyCode="HRCEN" approvalAvailable onPrepared={onPrepared} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Prepare upload for approval' }));
+    await waitFor(() => expect(bind).toHaveBeenCalledOnce());
+    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="other-item"
+      propertyCode="HRCEN" approvalAvailable onPrepared={onPrepared} />);
+    await act(async () => resolveBind({ status: 'bound' }));
+    expect(onPrepared).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect((await screen.findByRole('button', { name: 'Prepare upload for approval' })).hasAttribute('disabled')).toBe(false);
   });
 
   it('holds preparation when the scoped filing flag is off, even if create is enabled', async () => {
