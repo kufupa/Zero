@@ -1,13 +1,136 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { centurionContextOptions, newPreparedCenturionPage, withCenturionStay360Page } from './centurion-stay360.mjs';
+import {
+  assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserHoldPath, centurionBrowserIdentity, centurionContextOptions,
+  closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, prepareCenturionLaunch, withCenturionStay360Page,
+} from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
+
+test('failed or incomplete browser cleanup remains uncertain and still closes the other layers', async () => {
+  for (const failing of ['context', 'browser', 'server', 'group']) {
+    const calls = [];
+    const resource = (name) => ({ close: async () => { calls.push(name); if (failing === name) throw new Error('failed'); } });
+    await assert.rejects(closeCenturionResources({
+      context: resource('context'), browser: resource('browser'), server: resource('server'), processGroup: 123,
+    }, { isGroupGone: async () => { calls.push('group'); return failing !== 'group'; },
+      onUnconfirmed: () => {}, groupWaitMs: 0 }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.deepEqual(calls, ['context', 'browser', 'server', 'group', ...(failing === 'group' ? ['group'] : [])]);
+  }
+  await assert.rejects(closeCenturionResources({ server: { close: async () => {} } }, { onUnconfirmed: () => {} }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+});
+
+test('a hung close is bounded and later cleanup still runs', async () => {
+  const calls = [];
+  await assert.rejects(closeCenturionResources({
+    context: { close: () => new Promise(() => {}) },
+    browser: { close: async () => { calls.push('browser'); } },
+    server: { close: async () => { calls.push('server'); } }, processGroup: 123,
+  }, { timeoutMs: 10, groupWaitMs: 0, isGroupGone: async () => true }), /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+  assert.deepEqual(calls, ['browser', 'server']);
+});
+
+test('a real owned Chromium server closes its detached process group', async () => {
+  const chromium = require('playwright').chromium;
+  let server, browser, context;
+  try {
+    server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+      executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+    const group = centurionBrowserGroup(server.process().pid);
+    browser = await chromium.connect(server.wsEndpoint());
+    context = await browser.newContext(centurionContextOptions(true));
+    const page = await context.newPage();
+    await page.goto('data:text/html,<title>owned browser</title>');
+    await closeCenturionResources({ context, browser, server, processGroup: group });
+    context = browser = server = undefined;
+    assert.throws(() => process.kill(-group, 0), { code: 'ESRCH' });
+  } finally {
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    await server?.close().catch(() => {});
+  }
+});
+
+test('a hung server is killed only when its owned group identity still matches', async () => {
+  const chromium = require('playwright').chromium;
+  const server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  const identity = centurionBrowserIdentity(server.process().pid);
+  const exited = new Promise((resolve) => server.process().once('exit', resolve));
+  let held = false;
+  try {
+    await assert.rejects(closeCenturionResources({
+      server: { close: () => new Promise(() => {}) }, processGroup: identity.pid, processIdentity: identity,
+    }, { timeoutMs: 10, groupWaitMs: 1_000, onUnconfirmed: () => { held = true; } }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    await exited;
+    assert.equal(held, false);
+    assert.throws(() => process.kill(-identity.pid, 0), { code: 'ESRCH' });
+  } finally {
+    await server.close().catch(() => {});
+  }
+});
+
+test('a mismatched group is never killed and creates a persistent hold', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hms-browser-hold-'));
+  const path = join(dir, 'hold');
+  const chromium = require('playwright').chromium;
+  const server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  const identity = centurionBrowserIdentity(server.process().pid);
+  try {
+    const mismatch = { ...identity, started: '0' };
+    await assert.rejects(closeCenturionResources({ server: { close: async () => {} },
+      processGroup: identity.pid, processIdentity: mismatch },
+    { groupWaitMs: 0, onUnconfirmed: (value) => holdCenturionBrowser(value, path) }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.doesNotThrow(() => process.kill(identity.pid, 0));
+    assert.throws(() => assertNoCenturionBrowserHold(path), /HMS_BROWSER_HOLD/);
+    holdCenturionBrowser(mismatch, path); // An existing hold is never overwritten.
+  } finally {
+    await server.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('browser holds use an owner-private directory and reject unsafe parents', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-private-home-'));
+  try {
+    const path = centurionBrowserHoldPath(home);
+    assert.equal(path, join(home, '.nava-hms-runtime', 'hrcen-browser-hold'));
+    assert.doesNotThrow(() => assertNoCenturionBrowserHold(path));
+    holdCenturionBrowser({ pid: 1, started: '1' }, path);
+    assert.throws(() => assertNoCenturionBrowserHold(path), /HMS_BROWSER_HOLD/);
+    await chmod(join(home, '.nava-hms-runtime'), 0o770);
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+    await rm(join(home, '.nava-hms-runtime'), { recursive: true });
+    await symlink(home, join(home, '.nava-hms-runtime'));
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+    await chmod(home, 0o777);
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+  } finally {
+    await chmod(home, 0o700);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('a hold created while a launch is queued prevents that launch', async () => {
+  let held = false;
+  let checks = 0;
+  const check = () => { checks += 1; if (held) throw new Error('HMS_BROWSER_HOLD'); };
+  await assert.rejects(prepareCenturionLaunch(async () => { held = true; }, undefined, check), /HMS_BROWSER_HOLD/);
+  assert.equal(checks, 2);
+  let called = false;
+  await assert.rejects(prepareCenturionLaunch(() => { called = true; }, undefined, check), /HMS_BROWSER_HOLD/);
+  assert.equal(called, false);
+});
 
 test('service-worker blocking is explicit and the default context is unchanged', () => {
   assert.deepEqual(centurionContextOptions(), { viewport: { width: 1440, height: 1000 } });
