@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { reconcilePaneCreateScope } from '../src/ai/pane-create-scope.js';
+import { activePaneCreateIdentity, reconcilePaneCreateScope } from '../src/ai/pane-create-scope.js';
 import { paneOwnRowsFromEvents } from '../src/ai/pane-create-scope-origin.js';
+import { storedAnalysis } from '../src/ai/work-items.js';
 
 const stay = { firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01', departure: '2027-03-03',
   adults: 1, childAges: [], sourceOfBusiness: 'Walk in', roomType: 'STQN', ratePlan: 'BAR',
@@ -12,6 +13,46 @@ const payload = { contact: { name: null, email: null, phone: null }, agency: nul
   confirmationNumbers: [], stays: [extractedStay], missing: [] };
 const base = { payload, state: {}, identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 },
   party: { kind: 'none' as const }, stay };
+
+describe('active create room identity', () => {
+  it('requires the selected room to exist and remain visible at the selected index', () => {
+    expect(activePaneCreateIdentity(payload, {}, base.identity)).toBe(true);
+    expect(activePaneCreateIdentity(payload, {}, { ...base.identity, rowId: 'other' })).toBe(false);
+    expect(activePaneCreateIdentity(payload, {}, { ...base.identity, roomIndex: 2 })).toBe(false);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].removed': true }, base.identity)).toBe(false);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r1].removed': true }, base.identity)).toBe(false);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r1].count': 2 }, { ...base.identity, roomIndex: 2 })).toBe(true);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r1].count': null }, base.identity)).toBe(false);
+  });
+
+  it('refuses duplicate room keys and orphan rows while permitting explicit staff additions', () => {
+    const second = { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r2' }] };
+    expect(activePaneCreateIdentity({ ...payload, stays: [extractedStay, second] }, {}, base.identity)).toBe(true);
+    expect(activePaneCreateIdentity({ ...payload, stays: [{ ...extractedStay, rows: [row, { ...row, id: 'r2' }] }] },
+      {}, base.identity)).toBe(false);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r2].count': 1 }, { ...base.identity, rowId: 'r2' })).toBe(false);
+    expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r1].removed': true,
+      'stays[s1].rows[r2].removed': null, 'stays[s1].rows[r2].count': 1 }, { ...base.identity, rowId: 'r2' })).toBe(true);
+  });
+
+  it('accepts the rowless group while its edits are saved on the deterministic own row', () => {
+    const rowless = { ...payload, stays: [{ ...extractedStay, rows: [] }] };
+    const state = { 'stays[s1].rows[s1_row].count': 1, 'stays[s1].rows[s1_row].adults': 1 };
+    const before = storedAnalysis({ kind: 'booking', payload: rowless, attachments: [] }, {});
+    const after = storedAnalysis({ kind: 'booking', payload: rowless, attachments: [] }, state);
+    expect(before.refs.s1).toEqual({ stayId: 's1', rowId: null });
+    expect(after.refs.s1_row).toEqual({ stayId: 's1', rowId: 's1_row' });
+    const alias = { stayId: 's1', rowId: 's1', roomIndex: 1 };
+    expect(activePaneCreateIdentity(rowless, state, alias)).toBe(true);
+    expect(activePaneCreateIdentity(rowless, state, { ...alias, rowId: 's1_row' })).toBe(true);
+    expect(activePaneCreateIdentity(rowless, {}, alias)).toBe(false);
+    expect(activePaneCreateIdentity(rowless, { ...state, 'stays[s1].rows[s1_row].removed': true }, alias)).toBe(false);
+    expect(activePaneCreateIdentity(rowless, { ...state, 'stays[s1].rows[other].removed': null,
+      'stays[s1].rows[other].count': 1 }, alias)).toBe(false);
+    const colliding = { ...rowless, stays: [...rowless.stays, { ...extractedStay, id: 's2', rows: [{ ...row, id: 's1' }] }] };
+    expect(activePaneCreateIdentity(colliding, state, alias)).toBe(false);
+  });
+});
 
 describe('create scope reconciliation', () => {
   it('accepts one synchronized room and rejects wrong row or sibling identity', () => {
@@ -33,6 +74,12 @@ describe('create scope reconciliation', () => {
   it('refuses party fields when the reviewed party context is none', () => {
     expect(reconcilePaneCreateScope({ ...base, stay: { ...stay, bookingAgency: { nativeId: '1', name: 'Agency' } } })).toBe(false);
     expect(reconcilePaneCreateScope({ ...base, stay: { ...stay, organization: { nativeId: '2', name: 'Company' } } })).toBe(false);
+  });
+  it('accepts the exact selected agency and company, and rejects a changed selection', () => {
+    const selected = { ...base, party: { kind: 'selected' as const, agency: 'Agency', company: 'Company' },
+      stay: { ...stay, bookingAgency: { nativeId: '1', name: 'Agency' }, organization: { nativeId: '2', name: 'Company' } } };
+    expect(reconcilePaneCreateScope(selected)).toBe(true);
+    expect(reconcilePaneCreateScope({ ...selected, party: { ...selected.party, company: 'Other' } })).toBe(false);
   });
   it('ignores deleted additions but still rejects active orphan paths', () => {
     expect(reconcilePaneCreateScope({ ...base, state: { 'stays[s1].rows[r2].count': 1,

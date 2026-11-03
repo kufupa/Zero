@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
+import generatedNote from '../tooling/hms-cloud/fixtures/generated-reservation-note.json';
 
 const stay = {
   firstName: 'Proof', lastName: 'Labtest', propertyCode: 'HRCEN',
@@ -16,6 +17,24 @@ const proof = {
 };
 
 describe('Cloud pane create mapping', () => {
+  it('binds the exact generated multiline reservation note through prepare and commit', () => {
+    const reviewed = { ...stay, reservationNote: generatedNote.note };
+    const native = { ...proof, note: generatedNote.note };
+    expect(reviewed.reservationNote.length).toBeGreaterThan(200);
+    for (const mode of ['prepare', 'commit'] as const) {
+      expect(mapPaneStayToCloudCreateInput(reviewed, mode, '123')).toMatchObject({
+        outcome: 'ok', input: { note: generatedNote.note },
+      });
+    }
+    expect(digestPaneCloudCreateProof(reviewed, native, undefined, '123')).toMatchObject({
+      outcome: 'ok', request: { note: generatedNote.note },
+    });
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, note: generatedNote.note.replace('\n', ' ') }).outcome).toBe('refused');
+    for (const note of ['x'.repeat(2_001), 'a\rb', 'a\0b', 'a\tb']) {
+      expect(mapPaneStayToCloudCreateInput({ ...reviewed, reservationNote: note }, 'prepare').outcome).toBe('refused');
+    }
+    expect(mapPaneStayToCloudCreateInput({ ...reviewed, reservationNote: 'x'.repeat(2_000) }, 'prepare').outcome).toBe('ok');
+  });
   it('maps a supported Labtest draft without enabling email or save', () => {
     expect(mapPaneStayToCloudCreateInput(stay, 'prepare')).toMatchObject({ outcome: 'ok', input: {
       mode: 'prepare', guest: { search: { firstName: 'Proof', lastName: 'Labtest' } },
@@ -29,10 +48,39 @@ describe('Cloud pane create mapping', () => {
     });
   });
 
+  it('preserves an explicitly chosen profile from prepare through proof', () => {
+    expect(mapPaneStayToCloudCreateInput(stay, 'prepare', '123')).toMatchObject({
+      outcome: 'ok', input: { mode: 'prepare', guest: { profileId: '123' } },
+    });
+    expect(mapPaneStayToCloudCreateInput(stay, 'prepare', '')).toMatchObject({
+      outcome: 'refused', reason: 'prepared_guest_identity_required',
+    });
+    expect(digestPaneCloudCreateProof(stay, proof, undefined, '123').outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(stay, proof, undefined, '456').outcome).toBe('refused');
+    expect(digestPaneCloudCreateProof(stay, proof, undefined, 'not-a-native-id').outcome).toBe('refused');
+  });
+
+  it.each([
+    ['NGI', 'NGI'], ['Non-Guaranteed Individual', 'NGI'],
+    ['GTDAGT', 'GTDAGT'], ['Guaranteed By Agent', 'GTDAGT'],
+  ])('maps and binds reviewed guarantee %s to native %s', (display, native) => {
+    const reviewed = { ...stay, guaranteeType: display };
+    expect(mapPaneStayToCloudCreateInput(reviewed, 'commit', '123')).toMatchObject({
+      outcome: 'ok', input: { guaranteeType: native },
+    });
+    expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, display).outcome).toBe('ok');
+    const other = native === 'NGI' ? 'GTDAGT' : 'NGI';
+    expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: other }, display).outcome).toBe('refused');
+    if (display !== native) {
+      expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }).outcome).toBe('refused');
+      expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, 'different').outcome).toBe('refused');
+    }
+  });
+
   it('refuses unsupported requested fields instead of dropping them', () => {
     for (const [field, value] of Object.entries({ track: 'A', marketSegment: 'A',
-      bookerName: 'A', bookerEmail: 'a@example.test', guestoptin4: false,
-      confirmationRecipient: { mode: 'client', address: 'a@example.test' } })) {
+      bookerName: 'invalid\nname', bookerEmail: 'a\n@example.test', guestoptin4: true,
+      confirmationRecipient: { mode: 'client', address: 'invalid' } })) {
       expect(mapPaneStayToCloudCreateInput({ ...stay, [field]: value }, 'prepare')).toMatchObject({
         outcome: 'refused', reason: 'cloud_create_field_unsupported', field,
       });
@@ -43,6 +91,34 @@ describe('Cloud pane create mapping', () => {
       expect(mapPaneStayToCloudCreateInput({ ...stay, lastName: name }, 'prepare'))
         .toMatchObject({ outcome: 'refused', reason: 'guest_name_required' });
     }
+  });
+
+  it('binds the reviewed booker and recipient without enabling CMS send', () => {
+    const reviewed = { ...stay, bookerName: 'Staff Booker', bookerEmail: 'booker@example.test',
+      confirmationSendMail: false, confirmationRecipient: { mode: 'client' as const, address: 'client@example.test' } };
+    const native = { ...proof, booker: { name: reviewed.bookerName, contact: reviewed.bookerEmail },
+      cmsRecipient: reviewed.confirmationRecipient.address };
+    expect(mapPaneStayToCloudCreateInput(reviewed, 'commit', '123')).toMatchObject({ outcome: 'ok', input: {
+      booker: native.booker, cms: { send: false, recipient: native.cmsRecipient },
+    } });
+    expect(digestPaneCloudCreateProof(reviewed, native).outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, cmsRecipient: 'other@example.test' }).outcome).toBe('refused');
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, booker: { ...native.booker, name: 'Other' } }).outcome).toBe('refused');
+    expect(mapPaneStayToCloudCreateInput({ ...reviewed, confirmationSendMail: true }, 'commit', '123')).toMatchObject({
+      outcome: 'refused', reason: 'confirmation_email_writer_unavailable',
+    });
+  });
+
+  it('binds the selected track and explicitly false guest opt-in', () => {
+    const reviewed = { ...stay, track: 'BAR', guestoptin4: false };
+    const native = { ...proof, track: { lookupCode: 'BAR', display: 'Best Available' }, guestOptIn: false };
+    expect(mapPaneStayToCloudCreateInput(reviewed, 'prepare')).toMatchObject({ outcome: 'ok', input: {
+      track: 'BAR', guestoptin4: false,
+    } });
+    expect(digestPaneCloudCreateProof(reviewed, native).outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, track: { ...native.track, display: 'Corporate Rate' } }).outcome).toBe('refused');
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, guestOptIn: true }).outcome).toBe('refused');
+    expect(digestPaneCloudCreateProof(reviewed, proof).outcome).toBe('refused');
   });
 
   it('uses the requested guest name for unsaved preparation and keeps real-guest commits refused', () => {
@@ -77,9 +153,8 @@ describe('Cloud pane create mapping', () => {
     const unsupported = [
       { ...stay, propertyCode: 'HRDAV' },
       { ...stay, guaranteeType: 'GTD' },
-      { ...stay, bookerName: 'Someone' },
       { ...stay, marketSegment: 'CORP' },
-      { ...stay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } },
+      { ...stay, confirmationSendMail: true },
     ];
     for (const request of unsupported) {
       expect(mapPaneStayToCloudCreateInput(request, 'prepare').outcome).toBe('refused');

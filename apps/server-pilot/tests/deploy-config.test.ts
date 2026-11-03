@@ -2516,6 +2516,7 @@ describe('deploy config', () => {
     const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
     for (const name of [
       'PANE_WRITE_CREATE',
+      'PANE_CLOUD_CREATE_DISPATCH',
       'PANE_WRITE_AMEND_UNPAID',
       'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID',
@@ -5341,6 +5342,8 @@ if (!realMailGate) {
             "DATABASE_URL='postgres://example.invalid/zero'",
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
+            "HMS_CHROMIUM_EXECUTABLE_PATH='/opt/nava/chromium/chrome'",
+            "PLAYWRIGHT_BROWSERS_PATH='/opt/nava/ms-playwright'",
             '',
           ].join('\n'),
           'utf8',
@@ -5420,6 +5423,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           expect(valid.status, valid.stderr).toBe(0);
           expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
             "DATABASE_URL='postgres://example.invalid/zero'",
+          );
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "HMS_CHROMIUM_EXECUTABLE_PATH='/opt/nava/chromium/chrome'",
+          );
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "PLAYWRIGHT_BROWSERS_PATH='/opt/nava/ms-playwright'",
           );
         }
 
@@ -5754,10 +5763,13 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(keys).toContain('PANE_CLOUD_CREATE_DISPATCH');
+      expect(keys).toContain('PLAYWRIGHT_BROWSERS_PATH');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
+        'HMS_CHROMIUM_EXECUTABLE_PATH',
         'HMS_DAVINCI_CREATE',
         'HMS_DAVINCI_MAKE_QUOTE',
         'HMS_DAVINCI_READS',
