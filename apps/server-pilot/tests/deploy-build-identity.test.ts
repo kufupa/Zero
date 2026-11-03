@@ -93,7 +93,7 @@ describe('server build identity', () => {
     for (const [, relative] of entries) {
       const file = join(dist, relative);
       mkdirSync(join(file, '..'), { recursive: true });
-      writeFileSync(file, 'process.stdout.write(process.env.NAVA_BUILD_COMMIT);\n');
+      writeFileSync(file, 'process.stdout.write(process.env.PRINT_EXEC_PATH ? process.execPath : process.env.NAVA_BUILD_COMMIT);\n');
     }
     const invoke = (entry: string) => spawnSync('bash', [wrapper, entry], {
       encoding: 'utf8',
@@ -106,6 +106,11 @@ describe('server build identity', () => {
       expect(started.status, started.stderr).toBe(0);
       expect(started.stdout).toBe(built);
     }
+    const hms = spawnSync('bash', [wrapper, 'ai-worker'], {
+      encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', AI_WORKER_LANE: 'hms', PRINT_EXEC_PATH: '1' },
+    });
+    expect(hms.status, hms.stderr).toBe(0);
+    expect(hms.stdout).toBe('/usr/bin/node');
     writeFileSync(join(server, '.nava-build-in-progress'), 'BUILD_IN_PROGRESS\n');
     for (const [entry] of entries) {
       const blocked = invoke(entry);
