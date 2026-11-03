@@ -270,7 +270,7 @@ type WorkItemsClient = {
   };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: {
-    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
+    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }, opts?: ReturnType<typeof inMailbox>) => Promise<NeedsYouRow[]>;
   };
   dismiss?: {
     mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;

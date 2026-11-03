@@ -869,7 +869,7 @@ describe('NavaPane', () => {
     expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
-  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while Needs-you stays gated off', async (width) => {
+  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while mailbox scope is unavailable', async (width) => {
     const { container } = render(
       <div style={{ width: `${width}px`, maxWidth: `${width}px` }}>
         <NavaPane bridge={fakeBridge} />
@@ -891,6 +891,14 @@ describe('NavaPane', () => {
     expect(header!.textContent).not.toContain('Centurion');
     expect(header!.textContent).toMatch(/sync|checking/i);
     expect(container.firstElementChild?.getAttribute('style')).toContain(`width: ${width}px`);
+  });
+
+  it('opens the scoped Needs-you list from the Outlook pane header', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (0)' }));
+    expect(await screen.findByRole('heading', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.getByText('All caught up')).toBeDefined();
   });
 
   it('booking: an amendment email shows the change card with the guest request and the confirmation number', async () => {

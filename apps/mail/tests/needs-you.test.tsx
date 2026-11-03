@@ -13,7 +13,7 @@ import {
   WorkItemFieldProvenance,
   type WorkItemFieldProvenanceEntry,
 } from '../components/nava-pane/screens/work-item-field-provenance';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
@@ -24,13 +24,29 @@ import {
   useExactSourceMessageSelection,
 } from '../lib/mail/source-message-navigation';
 
-const { listQuery, dismissMutate, toastMock, toastDismissMock } = vi.hoisted(() => {
+const { listQuery, dismissMutate, toastMock, toastDismissMock, hostIdentity } = vi.hoisted(() => {
   return {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
     toastMock: vi.fn(),
     toastDismissMock: vi.fn(),
+    hostIdentity: { current: null as null | { userId: string; activeTransportId: string; sessionId: string } },
   };
+});
+
+vi.mock('../lib/auth-client', async () => {
+  const { getMailCacheScope } = await import('../lib/mail/mail-cache-scope');
+  return { useSession: () => {
+    const scope = hostIdentity.current ?? getMailCacheScope();
+    return { data: scope.userId ? { user: { id: scope.userId }, session: { id: hostIdentity.current?.sessionId ?? 'session-1' } } : null, isPending: false };
+  } };
+});
+vi.mock('../hooks/use-connections', async () => {
+  const { getMailCacheScope } = await import('../lib/mail/mail-cache-scope');
+  return { useActiveConnection: () => {
+    const scope = hostIdentity.current ?? getMailCacheScope();
+    return { data: scope.activeTransportId ? { id: scope.activeTransportId } : null, isLoading: false };
+  } };
 });
 
 vi.mock('sonner', () => ({
@@ -137,8 +153,9 @@ function ExactSourceMessageReader({
 }
 
 beforeEach(() => {
+  hostIdentity.current = null;
   localStorage.setItem('nava_onboarding_completed', 'true');
-  setMailCacheScope({ userId: null, activeTransportId: null });
+  setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
   listQuery.mockReset();
   listQuery.mockResolvedValue(TWO_OPEN);
   dismissMutate.mockReset();
@@ -157,6 +174,99 @@ afterEach(() => {
 });
 
 describe('Needs-you list', () => {
+  it('scope isolation: hides old rows while the active connection changes before cache scope', async () => {
+    listQuery.mockResolvedValueOnce([row({ id: 'a', subject: 'Mailbox A request' })]);
+    const { rerender } = render(<Harness host="web" />);
+    expect(await screen.findByRole('button', { name: 'Dismiss Mailbox A request' })).toBeDefined();
+    hostIdentity.current = { userId: 'staff-1', activeTransportId: 'transport-b', sessionId: 'session-1' };
+    rerender(<Harness host="web" />);
+    expect(screen.queryByRole('button', { name: 'Dismiss Mailbox A request' })).toBeNull();
+    listQuery.mockResolvedValueOnce([row({ id: 'b', subject: 'Mailbox B request' })]);
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' }));
+    expect(await screen.findByRole('button', { name: 'Dismiss Mailbox B request' })).toBeDefined();
+  });
+
+  it('scope isolation: a new session cannot reuse an old session list', async () => {
+    listQuery.mockResolvedValueOnce([row({ id: 'old', subject: 'Old session request' })]);
+    const { rerender } = render(<Harness host="web" />);
+    expect(await screen.findByRole('button', { name: 'Dismiss Old session request' })).toBeDefined();
+    let finish!: (rows: NeedsYouRow[]) => void;
+    listQuery.mockReturnValueOnce(new Promise<NeedsYouRow[]>((resolve) => { finish = resolve; }));
+    hostIdentity.current = { userId: 'staff-1', activeTransportId: 'transport-a', sessionId: 'session-2' };
+    rerender(<Harness host="web" />);
+    expect(screen.queryByRole('button', { name: 'Dismiss Old session request' })).toBeNull();
+    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(2));
+    await act(async () => finish([row({ id: 'new', subject: 'New session request' })]));
+    expect(await screen.findByRole('button', { name: 'Dismiss New session request' })).toBeDefined();
+  });
+
+  it('scope isolation: does not query before the signed-in mailbox is known', async () => {
+    setMailCacheScope({ userId: null, activeTransportId: null });
+    render(<Harness host="web" />);
+    await act(async () => {});
+    expect(listQuery).not.toHaveBeenCalled();
+  });
+
+  it('scope isolation: hides old rows while another mailbox loads and pins the query', async () => {
+    let finishB!: (rows: NeedsYouRow[]) => void;
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    listQuery.mockResolvedValueOnce([row({ id: 'a', subject: 'Mailbox A request' })]);
+    listQuery.mockReturnValueOnce(new Promise<NeedsYouRow[]>((resolve) => { finishB = resolve; }));
+    render(<Harness host="web" />);
+    expect(await screen.findByRole('button', { name: 'Dismiss Mailbox A request' })).toBeDefined();
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' }));
+    expect(screen.queryByRole('button', { name: 'Dismiss Mailbox A request' })).toBeNull();
+    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(2));
+    expect(listQuery).toHaveBeenLastCalledWith(
+      { limit: 200, statuses: ['needs_you', 'review'] },
+      { context: { activeTransportId: 'transport-b' } },
+    );
+    await act(async () => finishB([row({ id: 'b', subject: 'Mailbox B request' })]));
+    expect(await screen.findByRole('button', { name: 'Dismiss Mailbox B request' })).toBeDefined();
+  });
+
+  it('scope isolation: rejects an old A response after A to B to A', async () => {
+    let firstA!: (rows: NeedsYouRow[]) => void;
+    let secondA!: (rows: NeedsYouRow[]) => void;
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    listQuery.mockReturnValueOnce(new Promise<NeedsYouRow[]>((resolve) => { firstA = resolve; }));
+    listQuery.mockResolvedValueOnce([row({ id: 'b', subject: 'Mailbox B request' })]);
+    listQuery.mockReturnValueOnce(new Promise<NeedsYouRow[]>((resolve) => { secondA = resolve; }));
+    render(<Harness host="web" />);
+    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(1));
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' }));
+    expect(await screen.findByRole('button', { name: 'Dismiss Mailbox B request' })).toBeDefined();
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' }));
+    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(3));
+    await act(async () => firstA([row({ id: 'old', subject: 'Old A request' })]));
+    expect(screen.queryByRole('button', { name: 'Dismiss Old A request' })).toBeNull();
+    await act(async () => secondA([row({ id: 'new', subject: 'New A request' })]));
+    expect(await screen.findByRole('button', { name: 'Dismiss New A request' })).toBeDefined();
+  });
+
+  it('scope isolation: cancels an unsent dismissal after the signed-in user changes', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    render(<Harness host="web" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    act(() => setMailCacheScope({ userId: 'staff-2', activeTransportId: 'transport-b' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS); });
+    expect(dismissMutate).not.toHaveBeenCalled();
+  });
+
+  it('scope isolation: cancels an unsent dismissal after the session changes', async () => {
+    const { rerender } = render(<Harness host="web" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    hostIdentity.current = { userId: 'staff-1', activeTransportId: 'transport-a', sessionId: 'session-2' };
+    rerender(<Harness host="web" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS); });
+    expect(dismissMutate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
+  });
+
   it('shows each open item with its kind, sender, subject, received time and chip, in the order the list sends', async () => {
     listQuery.mockResolvedValue([
       row({ id: 'wi-1', chip: 'needs_you', subject: 'Rooms request' }),
@@ -190,7 +300,9 @@ describe('Needs-you list', () => {
     );
     expect(items[2]!.textContent).toContain('Amendment');
     expect(items[3]!.textContent).toContain('Payment');
-    expect(listQuery).toHaveBeenCalledWith({ limit: 200, statuses: ['needs_you', 'review'] });
+    expect(listQuery).toHaveBeenCalledWith(
+      { limit: 200, statuses: ['needs_you', 'review'] }, { context: { activeTransportId: 'transport-a' } },
+    );
   });
 
   it('shows the one-line reopen reason on an open item', async () => {
@@ -381,10 +493,14 @@ describe('Needs-you list', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
     });
-    expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' });
+    expect(dismissMutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1' }, { context: { activeTransportId: 'transport-a' } },
+    );
     expect(listQuery).toHaveBeenCalledTimes(3);
-    expect(listQuery).toHaveBeenNthCalledWith(2, { limit: 200, statuses: ['needs_you', 'review'] });
-    expect(listQuery).toHaveBeenNthCalledWith(3, { limit: 200, statuses: ['done', 'dismissed'] });
+    expect(listQuery).toHaveBeenNthCalledWith(2, { limit: 200, statuses: ['needs_you', 'review'] },
+      { context: { activeTransportId: 'transport-a' } });
+    expect(listQuery).toHaveBeenNthCalledWith(3, { limit: 200, statuses: ['done', 'dismissed'] },
+      { context: { activeTransportId: 'transport-a' } });
     expect(screen.getByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
 
     vi.useRealTimers();
@@ -458,7 +574,7 @@ describe('Needs-you list', () => {
     expect(listQuery).toHaveBeenNthCalledWith(2, {
       limit: 200,
       statuses: ['done', 'dismissed'],
-    });
+    }, { context: { activeTransportId: 'transport-a' } });
     expect(screen.getByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(screen.getByText('Finished', { selector: '[data-chip]' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Dismiss Completed quote' })).toBeNull();
@@ -538,12 +654,21 @@ describe('Needs-you rows mark guest details for the preview gate (H6b)', () => {
 });
 
 describe('Needs-you controls', () => {
-  it('hides both entry controls by default while keeping the list and Dismiss action available', async () => {
+  it('shows both entry controls alongside the list and Dismiss action', async () => {
     render(<ControlsHarness />);
 
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Needs you (2)' })).toBeNull();
+    expect(await screen.findAllByRole('button', { name: 'Needs you (2)' })).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
+  });
+
+  it('opens the exact source email from the webmail control', async () => {
+    const onOpenThread = vi.fn();
+    listQuery.mockResolvedValue([row({ id: 'wi-exact', threadId: 'thread-exact', sourceMessageId: 'message-exact' })]);
+    render(<NeedsYouWebControl trpc={needsYouClient} onOpenThread={onOpenThread} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (1)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Rooms request' }));
+    expect(onOpenThread).toHaveBeenCalledWith('thread-exact', 'message-exact');
   });
 });
 
