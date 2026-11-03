@@ -14,8 +14,27 @@ const menu = 'SYSTEM_FUNCTION_NAME=BSSTRT&USER_FUNCTION_NAME=BSSTRT&menu_module_
 const header = 'SYSTEM_FUNCTION_NAME=BSSTRT&USER_FUNCTION_NAME=BSSTRT&manurefresh=';
 const stayMenu = 'SYSTEM_FUNCTION_NAME=OSRESS&USER_FUNCTION_NAME=OSRESS&CURRENT_TAB_NAME=&' +
   'function_class=WEBL&menu_module_key=&removescreenflows=';
-const exactSearch = 'SYSTEM_FUNCTION_NAME=OSRESS&USER_FUNCTION_NAME=OSRESS&CURRENT_TAB_NAME=LST&' +
-  'component_info_type=&dataspy_id=&externalconfirmation=&grid_id=&grid_name=OSRESS&maddon_filter_value_1=x';
+// Native HRCEN quick-search scaffold captured while finding one fake stay.
+const searchBody = new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'OSRESS', USER_FUNCTION_NAME: 'OSRESS',
+  CURRENT_TAB_NAME: 'LST', component_info_type: 'DATA_ONLY', dataspy_id: '1941',
+  externalconfirmation: '123-1', grid_id: '1775', grid_name: 'OSRESS' });
+const searchSlots = [
+  ['departuredate', '>=', 'AND', '-30'], ['arrivaldate', '<=', 'AND', '+30'],
+  ['confirmationnumber', 'BEGINS', 'OR', '123-1'], ['room', '=', 'OR', '123-1'],
+  ['lastname_filter', 'BEGINS', 'OR', '123-1'], ['secondlastname', 'BEGINS', 'OR', '123-1'],
+  ['alternatelastname', 'BEGINS', 'OR', '123-1'], ['aliaslastname', 'BEGINS', 'OR', '123-1'],
+  ['loyaltynumber', 'BEGINS', 'OR', '123-1'], ['externalconfirmation', 'BEGINS', 'OR', '123-1'],
+  ['thirdpartyconfirmationnumber', 'BEGINS', 'OR', '123-1'],
+];
+for (const [index, [alias, operator, joiner, value]] of searchSlots.entries()) {
+  const n = index + 1;
+  for (const [part, field] of Object.entries({ alias_name: alias, operator, joiner, seqnum: String(n), value })) {
+    searchBody.set(`maddon_filter_${part}_${n}`, field);
+  }
+}
+for (const [key, value] of Object.entries({ maddon_lparen_3: 'true', maddon_lparen_5: 'false',
+  maddon_rparen_6: 'false', maddon_rparen_11: 'true' })) searchBody.set(key, value);
+const exactSearch = searchBody.toString();
 
 test('exact reader allows only observed login, menu and static reads', () => {
   for (const request of [
@@ -25,7 +44,7 @@ test('exact reader allows only observed login, menu and static reads', () => {
     { method: 'GET', url: `${origin}/web/base/logindisp?tenant=THECENTURION_PRD` },
     { method: 'GET', url: `${origin}/web/base/COMMON?req_key=observed` },
     { method: 'GET', url: `${origin}/web/resources/shared/shell.js` },
-  ]) assert.equal(savedStayReadMayRequest(request), true);
+  ]) assert.equal(savedStayReadMayRequest(request, { confirmation: '123-1' }), true);
 });
 
 test('exact reader rejects other search, save, uploads, origins and malformed login', () => {
@@ -46,7 +65,31 @@ test('exact reader rejects other search, save, uploads, origins and malformed lo
     { method: 'GET', url: `${origin}/web/base/logindisp?tenant=OTHER` },
     { method: 'GET', url: `${origin}/web/base/unreviewed` },
     { method: 'HEAD', url: `${origin}/web/base/logindisp?tenant=THECENTURION_PRD` },
-  ]) assert.equal(savedStayReadMayRequest(request), false);
+  ]) assert.equal(savedStayReadMayRequest(request, { confirmation: '123-1' }), false);
+});
+
+test('Stay 360 search pins every identity filter to the selected confirmation', () => {
+  const selected = { confirmation: '123-1' };
+  const request = (body) => post('/web/base/OSRESS.search', body.toString());
+  assert.equal(savedStayReadMayRequest(request(searchBody), selected), true);
+  assert.equal(savedStayReadMayRequest(request(searchBody)), false);
+  for (const [key, value] of [
+    ['maddon_filter_value_3', '999-1'], ['maddon_filter_value_4', ''],
+    ['maddon_filter_value_11', '999-1'], ['externalconfirmation', '999-1'],
+    ['maddon_filter_alias_name_1', 'lastname'], ['maddon_filter_operator_2', '>='],
+    ['maddon_filter_joiner_4', 'AND'], ['maddon_filter_seqnum_5', '9'],
+    ['maddon_lparen_3', 'false'], ['maddon_rparen_11', 'false'],
+    ['maddon_filter_value_1', 'malformed'],
+  ]) {
+    const changed = new URLSearchParams(searchBody); changed.set(key, value);
+    assert.equal(savedStayReadMayRequest(request(changed), selected), false, key);
+  }
+  const missing = new URLSearchParams(searchBody); missing.delete('maddon_filter_value_9');
+  assert.equal(savedStayReadMayRequest(request(missing), selected), false);
+  const extra = new URLSearchParams(searchBody); extra.set('maddon_filter_value_12', '123-1');
+  assert.equal(savedStayReadMayRequest(request(extra), selected), false);
+  const duplicate = new URLSearchParams(searchBody); duplicate.append('MADDON_FILTER_VALUE_3', '123-1');
+  assert.equal(savedStayReadMayRequest(request(duplicate), selected), false);
 });
 
 test('Stay 360 detail lookup is bound to the selected confirmation and a single field', () => {

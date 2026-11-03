@@ -19,6 +19,18 @@ const recordListFields = new Map([
 const recordHeaderKeys = new Set(['system_function_name', 'user_function_name', 'current_tab_name',
   'confirmationnumber', 'reservationstayid', 'propertycode', 'guestfullname', 'account', 'guestid', 'hoteldate',
   'lastname', 'firstname', 'twitterid', 'facebookid', 'tripadvisorid', 'bookingdotcomid', 'room']);
+// Captured HRCEN quick-search scaffold. The two date filters bracket an
+// OR-group whose nine native identity filters all receive the selected token.
+const staySearchSlots = [
+  ['departuredate', '>=', 'AND'], ['arrivaldate', '<=', 'AND'],
+  ['confirmationnumber', 'BEGINS', 'OR'], ['room', '=', 'OR'],
+  ['lastname_filter', 'BEGINS', 'OR'], ['secondlastname', 'BEGINS', 'OR'],
+  ['alternatelastname', 'BEGINS', 'OR'], ['aliaslastname', 'BEGINS', 'OR'],
+  ['loyaltynumber', 'BEGINS', 'OR'], ['externalconfirmation', 'BEGINS', 'OR'],
+  ['thirdpartyconfirmationnumber', 'BEGINS', 'OR'],
+];
+const staySearchParens = new Map([['maddon_lparen_3', 'true'], ['maddon_lparen_5', 'false'],
+  ['maddon_rparen_6', 'false'], ['maddon_rparen_11', 'true']]);
 
 function uniqueParams(params) {
   const values = new Map();
@@ -40,6 +52,30 @@ function isSelectedRecordNavigation(url, confirmation) {
   const initial = uniqueParams(new URLSearchParams(query.get('initparams')));
   return initial?.size === 2 && initial.get('startupview') === 'right' &&
     initial.get('autotracepopupskipconfnum') === confirmation;
+}
+
+function isSelectedStaySearch(url, request, confirmation) {
+  if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
+      url.search || url.hash || !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+      !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
+  const body = uniqueParams(new URLSearchParams(request.postData));
+  if (!body) return false;
+  const fixed = new Map([['system_function_name', 'OSRESS'], ['user_function_name', 'OSRESS'],
+    ['current_tab_name', 'LST'], ['component_info_type', 'DATA_ONLY'], ['grid_name', 'OSRESS'],
+    ['externalconfirmation', confirmation], ...staySearchParens]);
+  const expected = new Set([...fixed.keys(), 'dataspy_id', 'grid_id']);
+  if ([...fixed].some(([key, value]) => body.get(key) !== value) ||
+      !/^\d{1,12}$/.test(body.get('dataspy_id') || '') || !/^\d{1,12}$/.test(body.get('grid_id') || '')) return false;
+  for (const [index, [alias, operator, joiner]] of staySearchSlots.entries()) {
+    const n = index + 1;
+    const keys = ['alias_name', 'operator', 'joiner', 'seqnum', 'value'].map((key) => `maddon_filter_${key}_${n}`);
+    keys.forEach((key) => expected.add(key));
+    const value = body.get(keys[4]);
+    if (body.get(keys[0]) !== alias || body.get(keys[1]) !== operator || body.get(keys[2]) !== joiner ||
+        body.get(keys[3]) !== String(n) ||
+        (index < 2 ? !/^[+-]?\d{1,4}$/.test(value || '') || Math.abs(Number(value)) > 3660 : value !== confirmation)) return false;
+  }
+  return body.size === expected.size && [...expected].every((key) => body.has(key));
 }
 
 export function savedStayReadMayRequest(request, { confirmation } = {}) {
@@ -92,6 +128,7 @@ export function savedStayReadMayRequest(request, { confirmation } = {}) {
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESS.search' &&
         typeof request.postData === 'string') {
+      if (!isSelectedStaySearch(url, request, confirmation)) return false;
       const body = new URLSearchParams(request.postData);
       const userKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'user_function_name');
       const gridKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'grid_name');
