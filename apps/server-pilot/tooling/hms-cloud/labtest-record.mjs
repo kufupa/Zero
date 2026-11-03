@@ -25,7 +25,26 @@ function date(value) {
     wire: `${value.slice(5, 7)}/${value.slice(8, 10)}/${value.slice(0, 4)}` };
 }
 
+// Saved action guards stay NGI-only. The create-only reader is used under a read-only guard.
 export async function currentLabtestRecord(page, expected, options = {}) {
+  return readLabtestRecord(page, expected, options, { code: 'NGI', display: 'Non-Guaranteed Individual' });
+}
+
+export async function readCreatedLabtestRecord(page, expected, options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  const { expectedGuarantee, ...recordOptions } = options;
+  if (!expectedGuarantee || typeof expectedGuarantee !== 'object' || Array.isArray(expectedGuarantee) ||
+      Object.keys(expectedGuarantee).length !== 2 || !Object.hasOwn(expectedGuarantee, 'code') ||
+      !Object.hasOwn(expectedGuarantee, 'display') || !['NGI', 'GTDAGT'].includes(expectedGuarantee.code) ||
+      typeof expectedGuarantee.display !== 'string' || !expectedGuarantee.display.trim() ||
+      expectedGuarantee.display !== expectedGuarantee.display.trim() ||
+      (expectedGuarantee.code === 'NGI' && expectedGuarantee.display !== 'Non-Guaranteed Individual')) {
+    throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  }
+  return readLabtestRecord(page, expected, recordOptions, expectedGuarantee);
+}
+
+async function readLabtestRecord(page, expected, options, expectedGuarantee) {
   const { allowBlankNote = false, allowUnchangedBusinessParties = false } = options || {};
   const hasExpectedOrganization = Boolean(options && Object.hasOwn(options, 'expectedOrganization'));
   const expectedOrganization = hasExpectedOrganization
@@ -52,7 +71,7 @@ export async function currentLabtestRecord(page, expected, options = {}) {
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
   const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields,
-    unchangedBusinessPartyFields, allowUnchangedBusinessParties, expectedOrganization }) => {
+    unchangedBusinessPartyFields, allowUnchangedBusinessParties, expectedOrganization, expectedGuarantee }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
@@ -74,7 +93,7 @@ export async function currentLabtestRecord(page, expected, options = {}) {
         value('guestid') !== expected.guestId || value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' ||
         value('arrivaldate') !== start.display || value('departuredate') !== end.display || value('roomtype') !== expected.roomType ||
         value('rateplan') !== expected.ratePlan || !value('track') || value('reservationnote') !== expected.note ||
-        value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== 'NGI' ||
+        value('guaranteetype') !== expectedGuarantee.display || cmp('guaranteetype')?.getValue?.() !== expectedGuarantee.code ||
         value('udfchar13') || value('emailaddress') || cmp('udfchkbox04')?.getValue?.() !== false) return null;
     const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
       visible(el) && blankSavedPartyFields.includes(el.name.toLowerCase()));
@@ -135,7 +154,7 @@ export async function currentLabtestRecord(page, expected, options = {}) {
     return { native, track: value('track'), partyPreimage };
   }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields,
     unchangedBusinessPartyFields: [...unchangedBusinessPartyFields], allowUnchangedBusinessParties,
-    expectedOrganization });
+    expectedOrganization, expectedGuarantee });
   if (state?.issue) throw new Error(state.issue);
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };

@@ -233,6 +233,29 @@ test('preserves padded synthetic reservation notes exactly', () => {
   assert.equal(matchesFullCreateBody(body, formData), false);
 });
 
+test('agent guarantee requires matching selector evidence and a current strict draft', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  for (const invalid of [undefined, { ...selection, requested: 'NGI' },
+    { ...selection, actual: { ...selection.actual, submitted: 'NGI' } },
+    { ...selection, actual: { ...selection.actual, display: '' } }]) {
+    const result = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: invalid });
+    assert.equal(result.outcome, 'input_gap');
+    assert.equal(result.issue, 'GUARANTEE_SELECTION_UNVERIFIED');
+  }
+  let expected;
+  const page = pageStub();
+  page.evaluate = async (_fn, args) => { expected = args.expected; return 'DRAFT_GUARANTEE'; };
+  const result = await saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  assert.equal(expected.guaranteeType, 'GTDAGT');
+  assert.equal(expected.guaranteeDisplay, 'Guaranteed By Agent');
+  assert.equal(expected.strictCreateProof, true);
+  const unsupported = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDCC' });
+  assert.equal(unsupported.issue, 'INVALID_LABTEST_SAVE_INPUT');
+});
+
 test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');
@@ -436,6 +459,34 @@ function nativeCreateDraftPage() {
     } };
   return page;
 }
+
+test('native draft checks agent guarantee display, native value and submitted value', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
+    page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
+    page.elements.find((element) => element.name === 'araccountname').value = '';
+    page.data.guaranteetype = 'GTDAGT'; page.values.guaranteetype = 'GTDAGT';
+    page.elements.find((element) => element.name === 'guaranteetype').value = 'Guaranteed By Agent';
+    return page;
+  };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  // Synthetic form intentionally lacks the complete native schema; no Save may dispatch.
+  const valid = await run(makePage());
+  assert.equal(valid.outcome, 'not_dispatched');
+  assert.equal(valid.issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  const wrongDisplay = makePage();
+  wrongDisplay.elements.find((element) => element.name === 'guaranteetype').value = 'Non-Guaranteed Individual';
+  const wrongValue = makePage(); wrongValue.components.guaranteetype.getValue = () => 'NGI';
+  const wrongSubmit = makePage(); wrongSubmit.components.guaranteetype.getSubmitData = () => ({ guaranteetype: 'NGI' });
+  for (const page of [wrongDisplay, wrongValue, wrongSubmit]) {
+    const result = await run(page);
+    assert.equal(result.outcome, 'not_dispatched');
+    assert.equal(result.draftCheck, 'DRAFT_GUARANTEE');
+  }
+});
 
 test('native draft binds A/R, CMS and reason controls before any save route', async () => {
   const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
