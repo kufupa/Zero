@@ -519,7 +519,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       requireExplicitGuestSelection: !input.selection.nativeGuestId, allowRealGuest: admission.allowRealGuest,
       expectedGuest: { firstName: input.stay.firstName, lastName: input.stay.lastName },
       cloudTargetKey: hmsDispatchTargetKey(dispatchTarget) });
-    if (!input.selection.nativeGuestId && ['guest_ambiguous', 'guest_choice_required'].includes(String(native.issue)) && Array.isArray(native.guestCandidates)) {
+    if (!input.selection.nativeGuestId && ['guest_ambiguous', 'guest_choice_required', 'guest_not_found'].includes(String(native.issue)) && Array.isArray(native.guestCandidates)) {
       if (!await sourceUnchanged()) return refused('cloud_create_scope_changed');
       const candidates = native.guestCandidates.flatMap((value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
