@@ -67,6 +67,7 @@ import {
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { hmsDispatchTargetKey, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { recordNeverDispatchedAttach } from './pane-cloud-attach-recovery.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
   resolveNeverDispatchedAttach, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
@@ -637,7 +638,7 @@ export type PaneAttachSpawnInput = {
   finalAuthority?: (code: string) => Promise<boolean>;
   continuationAllowed?: () => boolean;
   dispatchWithAuthority?: (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
-    dispatch: NativeAttachContinuation, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
+    dispatch: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
 };
 
 type NativeAttachContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
@@ -1255,10 +1256,11 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
             nativeStayId: dispatch.nativeStayId!, filingSnapshot: dispatch.filingSnapshot! }) })).status === 'unchanged';
       },
       dispatchWithAuthority: async (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
-        continueOnce: NativeAttachContinuation, beforeShot: string, interceptedRequest: unknown) => {
+        continueOnce: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => {
         if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
             dispatchTarget?.kind !== 'saved' || typeof dispatch.stay.firstName !== 'string' ||
             typeof dispatch.stay.lastName !== 'string' || typeof dispatch.stay.departure !== 'string' || !hasFinishBudget() ||
+            !centurionWriterCurrent(writer) ||
             nativeGuestId !== dispatch.guestId || !/^\d{1,30}$/.test(nativeGuestId) ||
             nativeStayId !== dispatch.nativeStayId || nativeStayId !== dispatchTarget.nativeStayId ||
             !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !/^[a-f0-9]{64}$/.test(requestDigest)) {
@@ -1280,7 +1282,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
           nativeStayId, guestName: `${dispatch.stay.firstName} ${dispatch.stay.lastName}`,
           allowRealGuest: input.allowRealGuest, ...(cloudTargetKey ? { cloudTargetKey } : {}),
           runId: fence.runId, claimDigest: pdfBytesHash(Buffer.from(canonicalJson({ claimOwner: fence.claimOwner,
-            claimToken: fence.claimToken }))), before: dispatch.before };
+            claimToken: fence.claimToken }))), before: dispatch.before, writer };
         dispatch.recovery = recovery;
         dispatch.attempted = true;
         let authorityRefusal: HmsApprovalError | null = null;

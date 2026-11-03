@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { centurionWriterIdentity, centurionWriterQuiesced, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readShallow, readRecord, readDocuments } from './hms-readers.mjs';
 import { installPaneAttachReadGuard } from './pane-attach-read-guard.mjs';
 import { attachLabtestDocument } from './stay360-document-attach.mjs';
@@ -116,7 +116,7 @@ async function freshDocuments(page, input, code, setNative) {
 
 /** Recovery accepts only a fresh positive listing on the original stay. */
 export async function provePositiveAttachRecovery(intent, { openSession = withCenturionStay360Page,
-  shallow = readShallow, read = readRecord, documents = readDocuments } = {}) {
+  shallow = readShallow, read = readRecord, documents = readDocuments, writerQuiesced = centurionWriterQuiesced } = {}) {
   try {
     const recovery = intent?.recovery;
     const labtestGuest = intent?.firstName === 'Proof' && intent?.lastName === 'Labtest';
@@ -126,7 +126,7 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
     if (intent?.operation !== 'attach_document' || intent.propertyCode !== 'HRCEN' ||
         typeof intent.firstName !== 'string' || !intent.firstName.trim() ||
         typeof intent.lastName !== 'string' || !intent.lastName.trim() ||
-        !/^[0-9]{1,30}$/.test(intent.nativeGuestId || '') ||
+        !/^[0-9]{1,30}$/.test(intent.nativeGuestId || '') || !writerQuiesced(recovery?.writer) ||
         !/^\d+-\d+$/.test(recovery?.confirmation || '') || !validIsoDate(recovery.arrival) ||
         !validIsoDate(recovery.departure) || recovery.departure <= recovery.arrival ||
         !targetPolicyAllowed ||
@@ -166,7 +166,8 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
 
 /** Caller holds the property lock and supplies a live server-side dispatch check. */
 export async function runCloudPaneAttach(input, { openSession = withCenturionStay360Page,
-  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord } = {}) {
+  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord,
+  writerIdentity = centurionWriterIdentity } = {}) {
   if (input.target?.propertyCode !== 'HRCEN' || typeof input.beforeDispatch !== 'function' ||
       typeof input.finalAuthority !== 'function' || typeof input.dispatchWithAuthority !== 'function' ||
       typeof input.continuationAllowed !== 'function' ||
@@ -206,8 +207,12 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         beforeDispatch: input.beforeDispatch, finalAuthority: () => input.finalAuthority(code),
         continuationAllowed: input.continuationAllowed,
-        dispatchWithAuthority: (dispatch, requestDigest, beforeShot, intercepted) =>
-          input.dispatchWithAuthority(code, expected.guestId, expected.nativeStayId, requestDigest, dispatch, beforeShot, intercepted),
+        dispatchWithAuthority: (dispatch, requestDigest, beforeShot, intercepted) => {
+          const writer = writerIdentity(page);
+          if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+          return input.dispatchWithAuthority(code, expected.guestId, expected.nativeStayId, requestDigest,
+            dispatch, writer, beforeShot, intercepted);
+        },
         onDispatched: () => { dispatched = true; }, strictNetwork: true, timeoutMs: 7 * 60_000 });
     }, options(writing, 10 * 60_000));
     writerSessionClosed = true; // withCenturionStay360Page returns only after verified browser cleanup.

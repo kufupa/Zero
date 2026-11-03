@@ -7,15 +7,18 @@ import test from 'node:test';
 import { approvedDocumentDispatch, approvedLabtestRecord, documentCodeForUuid, filingSnapshot, hasUniqueDocumentListing,
   provePositiveAttachRecovery, runCloudPaneAttach } from './pane-attach-session.mjs';
 
-const native = { propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', firstName: 'Proof',
+const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', firstName: 'Proof',
   lastName: 'Labtest', status: 'Reserved', guaranteeCode: 'NGI', arrival: '2027-10-12', departure: '2027-10-13',
   roomType: 'STQN', ratePlan: 'BAR', reservationStayId: '42', reservationId: '41' };
 const record = { nativePreimage: native, details: { fields: [{ name: 'reservationnote', rawValue: '' },
   { name: 'udfchar13', value: '' }, { name: 'udfchkbox04', value: false }, { name: 'emailaddress', value: '' },
   { name: 'company', value: '' }, { name: 'ta1', value: '' }] } };
-const stay = { ...native, nativeGuestId: native.guestId, organization: null, bookingAgency: null };
+const stay = { ...native, nativeGuestId: native.guestId, nativeStayId: native.reservationStayId,
+  organization: null, bookingAgency: null };
 const snapshot = { cmsSend: false };
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+const writer = { host: 'b'.repeat(64), bootId: randomUUID(), pidNamespace: 'pid:[1]',
+  node: { pid: 100, started: '10' }, browser: { pid: 200, started: '20' } };
 
 test('30-character document codes preserve every UUID bit', () => {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -47,6 +50,7 @@ async function nativeScreenshots(root) {
 test('the selected fake booking matches property, guest and approved dates', () => {
   assert.deepEqual(filingSnapshot(record, stay), snapshot);
   assert.deepEqual(approvedLabtestRecord(record, stay), { confirmation: native.confirmation, guestId: native.guestId,
+    nativeStayId: native.reservationStayId, firstName: native.firstName, lastName: native.lastName, allowRealGuest: false,
     arrival: native.arrival, departure: native.departure });
   for (const changed of [{ propertyCode: 'OTHER' }, { firstName: 'Real' }, { lastName: 'Other' },
     { status: 'Cancelled' }, { arrival: '2026-12-31' }, { arrival: '2027-02-30' },
@@ -109,7 +113,7 @@ test('restart recovery requires a stopped writer and fresh exact unique document
   const positive = await provePositiveAttachRecovery(intent, deps);
   assert.equal(positive.outcome, 'verified');
   assert.deepEqual(positive.readback, { confirmation: native.confirmation, nativeGuestId: native.guestId,
-    documentCode: code, documentName: 'voucher.pdf', uniqueFreshListing: true });
+    nativeStayId: native.reservationStayId, documentCode: code, documentName: 'voucher.pdf', uniqueFreshListing: true });
   assert.deepEqual(positive.screenshot, png);
   for (const altered of [[], [row, row], [{ ...row, name: 'wrong.pdf' }], [{ ...row, documentCode: 'OTHER' }]]) {
     assert.equal((await provePositiveAttachRecovery(intent, { ...deps, documents: async () => ({ documents: altered }) })).outcome, 'unconfirmed');
@@ -129,8 +133,8 @@ test('restart recovery requires a stopped writer and fresh exact unique document
 test('filing refuses names that the Documents reader would normalize before opening HMS', async () => {
   for (const documentName of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
     let opened = 0;
-    const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, documentName,
-      approvedSnapshot: snapshot, pdfSha256: 'a'.repeat(64), beforeDispatch: async () => true,
+    const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, documentName, guestName: 'Proof Labtest',
+      approvedStay: stay, approvedSnapshot: snapshot, pdfSha256: 'a'.repeat(64), beforeDispatch: async () => true,
       finalAuthority: async () => true, continuationAllowed: () => true, dispatchWithAuthority: async () => {} },
     { openSession: async () => { opened++; } });
     assert.equal(result.outcome, 'refused_input');
@@ -146,11 +150,12 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     await writeFile(path, bytes);
     let heldCode;
     const input = { target: { propertyCode: 'HRCEN' }, confirmation: native.confirmation, arrival: native.arrival,
-      documentName: 'voucher.pdf', file: path, approvedStay: stay, approvedSnapshot: snapshot, beforeDispatch: async () => true,
+      guestName: 'Proof Labtest', documentName: 'voucher.pdf', file: path, approvedStay: stay, approvedSnapshot: snapshot, beforeDispatch: async () => true,
       continuationAllowed: () => true,
       finalAuthority: async (code) => { heldCode = code; return true; },
-      dispatchWithAuthority: async (_code, guestId, requestDigest, dispatch) => {
-        assert.equal(guestId, native.guestId); assert.equal(requestDigest, 'a'.repeat(64)); return dispatch();
+      dispatchWithAuthority: async (_code, guestId, nativeStayId, requestDigest, dispatch, writerIdentity) => {
+        assert.equal(guestId, native.guestId); assert.equal(nativeStayId, native.reservationStayId);
+        assert.equal(requestDigest, 'a'.repeat(64)); assert.deepEqual(writerIdentity, writer); return dispatch();
       },
       pdfSha256: createHash('sha256').update(bytes).digest('hex') };
     let sessions = 0, readbacks = 0;
@@ -165,9 +170,12 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
         assert.equal(await options.dispatchWithAuthority(async () => 'continued', 'a'.repeat(64)), 'continued');
         return { outcome: 'awaiting_readback', ...await nativeScreenshots(options.evidenceRoot),
           dispatchCallbacksDrained: true }; },
+      writerIdentity: () => writer,
       freshRead: async (page, _input, code, setNative) => { assert.equal(page.session, 2); assert.match(code, /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/);
         assert.equal(typeof setNative, 'function'); setNative(native);
-        readbacks++; return true; } };
+        readbacks++; return { listed: true, nativeReadback: { confirmation: native.confirmation,
+          nativeStayId: native.reservationStayId, nativeGuestId: native.guestId, documentCode: code,
+          documentName: 'voucher.pdf', uniqueFreshListing: true }, screenshot: png }; } };
     const success = await runCloudPaneAttach(input, deps);
     assert.equal(success.outcome, 'confirmed'); assert.equal(success.uploadSent, true);
     assert.equal(success.listed, true); assert.match(heldCode, /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/);
@@ -191,7 +199,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     await rm(successWithoutCallback.cleanupRoot, { recursive: true, force: true });
 
     sessions = 0;
-    const missing = await runCloudPaneAttach(input, { ...deps, freshRead: async () => false });
+    const missing = await runCloudPaneAttach(input, { ...deps, freshRead: async () => ({ listed: false }) });
     assert.equal(missing.outcome, 'upload_unconfirmed');
     assert.equal(missing.listed, false);
     await rm(missing.cleanupRoot, { recursive: true, force: true });
@@ -227,7 +235,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
       outcome: 'awaiting_readback', evidenceDir: dir,
       screenshots: [join(dir, `${randomUUID()}-before.png`), join(dir, `${randomUUID()}-after.png`)],
     }) });
-    assert.equal(outside.outcome, 'confirmed'); assert.deepEqual(outside.screenshots, []);
+    assert.equal(outside.outcome, 'uncertain'); assert.deepEqual(outside.screenshots, []);
     await rm(outside.cleanupRoot, { recursive: true, force: true });
     assert.equal((await runCloudPaneAttach({ ...input, pdfSha256: 'a'.repeat(64) }, deps)).outcome, 'attachment_hash_changed');
     assert.equal((await runCloudPaneAttach({ ...input, target: { propertyCode: 'OTHER' } }, deps)).outcome, 'refused_input');
