@@ -2512,6 +2512,7 @@ export function NavaPane({
               }
               workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
               writesEnabled={attachWritesEnabled}
+              amendPropertyResolved={activePaneConfig !== null}
               readOnlyAmend={activePaneConfig?.propertyCode === 'HRCEN' ? {
                 propertyCode: 'HRCEN',
                 ratePlans: activePaneConfig.ratePlans,

@@ -26,6 +26,7 @@ export function BookingVoucherCard({
   senderEmail = null,
   subject = null,
   bodyText = null,
+  amendPropertyResolved = true,
   readOnlyAmend = null,
 }: {
   session: QuoteSession;
@@ -41,6 +42,7 @@ export function BookingVoucherCard({
   senderEmail?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  amendPropertyResolved?: boolean;
   readOnlyAmend?: AmendReadOnlyContext | null;
 }) {
   const amendment = amendmentOf(session);
@@ -61,7 +63,10 @@ export function BookingVoucherCard({
       {ota ? (
         <OtaBookingChannelChip source={ota} />
       ) : null}
-      {readOnlyAmend?.selectionCurrent === false ? null : (
+      {!amendPropertyResolved && amendment ? (
+        <p role="status" className="text-[11.5px] text-[#64748b]">Nava cannot confirm the property yet. Open the booking in HMS.</p>
+      ) : null}
+      {!amendPropertyResolved || readOnlyAmend?.selectionCurrent === false ? null : (
         <AmendLookupPanel
           key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,
             session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash]) : undefined}

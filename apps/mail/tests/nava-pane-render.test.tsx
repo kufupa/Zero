@@ -822,6 +822,13 @@ describe('NavaPane', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
+  const resolveDavinciProperty = () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRDAV', roomTypes: [], ratePlans: [],
+      boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+  };
+
   /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
   const stabilizePaneSnapshot = (root: HTMLElement) => {
     root.querySelectorAll('*').forEach((el) => {
@@ -894,6 +901,7 @@ describe('NavaPane', () => {
   });
 
   it('booking: an amendment email shows the change card with the guest request and the confirmation number', async () => {
+    resolveDavinciProperty();
     bridgeMockState.analysisOverride = {
       status: 'ready',
       intent: 'other',
@@ -1096,6 +1104,7 @@ describe('NavaPane', () => {
   });
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
+    resolveDavinciProperty();
     bridgeMockState.storedWork = STORED_AMENDMENT;
     render(<NavaPane bridge={fakeBridge} />);
 
@@ -3078,18 +3087,35 @@ describe('NavaPane', () => {
     expect(within(card).queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
     fireEvent.change(adults, { target: { value: '3' } });
     try {
+      // The new session's property catalogue is still unavailable after the old one is discarded.
+      bridgeMockState.quotePaneConfig = null;
       bridgeMockState.userId = 'staff-2';
       bridgeMockState.sessionId = 'session-2';
       pane.rerender(<NavaPane bridge={fakeBridge} />);
-      const afterSwitch = screen.queryByLabelText('Requested adults') as HTMLInputElement | null;
-      expect(afterSwitch === null || afterSwitch.value !== '3').toBe(true);
+      await settle();
+      await settle();
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
     } finally {
       bridgeMockState.userId = 'staff-1';
       bridgeMockState.sessionId = 'session-1';
     }
   });
 
+  it('does not mount an amendment lookup while the active property is unresolved', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedChange: null },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    await settle();
+    expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+    expect(screen.getByText('Nava cannot confirm the property yet. Open the booking in HMS.')).toBeTruthy();
+  });
+
   it('amendment: no requested change shows one plain line and each HMS date once', async () => {
+    resolveDavinciProperty();
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
       status: 'ready',
@@ -3122,6 +3148,7 @@ describe('NavaPane', () => {
   });
 
   it('amendment: right column shows only the requested departure difference', async () => {
+    resolveDavinciProperty();
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
       status: 'ready',
