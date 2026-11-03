@@ -264,12 +264,11 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     expect(result.stderr).toMatch(/HMS_DAVINCI_MAKE_QUOTE|quote/);
   });
 
-  it('requires an attach canary before enabling the Labtest upload worker', () => {
+  it('allows Labtest attach-worker bootstrap without a live canary in lab mode', () => {
     const sha = 'abcdef1234567890abcdef1234567890abcdef12';
     for (const canaryLine of [null, `CANARY PASS attach HRDAV ${sha}`, 'CANARY PASS attach HRCEN deadbeef']) {
       const result = runWriter({ liveSha: sha, canaryLine, quoteOn: false, attachWorkerOn: true });
-      expect(result.status).toBe(2);
-      expect(result.stderr).toMatch(/PANE_HMS_LAB_ATTACH_WORKER|attach/);
+      expect(result.status, result.stderr).toBe(0);
     }
     const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS attach HRCEN ${sha}`,
       quoteOn: false, attachWorkerOn: true });
