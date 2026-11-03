@@ -138,7 +138,7 @@ describe('server build identity', () => {
   it('registers guarded entrypoints for all PM2 server processes', () => {
     const require = createRequire(import.meta.url);
     const config = require('../deploy/pm2.config.cjs') as {
-      apps: Array<{ name: string; script: string; interpreter: string; args?: string }>;
+      apps: Array<{ name: string; script: string; interpreter: string; args?: string; kill_timeout?: number }>;
     };
     for (const name of ['http', 'worker', 'ai-worker']) {
       expect(config.apps.find((app) => app.name === name)).toMatchObject({
@@ -149,6 +149,29 @@ describe('server build identity', () => {
       .toContain('/bin/bash deploy/start-guarded-server.sh ai-worker');
     expect(config.apps.find((app) => app.name === 'remote-http')?.script)
       .toBe('deploy/start-remote-http.sh');
+    // A claimed HMS operation can run for 25 minutes; every managed process
+    // must get longer than that to close before PM2 sends SIGKILL.
+    for (const name of ['http', 'remote-http', 'worker', 'ai-worker', 'hms-ai-worker']) {
+      const app = config.apps.filter((item) => item.name === name);
+      expect(app).toHaveLength(1);
+      expect(app[0]?.kill_timeout).toBeGreaterThan(25 * 60_000);
+    }
+  });
+
+  it('keeps restart SSM budgets above all sequential process drains', () => {
+    const require = createRequire(import.meta.url);
+    const config = require('../deploy/pm2.config.cjs') as { apps: Array<{ kill_timeout: number }> };
+    const drainSeconds = config.apps.reduce((sum, app) => sum + app.kill_timeout / 1000, 0);
+    for (const name of ['ops-deploy.sh', 'ops-restart.sh', 'ops-reboot.sh']) {
+      const path = fileURLToPath(new URL(`../deploy/${name}`, import.meta.url));
+      const script = readFileSync(path, 'utf8');
+      const budgets = /SSM_EXECUTION_TIMEOUT_SECONDS=(\d+)\s+SSM_MAX_POLL_SECONDS=(\d+)\s+(?:\\\s*)?(?:remote_bound|bash)/.exec(script);
+      expect(budgets, name).not.toBeNull();
+      const execution = Number(budgets?.[1]), polling = Number(budgets?.[2]);
+      expect(execution).toBeGreaterThanOrEqual(drainSeconds + 600);
+      expect(polling).toBeGreaterThanOrEqual(execution + 60);
+      expect(spawnSync('bash', ['-n', path]).status).toBe(0);
+    }
   });
 
   it('binds HMS start to the built marker and allows status when identity is unknown', () => {
