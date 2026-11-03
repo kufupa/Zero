@@ -182,6 +182,27 @@ test('native upload stays paused inside dispatch authority and never resumes aft
   }
 });
 
+test('a delayed timeout callback cannot release an upload past its monotonic deadline', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-deadline-test-'));
+  try {
+    let enter, release, sent = 0, aborted = 0;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const waiting = new Promise((resolve) => { release = resolve; });
+    const request = upload(), route = { request: () => request,
+      continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+    const deadline = performance.now() + 20;
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir, deadline,
+      confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {}, onAuthorityError: () => {},
+      stillArmed: () => true, dispatchWithAuthority: async (next) => { enter(); await waiting; return next(); } });
+    const pending = gate(route, { candidate: request, armed: true, checkStatus: 200 }).result;
+    await entered;
+    while (performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    assert.equal(await pending, 'aborted');
+    assert.equal(sent, 0); assert.equal(aborted, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('an authority callback cannot continue the same upload twice', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
   try {

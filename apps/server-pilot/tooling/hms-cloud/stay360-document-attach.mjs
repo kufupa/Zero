@@ -119,7 +119,7 @@ export function documentUploadRequestDigest(request) {
 // An intent is exclusive and is written before the one permitted continuation.
 export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError,
   beforeDispatch, stillArmed = () => true, onAuthorityError = onIntentError, dispatchRequest = (route) => route.continue(),
-  dispatchWithAuthority }) {
+  dispatchWithAuthority, deadline = Infinity }) {
   let consumed = false, disarmed = false;
   const pending = new Set();
   const track = (result) => {
@@ -142,7 +142,7 @@ export function createDocumentUploadGate({ frame, fields, file, token, evidenceD
         // Even a faulty authority callback cannot send this native request twice.
         if (continued) { onAuthorityError(); return undefined; }
         continued = true;
-        if (disarmed || !stillArmed()) { onAuthorityError(); return route.abort(); }
+        if (disarmed || performance.now() >= deadline || !stillArmed()) { onAuthorityError(); return route.abort(); }
         try {
           writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation,
             documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }),
@@ -164,7 +164,7 @@ export function createDocumentUploadGate({ frame, fields, file, token, evidenceD
     // The server checks its live grant, lease, source and approved bytes while
     // this exact request is paused. A timeout or failed check cannot release it.
     return { result: track(Promise.resolve().then(beforeDispatch).then((allowed) => {
-      if (disarmed || allowed !== true || !stillArmed()) { onAuthorityError(); return route.abort(); }
+      if (disarmed || allowed !== true || performance.now() >= deadline || !stillArmed()) { onAuthorityError(); return route.abort(); }
       return dispatch();
     }, () => { onAuthorityError(); return route.abort(); })) };
   };
@@ -245,6 +245,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if (result.reason) throw new Error(result.reason);
     return result.value;
   };
+  const deadline = performance.now() + timeoutMs;
   const timer = setTimeout(() => stop('DOCUMENT_TIMEOUT'), timeoutMs);
   const onDialog = () => stop('UNEXPECTED_DIALOG');
   const onWorker = () => stop('UNEXPECTED_SERVICE_WORKER');
@@ -360,7 +361,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if ([...token.keys()].length !== 2 || token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');
     uploadGate = createDocumentUploadGate({ frame, fields: expectedFields, file, token, evidenceDir,
-      confirmation: expected.confirmation,
+      confirmation: expected.confirmation, deadline,
       ...(strictNetwork ? { dispatchRequest: fulfillGuestLookupRequest } : {}),
       ...(dispatchWithAuthority ? { dispatchWithAuthority } : {}),
       onDispatch: () => { possible = true; dispatched = true; armed = false; onDispatched?.(); },
