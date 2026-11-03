@@ -8,7 +8,7 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
 const confirmation = z.string().trim().regex(/^\d{1,30}-\d{1,10}$/);
 const nativeStayId = z.string().trim().regex(/^\d{1,100}$/);
 
-/** The saved-stay confirmation is preferred whenever it exists. */
+/** A saved target carries the verified native stay ID and its confirmation when available. */
 export const hmsDispatchTargetSchema = z.union([
   z.object({ propertyCode: z.literal('HRCEN'), kind: z.literal('create'),
     firstName: guestName, lastName: guestName, arrival: isoDate }).strict(),
@@ -21,17 +21,25 @@ export type HmsDispatchTarget = z.input<typeof hmsDispatchTargetSchema>;
 const nameKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
 const decimalKey = (value: string) => value.replace(/^0+(?=\d)/, '');
 
-/** Stable keys are shared by the durable hold, preimage session and recovery session. */
-export function hmsDispatchTargetKey(input: HmsDispatchTarget): string {
+/** Return every verified alias; a saved stay can have both a confirmation and native ID. */
+export function hmsDispatchTargetKeys(input: HmsDispatchTarget): string[] {
   const target = hmsDispatchTargetSchema.parse(input);
   if (target.kind === 'create') {
-    return JSON.stringify([target.propertyCode, 'create', nameKey(target.firstName), nameKey(target.lastName), target.arrival]);
+    return [JSON.stringify([target.propertyCode, 'create', nameKey(target.firstName), nameKey(target.lastName), target.arrival])];
   }
+  const keys: string[] = [];
   if (target.confirmation) {
     const [base, suffix] = target.confirmation.split('-');
-    return JSON.stringify([target.propertyCode, 'saved', `${decimalKey(base!)}-${decimalKey(suffix!)}`]);
+    keys.push(JSON.stringify([target.propertyCode, 'saved', `${decimalKey(base!)}-${decimalKey(suffix!)}`]));
   }
-  return JSON.stringify([target.propertyCode, 'saved_native', decimalKey(target.nativeStayId!)]);
+  if (target.nativeStayId) keys.push(JSON.stringify([target.propertyCode, 'saved_native', decimalKey(target.nativeStayId)]));
+  return keys;
+}
+
+/** Session locks use native identity whenever present; durable locks use all aliases. */
+export function hmsDispatchTargetKey(input: HmsDispatchTarget): string {
+  const keys = hmsDispatchTargetKeys(input);
+  return keys[keys.length - 1]!;
 }
 
 /** Fallback for legacy rows that contain no attributable booking identity. */

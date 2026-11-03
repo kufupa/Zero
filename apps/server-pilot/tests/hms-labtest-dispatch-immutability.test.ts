@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, nativeCreateSaveDigest,
   resolveHmsLabtestDispatch, resolveNeverDispatchedCreate } from '../src/ai/hms-labtest-dispatch.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
+import { canonicalJson } from '../src/ai/draft-approval.js';
 
 const binding = digestCloudCreateRequest({ propertyCode: 'HRCEN',
   guest: { nativeId: '12345', firstName: 'Proof', lastName: 'Labtest' },
@@ -47,16 +48,29 @@ function historyDb() {
 
 function savedClaim(confirmation: string, grantId = randomUUID()) {
   const { stayId: _stayId, ...common } = input();
+  const nativeStayId = confirmation.replace('-', '');
   return { ...common, workItemId: randomUUID(), grantId, operation: 'attach_document' as const,
-    target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const, confirmation },
-    recovery: { confirmation, documentName: 'proof.pdf' } };
+    target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const, confirmation, nativeStayId },
+    recovery: { confirmation, nativeStayId, documentName: 'proof.pdf' } };
+}
+
+function nativeOnlyClaim(nativeStayId: string) {
+  const common = savedClaim('123456-1');
+  return { ...common, target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const, nativeStayId },
+    recovery: { nativeStayId, documentName: 'proof.pdf' } };
+}
+
+function verifiedReadback(confirmation: string, nativeStayId: string) {
+  const nativeReadback = { confirmation, nativeStayId, source: 'fresh_native_readback' };
+  return { nativeReadback, readbackDigest: createHash('sha256').update(canonicalJson(nativeReadback)).digest('hex') };
 }
 
 // Model transaction-scoped advisory locks so cross-target replay has a real interleaving.
 function concurrentDb() {
   const rows: any[] = [], locks = new Map<string, Promise<void>>();
-  let grantAttempts = 0, secondGrantAttempt!: () => void;
+  let grantAttempts = 0, secondGrantAttempt!: () => void, targetWaitAttempt!: () => void;
   const secondGrantWaiting = new Promise<void>((resolve) => { secondGrantAttempt = resolve; });
+  const targetWaiting = new Promise<void>((resolve) => { targetWaitAttempt = resolve; });
   const db = { transaction: async (fn: (tx: any) => Promise<unknown>) => {
     const releases: Array<() => void> = [];
     const tx = {
@@ -65,6 +79,7 @@ function concurrentDb() {
         const key = `${namespace}:${query.queryChunks[1]}`;
         if (namespace.includes('nava-hms-write-grant-v1') && ++grantAttempts === 2) secondGrantAttempt();
         const previous = locks.get(key);
+        if (previous && !namespace.includes('nava-hms-write-grant-v1')) targetWaitAttempt();
         let release!: () => void;
         const held = new Promise<void>((resolve) => { release = resolve; });
         locks.set(key, held);
@@ -78,7 +93,7 @@ function concurrentDb() {
     };
     try { return await fn(tx); } finally { for (const release of releases.reverse()) release(); }
   } } as unknown as DB;
-  return { db, secondGrantWaiting };
+  return { db, secondGrantWaiting, targetWaiting };
 }
 
 async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWithEpoch>[1], authorize: Parameters<typeof claimWithEpoch>[2]) {
@@ -201,9 +216,9 @@ describe('shared Labtest dispatch intent', () => {
     const { stayId: _stayId, ...shared } = input();
     const filing = { ...shared, workItemId: randomUUID(), grantId: randomUUID(), nativeGuestId: '99999',
       operation: 'attach_document' as const, target: { propertyCode: 'HRCEN' as const, kind: 'saved' as const,
-        confirmation: '123456-1' }, recovery: { confirmation: '123456-1', documentName: 'proof.pdf' } };
+        confirmation: '123456-1', nativeStayId: '42' }, recovery: { confirmation: '123456-1', nativeStayId: '42', documentName: 'proof.pdf' } };
     const filingHandle = await claimHmsLabtestDispatch(fake.db, filing, async () => {});
-    const proof = { operation: 'attach_document' as const, confirmation: '123456-1', readbackDigest: 'e'.repeat(64),
+    const proof = { operation: 'attach_document' as const, confirmation: '123456-1', nativeStayId: '42', readbackDigest: 'e'.repeat(64),
       savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } };
     await expect(resolveHmsLabtestDispatch(fake.db, handle, proof, async () => {})).rejects.toMatchObject({ reason: 'phase' });
     await expect(resolveHmsLabtestDispatch(fake.db, filingHandle, { ...proof, confirmation: '999999-1' }, async () => {}))
@@ -233,12 +248,12 @@ describe('shared Labtest dispatch intent', () => {
     const epoch = await captureHmsLabtestDispatchEpoch(fake.db, first.target);
     const otherHandle = await claimHmsLabtestDispatch(fake.db, other, async () => {});
     await resolveHmsLabtestDispatch(fake.db, otherHandle, { operation: 'attach_document', confirmation: '765432-2',
-      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+      nativeStayId: other.target.nativeStayId, readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
     expect(await captureHmsLabtestDispatchEpoch(fake.db, first.target)).toBe(epoch);
     const firstHandle = await claimWithEpoch(fake.db, first, async () => {}, epoch);
     const next = savedClaim('987654-1'), nextHandle = await claimHmsLabtestDispatch(fake.db, next, async () => {});
     await resolveHmsLabtestDispatch(fake.db, nextHandle, { operation: 'attach_document', confirmation: '987654-1',
-      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+      nativeStayId: next.target.nativeStayId, readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
     await expect(claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID() }, async () => {}))
       .rejects.toMatchObject({ reason: 'occupied' });
     await resolveHmsLabtestDispatch(fake.db, firstHandle, { operation: 'create', confirmation: '123456-1',
@@ -309,11 +324,87 @@ describe('shared Labtest dispatch intent', () => {
       .rejects.toMatchObject({ reason: 'occupied' });
   });
 
+  it('serializes a confirmed and native-only claim for the same verified stay', async () => {
+    const fake = concurrentDb(), full = savedClaim('123456-1'), nativeOnly = nativeOnlyClaim('42');
+    full.target.nativeStayId = full.recovery.nativeStayId = '42';
+    const [fullEpoch, nativeEpoch] = await Promise.all([
+      captureHmsLabtestDispatchEpoch(fake.db, full.target), captureHmsLabtestDispatchEpoch(fake.db, nativeOnly.target),
+    ]);
+    let entered!: () => void, finish!: () => void, secondAuthorized = false;
+    const inAuthority = new Promise<void>((resolve) => { entered = resolve; });
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const one = claimWithEpoch(fake.db, full, async () => { entered(); await wait; }, fullEpoch);
+    await inAuthority;
+    const two = claimWithEpoch(fake.db, nativeOnly, async () => { secondAuthorized = true; }, nativeEpoch)
+      .then(() => null, (error) => error);
+    await fake.targetWaiting;
+    finish();
+    await one;
+    expect(await two).toMatchObject({ reason: 'occupied' });
+    expect(secondAuthorized).toBe(false);
+  });
+
+  it('refuses missing or wrong native identity and mismatched fresh confirmation on native-only completion', async () => {
+    const fake = historyDb(), first = nativeOnlyClaim('42');
+    const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    const observed = verifiedReadback('123456-1', '42');
+    const proof = { operation: 'attach_document' as const, confirmation: '123456-1', nativeStayId: '42', ...observed,
+      savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } };
+    const { nativeStayId: _native, nativeReadback: _readback, ...missingIdentity } = proof;
+    await expect(resolveHmsLabtestDispatch(fake.db, handle, { ...missingIdentity, confirmation: '999999-1' }, async () => {}))
+      .rejects.toMatchObject({ reason: 'phase' });
+    await expect(resolveHmsLabtestDispatch(fake.db, handle, { ...proof, confirmation: '999999-1' }, async () => {}))
+      .rejects.toMatchObject({ reason: 'phase' });
+    await expect(resolveHmsLabtestDispatch(fake.db, handle, { ...proof, nativeStayId: '43' }, async () => {}))
+      .rejects.toMatchObject({ reason: 'phase' });
+    await expect(resolveHmsLabtestDispatch(fake.db, { ...handle, ownerToken: '0'.repeat(64) }, proof, async () => {}))
+      .rejects.toMatchObject({ reason: 'owner' });
+    await resolveHmsLabtestDispatch(fake.db, handle, proof, async () => {});
+    await expect(claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID() }, async () => {})).resolves.toBeDefined();
+  });
+
+  it('blocks a full target against legacy confirmation-only history and detects later alias changes in epoch', async () => {
+    const fake = historyDb(), legacy = savedClaim('123456-1'), nativeOnly = nativeOnlyClaim('42');
+    const ownerToken = 'a'.repeat(64), holdId = randomUUID();
+    const value: any = { ...legacy, version: 1, kind: 'intent', holdId,
+      ownerDigest: createHash('sha256').update(ownerToken).digest('hex') };
+    delete value.target;
+    delete value.recovery.nativeStayId;
+    fake.rows.push({ id: holdId, workItemId: value.workItemId, actorKind: 'system', type: 'write.evidence', value });
+    const full = { ...savedClaim('123456-1'), target: { ...legacy.target, nativeStayId: '42' },
+      recovery: { ...legacy.recovery, nativeStayId: '42' } };
+    await expect(captureHmsLabtestDispatchEpoch(fake.db, full.target)).rejects.toMatchObject({ reason: 'occupied' });
+    await expect(captureHmsLabtestDispatchEpoch(fake.db, { propertyCode: 'HRCEN', kind: 'saved', confirmation: '123456-1' }))
+      .rejects.toMatchObject({ reason: 'invalid' });
+    const stale = await captureHmsLabtestDispatchEpoch(fake.db, nativeOnly.target);
+    const readback = verifiedReadback('123456-1', '42');
+    await resolveHmsLabtestDispatch(fake.db, { holdId, ownerToken }, { operation: 'attach_document',
+      confirmation: '123456-1', nativeStayId: '42', ...readback,
+      savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    await expect(claimWithEpoch(fake.db, nativeOnly, async () => {}, stale)).rejects.toMatchObject({ reason: 'occupied' });
+    await claimHmsLabtestDispatch(fake.db, nativeOnly, async () => {});
+  });
+
+  it('does not finish when a verified alias discovers another active hold', async () => {
+    const fake = historyDb(), legacy = savedClaim('123456-1'), ownerToken = 'a'.repeat(64), holdId = randomUUID();
+    const value: any = { ...legacy, version: 1, kind: 'intent', holdId,
+      ownerDigest: createHash('sha256').update(ownerToken).digest('hex') };
+    delete value.target;
+    delete value.recovery.nativeStayId;
+    fake.rows.push({ id: holdId, workItemId: value.workItemId, actorKind: 'system', type: 'write.evidence', value });
+    await claimHmsLabtestDispatch(fake.db, nativeOnlyClaim('42'), async () => {});
+    await expect(resolveHmsLabtestDispatch(fake.db, { holdId, ownerToken }, { operation: 'attach_document',
+      confirmation: '123456-1', nativeStayId: '42', ...verifiedReadback('123456-1', '42'),
+      savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {}))
+      .rejects.toMatchObject({ reason: 'corrupt' });
+    expect(fake.rows.filter((row) => row.value.kind === 'resolved')).toHaveLength(0);
+  });
+
   it('keeps a legacy wrong-confirmation completion corrupt only for its own target', async () => {
     const fake = historyDb(), first = savedClaim('234567-1');
     const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
     await resolveHmsLabtestDispatch(fake.db, handle, { operation: 'attach_document', confirmation: '234567-1',
-      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+      nativeStayId: first.target.nativeStayId, readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
     fake.rows[1].value.confirmation = '999999-1';
     await expect(captureHmsLabtestDispatchEpoch(fake.db, first.target)).rejects.toMatchObject({ reason: 'corrupt' });
     await claimHmsLabtestDispatch(fake.db, savedClaim('345678-1'), async () => {});
@@ -324,5 +415,17 @@ describe('shared Labtest dispatch intent', () => {
     await expect(claimWithEpoch(fake.db, { ...first, target: { ...first.target, arrival: '2027-03-02' } }, async () => {},
       await captureHmsLabtestDispatchEpoch(fake.db, first.target))).rejects.toMatchObject({ reason: 'invalid' });
     await expect(captureHmsLabtestDispatchEpoch(fake.db)).rejects.toMatchObject({ reason: 'invalid' });
+  });
+
+  it('does not guess or omit a confirmation or native ID present in sealed evidence', async () => {
+    const fake = historyDb(), nativeOnly = nativeOnlyClaim('42');
+    const epoch = await captureHmsLabtestDispatchEpoch(fake.db, nativeOnly.target);
+    await expect(claimWithEpoch(fake.db, { ...nativeOnly, recovery: { ...nativeOnly.recovery, confirmation: '123456-1' } },
+      async () => {}, epoch)).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(claimWithEpoch(fake.db, { ...nativeOnly, recovery: { ...nativeOnly.recovery, confirmation: 'not-valid' } },
+      async () => {}, epoch)).rejects.toMatchObject({ reason: 'invalid' });
+    const full = savedClaim('123456-1');
+    await expect(claimWithEpoch(fake.db, { ...full, recovery: { ...full.recovery, nativeStayId: '43' } }, async () => {},
+      await captureHmsLabtestDispatchEpoch(fake.db, full.target))).rejects.toMatchObject({ reason: 'invalid' });
   });
 });

@@ -662,7 +662,8 @@ export function paneStayCloudTargetLock(target: HmsReadTarget, dispatchTarget: H
   const databaseUrl = process.env.DATABASE_URL;
   const parsed = hmsDispatchTargetSchema.safeParse(dispatchTarget);
   if (!databaseUrl || session?.kind !== 'independent_cloud' || !parsed.success || target.propertyCode !== parsed.data.propertyCode ||
-      target.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion') return null;
+      target.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion' ||
+      (parsed.data.kind === 'saved' && !parsed.data.nativeStayId)) return null;
   return createPostgresPropertyReadLock({
     tenantId: paneStayTenantId(),
     propertyCode: `cloud-target:${hmsDispatchTargetKey(parsed.data)}`,
