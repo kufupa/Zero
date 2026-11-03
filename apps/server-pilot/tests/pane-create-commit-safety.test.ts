@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { paneCloudPreviewLoaders } from '../src/ai/pane-cloud-preview.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
+import { readResolvedHmsLabtestCreates } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { consumeNeverDispatchedCreateProof, installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
@@ -384,8 +385,19 @@ describe('mounted Cloud create route', () => {
     expect(dispatches).toBe(0);
   });
 
-  it('resolves a late committed claim after the native fence has timed out and failed its first drain', async () => {
+  it.each(['single', 'first batch room'])('resolves a late committed claim for %s after the first drain timed out', async (mode) => {
+    if (mode === 'first batch room') {
+      (h.payload.stays as any)[0].totalRooms = 2;
+      (h.payload.stays as any)[0].rows[0].rooms = 2;
+    }
     const digest = await prepared();
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const secondDigest = mode === 'first batch room' ? (await caller().quoteWorkflow.previewStay(second)).previewDigest : undefined;
+    const batch = secondDigest ? { kind: 'start' as const, id: randomUUID(), rooms: [
+      { ...first, previewDigest: digest }, { ...second, previewDigest: secondDigest },
+    ] } : undefined;
     let release!: () => void, entered!: () => void;
     h.claimWait = new Promise<void>((resolve) => { release = resolve; });
     const claiming = new Promise<void>((resolve) => { entered = resolve; });
@@ -410,15 +422,20 @@ describe('mounted Cloud create route', () => {
         expect(await chain.drain({ timeoutMs: 5 })).toBe(false);
       }),
     });
-    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: digest, ...(batch ? { batch } : {}) }))
       .toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
     expect(dispatches).toBe(0);
     release();
     await lateRoute;
-    expect(h.events).toContainEqual({ value: { kind: 'not_dispatched' } });
+    expect(h.events).toContainEqual(expect.objectContaining({
+      value: expect.objectContaining({ kind: 'not_dispatched' }),
+    }));
     expect(h.sharedHoldResolved).toBe(true);
     expect(h.state).toMatchObject({ stays: {} });
+    if (batch) expect(h.state).not.toHaveProperty('cloudCreateBatch');
     expect(dispatches).toBe(0);
+    // A spent but never-dispatched grant is not a completed batch sibling.
+    expect(await readResolvedHmsLabtestCreates(h.tx, workItemId)).toEqual([]);
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
       .toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });

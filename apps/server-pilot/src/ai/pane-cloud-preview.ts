@@ -550,7 +550,17 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
       stay.confirmationNumber !== null || stay.screenshotRef !== null) throw new Error('cloud_create_recovery_scope_changed');
   const remaining = { ...stays } as Record<string, unknown>;
   delete remaining[intent.stayId];
-  await tx.update(workItem).set({ state: { ...current.state, stays: remaining }, updatedAt: new Date() })
+  const state: Record<string, unknown> = { ...current.state, stays: remaining };
+  const rawBatch = state[BATCH];
+  const batchId = rawBatch && typeof rawBatch === 'object' && !Array.isArray(rawBatch)
+    ? (rawBatch as Record<string, unknown>).id : null;
+  const batch = typeof batchId === 'string' ? storedBatch(state, batchId) : null;
+  // If the first room provably never left the browser, no room in this batch
+  // was saved. Discard its spent manifest so a fresh review can start again.
+  // Keep partial batches when any earlier room has a durable outcome.
+  if (batch?.rooms[0]?.stayId === intent.stayId && batch.rooms[0].grant.grantId === intent.grantId &&
+      batch.rooms.every((room) => !Object.hasOwn(remaining, room.stayId))) delete state[BATCH];
+  await tx.update(workItem).set({ state, updatedAt: new Date() })
     .where(eq(workItem.id, intent.workItemId));
 }
 
