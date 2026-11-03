@@ -220,6 +220,111 @@ function batchHolds(state: Record<string, unknown>): Record<string, string> | nu
   return parsed.success ? parsed.data : null;
 }
 
+/** An unused preview captured by a stopped Go needs a new preview before a new Go. */
+function grantInStoppedBatch(state: Record<string, unknown>, grantId: string): boolean {
+  const holds = batchHolds(state);
+  if (!holds) return true;
+  for (const [id, heldGrantId] of Object.entries(holds)) {
+    const batch = storedBatch(state, id);
+    if (!batch || !batch.rooms.some((room) => room.grant.grantId === heldGrantId) ||
+        batch.rooms.some((room) => room.grant.grantId === grantId)) return true;
+  }
+  return false;
+}
+
+type CreateDispatchTarget = Extract<HmsDispatchTarget, { kind: 'create' }>;
+export type CloudCreateHoldProjection = {
+  target: CreateDispatchTarget;
+  batch?: { id: string; rooms: Array<{ stayId: string; target: CreateDispatchTarget }> };
+};
+
+/** Positive Create target provenance, separate from a stopped-Go projection. */
+export function cloudCreateBookedTargetOf(state: Record<string, unknown>, stayId: string): CreateDispatchTarget | null {
+  const stays = state.stays;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return null;
+  const row = (stays as Record<string, unknown>)[stayId];
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const saved = row as Record<string, unknown>, target = hmsDispatchTargetSchema.safeParse(saved.cloudCreateTarget);
+  return saved.status === 'booked' && typeof saved.confirmationNumber === 'string' && saved.confirmationNumber.trim() &&
+    saved.cloudCreateVerified === true && z.string().uuid().safeParse(saved.cloudCreateGrantId).success &&
+    target.success && target.data.kind === 'create' ? target.data : null;
+}
+
+/** Read-only display of a stopped Create target and its sealed original Go. */
+export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string): CloudCreateHoldProjection | null {
+  const stays = state.stays;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return null;
+  const raw = (stays as Record<string, unknown>)[stayId];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const unknown = row.status === 'unknown';
+  if (!unknown && (row.status !== 'booked' || typeof row.confirmationNumber !== 'string' ||
+      !row.confirmationNumber.trim())) return null;
+  const target = hmsDispatchTargetSchema.safeParse(row.cloudCreateTarget);
+  if (unknown && (!z.string().uuid().safeParse(row.cloudCreateGrantId).success ||
+      !target.success || target.data.kind !== 'create')) return null;
+  const holds = batchHolds(state);
+  if (!holds) return null;
+
+  // A missing or corrupt manifest cannot be mistaken for an independently held single room.
+  const current = state[BATCH], archived = state[PAST_BATCHES];
+  if (archived !== undefined && (!archived || typeof archived !== 'object' || Array.isArray(archived))) return null;
+  if (Object.entries((archived ?? {}) as Record<string, unknown>).some(([id, value]) =>
+    !value || typeof value !== 'object' || Array.isArray(value) || (value as Record<string, unknown>).id !== id)) return null;
+  const raws = [current, ...Object.values((archived ?? {}) as Record<string, unknown>)].filter((value) => value !== undefined);
+  const batches: StoredBatch[] = [];
+  for (const value of raws) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const id = (value as Record<string, unknown>).id;
+    const batch = typeof id === 'string' ? storedBatch(state, id) : null;
+    if (!batch || batches.some((other) => other.id === batch.id)) return null;
+    batches.push(batch);
+  }
+  if (!unknown && row.cloudCreateRecovered === true && row.cloudCreateRecoveredBatchId === null &&
+      z.string().uuid().safeParse(row.cloudCreateGrantId).success && target.success && target.data.kind === 'create' &&
+      !Object.values(holds).includes(row.cloudCreateGrantId as string) &&
+      !batches.some((batch) => batch.rooms.some((room) => room.grant.grantId === row.cloudCreateGrantId))) {
+    return { target: target.data };
+  }
+  // Recovery intentionally keeps the batch hold, but older recovered rows did
+  // not retain their original target/grant. Reconstruct that binding only
+  // from the held grant in the sealed manifest for this exact stay.
+  const recovered = unknown ? [] : batches.flatMap((batch) => batch.rooms.filter((room) =>
+    room.stayId === stayId && room.grant.grantId === holds[batch.id]).map((room) => ({ batch, room })));
+  if (!unknown && recovered.length !== 1) return null;
+  const grantId = unknown ? row.cloudCreateGrantId : recovered[0]!.room.grant.grantId;
+  if (!unknown && row.cloudCreateGrantId !== undefined && row.cloudCreateGrantId !== grantId) return null;
+  const heldIds = Object.entries(holds).filter(([, value]) => value === grantId).map(([id]) => id);
+  if (heldIds.length > 1) return null;
+  const related = batches.filter((batch) => batch.rooms.some((room) => room.grant.grantId === grantId));
+  if (heldIds.length === 0) return unknown && target.success && target.data.kind === 'create' && related.length === 0
+    ? { target: target.data } : null;
+  if (related.length !== 1 || related[0]?.id !== heldIds[0]) return null;
+  const batch = related[0]!;
+  const rooms: NonNullable<CloudCreateHoldProjection['batch']>['rooms'] = [];
+  const grantIds = new Set<string>();
+  for (const room of batch.rooms) {
+    const { digest: grantDigest, ...grantBody } = room.grant;
+    const request = z.object({ propertyCode: z.literal('HRCEN'),
+      guest: z.object({ nativeId: z.string().regex(/^\d+$/), firstName: z.string(), lastName: z.string() }).passthrough(),
+      stay: z.object({ arrival: z.string() }).passthrough() }).passthrough().safeParse(room.grant.approvedRequest);
+    if (grantIds.has(room.grant.grantId) || hash(grantBody) !== grantDigest ||
+        hash(room.grant.approvedRequest) !== room.grant.requestDigest ||
+        room.stayId !== `${room.grant.identity.stayId}_${room.grant.identity.roomIndex}` ||
+        !request.success || request.data.guest.nativeId !== room.grant.nativeGuestId) return null;
+    grantIds.add(room.grant.grantId);
+    const memberTarget = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
+      firstName: request.data.guest.firstName, lastName: request.data.guest.lastName, arrival: request.data.stay.arrival });
+    if (!memberTarget.success || memberTarget.data.kind !== 'create') return null;
+    rooms.push({ stayId: room.stayId, target: memberTarget.data });
+  }
+  const held = batch.rooms.find((room) => room.stayId === stayId && room.grant.grantId === grantId);
+  const heldTarget = rooms.find((room) => room.stayId === stayId)?.target;
+  if (!held || !heldTarget || ((unknown || row.cloudCreateTarget !== undefined) &&
+      (!target.success || target.data.kind !== 'create' || hmsDispatchTargetKey(heldTarget) !== hmsDispatchTargetKey(target.data)))) return null;
+  return { target: heldTarget, batch: { id: batch.id, rooms } };
+}
+
 /** Check whether every room in the current batch has durable positive evidence. */
 async function previousBatchComplete(tx: CreateFenceTransaction, state: Record<string, unknown>, input: Input): Promise<boolean> {
   const raw = state[BATCH];
@@ -258,12 +363,15 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
     throw new Error('cloud_batch_stale');
   }
   let pastBatches: Record<string, unknown> | undefined;
-  if (!await previousBatchComplete(tx, source.item.state, input)) {
-    const raw = source.item.state[BATCH];
-    const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
+  const raw = source.item.state[BATCH];
+  const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
+  const holds = batchHolds(source.item.state);
+  // Positive recovery can complete every room without releasing the original
+  // batch hold. Its sealed manifest must survive the next unrelated Go.
+  if (!await previousBatchComplete(tx, source.item.state, input) ||
+      (typeof id === 'string' && holds && Object.hasOwn(holds, id))) {
     const previous = typeof id === 'string' ? storedBatch(source.item.state, id) : null;
     const archived = source.item.state[PAST_BATCHES];
-    const holds = batchHolds(source.item.state);
     if (!previous || (archived !== undefined && (!archived || typeof archived !== 'object' || Array.isArray(archived))) ||
         (archived && Object.hasOwn(archived, previous.id)) || !holds ||
         !previous.rooms.some((room) => room.grant.grantId === holds[previous.id])) throw new Error('cloud_batch_stale');
@@ -276,7 +384,8 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
     const candidate = grantOf(source.item.state, room.stayId);
     const current = await checkSource(tx, source, roomInput, grant.accessId);
     const roomTarget = createTarget(room.stay);
-    if (!candidate || room.stayId !== `${room.selection.identity.stayId}_${room.selection.identity.roomIndex}` ||
+    if (!candidate || grantInStoppedBatch(source.item.state, candidate.grantId) ||
+        room.stayId !== `${room.selection.identity.stayId}_${room.selection.identity.roomIndex}` ||
         !sameGrant(candidate, roomInput, room.previewDigest) || !matchesSource(current, candidate) ||
         canonicalJson(candidate.source) !== canonicalJson(grant.source) ||
         canonicalJson(candidate.cursor) !== canonicalJson(grant.cursor) ||
@@ -559,7 +668,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               const current = await checkSource(lockedTx, source, input, grant.accessId);
               const liveGrant = grantOf(source.item.state, input.stayId), stays = source.item.state.stays;
               const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
-              if (claim.stayId !== input.stayId || !liveGrant || !sameGrant(liveGrant, input, previewDigest) ||
+              if (claim.stayId !== input.stayId || !liveGrant || grantInStoppedBatch(source.item.state, liveGrant.grantId) ||
+                  !sameGrant(liveGrant, input, previewDigest) ||
                   !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) || hasStay(source.item.state, input.stayId) ||
                   createAdmission(mode, input.stay).reason || createAdmission(mode, input.stay).allowRealGuest !== admission.allowRealGuest ||
                   !paneCloudPreviewLoaders.authorityReady() ||
@@ -630,7 +740,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             intent.actorUserId !== input.actorUserId || intent.grantId !== grant.grantId || intent.stayId !== input.stayId ||
             intent.approvedDigest !== grant.requestDigest) throw new Error('cloud_create_result_scope_changed');
         await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest: hash(native.readback),
-          savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots }, input.batch?.id);
+          savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots }, input.batch?.id, false);
       });
       return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true, ...shots };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
@@ -733,7 +843,7 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
 
 /** Update only the original unknown stay and retain durable proof on the same transaction. */
 export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: HmsLabtestIntent, proof: CreateRecoveryProof,
-  completedBatchId?: string) {
+  completedBatchId?: string, operatorRecovery = true) {
   if (intent.operation !== 'create' || !intent.stayId) throw new Error('cloud_create_recovery_scope_changed');
   const [current] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
@@ -744,6 +854,26 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
   if (!stay || stay.status !== 'unknown' || stay.cloudCreateGrantId !== intent.grantId) {
     throw new Error('cloud_create_recovery_scope_changed');
   }
+  const recoveredTarget = hmsLabtestIntentTarget(intent);
+  const storedTarget = hmsDispatchTargetSchema.safeParse(stay.cloudCreateTarget);
+  if (!recoveredTarget || recoveredTarget.kind !== 'create' ||
+      (stay.cloudCreateTarget !== undefined && (!storedTarget.success ||
+        hmsDispatchTargetKey(storedTarget.data) !== hmsDispatchTargetKey(recoveredTarget)))) {
+    throw new Error('cloud_create_recovery_scope_changed');
+  }
+  let legacyHolds: Record<string, string> | undefined;
+  if (operatorRecovery && current.state[BATCH_HOLDS] === undefined && current.state[BATCH] !== undefined) {
+    const raw = current.state[BATCH];
+    const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
+    const batch = typeof id === 'string' ? storedBatch(current.state, id) : null;
+    if (!batch) throw new Error('cloud_create_recovery_scope_changed');
+    const members = batch.rooms.filter((room) => room.grant.grantId === intent.grantId);
+    if (members.length > 1 || (members.length === 1 && (members[0]!.stayId !== intent.stayId ||
+        members[0]!.grant.requestDigest !== intent.approvedDigest || members[0]!.grant.nativeGuestId !== intent.nativeGuestId))) {
+      throw new Error('cloud_create_recovery_scope_changed');
+    }
+    if (members.length === 1) legacyHolds = { [batch.id]: intent.grantId };
+  }
   let releasedHolds: Record<string, string> | undefined;
   if (completedBatchId) {
     const holds = batchHolds(current.state);
@@ -751,9 +881,15 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
     releasedHolds = { ...holds };
     delete releasedHolds[completedBatchId];
   }
-  const state = { ...current.state, ...(releasedHolds ? { [BATCH_HOLDS]: releasedHolds } : {}),
+  const recoveredBatches = Object.entries(legacyHolds ?? batchHolds(current.state) ?? {})
+    .filter(([, grantId]) => grantId === intent.grantId).map(([id]) => id);
+  if (operatorRecovery && recoveredBatches.length > 1) throw new Error('cloud_create_recovery_scope_changed');
+  const state = { ...current.state, ...(legacyHolds ? { [BATCH_HOLDS]: legacyHolds } : {}),
+    ...(releasedHolds ? { [BATCH_HOLDS]: releasedHolds } : {}),
     stays: { ...stays, [intent.stayId]: { status: 'booked',
     confirmationNumber: proof.confirmation, screenshotRef: { runId: proof.savedShot.runId, name: 'saved.png' },
-    runId: proof.savedShot.runId, shots: proof.shots } } };
+    runId: proof.savedShot.runId, shots: proof.shots, cloudCreateVerified: true,
+    cloudCreateTarget: recoveredTarget, cloudCreateGrantId: intent.grantId,
+    ...(operatorRecovery ? { cloudCreateRecovered: true, cloudCreateRecoveredBatchId: recoveredBatches[0] ?? null } : {}) } } };
   await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
 }

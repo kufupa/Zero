@@ -74,6 +74,7 @@ import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenc
   type CreateFenceIdentity } from './pane-create-dispatch-fence.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
+import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -138,6 +139,9 @@ export type StayCommitRecord = {
   shots?: StayCommitShot[];
   cmsReason?: 'saved_cms_mismatch';
   cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
+  /** Read-only projection; the server's dispatch and approval checks remain authoritative. */
+  cloudCreateHold?: CloudCreateHoldProjection;
+  cloudCreateTarget?: CloudCreateHoldProjection['target'];
 };
 export type StayCommitGuard =
   | { action: 'commit' }
@@ -225,12 +229,47 @@ export function stayCommitsOf(state: WorkState): Record<string, StayCommitRecord
   return out;
 }
 
+/** Project held Create identities only for pane reads; never write the projection back to state. */
+export async function paneStayCommitsOf(state: WorkState): Promise<Record<string, StayCommitRecord>> {
+  const commits = stayCommitsOf(state);
+  const rows = state[STAY_COMMITS_KEY];
+  const recovered = rows && typeof rows === 'object' && !Array.isArray(rows) &&
+    Object.values(rows).some((row) => row && typeof row === 'object' && !Array.isArray(row) &&
+      ((row as Record<string, unknown>).cloudCreateRecovered === true ||
+        (row as Record<string, unknown>).cloudCreateVerified === true));
+  if (state.cloudCreateBatchHolds === undefined && !recovered &&
+      !Object.values(commits).some((commit) => commit.status === 'unknown')) return commits;
+  // Load after work-items has initialized (Create imports its scope helpers).
+  const { cloudCreateHoldOf, cloudCreateBookedTargetOf } = await import('./pane-cloud-preview.js');
+  for (const [stayId, commit] of Object.entries(commits)) {
+    const hold = cloudCreateHoldOf(state, stayId);
+    const target = cloudCreateBookedTargetOf(state, stayId);
+    if (hold || target) commits[stayId] = { ...commit, ...(hold ? { cloudCreateHold: hold } : {}),
+      ...(target ? { cloudCreateTarget: target } : {}) };
+  }
+  return commits;
+}
+
 export function stayCommitOf(state: WorkState, stayId: string): StayCommitRecord | undefined {
   return stayCommitsOf(state)[stayId];
 }
 
 export function withStayCommit(state: WorkState, stayId: string, record: StayCommitRecord): WorkState {
-  return { ...state, [STAY_COMMITS_KEY]: { ...stayCommitsOf(state), [stayId]: record } };
+  const raw = state[STAY_COMMITS_KEY];
+  const rows = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  // Validate the visible entries but retain their server-owned evidence when another stay changes.
+  const siblings = Object.fromEntries(Object.keys(stayCommitsOf(state)).map((id) => [id, rows[id]]));
+  const previous = rows[stayId];
+  const evidence = previous && typeof previous === 'object' && !Array.isArray(previous)
+    ? previous as Record<string, unknown> : {};
+  const held = evidence.status === 'unknown' || evidence.cloudCreateVerified === true;
+  return { ...state, [STAY_COMMITS_KEY]: { ...siblings, [stayId]: { ...record,
+    ...(held && Object.hasOwn(evidence, 'cloudCreateTarget') ? { cloudCreateTarget: evidence.cloudCreateTarget } : {}),
+    ...(held && Object.hasOwn(evidence, 'cloudCreateGrantId') ? { cloudCreateGrantId: evidence.cloudCreateGrantId } : {}),
+    ...(evidence.cloudCreateVerified === true ? { cloudCreateVerified: true } : {}),
+    ...(evidence.cloudCreateRecovered === true ? { cloudCreateRecovered: true } : {}),
+    ...(Object.hasOwn(evidence, 'cloudCreateRecoveredBatchId') ? { cloudCreateRecoveredBatchId: evidence.cloudCreateRecoveredBatchId } : {}),
+  } } };
 }
 
 export function stayCommitGuard(record: StayCommitRecord | undefined): StayCommitGuard {
@@ -280,6 +319,12 @@ export function withStayActionResult(
 ): WorkState {
   if (!STAY_ID_PATTERN.test(stayId)) return state;
   const existing = stayCommitOf(state, stayId);
+  const stays = state[STAY_COMMITS_KEY];
+  const raw = stays && typeof stays === 'object' && !Array.isArray(stays)
+    ? (stays as Record<string, unknown>)[stayId] : null;
+  const held: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw) &&
+    (existing?.status === 'unknown' || (raw as Record<string, unknown>).cloudCreateRecovered === true)
+    ? raw as Record<string, unknown> : {};
   return withStayCommit(state, stayId, {
     confirmationNumber: result.confirmationNumber,
     status: existing?.status ?? 'booked',
@@ -287,6 +332,9 @@ export function withStayActionResult(
     ...(existing?.runId ? { runId: existing.runId } : {}),
     ...(existing?.shots ? { shots: existing.shots } : {}),
     ...(existing?.cmsReason ? { cmsReason: existing.cmsReason, cmsMismatches: existing.cmsMismatches } : {}),
+    ...(Object.hasOwn(held, 'cloudCreateTarget') ? { cloudCreateTarget: held.cloudCreateTarget } : {}),
+    ...(Object.hasOwn(held, 'cloudCreateGrantId') ? { cloudCreateGrantId: held.cloudCreateGrantId } : {}),
+    ...(held.cloudCreateRecovered === true ? { cloudCreateRecovered: true } : {}),
   });
 }
 
@@ -1980,7 +2028,7 @@ async function readyView(
           ),
     },
     contact: storedContact(read.payload, state),
-    stays: stayCommitsOf(state),
+    stays: await paneStayCommitsOf(state),
     stayPreviews: stayPreviewsOf(state),
     fieldProvenance: await latestFieldProvenance(db, {
       transportId,

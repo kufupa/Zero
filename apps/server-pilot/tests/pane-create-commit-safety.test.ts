@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import * as cloudCreateDriver from '../src/ai/pane-cloud-preview.js';
 import { paneCloudPreviewLoaders, recordRecoveredCreate } from '../src/ai/pane-cloud-preview.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
-import { readResolvedHmsLabtestCreates } from '../src/ai/hms-labtest-dispatch.js';
+import { paneStayCommitsOf, stayCommitsOf, withStayActionResult, withStayCommit } from '../src/ai/work-items.js';
+import { readResolvedHmsLabtestCreates, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { CREATE_GUARANTEES, hrcenToday } from '../tooling/hms-cloud/cloud-create-policy.mjs';
@@ -265,6 +267,25 @@ async function prepared() {
 }
 
 describe('mounted Cloud create route', () => {
+  it('projects a server-owned standalone Create hold and fails closed on legacy or corrupt holds', async () => {
+    const target = { propertyCode: 'HRCEN', kind: 'create', firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    const row = { status: 'unknown', confirmationNumber: null, screenshotRef: null,
+      cloudCreateTarget: target, cloudCreateGrantId: randomUUID() };
+    const state = { stays: { s1_1: row } };
+    expect((await paneStayCommitsOf(state)).s1_1?.cloudCreateHold).toEqual({ target });
+    expect(stayCommitsOf(state).s1_1).not.toHaveProperty('cloudCreateHold');
+    expect((await paneStayCommitsOf({ stays: { s1_1: { ...row, cloudCreateTarget: undefined } } })).s1_1?.cloudCreateHold).toBeUndefined();
+    expect((await paneStayCommitsOf({ ...state, cloudCreateBatch: { id: randomUUID() } })).s1_1?.cloudCreateHold).toBeUndefined();
+    expect((await paneStayCommitsOf({ ...state, cloudCreateBatchHolds: { invalid: 'broken' } })).s1_1?.cloudCreateHold).toBeUndefined();
+    const sibling = withStayCommit(state, 's1_2', { status: 'booked', confirmationNumber: '123456-1', screenshotRef: null });
+    expect((sibling.stays as Record<string, unknown>).s1_1).toEqual(row);
+    expect((await paneStayCommitsOf(sibling)).s1_1?.cloudCreateHold).toEqual({ target });
+    const action = withStayActionResult(state, 's1_1', { confirmationNumber: '123456-1', screenshotRef: null });
+    expect((action.stays as Record<string, unknown>).s1_1).toMatchObject({ status: 'unknown',
+      cloudCreateTarget: target, cloudCreateGrantId: row.cloudCreateGrantId });
+    expect((await paneStayCommitsOf(action)).s1_1?.cloudCreateHold).toEqual({ target });
+  });
+
   it('does not require boot, PID namespace or process identity proof to dispatch', async () => {
     const digest = await prepared();
     h.writerCurrent = false;
@@ -887,6 +908,235 @@ describe('mounted Cloud create route', () => {
     expect(dispatches).toBe(1);
   });
 
+  it('projects the stopped original batch after route recovery for the reopened pane', async () => {
+    paneStaySaveLoaders.mode = () => 'on';
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    (h.payload.stays as any)[0].totalRooms = 4;
+    (h.payload.stays as any)[0].rows[0].rooms = 4;
+    const rooms = Array.from({ length: 4 }, (_, index) => ({ ...request('123'), stayId: `s1_${index + 1}`,
+      ...(index > 1 ? { firstName: 'Ada', lastName: 'Moyo' } : {}),
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: index + 1 } } }));
+    const digests: string[] = [];
+    for (const [index, room] of rooms.entries()) {
+      proof = index < 2 ? structuredClone(nativeRequest) :
+        { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+      digests.push((await caller().quoteWorkflow.previewStay(room)).previewDigest!);
+      expect(digests[index]).toMatch(/^[a-f0-9]{64}$/);
+    }
+    const originalId = randomUUID();
+    proof = structuredClone(nativeRequest);
+    outcome = 'uncertain';
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[0]!, previewDigest: digests[0]!, batch: {
+      kind: 'start', id: originalId, rooms: rooms.map((room, index) => ({ ...room, previewDigest: digests[index]! })),
+    } })).toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+    const beforeRecovery = await paneStayCommitsOf(h.state);
+    const originalHold = beforeRecovery.s1_1?.cloudCreateHold;
+    expect(originalHold).toMatchObject({ batch: { id: originalId, rooms: [
+      { stayId: 's1_1', target: { firstName: 'Proof', lastName: 'Labtest' } },
+      { stayId: 's1_2', target: { firstName: 'Proof', lastName: 'Labtest' } },
+      { stayId: 's1_3', target: { firstName: 'Ada', lastName: 'Moyo' } },
+      { stayId: 's1_4', target: { firstName: 'Ada', lastName: 'Moyo' } },
+    ] } });
+
+    // Exercise the actual operator recovery and ledger path; only the native
+    // positive readback is replaced with a synthetic proof in this local test.
+    const prove = vi.spyOn(cloudCreateDriver, 'proveCreateRecovery').mockResolvedValue({
+      confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [],
+    });
+    h.tx.insert = () => ({ values: async (value: any) => {
+      h.events.push({ ...value, id: randomUUID(), itemId: value.workItemId });
+    } });
+    try { await recoverHmsLabtestCreate(h.db, String(h.sharedHold?.holdId)); }
+    finally { prove.mockRestore(); }
+    h.sharedHoldResolved = true;
+    expect((h.state.cloudCreateBatchHolds as Record<string, string>)[originalId]).toBe(h.sharedHold?.grantId);
+    const afterRecovery = await paneStayCommitsOf(h.state);
+    expect(afterRecovery.s1_1).toMatchObject({ status: 'booked', confirmationNumber: '123456-1', cloudCreateHold: originalHold });
+
+    // The sealed held grant must identify this stay and target; tampering cannot
+    // produce an unrelated-target projection, even for legacy recovered rows.
+    for (const variant of ['hold', 'stay', 'request', 'rowGrant', 'rowTarget'] as const) {
+      const changed = structuredClone(h.state) as any;
+      if (variant === 'hold') changed.cloudCreateBatchHolds[originalId] = randomUUID();
+      if (variant === 'stay') changed.stays.s1_2 = changed.stays.s1_1, delete changed.stays.s1_1;
+      if (variant === 'request') changed.cloudCreateBatch.rooms[0].grant.approvedRequest.guest.firstName = 'Changed';
+      if (variant === 'rowGrant') changed.stays.s1_1.cloudCreateGrantId = randomUUID();
+      if (variant === 'rowTarget') changed.stays.s1_1.cloudCreateTarget = {
+        propertyCode: 'HRCEN', kind: 'create', firstName: 'Other', lastName: 'Guest', arrival: stay.arrival,
+      };
+      const projected = await paneStayCommitsOf(changed);
+      expect(projected[variant === 'stay' ? 's1_2' : 's1_1']?.cloudCreateHold).toBeUndefined();
+    }
+
+    const receipt = process.env.U1_CREATE_TEST_RECOVERY_RECEIPT;
+    if (receipt) await writeFile(receipt, JSON.stringify({ beforeRecovery, afterRecovery, originalId }), { flag: 'wx', mode: 0o600 });
+
+    // A stale client cannot recycle unused grants captured in the stopped Go
+    // into a different batch or a standalone Save, even for unrelated guests.
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+    outcome = 'saved';
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: digests[2]!, batch: {
+      kind: 'start', id: randomUUID(), rooms: rooms.slice(2).map((room, index) => ({ ...room, previewDigest: digests[index + 2]! })),
+    } })).toMatchObject({ status: 'refused' });
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: digests[2]! }))
+      .toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(1);
+    expect((h.state.stays as Record<string, unknown>).s1_3).toBeUndefined();
+
+    const previousCalls = calls.length;
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[1]!, previewDigest: digests[1]!,
+      batch: { kind: 'continue', id: originalId, index: 1 } })).toMatchObject({ status: 'refused' });
+    expect(calls).toHaveLength(previousCalls);
+    expect(dispatches).toBe(1);
+
+    // Newly previewed rooms for an unrelated guest start a different batch;
+    // moving the original manifest to history does not lose its stop.
+    outcome = 'saved';
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+    const fresh = [];
+    for (const room of rooms.slice(2)) fresh.push(await caller().quoteWorkflow.previewStay(room));
+    const newId = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: fresh[0]!.previewDigest!, batch: {
+      kind: 'start', id: newId, rooms: rooms.slice(2).map((room, index) => ({ ...room, previewDigest: fresh[index]!.previewDigest! })),
+    } })).toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect((await paneStayCommitsOf(h.state)).s1_1?.cloudCreateHold).toEqual(originalHold);
+    expect((h.state.cloudCreateBatchHolds as Record<string, string>)[originalId]).toBeDefined();
+  });
+
+  it('archives a fully recovered held batch before a later unrelated Go', async () => {
+    paneStaySaveLoaders.mode = () => 'on'; vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const laterStay = structuredClone((h.payload.stays as any)[0]);
+    laterStay.id = 's2'; laterStay.rows[0].id = 'r2';
+    laterStay.requested = { arrival: '2027-03-10', departure: '2027-03-12' };
+    (h.payload.stays as any[]).push(laterStay);
+    const first = request('123'), second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared(), secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const originalId = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
+      kind: 'start', id: originalId, rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }],
+    } })).toMatchObject({ status: 'ok', outcome: 'committed' });
+    const originalRun = paneCloudPreviewLoaders.run, originalVerify = paneCloudPreviewLoaders.verifySiblings;
+    const row = { confirmation: '123456-1', firstName: 'Proof', lastName: 'Labtest',
+      arrival: stay.arrival, departure: stay.departure, status: 'Reserved' };
+    const census = { outcome: 'existing_matches', arrival: stay.arrival, coverage: { complete: true }, sameArrival: [row] };
+    paneCloudPreviewLoaders.verifySiblings = async (_census, siblings) => siblings.length === 1 && siblings[0]?.confirmation === row.confirmation;
+    paneCloudPreviewLoaders.run = async (input, options) => {
+      if (input.mode === 'commit') expect(await options.verifyLabtestMatches?.(census)).toBe(true);
+      const dispatch = options.dispatchCandidate;
+      return originalRun(input, { ...options, dispatchCandidate: dispatch && ((candidate, next, evidence: any) =>
+        dispatch(candidate, next, { ...evidence, preimage: { ...evidence.preimage,
+          coverage: { displayed: 1, total: 1, complete: true }, sameArrival: [row], verifiedExisting: true } })) });
+    };
+    outcome = 'uncertain';
+    try {
+      expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+        batch: { kind: 'continue', id: originalId, index: 1 } })).toMatchObject({ reason: 'pane_save_unconfirmed' });
+    } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
+    h.tx.insert = () => ({ values: async (value: any) => h.events.push({ ...value, id: randomUUID(), itemId: value.workItemId }) });
+    const prove = vi.spyOn(cloudCreateDriver, 'proveCreateRecovery').mockResolvedValue({
+      confirmation: '123456-2', readbackDigest: 'a'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [],
+    });
+    try { await recoverHmsLabtestCreate(h.db, String(h.sharedHold?.holdId)); } finally { prove.mockRestore(); }
+    h.sharedHoldResolved = true;
+    expect(await readResolvedHmsLabtestCreates(h.db, workItemId)).toHaveLength(2);
+    const originalHold = (await paneStayCommitsOf(h.state)).s1_2?.cloudCreateHold;
+    expect(originalHold?.batch?.id).toBe(originalId);
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' },
+      stay: { ...nativeRequest.stay, arrival: laterStay.requested.arrival, departure: laterStay.requested.departure } };
+    const later = [1, 2].map((roomIndex) => ({ ...request('123'), firstName: 'Ada', lastName: 'Moyo',
+      arrival: laterStay.requested.arrival, departure: laterStay.requested.departure, stayId: `s2_${roomIndex}`,
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex } } }));
+    const fresh = [];
+    for (const room of later) fresh.push(await caller().quoteWorkflow.previewStay(room));
+    outcome = 'saved';
+    const newId = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...later[0]!, previewDigest: fresh[0]!.previewDigest!, batch: {
+      kind: 'start', id: newId, rooms: later.map((room, index) => ({ ...room, previewDigest: fresh[index]!.previewDigest! })),
+    } })).toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect((h.state.cloudCreatePastBatches as Record<string, unknown>)[originalId]).toBeDefined();
+    expect((await paneStayCommitsOf(h.state)).s1_2?.cloudCreateHold).toEqual(originalHold);
+    expect((await paneStayCommitsOf(h.state)).s1_2?.cloudCreateTarget).toMatchObject({ firstName: 'Proof', lastName: 'Labtest' });
+  });
+
+  it('retains recovered standalone target provenance through later stay actions', async () => {
+    const digest = await prepared(); outcome = 'uncertain';
+    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+      .toMatchObject({ reason: 'pane_save_unconfirmed' });
+    await recordRecoveredCreate(h.tx, h.sharedHold as any, { confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [] });
+    h.sharedHoldResolved = true;
+    const projected = (await paneStayCommitsOf(h.state)).s1_1!;
+    expect(projected.cloudCreateHold).toMatchObject({ target: { firstName: 'Proof', lastName: 'Labtest' } });
+    expect(projected.cloudCreateHold?.batch).toBeUndefined();
+    expect(projected.cloudCreateTarget).toEqual(projected.cloudCreateHold?.target);
+    h.state = withStayActionResult(h.state, 's1_1', { confirmationNumber: '123456-1', screenshotRef: null });
+    expect((await paneStayCommitsOf(h.state)).s1_1?.cloudCreateHold).toEqual(projected.cloudCreateHold);
+    expect((await paneStayCommitsOf(h.state)).s1_1?.cloudCreateTarget).toEqual(projected.cloudCreateTarget);
+  });
+
+  it('recovers an unambiguous legacy target and reconstructs its sealed batch hold', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123'), second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared(), secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const originalId = randomUUID(); outcome = 'uncertain';
+    await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: { kind: 'start', id: originalId,
+      rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }] } });
+    const legacy = structuredClone(h.sharedHold) as any;
+    delete legacy.target;
+    delete (h.state.stays as any).s1_1.cloudCreateTarget;
+    delete h.state.cloudCreateBatchHolds;
+    const evidence = { confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [] };
+    const unchanged = structuredClone(h.state);
+    const wrong = { ...legacy, recovery: { ...legacy.recovery, request: { ...legacy.recovery.request,
+      guest: { ...legacy.recovery.request.guest, firstName: 'Other' } } } };
+    await expect(recordRecoveredCreate(h.tx, wrong, evidence)).rejects.toThrow('cloud_create_recovery_scope_changed');
+    expect(h.state).toEqual(unchanged);
+    await recordRecoveredCreate(h.tx, legacy, evidence);
+    expect(h.state.cloudCreateBatchHolds).toEqual({ [originalId]: legacy.grantId });
+    expect((await paneStayCommitsOf(h.state)).s1_1).toMatchObject({ status: 'booked',
+      cloudCreateTarget: { firstName: 'Proof', lastName: 'Labtest' }, cloudCreateHold: { batch: { id: originalId } } });
+  });
+
+  it('allows a freshly reviewed standalone unrelated room after a batch recovers', async () => {
+    paneStaySaveLoaders.mode = () => 'on';
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    (h.payload.stays as any)[0].totalRooms = 3;
+    (h.payload.stays as any)[0].rows[0].rooms = 3;
+    const rooms = Array.from({ length: 3 }, (_, index) => ({ ...request('123'), stayId: `s1_${index + 1}`,
+      ...(index === 2 ? { firstName: 'Ada', lastName: 'Moyo' } : {}),
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: index + 1 } } }));
+    const digests: string[] = [];
+    for (const [index, room] of rooms.entries()) {
+      proof = index < 2 ? structuredClone(nativeRequest) :
+        { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+      digests.push((await caller().quoteWorkflow.previewStay(room)).previewDigest!);
+    }
+    const originalId = randomUUID();
+    proof = structuredClone(nativeRequest); outcome = 'uncertain';
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[0]!, previewDigest: digests[0]!, batch: {
+      kind: 'start', id: originalId, rooms: rooms.map((room, index) => ({ ...room, previewDigest: digests[index]! })),
+    } })).toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+    await recordRecoveredCreate(h.tx, h.sharedHold as any, { confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [] });
+    h.sharedHoldResolved = true;
+    outcome = 'saved';
+    proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
+    const fresh = await caller().quoteWorkflow.previewStay(rooms[2]!);
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: fresh.previewDigest! }))
+      .toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect((h.state.cloudCreateBatchHolds as Record<string, string>)[originalId]).toBeDefined();
+    expect(await caller().quoteWorkflow.commitStay({ ...rooms[1]!, previewDigest: digests[1]!,
+      batch: { kind: 'continue', id: originalId, index: 1 } })).toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(2);
+  });
+
   it('allows a separately approved unrelated batch to continue while an earlier batch is UNKNOWN', async () => {
     paneStaySaveLoaders.mode = () => 'on';
     vi.stubEnv('PANE_WRITE_CREATE', 'on');
@@ -904,6 +1154,16 @@ describe('mounted Cloud create route', () => {
     await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: { kind: 'start', id: oldBatchId,
       rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }] } });
     expect(h.state).toMatchObject({ stays: { s1_1: { status: 'unknown' } } });
+    const projection = (await paneStayCommitsOf(h.state)).s1_1?.cloudCreateHold;
+    expect(projection).toMatchObject({ target: { kind: 'create', firstName: 'Proof', lastName: 'Labtest', arrival: stay.arrival },
+      batch: { id: oldBatchId, rooms: [
+        { stayId: 's1_1', target: { firstName: 'Proof', lastName: 'Labtest' } },
+        { stayId: 's1_2', target: { firstName: 'Proof', lastName: 'Labtest' } },
+      ] } });
+    expect(stayCommitsOf(h.state).s1_1).not.toHaveProperty('cloudCreateHold');
+    const changed = structuredClone(h.state) as any;
+    changed.cloudCreateBatch.rooms[1].grant.approvedRequest.guest.firstName = 'Changed';
+    expect((await paneStayCommitsOf(changed)).s1_1?.cloudCreateHold).toBeUndefined();
     // The real ledger is target-scoped; this fixture keeps one synthetic hold at a time.
     h.sharedHoldResolved = true;
     outcome = 'saved';
@@ -936,6 +1196,7 @@ describe('mounted Cloud create route', () => {
         batch: { kind: 'continue', id: newBatchId, index: 1 } })).toMatchObject({ status: 'ok', outcome: 'committed' });
       expect(h.state).toMatchObject({ stays: { s1_1: { status: 'unknown' }, s2_1: { status: 'booked' }, s2_2: { status: 'booked' } },
         cloudCreateBatchHolds: { [oldBatchId]: expect.any(String) } });
+      expect((await paneStayCommitsOf(h.state)).s1_1?.cloudCreateHold).toEqual(projection);
     } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
   });
 
