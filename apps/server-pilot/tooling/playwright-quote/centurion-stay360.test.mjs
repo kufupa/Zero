@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import {
-  assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserIdentity, centurionContextOptions,
-  closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, withCenturionStay360Page,
+  assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserHoldPath, centurionBrowserIdentity, centurionContextOptions,
+  closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, prepareCenturionLaunch, withCenturionStay360Page,
 } from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
@@ -98,6 +98,38 @@ test('a mismatched group is never killed and creates a persistent hold', async (
     await server.close().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('browser holds use an owner-private directory and reject unsafe parents', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-private-home-'));
+  try {
+    const path = centurionBrowserHoldPath(home);
+    assert.equal(path, join(home, '.nava-hms-runtime', 'hrcen-browser-hold'));
+    assert.doesNotThrow(() => assertNoCenturionBrowserHold(path));
+    holdCenturionBrowser({ pid: 1, started: '1' }, path);
+    assert.throws(() => assertNoCenturionBrowserHold(path), /HMS_BROWSER_HOLD/);
+    await chmod(join(home, '.nava-hms-runtime'), 0o770);
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+    await rm(join(home, '.nava-hms-runtime'), { recursive: true });
+    await symlink(home, join(home, '.nava-hms-runtime'));
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+    await chmod(home, 0o777);
+    assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
+  } finally {
+    await chmod(home, 0o700);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('a hold created while a launch is queued prevents that launch', async () => {
+  let held = false;
+  let checks = 0;
+  const check = () => { checks += 1; if (held) throw new Error('HMS_BROWSER_HOLD'); };
+  await assert.rejects(prepareCenturionLaunch(async () => { held = true; }, undefined, check), /HMS_BROWSER_HOLD/);
+  assert.equal(checks, 2);
+  let called = false;
+  await assert.rejects(prepareCenturionLaunch(() => { called = true; }, undefined, check), /HMS_BROWSER_HOLD/);
+  assert.equal(called, false);
 });
 
 test('service-worker blocking is explicit and the default context is unchanged', () => {

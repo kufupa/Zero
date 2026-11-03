@@ -3,7 +3,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { login } from './session-reuse.mjs';
 import { installStay360NotesHandler, notesHandlerFailure } from './stay360-notes.mjs';
 
@@ -97,10 +99,26 @@ export function centurionBrowserIdentity(pid) {
 
 export function centurionBrowserGroup(pid) { return centurionBrowserIdentity(pid).pid; }
 
-function browserHoldPath() { return `/tmp/nava-hrcen-browser-hold-${process.getuid()}`; }
+/** Keep the hold in a private, owner-controlled directory, not shared /tmp. */
+export function centurionBrowserHoldPath(home = homedir()) {
+  const uid = process.getuid();
+  const validDirectory = (path, privateMode) => {
+    const stat = lstatSync(path);
+    return stat.isDirectory() && stat.uid === uid && !(stat.mode & privateMode);
+  };
+  try {
+    if (!validDirectory(home, 0o022)) throw new Error('unsafe home');
+    const dir = join(home, '.nava-hms-runtime');
+    try { mkdirSync(dir, { mode: 0o700 }); } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    if (!validDirectory(dir, 0o077)) throw new Error('unsafe hold directory');
+    return join(dir, 'hrcen-browser-hold');
+  } catch { throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+}
 
 /** An unconfirmed browser blocks later launches in every process for this user. */
-export function assertNoCenturionBrowserHold(path = browserHoldPath()) {
+export function assertNoCenturionBrowserHold(path = centurionBrowserHoldPath()) {
   try { lstatSync(path); } catch (error) {
     if (error?.code === 'ENOENT') return;
     throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
@@ -108,7 +126,7 @@ export function assertNoCenturionBrowserHold(path = browserHoldPath()) {
   throw new Error('HMS_BROWSER_HOLD');
 }
 
-export function holdCenturionBrowser(identity, path = browserHoldPath()) {
+export function holdCenturionBrowser(identity, path = centurionBrowserHoldPath()) {
   try {
     writeFileSync(path, JSON.stringify({ property: 'HRCEN', pid: identity?.pid ?? null,
       started: identity?.started ?? null }) + '\n', { flag: 'wx', mode: 0o600 });
@@ -204,6 +222,14 @@ export async function newPreparedCenturionPage(context, prepareContext) {
   return context.newPage();
 }
 
+/** A queued launch must see a hold made while its beforeLaunch hook waited. */
+export async function prepareCenturionLaunch(beforeLaunch, signal, check = assertNoCenturionBrowserHold) {
+  check();
+  await beforeLaunch?.();
+  signal?.throwIfAborted();
+  check();
+}
+
 export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal,
   blockServiceWorkers = false, prepareContext } = {}) {
   const contextOptions = centurionContextOptions(blockServiceWorkers);
@@ -239,9 +265,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.throwIfAborted();
 
     phase = 'browser_launch';
-    assertNoCenturionBrowserHold();
-    await beforeLaunch?.();
-    signal?.throwIfAborted();
+    await prepareCenturionLaunch(beforeLaunch, signal);
     const chromium = centurionChromium();
     server = await chromium.launchServer({
       headless, host: '127.0.0.1',
@@ -284,7 +308,11 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     await abortClose;
     await closeResources();
   }
-  if (closeError) { closeError.phase = 'cleanup'; throw closeError; }
+  if (closeError) {
+    closeError.phase = 'cleanup';
+    if (operationFailed && closeError.cause === undefined) closeError.cause = operationError;
+    throw closeError;
+  }
   if (operationFailed) throw operationError;
   return operationResult;
 }
