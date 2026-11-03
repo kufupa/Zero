@@ -47,8 +47,9 @@ vi.mock('../lib/workstation/web-pane-bridge', () => ({
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: ({ onOpenThread }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void }) => (
-    <div data-testid="nava-pane">
+  NavaPane: ({ onOpenThread, webSelectedMessageId }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
+    webSelectedMessageId?: string | null }) => (
+    <div data-testid="nava-pane" data-web-selected-message={webSelectedMessageId ?? ''}>
       <button type="button" onClick={() => onOpenThread?.('thread-a', 'source-a')}>Open source A</button>
       <button type="button" onClick={() => onOpenThread?.('thread-b', 'source-b')}>Open source B</button>
       <button type="button" onClick={() => onOpenThread?.('thread-7')}>Open thread only</button>
@@ -214,11 +215,17 @@ describe('Nava pane beside the open thread', () => {
     render(<MailLayout />);
 
     expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-message')).toBe('msg-1');
     expect(mocks.useWebPreview).toHaveBeenCalledWith({ threadId: 'thread-42', requireSelectedMessage: true });
     expect(document.querySelector('[data-preview-thread="thread-42"]')).not.toBeNull();
     expect(panelSize('mail-list-panel')).toBe('30.0');
     expect(panelSize('mail-thread-panel')).toBe('42.0');
     expect(panelSize('mail-nava-panel')).toBe('28.0');
+  });
+
+  it('does not vouch for the latest inbound in the generic viewer', () => {
+    render(<WebPanePanel threadId="thread-42" />);
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-message')).toBe('');
   });
 
   it('passes the selected stored message through the pane on A/B/A changes', async () => {

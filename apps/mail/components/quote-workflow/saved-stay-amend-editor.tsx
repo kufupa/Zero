@@ -137,7 +137,7 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
           const current = stay[name];
           return <label key={name} className="flex min-w-0 flex-col gap-1">
             <span className={labelClass}>{title}</span>
-            <span className={smallClass}>HMS now: {current == null || current === '' ? 'Not shown' : String(current)}</span>
+            <span className={smallClass}>HMS at lookup: {current == null || current === '' ? 'Not shown' : String(current)}</span>
             <input aria-label={`Requested ${title.toLowerCase()}`} className={inputClass}
               type={name === 'arrival' || name === 'departure' ? 'date' : 'number'}
               min={name === 'adults' ? 1 : name === 'children' ? 0 : undefined}

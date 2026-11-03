@@ -82,6 +82,7 @@ export function WebPanePanel({
       <NavaPane
         bridge={bridge}
         preview
+        webSelectedMessageId={requireSelectedMessage ? activeEmail?.entryId ?? null : null}
         onOpenThread={onOpenThread}
         goldLabelEnabled={goldLabelEnabled}
         hmsNoticesManagedByParent={hmsNoticesManagedByParent}
