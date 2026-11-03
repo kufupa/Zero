@@ -56,7 +56,9 @@ export async function installReadOnlyGuard(context) {
       await route.abort();
       return;
     }
-    await route.continue();
+    // Readers can install this guard more than once. Preserve any stricter
+    // context fence installed earlier instead of bypassing it.
+    await route.fallback();
   });
 }
 

@@ -343,14 +343,14 @@ export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknow
   }
   const sessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
-    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal }) => Promise<T>;
+    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; readOnlyConfirmation?: string }) => Promise<T>;
   };
   return module.withSavedStayAgentSession(async (session) => {
     // A fallback timestamp bounds both attempts from before the first read begins.
     const readStartedAt = new Date().toISOString();
     const result = await readCloudStayForPane(session, input.request);
     return stampCloudStayReadResult(result, readStartedAt);
-  }, { signal: input.signal });
+  }, { signal: input.signal, readOnly: true, readOnlyConfirmation: input.request.confirmation });
 }
 
 /** A read-only retry relaxes only the arrival hint, never the shared native matching guard. */

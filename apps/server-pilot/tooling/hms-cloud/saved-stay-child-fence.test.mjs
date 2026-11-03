@@ -33,7 +33,7 @@ function mockPage({ paused = null } = {}) {
     waitForTimeout: async () => {}, waitForResponse: async () => null };
   const visit = async (request) => {
     const callContext = async (index) => {
-      if (index < 0) { calls.push('context-end'); return; }
+      if (index < 0) { calls.push('continue'); return; }
       await contextRoutes[index]({ request: () => request, abort: async () => calls.push('abort'),
         continue: async () => calls.push('continue'), fallback: async () => callContext(index - 1) });
     };

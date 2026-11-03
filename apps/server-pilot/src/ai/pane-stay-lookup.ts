@@ -391,6 +391,18 @@ async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
   target: HmsReadTarget,
 ): Promise<PaneStayLookupSpawnResult> {
+  if (input.mode === 'find' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+    const cloud = await import('./hms-cloud-saved-stay-find.js');
+    const request = { confirmation: input.confirmation, ...(input.arrival ? { arrival: input.arrival } : {}) };
+    const result = cloud.projectCloudStayFind(request, await cloud.runCloudStayFind({
+      request, target, signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    }));
+    // The mounted pane must not present a partial or mismatched record as a found stay.
+    if (result.outcome === 'found' && (!result.nativePreimage || result.nativePreimage.confirmation !== input.confirmation)) {
+      return { ...refused('execution_failure'), reason: 'SAVED_STAY_IDENTITY_UNVERIFIED', rows: [] };
+    }
+    return { ...result, rows: [] };
+  }
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
   await mkdir(dir, { mode: 0o700 });
