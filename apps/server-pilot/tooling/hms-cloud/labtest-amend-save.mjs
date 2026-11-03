@@ -211,8 +211,15 @@ export async function runLabtestAmendSave(page, {
     armed = false;
     routeChain?.disarm();
     if (possiblyDispatched) fence?.quarantine();
+    // A click can fail after native continuation but before the server wrapper
+    // settles. Keep the caller waiting until that wrapper finishes or the same
+    // lifecycle deadline stops us; neither outcome makes the Save certain.
+    if (dispatched && routeChain && withinDeadline()) {
+      try { await bounded(routeChain.waitForDispatch()); withinDeadline(); }
+      catch { /* Preserve uncertainty when the wrapper is still pending. */ }
+    }
     return result(possiblyDispatched ? 'uncertain' : 'not_dispatched', {
-      issue: labtestAmendIssue(error),
+      issue: stopReason || labtestAmendIssue(error),
       ...diagnostics(),
       ...details(),
     });

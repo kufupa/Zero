@@ -205,7 +205,7 @@ test('Save context route refuses a candidate after the lifecycle deadline', asyn
 
 
 // Simulate a native response arriving before the caller's dispatch guard exits.
-function wrappedSaveScenario(dispatchCandidate, { timeoutMs = 1000, status = 200 } = {}) {
+function wrappedSaveScenario(dispatchCandidate, { timeoutMs = 1000, status = 200, failClick = false } = {}) {
   const native = deferred();
   const fake = mockPage({
     onContinue: (request) => native.resolve({ request: () => request, status: () => status }),
@@ -217,7 +217,10 @@ function wrappedSaveScenario(dispatchCandidate, { timeoutMs = 1000, status = 200
   };
   const request = makeRequest('/web/base/OSRESV.HDR?pageaction=SAVE', {});
   let route;
-  const save = { click: async () => { route = fake.visit(request).then(() => null, (error) => error); } };
+  const save = { click: async () => {
+    route = fake.visit(request).then(() => null, (error) => error);
+    if (failClick) { await native.promise; throw new Error('SAVE_CLICK_FAILED'); }
+  } };
   const work = runLabtestAmendSave(fake.page, {
     ...config(null, async () => ({}), save), prepareOnly: false, timeoutMs, dispatchCandidate,
   });
@@ -277,6 +280,40 @@ test('full amend lifecycle treats wrapper failure after response as uncertain', 
   assert.equal(result.outcome, 'uncertain');
   assert.equal(result.issue, 'SAVE_DISPATCH_UNCERTAIN');
   assert.deepEqual(f.calls, ['continue']);
+});
+
+test('click failure after dispatch waits for wrapper completion and stays uncertain', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { failClick: true });
+  let settled = false;
+  void f.work.then(() => { settled = true; });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release.resolve(); }
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.issue, 'SAVE_CLICK_FAILED');
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('click failure does not wait past the lifecycle deadline for a pending wrapper', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { failClick: true, timeoutMs: 250 });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    const result = await f.work;
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(result.issue, 'AMEND_TIMEOUT');
+    assert.deepEqual(f.calls, ['continue']);
+  } finally { release.resolve(); }
+  assert.equal(await f.route(), null);
 });
 
 test('wrapper finishing after the monotonic deadline remains uncertain even before its timer fires', async () => {
