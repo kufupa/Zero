@@ -18,5 +18,5 @@ export function withDrain<T extends unknown[], R>(
   drain: ReturnType<typeof createBackgroundDrain>,
   handler: (...args: T) => R,
 ): (...args: T) => Promise<Awaited<R>> {
-  return (...args) => drain.track(Promise.resolve().then(() => handler(...args)));
+  return (...args) => drain.track((async () => await handler(...args))());
 }
