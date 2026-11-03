@@ -11,21 +11,24 @@ import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 export type BookingBatchReview = Omit<NonNullable<ComponentProps<typeof BookingCards>['batchReview']>, 'aggregate'>;
 
 /** Joins proposals only. Source, manifest, approval and execution are still server authority. */
-function CoordinatedDrafts({ keys, review, enabled, priorWriteUncertain, renderCard, onStart }: {
+function CoordinatedDrafts({ keys, review, enabled, allowSingleFallback, priorWriteUncertain, renderCard, onStart }: {
   keys: string[];
   review?: BookingBatchReview;
   enabled: boolean;
+  allowSingleFallback: boolean;
   priorWriteUncertain: boolean;
   renderCard: (key: string, aggregate?: BatchDraftAggregation) => ReactNode;
   onStart: () => void;
 }) {
-  // Keep the parent stable when draft membership changes. Once coordinated, hold
-  // batch mode even if rooms or the client disappear, until the host is remounted.
+  // The stable parent preserves card edits. Only a never-submitted group with
+  // one remaining room and no prior single attempt may return to single mode.
   const wasCoordinated = useRef(false);
+  const approvalStarted = useRef(false);
   if (enabled) wasCoordinated.current = true;
-  const coordinated = enabled || wasCoordinated.current;
   const [snapshots, setSnapshots] = useState<Record<string, BatchDraftSnapshot>>({});
   const [locked, setLocked] = useState(false);
+  const coordinated = enabled || (wasCoordinated.current &&
+    (approvalStarted.current || locked || !allowSingleFallback));
   const update = useCallback((key: string, snapshot: BatchDraftSnapshot | null) => {
     setSnapshots((previous) => {
       if (snapshot === null) {
@@ -51,10 +54,10 @@ function CoordinatedDrafts({ keys, review, enabled, priorWriteUncertain, renderC
   ])];
   const revisionKey = JSON.stringify(keys.map((key) => [key, snapshots[key]?.revisionKey ?? null]));
   return <>
-    {keys.map((key) => renderCard(key, coordinated ? { key, locked, update } : undefined))}
+    {keys.map((key) => renderCard(key, wasCoordinated.current ? { key, locked, update, singleMode: !coordinated } : undefined))}
     {coordinated ? <BatchBookingReview client={review?.client} input={input} missing={missing} onLock={(value) => {
+      if (value) { approvalStarted.current = true; onStart(); }
       setLocked(value);
-      if (value) onStart();
     }} hideInclusion revisionKey={revisionKey} /> : null}
   </>;
 }
@@ -95,9 +98,14 @@ export function QuoteBookingHost({
 
   // Outlook folders and selection epochs can change for the same work item; neither releases a Go hold.
   const batchWasEnabled = useRef(false);
-  const [started, setStarted] = useState<Record<string, { arrival: string; keys: string[] }>>({});
+  const sourceKey = session.binding?.transportId && session.staffSource?.messageId
+    ? JSON.stringify([session.binding.transportId, session.staffSource.messageId]) : null;
+  const [started, setStarted] = useState<Record<string, { arrival: string; keys: string[]; sourceKey: string | null }>>({});
   const active = workItemId ? started[workItemId] ?? null : null;
-  const writeHeld = Boolean(active) || (!workItemId && Object.keys(started).length > 0);
+  // A different work item can still refer to the same message after a reread.
+  // Missing identities are ambiguous, not evidence that the write is unrelated.
+  const sourceStarted = Object.values(started).some((attempt) => !sourceKey || !attempt.sourceKey || attempt.sourceKey === sourceKey);
+  const writeHeld = Boolean(active) || sourceStarted || (!workItemId && Object.keys(started).length > 0);
   if (batchReview) batchWasEnabled.current = true;
   // Losing the opt-in client must not expose the old single-room write controls.
   const effectiveBatchReview = batchReview ?? (batchWasEnabled.current ? { refs: {} } : undefined);
@@ -120,20 +128,45 @@ export function QuoteBookingHost({
   // A prior unknown result can belong to a hidden or no-longer-matching draft.
   // Keep it held if a refresh omits it; only server recovery may release the hold.
   // The server must still fence all source writes, including ones not yet loaded here.
-  const unknownSeenByWorkItem = useRef<Record<string, true>>({});
+  const unknownSeen = useRef<Record<string, true>>({});
+  const singleAttempts = useRef<Record<string, true>>({});
+  const [, updateSingleAttempt] = useState(0);
   const hasUnknownSavedStay = Object.values(savedStays ?? {}).some((saved) => saved.status === 'unknown' || !saved.confirmationNumber);
-  if (workItemId && hasUnknownSavedStay) unknownSeenByWorkItem.current[workItemId] = true;
-  const priorWriteUncertain = hasUnknownSavedStay || Boolean(workItemId && unknownSeenByWorkItem.current[workItemId]);
+  if (hasUnknownSavedStay) {
+    const keys = workItemId && sourceKey ? [`item:${workItemId}`, `source:${sourceKey}`] : ['*'];
+    for (const key of keys) unknownSeen.current[key] = true;
+  }
+  // No client response alone proves settlement and independent readback. Keep
+  // every observed single attempt held for this host lifetime, even after its
+  // card unmounts. Only durable server recovery can safely release it.
+  const singleAttemptHeld = Boolean(singleAttempts.current['*'] ||
+    (workItemId && singleAttempts.current[`item:${workItemId}`]) ||
+    (sourceKey && singleAttempts.current[`source:${sourceKey}`]) ||
+    ((!workItemId || !sourceKey) && Object.keys(singleAttempts.current).length));
+  const unknownHeld = Boolean(unknownSeen.current['*'] ||
+    (workItemId && unknownSeen.current[`item:${workItemId}`]) ||
+    (sourceKey && unknownSeen.current[`source:${sourceKey}`]) ||
+    ((!workItemId || !sourceKey) && Object.keys(unknownSeen.current).length));
+  const priorWriteUncertain = hasUnknownSavedStay || singleAttemptHeld || unknownHeld;
 
   const renderCard = (key: string, aggregate?: BatchDraftAggregation) => {
     const draft = session.bookingDrafts[key];
     if (!draft) return null;
     return <Fragment key={`${requestKey}:${key}`}>
       {isMultiStay(session) ? <p className="text-[13px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p> : null}
-      <BookingCards draft={draft} groups={session.groups} paneSave={writeHeld ? null : paneSave} contact={contact} workItemId={workItemId}
+      <BookingCards draft={draft} groups={session.groups} paneSave={writeHeld || (effectiveBatchReview && priorWriteUncertain) ? null : paneSave} contact={contact} workItemId={workItemId}
         savedStays={savedStays} screenshot={screenshot ?? paneSave?.screenshot} parties={session.staffHeader.parties}
         guestName={stayingGuestName(session, contact ?? null)} guestEditorKey={guestEditorKeyFor(session)} session={session}
         propertyCode={propertyCode} confirmation={confirmation} onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
+        onSingleAttemptStart={() => {
+          // Work-item IDs can change on reclassification. Retain both bindings;
+          // missing identity holds the whole host rather than guessing an alias.
+          const keys = workItemId && sourceKey ? [`item:${workItemId}`, `source:${sourceKey}`] : ['*'];
+          if (keys.some((key) => !singleAttempts.current[key])) {
+            for (const key of keys) singleAttempts.current[key] = true;
+            updateSingleAttempt((value) => value + 1);
+          }
+        }}
         batchReview={effectiveBatchReview ? { ...effectiveBatchReview, ...(writeHeld ? { client: undefined } : {}), aggregate } : undefined} />
     </Fragment>;
   };
@@ -143,9 +176,12 @@ export function QuoteBookingHost({
       {[...arrivals.entries()].map(([arrival, keys]) => <CoordinatedDrafts key={`${requestKey}:${arrival}`} keys={keys}
         enabled={Boolean(effectiveBatchReview && (keys.length > 1 || active?.arrival === arrival ||
           keys.some((key) => (session.bookingDrafts[key]?.draft.rooms.length ?? 0) > 1)))}
+        allowSingleFallback={Boolean(workItemId && !writeHeld && !priorWriteUncertain && keys.length === 1 &&
+          session.bookingDrafts[keys[0]!]?.draft.rooms.length === 1 && batchReview?.client &&
+          ['lab', 'on'].includes(batchReview.client.mode() ?? ''))}
         priorWriteUncertain={priorWriteUncertain}
         review={effectiveBatchReview && writeHeld ? { ...effectiveBatchReview, client: undefined } : effectiveBatchReview}
-        onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys] } })); }} renderCard={renderCard} />)}
+        onStart={() => { if (workItemId) setStarted((previous) => ({ ...previous, [workItemId]: { arrival, keys: [...keys], sourceKey } })); }} renderCard={renderCard} />)}
       {uncoveredStays.map(([stayId, saved]) => (
         <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />
       ))}
