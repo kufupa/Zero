@@ -6,6 +6,16 @@ const SAVE_PATH = '/web/base/OSRESV.HDR';
 const AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
 const DANGEROUS_PATH = /save|delete|cancel|checkin|checkout|send|email|mail|crs/i;
 const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const neverDispatchedCreateProofs = new WeakMap();
+
+// A proof can only originate from the exact disarmed native route below.
+// Consume it once, and only for the same intercepted Request object.
+export function consumeNeverDispatchedCreateProof(proof, request) {
+  if (!proof || typeof proof !== 'object' || !neverDispatchedCreateProofs.has(proof) ||
+      neverDispatchedCreateProofs.get(proof) !== request) return false;
+  neverDispatchedCreateProofs.delete(proof);
+  return true;
+}
 
 /**
  * Install after the shared context read-only guard and the page request fence.
@@ -128,6 +138,17 @@ export async function installLabtestSaveRouteChain(page, {
         // still returned to a correct caller without becoming unhandled.
         void task.catch(() => {});
         return task;
+      };
+      let noDispatchProved = false;
+      continueOnce.proveNeverDispatched = () => {
+        // Create has no effectful child route. Once disarmed, this exact Save
+        // and any pending continuation are unable to reach route.continue().
+        if (childStageGate || wrapperFinished || attempted || continuedRequest || noDispatchProved) return null;
+        active = false;
+        noDispatchProved = true;
+        const proof = Object.freeze({});
+        neverDispatchedCreateProofs.set(proof, request);
+        return proof;
       };
       try {
         const result = phase.dispatchCandidate ? await phase.dispatchCandidate(request, continueOnce) : await continueOnce();

@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { centurionWriterQuiesced } from '../../tooling/playwright-quote/centurion-stay360.mjs';
+import { consumeNeverDispatchedCreateProof } from '../../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from './draft-approval.js';
@@ -27,7 +28,9 @@ const intentSchema = claimSchema.extend({ version: z.literal(1), kind: z.literal
 const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('resolved'),
   holdId: z.string().uuid(), operation, confirmation: z.string().max(40).regex(/^\d+-\d+$/),
   readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
-const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema]);
+const noDispatchSchema = z.object({ version: z.literal(1), kind: z.literal('not_dispatched'),
+  holdId: z.string().uuid(), operation: z.literal('create') }).strict();
+const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema, noDispatchSchema]);
 type Claim = z.infer<typeof claimSchema>;
 type Intent = z.infer<typeof intentSchema>;
 export type HmsLabtestIntent = Intent;
@@ -43,6 +46,22 @@ export class HmsLabtestDispatchError extends Error {
 
 const ownerHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
+/** Bind the exact intercepted native request, including its body and destination. */
+export function nativeCreateSaveDigest(raw: unknown): string {
+  if (!raw || typeof raw !== 'object') throw new Error('cloud_create_request_unavailable');
+  const request = raw as { method?: () => string; url?: () => string; headers?: () => Record<string, string>;
+    postDataBuffer?: () => Buffer | null };
+  if (request.method?.() !== 'POST' || typeof request.url !== 'function' || typeof request.headers !== 'function' ||
+      typeof request.postDataBuffer !== 'function') throw new Error('cloud_create_request_unavailable');
+  const url = new URL(request.url()), contentType = request.headers()['content-type'] ?? '';
+  const bytes = request.postDataBuffer();
+  if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.pathname !== '/web/base/OSRESV.HDR' ||
+      url.hash || [...url.searchParams].length !== 1 || url.searchParams.get('pageaction') !== 'SAVE' ||
+      !/^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType) || !Buffer.isBuffer(bytes) ||
+      bytes.length === 0 || bytes.length > 1024 * 1024) throw new Error('cloud_create_request_unavailable');
+  return createHash('sha256').update(JSON.stringify(['POST', url.href, contentType])).update('\0').update(bytes).digest('hex');
+}
+
 async function lockProperty(tx: CreateFenceTransaction) {
   // All participants acquire this before mailbox, source, item or lease locks.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext('nava-hms-labtest-write-v1'), hashtext('HRCEN'))`);
@@ -52,14 +71,14 @@ async function readHistory(tx: CreateFenceTransaction) {
   const rows = await tx.select({ id: workEvent.id, itemId: workEvent.workItemId, type: workEvent.type,
     actorKind: workEvent.actorKind, value: workEvent.value }).from(workEvent).where(eq(workEvent.fieldPath, FIELD));
   const intents = new Map<string, Intent>(), resolved = new Set<string>(), grants = new Set<string>();
-  const completions: Array<{ itemId: string; value: z.infer<typeof resolutionSchema> }> = [];
+  const completions: Array<{ itemId: string; value: z.infer<typeof resolutionSchema> | z.infer<typeof noDispatchSchema> }> = [];
   for (const row of rows) {
     const event = eventSchema.safeParse(row.value);
     if (!event.success || row.type !== 'write.evidence' || row.actorKind !== 'system') {
       throw new HmsLabtestDispatchError('corrupt');
     }
     const value = event.data;
-    if (value.kind === 'resolved') {
+    if (value.kind !== 'intent') {
       completions.push({ itemId: row.itemId, value });
     } else {
       if (row.id !== value.holdId || row.itemId !== value.workItemId ||
@@ -74,7 +93,7 @@ async function readHistory(tx: CreateFenceTransaction) {
   for (const { itemId, value } of completions) {
     const intent = intents.get(value.holdId);
     if (!intent || intent.workItemId !== itemId || intent.operation !== value.operation || resolved.has(value.holdId) ||
-        (intent.operation === 'create' && !/^\d{6,10}-\d{1,2}$/.test(value.confirmation))) {
+        (value.kind === 'resolved' && intent.operation === 'create' && !/^\d{6,10}-\d{1,2}$/.test(value.confirmation))) {
       throw new HmsLabtestDispatchError('corrupt');
     }
     resolved.add(value.holdId);
@@ -137,7 +156,7 @@ export async function claimHmsLabtestDispatch(
   return { holdId, ownerToken };
 }
 
-async function finishDispatch(db: DB, holdId: string, evidence: Resolution,
+async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create'; notDispatched: true },
   authorize: (intent: Intent) => void, record: (tx: CreateFenceTransaction, intent: Intent) => Promise<void>) {
   await db.transaction(async (tx) => {
     await lockProperty(tx);
@@ -148,9 +167,27 @@ async function finishDispatch(db: DB, holdId: string, evidence: Resolution,
     const immutableIntent = canonicalJson(intent);
     await record(tx, intent);
     if (canonicalJson(intent) !== immutableIntent) throw new HmsLabtestDispatchError('invalid');
+    const value = 'notDispatched' in evidence
+      ? { version: 1, kind: 'not_dispatched', holdId: intent.holdId, operation: evidence.operation }
+      : { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence };
     await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
-      fieldPath: FIELD, value: { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence } });
+      fieldPath: FIELD, value });
   }, { isolationLevel: 'read committed' });
+}
+
+/** A route-owned, one-use proof can release only the exact Save it never continued. */
+export async function resolveNeverDispatchedCreate(db: DB, handle: HmsLabtestWriteHandle, proof: unknown,
+  request: unknown, record: (tx: CreateFenceTransaction, intent: Readonly<Intent>) => Promise<void>): Promise<void> {
+  const requestDigest = nativeCreateSaveDigest(request);
+  if (!z.string().uuid().safeParse(handle?.holdId).success || !digest.safeParse(handle?.ownerToken).success ||
+      !digest.safeParse(requestDigest).success || typeof record !== 'function' ||
+      !consumeNeverDispatchedCreateProof(proof, request)) throw new HmsLabtestDispatchError('invalid');
+  await finishDispatch(db, handle.holdId, { operation: 'create', notDispatched: true }, (intent) => {
+    if (intent.requestDigest !== requestDigest ||
+        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+      throw new HmsLabtestDispatchError('owner');
+    }
+  }, record);
 }
 
 /**

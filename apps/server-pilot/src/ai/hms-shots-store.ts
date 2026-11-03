@@ -223,13 +223,13 @@ export async function readStoredHmsShot(input: ReadInput): Promise<Buffer | null
   }
 }
 
-/** Verify retained preview bytes against their owner, property, work item and full recorded digest. */
-export async function verifyStoredHmsPreview(input: {
+/** Verify a retained PNG against its owner, property, work item and full recorded digest. */
+export async function verifyStoredHmsShot(input: {
   runId: string; name: string; sha256: string; owner: string; propertyCode: string; workItemId: string;
   env?: ShotEnv;
-}): Promise<boolean> {
+}, expectedName: (typeof HMS_SHOT_NAMES)[number] = 'filled.png'): Promise<boolean> {
   const root = hmsShotsRoot(input.env);
-  if (!root || !RUN_ID_PATTERN.test(input.runId) || input.name !== 'filled.png' ||
+  if (!root || !RUN_ID_PATTERN.test(input.runId) || input.name !== expectedName || !SHOT_NAME_PATTERN.test(input.name) ||
       !/^[0-9a-f]{64}$/.test(input.sha256)) return false;
   const index = await readIndex(root, input.runId);
   if (!index || index.owner !== input.owner || index.property !== input.propertyCode ||

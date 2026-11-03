@@ -37,6 +37,7 @@ import {
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
 import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist.js';
+import { cloudPreviewSelection, commitPaneCloud, previewPaneCloud } from '../../ai/pane-cloud-preview.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import {
@@ -91,6 +92,7 @@ export const paneStayInput = z.object({
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
   bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
+  confirmationSendMail: z.boolean().optional(),
   confirmationRecipient: z
     .object({
       mode: z.enum(['self', 'client', 'custom']),
@@ -107,6 +109,7 @@ export const paneStayInput = z.object({
     .regex(/^[A-Za-z0-9_-]{1,40}$/)
     .optional(),
   workItemId: z.string().uuid().optional(),
+  createSelection: cloudPreviewSelection.optional(),
 });
 
 export type LoadSyncedSelection = (input: {
@@ -287,12 +290,12 @@ export const quoteWorkflowRouter = router({
   }),
   previewStay: mailboxProcedure
     .input(paneStayInput)
-    .use(({ ctx, next }) =>
+    .use(({ input, ctx, next }) =>
       recordToolOutcome(
         () => ({
           kind: 'stay_preview',
           transportId: ctx.activeTransportId,
-          messageId: null,
+          messageId: input.createSelection?.source.messageId ?? null,
           userId: ctx.sessionUser.id,
         }),
         classifyStayPreview,
@@ -300,7 +303,14 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-    const { stayId, workItemId, ...stay } = input;
+    const { stayId, workItemId, createSelection, confirmationSendMail, ...stay } = input;
+    const target = resolvePropertyTransport(ctx.activeTransportId);
+    if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
+      if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+      return previewPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
+        actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+        workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail } });
+    }
     const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
     const previewPersist =
       workItemId && stayId
@@ -328,7 +338,7 @@ export const quoteWorkflowRouter = router({
         () => ({
           kind: 'stay_commit',
           transportId: ctx.activeTransportId,
-          messageId: null,
+          messageId: input.createSelection?.source.messageId ?? null,
           userId: ctx.sessionUser.id,
         }),
         (value: PaneStayResult) => classifyStayCommit(value, input.previewDigest),
@@ -336,7 +346,15 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
+      const { previewDigest, stayId, workItemId, parentStayId, createSelection, confirmationSendMail, ...stay } = input;
+      const target = resolvePropertyTransport(ctx.activeTransportId);
+      if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
+        if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+        if (parentStayId) return { status: 'refused' as const, reason: 'pane_save_parent_unsupported' };
+        return commitPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
+          actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+          workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail } }, previewDigest);
+      }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       const previewPersist =
         workItemId && stayId

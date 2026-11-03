@@ -64,7 +64,7 @@ async function readLabtestRecord(page, expected, options, expectedGuarantee) {
       !/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') || !start || !end ||
       arrival < '2027-01-01' || arrival >= departure || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || typeof note !== 'string' ||
-      (!allowBlankNote && !note) || note.length > 200) {
+      (!allowBlankNote && !note) || note.length > 2_000) {
     throw new Error('LABTEST_RECORD_INPUT_INVALID');
   }
   if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {

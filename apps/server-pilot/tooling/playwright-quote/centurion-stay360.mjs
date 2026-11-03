@@ -1,10 +1,11 @@
 // Centurion-only browser bootstrap for UI tools that start at Stay 360.
 // One Chromium context is owned for the full callback; callers must not retain its page.
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { login } from './session-reuse.mjs';
 import { installStay360NotesHandler, notesHandlerFailure } from './stay360-notes.mjs';
@@ -17,6 +18,7 @@ const propertyCode = 'HRCEN';
 const viewport = { width: 1440, height: 1000 };
 const playwrightVersion = '1.63.0';
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
+const ownedPages = new WeakMap();
 
 function validateCenturionSecret(secret) {
   for (const key of [
@@ -98,6 +100,68 @@ export function centurionBrowserIdentity(pid) {
 }
 
 export function centurionBrowserGroup(pid) { return centurionBrowserIdentity(pid).pid; }
+
+// PID values are meaningful only on the same host, boot and PID namespace.
+// Store a host fingerprint, never a credential or the machine-id itself.
+function currentHostIdentity() {
+  const machine = readFileSync('/etc/machine-id', 'utf8').trim();
+  const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  const pidNamespace = readlinkSync('/proc/self/ns/pid');
+  if (!/^[a-f0-9]{32}$/i.test(machine) ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(bootId) ||
+      !/^pid:\[\d+\]$/.test(pidNamespace) || !hostname()) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  return { host: createHash('sha256').update(machine).update('\0').update(hostname()).digest('hex'), bootId, pidNamespace };
+}
+
+function processStart(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 2) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const end = stat.lastIndexOf(')');
+  const fields = end < 0 ? [] : stat.slice(end + 1).trim().split(/\s+/);
+  if (!/^\d+$/.test(fields[19] ?? '')) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  return fields[19];
+}
+
+/** Capture only a browser group owned by this live session, before its native dispatch. */
+export function centurionWriterIdentity(page) {
+  const browser = ownedPages.get(page);
+  if (!browser) return null;
+  const current = centurionBrowserIdentity(browser.pid);
+  if (current.started !== browser.started) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  return { ...currentHostIdentity(), node: { pid: process.pid, started: processStart(process.pid) }, browser: current };
+}
+
+/** A stale, foreign, unreadable or still-live process identity cannot authorize recovery. */
+export function centurionWriterQuiesced(identity) {
+  try {
+    if (!identity || typeof identity !== 'object' || !/^[a-f0-9]{64}$/.test(identity.host || '') ||
+        !identity.node || !identity.browser || !Number.isSafeInteger(identity.node.pid) || identity.node.pid < 2 ||
+        !Number.isSafeInteger(identity.browser.pid) || identity.browser.pid < 2 ||
+        identity.node.pid === identity.browser.pid || !/^\d+$/.test(identity.node.started || '') ||
+        !/^\d+$/.test(identity.browser.started || '')) return false;
+    const current = currentHostIdentity();
+    if (identity.host !== current.host || identity.bootId !== current.bootId ||
+        identity.pidNamespace !== current.pidNamespace) return false;
+    try {
+      if (processStart(identity.node.pid) === identity.node.started) return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') return false;
+    }
+    try { process.kill(-identity.browser.pid, 0); return false; }
+    catch (error) { return error?.code === 'ESRCH'; }
+  } catch { return false; }
+}
+
+/** Revalidate an identity emitted by this Node and its still-owned browser. */
+export function centurionWriterCurrent(identity) {
+  try {
+    const current = currentHostIdentity();
+    const browser = centurionBrowserIdentity(identity?.browser?.pid);
+    return identity.host === current.host && identity.bootId === current.bootId &&
+      identity.pidNamespace === current.pidNamespace && identity.node?.pid === process.pid &&
+      identity.node.started === processStart(process.pid) && identity.browser.started === browser.started;
+  } catch { return false; }
+}
 
 /** Keep the hold in a private, owner-controlled directory, not shared /tmp. */
 export function centurionBrowserHoldPath(home = homedir()) {
@@ -282,6 +346,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.throwIfAborted();
 
     page = await newPreparedCenturionPage(context, prepareContext);
+    ownedPages.set(page, processIdentity);
     signal?.throwIfAborted();
 
     phase = 'login';
@@ -307,6 +372,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.removeEventListener('abort', onAbort);
     await abortClose;
     await closeResources();
+    if (page) ownedPages.delete(page);
   }
   if (closeError) {
     closeError.phase = 'cleanup';

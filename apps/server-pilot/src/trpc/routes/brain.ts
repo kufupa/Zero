@@ -15,6 +15,7 @@ export const pilotCapabilities = {
   staleDraftWarning: true,
   catchupUpload: false,
   paneSave: false,
+  paneCreatePreview: true,
   paneSaveMode: 'off',
   paneWrite: {
     create: 'off',

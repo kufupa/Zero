@@ -111,3 +111,16 @@ test('distinguishes absent and explicitly reviewed create notes', () => {
   assert.equal(Object.hasOwn(absent.request, 'note'), false);
   assert.notEqual(absent.normalizedRequestDigest, present.normalizedRequestDigest);
 });
+
+test('binds exact multiline notes up to the HMS textarea limit', () => {
+  const note = `First line\n${'x'.repeat(1_989)}`;
+  assert.equal(note.length, 2_000);
+  const original = digestCloudCreateRequest({ ...request, note });
+  assert.equal(original.outcome, 'ok');
+  assert.equal(original.request.note, note);
+  assert.notEqual(digestCloudCreateRequest({ ...request, note: note.replace('\n', ' ') }).normalizedRequestDigest,
+    original.normalizedRequestDigest);
+  for (const invalid of [`${note}x`, 'a\rb', 'a\0b', 'a\tb']) {
+    assert.equal(normalizeCloudCreateRequest({ ...request, note: invalid }).issue, 'CREATE_NOTE_INVALID');
+  }
+});
