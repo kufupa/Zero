@@ -114,27 +114,55 @@ function searchRequest(request, lastName) {
   } catch { return false; }
 }
 
-// HMS sends dates as day offsets; bind the response's request to the rendered range.
+function nativeDate(value) {
+  if (!date(value)) return null;
+  const [year, month, day] = value.split('-');
+  return `${day}-${MONTHS[Number(month) - 1].slice(0, 3).toUpperCase()}-${year}`;
+}
+
+function uniqueField(body, key) {
+  const names = [...body.keys()].filter((name) => name.toLowerCase() === key.toLowerCase());
+  return names.length === 1 && names[0] === key ? body.get(key) : null;
+}
+
+// Native absolute date values avoid the different browser and server day-offset anchors.
 function requestCoversWindow(request, window) {
   try {
     const body = new URLSearchParams(request.postData() || '');
-    const offset = (key) => {
-      const names = [...body.keys()].filter((name) => name.toLowerCase() === key.toLowerCase());
-      const value = body.get(key);
-      return names.length === 1 && names[0] === key && /^[+-]?\d{1,5}$/.test(value || '') ? Number(value) : null;
-    };
-    const from = date(window.from)?.getTime(), to = date(window.to)?.getTime();
-    const fromOffset = offset('MADDON_FILTER_VALUE_1'), toOffset = offset('MADDON_FILTER_VALUE_2');
-    if (from === undefined || to === undefined || fromOffset === null || toOffset === null) return false;
-    const fromBase = from - fromOffset * 86_400_000, toBase = to - toOffset * 86_400_000;
-    const now = new Date(), utcToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    const propertyDay = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(now);
-    const propertyToday = date(propertyDay)?.getTime();
-    // Do not guess the offset anchor when the property and UTC dates differ.
-    return propertyToday === utcToday && fromBase === utcToday && toBase === utcToday;
+    const from = nativeDate(window.from), to = nativeDate(window.to);
+    return Boolean(from && to && uniqueField(body, 'MADDON_FILTER_VALUE_1') === from &&
+      uniqueField(body, 'MADDON_FILTER_VALUE_2') === to);
   } catch { return false; }
+}
+
+// Reissue the native UI search once, changing only its two date values. The
+// response must expose the exact absolute bounds before it can prove a census.
+async function searchAbsoluteWindow(page, run, lastName, window) {
+  const from = nativeDate(window.from), to = nativeDate(window.to);
+  if (!from || !to) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
+  let captured, routed = 0;
+  const pattern = '**/web/base/OSRESS.search';
+  const handler = async (route) => {
+    const request = route.request();
+    if (routed++ || !searchRequest(request, lastName)) return route.abort();
+    const body = new URLSearchParams(request.postData() || '');
+    for (const key of ['MADDON_FILTER_VALUE_1', 'MADDON_FILTER_VALUE_2']) {
+      if (!/^[+-]?\d{1,5}$/.test(uniqueField(body, key) || '')) return route.abort();
+    }
+    body.set('MADDON_FILTER_VALUE_1', from);
+    body.set('MADDON_FILTER_VALUE_2', to);
+    captured = request;
+    await route.fallback({ postData: body.toString() });
+  };
+  await page.route(pattern, handler);
+  try {
+    const pending = page.waitForResponse((response) => response.request() === captured, { timeout: 30_000 }).catch(() => null);
+    await run.click();
+    const response = await pending;
+    if (routed !== 1 || !response || response.status() !== 200 || !searchRequest(response.request(), lastName) ||
+        !requestCoversWindow(response.request(), window)) throw new Error('SEARCH_RESPONSE_UNVERIFIED');
+    return response;
+  } finally { await page.unroute(pattern, handler); }
 }
 
 function searchResponse(text) {
@@ -195,8 +223,13 @@ export async function searchLabtestPreimage(page, { arrival, departure, firstNam
       found = await panel(page, box);
       window = await range(found.popup);
     }
-    if (!observed || observed.status() !== 200 || arrival < window.from || arrival > window.to ||
-        !requestCoversWindow(observed.request(), window)) throw new Error('SEARCH_RESPONSE_UNVERIFIED');
+    if (!observed || observed.status() !== 200 || arrival < window.from || arrival > window.to) {
+      throw new Error('SEARCH_RESPONSE_UNVERIFIED');
+    }
+    observed = await searchAbsoluteWindow(page, adjacent[0], lastName, window);
+    found = await panel(page, box);
+    const refreshed = await range(found.popup);
+    if (refreshed.from !== window.from || refreshed.to !== window.to) throw new Error('SEARCH_DATE_RANGE_CHANGED');
     const candidates = searchResponse(await observed.text());
     const uiRows = await found.popup.locator('.x-grid-row:visible').evaluateAll((rows) => rows.map((row) =>
       [...row.querySelectorAll('td,[role="gridcell"],.x-grid-cell')].filter((cell) => cell.closest('.x-grid-row') === row)
