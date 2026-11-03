@@ -1,5 +1,6 @@
 import { normalizeEmailAddress } from './never-spam.js';
 import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
+import { load } from 'cheerio';
 
 const PRE_STAY_SUBJECT = /\bpre[\s-]?(?:stay|arrival)\b/i;
 const SUBJECT_CONFIRMATION_NUMBER =
@@ -37,8 +38,9 @@ export function isSelfSentPreStayInformationMail(input: {
 export function preStaySourceText(textBody: string | null | undefined, htmlBody: string | null | undefined): string {
   if (textBody?.trim()) return textBody;
   if (!htmlBody) return '';
-  const quote = htmlBody.search(/<blockquote(?:\s|>)/i);
-  return htmlToPlainText(quote < 0 ? htmlBody : htmlBody.slice(0, quote));
+  const document = load(htmlBody, null, false);
+  document('blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').remove();
+  return htmlToPlainText(document.root().html() ?? '');
 }
 
 /** Accept only an excerpt of the current message, not a model summary or thread history. */

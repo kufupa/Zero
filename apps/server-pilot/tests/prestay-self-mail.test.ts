@@ -60,10 +60,34 @@ describe('self-sent pre-stay information', () => {
     });
     expect(source.kind).toBe('channel');
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
-      kind: 'direct', source: null, reason: 'self_sent_pre_stay_confirmation',
+      kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
     });
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: 'other@example.invalid' })).toEqual(source);
     expect(admissionMailSource(source, { fromAddress, subject: 'Booking confirmation', mailboxAddress: fromAddress })).toEqual(source);
+  });
+
+  it('admits a self-sent pre-arrival candidate whose confirmation is only in the body', () => {
+    const fromAddress = 'reservations@legacyhotels.co.za';
+    const subject = 'Pre-arrival guest details';
+    const source = classifyMailSource({ fromAddress, subject,
+      bodyText: 'Confirmation No 57291630-1. Please send the menu.\nFrom: Booking.com <noreply@messages.booking.com>' });
+    expect(source.kind).toBe('channel');
+    expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
+      kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
+    });
+  });
+
+  it('keeps current HTML after a quoted block while excluding nested Gmail history', () => {
+    const current = 'Please send the catering menu.';
+    const old = 'Please book the old room.';
+    const html = `<p>Arrival details.</p><blockquote><div class="gmail_quote">${old}</div></blockquote><p>${current}</p>`;
+    expect(preStaySourceText(null, html)).toContain(current);
+    expect(preStaySourceText(null, html)).not.toContain(old);
+    expect(groundedSeparateAsk(html, current)).toBe(current);
+    expect(groundedSeparateAsk(html, old)).toBeNull();
+    const gmail = `<div class="gmail_quote"><p>${old}</p></div><p>${current}</p>`;
+    expect(groundedSeparateAsk(gmail, old)).toBeNull();
+    expect(groundedSeparateAsk(gmail, current)).toBe(current);
   });
 
   it('uses an extracted confirmation number to override a model booking kind', async () => {

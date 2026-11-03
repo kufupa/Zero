@@ -22,7 +22,7 @@ import {
 } from '../../ai/extraction/inbound-run.js';
 import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled } from '../../env.js';
 import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
-import { isSelfSentPreStayInformationMail } from '../../ai/existing-stay-information.js';
+import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
@@ -83,13 +83,13 @@ export type NativeAdmissionEvidence = {
   };
 };
 
-/** A quoted channel notice cannot hide a current request in confirmed self-sent pre-stay mail. */
+/** Admit self-sent pre-stay candidates so extraction can verify body-only confirmations. */
 export function admissionMailSource(
   source: MailSourceClassification,
   mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null },
 ): MailSourceClassification {
-  return source.kind !== 'direct' && isSelfSentPreStayInformationMail(mail)
-    ? { kind: 'direct', source: null, reason: 'self_sent_pre_stay_confirmation' }
+  return source.kind !== 'direct' && isSelfSentPreStaySubject(mail)
+    ? { kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate' }
     : source;
 }
 

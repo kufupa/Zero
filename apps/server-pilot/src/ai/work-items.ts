@@ -1534,24 +1534,6 @@ export async function planThreadWork(
       fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
       confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
     }) && separatePreStayAsk(item.kind, payload, source.textBody, source.htmlBody);
-    // A prior pure-information read may have been automatically closed as staff-sent.
-    if (separateAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
-      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
-      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      continue;
-    }
-    if (item.status === 'dismissed') {
-      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
-        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
-        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      }
-      continue;
-    }
-    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
-      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
-      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      continue;
-    }
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -1567,10 +1549,34 @@ export async function planThreadWork(
             sentMessageId: lastHotel.m.id,
           }
         : undefined;
-    // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
-    const domainOther = kind === 'other' && ownDomain(source);
     const closeOnReply =
       replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
+    // A prior pure-information read may have been automatically closed as staff-sent.
+    if (separateAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+      if (closeOnReply && lastHotel) {
+        if (lastHotel.m.id !== item.sentMessageId) {
+          changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
+        }
+      } else {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'dismissed') {
+      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
+    // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
+    const domainOther = kind === 'other' && ownDomain(source);
     if (!untouched) {
       if (item.status === 'needs_you' && closeOnReply) {
         changes.push(closeOnReply);
