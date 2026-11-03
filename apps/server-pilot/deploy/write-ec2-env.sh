@@ -15,6 +15,25 @@ set -euo pipefail
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"
 : "${UNDO_SEND_SECONDS:=20}"
 
+# Reject misspelled release controls before touching the existing env file.
+for key in PANE_WRITE_CREATE PANE_WRITE_AMEND PANE_WRITE_AMEND_UNPAID PANE_WRITE_AMEND_PAID \
+  PANE_WRITE_CANCEL_UNPAID PANE_WRITE_CANCEL_PAID PANE_WRITE_ATTACH; do
+  case "${!key:-}" in ''|off|lab|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
+done
+for key in PANE_HMS_LAB_CREATE_WORKER PANE_HMS_LAB_ATTACH_WORKER PANE_HMS_LAB_AMEND_WORKER \
+  PANE_CLOUD_CREATE_DISPATCH HMS_JOB_QUEUE HMS_AVAILABILITY_PREFETCH; do
+  case "${!key:-}" in ''|off|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
+done
+for key in HMS_PREFETCH_ENABLED HMS_LANE_PAUSED PARTY_MATCH_V2; do
+  case "${!key:-}" in ''|true|false|1|0) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
+done
+case "${HMS_QUOTE_PREPARE:-}" in ''|true|false|1|0|on|off) ;; *) echo 'invalid HMS_QUOTE_PREPARE' >&2; exit 2 ;; esac
+for key in HMS_PREFETCH_PER_HOUR HMS_GUEST_PREFETCH_PER_HOUR HMS_AVAILABILITY_PER_HOUR HMS_QUOTE_PREPARE_PER_HOUR; do
+  value="${!key:-}"
+  if [[ -n "$value" && ! "$value" =~ ^[0-9]{1,15}$ ]]; then echo "invalid $key" >&2; exit 2; fi
+done
+unset key value
+
 DATABASE_URL="$(
   aws secretsmanager get-secret-value \
     --region "$AWS_REGION" \
@@ -190,16 +209,21 @@ append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"
 append_env HMS_QUOTE_PREPARE_PER_HOUR "${HMS_QUOTE_PREPARE_PER_HOUR:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"
 append_env HMS_PREFETCH_PER_HOUR "${HMS_PREFETCH_PER_HOUR:-}"
+append_env HMS_GUEST_PREFETCH_PER_HOUR "${HMS_GUEST_PREFETCH_PER_HOUR:-}"
+append_env PARTY_MATCH_V2 "${PARTY_MATCH_V2:-}"
 # Availability probe per quote stay (U10): off unless ops set HMS_AVAILABILITY_PREFETCH=on. Needs HMS_JOB_QUEUE=on.
 # HMS_AVAILABILITY_PER_HOUR caps probes apart from confirmation prefetch (default 6).
 append_env HMS_AVAILABILITY_PREFETCH "${HMS_AVAILABILITY_PREFETCH:-}"
 append_env HMS_AVAILABILITY_PER_HOUR "${HMS_AVAILABILITY_PER_HOUR:-}"
 # Per-workflow pane writes (KTD1). Unset unless ops pass them; never default on.
 append_env PANE_WRITE_CREATE "${PANE_WRITE_CREATE:-}"
+append_env PANE_HMS_LAB_CREATE_WORKER "${PANE_HMS_LAB_CREATE_WORKER:-}"
 # Cloud Create cutover stays off until the shared write claim is ready.
 append_env PANE_CLOUD_CREATE_DISPATCH "${PANE_CLOUD_CREATE_DISPATCH:-}"
 append_env PANE_WRITE_AMEND_UNPAID "${PANE_WRITE_AMEND_UNPAID:-}"
 append_env PANE_WRITE_AMEND_PAID "${PANE_WRITE_AMEND_PAID:-}"
+append_env PANE_WRITE_AMEND "${PANE_WRITE_AMEND:-}"
+append_env PANE_HMS_LAB_AMEND_WORKER "${PANE_HMS_LAB_AMEND_WORKER:-}"
 append_env PANE_WRITE_CANCEL_UNPAID "${PANE_WRITE_CANCEL_UNPAID:-}"
 append_env PANE_WRITE_CANCEL_PAID "${PANE_WRITE_CANCEL_PAID:-}"
 append_env PANE_WRITE_ATTACH "${PANE_WRITE_ATTACH:-}"

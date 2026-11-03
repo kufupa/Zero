@@ -181,6 +181,35 @@ export function centurionBrowserHoldPath(home = homedir()) {
   } catch { throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
 }
 
+/** Only server-derived canonical dispatch keys may select a narrower cleanup hold. */
+export function centurionCloudBrowserHoldPath(key, home = homedir()) {
+  let parts;
+  try { parts = JSON.parse(key); } catch { throw new Error('HMS_BROWSER_TARGET_INVALID'); }
+  const nameKey = (value) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  const validName = (value) => typeof value === 'string' && value.length > 0 && value.length <= 4_608 &&
+    !/[\p{Cc}]/u.test(value) && value === nameKey(value);
+  const validDate = (value) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  };
+  const valid = Array.isArray(parts) && parts[0] === propertyCode && (
+    (parts.length === 5 && parts[1] === 'create' && validName(parts[2]) && validName(parts[3]) && validDate(parts[4])) ||
+    (parts.length === 3 && parts[1] === 'saved' && typeof parts[2] === 'string' &&
+      /^(?:0|[1-9]\d{0,29})-(?:0|[1-9]\d{0,9})$/.test(parts[2])) ||
+    (parts.length === 3 && parts[1] === 'saved_native' && typeof parts[2] === 'string' &&
+      /^(?:0|[1-9]\d{0,99})$/.test(parts[2]))
+  );
+  if (!valid || JSON.stringify(parts) !== key) throw new Error('HMS_BROWSER_TARGET_INVALID');
+  return `${centurionBrowserHoldPath(home)}-${createHash('sha256').update(key).digest('hex')}`;
+}
+
+/** A legacy hotel-wide hold always blocks a Cloud session as well. */
+export function assertNoCenturionCloudBrowserHold(key, home = homedir()) {
+  assertNoCenturionBrowserHold(centurionBrowserHoldPath(home));
+  assertNoCenturionBrowserHold(centurionCloudBrowserHoldPath(key, home));
+}
+
 /** An unconfirmed browser blocks later launches in every process for this user. */
 export function assertNoCenturionBrowserHold(path = centurionBrowserHoldPath()) {
   try { lstatSync(path); } catch (error) {
@@ -239,10 +268,19 @@ export async function closeCenturionResources({ context, browser, server, proces
   { isGroupGone = groupGone, stopGroup = stopOwnedGroup, onUnconfirmed = holdCenturionBrowser,
     timeoutMs = 5_000, groupWaitMs = 2_000 } = {}) {
   let clean = true;
+  let held = false;
+  const hold = () => {
+    if (!held) { onUnconfirmed(processIdentity); held = true; }
+  };
+  let serverClosed = !server;
   for (const resource of [context, browser, server]) {
-    if (!await closeBounded(resource, timeoutMs)) clean = false;
+    const closed = await closeBounded(resource, timeoutMs);
+    if (resource === server) serverClosed = closed;
+    if (!closed) clean = false;
   }
-  if (server && !processGroup) { clean = false; onUnconfirmed(processIdentity); }
+  // Without a verified group identity, observing an empty numeric group cannot prove
+  // that a server whose close failed has exited: it may never have owned that group.
+  if (server && !serverClosed && (!processGroup || processIdentity?.pid !== processGroup)) hold();
   if (processGroup) {
     let gone = await waitForGroupGone(processGroup, isGroupGone, groupWaitMs);
     if (!gone) {
@@ -251,7 +289,7 @@ export async function closeCenturionResources({ context, browser, server, proces
         if (processIdentity?.pid === processGroup) await stopGroup(processIdentity);
       } catch { /* A hold is required if it still lives. */ }
       gone = await waitForGroupGone(processGroup, isGroupGone, groupWaitMs);
-      if (!gone) onUnconfirmed(processIdentity);
+      if (!gone) hold();
     }
   }
   if (!clean) throw new Error('HMS_BROWSER_CLOSE_UNCONFIRMED');
@@ -295,8 +333,13 @@ export async function prepareCenturionLaunch(beforeLaunch, signal, check = asser
 }
 
 export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal,
-  blockServiceWorkers = false, prepareContext } = {}) {
+  blockServiceWorkers = false, prepareContext, cloudTargetKey } = {}) {
   const contextOptions = centurionContextOptions(blockServiceWorkers);
+  const cloudHoldPath = cloudTargetKey === undefined ? undefined : centurionCloudBrowserHoldPath(cloudTargetKey);
+  const checkHold = cloudHoldPath === undefined ? assertNoCenturionBrowserHold : () => {
+    assertNoCenturionBrowserHold();
+    assertNoCenturionBrowserHold(cloudHoldPath);
+  };
   let browser;
   let server;
   let processGroup;
@@ -317,7 +360,9 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     server = undefined;
     processGroup = undefined;
     processIdentity = undefined;
-    try { await closeCenturionResources(owned); }
+    try { await closeCenturionResources(owned, cloudHoldPath === undefined ? undefined : {
+      onUnconfirmed: (identity) => holdCenturionBrowser(identity, cloudHoldPath),
+    }); }
     catch (error) { closeError ??= error; }
   };
   const onAbort = () => { abortClose ??= closeResources(); };
@@ -329,14 +374,19 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.throwIfAborted();
 
     phase = 'browser_launch';
-    await prepareCenturionLaunch(beforeLaunch, signal);
+    await prepareCenturionLaunch(beforeLaunch, signal, checkHold);
     const chromium = centurionChromium();
     server = await chromium.launchServer({
       headless, host: '127.0.0.1',
       executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined,
     });
-    processIdentity = centurionBrowserIdentity(server.process()?.pid);
-    processGroup = processIdentity.pid;
+    const pid = server.process()?.pid;
+    if (Number.isSafeInteger(pid) && pid >= 2 && pid !== process.pid) processGroup = pid;
+    try { processIdentity = centurionBrowserIdentity(pid); }
+    catch (error) {
+      // Cloud owns this server even when /proc cannot prove the identity for PID-safe killing.
+      if (cloudHoldPath === undefined) throw error;
+    }
     signal?.throwIfAborted();
     browser = await chromium.connect(server.wsEndpoint(), { timeout: 30_000 });
     signal?.throwIfAborted();

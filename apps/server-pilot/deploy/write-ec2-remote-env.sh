@@ -54,16 +54,29 @@ REMOTE_COMMON_ALLOWLIST=(
   HMS_DAVINCI_CREATE
   HMS_DAVINCI_MAKE_QUOTE
   HMS_DAVINCI_READS
+  HMS_EXPECTED_TENANT
+  HMS_EXPECTED_PROPERTY_CODE
+  HMS_EXPECTED_TRANSPORT_ID
   HMS_JOB_QUEUE
+  HMS_LANE_PAUSED
+  HMS_PREFETCH_ENABLED
+  HMS_PREFETCH_PER_HOUR
+  HMS_GUEST_PREFETCH_PER_HOUR
+  HMS_AVAILABILITY_PREFETCH
+  HMS_AVAILABILITY_PER_HOUR
   HMS_QUOTE_PREPARE
   HMS_QUOTE_PREPARE_PER_HOUR
+  PARTY_MATCH_V2
   HMS_STAGEHAND_CDP_URL_DAVINCI
   RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV
   INBOUND_EXTRACTION
   INBOUND_TRIAGE_CLASSIFIER
   NEEDS_YOU_SINCE
   PANE_WRITE_CREATE
+  PANE_HMS_LAB_CREATE_WORKER
   PANE_CLOUD_CREATE_DISPATCH
+  PANE_WRITE_AMEND
+  PANE_HMS_LAB_AMEND_WORKER
   PANE_WRITE_AMEND_UNPAID
   PANE_WRITE_AMEND_PAID
   PANE_WRITE_CANCEL_UNPAID
@@ -95,10 +108,13 @@ const common = new Set([
   "AI_DRAFTS_ENABLED", "CATCHUP_UPLOAD_ENABLED", "AI_STALE_RUN_TIMEOUT_MS", "AI_MODEL_ID", "PANE_BRAIN", "QUOTE_WORKFLOW_LLM",
   "AI_WORKER_IDEMPOTENCY_PREFIX", "BEDROCK_REGION", "BEDROCK_GUARDRAIL_ID",
   "BEDROCK_GUARDRAIL_VERSION", "MASTRA_STORAGE_PATH", "GOTENBERG_URL", "NAVA_BUILD_COMMIT", "PLAYWRIGHT_BROWSERS_PATH",
-  "HMS_CHROMIUM_EXECUTABLE_PATH", "HMS_DAVINCI_CREATE", "HMS_DAVINCI_MAKE_QUOTE", "HMS_DAVINCI_READS", "HMS_JOB_QUEUE", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "HMS_STAGEHAND_CDP_URL_DAVINCI",
+  "HMS_CHROMIUM_EXECUTABLE_PATH", "HMS_DAVINCI_CREATE", "HMS_DAVINCI_MAKE_QUOTE", "HMS_DAVINCI_READS",
+  "HMS_EXPECTED_TENANT", "HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TRANSPORT_ID", "HMS_JOB_QUEUE", "HMS_LANE_PAUSED",
+  "HMS_PREFETCH_ENABLED", "HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PREFETCH",
+  "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "PARTY_MATCH_V2", "HMS_STAGEHAND_CDP_URL_DAVINCI",
   "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV",
   "INBOUND_EXTRACTION", "INBOUND_TRIAGE_CLASSIFIER", "NEEDS_YOU_SINCE",
-  "PANE_WRITE_CREATE", "PANE_CLOUD_CREATE_DISPATCH", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
+  "PANE_WRITE_CREATE", "PANE_HMS_LAB_CREATE_WORKER", "PANE_CLOUD_CREATE_DISPATCH", "PANE_WRITE_AMEND", "PANE_HMS_LAB_AMEND_WORKER", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
   "PANE_WRITE_CANCEL_UNPAID", "PANE_WRITE_CANCEL_PAID", "PANE_WRITE_ATTACH",
   "PANE_HMS_LAB_ATTACH_WORKER",
 ]);
@@ -122,6 +138,23 @@ try {
     }
     if (values.has("QUOTE_WORKFLOW_LLM") && !["on", "off"].includes(values.get("QUOTE_WORKFLOW_LLM"))) {
       throw new Error("invalid");
+    }
+    const validate = (keys, allowed) => {
+      for (const key of keys) if (values.has(key) && !allowed.includes(values.get(key))) throw new Error("invalid");
+    };
+    validate(["PANE_WRITE_CREATE", "PANE_WRITE_AMEND", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
+      "PANE_WRITE_CANCEL_UNPAID", "PANE_WRITE_CANCEL_PAID", "PANE_WRITE_ATTACH"], ["off", "lab", "on"]);
+    validate(["PANE_HMS_LAB_CREATE_WORKER", "PANE_HMS_LAB_ATTACH_WORKER", "PANE_HMS_LAB_AMEND_WORKER",
+      "PANE_CLOUD_CREATE_DISPATCH", "HMS_JOB_QUEUE", "HMS_AVAILABILITY_PREFETCH"], ["off", "on"]);
+    validate(["HMS_PREFETCH_ENABLED", "HMS_LANE_PAUSED", "PARTY_MATCH_V2"], ["true", "false", "1", "0"]);
+    validate(["HMS_QUOTE_PREPARE"], ["true", "false", "1", "0", "on", "off"]);
+    for (const key of ["HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE_PER_HOUR"]) {
+      if (values.has(key) && !/^\d{1,15}$/.test(values.get(key))) throw new Error("invalid");
+    }
+    for (const [key, pattern] of [["HMS_EXPECTED_TENANT", /^[A-Z][A-Z0-9_]+$/],
+      ["HMS_EXPECTED_PROPERTY_CODE", /^[A-Z][A-Z0-9]+$/],
+      ["HMS_EXPECTED_TRANSPORT_ID", /^transport-[a-z0-9]+(?:-[a-z0-9]+)*$/]]) {
+      if (values.has(key) && !pattern.test(values.get(key))) throw new Error("invalid");
     }
     if (values.has("GOTENBERG_URL")) {
       const url = new URL(values.get("GOTENBERG_URL"));
@@ -319,12 +352,18 @@ const WORKFLOW = {
   HMS_DAVINCI_MAKE_QUOTE: "quote",
   HMS_DAVINCI_READS: "reads",
   HMS_QUOTE_PREPARE: "quote",
+  HMS_PREFETCH_ENABLED: "prefetch",
+  HMS_AVAILABILITY_PREFETCH: "availability",
+  PARTY_MATCH_V2: "party",
   INBOUND_TRIAGE_CLASSIFIER: "triage",
   INBOUND_EXTRACTION: "extraction",
   PANE_WRITE_CREATE: "create",
+  PANE_HMS_LAB_CREATE_WORKER: "create",
   PANE_CLOUD_CREATE_DISPATCH: "create",
   PANE_WRITE_AMEND_UNPAID: "amend",
   PANE_WRITE_AMEND_PAID: "amend",
+  PANE_WRITE_AMEND: "amend",
+  PANE_HMS_LAB_AMEND_WORKER: "amend",
   PANE_WRITE_CANCEL_UNPAID: "cancel",
   PANE_WRITE_CANCEL_PAID: "cancel",
   PANE_WRITE_ATTACH: "attach",
@@ -351,7 +390,11 @@ const next = parse(newPath);
 const prev = parse(oldPath);
 const flips = [];
 for (const [key, value] of next) {
-  if (!isWorkflow(key) || !isOn(value) || isOn(prev.get(key))) continue;
+  if (!isWorkflow(key)) continue;
+  // Amend's lab mode is an enabled workflow too; lab -> on widens it to real guests.
+  const widensAmend = key === "PANE_WRITE_AMEND" &&
+    ((value === "lab" && !["lab", "on"].includes(prev.get(key))) || (value === "on" && prev.get(key) !== "on"));
+  if (!widensAmend && (!isOn(value) || isOn(prev.get(key)))) continue;
   flips.push(key);
 }
 if (flips.length === 0) process.exit(0);
@@ -371,9 +414,10 @@ for (const line of canary.split(/\r?\n/)) {
   const match = lineRe.exec(line);
   if (match) rows.push({ workflow: match[1], property: match[2], sha: match[3] });
 }
-function shaMatch(canarySha, live) {
+function shaMatch(canarySha, live, exact) {
   const a = canarySha.toLowerCase();
   const b = live.toLowerCase();
+  if (exact) return /^[0-9a-f]{40}$/.test(a) && a === b;
   if (a === b) return true;
   if (a.length >= 7 && b.startsWith(a)) return true;
   if (b.length >= 7 && a.startsWith(b)) return true;
@@ -384,23 +428,37 @@ function workflowMatch(flag, token) {
   return token === flag || token.toLowerCase() === String(alias).toLowerCase();
 }
 const FLAG_PROPERTY = {
+  PANE_WRITE_CREATE: "HRCEN",
+  PANE_HMS_LAB_CREATE_WORKER: "HRCEN",
   PANE_CLOUD_CREATE_DISPATCH: "HRCEN",
+  PANE_WRITE_AMEND: "HRCEN",
+  PANE_WRITE_AMEND_UNPAID: "HRCEN",
+  PANE_WRITE_AMEND_PAID: "HRCEN",
+  PANE_HMS_LAB_AMEND_WORKER: "HRCEN",
+  PANE_WRITE_CANCEL_UNPAID: "HRCEN",
+  PANE_WRITE_CANCEL_PAID: "HRCEN",
+  PANE_WRITE_ATTACH: "HRCEN",
   HMS_DAVINCI_CREATE: "HRDAV",
   HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
   HMS_DAVINCI_READS: "HRDAV",
   PANE_HMS_LAB_ATTACH_WORKER: "HRCEN",
 };
+const CONFIGURED_PROPERTY_FLAGS = new Set(["HMS_JOB_QUEUE", "HMS_QUOTE_PREPARE", "HMS_PREFETCH_ENABLED",
+  "HMS_AVAILABILITY_PREFETCH", "PARTY_MATCH_V2"]);
 for (const flag of flips) {
-  const neededProperty = FLAG_PROPERTY[flag];
+  const neededProperty = FLAG_PROPERTY[flag] || (CONFIGURED_PROPERTY_FLAGS.has(flag) ?
+    (next.get("HMS_EXPECTED_PROPERTY_CODE") || "HRCEN") : undefined);
+  const exactSha = neededProperty === "HRCEN";
   const hit = rows.find(
     (row) =>
       workflowMatch(flag, row.workflow) &&
       /^(HRCEN|HRDAV)$/.test(row.property) &&
       (!neededProperty || row.property === neededProperty) &&
-      shaMatch(row.sha, liveSha),
+      shaMatch(row.sha, liveSha, exactSha),
   );
   if (hit) continue;
-  const stale = rows.some((row) => workflowMatch(flag, row.workflow));
+  const stale = rows.some((row) => workflowMatch(flag, row.workflow) &&
+    (!neededProperty || row.property === neededProperty));
   process.stderr.write(
     stale
       ? `write-ec2-remote-env: refuse: stale canary SHA for ${flag} (live ${liveSha})\n`

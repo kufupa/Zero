@@ -2,15 +2,17 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import { readFileSync, readlinkSync } from 'node:fs';
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { once } from 'node:events';
 import test from 'node:test';
 import {
-  assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserHoldPath, centurionBrowserIdentity, centurionContextOptions,
+  assertNoCenturionBrowserHold, assertNoCenturionCloudBrowserHold, centurionBrowserGroup, centurionBrowserHoldPath,
+  centurionBrowserIdentity, centurionCloudBrowserHoldPath, centurionContextOptions,
   centurionWriterCurrent, centurionWriterIdentity, centurionWriterQuiesced,
   closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, prepareCenturionLaunch, withCenturionStay360Page,
 } from './centurion-stay360.mjs';
@@ -61,8 +63,9 @@ test('failed or incomplete browser cleanup remains uncertain and still closes th
     /HMS_BROWSER_CLOSE_UNCONFIRMED/);
     assert.deepEqual(calls, ['context', 'browser', 'server', 'group', ...(failing === 'group' ? ['group'] : [])]);
   }
-  await assert.rejects(closeCenturionResources({ server: { close: async () => {} } }, { onUnconfirmed: () => {} }),
-    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+  let held = false;
+  await closeCenturionResources({ server: { close: async () => {} } }, { onUnconfirmed: () => { held = true; } });
+  assert.equal(held, false);
 });
 
 test('a hung close is bounded and later cleanup still runs', async () => {
@@ -155,6 +158,125 @@ test('browser holds use an owner-private directory and reject unsafe parents', a
     assert.throws(() => centurionBrowserHoldPath(home), /HMS_BROWSER_HOLD_UNAVAILABLE/);
   } finally {
     await chmod(home, 0o700);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('Cloud holds block the same canonical target before and after a queued launch, but not another target', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-cloud-home-'));
+  const a = JSON.stringify(['HRCEN', 'create', 'proof', 'labtest', '2027-03-15']);
+  const b = JSON.stringify(['HRCEN', 'saved_native', '123']);
+  try {
+    const path = centurionCloudBrowserHoldPath(a, home);
+    assert.match(path, /hrcen-browser-hold-[a-f0-9]{64}$/);
+    assert.doesNotMatch(path, /proof|labtest|2027/);
+    const checkA = () => assertNoCenturionCloudBrowserHold(a, home);
+    const checkB = () => assertNoCenturionCloudBrowserHold(b, home);
+    await assert.rejects(prepareCenturionLaunch(async () => holdCenturionBrowser(undefined, path), undefined, checkA),
+      /HMS_BROWSER_HOLD/);
+    let launched = false;
+    await assert.rejects(prepareCenturionLaunch(async () => { launched = true; }, undefined, checkA), /HMS_BROWSER_HOLD/);
+    assert.equal(launched, false);
+    await prepareCenturionLaunch(async () => { launched = true; }, undefined, checkB);
+    assert.equal(launched, true);
+    assert.doesNotThrow(() => assertNoCenturionBrowserHold(centurionBrowserHoldPath(home)));
+    holdCenturionBrowser(undefined, centurionBrowserHoldPath(home));
+    assert.throws(checkB, /HMS_BROWSER_HOLD/);
+    assert.throws(() => assertNoCenturionBrowserHold(centurionBrowserHoldPath(home)), /HMS_BROWSER_HOLD/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('Cloud holds reject noncanonical or non-HRCEN targets', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-cloud-key-'));
+  try {
+    for (const parts of [
+      ['HRDAV', 'saved_native', '123'], ['HRCEN', 'work_item', '123'],
+      ['HRCEN', 'saved_native', '001'], ['HRCEN', 'saved', '1-01'],
+      ['HRCEN', 'create', 'Proof', 'labtest', '2027-03-15'],
+      ['HRCEN', 'create', 'proof', 'labtest', '2027-02-30'],
+      ['HRCEN', 'create', 'proof', 'labtest', '2027-03-15', 'extra'],
+    ]) assert.throws(() => centurionCloudBrowserHoldPath(JSON.stringify(parts), home), /HMS_BROWSER_TARGET_INVALID/);
+    assert.throws(() => centurionCloudBrowserHoldPath('not-json', home), /HMS_BROWSER_TARGET_INVALID/);
+    assert.throws(() => centurionCloudBrowserHoldPath('[ "HRCEN", "saved_native", "123" ]', home),
+      /HMS_BROWSER_TARGET_INVALID/);
+    assert.doesNotThrow(() => centurionCloudBrowserHoldPath(JSON.stringify(['HRCEN', 'saved', '1-2']), home));
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('missing process identity accepts confirmed close, while uncertain cleanup holds only its Cloud target', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-cloud-cleanup-'));
+  const a = JSON.stringify(['HRCEN', 'saved_native', '123']);
+  const b = JSON.stringify(['HRCEN', 'saved_native', '456']);
+  const path = centurionCloudBrowserHoldPath(a, home);
+  let stopped = false;
+  const options = { groupWaitMs: 0, stopGroup: () => { stopped = true; },
+    onUnconfirmed: (identity) => holdCenturionBrowser(identity, path) };
+  try {
+    await closeCenturionResources({ server: { close: async () => {} }, processGroup: 123 },
+      { ...options, isGroupGone: async () => true });
+    assert.doesNotThrow(() => assertNoCenturionCloudBrowserHold(a, home));
+    await assert.rejects(closeCenturionResources({ server: { close: async () => {} }, processGroup: 123 },
+      { ...options, isGroupGone: async () => false }), /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.equal(stopped, false);
+    assert.throws(() => assertNoCenturionCloudBrowserHold(a, home), /HMS_BROWSER_HOLD/);
+    assert.doesNotThrow(() => assertNoCenturionCloudBrowserHold(b, home));
+    assert.doesNotThrow(() => assertNoCenturionBrowserHold(centurionBrowserHoldPath(home)));
+
+    const c = JSON.stringify(['HRCEN', 'saved_native', '789']);
+    await assert.rejects(closeCenturionResources({ server: { close: async () => { throw new Error('lost'); } }, processGroup: 789 },
+      { ...options, isGroupGone: async () => true,
+        onUnconfirmed: (identity) => holdCenturionBrowser(identity, centurionCloudBrowserHoldPath(c, home)) }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.throws(() => assertNoCenturionCloudBrowserHold(c, home), /HMS_BROWSER_HOLD/);
+    assert.doesNotThrow(() => assertNoCenturionCloudBrowserHold(b, home));
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('scoped bootstrap continues without proc identity and confirmed close leaves no hold', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hms-cloud-no-proc-'));
+  const bin = join(home, 'bin');
+  const prior = { PATH: process.env.PATH, HOME: process.env.HOME,
+    HMS_CHROMIUM_EXECUTABLE_PATH: process.env.HMS_CHROMIUM_EXECUTABLE_PATH };
+  const executable = process.env.HMS_TEST_CHROMIUM_PATH || require('playwright').chromium.executablePath();
+  const credentials = { loginUrl: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD',
+    username: 'synthetic', password: 'synthetic', expectedTenant: 'THECENTURION_PRD',
+    expectedPropertyCode: 'HRCEN', expectedPropertyName: 'test' };
+  const key = JSON.stringify(['HRCEN', 'saved_native', '123']);
+  const originalRead = fs.readFileSync;
+  try {
+    await mkdir(bin);
+    await writeFile(join(bin, 'aws'), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(credentials))});\n`, { mode: 0o700 });
+    process.env.PATH = `${bin}:${prior.PATH}`;
+    process.env.HOME = home;
+    process.env.HMS_CHROMIUM_EXECUTABLE_PATH = executable;
+    fs.readFileSync = function(path, ...args) {
+      if (typeof path === 'string' && /^\/proc\/\d+\/stat$/.test(path)) throw new Error('proc unavailable');
+      return originalRead.call(this, path, ...args);
+    };
+    syncBuiltinESMExports();
+    let prepared = false;
+    await assert.rejects(withCenturionStay360Page(() => {}, { cloudTargetKey: key,
+      prepareContext: () => { prepared = true; throw new Error('STOP_AFTER_CONTEXT'); } }), /STOP_AFTER_CONTEXT/);
+    assert.equal(prepared, true);
+    assert.doesNotThrow(() => assertNoCenturionCloudBrowserHold(key, home));
+    await assert.rejects(withCenturionStay360Page(() => {}), /HMS_BROWSER_GROUP_UNVERIFIED/);
+    assert.doesNotThrow(() => assertNoCenturionBrowserHold(centurionBrowserHoldPath(home)));
+    holdCenturionBrowser(undefined, centurionCloudBrowserHoldPath(key, home));
+    let admitted = false;
+    await assert.rejects(withCenturionStay360Page(() => {}, { cloudTargetKey: key,
+      beforeLaunch: () => { admitted = true; } }), /HMS_BROWSER_HOLD/);
+    assert.equal(admitted, false);
+    holdCenturionBrowser(undefined, centurionBrowserHoldPath(home));
+    const other = JSON.stringify(['HRCEN', 'saved_native', '456']);
+    await assert.rejects(withCenturionStay360Page(() => {}, { cloudTargetKey: other,
+      beforeLaunch: () => { admitted = true; } }), /HMS_BROWSER_HOLD/);
+    assert.equal(admitted, false);
+  } finally {
+    fs.readFileSync = originalRead;
+    syncBuiltinESMExports();
+    for (const [name, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });
