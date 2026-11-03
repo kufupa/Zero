@@ -52,7 +52,25 @@ export async function openHotelAvailability(page) {
     await node('Availability').click();
     await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
-  await node('Hotel Availability').click();
+  const hotel = node('Hotel Availability');
+  // ExtJS can reveal this row before the expanding tree finishes moving it.
+  // Wait for a settled position before the real pointer click; the native
+  // tree does not handle a synthetic click event.
+  await hotel.evaluate((element) => new Promise((resolve, reject) => {
+    const started = performance.now();
+    let last = '', stableSince = started;
+    const sample = (now) => {
+      if (!element.isConnected) return reject(new Error('availability menu detached'));
+      const box = element.getBoundingClientRect();
+      const current = [box.x, box.y, box.width, box.height].map((value) => Math.round(value * 10)).join(':');
+      if (current !== last) { last = current; stableSince = now; }
+      if (now - stableSince >= 400) return resolve();
+      if (now - started >= 5000) return reject(new Error('availability menu did not settle'));
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+  await hotel.click();
   // On-prem HMS has a startdate field; the Infor cloud build (HRCEN, 2026-10-27) has one `dates` range picker.
   await page.locator('input[name="startdate"]:visible, input[name="dates"]:visible').first().waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
