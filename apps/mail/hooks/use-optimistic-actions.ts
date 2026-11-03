@@ -21,6 +21,7 @@ import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { formatFileSuccessMessage } from '@/lib/mail/file-drag';
+import { beginThreadMove, finishThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -413,9 +414,14 @@ export function useOptimisticActions() {
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
-    options?: { preserveSelection?: boolean },
+    options?: { preserveSelection?: boolean; moveIntent?: number },
   ) {
     if (!threadIds.length || !destination) return;
+    if (options?.moveIntent !== undefined &&
+        (threadIds.length !== 1 || !isCurrentThreadMove(threadIds[0]!, options.moveIntent))) return;
+    const moveIntents = new Map(threadIds.map((id) => [id, options?.moveIntent ?? beginThreadMove(id)]));
+    const currentThreads = () => threadIds.filter((id) => isCurrentThreadMove(id, moveIntents.get(id)!));
+    const finishMoves = (ids: string[]) => ids.forEach((id) => finishThreadMove(id, moveIntents.get(id)!));
 
     const optimisticId = addOptimisticAction({
       type: 'MOVE',
@@ -433,7 +439,7 @@ export function useOptimisticActions() {
     }
 
     if (destination === 'spam') {
-      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId);
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).finally(() => finishMoves(threadIds));
       return;
     }
 
@@ -450,29 +456,36 @@ export function useOptimisticActions() {
       params: { currentFolder, destination },
       optimisticId,
       execute: async () => {
+        const activeIds = currentThreads();
+        if (!activeIds.length) return;
+        try {
           if (frontendOnlyDemo) {
-            await demoMoveThreadsTo({ threadIds, currentFolder, destination });
+            await demoMoveThreadsTo({ threadIds: activeIds, currentFolder, destination });
           } else {
             await moveThreadsTo({
-              threadIds,
+              threadIds: activeIds,
               currentFolder,
               destination,
             });
           }
 
-        if (mail.bulkSelected.length > 0) {
-          setMail({ ...mail, bulkSelected: [] });
+          if (mail.bulkSelected.length > 0) {
+            setMail({ ...mail, bulkSelected: [] });
+          }
+        } finally {
+          currentThreads().forEach((id) => {
+            setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+          });
+          finishMoves(activeIds);
         }
-
-        threadIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
-        threadIds.forEach((id) => {
+        const activeIds = currentThreads();
+        activeIds.forEach((id) => {
           setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
         });
+        finishMoves(activeIds);
       },
       toastMessage: successMessage,
       folders: [currentFolder, destination],

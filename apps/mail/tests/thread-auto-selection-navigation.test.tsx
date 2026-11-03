@@ -73,7 +73,8 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: ({ children }: any) => children, DropdownMenuTrigger: ({ children }: any) => children,
-  DropdownMenuContent: () => null, DropdownMenuItem: ({ children }: any) => children,
+  DropdownMenuContent: ({ children }: any) => children,
+  DropdownMenuItem: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button>,
 }));
 vi.mock('@/components/ui/scroll-area', () => ({ ScrollArea: ({ children }: any) => <div>{children}</div> }));
 vi.mock('@/components/mail/mail-display', () => ({ default: () => null, ThreadAttachments: () => null }));
@@ -110,7 +111,8 @@ it('opens the next thread after a move clears the old selection', async () => {
   render(<ThreadDisplay />);
   fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.archive' }));
   await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: null }));
-  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive');
+  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive',
+    { moveIntent: expect.any(Number) });
   expect(mocks.flushCompose).toHaveBeenCalledOnce();
 });
 
@@ -130,6 +132,23 @@ it('still moves the clicked thread when a later selection wins the draft-save ra
     mocks.selectThread?.({ threadId: 'thread-b', sourceMessageId: 'message-b' });
   });
   await act(async () => finishSave());
-  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive', { preserveSelection: true });
+  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive',
+    { preserveSelection: true, moveIntent: expect.any(Number) });
   expect(mocks.setMailSelection).not.toHaveBeenCalled();
+});
+
+it('honors the newer move when two moves wait for the same draft save', async () => {
+  let finishSave!: () => void;
+  mocks.items = [{ id: 'thread-a' }, { id: 'thread-b' }];
+  mocks.thread = { transportId: 'transport-1', messages: [], latest: undefined };
+  mocks.flushCompose.mockReturnValue(new Promise<void>((resolve) => { finishSave = resolve; }));
+  mocks.optimisticMove.mockImplementation(() => {});
+  getDefaultStore().set(focusedIndexAtom, 0);
+  render(<ThreadDisplay />);
+  fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.archive' }));
+  fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.moveToSpam' }));
+  await act(async () => finishSave());
+  expect(mocks.optimisticMove).toHaveBeenCalledOnce();
+  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'spam',
+    { moveIntent: expect.any(Number) });
 });

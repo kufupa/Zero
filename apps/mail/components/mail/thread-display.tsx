@@ -47,6 +47,7 @@ import {
   shouldSuppressLatestAutoScroll,
   useExactSourceMessageSelection,
 } from '@/lib/mail/source-message-navigation';
+import { beginThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -439,13 +440,15 @@ export function ThreadDisplay() {
     async (destination: ThreadDestination) => {
       if (!id) return;
 
+      const moveIntent = beginThreadMove(id);
       const revision = ++selectionRevision.current;
       const intent = beginMailSelectionIntent();
       await clearComposeContext(revision, intent);
+      if (!isCurrentThreadMove(id, moveIntent)) return;
       if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) {
         // The move belongs to the clicked thread even if staff navigated while
         // the draft saved. Do not clear or replace their newer selection.
-        optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true });
+        optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true, moveIntent });
         return;
       }
 
@@ -453,7 +456,7 @@ export function ThreadDisplay() {
         ? items[Math.max(1, focusedIndex + 1)] : undefined;
       // The optimistic move clears the old thread. Select its successor in the
       // same turn, after the one draft flush, so that clear cannot cancel it.
-      optimisticMoveThreadsTo([id], folder, destination);
+      optimisticMoveThreadsTo([id], folder, destination, { moveIntent });
       void setThreadSelection({ threadId: nextThread?.id ?? null, sourceMessageId: null });
       if (nextThread && focusedIndex !== null) {
         setFocusedIndex(focusedIndex + 1);

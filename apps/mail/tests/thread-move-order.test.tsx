@@ -1,0 +1,62 @@
+/** @vitest-environment happy-dom */
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
+import { optimisticActionsManager } from '@/lib/optimistic-actions-manager';
+
+const mocks = vi.hoisted(() => ({
+  move: vi.fn(async () => ({ preferences: [] })),
+  toast: Object.assign(vi.fn(), { error: vi.fn() }),
+}));
+vi.mock('@/lib/thread-actions', () => ({
+  moveThreadsTo: mocks.move, fileThreadsTo: vi.fn(), buildThreadFilingSnapshots: vi.fn(),
+  collectCachedThreadLabelSources: vi.fn(),
+}));
+vi.mock('@/providers/query-provider', () => ({ useTRPC: () => {
+  const endpoint = { mutationOptions: () => ({}), queryKey: () => ['test'] };
+  const group = new Proxy({}, { get: () => endpoint });
+  return { mail: group, drafts: group, categories: group, labels: group };
+} }));
+vi.mock('@tanstack/react-query', () => ({
+  useMutation: () => ({ mutateAsync: vi.fn() }),
+  useQueryClient: () => ({ refetchQueries: vi.fn(async () => {}) }),
+}));
+vi.mock('jotai', async (original) => ({
+  ...await original<typeof import('jotai')>(), useAtom: () => [null, vi.fn(() => 'optimistic-id')],
+}));
+vi.mock('nuqs', () => ({ useQueryState: () => [null, vi.fn()] }));
+vi.mock('@/components/mail/use-mail', () => ({ useMail: () => [{ bulkSelected: [] }, vi.fn()] }));
+vi.mock('@/hooks/use-labels', () => ({ useLabels: () => ({ userLabels: [] }) }));
+vi.mock('@/lib/demo/runtime', () => ({ isFrontendOnlyDemo: () => false }));
+vi.mock('@/lib/mail/spam-undo-toast', () => ({ showSpamUndoToast: vi.fn() }));
+vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: (_, key) => () => String(key) }) }));
+vi.mock('posthog-js', () => ({ default: { capture: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: mocks.toast }));
+
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+it('does not send an older delayed archive after a newer spam move', async () => {
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-a'], 'inbox', 'archive'));
+  const pending = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-a'], 'inbox', 'spam'));
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
+    threadIds: ['thread-a'], currentFolder: 'inbox', destination: 'spam',
+  }));
+  await act(async () => { pending.onAutoClose(); });
+  await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
+  expect(mocks.move).toHaveBeenCalledOnce();
+});
+
+it('still archives unaffected threads in an older bulk move', async () => {
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-a', 'thread-b'], 'inbox', 'archive'));
+  const pending = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-a'], 'inbox', 'spam'));
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledOnce());
+  await act(async () => { pending.onAutoClose(); });
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
+    threadIds: ['thread-b'], currentFolder: 'inbox', destination: 'archive',
+  }));
+  await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
+});
