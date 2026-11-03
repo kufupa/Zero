@@ -1093,7 +1093,7 @@ async function latestWriteRun(db: DB, workItemId: string) {
   return run ?? null;
 }
 
-/** The write.evidence events one run sealed, oldest first. */
+/** The screenshot evidence one run sealed, oldest first. */
 async function evidenceForRun(db: DB, workItemId: string, runId: string) {
   return db
     .select({ id: workEvent.id, name: sql<string>`${workEvent.value}->>'name'`, at: workEvent.at })
@@ -1103,6 +1103,9 @@ async function evidenceForRun(db: DB, workItemId: string, runId: string) {
         eq(workEvent.workItemId, workItemId),
         eq(workEvent.type, 'write.evidence'),
         sql`${workEvent.value}->>'runId' = ${runId}`,
+        sql`${workEvent.value}->>'name' ~ ${EVIDENCE_NAME_PATTERN.source}`,
+        sql`${workEvent.evidence}->>'key' is not null`,
+        sql`${workEvent.evidence}->>'sha256' is not null`,
       ),
     )
     .orderBy(workEvent.at, workEvent.id);

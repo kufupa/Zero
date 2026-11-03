@@ -10,7 +10,7 @@ import type { DB } from '../src/db/client.js';
 import { aiWorkflowRun } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
-import { recordHmsWriteEvidence } from '../src/ai/hms-approval.js';
+import { hmsWriteStateOf, readHmsWriteEvidence, recordHmsWriteEvidence } from '../src/ai/hms-approval.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, recoverHmsLabtestAttach,
   resolveNeverDispatchedAttach } from '../src/ai/hms-labtest-dispatch.js';
 import { recordNeverDispatchedAttach } from '../src/ai/pane-cloud-attach-recovery.js';
@@ -236,6 +236,20 @@ describe.skipIf(!root)('positive Filing recovery on a private synthetic PostgreS
     expect(run).toMatchObject({ state: 'succeeded', failure_class: null,
       metrics: { action: 'attach_document', outcome: 'confirmed', listed: true, recovered: true } });
     expect(await conn`select id from work_event where value->>'kind' = 'resolved'`).toHaveLength(1);
+    const [metadata] = await conn`select id from work_event where work_item_id = ${workItemId}
+      and value->>'kind' = 'hms_attach_verified'`;
+    expect(metadata?.id).toEqual(expect.any(String));
+    const state = await hmsWriteStateOf({ db, transportId, workItemId });
+    const screenshots = state?.run?.evidence ?? [];
+    expect(screenshots.map((row) => row.name)).toEqual(expect.arrayContaining([
+      'before.png', expect.stringMatching(/^recovery-[a-f0-9]{16}\.png$/),
+    ]));
+    expect(screenshots.every((row) => typeof row.name === 'string' && row.name.endsWith('.png'))).toBe(true);
+    expect(screenshots.map((row) => row.eventId)).not.toContain(metadata?.id);
+    const recoveredScreenshot = screenshots.find((row) => row.name.startsWith('recovery-'));
+    expect(recoveredScreenshot).toBeDefined();
+    await expect(readHmsWriteEvidence({ db, storage, transportId, workItemId, eventId: recoveredScreenshot!.eventId }))
+      .resolves.toEqual({ status: 'ok', dataUrl: `data:image/png;base64,${png.toString('base64')}` });
     const laterEpoch = await captureHmsLabtestDispatchEpoch(db);
     expect(laterEpoch).not.toBe(epoch);
     await expect(claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {}, epoch))
