@@ -187,16 +187,44 @@ function storedBatch(state: Record<string, unknown>, id: string): StoredBatch | 
   return hash(body) === actual && new Set(body.rooms.map((room) => room.stayId)).size === body.rooms.length ? parsed.data : null;
 }
 
+/** A later stay may replace a batch only after every prior room has durable positive evidence. */
+async function previousBatchComplete(tx: CreateFenceTransaction, state: Record<string, unknown>, input: Input): Promise<boolean> {
+  const raw = state[BATCH];
+  if (raw === undefined) return true;
+  const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
+  const batch = typeof id === 'string' ? storedBatch(state, id) : null;
+  const stays = state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays)
+    ? state.stays as Record<string, unknown> : null;
+  if (!batch || !stays) return false;
+  const completed = await readResolvedHmsLabtestCreates(tx, input.workItemId);
+  const confirmations = new Set<string>();
+  for (const room of batch.rooms) {
+    const prior = stays[room.stayId];
+    if (!prior || typeof prior !== 'object' || Array.isArray(prior)) return false;
+    const row = prior as Record<string, unknown>, confirmation = row.confirmationNumber;
+    if (row.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || confirmations.has(confirmation)) return false;
+    const evidence = completed.filter(({ intent, resolution }) =>
+      intent.transportId === input.transportId && intent.actorUserId === room.grant.actorUserId &&
+      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
+      intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
+    if (evidence.length !== 1) return false;
+    confirmations.add(confirmation);
+  }
+  return true;
+}
+
 /** The first Save transaction captures every previewed room under the single Go. */
 async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSource, input: Input, grant: Grant,
   previewDigest: string): Promise<StoredBatch | null> {
   const batch = input.batch;
   if (!batch || batch.kind !== 'start') return null;
   if (!z.string().uuid().safeParse(batch.id).success || batch.rooms.length < 2 || batch.rooms.length > 8 ||
-      source.item.state[BATCH] !== undefined || new Set(batch.rooms.map((room) => room.stayId)).size !== batch.rooms.length ||
+      new Set(batch.rooms.map((room) => room.stayId)).size !== batch.rooms.length ||
       batch.rooms[0]?.stayId !== input.stayId || batch.rooms[0]?.previewDigest !== previewDigest) {
     throw new Error('cloud_batch_stale');
   }
+  if (!await previousBatchComplete(tx, source.item.state, input)) throw new Error('cloud_batch_stale');
   const rooms: StoredBatch['rooms'] = [];
   for (const room of batch.rooms) {
     const roomInput: Input = { ...input, stayId: room.stayId, stay: room.stay, selection: room.selection, batch: undefined };

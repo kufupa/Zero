@@ -764,9 +764,16 @@ describe('mounted Cloud create route', () => {
   it('one Go captures both previews and commits separately only after a trusted sibling read', async () => {
     (h.payload.stays as any)[0].totalRooms = 2;
     (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const laterStay = structuredClone((h.payload.stays as any)[0]);
+    laterStay.id = 's2'; laterStay.rows[0].id = 'r2';
+    (h.payload.stays as any[]).push(laterStay);
     const first = request('123');
     const second = { ...request('123'), stayId: 's1_2',
       createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const third = { ...request('123'), stayId: 's2_1',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 } } };
+    const fourth = { ...request('123'), stayId: 's2_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 2 } } };
     const firstDigest = await prepared();
     const secondPreview = await caller().quoteWorkflow.previewStay(second);
     const secondDigest = secondPreview.previewDigest!;
@@ -776,6 +783,14 @@ describe('mounted Cloud create route', () => {
     ] };
     expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch }))
       .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-1' });
+    const thirdDigest = (await caller().quoteWorkflow.previewStay(third)).previewDigest!;
+    const fourthDigest = (await caller().quoteWorkflow.previewStay(fourth)).previewDigest!;
+    const laterBatch = { kind: 'start' as const, id: randomUUID(), rooms: [
+      { ...third, previewDigest: thirdDigest }, { ...fourth, previewDigest: fourthDigest },
+    ] };
+    expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: laterBatch }))
+      .toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(1);
     const originalRun = paneCloudPreviewLoaders.run, originalVerify = paneCloudPreviewLoaders.verifySiblings;
     const verifier = vi.fn<typeof paneCloudPreviewLoaders.verifySiblings>(async (_census, siblings) => {
       expect(siblings).toHaveLength(1);
@@ -801,6 +816,11 @@ describe('mounted Cloud create route', () => {
       expect(dispatches).toBe(2);
       expect(verifier).toHaveBeenCalledOnce();
       expect(h.state).toMatchObject({ stays: { s1_1: { status: 'booked' }, s1_2: { status: 'booked' } } });
+      paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify;
+      expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: laterBatch }))
+        .toMatchObject({ status: 'ok', outcome: 'committed' });
+      expect(h.state).toMatchObject({ cloudCreateBatch: { id: laterBatch.id } });
+      expect(dispatches).toBe(3);
     } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
   });
 
