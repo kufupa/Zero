@@ -226,21 +226,22 @@ describe('HMS write approvals', () => {
         await expect(
           caller.hmsApproval.approve({
             workItemId,
+            internetMessageId: 'thread-1@example.com',
             formDigest: 'forged',
             hmsBeforeDigest: 'forged',
           } as never),
         ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
         // The card sends back the digest of the form it showed. A form edited since then is refused, not approved.
         await expect(
-          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(EDITED_FORM) }),
+          caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(EDITED_FORM) }),
         ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'form_outdated' });
-        const granted = await caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) });
+        const granted = await caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(FORM) });
         expect(granted.runId).toEqual(expect.any(String));
         const [count] = await sql<{ n: number }[]>`
           SELECT count(*)::int AS n FROM work_event WHERE type = 'approval.granted'`;
         expect(count?.n).toBe(1);
         await expect(
-          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) }),
+          caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(FORM) }),
         ).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED',
           message: 'write_in_flight',
@@ -587,10 +588,10 @@ describe('HMS write approvals', () => {
       __setDbForTests({ db, conn: sql } as never);
       const caller = callerFor(TRANSPORT_ID);
       await expect(
-        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: '' }),
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, internetMessageId: 'thread-1@example.com', note: '' }),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: 'Booking reads amended in HMS' }),
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, internetMessageId: 'thread-1@example.com', note: 'Booking reads amended in HMS' }),
       ).resolves.toEqual({ runId: claim.runId, resolution: 'staff_checked' });
       const events = await db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
       expect(events.find((row) => (row.value as { resolvedRunId?: string })?.resolvedRunId)).toMatchObject({
@@ -931,10 +932,10 @@ describe('HMS write approvals', () => {
       __setDbForTests({ db, conn: sql } as never);
       setS3Storage(storage);
       await expect(
-        callerFor('transport-nava').hmsApproval.evidence({ workItemId, eventId: sealed.eventId }),
-      ).resolves.toEqual({ status: 'unavailable', reason: 'evidence_unavailable' });
+        callerFor('transport-nava').hmsApproval.evidence({ workItemId, internetMessageId: 'thread-1@example.com', eventId: sealed.eventId }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor(TRANSPORT_ID).hmsApproval.evidence({ workItemId, eventId: sealed.eventId }),
+        callerFor(TRANSPORT_ID).hmsApproval.evidence({ workItemId, internetMessageId: 'thread-1@example.com', eventId: sealed.eventId }),
       ).resolves.toEqual({
         status: 'ok',
         dataUrl: `data:image/png;base64,${PNG_BYTES.toString('base64')}`,
@@ -1111,27 +1112,27 @@ describe('HMS write review and write state', () => {
       __setDbForTests({ db, conn: sql } as never);
       const caller = callerFor(TRANSPORT_ID);
       await expect(
-        caller.hmsApproval.review({ workItemId, decision: 'flag', note: '' } as never),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', decision: 'flag', note: '' } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.review({ workItemId, decision: 'ok', note: 'not allowed' } as never),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', decision: 'ok', note: 'not allowed' } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.review({ workItemId, runId, decision: 'flag', note: 'Check arrival in HMS' }),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', runId, decision: 'flag', note: 'Check arrival in HMS' }),
       ).resolves.toEqual({ runId, status: 'needs_you' });
       // This form names no booking to read (no confirmation, arrival or action), so nothing reaches HMS.
-      await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
+      await expect(caller.hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' })).resolves.toEqual({
         status: 'refused',
         reason: 'form_invalid',
       });
       await expect(
-        callerFor('transport-nava').hmsApproval.review({ workItemId, runId, decision: 'ok' }),
+        callerFor('transport-nava').hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', runId, decision: 'ok' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor('transport-nava').hmsApproval.writeState({ workItemId }),
+        callerFor('transport-nava').hmsApproval.writeState({ workItemId, internetMessageId: 'thread-1@example.com' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor('transport-nava').hmsApproval.reread({ workItemId }),
+        callerFor('transport-nava').hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     });
   });

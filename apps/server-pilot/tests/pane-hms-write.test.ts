@@ -994,20 +994,20 @@ describe('pane HMS write (U26)', () => {
       __setDbForTests({ db, conn: sql } as never);
       const previousMode = process.env.RESERVATIONIST_PANE_SAVE;
       try {
-        await caller.hmsApproval.review({ workItemId, runId: run.runId, decision: 'flag', note: 'Wrong document' });
+        await caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', runId: run.runId, decision: 'flag', note: 'Wrong document' });
         expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
         await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({
           refusal: 'snapshot_missing',
         });
 
         delete process.env.RESERVATIONIST_PANE_SAVE;
-        await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
+        await expect(caller.hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' })).resolves.toEqual({
           status: 'refused',
           reason: 'refused_flag_off',
         });
         process.env.RESERVATIONIST_PANE_SAVE = 'lab';
         hmsStay = { ...LAB_STAY, departure: '2027-09-17' };
-        const reread = await caller.hmsApproval.reread({ workItemId });
+        const reread = await caller.hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' });
         expect(reread).toMatchObject({ status: 'stored' });
         expect((await stateOf(db, workItemId)).hmsSnapshot).toMatchObject({
           digest: hmsStateDigest(hmsStay),

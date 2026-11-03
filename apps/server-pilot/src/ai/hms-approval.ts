@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun } from '../db/schema/mail.js';
+import { aiWorkflowRun, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
+import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
 import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
@@ -61,6 +63,7 @@ export type HmsApprovalRefusal =
   | 'not_found'
   | 'not_open'
   | 'source_mail_missing'
+  | 'source_mail_changed'
   | 'write_in_flight'
   | 'needs_check_open'
   | 'snapshot_missing'
@@ -88,6 +91,35 @@ export class HmsApprovalError extends Error {
     this.name = 'HmsApprovalError';
     this.refusal = refusal;
   }
+}
+
+type SelectedHmsSource = { transportId: string; selectedInternetMessageId?: string };
+type HmsSourceItem = { sourceMessageId: string | null; threadId: string | null };
+
+/** The public pane names the selected email; ambiguous or mismatched message IDs never authorize a write. */
+async function assertHmsSelectedSource(db: DB, input: SelectedHmsSource, item: HmsSourceItem, lockRows = false): Promise<void> {
+  if (input.selectedInternetMessageId === undefined) return;
+  const selectedId = canonicalMessageId(input.selectedInternetMessageId.trim());
+  if (!selectedId || !item.sourceMessageId || !item.threadId) throw new HmsApprovalError('source_mail_changed');
+  const query = db.select({ id: message.id, threadId: message.threadId, direction: message.direction })
+    .from(message).where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, selectedId))).limit(2);
+  const matches = lockRows ? await query.for('share') : await query;
+  if (matches.length !== 1 || matches[0]?.id !== item.sourceMessageId ||
+      matches[0].threadId !== item.threadId || matches[0].direction !== 'inbound') {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+}
+
+async function lockHmsSelectedMailbox(db: DB, input: SelectedHmsSource): Promise<void> {
+  if (input.selectedInternetMessageId !== undefined) await lockCanonicalMailbox(db, input.transportId);
+}
+
+async function assertCurrentHmsSelection(db: DB, input: SelectedHmsSource & { workItemId: string }): Promise<void> {
+  if (input.selectedInternetMessageId === undefined) return;
+  const [item] = await db.select({ sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
+    .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
+  if (!item) throw new HmsApprovalError('not_found');
+  await assertHmsSelectedSource(db, input, item);
 }
 
 /** The approval payload. Stored as the approval.granted value, and its hash is the event's payload_hash. */
@@ -238,7 +270,7 @@ async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<st
   return resolved ? null : latest.id;
 }
 
-async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
+export async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
   await assertNoWriteInFlight(db, workItemId);
   if (await unresolvedNeedsCheckRunId(db, workItemId)) throw new HmsApprovalError('needs_check_open');
 }
@@ -276,6 +308,8 @@ export async function storeHmsSnapshot(input: {
   db?: DB;
   transportId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
+  expectedFormDigest?: string;
   readHmsState: () => Promise<unknown>;
   now?: Date;
 }): Promise<{ digest: string; readAt: string }> {
@@ -283,14 +317,20 @@ export async function storeHmsSnapshot(input: {
   const now = input.now ?? new Date();
   const snapshot = { digest: hmsStateDigest(await input.readHmsState()), readAt: now.toISOString() };
   await db.transaction(async (tx) => {
+    await lockHmsSelectedMailbox(tx as DB, input);
     const [item] = await tx
-      .select({ id: workItem.id, state: workItem.state, status: workItem.status })
+      .select({ id: workItem.id, state: workItem.state, status: workItem.status,
+        sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
+    await assertHmsSelectedSource(tx as DB, input, item, true);
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
+    if (input.expectedFormDigest !== undefined && input.expectedFormDigest !== formDigest(item.state)) {
+      throw new HmsApprovalError('form_outdated');
+    }
     await tx
       .update(workItem)
       .set({ state: { ...item.state, [HMS_SNAPSHOT_KEY]: snapshot }, updatedAt: now })
@@ -390,6 +430,7 @@ export async function approveHmsWrite(input: {
   transportId: string;
   actorUserId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
   /**
    * The form digest of the values the card showed (hmsWriteStateOf.formDigest). When given, approval is refused unless
    * the stored form still has it, so staff never approve values they were not shown.
@@ -402,6 +443,7 @@ export async function approveHmsWrite(input: {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   return db.transaction(async (tx) => {
+    await lockHmsSelectedMailbox(tx as DB, input);
     const [item] = await tx
       .select()
       .from(workItem)
@@ -409,6 +451,7 @@ export async function approveHmsWrite(input: {
       .limit(1)
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
+    await assertHmsSelectedSource(tx as DB, input, item, true);
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
     const target = paneStayHmsTargetForTransport(input.transportId);
@@ -491,6 +534,7 @@ export async function resolveHmsNeedsCheck(input: {
   transportId: string;
   actorUserId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
   note?: string;
   rereadHmsState?: () => Promise<unknown>;
   now?: Date;
@@ -501,13 +545,16 @@ export async function resolveHmsNeedsCheck(input: {
   if (!input.rereadHmsState && note.length === 0) throw new HmsApprovalError('note_required');
   if (note.length > RESOLVE_NOTE_MAX) throw new HmsApprovalError('note_required');
   return db.transaction(async (tx) => {
+    await lockHmsSelectedMailbox(tx as DB, input);
     const [item] = await tx
-      .select({ id: workItem.id, state: workItem.state })
+      .select({ id: workItem.id, state: workItem.state,
+        sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
+    await assertHmsSelectedSource(tx as DB, input, item, true);
     const target = paneStayHmsTargetForTransport(input.transportId);
     if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
       throw new HmsApprovalError('filing_unavailable');
@@ -891,8 +938,10 @@ export async function readHmsWriteEvidence(input: {
   transportId: string;
   workItemId: string;
   eventId: string;
+  selectedInternetMessageId?: string;
 }): Promise<{ status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string }> {
   const db = input.db ?? getDb();
+  await assertCurrentHmsSelection(db, input);
   const storage = input.storage ?? getS3Storage();
   const unavailable = { status: 'unavailable' as const, reason: 'evidence_unavailable' };
   const [row] = await db
@@ -926,6 +975,7 @@ export async function readHmsWriteEvidence(input: {
   try {
     const object = await storage.getObjectBounded(key, EVIDENCE_MAX_BYTES);
     if (!object || sha256Hex(object.body) !== evidence.data.sha256) return unavailable;
+    await assertCurrentHmsSelection(db, input);
     return { status: 'ok', dataUrl: `data:image/png;base64,${object.body.toString('base64')}` };
   } catch {
     return unavailable;
@@ -999,6 +1049,7 @@ export async function reviewHmsWrite(input: {
   transportId: string;
   actorUserId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
   /** The run the reviewer was shown. When given, the review is refused unless it is still the latest write. */
   runId?: string;
   decision: 'ok' | 'flag';
@@ -1012,13 +1063,16 @@ export async function reviewHmsWrite(input: {
     throw new HmsApprovalError('note_required');
   }
   const reviewed = await db.transaction(async (tx) => {
+    await lockHmsSelectedMailbox(tx as DB, input);
     const [item] = await tx
-      .select({ id: workItem.id, status: workItem.status, state: workItem.state, threadId: workItem.threadId })
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
+    await assertHmsSelectedSource(tx as DB, input, item, true);
     if (item.status === 'done' || item.status === 'dismissed')
       throw new HmsApprovalError('not_open');
     await assertNoWriteInFlight(tx as DB, item.id);
@@ -1132,16 +1186,19 @@ export async function hmsWriteStateOf(input: {
   db?: DB;
   transportId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
   now?: Date;
 }): Promise<HmsWriteStateView | null> {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const [item] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state })
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state,
+      sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
     .limit(1);
   if (!item) return null;
+  await assertHmsSelectedSource(db, input, item);
   const snapshot = readSnapshot(item.state);
   const storedValues = z
     .record(z.unknown())
@@ -1199,6 +1256,7 @@ export async function hmsWriteStateOf(input: {
     };
   }
   const target = paneStayHmsTargetForTransport(input.transportId);
+  await assertCurrentHmsSelection(db, input);
   return {
     status: item.status,
     ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')

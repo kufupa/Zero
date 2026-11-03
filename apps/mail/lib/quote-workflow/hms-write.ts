@@ -1,4 +1,5 @@
 import { formatStayDate } from './amend-find';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 
 /**
  * The HMS write as the approve and review cards see it (U18). The wire types mirror hmsWriteStateOf and the hmsApproval
@@ -57,20 +58,28 @@ export type HmsApprovalClient = {
   evidence: (input: { workItemId: string; eventId: string }) => Promise<HmsEvidenceReply>;
 };
 
+type MailboxOptions = NonNullable<ReturnType<typeof inMailbox>>;
+type MailboxCall<T> = T extends (input: infer Input) => infer Result
+  ? (input: Input & { internetMessageId: string }, options: MailboxOptions) => Result
+  : never;
+
 type TrpcHmsApprovalRoutes = {
   hmsApproval?: {
-    writeState?: { query: HmsApprovalClient['writeState'] };
-    approve?: { mutate: HmsApprovalClient['approve'] };
-    review?: { mutate: HmsApprovalClient['review'] };
-    resolveNeedsCheck?: { mutate: HmsApprovalClient['resolveNeedsCheck'] };
-    reread?: { mutate: HmsApprovalClient['reread'] };
-    evidence?: { query: HmsApprovalClient['evidence'] };
+    writeState?: { query: MailboxCall<HmsApprovalClient['writeState']> };
+    approve?: { mutate: MailboxCall<HmsApprovalClient['approve']> };
+    review?: { mutate: MailboxCall<HmsApprovalClient['review']> };
+    resolveNeedsCheck?: { mutate: MailboxCall<HmsApprovalClient['resolveNeedsCheck']> };
+    reread?: { mutate: MailboxCall<HmsApprovalClient['reread']> };
+    evidence?: { query: MailboxCall<HmsApprovalClient['evidence']> };
   };
 };
 
-/** Binds the hmsApproval routes off a tRPC client. Null when one is missing, so no write card shows. */
-export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+/** Pin every request to the mailbox and selected email the card belongs to. */
+export function hmsApprovalFromTrpc(
+  trpc: unknown, transportId: string | null, internetMessageId: string | null,
+): HmsApprovalClient | null {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcHmsApprovalRoutes).hmsApproval;
   const writeState = routes?.writeState;
   const approve = routes?.approve;
@@ -80,12 +89,12 @@ export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
   const evidence = routes?.evidence;
   if (!writeState || !approve || !review || !resolve || !reread || !evidence) return null;
   return {
-    writeState: (input) => writeState.query(input),
-    approve: (input) => approve.mutate(input),
-    review: (input) => review.mutate(input),
-    resolveNeedsCheck: (input) => resolve.mutate(input),
-    reread: (input) => reread.mutate(input),
-    evidence: (input) => evidence.query(input),
+    writeState: (input) => writeState.query({ ...input, internetMessageId }, mailbox),
+    approve: (input) => approve.mutate({ ...input, internetMessageId }, mailbox),
+    review: (input) => review.mutate({ ...input, internetMessageId }, mailbox),
+    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId }, mailbox),
+    reread: (input) => reread.mutate({ ...input, internetMessageId }, mailbox),
+    evidence: (input) => evidence.query({ ...input, internetMessageId }, mailbox),
   };
 }
 
@@ -165,6 +174,7 @@ const REFUSAL_COPY: Record<string, string> = {
   not_found: 'This item is no longer here. Reopen the email and try again.',
   not_open: 'This item is already closed.',
   source_mail_missing: 'Nava cannot find the email this item came from.',
+  source_mail_changed: 'This write belongs to another email. Reopen the selected email.',
   write_in_flight: 'A write for this item is still running. Wait for it to finish.',
   needs_check_open: 'Check HMS first. The last write needs a check.',
   snapshot_missing: 'Re-read HMS first.',
