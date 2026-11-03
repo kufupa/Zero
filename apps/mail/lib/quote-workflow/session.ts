@@ -398,9 +398,12 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
 
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
+  session: Pick<QuoteSession, 'phase' | 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
   step: QuoteToolStep,
 ): string | null {
+  if (session.phase === 'analysing') {
+    return 'Wait for Nava to finish reading this email before searching.';
+  }
   if (
     step.kind === 'quote_stay' &&
     step.shareKey &&
