@@ -17,7 +17,7 @@ const origin = hmsProductionOriginForSlot(property.browserSlot);
 const secret = { loginUrl: `${origin}/web/base/logindisp?tenant=${property.expectedTenant}`,
   expectedTenant: property.expectedTenant, expectedPropertyCode: property.propertyCode,
   expectedPropertyName: property.expectedPropertyName, username: property.username, password: 'fixture-only' };
-const policy = () => prepareQuoteRequestPolicy({ secret, property, modules });
+const policy = (quoteRequest) => prepareQuoteRequestPolicy({ secret, property, quoteRequest, modules });
 const script = `${origin}/web/resources/shared/scripts/jquery-3.6.0.min.js`;
 
 function fakeContext() {
@@ -58,9 +58,9 @@ function fakeRoute({ url = script, method = 'GET', resourceType = 'script', body
   };
 }
 
-async function routed(input) {
+async function routed(input, quoteRequest) {
   const context = fakeContext();
-  const guard = await installQuoteRequestGuard(context, await policy());
+  const guard = await installQuoteRequestGuard(context, await policy(quoteRequest));
   const route = fakeRoute(input);
   await context.request(route);
   return { context, guard, route };
@@ -264,6 +264,156 @@ test('only the typed, duplicate-free, Centurion availability inquiry is fetched'
     assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
     assert.equal(denied.context.closed, 1);
   }
+});
+
+test('details allow only the observed Centurion single-day read within the requested stay and rooms', async () => {
+  const quoteRequest = { propertyCode: 'HRCEN', details: 'full', arrivalDate: '2027-03-15', departureDate: '2027-03-17',
+    rooms: [{ required: { roomCodes: ['STQN'] } }] };
+  const fields = { roomType: 'STQN', building: '', startDate: '2027-03-15', endDate: '2027-03-15' };
+  const valid = { url: `${origin}/api/booking/hotelAvail/HRCEN/availabilityDetailsInquiry`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/json', bookingclientsessionid: 'forceRelay' }, body: JSON.stringify(fields) };
+  const allowed = await routed(valid, quoteRequest);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  assert.equal(allowed.guard.failureError(), null);
+  const nextNight = await routed({ ...valid, body: JSON.stringify({ ...fields, startDate: '2027-03-16', endDate: '2027-03-16' }) }, quoteRequest);
+  assert.deepEqual(nextNight.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, url: valid.url.replace('/HRCEN/', '/HRDAV/') },
+    { ...valid, url: `${valid.url}?pageaction=SAVE` },
+    { ...valid, url: `${valid.url}?` },
+    { ...valid, url: valid.url.replace('availabilityDetailsInquiry', 'save') },
+    { ...valid, method: 'PUT' },
+    { ...valid, resourceType: 'document' },
+    { ...valid, headers: { ...valid.headers, 'content-type': 'text/plain' } },
+    { ...valid, headers: { 'content-type': 'application/json' } },
+    { ...valid, headers: { ...valid.headers, bookingclientsessionid: 'another' } },
+    { ...valid, body: JSON.stringify({ ...fields, roomType: 'OTHER' }) },
+    { ...valid, body: JSON.stringify({ ...fields, roomType: '../STQN' }) },
+    { ...valid, body: JSON.stringify({ ...fields, building: 'OTHER' }) },
+    { ...valid, body: JSON.stringify({ ...fields, startDate: '2027-03-14', endDate: '2027-03-14' }) },
+    { ...valid, body: JSON.stringify({ ...fields, startDate: '2027-03-17', endDate: '2027-03-17' }) },
+    { ...valid, body: JSON.stringify({ ...fields, startDate: '2027-02-30', endDate: '2027-02-30' }) },
+    { ...valid, body: JSON.stringify({ ...fields, endDate: '2027-03-16' }) },
+    { ...valid, body: JSON.stringify({ ...fields, pageaction: 'SAVE' }) },
+    { ...valid, body: JSON.stringify({ roomType: fields.roomType, startDate: fields.startDate, endDate: fields.endDate }) },
+    { ...valid, body: valid.body.replace('{', '{"roomType":"OTHER",') },
+    { ...valid, body: 'x'.repeat(4097) },
+    { ...valid, body: '{' },
+  ]) {
+    const denied = await routed(bad, quoteRequest);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']], JSON.stringify(bad));
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+    assert.equal(denied.context.closed, 1);
+  }
+  const redirect = await routed({ ...valid, status: 302 }, quoteRequest);
+  assert.deepEqual(redirect.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['abort', 'blockedbyclient']]);
+  assert.match(redirect.guard.failureError().message, /unreviewed_redirect/);
+});
+
+test('room information opens only the reviewed HRCEN popup for an in-scope room with no guest', async () => {
+  const quoteRequest = { propertyCode: 'HRCEN', details: 'full', arrivalDate: '2027-03-15', departureDate: '2027-03-16',
+    rooms: [{ required: { roomCodes: ['STQN'] } }] };
+  const body = 'SYSTEM_FUNCTION_NAME=OSCCRT&USER_FUNCTION_NAME=OSCCRT&propertycode=HRCEN&roomtypecode=STQN&guestid=';
+  const valid = { url: `${origin}/web/base/OSCCRT`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body };
+  const allowed = await routed(valid, quoteRequest);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, url: `${valid.url}?pageaction=SAVE` },
+    { ...valid, url: `${valid.url}?` },
+    { ...valid, url: `${origin}/web/base/OSRESV` },
+    { ...valid, method: 'PUT' },
+    { ...valid, resourceType: 'document' },
+    { ...valid, headers: { 'content-type': 'application/json' } },
+    { ...valid, body: body.replace('propertycode=HRCEN', 'propertycode=HRDAV') },
+    { ...valid, body: body.replace('roomtypecode=STQN', 'roomtypecode=OTHER') },
+    { ...valid, body: body.replace('guestid=', 'guestid=123') },
+    { ...valid, body: body.replace('USER_FUNCTION_NAME=OSCCRT', 'USER_FUNCTION_NAME=OSRESV') },
+    { ...valid, body: body.replace('&guestid=', '') },
+    { ...valid, body: `${body}&guestid=123` },
+    { ...valid, body: `${body}&pageaction=SAVE` },
+    { ...valid, body: 'x'.repeat(4097) },
+  ]) {
+    const denied = await routed(bad, quoteRequest);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']], JSON.stringify(bad));
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+  }
+  assert.deepEqual((await routed(valid)).route.calls, [['abort', 'blockedbyclient']]);
+  assert.deepEqual((await routed(valid, { ...quoteRequest, details: 'summary' })).route.calls, [['abort', 'blockedbyclient']]);
+  const redirect = await routed({ ...valid, status: 302 }, quoteRequest);
+  assert.deepEqual(redirect.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['abort', 'blockedbyclient']]);
+  assert.match(redirect.guard.failureError().message, /unreviewed_redirect/);
+});
+
+test('room-information popup loads only its reviewed same-origin static view with a numeric cache buster', async () => {
+  const quoteRequest = { propertyCode: 'HRCEN', details: 'full', arrivalDate: '2027-03-15', departureDate: '2027-03-16',
+    rooms: [{ required: { roomCodes: ['STQN'] } }] };
+  const valid = { url: `${origin}/web/base/app/view/operations/callcenter/osccrt.js?_dc=1793686349390`,
+    method: 'GET', resourceType: 'xhr' };
+  assert.deepEqual((await routed(valid, quoteRequest)).route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, url: valid.url.replace('osccrt.js', 'osresv.js') },
+    { ...valid, url: valid.url.replace('1793686349390', 'invalid') },
+    { ...valid, url: valid.url.replace('?_dc=1793686349390', '') },
+    { ...valid, url: `${valid.url}&_dc=1793686349390` },
+    { ...valid, url: `${valid.url}&pageaction=SAVE` },
+    { ...valid, method: 'POST' }, { ...valid, resourceType: 'document' }, { ...valid, body: 'pageaction=SAVE' },
+  ]) assert.deepEqual((await routed(bad, quoteRequest)).route.calls, [['abort', 'blockedbyclient']]);
+  assert.deepEqual((await routed(valid)).route.calls, [['abort', 'blockedbyclient']]);
+  const redirect = await routed({ ...valid, status: 302 }, quoteRequest);
+  assert.deepEqual(redirect.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['abort', 'blockedbyclient']]);
+  assert.match(redirect.guard.failureError().message, /unreviewed_redirect/);
+});
+
+test('room information reads only the scoped HRCEN room without guest preferences', async () => {
+  const quoteRequest = { propertyCode: 'HRCEN', details: 'full', arrivalDate: '2027-03-15', departureDate: '2027-03-16',
+    rooms: [{ required: { roomCodes: ['STQN'] } }] };
+  const valid = { url: `${origin}/api/booking/HRCEN/roomType/STQN?_dc=1793686468377`, method: 'GET', resourceType: 'xhr',
+    headers: { bookingclientsessionid: 'forceRelay' } };
+  assert.deepEqual((await routed(valid, quoteRequest)).route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, url: valid.url.replace('/HRCEN/', '/HRDAV/') },
+    { ...valid, url: valid.url.replace('/STQN?', '/OTHER?') },
+    { ...valid, url: valid.url.replace('1793686468377', 'invalid') },
+    { ...valid, url: `${valid.url}&guestID=123` },
+    { ...valid, url: `${valid.url}&_dc=1793686468377` },
+    { ...valid, method: 'POST' }, { ...valid, resourceType: 'document' }, { ...valid, headers: {} },
+    { ...valid, body: 'pageaction=SAVE' },
+  ]) assert.deepEqual((await routed(bad, quoteRequest)).route.calls, [['abort', 'blockedbyclient']]);
+  assert.deepEqual((await routed(valid)).route.calls, [['abort', 'blockedbyclient']]);
+  const redirect = await routed({ ...valid, status: 302 }, quoteRequest);
+  assert.deepEqual(redirect.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['abort', 'blockedbyclient']]);
+  assert.match(redirect.guard.failureError().message, /unreviewed_redirect/);
+});
+
+test('details require an immutable, valid full-quote scope; unconstrained rooms remain readable', async () => {
+  const quoteRequest = { propertyCode: 'HRCEN', details: 'full', arrivalDate: '2027-03-15', departureDate: '2027-03-16',
+    rooms: [{ required: { roomCodes: ['STQN'] } }] };
+  const valid = { url: `${origin}/api/booking/hotelAvail/HRCEN/availabilityDetailsInquiry`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/json', bookingclientsessionid: 'forceRelay' },
+    body: JSON.stringify({ roomType: 'STQN', building: '', startDate: '2027-03-15', endDate: '2027-03-15' }) };
+  for (const scope of [undefined, { ...quoteRequest, details: 'summary' }, { ...quoteRequest, propertyCode: 'HRDAV' },
+    { ...quoteRequest, arrivalDate: '2027-02-30' }, { ...quoteRequest, departureDate: '2027-04-16' },
+    { ...quoteRequest, rooms: [] }, { ...quoteRequest, rooms: [{ required: { roomCodes: [] } }] }]) {
+    const denied = await routed(valid, scope);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+  }
+  const unrestricted = await routed({ ...valid, body: valid.body.replace('STQN', 'OTHER') },
+    { ...quoteRequest, rooms: [{ required: { roomCodes: ['STQN'] } }, {}] });
+  assert.deepEqual(unrestricted.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+
+  const snapshot = await policy(quoteRequest);
+  quoteRequest.rooms[0].required.roomCodes.push('OTHER');
+  quoteRequest.departureDate = '2027-04-01';
+  const context = fakeContext();
+  await installQuoteRequestGuard(context, snapshot);
+  const afterMutation = fakeRoute({ ...valid, body: valid.body.replace('STQN', 'OTHER') });
+  await context.request(afterMutation);
+  assert.deepEqual(afterMutation.calls, [['abort', 'blockedbyclient']]);
 });
 
 test('an unreviewed HMS image is skipped without fetching, but other requests still fail closed', async () => {
