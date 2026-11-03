@@ -55,7 +55,16 @@ describe('server build identity', () => {
     expect(finished.stderr).toContain('checkout changed during server build');
     const loaded = run('nava_load_build_commit "$2"', repo.root, '', 'a'.repeat(40));
     expect(loaded.status).not.toBe(0);
-    expect(loaded.stderr).toContain('invalid server build identity');
+    expect(loaded.stderr).toContain('build in progress');
+  });
+
+  it('refuses startup if a failed clean build removed dist and its marker', () => {
+    const repo = repository();
+    expect(run('nava_write_build_marker "$2" BUILD_IN_PROGRESS', repo.root).status).toBe(0);
+    rmSync(join(repo.root, 'apps', 'server-pilot', 'dist'), { recursive: true, force: true });
+    const loaded = run('nava_load_build_commit "$2"', repo.root, '', 'a'.repeat(40));
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('build in progress');
   });
 
   it('marks legacy startup identity unknown instead of trusting stale env or checkout', () => {
