@@ -40,6 +40,7 @@ import {
 } from './guest-stay-source-business.mjs';
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
+import { validCreateNote } from './create-request-binding.mjs';
 
 const PROPERTY = 'HRCEN';
 const DEFAULT_DATA_DIR = '/home/orca/.local/share/zero/research/halloween/raw-data';
@@ -101,7 +102,7 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
       !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
-      typeof request.note !== 'string' || !request.note.trim() || request.note.length > 200) return null;
+      !validCreateNote(request.note)) return null;
   return {
     confirmation,
     expected: {

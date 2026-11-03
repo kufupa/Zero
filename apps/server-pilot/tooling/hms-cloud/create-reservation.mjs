@@ -7,7 +7,7 @@ import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
-import { digestCloudCreateRequest } from './create-request-binding.mjs';
+import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
 import { normalizeCreateTrack } from './create-track.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
@@ -82,7 +82,7 @@ function validate(input) {
   for (const key of ['organizationName', 'agencyName', 'arAccountName']) {
     if (input.parties?.[key] != null && !text(input.parties[key])) missing.push(`parties.${key}`);
   }
-  if (input.note != null && (typeof input.note !== 'string' || !input.note.trim() || input.note.length > 200)) missing.push('note');
+  if (input.note != null && !validCreateNote(input.note)) missing.push('note');
   if (input.mode === 'commit') {
     if (input.billingReference != null) {
       if (input.parties?.arAccountId == null) missing.push('parties.arAccountId');
@@ -504,7 +504,7 @@ export async function createReservation(input, { withSession = withBookingLookup
       // Only verified Labtest prepares get a synthetic note. Commit reuses its input.
       const note = input.note === undefined && !commit && labtestDraft
         ? `Proof Labtest create ${randomUUID()}` : input.note;
-      if (note != null && typeof note === 'string' && note.trim() && note.length <= 200) {
+      if (validCreateNote(note)) {
         const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'reservationNote', value: note });
         if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });
         output.applied.note = result.actual;

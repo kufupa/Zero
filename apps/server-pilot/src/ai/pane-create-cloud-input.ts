@@ -1,6 +1,7 @@
 import {
   digestCloudCreateRequest,
   normalizeCloudCreateRequest,
+  validCreateNote,
 } from '../../tooling/hms-cloud/create-request-binding.mjs';
 import { normalizeCreateTrack } from '../../tooling/hms-cloud/create-track.mjs';
 import type { PaneStay } from './pane-stay-save.js';
@@ -92,7 +93,7 @@ export function mapPaneStayToCloudCreateInput(
     return { outcome: 'refused', reason: 'child_ages_required', field: 'childAges' };
   }
   if (!cleanText(stay.sourceOfBusiness)) return { outcome: 'refused', reason: 'source_of_business_required', field: 'sourceOfBusiness' };
-  if (!cleanText(stay.reservationNote) || stay.reservationNote.length > 200) {
+  if (!validCreateNote(stay.reservationNote) || stay.reservationNote !== stay.reservationNote.trim()) {
     return { outcome: 'refused', reason: 'staff_note_required', field: 'reservationNote' };
   }
   if (!/^[A-Z0-9]{1,12}$/.test(stay.roomType) || !/^[A-Z0-9]{1,12}$/.test(stay.ratePlan)) {

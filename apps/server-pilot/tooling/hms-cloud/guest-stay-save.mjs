@@ -7,6 +7,7 @@ import { blankPartyFields } from './labtest-party-fields.mjs';
 import { verifiedArSelectionToken, isVerifiedArSelectionCurrent } from './lookup.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
+import { validCreateNote } from './create-request-binding.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
@@ -618,7 +619,7 @@ export async function saveNewLabtestStay(page, {
 } = {}, { timeoutMs = 20_000, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
   const formatted = dates(arrival, departure);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
-      !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || !isSupportedLabtestGuarantee(guaranteeType) || typeof note !== 'string' || !note.trim() || note.length > 200 ||
+      !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || !isSupportedLabtestGuarantee(guaranteeType) || !validCreateNote(note) ||
       !preimageId || (track !== undefined && (typeof track !== 'string' || !track.trim() || track !== track.trim())) ||
       (guestOptIn !== undefined && guestOptIn !== false) ||
       (cmsRecipient !== undefined && (typeof cmsRecipient !== 'string' || cmsRecipient.length > 255 ||

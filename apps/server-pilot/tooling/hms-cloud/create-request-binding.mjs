@@ -20,6 +20,13 @@ function exactText(value, { max = 200, allowBlank = false } = {}) {
     (allowBlank || Boolean(value.trim()));
 }
 
+// The HMS reservation note is a 2,000-character textarea. Keep its line feeds
+// exactly as staff reviewed them; other control characters are unsupported.
+export function validCreateNote(value) {
+  return typeof value === 'string' && value.length <= 2_000 && Boolean(value.trim()) &&
+    ![...value].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127);
+}
+
 function isoDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -135,7 +142,7 @@ export function normalizeCloudCreateRequest(input) {
   if (input.cmsMessageId !== undefined && !exactText(input.cmsMessageId, { max: 100 })) {
     return fail('CREATE_CMS_MESSAGE_INVALID', 'cmsMessageId');
   }
-  if (input.note !== undefined && !exactText(input.note, { max: 200 })) return fail('CREATE_NOTE_INVALID', 'note');
+  if (input.note !== undefined && !validCreateNote(input.note)) return fail('CREATE_NOTE_INVALID', 'note');
   if (input.cmsRecipient !== undefined && (!exactText(input.cmsRecipient, { max: 255 }) ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.cmsRecipient))) return fail('CREATE_CMS_RECIPIENT_INVALID', 'cmsRecipient');
   if (input.booker !== undefined) {

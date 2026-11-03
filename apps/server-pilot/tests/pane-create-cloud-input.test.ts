@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
+import generatedNote from '../tooling/hms-cloud/fixtures/generated-reservation-note.json';
 
 const stay = {
   firstName: 'Proof', lastName: 'Labtest', propertyCode: 'HRCEN',
@@ -16,6 +17,24 @@ const proof = {
 };
 
 describe('Cloud pane create mapping', () => {
+  it('binds the exact generated multiline reservation note through prepare and commit', () => {
+    const reviewed = { ...stay, reservationNote: generatedNote.note };
+    const native = { ...proof, note: generatedNote.note };
+    expect(reviewed.reservationNote.length).toBeGreaterThan(200);
+    for (const mode of ['prepare', 'commit'] as const) {
+      expect(mapPaneStayToCloudCreateInput(reviewed, mode, '123')).toMatchObject({
+        outcome: 'ok', input: { note: generatedNote.note },
+      });
+    }
+    expect(digestPaneCloudCreateProof(reviewed, native, undefined, '123')).toMatchObject({
+      outcome: 'ok', request: { note: generatedNote.note },
+    });
+    expect(digestPaneCloudCreateProof(reviewed, { ...native, note: generatedNote.note.replace('\n', ' ') }).outcome).toBe('refused');
+    for (const note of ['x'.repeat(2_001), 'a\rb', 'a\0b', 'a\tb']) {
+      expect(mapPaneStayToCloudCreateInput({ ...reviewed, reservationNote: note }, 'prepare').outcome).toBe('refused');
+    }
+    expect(mapPaneStayToCloudCreateInput({ ...reviewed, reservationNote: 'x'.repeat(2_000) }, 'prepare').outcome).toBe('ok');
+  });
   it('maps a supported Labtest draft without enabling email or save', () => {
     expect(mapPaneStayToCloudCreateInput(stay, 'prepare')).toMatchObject({ outcome: 'ok', input: {
       mode: 'prepare', guest: { search: { firstName: 'Proof', lastName: 'Labtest' } },

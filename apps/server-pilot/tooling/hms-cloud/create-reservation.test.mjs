@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
 
@@ -12,6 +13,7 @@ const input = {
   cms: { send: false },
 };
 const profile = { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', email: 'response-only@example.test' };
+const generatedNote = JSON.parse(readFileSync(new URL('./fixtures/generated-reservation-note.json', import.meta.url), 'utf8')).note;
 const values = { guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
   arrivaldate: '15-MAR-2027', departuredate: '17-MAR-2027', adults: '2', children: '2', child1: '0', child2: '2', child3: '0',
   roomtype: 'DLXKNG', rateplan: 'BAR', sourceofbusinessdesc: 'E-Mail', company: 'Example Company',
@@ -167,6 +169,29 @@ test('staff-bound commit rechecks the staged native request before Save', async 
     expectedRequestDigest: prepared.requestBinding.digest });
   assert.equal(invalid.issue, 'SAVE_GUARD_CALLBACKS_INVALID');
   assert.equal(missingCallbacks.calls.length, 0);
+});
+
+test('generated multiline note remains exact from prepare to fenced save and fresh readback', async (t) => {
+  const reviewed = { ...input, note: generatedNote };
+  const preparing = harness();
+  const prepared = await createReservation({ ...reviewed, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.equal(prepared.requestBinding.request.note, generatedNote);
+  assert.equal(preparing.calls.find(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote').value, generatedNote);
+  const committing = harness({ record: { ...values, reservationnote: generatedNote } });
+  const saved = await createReservation(reviewed, { ...committing.options, expectedRequestDigest: prepared.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.equal(committing.calls.find(({ tool }) => tool === 'saveNewLabtestStay').note, generatedNote);
+  assert.deepEqual(saved.readback.mismatches, []);
+
+  const changed = harness({ record: { ...values, reservationnote: generatedNote.replace('\n', ' ') } });
+  const uncertain = await createReservation(reviewed, { ...changed.options, expectedRequestDigest: prepared.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'note'));
 });
 
 test('staff-bound create requires drained callbacks, owned-session close, and an exact read-only fresh session', async (t) => {

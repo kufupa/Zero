@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bindExecuteStaffQuote, type ExecuteStaffQuoteInput, type ExecuteStaffQuoteResult } from '../lib/quote-workflow/staff-quote-bind';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import { formatReservationNote, reservationNoteForGroup } from '../lib/quote-workflow/reservation-note';
+import generatedNote from '../../server-pilot/tooling/hms-cloud/fixtures/generated-reservation-note.json';
 import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
@@ -125,6 +126,20 @@ async function currentSession() {
 }
 
 describe('reservation note', () => {
+  it('produces the multiline value exercised by the Cloud create proof', () => {
+    expect(formatReservationNote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      stay: { arrivalDate: '2027-03-15', departureDate: '2027-03-17', quantity: 1 },
+      selection: { roomCode: 'DLXKNG', rateCode: 'BAR', board: 'bb' },
+      availability: { groupId: 'g1', roomCode: 'DLXKNG', rateCode: 'BAR', board: 'bb', nightlyPriceMinor: 220000,
+        roomLabel: 'Deluxe King', rateLabel: 'Best Available', boardLabel: 'Bed and breakfast', roomsLeft: 1, rateScope: 'public' },
+      chargedRate: { groupId: 'g1', source: 'hms', hmsNightlyMinor: [215000, 225000],
+        nightlyMinor: [215000, 225000], rateCode: 'BAR' },
+      extras: { shuttleEnabled: true, shuttleMinor: 12500, shuttleTrips: 2, lunchEnabled: false,
+        dinnerEnabled: true, dinnerAllowanceMinor: 35000, dinnerAllowanceUnit: 'per_person_per_night', otherEnabled: false },
+      currency: 'ZAR',
+    })).toBe(generatedNote.note);
+  });
   it('uses the final selected room, rate and current extras', async () => {
     const session = await currentSession();
     const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');

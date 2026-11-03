@@ -34,7 +34,7 @@ const REFUSAL_COPY: Record<string, string> = {
   adults_required: 'Add at least one adult before previewing this booking.',
   child_ages_required: 'Add an age for each child before previewing this booking.',
   source_of_business_required: 'Choose a source of business before previewing this booking.',
-  staff_note_required: 'Add a reservation note of up to 200 characters before previewing.',
+  staff_note_required: 'Add a reservation note of up to 2,000 characters before previewing.',
   native_room_codes_required: 'Choose a room type and rate plan from HMS before previewing.',
   cms_message_invalid: 'Nava could not confirm the confirmation choice. Check the details and preview again.',
   booking_agency_id_and_name_required: 'Choose the booking agency from HMS before previewing.',

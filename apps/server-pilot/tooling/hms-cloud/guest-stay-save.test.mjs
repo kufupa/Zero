@@ -254,6 +254,15 @@ test('preserves padded synthetic reservation notes exactly', () => {
   assert.equal(matchesFullCreateBody(body, formData), false);
 });
 
+test('native request fence preserves multiline note bytes exactly', () => {
+  const note = JSON.parse(readFileSync(new URL('./fixtures/generated-reservation-note.json', import.meta.url), 'utf8')).note;
+  const formData = { ...createModelData(), reservationnote: note };
+  const body = createSaveBody(formData);
+  assert.equal(matchesFullCreateBody(body, formData), true);
+  body.set('reservationnote', note.replace('\n', ' '));
+  assert.equal(matchesFullCreateBody(body, formData), false);
+});
+
 test('agent guarantee requires matching selector evidence and a current strict draft', async () => {
   const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
     actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
