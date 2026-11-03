@@ -9,7 +9,7 @@ import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs'
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const READ = '/web/base/OSRESV.HDR.getChildAges';
 const VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
-const frame = {};
+const frame = { locator: () => ({ count: async () => 0 }) };
 const target = () => ({ frame, stayId: '5', adults: 2, priorAges: [8, 12],
   priorBands: { child1: 0, child2: 2, child3: 0 }, nextAges: [8, 12, 5], deadlineAt: performance.now() + 10000 });
 const makeRequest = (path, params, requestFrame = frame) => ({
@@ -25,7 +25,7 @@ const validate = () => makeRequest(VALIDATE, { propertyCode: 'HRCEN', reservatio
 function deferred() {
   let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve };
 }
-function mockPage({ paused = null } = {}) {
+function mockPage({ paused = null, onContinue = () => {}, onAbort = () => {} } = {}) {
   const pageRoutes = [], contextRoutes = [], calls = [];
   const context = { route: async (_pattern, handler) => { contextRoutes.push(handler); }, unroute: async () => {} };
   const page = { context: () => context, route: async (_pattern, handler) => { pageRoutes.push(handler); },
@@ -34,8 +34,8 @@ function mockPage({ paused = null } = {}) {
   const visit = async (request) => {
     const callContext = async (index) => {
       if (index < 0) { calls.push('context-end'); return; }
-      await contextRoutes[index]({ request: () => request, abort: async () => calls.push('abort'),
-        continue: async () => calls.push('continue'), fallback: async () => callContext(index - 1) });
+      await contextRoutes[index]({ request: () => request, abort: async () => { calls.push('abort'); onAbort(request); },
+        continue: async () => { calls.push('continue'); onContinue(request); }, fallback: async () => callContext(index - 1) });
     };
     const callPage = async (index) => {
       if (index < 0) return callContext(contextRoutes.length - 1);
@@ -201,4 +201,190 @@ test('Save context route refuses a candidate after the lifecycle deadline', asyn
   assert.equal(result.outcome, 'uncertain');
   assert.equal(result.issue, 'AMEND_TIMEOUT');
   assert.deepEqual(fake.calls, ['abort']);
+});
+
+
+// Simulate a native response arriving before the caller's dispatch guard exits.
+function wrappedSaveScenario(dispatchCandidate, { timeoutMs = 1000, status = 200, failClick = false } = {}) {
+  const native = deferred();
+  const fake = mockPage({
+    onContinue: (request) => native.resolve({ request: () => request, status: () => status }),
+    onAbort: () => native.resolve(null),
+  });
+  fake.page.waitForResponse = async (matches) => {
+    const response = await native.promise;
+    return response && matches(response) ? response : null;
+  };
+  const request = makeRequest('/web/base/OSRESV.HDR?pageaction=SAVE', {});
+  let route;
+  const save = { click: async () => {
+    route = fake.visit(request).then(() => null, (error) => error);
+    if (failClick) { await native.promise; throw new Error('SAVE_CLICK_FAILED'); }
+  } };
+  const work = runLabtestAmendSave(fake.page, {
+    ...config(null, async () => ({}), save), prepareOnly: false, timeoutMs, dispatchCandidate,
+  });
+  return { ...fake, request, work, route: () => route };
+}
+
+test('full amend lifecycle waits for the dispatch wrapper after the native response', async () => {
+  const entered = deferred(), release = deferred(), order = [];
+  const f = wrappedSaveScenario(async (request, proceed) => {
+    assert.equal(request, f.request);
+    order.push('enter'); await proceed(); order.push('continued'); entered.resolve();
+    await release.promise; order.push('exit');
+  });
+  let settled = false;
+  void f.work.then(() => { settled = true; });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release.resolve(); }
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'awaiting_readback');
+  assert.deepEqual(order, ['enter', 'continued', 'exit']);
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('full amend lifecycle waits for wrapper even after a non-success native response', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { status: 500 });
+  let settled = false;
+  void f.work.then(() => { settled = true; });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release.resolve(); }
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('full amend lifecycle treats wrapper failure after response as uncertain', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise; throw new Error('commit_failed');
+  });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+  } finally { release.resolve(); }
+  const result = await f.work;
+  assert.equal((await f.route()).message, 'commit_failed');
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.issue, 'SAVE_DISPATCH_UNCERTAIN');
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('click failure after dispatch waits for wrapper completion and stays uncertain', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { failClick: true });
+  let settled = false;
+  void f.work.then(() => { settled = true; });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally { release.resolve(); }
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.issue, 'SAVE_CLICK_FAILED');
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('click failure does not wait past the lifecycle deadline for a pending wrapper', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { failClick: true, timeoutMs: 250 });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    const result = await f.work;
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(result.issue, 'AMEND_TIMEOUT');
+    assert.deepEqual(f.calls, ['continue']);
+  } finally { release.resolve(); }
+  assert.equal(await f.route(), null);
+});
+
+test('wrapper finishing after the monotonic deadline remains uncertain even before its timer fires', async () => {
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); blockPastDeadline();
+  }, { timeoutMs: 200 });
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.issue, 'AMEND_TIMEOUT');
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('full amend lifecycle times out an unfinished wrapper without retrying Save', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    await proceed(); entered.resolve(); await release.promise;
+  }, { timeoutMs: 250 });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    const result = await f.work;
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(result.issue, 'AMEND_TIMEOUT');
+    assert.deepEqual(f.calls, ['continue']);
+  } finally { release.resolve(); }
+  assert.equal(await f.route(), null);
+});
+
+test('late pre-dispatch wrapper continuation is refused after the lifecycle timeout', async () => {
+  const entered = deferred(), release = deferred();
+  const f = wrappedSaveScenario(async (_request, proceed) => {
+    entered.resolve(); await release.promise; await proceed();
+  }, { timeoutMs: 250 });
+  try {
+    assert.equal(await Promise.race([entered.promise.then(() => true), f.work.then(() => false)]), true);
+    const result = await f.work;
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(result.issue, 'AMEND_TIMEOUT');
+    assert.deepEqual(f.calls, []);
+  } finally { release.resolve(); }
+  assert.equal(await f.route(), null);
+  assert.deepEqual(f.calls, ['abort']);
+});
+
+test('full amend lifecycle preserves the existing default continuation', async () => {
+  const f = wrappedSaveScenario(undefined);
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  assert.equal(result.outcome, 'awaiting_readback');
+  assert.deepEqual(f.calls, ['continue']);
+});
+
+test('full amend lifecycle does not continue a wrapper-refused candidate', async () => {
+  const f = wrappedSaveScenario(async () => {});
+  const result = await f.work;
+  assert.equal(await f.route(), null);
+  // Candidate marking precedes context refusal, so the result is conservative.
+  assert.equal(result.outcome, 'uncertain');
+  assert.deepEqual(f.calls, ['abort']);
+});
+
+test('prepare-only and invalid wrapper cannot invoke the dispatch callback', async () => {
+  const fake = mockPage(); let invocations = 0, clicks = 0;
+  const save = { click: async () => { clicks += 1; } };
+  const result = await runLabtestAmendSave(fake.page, { ...config(null, async () => ({}), save),
+    dispatchCandidate: async () => { invocations += 1; } });
+  assert.equal(result.issue, 'PREPARE_ONLY');
+  assert.equal(invocations, 0); assert.equal(clicks, 0);
+  const invalid = await runLabtestAmendSave(mockPage().page, {
+    ...config(null, async () => ({}), save), dispatchCandidate: 'invalid',
+  });
+  assert.equal(invalid.outcome, 'input_gap');
+  assert.equal(invalid.issue, 'AMEND_CALLBACKS_INVALID');
 });
