@@ -34,11 +34,22 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         request.parties?.arAccount || request.billingReference !== undefined) return blocked('intent_unverified');
     const preimage = recovery.preimage;
     if (preimage?.arrival !== stay.arrival || preimage?.departure !== stay.departure ||
-        !Array.isArray(preimage.sameArrival) || preimage.sameArrival.length !== 0 ||
+        !Array.isArray(preimage.sameArrival) || preimage.sameArrival.length > 7 ||
         preimage.coverage?.complete !== true || !Number.isSafeInteger(preimage.coverage.displayed) ||
-        preimage.coverage.displayed < 0 || preimage.coverage.displayed !== preimage.coverage.total ||
+        preimage.coverage.displayed < preimage.sameArrival.length || preimage.coverage.displayed !== preimage.coverage.total ||
         preimage.searchedDateRange?.from > stay.arrival || preimage.searchedDateRange?.to < stay.arrival ||
         typeof preimage.searchedDateRange?.from !== 'string' || typeof preimage.searchedDateRange?.to !== 'string') {
+      return blocked('preimage_unverified');
+    }
+    // The claim sealed only siblings that the server independently verified
+    // before Save. Their exact identities must still be present in the census.
+    const prior = preimage.sameArrival;
+    const sameIdentity = (left, right) => left?.confirmation === right?.confirmation &&
+      left?.firstName === right?.firstName && left?.lastName === right?.lastName &&
+      left?.arrival === right?.arrival && left?.departure === right?.departure && left?.status === right?.status;
+    if (new Set(prior.map((row) => row?.confirmation)).size !== prior.length || prior.some((row) =>
+      !/^\d{6,10}-\d{1,2}$/.test(row?.confirmation || '') || row.firstName !== 'Proof' || row.lastName !== 'Labtest' ||
+      row.arrival !== stay.arrival || typeof row.departure !== 'string' || row.status !== 'Reserved')) {
       return blocked('preimage_unverified');
     }
     const listing = await census(stay);
@@ -47,8 +58,13 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         listing.coverage.displayed < 0 || listing.coverage.displayed !== listing.coverage.total ||
         typeof listing.searchedDateRange?.from !== 'string' || typeof listing.searchedDateRange?.to !== 'string' ||
         listing.searchedDateRange.from > stay.arrival || listing.searchedDateRange.to < stay.arrival ||
-        !Array.isArray(listing.sameArrival) || listing.sameArrival.length !== 1) return blocked('census_not_unique');
-    const candidate = listing.sameArrival[0];
+        !Array.isArray(listing.sameArrival) || listing.sameArrival.length !== prior.length + 1 ||
+        listing.coverage.displayed < listing.sameArrival.length ||
+        new Set(listing.sameArrival.map((row) => row?.confirmation)).size !== listing.sameArrival.length ||
+        prior.some((row) => listing.sameArrival.filter((observed) => sameIdentity(row, observed)).length !== 1)) {
+      return blocked('census_not_unique');
+    }
+    const candidate = listing.sameArrival.find((row) => !prior.some((before) => before.confirmation === row?.confirmation));
     if (!/^\d{6,10}-\d{1,2}$/.test(candidate?.confirmation || '') || candidate.firstName !== 'Proof' ||
         candidate.lastName !== 'Labtest' || candidate.arrival !== stay.arrival || candidate.departure !== stay.departure ||
         candidate.status !== 'Reserved') return blocked('candidate_unverified');

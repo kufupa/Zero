@@ -5,7 +5,7 @@ import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
 import type { DB } from '../src/db/client.js';
-import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, readResolvedHmsLabtestCreates, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
 
 async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWithEpoch>[1], authorize: Parameters<typeof claimWithEpoch>[2]) {
   return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db));
@@ -79,6 +79,15 @@ describe.skipIf(!root)('positive Create recovery on a private synthetic PostgreS
     const resolved = await conn`select value from work_event where value->>'kind' = 'resolved'`;
     expect(resolved).toHaveLength(1);
     expect(resolved[0]?.value).toMatchObject({ recovered: true, holdId: handle.holdId, confirmation: '123456-1' });
+    const readResolved = () => db.transaction((tx) => readResolvedHmsLabtestCreates(tx, claim.workItemId));
+    expect(await readResolved()).toMatchObject([{ intent: { holdId: handle.holdId, grantId: claim.grantId,
+      stayId: claim.stayId, approvedDigest: claim.approvedDigest }, resolution: { confirmation: '123456-1' } }]);
+    expect(await db.transaction((tx) => readResolvedHmsLabtestCreates(tx, randomUUID()))).toHaveLength(0);
+    const duplicateId = randomUUID();
+    await conn`insert into work_event (id, work_item_id, actor_kind, type, field_path, value)
+      values (${duplicateId}, ${claim.workItemId}, 'system', 'write.evidence', 'nava.hms.labtest.dispatch.v1', ${JSON.stringify(resolved[0]!.value)}::jsonb)`;
+    await expect(readResolved()).rejects.toMatchObject({ reason: 'corrupt' });
+    await conn`delete from work_event where id = ${duplicateId}`;
     await expect(claimHmsLabtestDispatch(db, claim, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
     await claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {});
   });

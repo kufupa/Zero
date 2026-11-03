@@ -100,7 +100,17 @@ async function readHistory(tx: CreateFenceTransaction) {
   }
   const active = [...intents.values()].filter((intent) => !resolved.has(intent.holdId));
   if (active.length > 1) throw new HmsLabtestDispatchError('corrupt');
-  return { active, grants };
+  const completed = completions.map(({ value }) => ({ intent: intents.get(value.holdId)!, resolution: value }));
+  return { active, grants, completed };
+}
+
+/** Read only validated intent/resolution pairs for this work item. */
+export async function readResolvedHmsLabtestCreates(tx: CreateFenceTransaction, workItemId: string) {
+  const history = await readHistory(tx);
+  return history.completed.flatMap(({ intent, resolution }) =>
+    intent.operation === 'create' && intent.workItemId === workItemId && resolution.kind === 'resolved'
+      ? [{ intent, resolution }]
+      : []);
 }
 
 const historyEpoch = (history: Awaited<ReturnType<typeof readHistory>>) =>

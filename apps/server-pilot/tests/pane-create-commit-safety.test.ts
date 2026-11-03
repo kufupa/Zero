@@ -53,10 +53,8 @@ vi.mock('../src/ai/pane-create-actor-lock.js', () => ({
 }));
 vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
   const actual = await original<typeof import('../src/ai/hms-labtest-dispatch.js')>();
-  class HmsLabtestDispatchError extends Error {
-    constructor(readonly reason: string) { super(`hms_labtest_dispatch_${reason}`); }
-  }
-  return { ...actual, HmsLabtestDispatchError,
+  const { HmsLabtestDispatchError } = actual;
+  return { ...actual,
     captureHmsLabtestDispatchEpoch: async () => '0'.repeat(64),
     claimHmsLabtestDispatch: async (_db: unknown, input: Record<string, unknown>, authorize: (tx: unknown, input: Record<string, unknown>) => Promise<void>) => {
       h.createMutexCalls += 1; h.onCreateMutex?.();
@@ -64,16 +62,21 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
       h.onClaimEntered?.();
       if (h.claimWait) await h.claimWait;
       await authorize(h.tx, input);
-      h.sharedHold = structuredClone(input);
+      const holdId = randomUUID();
+      h.sharedHold = { ...structuredClone(input), version: 1, kind: 'intent', holdId, ownerDigest: 'a'.repeat(64) };
+      h.events.push({ id: holdId, itemId: input.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: structuredClone(h.sharedHold) });
       h.sharedHoldResolved = false;
       if (h.loseAckAfterClaim) throw new Error('synthetic_commit_ack_lost');
-      return { holdId: 'hold-1', ownerToken: 'a'.repeat(64) };
+      return { holdId, ownerToken: 'a'.repeat(64) };
     },
     resolveHmsLabtestDispatch: async (_db: unknown, _handle: unknown, evidence: Record<string, unknown>,
       record: (tx: unknown, intent: Record<string, unknown>) => Promise<void>) => {
       if (!h.sharedHold || h.sharedHoldResolved) throw new HmsLabtestDispatchError('owner');
       await record(h.tx, h.sharedHold);
-      h.events.push({ value: { kind: 'resolved', ...structuredClone(evidence) } });
+      h.events.push({ id: randomUUID(), itemId: h.sharedHold.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: { version: 1, kind: 'resolved',
+          holdId: h.sharedHold.holdId, ...structuredClone(evidence) } });
       h.sharedHoldResolved = true;
     },
     resolveNeverDispatchedCreate: async (_db: unknown, _handle: unknown, receipt: unknown, request: unknown,
@@ -81,7 +84,9 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
       if (!h.sharedHold || h.sharedHoldResolved || !consumeNeverDispatchedCreateProof(receipt, request) ||
           actual.nativeCreateSaveDigest(request) !== h.sharedHold.requestDigest) throw new HmsLabtestDispatchError('owner');
       await record(h.tx, h.sharedHold);
-      h.events.push({ value: { kind: 'not_dispatched' } });
+      h.events.push({ id: randomUUID(), itemId: h.sharedHold.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: { version: 1, kind: 'not_dispatched',
+          holdId: h.sharedHold.holdId, operation: 'create' } });
       h.sharedHoldResolved = true;
     },
   };
@@ -128,7 +133,7 @@ function query(columns: Record<string, unknown>) {
     if ('extractionId' in columns) return [h.cursor];
     if ('direction' in columns) return [h.mail];
     if ('state' in columns) return [{ state: h.state }];
-    if ('actorKind' in columns && 'value' in columns) return h.events.filter((event: any) => event.type === 'write.evidence');
+    if ('actorKind' in columns && 'value' in columns) return h.events.filter((event: any) => event.fieldPath === 'nava.hms.labtest.dispatch.v1');
     throw new Error('unexpected query');
   };
   const chain = Object.assign(Promise.resolve().then(rows), {
@@ -486,8 +491,8 @@ describe('mounted Cloud create route', () => {
         coverage: { displayed: 0, total: 0, complete: true } } });
     expect(JSON.stringify(h.sharedHold)).not.toContain('transient-proof');
     expect(h.sharedHoldResolved).toBe(true);
-    expect(h.events).toHaveLength(1);
-    expect(h.events[0]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
+    expect(h.events).toHaveLength(2);
+    expect(h.events[1]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
   });
 
   it('binds the selected agency, company, guarantee and no-send recipient through Go', async () => {
@@ -763,7 +768,8 @@ describe('mounted Cloud create route', () => {
       if (input.mode === 'commit') expect(await options.verifyLabtestMatches?.(census)).toBe(true);
       const dispatch = options.dispatchCandidate;
       const result = await originalRun(input, { ...options, dispatchCandidate: dispatch && ((request, next, evidence: any) =>
-        dispatch(request, next, { ...evidence, preimage: { ...evidence.preimage, sameArrival: [row], verifiedExisting: true } })) });
+        dispatch(request, next, { ...evidence, preimage: { ...evidence.preimage,
+          coverage: { displayed: 1, total: 1, complete: true }, sameArrival: [row], verifiedExisting: true } })) });
       return input.mode === 'commit' ? { ...result, confirmation: '123456-2' } : result;
     };
     try {
@@ -776,7 +782,8 @@ describe('mounted Cloud create route', () => {
     } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
   });
 
-  it('rejects a forged or missing sibling receipt before another Cloud session starts', async () => {
+  it.each(['missing resolution', 'wrong confirmation', 'wrong digest', 'wrong item', 'wrong actor'])(
+    'rejects %s before another Cloud session starts', async (variant) => {
     (h.payload.stays as any)[0].totalRooms = 2;
     (h.payload.stays as any)[0].rows[0].rooms = 2;
     const first = request('123');
@@ -788,7 +795,13 @@ describe('mounted Cloud create route', () => {
     expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
       kind: 'start', id, rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }],
     } })).toMatchObject({ status: 'ok' });
-    h.events = h.events.filter((event: any) => event.type !== 'write.evidence');
+    const intent = h.events.find((event: any) => event.value?.kind === 'intent') as any;
+    const resolution = h.events.find((event: any) => event.value?.kind === 'resolved') as any;
+    if (variant === 'missing resolution') h.events = h.events.filter((event: any) => event !== resolution);
+    if (variant === 'wrong confirmation') resolution.value.confirmation = '999999-1';
+    if (variant === 'wrong digest') intent.value.approvedDigest = '0'.repeat(64);
+    if (variant === 'wrong item') intent.itemId = randomUUID();
+    if (variant === 'wrong actor') resolution.actorKind = 'user';
     const callsBefore = calls.length;
     expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
       batch: { kind: 'continue', id, index: 1 } })).toMatchObject({ status: 'refused' });

@@ -15,7 +15,7 @@ import { canonicalJson } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, nativeCreateSaveDigest,
-  resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
+  readResolvedHmsLabtestCreates, resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
@@ -226,20 +226,16 @@ async function checkedSiblings(tx: CreateFenceTransaction, state: Record<string,
     throw new Error('cloud_batch_stale');
   }
   const stays = state.stays as Record<string, unknown> | undefined;
-  const events = await tx.select({ value: workEvent.value, actorKind: workEvent.actorKind }).from(workEvent)
-    .where(and(eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'))).limit(513).for('share');
-  if (events.length > 512) throw new Error('cloud_batch_stale');
+  const completed = await readResolvedHmsLabtestCreates(tx, input.workItemId);
   const siblings: BatchSibling[] = [];
   for (const room of batch.rooms.slice(0, index)) {
     const previous = stays?.[room.stayId] as Record<string, unknown> | undefined;
     const confirmation = previous?.confirmationNumber;
-    const evidence = events.filter(({ value, actorKind }) => {
-      if (actorKind !== 'system' || !value || typeof value !== 'object' || Array.isArray(value)) return false;
-      const entry = value as Record<string, unknown>;
-      return entry.kind === 'cloud_create_verified' && entry.grantId === room.grant.grantId &&
-        entry.stayId === room.stayId && entry.confirmationNumber === confirmation &&
-        entry.requestDigest === room.grant.requestDigest;
-    });
+    const evidence = completed.filter(({ intent, resolution }) =>
+      intent.transportId === input.transportId && intent.actorUserId === input.actorUserId &&
+      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
+      intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
     if (previous?.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || evidence.length !== 1) {
       throw new Error('cloud_batch_stale');
     }
@@ -285,6 +281,7 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
       parsed.data.preimage.searchedDateRange.to < input.stay.arrival ||
       Date.parse(parsed.data.preimage.expiresAt) <= Date.now() ||
       parsed.data.preimage.coverage.displayed !== parsed.data.preimage.coverage.total ||
+      parsed.data.preimage.coverage.displayed < parsed.data.preimage.sameArrival.length ||
       !centurionWriterCurrent(parsed.data.writer) ||
       parsed.data.preimage.sameArrival.length !== siblings.length ||
       (siblings.length > 0 && parsed.data.preimage.verifiedExisting !== true) ||
