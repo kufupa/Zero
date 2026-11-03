@@ -340,6 +340,7 @@ export function useOptimisticActions() {
     currentFolder: string,
     optimisticId: string,
   ) {
+    let moved = false;
     try {
       let preferences: SenderPreference[] = [];
 
@@ -353,6 +354,7 @@ export function useOptimisticActions() {
         });
         preferences = result?.preferences ?? [];
       }
+      moved = true;
 
       posthog.capture(actionEventNames[ActionType.MOVE]({ destination: 'spam' }));
 
@@ -401,6 +403,7 @@ export function useOptimisticActions() {
       removeOptimisticAction(optimisticId);
       toast.error('Action failed');
     }
+    return moved;
   }
 
   function optimisticMoveThreadsTo(
@@ -436,8 +439,8 @@ export function useOptimisticActions() {
     }
 
     if (destination === 'spam') {
-      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).finally(() => {
-        finishMoves(threadIds);
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).then((moved) => {
+        (moved ? finishMoves : cancelMoves)(threadIds);
         clearFinished(threadIds);
       });
       return;
@@ -469,12 +472,15 @@ export function useOptimisticActions() {
               destination,
             });
           }
+          finishMoves(activeIds);
 
           if (mail.bulkSelected.length > 0) {
             setMail({ ...mail, bulkSelected: [] });
           }
+        } catch (error) {
+          cancelMoves(activeIds);
+          throw error;
         } finally {
-          finishMoves(activeIds);
           clearFinished(activeIds);
         }
       },

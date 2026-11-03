@@ -6,6 +6,7 @@ import { optimisticActionsManager } from '@/lib/optimistic-actions-manager';
 
 const mocks = vi.hoisted(() => ({
   move: vi.fn(async () => ({ preferences: [] })),
+  refresh: vi.fn(async () => {}),
   toast: Object.assign(vi.fn(), { error: vi.fn() }),
 }));
 vi.mock('@/lib/thread-actions', () => ({
@@ -19,7 +20,7 @@ vi.mock('@/providers/query-provider', () => ({ useTRPC: () => {
 } }));
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({ mutateAsync: vi.fn() }),
-  useQueryClient: () => ({ refetchQueries: vi.fn(async () => {}) }),
+  useQueryClient: () => ({ refetchQueries: mocks.refresh }),
 }));
 vi.mock('jotai', async (original) => ({
   ...await original<typeof import('jotai')>(), useAtom: () => [null, vi.fn(() => 'optimistic-id')],
@@ -85,4 +86,44 @@ it('does not revive an older move that already expired when a newer move is undo
   await act(async () => { archive.onAutoClose(); });
   act(() => bin.action.onClick());
   expect(mocks.move).not.toHaveBeenCalled();
+});
+
+it('preserves an older pending archive when the newer spam move fails', async () => {
+  mocks.move.mockRejectedValueOnce(new Error('spam failed'));
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-e'], 'inbox', 'archive'));
+  const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-e'], 'inbox', 'spam'));
+  await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
+  await act(async () => { archive.onAutoClose(); });
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
+    threadIds: ['thread-e'], currentFolder: 'inbox', destination: 'archive',
+  }));
+});
+
+it('preserves an older pending archive when the newer bin move fails', async () => {
+  mocks.move.mockRejectedValueOnce(new Error('bin failed'));
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-f'], 'inbox', 'archive'));
+  const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-f'], 'inbox', 'bin'));
+  const bin = mocks.toast.mock.calls[1]![1] as { onAutoClose: () => void };
+  await act(async () => { bin.onAutoClose(); });
+  await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
+  await act(async () => { archive.onAutoClose(); });
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
+    threadIds: ['thread-f'], currentFolder: 'inbox', destination: 'archive',
+  }));
+});
+
+it('does not revive an older archive when spam saved but refresh failed', async () => {
+  mocks.refresh.mockRejectedValueOnce(new Error('refresh failed'));
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-g'], 'inbox', 'archive'));
+  const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-g'], 'inbox', 'spam'));
+  await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
+  await act(async () => { archive.onAutoClose(); });
+  await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
+  expect(mocks.move).toHaveBeenCalledOnce();
 });
