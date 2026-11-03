@@ -221,10 +221,9 @@ export function ThreadDisplay() {
     if (!isFrontendOnlyDemo() && threadTransportId !== activeConnection.id) return null;
     return singleInboundMessageId(emailData.messages, activeConnection.email ?? '', id);
   }, [activeConnection?.email, activeConnection?.id, emailData, id, isThreadDataMismatch, sourceMessageId]);
-  useEffect(() => {
-    if (id && soleInboundId)
-      void setThreadSelection({ threadId: id, sourceMessageId: soleInboundId });
-  }, [id, setThreadSelection, soleInboundId]);
+  // An unambiguous default is for display only. Writing it into the URL while
+  // a draft flush is pending would cancel or overwrite the user's navigation.
+  const displayedSourceMessageId = sourceMessageId ?? soleInboundId;
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
   const [navaSidePanelOpen, setNavaSidePanelOpen] = useAtom(navaSidePanelAtom);
@@ -1263,7 +1262,7 @@ export function ThreadDisplay() {
                   >
                     <MessageList
                       messages={emailData?.messages ?? []}
-                      sourceMessageId={sourceMessageId}
+                      sourceMessageId={displayedSourceMessageId}
                       currentThreadId={id}
                       onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                       isFullscreen={isFullscreen}
@@ -1282,7 +1281,7 @@ export function ThreadDisplay() {
               ) : (
                 <MessageList
                   messages={emailData?.messages ?? []}
-                  sourceMessageId={sourceMessageId}
+                  sourceMessageId={displayedSourceMessageId}
                   currentThreadId={id}
                   onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                   isFullscreen={isFullscreen}
@@ -1400,7 +1399,7 @@ export const MessageList = ({
             !message.isDraft && isInboundMessage(message, connection.email),
           );
           const isSelectedSourceMessage = Boolean(
-            canSelectSourceMessage && message.id === sourceMessageId &&
+            message.id === sourceMessageId &&
             message.threadId === currentThreadId &&
             messages.filter((candidate) => candidate.id === sourceMessageId).length === 1,
           );

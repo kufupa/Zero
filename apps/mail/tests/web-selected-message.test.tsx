@@ -71,4 +71,16 @@ describe('thread message selection', () => {
     fireEvent.click(messageButton('linked')!);
     expect(select).toHaveBeenCalledWith(expect.objectContaining({ id: 'linked', threadId: 'thread-2' }));
   });
+
+  it('focuses an exact message link even when Nava selection controls are closed', () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    render(<MessageList messages={messages} currentThreadId="thread-1" sourceMessageId="A"
+      isFullscreen={false} isMobile={false} />);
+    const row = document.querySelector('[data-message-id="A"]');
+    expect(row?.getAttribute('aria-current')).toBe('true');
+    expect(document.activeElement).toBe(row);
+    expect(scroll).toHaveBeenCalledOnce();
+    expect(messageButton('A')).toBeNull();
+  });
 });

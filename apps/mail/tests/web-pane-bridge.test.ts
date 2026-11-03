@@ -164,6 +164,12 @@ describe('exact webmail selection', () => {
     expect(singleInboundMessageId([first, { ...first, threadId: 'linked' }], MAILBOX, 'thread-1')).toBeNull();
     expect(singleInboundMessageId([first], '', 'thread-1')).toBeNull();
     expect(singleInboundMessageId([first], MAILBOX, 'other-thread')).toBeNull();
+    expect(select(null, [first, staffReply({ id: 'reply' })])).toMatchObject({
+      status: 'ready', email: { entryId: 'in-1' },
+    });
+    expect(select(null, [first, { ...first, threadId: 'linked' }])).toEqual({
+      status: 'unsynced', reason: 'select_message',
+    });
   });
 
   it('never falls back to the latest message when an explicit id is stale or belongs to a linked thread', () => {
