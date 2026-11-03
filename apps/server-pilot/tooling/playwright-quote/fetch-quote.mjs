@@ -11,6 +11,7 @@ import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
 import { attachGuardedQuoteSession, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
+import { createQuoteBrowserConnector } from './quote-browser-fallback.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -1020,7 +1021,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,context,page,secret,propertyRegistration,quoteGuard,phase='input',result,auditReport;
+  let browser,context,page,secret,propertyRegistration,quoteGuard,browserConnector,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
   const clock=createPhaseClock();
@@ -1049,13 +1050,14 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
       await clock.time('cdp',async()=>{
+        browserConnector=createQuoteBrowserConnector({propertyCode:property.propertyCode,chromium:playwright().chromium,env});
         const attached=await attachQuoteSession({
           href:url.href,
           env,
           property,
           secret,
           quoteRequest:request,
-          connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
+          connectOverCDP:(href,opts)=>browserConnector.connect(href,opts),
         });
         browser=attached.browser;
         context=attached.context;
@@ -1091,12 +1093,16 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     // cannot prevent closing our context or detaching CDP.
     try {auditReport=await clock.time('traceFinish',()=>audit.finish());}
     catch {auditReport={status:'incomplete',errors:['AUDIT_FINALIZATION_FAILED']};}
-    try { if(context) await context.close(); }
-    catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
-    // Pinned Playwright connectOverCDP closes its transport, not remote Chromium.
-    // Verified in coreBundle _connectOverCDPImpl and against the retained live tab.
-    try { if(browser) await browser.close(); }
-    catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    let ownedClosed=false;
+    try { ownedClosed=await browserConnector?.close(context) ?? false; }
+    catch { ownedClosed=true; result={...result,outcome:'execution_failure',cleanupError:'OWNED_BROWSER_CLOSE_FAILED'}; }
+    if (!ownedClosed) {
+      try { if(context) await context.close(); }
+      catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
+      // Pinned Playwright connectOverCDP closes its transport, not remote Chromium.
+      try { if(browser) await browser.close(); }
+      catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    }
     const policyError=quoteGuard?.failureError();
     if(policyError) result={...executionFailure(policyError,phase,secret),
       ...(result?.cleanupError?{cleanupError:result.cleanupError}:{})};
