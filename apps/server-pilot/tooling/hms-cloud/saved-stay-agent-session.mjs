@@ -40,7 +40,7 @@ function readFailure(error, stage, shallow) {
 }
 
 /** Own guarded pages; calls submitted through runTool execute in order. */
-export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation } = {}) {
+export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation, cloudTargetKey } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
   if (typeof readOnly !== 'boolean') throw new Error('READ_ONLY_OPTION_INVALID');
   if (readOnly && !/^\d+-\d+$/.test(readOnlyConfirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
@@ -266,7 +266,8 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       releaseAvailability?.();
       await availabilityTask;
     }
-  }, { headless: true, signal, blockServiceWorkers: true, ...(prepareContext && { prepareContext }) });
+  }, { headless: true, signal, blockServiceWorkers: true, cloudTargetKey,
+    ...(prepareContext && { prepareContext }) });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {

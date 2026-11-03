@@ -36,15 +36,22 @@ export async function currentLabtestRecord(page, expected, options = {}) {
 }
 
 // The Documents request does not save the surrounding stay form. Verify only
-// its exact fake-stay target and the no-send control; linked parties and notes
+// its exact native-stay target and the no-send control; linked parties and notes
 // are not part of this native upload.
 export async function currentLabtestDocumentRecord(page, expected, context) {
   const { confirmation, guestId, arrival, departure } = expected || {};
+  const allowRealGuest = expected?.allowRealGuest === true;
+  const firstName = expected?.firstName ?? (allowRealGuest ? null : 'Proof');
+  const lastName = expected?.lastName ?? (allowRealGuest ? null : 'Labtest');
+  const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 200 &&
+    name === name.trim() && !/[\p{Cc}]/u.test(name);
   const start = date(arrival), end = date(departure);
   if (!context || Object.keys(context).length !== 1 || context.cmsSend !== false ||
       !/^\d+-\d+$/.test(confirmation || '') || confirmation.length > 100 ||
-      !/^\d{1,30}$/.test(guestId || '') || !start || !end ||
-      arrival < '2027-01-01' || arrival >= departure) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+      !/^\d{1,30}$/.test(guestId || '') || !start || !end || !validName(firstName) || !validName(lastName) ||
+      (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest' || arrival < '2027-01-01')) ||
+      (expected?.nativeStayId !== undefined && !/^\d{1,100}$/.test(expected.nativeStayId)) ||
+      arrival >= departure) throw new Error('LABTEST_RECORD_INPUT_INVALID');
   if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
     throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
   }
@@ -52,7 +59,7 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
   if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
-  const state = await frame.evaluate(({ expected, start, end, origin }) => {
+  const state = await frame.evaluate(({ expected, firstName, lastName, start, end, origin }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
       getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
@@ -68,10 +75,10 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const value = (name) => fields[name][0].value.trim();
     if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
-        !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', 'Proof') ||
-        !exact('lastname', 'Labtest') || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
+        !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', firstName) ||
+        !exact('lastname', lastName) || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
         value('confirmationnumber') !== expected.confirmation || value('guestid') !== expected.guestId ||
-        value('status') !== 'Reserved' || value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' ||
+        value('status') !== 'Reserved' || value('firstname') !== firstName || value('lastname') !== lastName ||
         value('arrivaldate') !== start.display || value('departuredate') !== end.display ||
         cmp('udfchkbox04')?.getValue?.() !== false) return null;
     const native = {};
@@ -79,9 +86,10 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
       if (!unique(key) || !String(data[key] ?? '').trim()) return null;
       native[key] = String(data[key]).trim();
     }
-    if (!/^\d{1,100}$/.test(native.reservationid) || !/^\d{1,100}$/.test(native.reservationstayid)) return null;
+    if (!/^\d{1,100}$/.test(native.reservationid) || !/^\d{1,100}$/.test(native.reservationstayid) ||
+        (expected.nativeStayId && native.reservationstayid !== expected.nativeStayId)) return null;
     return { native };
-  }, { expected, start, end, origin: ORIGIN });
+  }, { expected, firstName, lastName, start, end, origin: ORIGIN });
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
   return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
 }

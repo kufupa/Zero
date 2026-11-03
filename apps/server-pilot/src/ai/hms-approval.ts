@@ -161,15 +161,19 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
   return form;
 }
 
-/** This grant is only for the selected POP3 PDF and the fake HRCEN guest. */
-function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageId: string | null): boolean {
+/** Bind the selected POP3 PDF and stay; only server on-mode admits real guests. */
+function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageId: string | null,
+  env: NodeJS.Dict<string> = process.env): boolean {
   const arrival = typeof state.arrival === 'string' ? state.arrival : '';
   const date = new Date(`${arrival}T00:00:00Z`);
+  const allowRealGuest = env.PANE_WRITE_ATTACH === 'on';
   const selected = typeof state.sourceInternetMessageId === 'string' ? canonicalMessageId(state.sourceInternetMessageId) : null;
   return state.action === 'attach_document' && !!sourceMessageId && state.sourceMessageId === sourceMessageId &&
-    !!selected && selected === state.sourceInternetMessageId && typeof state.lastName === 'string' && /^labtest$/i.test(state.lastName) &&
+    !!selected && selected === state.sourceInternetMessageId && typeof state.lastName === 'string' &&
+    !!state.lastName.trim() && state.lastName.length <= 200 && !/[\p{Cc}]/u.test(state.lastName) &&
+    state.lastName === state.lastName.trim() && (allowRealGuest || /^labtest$/i.test(state.lastName)) &&
     /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !Number.isNaN(date.valueOf()) &&
-    date.toISOString().slice(0, 10) === arrival && arrival >= '2027-01-01' &&
+    date.toISOString().slice(0, 10) === arrival && (allowRealGuest || arrival >= '2027-01-01') &&
     typeof state.confirmation === 'string' && /^\d+-\d+$/.test(state.confirmation) &&
     typeof state.attachmentId === 'string' && state.attachmentId.length > 0 &&
     typeof state.documentName === 'string' && /\.pdf$/i.test(state.documentName) &&
@@ -715,7 +719,7 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
       !/^[a-f0-9]{64}$/.test(input.pdfSha256)) throw new HmsApprovalError('filing_unavailable');
   const item = await input.lockSource(tx);
   if (!item || item.id !== input.workItemId || item.transportId !== input.transportId ||
-      !isBoundLabtestAttachment(item.state, item.sourceMessageId) || item.state.confirmation !== input.confirmation ||
+      !isBoundLabtestAttachment(item.state, item.sourceMessageId, input.env) || item.state.confirmation !== input.confirmation ||
       item.state.arrival !== input.arrival || item.state.sourceSnapshotDigest !== input.sourceDigest ||
       item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256) {
     throw new HmsApprovalError('state_changed');

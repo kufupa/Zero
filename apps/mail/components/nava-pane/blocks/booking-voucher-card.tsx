@@ -53,7 +53,7 @@ export function BookingVoucherCard({
 }) {
   const approvalClient = useMemo(
     () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId),
-    [transportId, internetMessageId],
+    [transportId, internetMessageId, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash],
   );
   const amendment = amendmentOf(session);
   const [approvalRevision, setApprovalRevision] = useState(0);
@@ -93,7 +93,8 @@ export function BookingVoucherCard({
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId, approvalRevision])}
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId, approvalRevision,
+            session.binding?.selectionEpoch, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash])}
           client={approvalClient}
           workItemId={workItemId}
           writesEnabled={writesEnabled}

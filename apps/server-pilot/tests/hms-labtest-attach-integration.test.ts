@@ -273,8 +273,15 @@ describe('approved filing worker to Cloud upload fence', () => {
           writerIdentity: () => ({ host: 'b'.repeat(64), bootId: randomUUID(), pidNamespace: 'pid:[1]',
             node: { pid: 100, started: '10' }, browser: { pid: 200, started: '20' } }),
           shallow: async () => {}, read: async () => record,
-          freshRead: async (_page: unknown, selected: { documentName: string }, code: string) => scenario === 'negative_readback' ? false :
-            hasUniqueDocumentListing({ documents: [{ documentCode: code, name: selected.documentName }] }, code, selected.documentName),
+          freshRead: async (_page: unknown, selected: { documentName: string }, code: string,
+            setNative: (native: unknown) => void) => {
+            setNative(native);
+            const listed = scenario !== 'negative_readback' &&
+              hasUniqueDocumentListing({ documents: [{ documentCode: code, name: selected.documentName }] }, code, selected.documentName);
+            return { listed, ...(listed ? { nativeReadback: { confirmation: native.confirmation,
+              nativeStayId: native.reservationStayId, nativeGuestId: native.guestId, documentCode: code,
+              documentName: selected.documentName, uniqueFreshListing: true } } : {}), screenshot: listed ? png : null };
+          },
           attach: async (_page: unknown, _expected: unknown, file: Parameters<typeof uploadRequest>[0], options: {
             evidenceRoot: string; beforeDispatch(): Promise<boolean>; finalAuthority(): Promise<boolean>;
             continuationAllowed(): boolean;

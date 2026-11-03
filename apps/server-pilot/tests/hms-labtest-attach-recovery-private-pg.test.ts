@@ -36,7 +36,7 @@ vi.mock('../tooling/hms-cloud/pane-attach-session.mjs', async (original) => ({
     if (f.failRead) return { outcome: 'unconfirmed' };
     if (f.loseQuiescence) f.quiesced = false;
     return { outcome: 'verified', confirmation: intent.recovery.confirmation, screenshot: png,
-      readback: { confirmation: intent.recovery.confirmation, nativeGuestId: intent.nativeGuestId,
+      readback: { confirmation: intent.recovery.confirmation, nativeStayId: '42', nativeGuestId: intent.nativeGuestId,
         documentCode: intent.recovery.documentCode, documentName: f.mismatch ? 'wrong.pdf' : intent.recovery.documentName,
         uniqueFreshListing: true } };
   },

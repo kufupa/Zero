@@ -1,4 +1,4 @@
-// A filing session permits Documents reads only for its already-verified Labtest record.
+// A filing session permits Documents reads only for its already-verified native stay.
 import { fulfillGuestLookupRequest } from './pane-guest-search.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 
@@ -15,17 +15,32 @@ const staticFields = new Map([
   ['metadata', 'DOC_LOV,RESV,P,RSL,{null},{null},{null},{null},{null},{null},{null},{null},CODE,CONFIRMATIONNUMBER,PROPERTYCODE,{null},{null},{null},{null},{null}'],
 ]);
 
-export function filingDocumentsMayRequest(request, { confirmation, native } = {}) {
+function matchesApprovedNativeIdentity(native, approved, confirmation) {
+  return !!approved && approved.propertyCode === 'HRCEN' && approved.confirmation === confirmation &&
+    approved.reservationId === native.reservationId && approved.reservationStayId === native.reservationStayId &&
+    approved.guestId === native.guestId && approved.firstName === native.firstName &&
+    approved.lastName === native.lastName && approved.status === native.status &&
+    approved.arrival === native.arrival && approved.departure === native.departure;
+}
+
+export function filingDocumentsMayRequest(request, { confirmation, native, allowRealGuest = false,
+  approvedNativeIdentity } = {}) {
   try {
     const url = new URL(request.url);
     if (String(request.method).toUpperCase() !== 'POST' || url.origin !== origin || url.username || url.password ||
         url.pathname !== '/web/base/OSRESV.DOC' || url.search || url.hash || typeof request.postData !== 'string' ||
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '') ||
         !/^\d+-\d+$/.test(confirmation || '') || native?.propertyCode !== 'HRCEN' ||
-        native.confirmation !== confirmation || native.firstName !== 'Proof' || native.lastName !== 'Labtest' ||
-        native.status !== 'Reserved' ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(native.arrival || '') || native.arrival < '2027-01-01' ||
+        native.confirmation !== confirmation || native.status !== 'Reserved' ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(native.arrival || '') ||
         ![native.reservationStayId, native.reservationId, native.guestId].every((id) => /^\d{1,100}$/.test(id || ''))) return false;
+    const labtestGuest = native.firstName === 'Proof' && native.lastName === 'Labtest';
+    const exactApprovedIdentity = approvedNativeIdentity === undefined ||
+      matchesApprovedNativeIdentity(native, approvedNativeIdentity, confirmation);
+    const labtestAllowed = labtestGuest && native.arrival >= '2027-01-01' && exactApprovedIdentity;
+    const realGuestAllowed = allowRealGuest === true && !labtestGuest &&
+      matchesApprovedNativeIdentity(native, approvedNativeIdentity, confirmation);
+    if (!labtestAllowed && !realGuestAllowed) return false;
     const body = new Map();
     for (const [key, value] of new URLSearchParams(request.postData)) {
       const normalized = key.toLowerCase();
@@ -39,8 +54,9 @@ export function filingDocumentsMayRequest(request, { confirmation, native } = {}
   } catch { return false; }
 }
 
-/** Install before login. The callback remains empty until the selected record is independently verified. */
-export async function installPaneAttachReadGuard(context, { confirmation, getNative } = {}) {
+/** Install before login. Identity remains empty until the selected native record is approved. */
+export async function installPaneAttachReadGuard(context, { confirmation, getNative, allowRealGuest = false,
+  getApprovedNativeIdentity } = {}) {
   if (typeof getNative !== 'function') throw new Error('DOCUMENT_IDENTITY_REQUIRED');
   await installSavedStayReadGuard(context, { confirmation });
   await context.route('**/*', async (route) => {
@@ -48,8 +64,15 @@ export async function installPaneAttachReadGuard(context, { confirmation, getNat
     let path;
     try { path = new URL(request.url()).pathname; } catch { return route.abort(); }
     if (path !== '/web/base/OSRESV.DOC') return route.fallback();
+    let native, approvedNativeIdentity;
+    try {
+      native = getNative();
+      approvedNativeIdentity = typeof getApprovedNativeIdentity === 'function'
+        ? getApprovedNativeIdentity() : undefined;
+    } catch { return route.abort(); }
     const allowed = filingDocumentsMayRequest({ method: request.method(), url: request.url(),
-      postData: request.postData?.(), contentType: request.headers()['content-type'] }, { confirmation, native: getNative() });
+      postData: request.postData?.(), contentType: request.headers()['content-type'] },
+    { confirmation, native, allowRealGuest, approvedNativeIdentity });
     return allowed ? fulfillGuestLookupRequest(route) : route.abort();
   });
 }
