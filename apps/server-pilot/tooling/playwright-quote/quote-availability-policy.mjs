@@ -90,6 +90,109 @@ const flags = [
 const nativeId = (value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{0,128}$/.test(value);
 const codes = (value) => typeof value === 'string' && /^(?:[A-Z0-9_-]+(?:,[A-Z0-9_-]+)*)?$/.test(value) && value.length <= 512;
 
+const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+const roomCode = (value) => typeof value === 'string' && /^[A-Z0-9_-]{1,128}$/.test(value);
+
+// Derive a snapshot, not a reference to the caller's mutable quote request.
+export function availabilityDetailsScope(request, propertyCode) {
+  try {
+    if (propertyCode !== 'HRCEN' || request?.propertyCode !== propertyCode || request.details !== 'full' ||
+        !validDate(request.arrivalDate) || !validDate(request.departureDate) ||
+        !Array.isArray(request.rooms) || request.rooms.length < 1 || request.rooms.length > 8) return null;
+    const nights = (Date.parse(request.departureDate) - Date.parse(request.arrivalDate)) / 86400000;
+    if (!Number.isInteger(nights) || nights < 1 || nights > 30) return null;
+    let unrestricted = false;
+    const rooms = new Set();
+    for (const room of request.rooms) {
+      if (!room || typeof room !== 'object' || Array.isArray(room) ||
+          (room.required !== undefined && (!room.required || typeof room.required !== 'object' || Array.isArray(room.required)))) return null;
+      const list = room.required?.roomCodes;
+      if (list === undefined) unrestricted = true;
+      else {
+        if (!Array.isArray(list) || list.length < 1 || list.length > 512 || !list.every(roomCode)) return null;
+        for (const code of list) rooms.add(code);
+      }
+    }
+    return Object.freeze({ arrivalDate: request.arrivalDate, departureDate: request.departureDate,
+      roomCodes: unrestricted ? null : Object.freeze([...rooms]) });
+  } catch { return null; }
+}
+
+/** Only the observed read-only, single-day HRCEN details inquiry is admitted. */
+export function isReviewedAvailabilityDetailsInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys, detailsScope }) {
+  try {
+    if (propertyCode !== 'HRCEN' || !detailsScope) return false;
+    const target = new URL(request.url());
+    if (request.method() !== 'POST' || !['xhr', 'fetch'].includes(request.resourceType()) ||
+        target.origin !== origin || target.username || target.password ||
+        target.href !== `${origin}/api/booking/hotelAvail/HRCEN/availabilityDetailsInquiry`) return false;
+    const headers = request.headers();
+    const contentType = headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+    const raw = request.postData();
+    if (contentType !== 'application/json' || headers.bookingclientsessionid !== 'forceRelay' ||
+        typeof raw !== 'string' || Buffer.byteLength(raw) > 4096 || typeof rejectDuplicateJsonBodyKeys !== 'function') return false;
+    const body = JSON.parse(raw);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    rejectDuplicateJsonBodyKeys(raw);
+    const keys = ['roomType', 'building', 'startDate', 'endDate'];
+    if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.hasOwn(body, key)) ||
+        !roomCode(body.roomType) || body.building !== '' || !validDate(body.startDate) ||
+        body.endDate !== body.startDate || body.startDate < detailsScope.arrivalDate ||
+        body.startDate >= detailsScope.departureDate ||
+        (detailsScope.roomCodes && !detailsScope.roomCodes.includes(body.roomType))) return false;
+    return true;
+  } catch { return false; }
+}
+
+/** The observed OSCCRT popup reads the selected room type, with no guest. */
+export function isReviewedRoomInformationRequest(request, { origin, propertyCode, detailsScope }) {
+  try {
+    if (propertyCode !== 'HRCEN' || !detailsScope) return false;
+    const target = new URL(request.url());
+    if (request.method() !== 'POST' || !['xhr', 'fetch'].includes(request.resourceType()) ||
+        target.origin !== origin || target.username || target.password || target.href !== `${origin}/web/base/OSCCRT`) return false;
+    const contentType = request.headers()['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+    const raw = request.postData();
+    if (contentType !== 'application/x-www-form-urlencoded' || typeof raw !== 'string' || Buffer.byteLength(raw) > 4096) return false;
+    const body = new URLSearchParams(raw);
+    const keys = ['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME', 'propertycode', 'roomtypecode', 'guestid'];
+    if ([...body.keys()].length !== keys.length || keys.some((key) => body.getAll(key).length !== 1) ||
+        body.get('SYSTEM_FUNCTION_NAME') !== 'OSCCRT' || body.get('USER_FUNCTION_NAME') !== 'OSCCRT' ||
+        body.get('propertycode') !== propertyCode || body.get('guestid') !== '' || !roomCode(body.get('roomtypecode')) ||
+        (detailsScope.roomCodes && !detailsScope.roomCodes.includes(body.get('roomtypecode')))) return false;
+    return true;
+  } catch { return false; }
+}
+
+/** Static view loaded by the reviewed room-information popup. */
+export function isReviewedRoomInformationAsset(request, { origin, propertyCode, detailsScope }) {
+  try {
+    if (propertyCode !== 'HRCEN' || !detailsScope || request.method() !== 'GET' || request.resourceType() !== 'xhr' ||
+        request.postData() !== null) return false;
+    const target = new URL(request.url());
+    const cacheBuster = target.searchParams.get('_dc');
+    return target.origin === origin && !target.username && !target.password &&
+      typeof cacheBuster === 'string' && /^\d{13}$/.test(cacheBuster) &&
+      target.href === `${origin}/web/base/app/view/operations/callcenter/osccrt.js?_dc=${cacheBuster}`;
+  } catch { return false; }
+}
+
+/** Read only the scoped room information, never guest preferences. */
+export function isReviewedRoomInformationRead(request, { origin, propertyCode, detailsScope }) {
+  try {
+    if (propertyCode !== 'HRCEN' || !detailsScope || request.method() !== 'GET' || request.resourceType() !== 'xhr' ||
+        request.postData() !== null || request.headers().bookingclientsessionid !== 'forceRelay') return false;
+    const target = new URL(request.url());
+    const match = /^\/api\/booking\/HRCEN\/roomType\/([A-Z0-9_-]{1,128})$/.exec(target.pathname);
+    const cacheBuster = target.searchParams.get('_dc');
+    return target.origin === origin && !target.username && !target.password && match &&
+      (!detailsScope.roomCodes || detailsScope.roomCodes.includes(match[1])) &&
+      typeof cacheBuster === 'string' && /^\d{13}$/.test(cacheBuster) &&
+      target.href === `${origin}${target.pathname}?_dc=${cacheBuster}`;
+  } catch { return false; }
+}
+
 /** Only the exact JSON inquiry shape is admitted; duplicate or extra keys are denied. */
 export function isReviewedAvailabilityInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys }) {
   try {

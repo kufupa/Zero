@@ -279,6 +279,8 @@ function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): Hm
 type NavaPaneProps = {
   bridge: PaneBridge;
   preview?: boolean;
+  /** The web preview checked this exact message, or a unique inbound. */
+  webSelectedMessageId?: string | null;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
   onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
   /** Normal inbox only: allow owners to save this message's workflow as a gold label. */
@@ -290,6 +292,7 @@ type NavaPaneProps = {
 export function NavaPane({
   bridge,
   preview = false,
+  webSelectedMessageId = null,
   onOpenThread,
   goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
@@ -517,6 +520,26 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  // Keep a separate display snapshot: a same-ID edit must not leave a settled amend lookup on screen.
+  const amendSourceSnapshot = useRef<{
+    scopeEpoch: number; selectionEpoch: number; internetMessageId?: string;
+    subject: string; bodyText: string; bodyHtml: string; invalidated: boolean;
+  } | null>(null);
+  if (activeEmail && selectedIdentity && (
+    amendSourceSnapshot.current?.scopeEpoch !== contextRevision.current.scopeEpoch ||
+    amendSourceSnapshot.current?.selectionEpoch !== contextRevision.current.selectionEpoch
+  )) {
+    amendSourceSnapshot.current = { scopeEpoch: contextRevision.current.scopeEpoch,
+      selectionEpoch: contextRevision.current.selectionEpoch, internetMessageId: activeEmail.internetMessageId,
+      subject: activeEmail.subject, bodyText: activeEmail.bodyText, bodyHtml: activeEmail.bodyHtml, invalidated: false };
+  }
+  if (activeEmail && amendSourceSnapshot.current && (
+    amendSourceSnapshot.current.internetMessageId !== activeEmail.internetMessageId ||
+    amendSourceSnapshot.current.subject !== activeEmail.subject ||
+    amendSourceSnapshot.current.bodyText !== activeEmail.bodyText ||
+    amendSourceSnapshot.current.bodyHtml !== activeEmail.bodyHtml
+  )) amendSourceSnapshot.current.invalidated = true;
+  const amendSourceChanged = amendSourceSnapshot.current?.invalidated === true;
   // Effects clean up after a render. A result can arrive in the meantime, including
   // after A → B → A, so identity alone is not enough to accept it.
   const isCurrentBinding = (binding: QuoteSelectionBinding) =>
@@ -2533,6 +2556,25 @@ export function NavaPane({
               }
               workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
               writesEnabled={attachWritesEnabled}
+              amendPropertyResolved={activePaneConfig !== null}
+              readOnlyAmend={activePaneConfig?.propertyCode === 'HRCEN' ? {
+                propertyCode: 'HRCEN',
+                ratePlans: activePaneConfig.ratePlans,
+                sourceContentChanged: amendSourceChanged,
+                sourceSelectionUnavailable: preview && (!webSelectedMessageId ||
+                  webSelectedMessageId !== activeEmail?.entryId ||
+                  Boolean(quoteSession.staffSource && webSelectedMessageId !== quoteSession.staffSource.messageId)),
+                selectionCurrent: Boolean(!amendSourceChanged && activeEmail?.entryId && activeEmail.internetMessageId &&
+                  (!preview || (webSelectedMessageId === activeEmail.entryId &&
+                    webSelectedMessageId === quoteSession.staffSource?.messageId)) &&
+                  quoteSession.binding?.transportId === activeConnection?.id &&
+                  quoteSession.binding?.entryId === activeEmail.entryId &&
+                  quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&
+                  quoteSession.binding?.folderEntryId === (activeEmail.folderEntryId ?? '') &&
+                  quoteSession.binding?.internetMessageId === activeEmail.internetMessageId &&
+                  quoteSession.binding?.scopeEpoch === contextRevision.current.scopeEpoch &&
+                  quoteSession.binding?.selectionEpoch === contextRevision.current.selectionEpoch),
+              } : null}
             />
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}

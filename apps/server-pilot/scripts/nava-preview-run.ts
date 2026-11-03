@@ -10,6 +10,7 @@
  *   NAVA_PREVIEW_BASE_URL       origin of the app, e.g. https://pilot.example
  *   NAVA_PREVIEW_STORAGE_STATE  Playwright storageState JSON holding a staff session
  *   NAVA_PREVIEW_CHROMIUM       optional path to a Chromium binary
+ *   NAVA_PREVIEW_SOURCE_MESSAGE_ID  exact selected message for a single explicit thread
  *
  * Usage (from the repo root):
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-preview-run.ts --latest 5
@@ -204,6 +205,8 @@ export type RunConfig = {
   resolveTo: string | null;
   /** Mailbox transport read through x-zero-active-transport. Null lets the server choose. */
   transportId: string | null;
+  /** Exact message for one explicit thread; absent means only an unambiguous thread can open. */
+  sourceMessageId?: string | null;
   selection: RunSelection;
   outDir: string;
   timeoutMs: number;
@@ -330,17 +333,36 @@ export function parseRunConfig(
   if (transportRaw && !TRANSPORT_ID.test(transportRaw)) {
     throw new Error('NAVA_PREVIEW_TRANSPORT_ID has an invalid id');
   }
+  const sourceMessageId = env.NAVA_PREVIEW_SOURCE_MESSAGE_ID?.trim() || null;
+  if (sourceMessageId && (sourceMessageId.length > 512 || [...sourceMessageId].some((char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127;
+  }))) {
+    throw new Error('NAVA_PREVIEW_SOURCE_MESSAGE_ID has an invalid source message id');
+  }
+  if (sourceMessageId && (selection.kind !== 'threads' || selection.ids.length !== 1)) {
+    throw new Error('NAVA_PREVIEW_SOURCE_MESSAGE_ID requires one explicit thread');
+  }
   return {
     baseUrl: base.origin,
     storageStatePath,
     chromiumPath,
     resolveTo: resolveRaw || null,
     transportId: transportRaw || null,
+    sourceMessageId,
     selection,
     outDir,
     timeoutMs,
     allowHmsReads: env.NAVA_PREVIEW_ALLOW_HMS_READS?.trim() === '1',
   };
+}
+
+/** Carry the selected message through browser proofs without guessing among thread messages. */
+export function previewThreadUrl(baseUrl: string, threadId: string, sourceMessageId?: string | null): string {
+  const url = new URL('/nava-preview', baseUrl);
+  url.searchParams.set('thread', threadId);
+  if (sourceMessageId) url.searchParams.set('sourceMessageId', sourceMessageId);
+  return url.toString();
 }
 
 /** The pane's scroll body, the only scroller inside the pane (nava-pane.tsx renders it with this class). */
@@ -635,9 +657,10 @@ async function viewThread(
   timeoutMs: number,
   blocked: BlockedWrite[],
   knownPii: Set<string>,
+  sourceMessageId?: string | null,
 ): Promise<ThreadResult> {
   const started = Date.now();
-  const url = `${baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`;
+  const url = previewThreadUrl(baseUrl, threadId, sourceMessageId);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   const readPane = async (): Promise<PaneRead | null> =>
     page
@@ -770,6 +793,7 @@ export async function runPreview(
         config.timeoutMs,
         blocked,
         knownPii,
+        config.sourceMessageId,
       ).catch((error: unknown) => {
         const failed = errorResult(threadId, error, blocked, Date.now() - started);
         return {

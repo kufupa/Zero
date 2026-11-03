@@ -142,17 +142,16 @@ export function selectPreviewMessage(
     const email = activeEmailFromMessage(match, transportId);
     return email ? { status: 'ready', email } : { status: 'unsynced', reason: 'no_message_id' };
   }
+  const sourceMessages = sourceThreadId
+    ? messages.filter((message) => message.threadId === sourceThreadId)
+    : messages;
   if (requireSelectedMessage) {
     // Do not mutate navigation state for an automatic default. Reuse the same
     // exact-selection checks, and never guess when there are multiple inbounds.
     const onlyInbound = sourceThreadId && singleInboundMessageId(messages, mailboxEmail, sourceThreadId);
-    return onlyInbound
-      ? selectPreviewMessage(messages, mailboxEmail, transportId, sourceThreadId, onlyInbound, true)
-      : { status: 'unsynced', reason: 'select_message' };
+    if (onlyInbound) return selectPreviewMessage(messages, mailboxEmail, transportId, sourceThreadId, onlyInbound, true);
+    return { status: 'unsynced', reason: latestInboundMessage(sourceMessages, mailboxEmail) ? 'select_message' : 'no_inbound' };
   }
-  const sourceMessages = sourceThreadId
-    ? messages.filter((message) => message.threadId === sourceThreadId)
-    : messages;
   const inbound = latestInboundMessage(sourceMessages, mailboxEmail);
   if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
   const email = activeEmailFromMessage(inbound, transportId);

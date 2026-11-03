@@ -24,7 +24,7 @@ describe('rates ready notice', () => {
   it('toasts once when a job on another mail becomes terminal', () => {
     const first = ratesReadyNotices({ prev: [A], next: [{ ...A, status: 'done' }], ...other });
     expect(first).toEqual([
-      { runId: 'job-a', title: 'Rates ready · Suite for Friday', threadId: 'thread-a', entryId: 'entry-a' },
+      { runId: 'job-a', title: 'Rates ready · Suite for Friday', threadId: 'thread-a', messageId: 'mail-a', entryId: 'entry-a' },
     ]);
     expect(ratesReadyToastTitle({ refused: false, subject: 'Suite for Friday' })).toBe(
       'Rates ready · Suite for Friday',
@@ -86,9 +86,9 @@ describe('rates ready notice', () => {
   it('opens webmail via onOpenThread and Outlook via displayMessageForm when present', () => {
     const onOpenThread = vi.fn();
     const displayMessageForm = vi.fn();
-    openRatesReadyMail({ threadId: 'thread-a', entryId: 'entry-a' }, { onOpenThread, displayMessageForm });
-    expect(onOpenThread).toHaveBeenCalledWith('thread-a');
-    openRatesReadyMail({ threadId: 'thread-a', entryId: 'entry-a' }, { displayMessageForm });
+    openRatesReadyMail({ threadId: 'thread-a', messageId: 'mail-a', entryId: 'entry-a' }, { onOpenThread, displayMessageForm });
+    expect(onOpenThread).toHaveBeenCalledWith('thread-a', 'mail-a');
+    openRatesReadyMail({ threadId: 'thread-a', messageId: 'mail-a', entryId: 'entry-a' }, { displayMessageForm });
     expect(displayMessageForm).toHaveBeenCalledWith('entry-a');
     expect(canOpenRatesReadyMail({})).toBe(false);
     expect(canOpenRatesReadyMail({ onOpenThread })).toBe(true);

@@ -3,7 +3,9 @@
 // narrowly reviewed read-only screen and inquiry signatures.
 import { attachBorrowedSession, newBorrowedContext } from './session-reuse.mjs';
 import { randomUUID } from 'node:crypto';
-import { availabilityScreenRules, isReviewedAvailabilityInquiry } from './quote-availability-policy.mjs';
+import { availabilityDetailsScope, availabilityScreenRules, isReviewedAvailabilityDetailsInquiry,
+  isReviewedAvailabilityInquiry, isReviewedRoomInformationAsset, isReviewedRoomInformationRead,
+  isReviewedRoomInformationRequest } from './quote-availability-policy.mjs';
 
 const SHELL_RULES = new Set([
   'live-login-get',
@@ -45,7 +47,7 @@ async function loadCanonicalPolicy() {
 }
 
 /** Bind the reviewed subset to the configured property, tenant and HMS origin. */
-export async function prepareQuoteRequestPolicy({ secret, property, modules }) {
+export async function prepareQuoteRequestPolicy({ secret, property, quoteRequest, modules }) {
   const canonical = modules ?? await loadCanonicalPolicy();
   if (!property?.active || secret?.expectedPropertyCode !== property.propertyCode ||
       secret.expectedTenant !== property.expectedTenant ||
@@ -72,7 +74,8 @@ export async function prepareQuoteRequestPolicy({ secret, property, modules }) {
   if (typeof canonical.enforceRequestPolicy !== 'function' || typeof canonical.rejectDuplicateJsonBodyKeys !== 'function')
     throw new Error('HMS_QUOTE_CANONICAL_POLICY_UNAVAILABLE');
   return { manifest: { rules }, enforce: canonical.enforceRequestPolicy, origin,
-    propertyCode: property.propertyCode, rejectDuplicateJsonBodyKeys: canonical.rejectDuplicateJsonBodyKeys };
+    propertyCode: property.propertyCode, rejectDuplicateJsonBodyKeys: canonical.rejectDuplicateJsonBodyKeys,
+    detailsScope: availabilityDetailsScope(quoteRequest, property.propertyCode) };
 }
 
 /** Install before any page exists. A block terminates this owned context. */
@@ -141,7 +144,9 @@ export async function installQuoteRequestGuard(context, policy) {
       },
     };
     try {
-      if (isReviewedAvailabilityInquiry(route.request(), policy)) {
+      if (isReviewedAvailabilityInquiry(route.request(), policy) || isReviewedAvailabilityDetailsInquiry(route.request(), policy) ||
+          isReviewedRoomInformationRequest(route.request(), policy) || isReviewedRoomInformationAsset(route.request(), policy) ||
+          isReviewedRoomInformationRead(route.request(), policy)) {
         await guardedRoute.continue();
         return;
       }
