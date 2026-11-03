@@ -20,6 +20,7 @@ async function fixture(t, { loader = true, source = true } = {}) {
   await Promise.all([mkdir(tools, { recursive: true }), mkdir(modules), mkdir(dist, { recursive: true })]);
   await Promise.all([
     copyFile(join(here, 'quote-request-guard.mjs'), join(tools, 'quote-request-guard.mjs')),
+    copyFile(join(here, 'quote-availability-policy.mjs'), join(tools, 'quote-availability-policy.mjs')),
     copyFile(join(here, 'session-reuse.mjs'), join(tools, 'session-reuse.mjs')),
     ...['live-read-manifest', 'request-policy', 'browser-artifacts'].map((name) =>
       writeFile(join(dist, `${name}.js`), "throw new Error('stale dist was used');\n")),
