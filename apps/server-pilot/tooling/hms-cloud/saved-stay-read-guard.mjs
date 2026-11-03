@@ -61,8 +61,13 @@ export function savedStayReadMayRequest(request, { confirmation } = {}) {
           url.search || url.hash || !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
-      return body?.size === recordHeaderKeys.size && [...body].every(([key, value]) =>
-        recordHeaderKeys.has(key) && value.length <= 256 && !/[\p{Cc}]/u.test(value)) &&
+      if (!body) return false;
+      const chrome = body.size === recordHeaderKeys.size + 2 && body.get('menu_module_key') === '0' &&
+        body.get('removescreenflows') === 'yes';
+      if (body.size !== recordHeaderKeys.size && !chrome) return false;
+      return [...recordHeaderKeys].every((key) => body.has(key)) && [...body].every(([key, value]) =>
+        (recordHeaderKeys.has(key) || (chrome && ['menu_module_key', 'removescreenflows'].includes(key))) &&
+        value.length <= 256 && !/[\p{Cc}]/u.test(value)) &&
         body.get('system_function_name') === 'OSRESV' && body.get('user_function_name') === 'OSRESV' &&
         body.get('current_tab_name') === 'HDR' && body.get('confirmationnumber') === confirmation &&
         body.get('propertycode') === 'HRCEN' && /^\d{1,100}$/.test(body.get('reservationstayid') || '') &&

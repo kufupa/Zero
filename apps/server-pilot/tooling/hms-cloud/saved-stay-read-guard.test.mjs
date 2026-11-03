@@ -124,6 +124,21 @@ test('record header POST is bound to the selected HRCEN confirmation and native 
     twitterid: '-', facebookid: '-', tripadvisorid: '-', bookingdotcomid: '-', room: '' });
   const selected = { confirmation: '123-1' };
   assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', body.toString()), selected), true);
+  // The reviewed native detail-open manifest records both the 17-field and
+  // 19-field forms. Accept the latter only with the known shell values.
+  const withChrome = new URLSearchParams(body);
+  withChrome.set('MENU_MODULE_KEY', '0');
+  withChrome.set('removescreenflows', 'yes');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', withChrome.toString()), selected), true);
+  for (const [key, value] of [['MENU_MODULE_KEY', '1'], ['removescreenflows', 'no'],
+    ['MENU_MODULE_KEY', 'SAVE'], ['removescreenflows', '']]) {
+    const changed = new URLSearchParams(withChrome); changed.set(key, value);
+    assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', changed.toString()), selected), false);
+  }
+  const partial = new URLSearchParams(withChrome); partial.delete('removescreenflows');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', partial.toString()), selected), false);
+  const repeated = new URLSearchParams(withChrome); repeated.append('menu_module_key', '0');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', repeated.toString()), selected), false);
   for (const [key, value] of [['confirmationnumber', '999-1'], ['propertycode', 'HRDAV'],
     ['reservationstayid', '456&action=SAVE'], ['guestid', ''], ['CURRENT_TAB_NAME', 'SAVE']]) {
     const changed = new URLSearchParams(body); changed.set(key, value);
