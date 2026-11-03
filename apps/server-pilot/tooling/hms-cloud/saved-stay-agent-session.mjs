@@ -40,11 +40,15 @@ function readFailure(error, stage, shallow) {
 }
 
 /** Own guarded pages; calls submitted through runTool execute in order. */
-export async function withSavedStayAgentSession(operation, { signal } = {}) {
+export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
+  if (typeof readOnly !== 'boolean') throw new Error('READ_ONLY_OPTION_INVALID');
+  if (readOnly && !/^\d+-\d+$/.test(readOnlyConfirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
   signal?.throwIfAborted();
+  const installStrictGuard = readOnly ? (await import('./saved-stay-read-guard.mjs')).installSavedStayReadGuard : undefined;
+  const prepareContext = installStrictGuard && ((context) => installStrictGuard(context, { confirmation: readOnlyConfirmation }));
   return withCenturionStay360Page(async (page) => {
-    await installReadOnlyGuard(page.context());
+    if (!readOnly) await installReadOnlyGuard(page.context());
     let current = null, recordOpen = false, pendingCancel = null, sealed = false, nativeDialog = null;
     let accepting = true, tail = Promise.resolve();
     let interruptRead;
@@ -83,6 +87,10 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
         'readAmendmentAvailability', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
         'cancelHotelAvailabilityParty'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
+      }
+      if (readOnly && tool !== 'read') return { outcome: 'refused', issue: 'READ_ONLY_SESSION' };
+      if (readOnly && request.confirmation !== readOnlyConfirmation) {
+        return { outcome: 'refused', issue: 'READ_ONLY_CONFIRMATION_MISMATCH' };
       }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
         ? 'fee_dialog_pending' : 'unexpected_dialog', issue: 'NATIVE_DIALOG', nativeDialog };
@@ -252,7 +260,7 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
       releaseAvailability?.();
       await availabilityTask;
     }
-  }, { headless: true, signal, blockServiceWorkers: true });
+  }, { headless: true, signal, blockServiceWorkers: true, ...(prepareContext && { prepareContext }) });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {

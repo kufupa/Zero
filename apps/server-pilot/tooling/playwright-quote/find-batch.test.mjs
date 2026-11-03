@@ -68,7 +68,7 @@ test('route guard aborts HMS writes but permits confirmation and reservation rea
   assert.equal(shouldAbortReadOnlyRequest({ method: 'DELETE', url: 'https://hms.invalid/web/base/OSRESV.HDR' }), true);
 });
 
-test('installed route guard aborts the write and continues the read-only searches', async () => {
+test('installed route guard aborts the write and delegates read-only searches', async () => {
   let handler;
   const context = {
     route: async (pattern, run) => {
@@ -82,12 +82,12 @@ test('installed route guard aborts the write and continues the read-only searche
     const route = {
       request: () => ({ method: () => method, url: () => url }),
       abort: async () => { result.action = 'abort'; },
-      continue: async () => { result.action = 'continue'; },
+      fallback: async () => { result.action = 'fallback'; },
     };
     await handler(route);
     return result.action;
   };
-  assert.equal(await resultFor('POST', 'https://hms.invalid/web/base/OSRESS.search'), 'continue');
-  assert.equal(await resultFor('POST', 'https://hms.invalid/web/base/OSRESV.HDR'), 'continue');
+  assert.equal(await resultFor('POST', 'https://hms.invalid/web/base/OSRESS.search'), 'fallback');
+  assert.equal(await resultFor('POST', 'https://hms.invalid/web/base/OSRESV.HDR'), 'fallback');
   assert.equal(await resultFor('POST', 'https://hms.invalid/web/base/OSRESV.save'), 'abort');
 });
