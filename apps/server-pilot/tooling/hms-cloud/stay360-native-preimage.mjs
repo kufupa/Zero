@@ -2,7 +2,7 @@
 // This is not an approval, a write grant, or proof that an ID is stable across sessions.
 const KEYS = ['propertycode', 'confirmationnumber', 'guestid', 'status', 'firstname', 'lastname',
   'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3',
-  'childages', 'reservationstayid', 'reservationid', 'recordid'];
+  'childages', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype'];
 const FORM_KEYS = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'arrivaldate',
   'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -57,10 +57,16 @@ export function projectNativeSavedStayPreimage(snapshot, expected) {
       ages.filter((age) => age <= 2).length === bands[0] &&
       ages.filter((age) => age >= 3 && age <= 12).length === bands[1] &&
       ages.filter((age) => age >= 13).length === bands[2]) childAges = [...ages];
+  // Report a guarantee code only when the selected visible control and model agree.
+  const guaranteeCode = field('guaranteetype');
+  const controlGuarantee = value(snapshot.controls, 'guaranteetype');
+  const verifiedGuarantee = guaranteeCode && /^[A-Z0-9]{1,40}$/.test(guaranteeCode) &&
+    guaranteeCode === controlGuarantee ? guaranteeCode : null;
   return { source: 'record_view_ext_model', propertyCode: expected.propertyCode, confirmation: expected.confirmation,
     reservationStayId: field('reservationstayid'), reservationId: field('reservationid'), recordId: field('recordid'),
     guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
-    arrival, departure, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges };
+    arrival, departure, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
+    ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}) };
 }
 
 /** Observe only allowlisted fields, not the full model, which can contain credentials and card data. */
@@ -87,7 +93,19 @@ export async function readNativeSavedStayPreimage(frame, expected) {
       }
       return result;
     };
-    return { data: pick(data, keys), values: pick(values, formKeys), formDirty: form.isDirty(), recordDirty: record.dirty,
+    let guarantee = null;
+    try {
+      const inputs = [...document.querySelectorAll('input,textarea,select')]
+        .filter((el) => typeof el.name === 'string' && el.name.toLowerCase() === 'guaranteetype' && visible(el));
+      if (inputs.length === 1 && inputs[0].name === 'guaranteetype' && panel.el.dom.contains(inputs[0])) {
+        const control = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''));
+        const selected = control?.getValue?.();
+        if (fields.includes(control) && (control.getName?.() || control.name) === 'guaranteetype' &&
+            (typeof selected === 'string' || typeof selected === 'number')) guarantee = selected;
+      }
+    } catch { /* Missing or ambiguous guarantee evidence stays unknown. */ }
+    return { data: pick(data, keys), values: pick(values, formKeys), controls: { guaranteetype: guarantee },
+      formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}) };
   }, { keys: KEYS, formKeys: FORM_KEYS });

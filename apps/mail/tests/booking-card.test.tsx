@@ -2435,6 +2435,7 @@ describe('pane save helpers', () => {
       'osress_duplicate',
       'pane_save_preview_required',
       'pane_preview_persist_failed',
+      'pane_preview_binding_required',
       'pane_save_digest_mismatch',
       'pane_save_lock_unavailable',
       'refused_lock_busy',
