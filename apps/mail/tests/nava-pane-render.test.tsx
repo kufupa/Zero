@@ -3116,8 +3116,8 @@ describe('NavaPane', () => {
     expect(screen.getByText('Nava cannot confirm the property yet. Open the booking in HMS.')).toBeTruthy();
   });
 
-  it.each(['subject', 'bodyText', 'bodyHtml'] as const)(
-    'hides the HRCEN review if the selected email changes its %s without changing identity', async (field) => {
+  it.each(['internetMessageId', 'subject', 'bodyText', 'bodyHtml'] as const)(
+    'hides the HRCEN review if the selected email changes its %s without changing its entry', async (field) => {
       bridgeMockState.quotePaneConfig = {
         transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
         boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
@@ -3133,10 +3133,12 @@ describe('NavaPane', () => {
       const changedBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, [field]: 'Changed content' } };
       pane.rerender(<NavaPane bridge={changedBridge} />);
       expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
-      expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
+      if (field !== 'internetMessageId') {
+        expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
+      }
       pane.rerender(<NavaPane bridge={fakeBridge} />);
+      await waitFor(() => expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy());
       expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
-      expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
     },
   );
 
