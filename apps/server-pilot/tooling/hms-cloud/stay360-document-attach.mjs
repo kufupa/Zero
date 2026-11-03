@@ -16,9 +16,18 @@ const UPLOAD = '/web/base/BSUPLD.upload', REFRESH = '/web/base/OSRESV.DOC';
 const FIELD_NAMES = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg',
   'typecode', 'uploaddoc', 'pagemode', 'recordid', 'uploadorcreatedoc', 'daeRentity', 'daeType', 'daeCode', 'pages', 'filetype'];
 const usedPages = new WeakSet();
+const neverDispatchedAttachProofs = new WeakMap();
 const text = (v) => v == null ? '' : String(v);
 const scalar = (v) => v == null || ['string', 'number', 'boolean'].includes(typeof v);
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'DOCUMENT_ACTION_FAILED';
+
+/** Consume only a proof minted for this exact, permanently disarmed upload request. */
+export function consumeNeverDispatchedAttachProof(proof, request) {
+  if (!proof || typeof proof !== 'object' || !neverDispatchedAttachProofs.has(proof) ||
+      neverDispatchedAttachProofs.get(proof) !== request) return false;
+  neverDispatchedAttachProofs.delete(proof);
+  return true;
+}
 
 // Derive all fields from the staged native model and controls, not a captured stay.
 export function documentValidationFields(snapshot) {
@@ -119,7 +128,7 @@ export function documentUploadRequestDigest(request) {
 // An intent is exclusive and is written before the one permitted continuation.
 export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError,
   beforeDispatch, stillArmed = () => true, onAuthorityError = onIntentError, dispatchRequest = (route) => route.continue(),
-  dispatchWithAuthority, deadline = Infinity }) {
+  dispatchWithAuthority, continuationAllowed = () => true, deadline = Infinity }) {
   let consumed = false, disarmed = false;
   const pending = new Set();
   const track = (result) => {
@@ -137,28 +146,48 @@ export function createDocumentUploadGate({ frame, fields, file, token, evidenceD
     if (!requestDigest) return null;
     consumed = true;
     const dispatch = () => {
-      let released = false, continued = false;
+      let released = false, continued = false, wrapperFinished = false, proofIssued = false, authorityFailed = false;
+      const failAuthority = () => { if (!authorityFailed) { authorityFailed = true; onAuthorityError(); } };
       const continueOnce = () => {
         // Even a faulty authority callback cannot send this native request twice.
-        if (continued) { onAuthorityError(); return undefined; }
+        if (continued || wrapperFinished) { failAuthority(); return undefined; }
         continued = true;
-        if (disarmed || performance.now() >= deadline || !stillArmed()) { onAuthorityError(); return route.abort(); }
+        let budget = false;
+        try { budget = continuationAllowed() === true; } catch { /* Refuse on an unavailable deadline. */ }
+        if (disarmed || performance.now() >= deadline || !stillArmed() || !budget) {
+          failAuthority();
+          if (dispatchWithAuthority) throw new Error('DOCUMENT_DISPATCH_NOT_AUTHORIZED');
+          return route.abort();
+        }
         try {
           writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation,
             documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }),
           { flag: 'wx', mode: 0o600 });
-        } catch { onIntentError(); return route.abort(); }
+        } catch {
+          onIntentError();
+          if (dispatchWithAuthority) throw new Error('DOCUMENT_DISPATCH_INTENT_UNAVAILABLE');
+          return route.abort();
+        }
         released = true; onDispatch();
         // Track the actual request even if a faulty authority callback starts
         // it but neglects to await or return its promise.
         return track(dispatchRequest(route));
       };
+      continueOnce.proveNeverDispatched = () => {
+        // The page/context fences admit this single multipart candidate only.
+        // Permanently disarm before minting, and never mint after an attempted send.
+        if (wrapperFinished || released || proofIssued) return null;
+        disarmed = true; proofIssued = true;
+        const proof = Object.freeze({});
+        neverDispatchedAttachProofs.set(proof, request);
+        return proof;
+      };
       if (!dispatchWithAuthority) return continueOnce();
-      return Promise.resolve().then(() => dispatchWithAuthority(continueOnce, requestDigest)).catch(() => {
-        onAuthorityError();
+      return Promise.resolve().then(() => dispatchWithAuthority(continueOnce, requestDigest, join(evidenceDir, 'before.png'), request)).catch(() => {
+        failAuthority();
         // Once released, the outcome is unknown; the browser may already have received a response.
         return released ? undefined : route.abort();
-      });
+      }).finally(() => { wrapperFinished = true; });
     };
     if (!beforeDispatch) return { result: track(dispatch()) };
     // The server checks its live grant, lease, source and approved bytes while
@@ -211,12 +240,13 @@ function validFile(file) {
 
 /** Returns awaiting_readback, uncertain, or not_dispatched. A fresh session must reconcile every dispatch. */
 export async function attachLabtestDocument(page, expected, file, { evidenceRoot, expectedOrganization, expectedDocumentContext, timeoutMs = 30000,
-  beforeDispatch, finalAuthority, dispatchWithAuthority, onDispatched, strictNetwork = false } = {}) {
+  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false } = {}) {
   if (!validFile(file) || typeof evidenceRoot !== 'string' || !isAbsolute(evidenceRoot) ||
       !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
       (beforeDispatch !== undefined && typeof beforeDispatch !== 'function') ||
       (finalAuthority !== undefined && typeof finalAuthority !== 'function') ||
       (dispatchWithAuthority !== undefined && typeof dispatchWithAuthority !== 'function') ||
+      (continuationAllowed !== undefined && typeof continuationAllowed !== 'function') ||
       (onDispatched !== undefined && typeof onDispatched !== 'function') ||
       (expectedDocumentContext !== undefined && expectedOrganization !== undefined) || typeof strictNetwork !== 'boolean') {
     return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' };
@@ -364,6 +394,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       confirmation: expected.confirmation, deadline,
       ...(strictNetwork ? { dispatchRequest: fulfillGuestLookupRequest } : {}),
       ...(dispatchWithAuthority ? { dispatchWithAuthority } : {}),
+      ...(continuationAllowed ? { continuationAllowed } : {}),
       onDispatch: () => { possible = true; dispatched = true; armed = false; onDispatched?.(); },
       onIntentError: () => stop('DISPATCH_INTENT_FAILED'),
       beforeDispatch: beforeDispatch && (async () => {

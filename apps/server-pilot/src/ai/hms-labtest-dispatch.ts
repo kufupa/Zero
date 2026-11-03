@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { centurionWriterQuiesced } from '../../tooling/playwright-quote/centurion-stay360.mjs';
+import { consumeNeverDispatchedCreateProof } from '../../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from './draft-approval.js';
@@ -25,10 +27,13 @@ const intentSchema = claimSchema.extend({ version: z.literal(1), kind: z.literal
   holdId: z.string().uuid(), ownerDigest: digest }).strict();
 const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('resolved'),
   holdId: z.string().uuid(), operation, confirmation: z.string().max(40).regex(/^\d+-\d+$/),
-  readbackDigest: digest, savedShot: shot }).strict();
-const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema]);
+  readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
+const noDispatchSchema = z.object({ version: z.literal(1), kind: z.literal('not_dispatched'),
+  holdId: z.string().uuid(), operation: z.enum(['create', 'attach_document']) }).strict();
+const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema, noDispatchSchema]);
 type Claim = z.infer<typeof claimSchema>;
 type Intent = z.infer<typeof intentSchema>;
+export type HmsLabtestIntent = Intent;
 type Resolution = Omit<z.infer<typeof resolutionSchema>, 'version' | 'kind' | 'holdId'>;
 export type HmsLabtestWriteHandle = { holdId: string; ownerToken: string };
 
@@ -41,6 +46,22 @@ export class HmsLabtestDispatchError extends Error {
 
 const ownerHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
+/** Bind the exact intercepted native request, including its body and destination. */
+export function nativeCreateSaveDigest(raw: unknown): string {
+  if (!raw || typeof raw !== 'object') throw new Error('cloud_create_request_unavailable');
+  const request = raw as { method?: () => string; url?: () => string; headers?: () => Record<string, string>;
+    postDataBuffer?: () => Buffer | null };
+  if (request.method?.() !== 'POST' || typeof request.url !== 'function' || typeof request.headers !== 'function' ||
+      typeof request.postDataBuffer !== 'function') throw new Error('cloud_create_request_unavailable');
+  const url = new URL(request.url()), contentType = request.headers()['content-type'] ?? '';
+  const bytes = request.postDataBuffer();
+  if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.pathname !== '/web/base/OSRESV.HDR' ||
+      url.hash || [...url.searchParams].length !== 1 || url.searchParams.get('pageaction') !== 'SAVE' ||
+      !/^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType) || !Buffer.isBuffer(bytes) ||
+      bytes.length === 0 || bytes.length > 1024 * 1024) throw new Error('cloud_create_request_unavailable');
+  return createHash('sha256').update(JSON.stringify(['POST', url.href, contentType])).update('\0').update(bytes).digest('hex');
+}
+
 async function lockProperty(tx: CreateFenceTransaction) {
   // All participants acquire this before mailbox, source, item or lease locks.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext('nava-hms-labtest-write-v1'), hashtext('HRCEN'))`);
@@ -50,14 +71,14 @@ async function readHistory(tx: CreateFenceTransaction) {
   const rows = await tx.select({ id: workEvent.id, itemId: workEvent.workItemId, type: workEvent.type,
     actorKind: workEvent.actorKind, value: workEvent.value }).from(workEvent).where(eq(workEvent.fieldPath, FIELD));
   const intents = new Map<string, Intent>(), resolved = new Set<string>(), grants = new Set<string>();
-  const completions: Array<{ itemId: string; value: z.infer<typeof resolutionSchema> }> = [];
+  const completions: Array<{ itemId: string; value: z.infer<typeof resolutionSchema> | z.infer<typeof noDispatchSchema> }> = [];
   for (const row of rows) {
     const event = eventSchema.safeParse(row.value);
     if (!event.success || row.type !== 'write.evidence' || row.actorKind !== 'system') {
       throw new HmsLabtestDispatchError('corrupt');
     }
     const value = event.data;
-    if (value.kind === 'resolved') {
+    if (value.kind !== 'intent') {
       completions.push({ itemId: row.itemId, value });
     } else {
       if (row.id !== value.holdId || row.itemId !== value.workItemId ||
@@ -72,7 +93,7 @@ async function readHistory(tx: CreateFenceTransaction) {
   for (const { itemId, value } of completions) {
     const intent = intents.get(value.holdId);
     if (!intent || intent.workItemId !== itemId || intent.operation !== value.operation || resolved.has(value.holdId) ||
-        (intent.operation === 'create' && !/^\d{6,10}-\d{1,2}$/.test(value.confirmation))) {
+        (value.kind === 'resolved' && intent.operation === 'create' && !/^\d{6,10}-\d{1,2}$/.test(value.confirmation))) {
       throw new HmsLabtestDispatchError('corrupt');
     }
     resolved.add(value.holdId);
@@ -80,6 +101,19 @@ async function readHistory(tx: CreateFenceTransaction) {
   const active = [...intents.values()].filter((intent) => !resolved.has(intent.holdId));
   if (active.length > 1) throw new HmsLabtestDispatchError('corrupt');
   return { active, grants };
+}
+
+const historyEpoch = (history: Awaited<ReturnType<typeof readHistory>>) =>
+  createHash('sha256').update([...history.grants].sort().join('\0')).digest('hex');
+
+/** Snapshot the append-only writer history before reading an HMS preimage. */
+export async function captureHmsLabtestDispatchEpoch(db: DB): Promise<string> {
+  return db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const history = await readHistory(tx);
+    if (history.active.length) throw new HmsLabtestDispatchError('occupied');
+    return historyEpoch(history);
+  }, { isolationLevel: 'read committed' });
 }
 
 /**
@@ -95,9 +129,10 @@ async function readHistory(tx: CreateFenceTransaction) {
  */
 export async function claimHmsLabtestDispatch(
   db: DB, raw: Claim, authorize: (tx: CreateFenceTransaction, input: Readonly<Claim>) => Promise<void>,
+  expectedEpoch: string,
 ): Promise<HmsLabtestWriteHandle> {
   const parsed = claimSchema.safeParse(raw);
-  if (!parsed.success || typeof authorize !== 'function' ||
+  if (!parsed.success || typeof authorize !== 'function' || !digest.safeParse(expectedEpoch).success ||
       (parsed.data.operation === 'create') !== Boolean(parsed.data.stayId)) throw new HmsLabtestDispatchError('invalid');
   const input = Object.freeze(parsed.data);
   let encoded: string;
@@ -110,13 +145,69 @@ export async function claimHmsLabtestDispatch(
   await db.transaction(async (tx) => {
     await lockProperty(tx);
     const history = await readHistory(tx);
-    if (history.active.length || history.grants.has(input.grantId)) throw new HmsLabtestDispatchError('occupied');
+    if (history.active.length || historyEpoch(history) !== expectedEpoch || history.grants.has(input.grantId)) {
+      throw new HmsLabtestDispatchError('occupied');
+    }
     await authorize(tx, input);
     if (canonicalJson(input) !== encoded) throw new HmsLabtestDispatchError('invalid');
     await tx.insert(workEvent).values({ id: holdId, workItemId: input.workItemId, actorKind: 'system',
       type: 'write.evidence', fieldPath: FIELD, value: intent });
   }, { isolationLevel: 'read committed' });
   return { holdId, ownerToken };
+}
+
+async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create' | 'attach_document'; notDispatched: true },
+  authorize: (intent: Intent) => void, record: (tx: CreateFenceTransaction, intent: Intent) => Promise<void>) {
+  await db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const [intent] = (await readHistory(tx)).active;
+    if (!intent || intent.holdId !== holdId) throw new HmsLabtestDispatchError('owner');
+    authorize(intent);
+    if (intent.operation !== evidence.operation) throw new HmsLabtestDispatchError('phase');
+    const immutableIntent = canonicalJson(intent);
+    await record(tx, intent);
+    if (canonicalJson(intent) !== immutableIntent) throw new HmsLabtestDispatchError('invalid');
+    const value = 'notDispatched' in evidence
+      ? { version: 1, kind: 'not_dispatched', holdId: intent.holdId, operation: evidence.operation }
+      : { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence };
+    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
+      fieldPath: FIELD, value });
+  }, { isolationLevel: 'read committed' });
+}
+
+/** A route-owned, one-use proof can release only the exact Save it never continued. */
+export async function resolveNeverDispatchedCreate(db: DB, handle: HmsLabtestWriteHandle, proof: unknown,
+  request: unknown, record: (tx: CreateFenceTransaction, intent: Readonly<Intent>) => Promise<void>): Promise<void> {
+  const requestDigest = nativeCreateSaveDigest(request);
+  if (!z.string().uuid().safeParse(handle?.holdId).success || !digest.safeParse(handle?.ownerToken).success ||
+      !digest.safeParse(requestDigest).success || typeof record !== 'function' ||
+      !consumeNeverDispatchedCreateProof(proof, request)) throw new HmsLabtestDispatchError('invalid');
+  await finishDispatch(db, handle.holdId, { operation: 'create', notDispatched: true }, (intent) => {
+    if (intent.requestDigest !== requestDigest ||
+        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+      throw new HmsLabtestDispatchError('owner');
+    }
+  }, record);
+}
+
+/** Only the upload gate can prove that its exact multipart request was never continued. */
+export async function resolveNeverDispatchedAttach(db: DB, handle: HmsLabtestWriteHandle, proof: unknown,
+  request: unknown, record: (tx: CreateFenceTransaction, intent: Readonly<Intent>) => Promise<void>): Promise<void> {
+  const { consumeNeverDispatchedAttachProof, documentUploadRequestDigest } =
+    await import('../../tooling/hms-cloud/stay360-document-attach.mjs' as string) as {
+      consumeNeverDispatchedAttachProof(proof: unknown, request: unknown): boolean;
+      documentUploadRequestDigest(request: unknown): string | null;
+    };
+  const requestDigest = documentUploadRequestDigest(request);
+  if (!z.string().uuid().safeParse(handle?.holdId).success || !digest.safeParse(handle?.ownerToken).success ||
+      !digest.safeParse(requestDigest).success || typeof record !== 'function' ||
+      !consumeNeverDispatchedAttachProof(proof, request)) throw new HmsLabtestDispatchError('invalid');
+  await finishDispatch(db, handle.holdId, { operation: 'attach_document', notDispatched: true }, (intent) => {
+    if (intent.requestDigest !== requestDigest ||
+        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+      throw new HmsLabtestDispatchError('owner');
+    }
+  }, record);
 }
 
 /**
@@ -134,18 +225,58 @@ export async function resolveHmsLabtestDispatch(db: DB, handle: HmsLabtestWriteH
     throw new HmsLabtestDispatchError('invalid');
   }
   const evidence = JSON.parse(canonicalJson(parsed.data)) as Resolution;
-  await db.transaction(async (tx) => {
-    await lockProperty(tx);
-    const [intent] = (await readHistory(tx)).active;
-    if (!intent || intent.holdId !== handle.holdId ||
-        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+  await finishDispatch(db, handle.holdId, evidence, (intent) => {
+    if (!timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
       throw new HmsLabtestDispatchError('owner');
     }
-    if (intent.operation !== evidence.operation) throw new HmsLabtestDispatchError('phase');
-    const immutableIntent = canonicalJson(intent);
-    await record(tx, intent);
-    if (canonicalJson(intent) !== immutableIntent) throw new HmsLabtestDispatchError('invalid');
-    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
-      fieldPath: FIELD, value: { version: 1, kind: 'resolved', holdId: intent.holdId, ...evidence } });
+  }, record);
+}
+
+// Only operation-specific wrappers below can choose a driver. Neither this
+// function nor its trusted reader accepts evidence or callbacks from clients.
+async function recoverPositiveDispatch<P extends { confirmation: string; readbackDigest: string;
+  savedShot: { runId: string; sha256: string } }>(db: DB, holdId: string, kind: z.infer<typeof operation>, driver: {
+    withLock: <T>(intent: Intent, action: () => Promise<T>) => Promise<T>;
+    prove: (intent: Intent) => Promise<P>;
+    record: (tx: CreateFenceTransaction, intent: Intent, proof: P) => Promise<void>;
+  }): Promise<void> {
+  if (!z.string().uuid().safeParse(holdId).success) throw new HmsLabtestDispatchError('invalid');
+  const original = await db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const [intent] = (await readHistory(tx)).active;
+    if (!intent || intent.holdId !== holdId || intent.operation !== kind) throw new HmsLabtestDispatchError('phase');
+    return intent;
   }, { isolationLevel: 'read committed' });
+  await driver.withLock(original, async () => {
+    if (!centurionWriterQuiesced(original.recovery.writer)) throw new HmsLabtestDispatchError('phase');
+    const proof = await driver.prove(original);
+    const result = resolutionSchema.omit({ version: true, kind: true, holdId: true }).safeParse({ operation: kind,
+      confirmation: proof.confirmation, readbackDigest: proof.readbackDigest, savedShot: proof.savedShot, recovered: true });
+    if (!result.success || (kind === 'create' && !/^\d{6,10}-\d{1,2}$/.test(proof.confirmation))) {
+      throw new HmsLabtestDispatchError('invalid');
+    }
+    await finishDispatch(db, holdId, result.data, (intent) => {
+      if (canonicalJson(intent) !== canonicalJson(original) || !centurionWriterQuiesced(intent.recovery.writer)) {
+        throw new HmsLabtestDispatchError('phase');
+      }
+    }, (tx, intent) => driver.record(tx, intent, proof));
+  });
+}
+
+/** Operator-only positive Create reconciliation; no negative read or client evidence can clear a hold. */
+export async function recoverHmsLabtestCreate(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-preview.js');
+  await recoverPositiveDispatch(db, holdId, 'create', {
+    withLock: driver.withRecoveryLock, prove: driver.proveCreateRecovery, record: driver.recordRecoveredCreate,
+  });
+}
+
+/** Operator-only positive Filing reconciliation; no client supplies proof or a driver. */
+export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-attach-recovery.js');
+  await recoverPositiveDispatch(db, holdId, 'attach_document', {
+    withLock: driver.withAttachRecoveryLock,
+    prove: (intent) => driver.proveAttachRecovery(db, intent),
+    record: driver.recordRecoveredAttach,
+  });
 }

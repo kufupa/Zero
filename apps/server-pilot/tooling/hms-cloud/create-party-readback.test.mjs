@@ -13,6 +13,39 @@ test('rejects incomplete or mismatched identity inputs before opening HMS', asyn
   }
 });
 
+test('fresh party session blocks service workers and installs the read guard before opening a page', async () => {
+  const requests = [];
+  const context = {
+    route: async (_pattern, handler) => { context.handler = handler; },
+    routeWebSocket: async (_pattern, handler) => { context.socketHandler = handler; },
+  };
+  const result = await readCreateParties({ confirmation: '123456-1', arrival: '2028-09-19', guestId: '123' }, {
+    openSession: async (_operation, options) => {
+      assert.equal(options.blockServiceWorkers, true);
+      await options.prepareContext(context);
+      let closed = false;
+      context.socketHandler({ close: () => { closed = true; } });
+      assert.equal(closed, true);
+      for (const [method, url, body] of [
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE'],
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR.GetCheckAvailability'],
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/unrecognized', 'action=update'],
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/jsp/7iosress_getstaydata.jsp', 'confirmationnumber=999999-1'],
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/jsp/7iosress_getstaydata.jsp', 'confirmationnumber=123456-1'],
+        ['GET', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD'],
+      ]) {
+        await context.handler({ request: () => ({ method: () => method, url: () => url, postData: () => body,
+          headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }) }),
+        abort: async () => requests.push('blocked'), fetch: async () => ({ status: () => 200 }),
+        fulfill: async () => requests.push('allowed') });
+      }
+      return { outcome: 'verified' };
+    },
+  });
+  assert.deepEqual(requests, ['blocked', 'blocked', 'blocked', 'blocked', 'allowed', 'allowed']);
+  assert.deepEqual(result, { outcome: 'verified' });
+});
+
 
 test('fresh native and visible party evidence must all match the fake stay', () => {
   const expected = { confirmation: '123456-1', guestId: '123', agency: { nativeId: '99', name: 'Agency' },

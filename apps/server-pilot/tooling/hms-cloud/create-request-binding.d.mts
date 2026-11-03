@@ -1,4 +1,5 @@
 export const CLOUD_CREATE_REQUEST_VERSION: 'hms-cloud-create-request/v1';
+export function validCreateNote(input: unknown): input is string;
 type Failure = { outcome: 'unsupported'; issue: string; path?: string };
 export function normalizeCloudCreateRequest(input: unknown):
   | { outcome: 'ok'; request: Record<string, unknown> }

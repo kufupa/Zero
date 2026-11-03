@@ -54,7 +54,9 @@ done
 sleep 20
 
 echo "== ops-reboot: pm2-boot =="
-bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+# Boot can drain multiple resurrected PM2 processes before starting replacements.
+SSM_EXECUTION_TIMEOUT_SECONDS=10800 SSM_MAX_POLL_SECONDS=11100 \
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/pm2-boot.sh'
 
 echo "== ops-reboot: post-boot-smoke =="

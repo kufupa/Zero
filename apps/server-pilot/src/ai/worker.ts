@@ -5950,6 +5950,7 @@ export async function runAiWorkerLoop(
     await hmsLabtestAttach;
     await hmsWriteSweep;
     await closeAiWorkerResources();
+    if (stopping) console.log(`ai-worker: shutdown complete pid=${process.pid}`);
   }
 }
 

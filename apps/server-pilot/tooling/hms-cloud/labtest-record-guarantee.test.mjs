@@ -11,14 +11,14 @@ const recordOptions = { allowUnchangedBusinessParties: true, expectedOrganizatio
 const agentGuarantee = { code: 'GTDAGT', display: 'Guaranteed By Agent' };
 
 // Execute the actual saved-record browser predicate against a synthetic Ext form.
-function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', recipient = '', recipientModel = recipient,
+function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', note = expected.note, recipient = '', recipientModel = recipient,
   recipientForm = recipient, agency = null, companyId = organization.nativeId, companyName = organization.name,
   agencyId = agency?.nativeId, agencyName = agency?.name, send = false, guestEmail = '',
   noteCount = 1, modelChanges = {}, visibleChanges = {} } = {}) {
   const values = { confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '12-NOV-2027', departuredate: '14-NOV-2027',
     roomtype: expected.roomType, rateplan: expected.ratePlan, track: 'BAR', guaranteetype: display,
-    reservationnote: expected.note, udfchkbox04: '', udfchar13: recipient, emailaddress: guestEmail, ...visibleChanges };
+    reservationnote: note, udfchkbox04: '', udfchar13: recipient, emailaddress: guestEmail, ...visibleChanges };
   const inputs = Object.entries(values).filter(([name]) => name !== 'reservationnote' || noteCount > 0)
     .map(([name, value]) => ({ name, value, id: `${name}-inputEl`,
     offsetWidth: 1, offsetHeight: 1, closest: () => null }));
@@ -63,6 +63,15 @@ test('read-only create reconciliation accepts the exact saved agent guarantee', 
     { ...recordOptions, expectedGuarantee: agentGuarantee });
   assert.equal(record.partyPreimage.companyid, organization.nativeId);
   assert.equal(record.partyPreimage.company, organization.name);
+});
+
+test('created-record readback matches the full multiline HMS note limit', async () => {
+  const note = `Line one\n${'x'.repeat(1_991)}`;
+  const record = await records.readCreatedLabtestRecord(savedPage({ note }), { ...expected, note },
+    { ...recordOptions, expectedGuarantee: agentGuarantee });
+  assert.equal(record.partyPreimage.companyid, organization.nativeId);
+  await assert.rejects(records.readCreatedLabtestRecord(savedPage({ note }), { ...expected, note: `${note}x` },
+    { ...recordOptions, expectedGuarantee: agentGuarantee }), /LABTEST_RECORD_INPUT_INVALID/);
 });
 
 test('create reconciliation refuses a mismatched native value or displayed guarantee', async () => {

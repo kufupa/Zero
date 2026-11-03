@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
+import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, attachment, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
@@ -65,7 +66,9 @@ import {
 } from './pane-stay-save.js';
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
-import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+import { recordNeverDispatchedAttach } from './pane-cloud-attach-recovery.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
+  resolveNeverDispatchedAttach, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
@@ -95,6 +98,8 @@ const AMEND_STAY = fileURLToPath(
 );
 const ATTACH_TIMEOUT_MS = 10 * 60_000;
 const READ_ATTACHMENT_TIMEOUT_MS = 60_000;
+// 7m native upload, 5m fresh readback, and 2m for drain, closure, evidence and result.
+const CLOUD_ATTACH_FINISH_RESERVE_MS = 14 * 60_000;
 /** Attach reads the bytes through the read path, so the cap is the read path's cap. A test pins the equality. */
 export const PANE_ATTACH_MAX_BYTES = ARTIFACT_MAX_INPUT_BYTES;
 const PDF_MAGIC = Buffer.from('%PDF-');
@@ -608,9 +613,12 @@ export type PaneAttachSpawnInput = {
   approvedSnapshot?: FilingSnapshot;
   beforeDispatch?: () => Promise<boolean>;
   finalAuthority?: (code: string) => Promise<boolean>;
+  continuationAllowed?: () => boolean;
   dispatchWithAuthority?: (code: string, nativeGuestId: string, requestDigest: string,
-    dispatch: () => Promise<unknown>) => Promise<unknown>;
+    dispatch: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
 };
+
+type NativeAttachContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 
 export type PaneAttachSpawnResult = {
   outcome: string;
@@ -1000,7 +1008,7 @@ async function saveAttach(
   file: string | null,
   target: HmsReadTarget,
   allowRealGuest: boolean,
-  cloud?: Pick<PaneAttachSpawnInput, 'approvedStay' | 'approvedSnapshot' | 'beforeDispatch' | 'finalAuthority' | 'dispatchWithAuthority'>,
+  cloud?: Pick<PaneAttachSpawnInput, 'approvedStay' | 'approvedSnapshot' | 'beforeDispatch' | 'finalAuthority' | 'continuationAllowed' | 'dispatchWithAuthority'>,
 ): Promise<SaveOutcome> {
   if (target.propertyCode === 'HRCEN' && (!cloud || !form.pdfSha256)) {
     return { outcome: 'refused_cloud_upload_unavailable', clickedOk: false, uploadSent: false, screenshots: [] };
@@ -1067,6 +1075,7 @@ async function recordEvidence(
   const present = new Set(input.saved.screenshots.map((path) => basename(path)));
   for (const name of EVIDENCE_NAMES) {
     if (!present.has(name)) continue;
+    if (input.receipts?.[name]) { recorded.push(name); continue; }
     try {
       const png = await readFile(join(input.saved.runDir, name));
       const sealed = await recordHmsWriteEvidence({
@@ -1107,6 +1116,7 @@ type ExecuteInput = {
   form: HmsWriteForm;
   file: string | null;
   runDirs: string[];
+  pendingCloudEvidence: Map<string, boolean>;
   allowRealGuest: boolean;
   env: NodeJS.Dict<string>;
 };
@@ -1135,6 +1145,9 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(approved) : null;
   if (isCloudAttach && !parsedFiling?.success) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   const filing = parsedFiling?.success ? parsedFiling.data : null;
+  // A lost property-lock connection must not make an earlier Documents baseline authoritative.
+  const dispatchEpoch = isCloudAttach ? await captureHmsLabtestDispatchEpoch(db).catch(() => null) : null;
+  if (isCloudAttach && dispatchEpoch === null) return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
   const request = { confirmation: approved.confirmation, arrival: approved.arrival };
   const readCloud = paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord;
   const cloudStay = isCloudAttach ? await readCloud(request, target) : null;
@@ -1166,15 +1179,22 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     void heartbeatAiRun(fence, db).catch(() => false);
   }, HEARTBEAT_MS);
   let saved: SaveOutcome;
-  const dispatch: { handle: HmsLabtestWriteHandle | null; attempted: boolean; provedAuthorityRefusal: boolean; guestId: string | null;
-    stay: PaneStayFields | null; filingSnapshot: FilingSnapshot | null; code: string | null; requestDigest: string | null } =
-    { handle: null, attempted: false, provedAuthorityRefusal: false, guestId: null, stay: null, filingSnapshot: null, code: null, requestDigest: null };
+  const dispatch: { handle: HmsLabtestWriteHandle | null; attempted: boolean; provedAuthorityRefusal: boolean; provedNoDispatch: boolean; guestId: string | null;
+    stay: PaneStayFields | null; filingSnapshot: FilingSnapshot | null; code: string | null; requestDigest: string | null;
+    before: { eventId: string; sha256: string } | null; recovery: Record<string, unknown> | null } =
+    { handle: null, attempted: false, provedAuthorityRefusal: false, provedNoDispatch: false, guestId: null, stay: null, filingSnapshot: null,
+      code: null, requestDigest: null, before: null, recovery: null };
+  // A backward wall-clock adjustment must not extend the remaining write budget.
+  const finishCutoff = performance.now() + fence.deadlineAt.getTime() - Date.now() - CLOUD_ATTACH_FINISH_RESERVE_MS;
+  const hasFinishBudget = () => Number.isFinite(finishCutoff) && performance.now() <= finishCutoff &&
+    fence.deadlineAt.getTime() - Date.now() >= CLOUD_ATTACH_FINISH_RESERVE_MS;
   try {
     const cloud = filing && cloudStay ? {
       approvedStay: { ...stay, nativeGuestId: cloudStay.nativeGuestId },
       approvedSnapshot: cloudStay.filingSnapshot,
+      continuationAllowed: hasFinishBudget,
       beforeDispatch: async () => {
-        if (Date.now() >= fence.deadlineAt.getTime()) return false;
+        if (!hasFinishBudget()) return false;
         const current = await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence, readHmsState: async () => {
           const fresh = await readCloud(request, target);
           dispatch.stay = fresh?.stay ?? null;
@@ -1185,57 +1205,101 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         if (current.status !== 'unchanged') return false;
         const bytes = await readBoundFilingSource({ db, transportId: input.transportId,
           workItemId: input.workItemId, form: filing, fence });
-        return !!bytes && pdfBytesHash(bytes) === filing.pdfSha256;
+        return hasFinishBudget() && !!bytes && pdfBytesHash(bytes) === filing.pdfSha256;
       },
       finalAuthority: async (code: string) => {
-        if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !dispatch.stay || !dispatch.guestId || !dispatch.filingSnapshot || dispatch.handle || Date.now() >= fence.deadlineAt.getTime()) return false;
+        if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !dispatch.stay || !dispatch.guestId || !dispatch.filingSnapshot || dispatch.handle || !hasFinishBudget()) return false;
         return (await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence,
           readHmsState: async () => filingState({ stay: dispatch.stay!, nativeGuestId: dispatch.guestId!,
             filingSnapshot: dispatch.filingSnapshot! }) })).status === 'unchanged';
       },
       dispatchWithAuthority: async (code: string, nativeGuestId: string, requestDigest: string,
-        continueOnce: () => Promise<unknown>) => {
-        if (!consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
+        continueOnce: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => {
+        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
+            typeof dispatch.stay.departure !== 'string' || !centurionWriterCurrent(writer) || !hasFinishBudget() ||
             nativeGuestId !== dispatch.guestId || !/^\d{1,30}$/.test(nativeGuestId) ||
             !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !/^[a-f0-9]{64}$/.test(requestDigest)) {
           throw new Error('attachment_authority_unavailable');
         }
+        const evidenceDir = dirname(beforeShot), root = dirname(evidenceDir);
+        if (basename(beforeShot) !== 'before.png' || !basename(evidenceDir).startsWith('hms-document-') ||
+            !basename(root).startsWith('pane-cloud-attach-') || dirname(root) !== tmpdir()) {
+          throw new Error('attachment_before_evidence_unavailable');
+        }
+        const sealedBefore = await recordHmsWriteEvidence({ db, transportId: input.transportId,
+          workItemId: input.workItemId, runId: fence.runId, name: 'before.png', png: await readFile(beforeShot) });
+        dispatch.before = { eventId: sealedBefore.eventId, sha256: sealedBefore.sha256 };
+        if (!hasFinishBudget()) throw new HmsApprovalError('lease_lost');
         const sourceDigest = filing.sourceSnapshotDigest, approvedDigest = formDigest(consumed.form);
         const sessionId = consumed.sessionId, sessionProfile = consumed.sessionProfile;
-        const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, documentCode: code,
-          documentName: filing.documentName, pdfSha256: filing.pdfSha256 };
+        const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, departure: dispatch.stay.departure,
+          documentCode: code, documentName: filing.documentName, pdfSha256: filing.pdfSha256,
+          runId: fence.runId, claimDigest: pdfBytesHash(Buffer.from(canonicalJson({ claimOwner: fence.claimOwner,
+            claimToken: fence.claimToken }))), before: dispatch.before, writer };
+        dispatch.recovery = recovery;
         dispatch.attempted = true;
         let authorityRefusal: HmsApprovalError | null = null;
+        let authorizationStarted = false;
         try {
           dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
             actorUserId: consumed.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN', firstName: 'Proof',
             lastName: 'Labtest', nativeGuestId, operation: 'attach_document', sourceDigest, approvedDigest, requestDigest, recovery },
           async (tx, claim) => {
+            authorizationStarted = true;
             if (claim.requestDigest !== requestDigest || canonicalJson(claim.recovery) !== canonicalJson(recovery)) {
               throw new Error('attachment_recovery_changed');
             }
             try {
+              if (!centurionWriterCurrent(writer)) throw new Error('attachment_writer_unavailable');
+              if (!hasFinishBudget()) throw new HmsApprovalError('lease_lost');
               await authorizeConsumedLabtestAttach(tx, { fence, transportId: input.transportId, workItemId: input.workItemId,
                 grantId: consumed.grantId, actorUserId: consumed.actorUserId, sessionId, sessionProfile, sourceDigest, approvedDigest,
                 confirmation: filing.confirmation, arrival: filing.arrival, documentCode: code, documentName: filing.documentName,
                 pdfSha256: filing.pdfSha256, env: input.env,
                 lockSource: (lockedTx) => lockBoundFilingSource(lockedTx, { transportId: input.transportId,
                   workItemId: input.workItemId, form: filing }) });
+              if (!centurionWriterCurrent(writer)) throw new Error('attachment_writer_unavailable');
+              if (!hasFinishBudget()) throw new HmsApprovalError('lease_lost');
             } catch (error) {
               if (error instanceof HmsApprovalError) authorityRefusal = error;
               throw error;
             }
-          });
+          }, dispatchEpoch);
         } catch (error) {
-          // Only the original, pre-insert refusal proves this claim never reached COMMIT.
-          // A lost transaction acknowledgement or a different error remains unknown.
-          dispatch.provedAuthorityRefusal = authorityRefusal !== null && error === authorityRefusal;
+          // The shared claim checks occupancy before authorization and inserts
+          // only after authorization returns. An occupied refusal before the
+          // callback starts therefore proves no intent was inserted by us.
+          // Changed errors and ambiguous commit acknowledgements stay unknown.
+          dispatch.provedAuthorityRefusal = (authorityRefusal !== null && error === authorityRefusal) ||
+            (!authorizationStarted && error instanceof HmsLabtestDispatchError && error.reason === 'occupied');
           throw error;
         }
         dispatch.code = code;
         dispatch.requestDigest = requestDigest;
-        // A confirmed commit authorizes exactly this already-intercepted request.
-        return continueOnce();
+        try {
+          if (!hasFinishBudget()) throw new Error('attachment_finish_deadline_unavailable');
+          // A confirmed commit authorizes exactly this already-intercepted request.
+          return await continueOnce();
+        } catch (error) {
+          // A permanently disarmed gate can prove this exact request never left.
+          // An attempted send, a lost claim acknowledgement or a failed resolution stays UNKNOWN.
+          const proof = continueOnce.proveNeverDispatched?.();
+          if (proof && dispatch.handle) {
+            try {
+              await resolveNeverDispatchedAttach(db, dispatch.handle, proof, interceptedRequest, async (tx, intent) => {
+                if (intent.workItemId !== input.workItemId || intent.transportId !== input.transportId ||
+                    intent.actorUserId !== consumed.actorUserId || intent.grantId !== consumed.grantId ||
+                    intent.requestDigest !== requestDigest || canonicalJson(intent.recovery) !== canonicalJson(recovery)) {
+                  throw new Error('filing_no_dispatch_scope_changed');
+                }
+                await recordNeverDispatchedAttach(tx, intent, fence);
+              });
+              dispatch.handle = null;
+              dispatch.provedNoDispatch = true;
+            } catch { /* Keep the hold on any uncertain resolution. */ }
+          }
+          throw error;
+        }
       },
     } : undefined;
     saved = approved.action === 'cancel' ? await saveCancel(approved, stay, target)
@@ -1253,10 +1317,20 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const safeCloudEvidence = Boolean(safeCloudRoot && saved.runDir && dirname(saved.runDir) === saved.cleanupRoot &&
     basename(saved.runDir).startsWith('hms-document-'));
   if (isCloudAttach) {
-    if (safeCloudRoot && saved.cleanupRoot) input.runDirs.push(saved.cleanupRoot);
+    if (safeCloudRoot && saved.cleanupRoot) {
+      const dir = await lstat(saved.cleanupRoot).catch(() => null);
+      if ((saved.uploadSent || dispatch.attempted) && dir?.isDirectory() &&
+          dir.uid === process.getuid?.() && !(dir.mode & 0o077)) {
+        // A possible upload must not destroy its only local screenshot if sealing fails.
+        input.pendingCloudEvidence.set(saved.cleanupRoot, false);
+      } else input.runDirs.push(saved.cleanupRoot);
+    }
     if (!safeCloudEvidence) saved.screenshots = [];
   } else if (saved.runDir) input.runDirs.push(saved.runDir);
   const confirmedListing = saved.outcome === 'confirmed' && saved.listed === true;
+  if (isCloudAttach && !confirmedListing && dispatch.provedNoDispatch) {
+    return { status: 'ended', failureClass: 'NEEDS_CHECK', reason: 'filing_not_dispatched' };
+  }
   if (isCloudAttach && !confirmedListing && saved.uploadSent && !dispatch.handle) return endRun(db, fence, 'UNKNOWN', 'target_hold_missing');
   if (isCloudAttach && !confirmedListing && dispatch.provedAuthorityRefusal && !dispatch.handle && !saved.uploadSent &&
       saved.dispatchCallbacksDrained === true && saved.writerSessionClosed === true) {
@@ -1266,7 +1340,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   if (isCloudAttach && !confirmedListing && dispatch.attempted && (!dispatch.handle || !saved.uploadSent)) {
     return endRun(db, fence, 'UNKNOWN', 'dispatch_claim_unresolved');
   }
-  const receipts: Record<string, { eventId: string; sha256: string }> = {};
+  const receipts: Record<string, { eventId: string; sha256: string }> = dispatch.before ? { 'before.png': dispatch.before } : {};
   const evidence = await recordEvidence(db, {
     transportId: input.transportId,
     workItemId: input.workItemId,
@@ -1274,6 +1348,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     saved,
     receipts,
   });
+  if (saved.cleanupRoot && receipts['before.png'] && receipts['after.png'] &&
+      input.pendingCloudEvidence.has(saved.cleanupRoot)) input.pendingCloudEvidence.set(saved.cleanupRoot, true);
   const verdict = classifySave(approved.action, saved);
   if (!verdict.ok) return endRun(db, fence, verdict.failureClass, verdict.reason);
   if (isCloudAttach && filing) {
@@ -1283,8 +1359,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
       // The metadata listing can be confirmed while the separate write hold remains open.
       return endConfirmedWithHold(db, fence);
     }
-    const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, documentCode: dispatch.code,
-      documentName: filing.documentName, pdfSha256: filing.pdfSha256 };
+    const recovery = dispatch.recovery;
+    if (!recovery) return endConfirmedWithHold(db, fence);
     const readbackDigest = pdfBytesHash(Buffer.from(canonicalJson({ confirmation: filing.confirmation,
       documentCode: dispatch.code, documentName: filing.documentName, uniqueFreshListing: true })));
     try {
@@ -1344,6 +1420,7 @@ async function runClaimed(
   fence: AiRunFence,
   env: NodeJS.Dict<string>,
   runDirs: string[],
+  pendingCloudEvidence: Map<string, boolean>,
 ): Promise<PaneHmsWriteResult> {
   if (runId !== fence.runId) return { status: 'lease_lost' };
   const attachMode = paneHmsWriteMode(env);
@@ -1407,7 +1484,7 @@ async function runClaimed(
   if (!lock) return endRun(db, fence, 'POLICY_BLOCK', 'refused_lock_unavailable');
   try {
     return await lock.withLock(
-      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs, allowRealGuest, env }),
+      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs, pendingCloudEvidence, allowRealGuest, env }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
@@ -1430,9 +1507,14 @@ export async function runPaneHmsWriteOnce(input: {
 }): Promise<PaneHmsWriteResult> {
   const db = input.db ?? getDb();
   const runDirs: string[] = [];
+  const pendingCloudEvidence = new Map<string, boolean>();
   try {
-    return await runClaimed(db, input.runId, input.fence, input.env ?? process.env, runDirs);
+    return await runClaimed(db, input.runId, input.fence, input.env ?? process.env, runDirs, pendingCloudEvidence);
   } finally {
+    for (const [directory, sealed] of pendingCloudEvidence) {
+      if (sealed) runDirs.push(directory);
+      else console.warn('pane_hms_write_unsealed_evidence_retained', { runId: input.runId, directory });
+    }
     await removeDirs(runDirs);
   }
 }

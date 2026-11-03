@@ -179,7 +179,9 @@ if [ "$QUIESCED" != "1" ]; then
   echo "== ops-deploy: on-box deploy =="
   step_mark 'ops-deploy: on-box deploy'
   DEPLOY_SSM_RESULT=""
-  if DEPLOY_SSM_RESULT="$(remote_bound \
+  # PM2 may drain several processes for up to 30 minutes each. Do not let
+  # the SSM execution or polling timeout interrupt the restart midway.
+  if DEPLOY_SSM_RESULT="$(SSM_EXECUTION_TIMEOUT_SECONDS=10800 SSM_MAX_POLL_SECONDS=11100 remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       bash apps/server-pilot/deploy/capture-deploy-ec2.sh")"; then
     :

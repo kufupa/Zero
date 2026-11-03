@@ -5,6 +5,7 @@ const fixtures = vi.hoisted(() => ({
   order: [] as string[],
   genericGuard: vi.fn(),
   strictGuard: vi.fn(),
+  screenshot: vi.fn(async () => Buffer.from('synthetic')),
   readShallow: vi.fn(async (_page: unknown, confirmation: string) => ({ confirmation })),
   readRecord: vi.fn(async () => ({ details: { fields: [{ name: 'status', value: 'Reserved' }] } })),
 }));
@@ -18,7 +19,7 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
       await (options.prepareContext as (context: unknown) => Promise<void>)(context);
     }
     fixtures.order.push('page');
-    return operation({ context: () => context, on: () => {} });
+    return operation({ context: () => context, on: () => {}, screenshot: fixtures.screenshot });
   },
 }));
 vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({ installReadOnlyGuard: fixtures.genericGuard }));
@@ -60,5 +61,17 @@ describe('strict saved-stay read session', () => {
     expect(fixtures.options).not.toHaveProperty('prepareContext');
     expect(fixtures.genericGuard).toHaveBeenCalledOnce();
     expect(fixtures.strictGuard).not.toHaveBeenCalled();
+  });
+
+  it('captures a record image only after a guarded read opens that record', async () => {
+    await withSavedStayAgentSession(async ({ runTool, screenshotRecord }) => {
+      await expect(screenshotRecord()).rejects.toThrow('RECORD_SCREENSHOT_UNAVAILABLE');
+      await runTool({ tool: 'read', confirmation: '123-1' });
+      await expect(screenshotRecord()).resolves.toEqual(Buffer.from('synthetic'));
+      expect(fixtures.screenshot).toHaveBeenCalledWith({ fullPage: true });
+    }, { readOnly: true, readOnlyConfirmation: '123-1' });
+    await withSavedStayAgentSession(async ({ screenshotRecord }) => {
+      await expect(screenshotRecord()).rejects.toThrow('RECORD_SCREENSHOT_UNAVAILABLE');
+    });
   });
 });

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { centurionWriterIdentity, centurionWriterQuiesced, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readShallow, readRecord, readDocuments } from './hms-readers.mjs';
 import { installPaneAttachReadGuard } from './pane-attach-read-guard.mjs';
 import { attachLabtestDocument } from './stay360-document-attach.mjs';
@@ -85,11 +85,51 @@ async function freshDocuments(page, input, code, setNative) {
   return hasUniqueDocumentListing(docs, code, input.documentName);
 }
 
+/** Recovery accepts only a fresh positive listing on the original fake stay. */
+export async function provePositiveAttachRecovery(intent, { openSession = withCenturionStay360Page,
+  shallow = readShallow, read = readRecord, documents = readDocuments, writerQuiesced = centurionWriterQuiesced } = {}) {
+  try {
+    const recovery = intent?.recovery;
+    if (intent?.operation !== 'attach_document' || intent.propertyCode !== 'HRCEN' ||
+        intent.firstName !== 'Proof' || intent.lastName !== 'Labtest' ||
+        !/^[0-9]{1,30}$/.test(intent.nativeGuestId || '') || !writerQuiesced(recovery?.writer) ||
+        !/^\d+-\d+$/.test(recovery?.confirmation || '') || !validIsoDate(recovery.arrival) ||
+        recovery.arrival < '2027-01-01' || !validIsoDate(recovery.departure) || recovery.departure <= recovery.arrival ||
+        !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(recovery.documentCode || '') ||
+        typeof recovery.documentName !== 'string' || !/\.pdf$/i.test(recovery.documentName) ||
+        recovery.documentName !== recovery.documentName.replace(/\s+/g, ' ').trim() ||
+        !/^[a-f0-9]{64}$/.test(recovery.pdfSha256 || '')) return { outcome: 'unconfirmed' };
+    const ref = { current: null };
+    return await openSession(async (page) => {
+      await shallow(page, recovery.confirmation, { guestName: 'Proof Labtest', arrivalDate: recovery.arrival });
+      const record = await read(page, recovery.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
+      const stay = { confirmation: recovery.confirmation, arrival: recovery.arrival, departure: recovery.departure,
+        nativeGuestId: intent.nativeGuestId };
+      if (!approvedDocumentDispatch(record, stay, { cmsSend: false })) return { outcome: 'unconfirmed' };
+      ref.current = record.nativePreimage;
+      const listing = await documents(page, recovery.confirmation);
+      if (!hasUniqueDocumentListing(listing, recovery.documentCode, recovery.documentName)) return { outcome: 'unconfirmed' };
+      const screenshot = await page.screenshot({ fullPage: true });
+      if (!Buffer.isBuffer(screenshot) || !screenshot.length || screenshot.length > 10 * 1024 * 1024) {
+        return { outcome: 'unconfirmed' };
+      }
+      return { outcome: 'verified', confirmation: recovery.confirmation, screenshot,
+        readback: { confirmation: recovery.confirmation, nativeGuestId: intent.nativeGuestId,
+          documentCode: recovery.documentCode, documentName: recovery.documentName, uniqueFreshListing: true } };
+    }, { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(5 * 60_000),
+      prepareContext: (context) => installPaneAttachReadGuard(context, {
+        confirmation: recovery.confirmation, getNative: () => ref.current,
+      }) });
+  } catch { return { outcome: 'unconfirmed' }; }
+}
+
 /** Caller holds the property lock and supplies a live server-side dispatch check. */
 export async function runCloudPaneAttach(input, { openSession = withCenturionStay360Page,
-  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord } = {}) {
+  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord,
+  writerIdentity = centurionWriterIdentity } = {}) {
   if (input.target?.propertyCode !== 'HRCEN' || input.allowRealGuest || typeof input.beforeDispatch !== 'function' ||
       typeof input.finalAuthority !== 'function' || typeof input.dispatchWithAuthority !== 'function' ||
+      typeof input.continuationAllowed !== 'function' ||
       !input.approvedSnapshot || !/^[a-f0-9]{64}$/.test(input.pdfSha256 || '') ||
       typeof input.documentName !== 'string' || input.documentName !== input.documentName.replace(/\s+/g, ' ').trim()) {
     return { outcome: 'refused_input', uploadSent: false, screenshots: [] };
@@ -119,8 +159,9 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
         description: input.documentName, mimeType: 'application/pdf', bytes },
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         beforeDispatch: input.beforeDispatch, finalAuthority: () => input.finalAuthority(code),
-        dispatchWithAuthority: (dispatch, requestDigest) =>
-          input.dispatchWithAuthority(code, expected.guestId, requestDigest, dispatch),
+        continuationAllowed: input.continuationAllowed,
+        dispatchWithAuthority: (dispatch, requestDigest, beforeShot, intercepted) =>
+          input.dispatchWithAuthority(code, expected.guestId, requestDigest, dispatch, writerIdentity(page), beforeShot, intercepted),
         onDispatched: () => { dispatched = true; }, strictNetwork: true, timeoutMs: 7 * 60_000 });
     }, options(writing, 10 * 60_000));
     writerSessionClosed = true; // withCenturionStay360Page returns only after verified browser cleanup.

@@ -186,6 +186,8 @@ append_env QUOTE_FOLLOWUPS_SINCE "${QUOTE_FOLLOWUPS_SINCE:-}"
 # Prefetch also needs HMS_PREFETCH_ENABLED=1; HMS_LANE_PAUSED=1 stops every hms lane claim.
 append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
+append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"
+append_env HMS_QUOTE_PREPARE_PER_HOUR "${HMS_QUOTE_PREPARE_PER_HOUR:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"
 append_env HMS_PREFETCH_PER_HOUR "${HMS_PREFETCH_PER_HOUR:-}"
 # Availability probe per quote stay (U10): off unless ops set HMS_AVAILABILITY_PREFETCH=on. Needs HMS_JOB_QUEUE=on.
@@ -194,6 +196,8 @@ append_env HMS_AVAILABILITY_PREFETCH "${HMS_AVAILABILITY_PREFETCH:-}"
 append_env HMS_AVAILABILITY_PER_HOUR "${HMS_AVAILABILITY_PER_HOUR:-}"
 # Per-workflow pane writes (KTD1). Unset unless ops pass them; never default on.
 append_env PANE_WRITE_CREATE "${PANE_WRITE_CREATE:-}"
+# Cloud Create cutover stays off until the shared write claim is ready.
+append_env PANE_CLOUD_CREATE_DISPATCH "${PANE_CLOUD_CREATE_DISPATCH:-}"
 append_env PANE_WRITE_AMEND_UNPAID "${PANE_WRITE_AMEND_UNPAID:-}"
 append_env PANE_WRITE_AMEND_PAID "${PANE_WRITE_AMEND_PAID:-}"
 append_env PANE_WRITE_CANCEL_UNPAID "${PANE_WRITE_CANCEL_UNPAID:-}"

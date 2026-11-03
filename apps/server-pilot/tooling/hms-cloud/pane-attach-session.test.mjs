@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { approvedDocumentDispatch, approvedLabtestRecord, documentCodeForUuid, filingSnapshot, hasUniqueDocumentListing, runCloudPaneAttach } from './pane-attach-session.mjs';
+import { approvedDocumentDispatch, approvedLabtestRecord, documentCodeForUuid, filingSnapshot, hasUniqueDocumentListing,
+  provePositiveAttachRecovery, runCloudPaneAttach } from './pane-attach-session.mjs';
 
 const native = { propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', firstName: 'Proof',
   lastName: 'Labtest', status: 'Reserved', guaranteeCode: 'NGI', arrival: '2027-10-12', departure: '2027-10-13',
@@ -93,12 +94,44 @@ test('fresh listing requires a unique exact code and filename', () => {
   assert.equal(matches([{ ...row, documentCode: 'NAVA456' }]), false);
 });
 
+test('restart recovery requires a stopped writer and fresh exact unique document metadata on the same fake stay', async () => {
+  const code = documentCodeForUuid(randomUUID());
+  const intent = { operation: 'attach_document', propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest',
+    nativeGuestId: native.guestId, recovery: { confirmation: native.confirmation, arrival: native.arrival,
+      departure: native.departure, documentCode: code, documentName: 'voucher.pdf', pdfSha256: 'a'.repeat(64), writer: {} } };
+  const row = { documentCode: code, name: 'voucher.pdf' };
+  let shots = 0;
+  const deps = { writerQuiesced: () => true, shallow: async () => {}, read: async () => record,
+    documents: async () => ({ documents: [row] }), openSession: async (fn, options) => {
+      assert.equal(options.blockServiceWorkers, true); assert.equal(typeof options.prepareContext, 'function');
+      return fn({ screenshot: async () => { shots++; return png; } });
+    } };
+  const positive = await provePositiveAttachRecovery(intent, deps);
+  assert.equal(positive.outcome, 'verified');
+  assert.deepEqual(positive.readback, { confirmation: native.confirmation, nativeGuestId: native.guestId,
+    documentCode: code, documentName: 'voucher.pdf', uniqueFreshListing: true });
+  assert.deepEqual(positive.screenshot, png);
+  for (const altered of [[], [row, row], [{ ...row, name: 'wrong.pdf' }], [{ ...row, documentCode: 'OTHER' }]]) {
+    assert.equal((await provePositiveAttachRecovery(intent, { ...deps, documents: async () => ({ documents: altered }) })).outcome, 'unconfirmed');
+  }
+  assert.equal((await provePositiveAttachRecovery(intent, { ...deps, writerQuiesced: () => false })).outcome, 'unconfirmed');
+  assert.equal((await provePositiveAttachRecovery({ ...intent, nativeGuestId: '124' }, deps)).outcome, 'unconfirmed');
+  assert.equal((await provePositiveAttachRecovery({ ...intent, propertyCode: 'OTHER' }, deps)).outcome, 'unconfirmed');
+  assert.equal((await provePositiveAttachRecovery({ ...intent, recovery: { ...intent.recovery, departure: '2027-10-14' } }, deps)).outcome, 'unconfirmed');
+  assert.equal((await provePositiveAttachRecovery(intent, { ...deps, read: async () => ({ ...record,
+    details: { fields: [{ name: 'udfchkbox04', value: true }] } }) })).outcome, 'unconfirmed');
+  assert.equal((await provePositiveAttachRecovery(intent, { ...deps, openSession: async (fn) => {
+    await fn({ screenshot: async () => png }); throw new Error('browser close unconfirmed');
+  } })).outcome, 'unconfirmed');
+  assert.equal(shots, 1);
+});
+
 test('filing refuses names that the Documents reader would normalize before opening HMS', async () => {
   for (const documentName of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
     let opened = 0;
     const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, documentName,
       approvedSnapshot: snapshot, pdfSha256: 'a'.repeat(64), beforeDispatch: async () => true,
-      finalAuthority: async () => true, dispatchWithAuthority: async () => {} },
+      finalAuthority: async () => true, continuationAllowed: () => true, dispatchWithAuthority: async () => {} },
     { openSession: async () => { opened++; } });
     assert.equal(result.outcome, 'refused_input');
     assert.equal(result.uploadSent, false);
@@ -114,6 +147,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     let heldCode;
     const input = { target: { propertyCode: 'HRCEN' }, confirmation: native.confirmation, arrival: native.arrival,
       documentName: 'voucher.pdf', file: path, approvedStay: stay, approvedSnapshot: snapshot, beforeDispatch: async () => true,
+      continuationAllowed: () => true,
       finalAuthority: async (code) => { heldCode = code; return true; },
       dispatchWithAuthority: async (_code, guestId, requestDigest, dispatch) => {
         assert.equal(guestId, native.guestId); assert.equal(requestDigest, 'a'.repeat(64)); return dispatch();

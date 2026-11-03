@@ -229,6 +229,9 @@ async function loadGrant(
   return { grant: parsed.data, payloadHash: row.payloadHash };
 }
 
+// Internal recovery reuses the same grant integrity check as the write path.
+export { loadGrant as readVerifiedHmsWriteGrant };
+
 async function assertNoWriteInFlight(db: DB, workItemId: string): Promise<void> {
   const [open] = await db
     .select({ id: aiWorkflowRun.id })

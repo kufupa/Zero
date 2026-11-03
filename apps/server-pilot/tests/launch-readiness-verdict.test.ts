@@ -22,10 +22,12 @@ const workflowQuerySource = script.slice(
   script.indexOf("const [workflow] = await sql.begin('read only', async (tx) => {"),
   script.indexOf('  const [outbound]'),
 );
-const runWorkflowSql = new Function(
-  'sql', 'deadLetterWindowAt',
+const workflowSql = new Function(
+  'sql', 'deadLetterWindowAt', 'deployStartedAt',
   `return (async () => { ${workflowQuerySource}\nreturn workflow; })();`,
-) as (sql: any, boundary: string | null) => Promise<any>;
+) as (sql: any, boundary: string | null, deployStartedAt: string | null) => Promise<any>;
+const runWorkflowSql = (sql: any, boundary: string | null, deployStartedAt: string | null = null) =>
+  workflowSql(sql, boundary, deployStartedAt);
 const markerValidatorSource = script.slice(
   script.indexOf('const rawLastGoodDeployAt ='),
   script.indexOf('const empty = {'),
@@ -68,6 +70,7 @@ function baselineRemote() {
       centurionActiveCategoryCount: 12,
       workflowCategoryMissingCount: 0,
       workflowNonterminalCount: 0,
+      workflowPostRestartNonterminalCount: 0 as number | null,
       workflowDeadLetterCount: 0,
       workflowDeadLetterRecentCount: 0,
       workflowDeadLetterWindowStart: null,
@@ -81,7 +84,7 @@ function baselineRemote() {
 
 type Remote = ReturnType<typeof baselineRemote>;
 
-function runVerdict(patch: (remote: Remote) => void = () => {}) {
+function runVerdict(patch: (remote: Remote) => void = () => {}, allowBacklog = '') {
   const remote = baselineRemote();
   patch(remote);
   const env = {
@@ -133,6 +136,7 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     REMOTE_TARGET_HEALTH_REQUIRED: '0',
     REMOTE_ADMIN_LIFECYCLE_MODE: '',
     REMOTE_ADMIN_FACTS: '{}',
+    NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG: allowBacklog,
   };
   const result = spawnSync('bash', ['-c', `set -euo pipefail\n${verdict}`], {
     env,
@@ -146,6 +150,56 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     report: stdout ? (JSON.parse(stdout) as Record<string, any>) : null,
   };
 }
+
+describe('owner waiver for the existing workflow backlog', () => {
+  it('leaves the measured backlog visible as a warning', () => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, '1');
+    expect(run.status).toBe(0);
+    expect(run.report).toMatchObject({
+      status: 'READY',
+      checks: { workflowNonterminalBacklogEmpty: false },
+      failures: [],
+      warnings: ['workflowNonterminalBacklogEmpty'],
+      observations: { workflowNonterminalCount: 54, workflowNonterminalBacklogWaived: true },
+    });
+    expect(run.stderr).toContain('owner waived workflowNonterminalBacklogEmpty');
+  });
+
+  it('still blocks nonterminal work created after this restart', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 55;
+      remote.db.workflowPostRestartNonterminalCount = 1;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowPostRestartBacklogEmpty']);
+    expect(run.report?.warnings).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+
+  it('fails closed if the current restart boundary could not be measured', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 54;
+      remote.db.workflowPostRestartNonterminalCount = null;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowPostRestartBacklogEmpty']);
+  });
+
+  it('keeps all other failures blocking when the backlog is waived', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 54;
+      remote.db.workflowDeadLetterRecentCount = 1;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowDeadLetterBacklogEmpty']);
+    expect(run.report?.warnings).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+
+  it.each(['', '0', 'true'])('requires an explicit 1 for the waiver (%s)', (value) => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, value);
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+});
 
 describe('last-good deploy marker validation in launch-readiness', () => {
   it.each([
@@ -171,9 +225,11 @@ describe('last-good deploy marker validation in launch-readiness', () => {
 describe('deploy restart dead-letter boundary', () => {
   it('runs the workflow query in a UTC read-only transaction', async () => {
     const calls: string[] = [];
-    const transaction = async (parts: TemplateStringsArray) => {
+    const boundValues: unknown[][] = [];
+    const transaction = async (parts: TemplateStringsArray, ...values: unknown[]) => {
       const statement = parts.join('?').replace(/\s+/g, ' ').trim();
       calls.push(statement);
+      boundValues.push(values);
       return statement.startsWith('SELECT') ? [{ dead_letter_recent: 1 }] : [];
     };
     const sql = {
@@ -182,10 +238,13 @@ describe('deploy restart dead-letter boundary', () => {
         return callback(transaction);
       },
     };
-    const row = await runWorkflowSql(sql, '2026-11-03T10:00:00.500Z');
+    const boundary = '2026-11-03T10:00:00.500Z';
+    const row = await runWorkflowSql(sql, boundary, boundary);
     expect(row.dead_letter_recent).toBe(1);
     expect(calls[0]).toBe("SET LOCAL TIME ZONE 'UTC'");
     expect(calls[1]).toContain('FROM ai_workflow_run');
+    expect(calls[1]).toContain('created_at >= ?::timestamptz');
+    expect(boundValues[1]).toContain(boundary);
   });
 
   it('uses the current restart before the last-good marker', () => {
@@ -512,7 +571,7 @@ describe.skipIf(!dbConfigured)('dead-letter window SQL (disposable DB)', () => {
     try {
       // TEMP table: visible only to this session, so the disposable DB keeps no state from the test.
       await db.unsafe(
-        `CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, finished_at ${columnKind}, updated_at ${columnKind} NOT NULL)`,
+        `CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, created_at ${columnKind} NOT NULL DEFAULT now(), finished_at ${columnKind}, updated_at ${columnKind} NOT NULL)`,
       );
       await db`SET TIME ZONE 'Africa/Johannesburg'`;
       for (const time of Array.isArray(deadLetterAt) ? deadLetterAt : [deadLetterAt]) {
@@ -575,6 +634,24 @@ describe.skipIf(!dbConfigured)('dead-letter window SQL (disposable DB)', () => {
     const boundary = hoursAgo(1);
     const row = await runWindow(boundary.toISOString(), boundary);
     expect(row.dead_letter_recent).toBe(1);
+  });
+
+  it('counts only nonterminal rows created on or after the deploy restart', async () => {
+    const db = postgres(testDbUrl, { max: 1 });
+    const boundary = hoursAgo(1);
+    try {
+      await db.unsafe('CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, created_at timestamp NOT NULL, finished_at timestamp, updated_at timestamp NOT NULL)');
+      await db`INSERT INTO ai_workflow_run (state, created_at, updated_at) VALUES
+        ('queued', ${new Date(boundary.getTime() - 1).toISOString()}, now()),
+        ('running', ${boundary.toISOString()}, now()),
+        ('succeeded', ${new Date(boundary.getTime() + 1).toISOString()}, now())`;
+      const row = await runWorkflowSql(db, boundary.toISOString(), boundary.toISOString());
+      expect(row.nonterminal).toBe(2);
+      expect(row.post_restart_nonterminal).toBe(1);
+      expect((await runWorkflowSql(db, boundary.toISOString())).post_restart_nonterminal).toBeNull();
+    } finally {
+      await db.end({ timeout: 2 });
+    }
   });
 });
 

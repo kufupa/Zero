@@ -7,7 +7,7 @@ import test from 'node:test';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentLabtestRecord } from './labtest-record.mjs';
-import { attachLabtestDocument, createDocumentUploadGate, documentUploadRequestDigest, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
+import { attachLabtestDocument, consumeNeverDispatchedAttachProof, createDocumentUploadGate, documentUploadRequestDigest, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
   matchesDocumentUpload } from './stay360-document-attach.mjs';
 
 const fields = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg', 'typecode',
@@ -203,6 +203,25 @@ test('a delayed timeout callback cannot release an upload past its monotonic dea
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('the final continuation fails closed when its completion budget expires or is unreadable', async () => {
+  for (const scenario of ['expired', 'throws']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-finish-budget-'));
+    try {
+      let sent = 0, aborted = 0, armed = true;
+      const request = upload(), route = { request: () => request,
+        continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => assert.fail('must not dispatch'), onIntentError: () => {},
+        onAuthorityError: () => {}, continuationAllowed: () => {
+          if (scenario === 'throws') throw new Error('deadline unavailable');
+          return armed;
+        }, dispatchWithAuthority: async (next) => { armed = false; return next(); } });
+      assert.equal(await gate(route, { candidate: request, armed: true, checkStatus: 200 }).result, 'aborted');
+      assert.equal(sent, 0); assert.equal(aborted, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
 test('an authority callback cannot continue the same upload twice', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
   try {
@@ -244,6 +263,67 @@ test('disarm drains a pending authority callback and prevents a late upload', as
       assert.equal(await pending, 'aborted');
       assert.equal(await gate.drain(100), true);
       assert.equal(sent, 0); assert.equal(aborted, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('a late claim can prove that its exact disarmed upload never reached the native request', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-no-dispatch-test-'));
+  try {
+    let enter, release, sent = 0, aborted = 0, proof, continuation, capturedRequest;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const waiting = new Promise((resolve) => { release = resolve; });
+    const request = upload(), route = { request: () => request,
+      continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {}, onAuthorityError: () => {},
+      dispatchWithAuthority: async (next, _digest, _before, intercepted) => {
+        enter(); await waiting;
+        try { return await next(); } catch (error) {
+          continuation = next; capturedRequest = intercepted; proof = next.proveNeverDispatched();
+          throw error;
+        }
+      } });
+    const pending = gate(route, { candidate: request, armed: true, checkStatus: 200 }).result;
+    await entered; gate.disarm();
+    assert.equal(await gate.drain(5), false);
+    release();
+    assert.equal(await pending, 'aborted');
+    assert.equal(await gate.drain(100), true);
+    assert.equal(capturedRequest, request); assert.ok(proof);
+    assert.equal(consumeNeverDispatchedAttachProof({}, request), false);
+    assert.equal(consumeNeverDispatchedAttachProof(proof, upload()), false);
+    assert.equal(consumeNeverDispatchedAttachProof(proof, request), true);
+    assert.equal(consumeNeverDispatchedAttachProof(proof, request), false);
+    assert.equal(await continuation(), undefined);
+    assert.equal(sent, 0); assert.equal(aborted, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('no-dispatch proof is unavailable after a native continuation was attempted or the wrapper returned', async () => {
+  for (const scenario of ['sent', 'network-failed', 'wrapper-returned']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-no-dispatch-test-'));
+    try {
+      let sent = 0, continuation, proof;
+      const request = upload(), route = { request: () => request,
+        continue: () => { sent++; if (scenario === 'network-failed') throw new Error('network uncertain'); return 'continued'; },
+        abort: () => 'aborted' };
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {}, onAuthorityError: () => {},
+        dispatchWithAuthority: async (next) => {
+          continuation = next;
+          if (scenario !== 'wrapper-returned') {
+            try { await next(); } catch { /* Native dispatch may still have happened. */ }
+            proof = next.proveNeverDispatched();
+          }
+          return 'done';
+        } });
+      await gate(route, { candidate: request, armed: true, checkStatus: 200 }).result;
+      if (scenario === 'wrapper-returned') {
+        assert.equal(continuation.proveNeverDispatched(), null);
+        assert.equal(await continuation(), undefined);
+      } else assert.equal(proof, null);
+      assert.equal(sent, scenario === 'wrapper-returned' ? 0 : 1);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 });

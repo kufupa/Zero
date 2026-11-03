@@ -41,6 +41,7 @@ import {
   paneStayInputForRoom,
   readPaneSaveFlag,
   type PaneStayClient,
+  type PaneStayInput,
   type PaneStayResult,
 } from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
@@ -1050,6 +1051,96 @@ function previewButton(index: number): HTMLButtonElement {
 function bookButton(index: number): HTMLButtonElement {
   return screen.getAllByRole('button', { name: 'Create provisional booking' })[index] as HTMLButtonElement;
 }
+
+describe('Cloud create controls', () => {
+  it.each(['off', 'lab'] as const)('binds selected mail and keeps preview-only Save disabled in %s mode', async (mode) => {
+    const preview = vi.fn<PaneStayClient['preview']>()
+      .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', city: 'Pretoria' },
+      ] })
+      .mockResolvedValueOnce({ status: 'ok', outcome: 'preview_only', runId: 'run-preview', screenshots: ['filled.png'] });
+    const { client, commit } = paneClient({ preview, mode: () => mode, canPreview: () => true });
+    const draft = previewableDraft('BAR');
+    Object.assign(draft.draft.rooms[0]!.request, { firstName: 'Proof', lastName: 'Labtest',
+      arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const session = quotedSession(draft);
+    const workItemId = '11111111-1111-4111-8111-111111111111';
+    render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
+      propertyCode="HRCEN" paneSave={client} />);
+    expect(screen.getByText(/HMS testing is currently limited to Proof Labtest/)).toBeDefined();
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    const selector = await screen.findByLabelText('Guest profile');
+    fireEvent.change(selector, { target: { value: '123' } });
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(/Preview only: Proof Labtest.*Nothing was saved/)).toBeDefined();
+    const reviewed = within(screen.getByLabelText('Reviewed booking details'));
+    expect(reviewed.getByText('Proof Labtest · #123')).toBeDefined();
+    expect(reviewed.getByText(/Send off/)).toBeDefined();
+    expect(reviewed.getByText('Source and guarantee')).toBeDefined();
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1',
+      confirmationSendMail: false, createSelection: { source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
+        identity: { stayId: 's1', rowId: 'g1', roomIndex: 1 }, nativeGuestId: '123' } }));
+    expect(bookButton(0).disabled).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('uses the mounted preview route while remembering the Cloud preview capability', async () => {
+    const preview = vi.fn().mockResolvedValue({ status: 'ok', outcome: 'preview_only' });
+    const trpc = { brain: { getCapabilities: { query: async () => ({ paneSave: false, paneCreatePreview: true }) } },
+      quoteWorkflow: { previewStay: { mutate: preview } } };
+    expect(await readPaneSaveFlag(trpc)).toBe(true);
+    const client = paneStayFromTrpc(trpc);
+    expect(client.mode?.()).toBe('off');
+    expect(client.canPreview?.()).toBe(true);
+    await client.preview({} as PaneStayInput);
+    await client.preview({ propertyCode: 'HRDAV' } as PaneStayInput);
+    expect(preview).toHaveBeenCalledTimes(2);
+    delete (trpc.quoteWorkflow as { previewStay?: unknown }).previewStay;
+    await expect(client.preview({} as PaneStayInput)).rejects.toThrow('pane_save_client_missing');
+  });
+
+  it('uses one Go on a bound Labtest preview and keeps HMS sending off', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>()
+      .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', city: 'Pretoria' },
+      ] }).mockResolvedValueOnce(PREVIEW_OK);
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client } = paneClient({ preview, commit, mode: () => 'lab', canPreview: () => true });
+    const draft = previewableDraft('BAR');
+    Object.assign(draft.draft.rooms[0]!.request, { firstName: 'Proof', lastName: 'Labtest',
+      arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const workItemId = '22222222-2222-4222-8222-222222222222';
+    render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)} workItemId={workItemId}
+      propertyCode="HRCEN" paneSave={client} />);
+    fireEvent.click(previewButton(0));
+    fireEvent.change(await screen.findByLabelText('Guest profile'), { target: { value: '123' } });
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    expect(screen.queryByText(/Booking from Nava is not available yet/)).toBeNull();
+    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1',
+      confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
+  });
+
+  it('preserves the other hotel’s existing preview and Save controls', async () => {
+    const { client, preview } = paneClient({ canPreview: () => true });
+    render(<BookingCards draft={previewableDraft()} propertyCode="HRDAV" paneSave={client} />);
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAV' }));
+    expect(bookButton(0).disabled).toBe(false);
+  });
+});
 
 
 describe('HRDAV booking fields and CMS', () => {
