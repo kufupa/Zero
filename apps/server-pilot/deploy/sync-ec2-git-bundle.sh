@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep transport configuration but do not let Git environment overrides
+# redirect checkout, object or ref discovery to another repository.
+while IFS='=' read -r name _; do
+  case "$name" in
+    GIT_BRANCH|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_TERMINAL_PROMPT) ;;
+    GIT_*) unset "$name" ;;
+  esac
+done < <(env)
+
 # Sync chosen local branch to EC2 via private S3 git bundle (no git push).
 # EC2 fetches the bundle directly from S3 using its instance profile role;
 # no presigned URLs are generated or persisted in SSM command history.
@@ -486,9 +495,25 @@ if ! git check-ref-format --branch "$GIT_BRANCH" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Bundle ships local refs/heads/$GIT_BRANCH. Fetch origin first; refuse a stale
-# or unpushed local tip (17:45 shipped older-than-prod main and reset EC2).
-LOCAL_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}" || true)"
+# The approved deploy bundles its checked HEAD, even if shared local main is
+# held by another worktree. Direct sync retains its existing branch behavior.
+BUNDLE_SOURCE_REF="refs/heads/$GIT_BRANCH"
+if [ -n "${NAVA_DEPLOY_EXPECTED_SHA:-}" ]; then
+  if ! [[ "$NAVA_DEPLOY_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+    [ "$GIT_BRANCH" != main ] || [ "${ALLOW_UNPUSHED_DEPLOY:-0}" = 1 ]; then
+    echo "error: invalid checked deploy identity" >&2
+    exit 2
+  fi
+  BUNDLE_SOURCE_REF=HEAD
+  LOCAL_COMMIT="$(git rev-parse --verify --quiet 'HEAD^{commit}' || true)"
+  if [ "$LOCAL_COMMIT" != "$NAVA_DEPLOY_EXPECTED_SHA" ]; then
+    echo "error: HEAD moved away from the checked deploy worktree" >&2
+    exit 2
+  fi
+else
+  LOCAL_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}" || true)"
+fi
+# Fetch origin first; refuse a stale or unpushed tip before uploading.
 if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ]; then
   if ! GIT_TERMINAL_PROMPT=0 git fetch -q origin "+refs/heads/$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH"; then
     echo "error: cannot fetch origin/$GIT_BRANCH to check the deploy branch (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
@@ -545,12 +570,12 @@ else
 fi
 
 echo "Creating git bundle for $GIT_BRANCH..."
-git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"
+git bundle create "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF"
 
-BUNDLE_LINE="$(git bundle list-heads "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH")"
+BUNDLE_LINE="$(git bundle list-heads "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF")"
 BUNDLE_COMMIT="${BUNDLE_LINE%% *}"
 BUNDLE_HEAD="${BUNDLE_LINE#* }"
-if [ "$BUNDLE_HEAD" != "refs/heads/$GIT_BRANCH" ] ||
+if [ "$BUNDLE_HEAD" != "$BUNDLE_SOURCE_REF" ] ||
   ! git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}" >/dev/null; then
   echo "error: branch $GIT_BRANCH not found in $REPO_ROOT" >&2
   exit 1
@@ -558,6 +583,10 @@ fi
 # The bundle re-reads the branch by name; refuse if it moved after the origin check.
 if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ] && [ "$BUNDLE_COMMIT" != "$LOCAL_COMMIT" ]; then
   echo "error: $GIT_BRANCH moved during bundle creation; rerun the deploy" >&2
+  exit 1
+fi
+if [ -n "${NAVA_DEPLOY_EXPECTED_SHA:-}" ] && [ "$BUNDLE_COMMIT" != "$NAVA_DEPLOY_EXPECTED_SHA" ]; then
+  echo "error: bundle does not match the checked deploy worktree" >&2
   exit 1
 fi
 
@@ -588,11 +617,11 @@ printf -v Q_REMOTE_BUNDLE '%q' "$REMOTE_BUNDLE"
 printf -v Q_REPO_PATH '%q' "$EC2_REPO_PATH"
 printf -v Q_GIT_BRANCH '%q' "$GIT_BRANCH"
 printf -v Q_BUNDLE_REF '%q' "refs/remotes/bundle/${GIT_BRANCH}"
-printf -v Q_BUNDLE_REFSPEC '%q' "+refs/heads/${GIT_BRANCH}:refs/remotes/bundle/${GIT_BRANCH}"
+printf -v Q_BUNDLE_REFSPEC '%q' "+${BUNDLE_SOURCE_REF}:refs/remotes/bundle/${GIT_BRANCH}"
 printf -v Q_BUNDLE_COMMIT '%q' "$BUNDLE_COMMIT"
 printf -v Q_BUNDLE_URI '%q' "s3://${BOOTSTRAP_BUCKET}/${BUNDLE_KEY}"
 printf -v Q_AWS_REGION '%q' "$AWS_REGION"
-REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; [ \"\$(git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit})\" = ${Q_BUNDLE_COMMIT} ] || { echo \"error: bundle commit mismatch\" >&2; exit 1; }; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_COMMIT}; git reset --hard ${Q_BUNDLE_COMMIT}; else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; [ \"\$(git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit})\" = ${Q_BUNDLE_COMMIT} ] || { echo \"error: bundle commit mismatch\" >&2; exit 1; }; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_COMMIT}; git reset --hard ${Q_BUNDLE_COMMIT}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
+REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; exec 9>>/home/ubuntu/.nava-deploy.lock; flock -x 9; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; [ \"\$(git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit})\" = ${Q_BUNDLE_COMMIT} ] || { echo \"error: bundle commit mismatch\" >&2; exit 1; }; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_COMMIT}; git reset --hard ${Q_BUNDLE_COMMIT}; else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; [ \"\$(git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit})\" = ${Q_BUNDLE_COMMIT} ] || { echo \"error: bundle commit mismatch\" >&2; exit 1; }; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_COMMIT}; git reset --hard ${Q_BUNDLE_COMMIT}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
 
 echo "Deploying bundle to EC2 via SSM (instance-profile S3 access)..."
 bash "$SCRIPT_DIR/ssm-run-command.sh" "$REMOTE_SCRIPT"

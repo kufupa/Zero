@@ -1,17 +1,19 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -357,64 +359,195 @@ describe('hms-job.sh shell contract', () => {
 });
 
 describe('ops-deploy.sh worktree guard', () => {
-  function runGuard(worktreeLeaf: string) {
+  function makeWorktree(worktreeLeaf: string) {
     const root = mkdtempSync(join(tmpdir(), 'ops-deploy-guard-'));
     harnesses.push(root);
     const wt = join(root, '.worktrees', worktreeLeaf);
     mkdirSync(join(wt, 'apps/server-pilot/deploy'), { recursive: true });
-    execFileSync('git', ['init', '-q', wt]);
+    execFileSync('git', ['init', '-q', '-b', 'main', wt]);
     copyFileSync(opsScript, join(wt, 'apps/server-pilot/deploy/ops-deploy.sh'));
     writeFileSync(
       join(wt, 'apps/server-pilot/deploy/sync-ec2-git-bundle.sh'),
-      '#!/usr/bin/env bash\necho stub-sync\nexit 0\n',
+      '#!/usr/bin/env bash\necho "stub-sync $NAVA_DEPLOY_EXPECTED_SHA"\nexit "${SYNC_STUB_EXIT:-77}"\n',
       { mode: 0o755 },
     );
+    writeFileSync(
+      join(wt, 'apps/server-pilot/deploy/ssm-run-command.sh'),
+      `#!/usr/bin/env bash
+if [[ "$1" == *"pnpm install --frozen-lockfile"* ]]; then exit 77; fi
+exec node -e 'const {spawnSync}=require("node:child_process");const c=process.argv[1].replaceAll("/home/ubuntu/repos/zero",process.env.TEST_REMOTE_REPO).replaceAll("/home/ubuntu/.nava-deploy.lock",process.env.TEST_REMOTE_LOCK);const r=spawnSync("bash",["-c",c],{stdio:"inherit",env:process.env});process.exit(r.status??1)' "$1"
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(join(wt, 'tracked.txt'), 'clean\n');
+    execFileSync('git', ['-C', wt, 'add', '.']);
+    execFileSync('git', [
+      '-C', wt, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-qm', 'test deploy worktree',
+    ]);
+    execFileSync('git', ['-C', wt, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const head = execFileSync('git', ['-C', wt, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    return { root, wt, head };
+  }
+
+  function runGuard(box: ReturnType<typeof makeWorktree>, cwd = box.wt, extraEnv: Record<string, string> = {}) {
+    const { root, wt } = box;
     return spawnSync('bash', [join(wt, 'apps/server-pilot/deploy/ops-deploy.sh')], {
-      cwd: wt,
+      cwd,
       encoding: 'utf8',
       timeout: 10_000,
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: root,
         NAVA_RUN_HOLD_FILE: join(root, 'absent-hold'),
+        ...extraEnv,
       },
     });
   }
 
-  it('refuses unless cwd is .worktrees/recover-parse-failure', () => {
-    const refused = runGuard('lane-U6');
+  it('allows any clean main worktree and binds the bundle to its HEAD', () => {
+    const box = makeWorktree('release');
+    const allowed = runGuard(box);
+    expect(allowed.stdout).toContain(`stub-sync ${box.head}`);
+  });
+
+  it('allows checked origin/main even when local main belongs to an older checkout', () => {
+    const box = makeWorktree('current-origin');
+    execFileSync('git', ['-C', box.wt, 'checkout', '-qb', 'release']);
+    execFileSync('git', [
+      '-C', box.wt, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--allow-empty', '-qm', 'new origin',
+    ]);
+    execFileSync('git', ['-C', box.wt, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    const head = execFileSync('git', ['-C', box.wt, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const allowed = runGuard(box);
+    expect(allowed.stdout).toContain(`stub-sync ${head}`);
+  });
+
+  it.each(['tracked', 'untracked'])('refuses a %s dirty worktree', (kind) => {
+    const box = makeWorktree('dirty');
+    writeFileSync(join(box.wt, kind === 'tracked' ? 'tracked.txt' : 'new.txt'), 'changed\n');
+    const refused = runGuard(box);
     expect(refused.status).toBe(2);
-    expect(refused.stderr).toMatch(/recover-parse-failure/);
+    expect(refused.stderr).toContain('worktree is not clean');
     expect(refused.stdout).not.toMatch(/sync bundle/);
   });
 
-  it('allows cwd .worktrees/recover-parse-failure past the guard', () => {
-    const allowed = runGuard('recover-parse-failure');
-    expect(allowed.stderr).not.toMatch(/refuse: cwd must be/);
-    expect(allowed.stdout).toMatch(/sync bundle/);
+  it('refuses when cwd and script are from different worktrees', () => {
+    const a = makeWorktree('one');
+    const b = makeWorktree('two');
+    const refused = runGuard(a, b.wt);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('same git worktree');
   });
 
-  it('refuses a lane script even when cwd is recover-parse-failure', () => {
-    const root = mkdtempSync(join(tmpdir(), 'ops-deploy-guard-'));
-    harnesses.push(root);
-    const recover = join(root, '.worktrees', 'recover-parse-failure');
-    const lane = join(root, '.worktrees', 'lane-U6');
-    for (const wt of [recover, lane]) {
-      mkdirSync(join(wt, 'apps/server-pilot/deploy'), { recursive: true });
-      execFileSync('git', ['init', '-q', wt]);
-      copyFileSync(opsScript, join(wt, 'apps/server-pilot/deploy/ops-deploy.sh'));
-    }
-    const refused = spawnSync('bash', [join(lane, 'apps/server-pilot/deploy/ops-deploy.sh')], {
-      cwd: recover,
-      encoding: 'utf8',
-      timeout: 10_000,
-      env: {
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        HOME: root,
-        NAVA_RUN_HOLD_FILE: join(root, 'absent-hold'),
-      },
+  it('refuses a clean worktree that differs from origin/main', () => {
+    const box = makeWorktree('stale');
+    execFileSync('git', [
+      '-C', box.wt, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--allow-empty', '-qm', 'ahead of origin',
+    ]);
+    const refused = runGuard(box);
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('worktree HEAD and origin/main must match');
+  });
+
+  it('ignores inherited Git worktree overrides when checking the script', () => {
+    const clean = makeWorktree('clean-env');
+    const dirty = makeWorktree('dirty-env');
+    writeFileSync(join(dirty.wt, 'tracked.txt'), 'changed\n');
+    const refused = runGuard(dirty, dirty.wt, {
+      GIT_DIR: join(clean.wt, '.git'),
+      GIT_WORK_TREE: clean.wt,
     });
     expect(refused.status).toBe(2);
-    expect(refused.stderr).toMatch(/script checkout must be/);
+    expect(refused.stderr).toContain('worktree is not clean');
+    expect(refused.stdout).not.toContain('stub-sync');
   });
+
+  it('cannot use test variables or Git discovery ceilings to bypass the main guard', () => {
+    const box = makeWorktree('ceiling');
+    const refused = runGuard(box, box.wt, {
+      GIT_CEILING_DIRECTORIES: join(box.wt, 'apps'),
+      REMOTE_TEST_REPO: box.wt,
+      GIT_BRANCH: 'feature',
+      ALLOW_UNPUSHED_DEPLOY: '1',
+    });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('main and the origin check are required');
+    expect(refused.stdout).not.toContain('stub-sync');
+  });
+
+  it.each([false, true])('checks the remote SHA before mutation (changed=%s)', (changed) => {
+    const box = makeWorktree('remote-sha');
+    const remote = join(box.root, 'remote');
+    execFileSync('git', ['clone', '-q', box.wt, remote]);
+    if (changed) {
+      execFileSync('git', [
+        '-C', remote, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        'commit', '--allow-empty', '-qm', 'concurrent deploy',
+      ]);
+    }
+    const hook = join(remote, '.husky', '_', 'h');
+    mkdirSync(dirname(hook), { recursive: true });
+    writeFileSync(hook, 'fixture');
+    chmodSync(hook, 0o444);
+    const result = runGuard(box, box.wt, {
+      SYNC_STUB_EXIT: '0', TEST_REMOTE_REPO: remote, TEST_REMOTE_LOCK: join(box.root, 'deploy.lock'),
+    });
+    expect(result.status).toBe(changed ? 20 : 77);
+    if (changed) expect(result.stderr).toContain('remote checkout changed');
+    expect(Boolean(statSync(hook).mode & 0o200)).toBe(!changed);
+  });
+
+  it('waits for the shared deploy lock before touching the remote checkout', async () => {
+    const box = makeWorktree('remote-lock');
+    const remote = join(box.root, 'remote');
+    const lock = join(box.root, 'deploy.lock');
+    const attempted = join(box.root, 'lock-attempted');
+    const bin = join(box.root, 'bin');
+    execFileSync('git', ['clone', '-q', box.wt, remote]);
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'flock'), '#!/usr/bin/env bash\nprintf x > "$TEST_LOCK_ATTEMPT"\nexec /usr/bin/flock "$@"\n', { mode: 0o755 });
+    const hook = join(remote, '.husky', '_', 'h');
+    mkdirSync(dirname(hook), { recursive: true });
+    writeFileSync(hook, 'fixture');
+    chmodSync(hook, 0o444);
+
+    const holder = spawn('bash', ['-c', 'exec 9>>"$1"; /usr/bin/flock -x 9; echo ready; read -r _', 'holder', lock]);
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', () => resolve());
+      holder.once('error', reject);
+    });
+    const deploy = spawn('bash', [join(box.wt, 'apps/server-pilot/deploy/ops-deploy.sh')], {
+      cwd: box.wt,
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: box.root,
+        NAVA_RUN_HOLD_FILE: join(box.root, 'absent-hold'), SYNC_STUB_EXIT: '0',
+        TEST_REMOTE_REPO: remote, TEST_REMOTE_LOCK: lock, TEST_LOCK_ATTEMPT: attempted,
+      },
+      stdio: 'ignore',
+    });
+    const completed = new Promise<number | null>((resolve) => deploy.once('exit', resolve));
+    let status: number | null = null;
+    try {
+      await vi.waitFor(() => expect(existsSync(attempted)).toBe(true), { timeout: 5_000, interval: 25 });
+      expect(statSync(hook).mode & 0o200).toBe(0);
+    } finally {
+      holder.stdin.end('continue\n');
+      status = await completed;
+    }
+    expect(status).toBe(77); // Next install is a stub; the first remote mutation completed.
+    expect(statSync(hook).mode & 0o200).not.toBe(0);
+  }, 10_000);
+
+  it.each([['GIT_BRANCH', 'feature'], ['ALLOW_UNPUSHED_DEPLOY', '1']])(
+    'refuses a non-main or unverified bundle override',
+    (key, value) => {
+      const box = makeWorktree('override');
+      const refused = runGuard(box, box.wt, { [key]: value });
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toContain('main and the origin check are required');
+    },
+  );
 });

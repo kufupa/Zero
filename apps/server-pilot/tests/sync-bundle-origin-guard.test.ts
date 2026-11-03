@@ -7,8 +7,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -30,6 +30,7 @@ function cleanEnv() {
       key.startsWith('GIT_') ||
       [
         'ALLOW_UNPUSHED_DEPLOY',
+        'NAVA_DEPLOY_EXPECTED_SHA',
         'AWS_REGION',
         'BUNDLE_KEY',
         'BOOTSTRAP_BUCKET',
@@ -56,6 +57,8 @@ function sandbox() {
   const repo = join(root, 'repo');
   const bin = join(root, 'bin');
   const awsCalls = join(root, 'aws-calls');
+  const ssmCalls = join(root, 'ssm-calls');
+  const bundle = join(root, 'captured.bundle');
   mkdirSync(bin);
   git(root, 'init', '-q', '--bare', '-b', 'main', origin);
   git(root, 'init', '-q', '-b', 'main', repo);
@@ -73,6 +76,7 @@ function sandbox() {
     join(deploy, 'ssm-run-command.sh'),
     [
       '#!/usr/bin/env bash',
+      'printf "%s\\n" "$1" >> "$SSM_CALLS"',
       'if [ "${SANDBOX_SSM_FAIL:-}" = 1 ]; then exit 70; fi',
       'if [ -n "${SANDBOX_EC2_SHA:-}" ]; then',
       '  printf \'NAVA_EC2_CHECKOUT=present\\n%s\\n\' "$SANDBOX_EC2_SHA"',
@@ -93,7 +97,7 @@ function sandbox() {
   git(repo, 'push', '-q', 'origin', 'main');
   writeFileSync(
     join(bin, 'aws'),
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(awsCalls)}\nexit 0\n`,
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$AWS_CALLS"\nif [ "\x24{1:-}" = s3 ] && [ "\x24{2:-}" = cp ]; then\n  if [[ "$3" = s3://* ]]; then cp "$BUNDLE_CAPTURE" "$4"; else cp "$3" "$BUNDLE_CAPTURE"; fi\nfi\nexit 0\n`,
     { mode: 0o755 },
   );
   const run = (env: Record<string, string> = {}, args: string[] = []) =>
@@ -101,14 +105,14 @@ function sandbox() {
       cwd: repo,
       encoding: 'utf8',
       timeout: 20_000,
-      env: { ...cleanEnv(), PATH: `${bin}:${process.env.PATH}`, ...env },
+      env: { ...cleanEnv(), PATH: `${bin}:${process.env.PATH}`, AWS_CALLS: awsCalls, SSM_CALLS: ssmCalls, BUNDLE_CAPTURE: bundle, ...env },
     });
   const commit = (message: string) => {
     writeFileSync(join(repo, `${message}.txt`), message);
     git(repo, 'add', '.');
     git(repo, 'commit', '-q', '-m', message);
   };
-  return { repo, origin, run, commit, uploaded: () => existsSync(awsCalls) };
+  return { root, repo, origin, bundle, bin, awsCalls, ssmCalls, run, commit, uploaded: () => existsSync(awsCalls) };
 }
 
 describe('sync-ec2-git-bundle refuses a local main that differs from origin', () => {
@@ -122,6 +126,75 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
     expect(result.stdout).toContain('EC2 SHA: none');
     expect(box.uploaded()).toBe(true);
   });
+
+  it('refuses before upload when main moved away from the checked worktree', () => {
+    const box = sandbox();
+    const checkedHead = git(box.repo, 'rev-parse', 'HEAD');
+    box.commit('new-main');
+    git(box.repo, 'push', '-q', 'origin', 'main');
+    const result = box.run({ NAVA_DEPLOY_EXPECTED_SHA: checkedHead });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('HEAD moved away from the checked deploy worktree');
+    expect(box.uploaded()).toBe(false);
+  });
+
+  it('ships the checked HEAD without updating an older shared local main', () => {
+    const box = sandbox();
+    const oldMain = git(box.repo, 'rev-parse', 'main');
+    git(box.repo, 'checkout', '-qb', 'checked-head');
+    box.commit('new-origin');
+    const head = git(box.repo, 'rev-parse', 'HEAD');
+    git(box.repo, 'push', '-q', 'origin', 'HEAD:main');
+    const result = box.run({ NAVA_DEPLOY_EXPECTED_SHA: head });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`shipping SHA: ${head}`);
+    expect(git(box.repo, 'rev-parse', 'main')).toBe(oldMain);
+    expect(git(box.repo, 'bundle', 'list-heads', box.bundle, 'HEAD')).toBe(`${head} HEAD`);
+    const receiver = join(box.root, 'receiver.git');
+    git(box.root, 'init', '-q', '--bare', receiver);
+    git(box.root, '--git-dir', receiver, 'fetch', '-q', box.bundle, '+HEAD:refs/heads/main');
+    expect(git(box.root, '--git-dir', receiver, 'rev-parse', 'refs/heads/main')).toBe(head);
+  });
+
+  it('holds the shared deploy lock before resetting the remote checkout', async () => {
+    const box = sandbox();
+    const remoteParent = join(box.root, 'remote');
+    const remote = join(remoteParent, 'zero');
+    const lock = join(box.root, 'deploy.lock');
+    const attempted = join(box.root, 'lock-attempted');
+    const sha = git(box.repo, 'rev-parse', 'HEAD');
+    const sync = box.run({ EC2_REPO_PATH: remote });
+    expect(sync.status, sync.stderr).toBe(0);
+    const payload = readFileSync(box.ssmCalls, 'utf8').split('\n').find((line) => line.startsWith('set -euo pipefail;'));
+    expect(payload).toBeTruthy();
+    const safePayload = payload!
+      .replaceAll('/home/ubuntu/.nava-deploy.lock', lock)
+      .replaceAll('/home/ubuntu/repos', remoteParent)
+      .replaceAll('/home/ubuntu/.nvm', join(box.root, 'absent-nvm'))
+      .replace(/\/tmp\/zero-git-bundle-\d+\.bundle/g, join(box.root, 'remote.bundle'));
+    writeFileSync(join(box.bin, 'flock'), '#!/usr/bin/env bash\nprintf x > "$TEST_LOCK_ATTEMPT"\nexec /usr/bin/flock "$@"\n', { mode: 0o755 });
+    const holder = spawn('bash', ['-c', 'exec 9>>"$1"; /usr/bin/flock -x 9; echo ready; read -r _', 'holder', lock]);
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', () => resolve());
+      holder.once('error', reject);
+    });
+    const checkout = spawn('bash', ['-c', safePayload], {
+      env: { ...cleanEnv(), PATH: `${box.bin}:${process.env.PATH}`, AWS_CALLS: box.awsCalls,
+        BUNDLE_CAPTURE: box.bundle, TEST_LOCK_ATTEMPT: attempted },
+      stdio: 'ignore',
+    });
+    const completed = new Promise<number | null>((resolve) => checkout.once('exit', resolve));
+    let status: number | null = null;
+    try {
+      await vi.waitFor(() => expect(existsSync(attempted)).toBe(true), { timeout: 5_000, interval: 25 });
+      expect(existsSync(join(remote, '.git'))).toBe(false);
+    } finally {
+      holder.stdin.end('continue\n');
+      status = await completed;
+    }
+    expect(status).toBe(0);
+    expect(git(remote, 'rev-parse', 'HEAD')).toBe(sha);
+  }, 10_000);
 
   it('stops before upload when local main is behind origin', () => {
     const box = sandbox();

@@ -29,13 +29,17 @@ set -euo pipefail
 export NVM_DIR=/home/ubuntu/.nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 export PATH="$HOME/.local/share/pnpm:$PATH"
+exec 9>>/home/ubuntu/.nava-deploy.lock
+flock -x 9
 cd /home/ubuntu/repos/zero
 SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
 ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 [ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
 case "$ENV_FILE" in /*) ;; *) ENV_FILE="$PWD/$ENV_FILE" ;; esac
 export ENV_FILE
-export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}"
+# shellcheck source=build-identity.sh
+source "$SERVER_PILOT/deploy/build-identity.sh"
+nava_load_build_commit /home/ubuntu/repos/zero
 
 validate_remote_env_files() {
   bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate || return 1

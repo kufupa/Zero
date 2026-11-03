@@ -18,13 +18,18 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 2
 fi
 
+exec 9>>/home/ubuntu/.nava-deploy.lock
+flock -x 9
+
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
-export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+# shellcheck source=build-identity.sh
+source "${SERVER_PILOT}/deploy/build-identity.sh"
+nava_load_build_commit "$REPO_ROOT"
 
 cd "$REPO_ROOT"
 

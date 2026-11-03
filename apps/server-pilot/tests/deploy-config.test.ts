@@ -6301,6 +6301,14 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect((await run()).status).toBe(0);
         expect(inspect()).toMatchObject({ HOME: toBashPath(temp), PATH: env.PATH, NODE_ENV: 'production', PORT: '8789', NAVA_AUTH_SESSION_PROFILE: 'remote', NAVA_BUILD_COMMIT: 'a'.repeat(40), PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on', PANE_WRITE_CREATE: 'lab', AZURE_FOUNDRY_API_KEY: 'fake-key-b', BETTER_AUTH_SECRET: 'remote-fake', UNRELATED_SECRET: null, GOOGLE_CLIENT_SECRET: null, REPO_ROOT: null, ENV_FILE: null });
         rmSync(marker);
+        env.NAVA_BUILD_COMMIT = 'unknown';
+        expect((await run()).status).toBe(0);
+        expect(inspect().NAVA_BUILD_COMMIT).toBe('unknown');
+        rmSync(marker);
+        env.NAVA_BUILD_COMMIT = 'invalid';
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        env.NAVA_BUILD_COMMIT = 'a'.repeat(40);
         writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
         expect((await run()).status).toBe(0);
         expect(inspect()).toMatchObject({ PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on' });
