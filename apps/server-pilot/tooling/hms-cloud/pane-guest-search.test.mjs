@@ -68,9 +68,10 @@ test('read fence never follows a redirect to a second endpoint', { timeout: 3000
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
-  const browser = await require('playwright').chromium.launch({ headless: true,
-    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  let browser;
   try {
+    browser = await require('playwright').chromium.launch({ headless: true,
+      executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
     const context = await browser.newContext();
     await context.route('**/*', fulfillGuestLookupRequest);
     const page = await context.newPage();
@@ -80,7 +81,7 @@ test('read fence never follows a redirect to a second endpoint', { timeout: 3000
     assert.equal(targetHits, 0);
     await context.close();
   } finally {
-    await browser.close();
+    await browser?.close();
     await new Promise((resolve) => server.close(resolve));
   }
 });
