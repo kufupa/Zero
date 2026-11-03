@@ -66,7 +66,8 @@ import {
 } from './pane-stay-save.js';
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
-import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, resolveHmsLabtestDispatch,
+  type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
@@ -1141,6 +1142,9 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(approved) : null;
   if (isCloudAttach && !parsedFiling?.success) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   const filing = parsedFiling?.success ? parsedFiling.data : null;
+  // A lost property-lock connection must not make an earlier Documents baseline authoritative.
+  const dispatchEpoch = isCloudAttach ? await captureHmsLabtestDispatchEpoch(db).catch(() => null) : null;
+  if (isCloudAttach && dispatchEpoch === null) return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
   const request = { confirmation: approved.confirmation, arrival: approved.arrival };
   const readCloud = paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord;
   const cloudStay = isCloudAttach ? await readCloud(request, target) : null;
@@ -1208,7 +1212,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
       },
       dispatchWithAuthority: async (code: string, nativeGuestId: string, requestDigest: string,
         continueOnce: () => Promise<unknown>, writer: unknown, beforeShot: string) => {
-        if (!consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
+        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
             typeof dispatch.stay.departure !== 'string' || !centurionWriterCurrent(writer) || !hasFinishBudget() ||
             nativeGuestId !== dispatch.guestId || !/^\d{1,30}$/.test(nativeGuestId) ||
             !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !/^[a-f0-9]{64}$/.test(requestDigest)) {
@@ -1255,7 +1259,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
               if (error instanceof HmsApprovalError) authorityRefusal = error;
               throw error;
             }
-          });
+          }, dispatchEpoch);
         } catch (error) {
           // Only the original, pre-insert refusal proves this claim never reached COMMIT.
           // A lost transaction acknowledgement or a different error remains unknown.

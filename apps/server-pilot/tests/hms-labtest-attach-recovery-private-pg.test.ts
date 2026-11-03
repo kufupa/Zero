@@ -9,7 +9,7 @@ import { aiWorkflowRun } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
 import { recordHmsWriteEvidence } from '../src/ai/hms-approval.js';
-import { claimHmsLabtestDispatch, recoverHmsLabtestAttach } from '../src/ai/hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, recoverHmsLabtestAttach } from '../src/ai/hms-labtest-dispatch.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 
@@ -98,7 +98,8 @@ describe.skipIf(!root)('positive Filing recovery on a private synthetic PostgreS
       recovery: { confirmation: '123456-1', arrival: '2027-10-12', departure: '2027-10-13',
         documentCode: 'NAVAAAAAAAAAAAAAAAAAAAAAAAAAAA', documentName: 'voucher.pdf', pdfSha256: 'd'.repeat(64),
         runId, claimDigest: 'e'.repeat(64), before: { eventId: before.eventId, sha256: before.sha256 }, writer: { synthetic: true } } };
-    const handle = await claimHmsLabtestDispatch(db, claim, async () => {});
+    const epoch = await captureHmsLabtestDispatchEpoch(db);
+    const handle = await claimHmsLabtestDispatch(db, claim, async () => {}, epoch);
     f.quiesced = false;
     await expect(recoverHmsLabtestAttach(db, handle.holdId)).rejects.toMatchObject({ reason: 'phase' });
     expect(f.reads).toBe(0);
@@ -130,14 +131,18 @@ describe.skipIf(!root)('positive Filing recovery on a private synthetic PostgreS
     f.entered = entered; f.release = new Promise<void>((resolve) => { release = resolve; });
     const running = recoverHmsLabtestAttach(db, handle.holdId);
     await reading;
-    await expect(claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {}))
+    await expect(claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {}, epoch))
       .rejects.toMatchObject({ reason: 'occupied' });
     release(); await running; f.entered = null; f.release = null;
     const [run] = await conn`select state, failure_class, metrics from ai_workflow_run where id = ${runId}`;
     expect(run).toMatchObject({ state: 'succeeded', failure_class: null,
       metrics: { action: 'attach_document', outcome: 'confirmed', listed: true, recovered: true } });
     expect(await conn`select id from work_event where value->>'kind' = 'resolved'`).toHaveLength(1);
-    await expect(claimHmsLabtestDispatch(db, claim, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
-    await claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {});
+    const laterEpoch = await captureHmsLabtestDispatchEpoch(db);
+    expect(laterEpoch).not.toBe(epoch);
+    await expect(claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {}, epoch))
+      .rejects.toMatchObject({ reason: 'occupied' });
+    await expect(claimHmsLabtestDispatch(db, claim, async () => {}, laterEpoch)).rejects.toMatchObject({ reason: 'occupied' });
+    await claimHmsLabtestDispatch(db, { ...claim, grantId: randomUUID() }, async () => {}, laterEpoch);
   });
 });

@@ -87,7 +87,7 @@ describe('approved filing worker to Cloud upload fence', () => {
     'pre_native_expiry', 'rollback_unacknowledged', 'refusal_drain_unconfirmed', 'refusal_close_unconfirmed',
     'finish_budget_preclaim', 'finish_budget_during_authority', 'finish_budget_after_claim', 'finish_budget_after_arm',
     'finish_budget_clock_rewind_after_arm',
-    'negative_readback', 'after_seal_failed', 'unsafe_evidence_dir', 'source_changed_at_claim', 'bytes_changed_before_check',
+    'negative_readback', 'after_seal_failed', 'unsafe_evidence_dir', 'intervening_resolved_write', 'source_changed_at_claim', 'bytes_changed_before_check',
     'bytes_changed_after_check'] as const)(
     '%s: claims the queued job and continues only after an acknowledged durable intent', async (scenario) => {
       const wallStart = Date.now();
@@ -121,7 +121,7 @@ describe('approved filing worker to Cloud upload fence', () => {
       const events: Array<Record<string, unknown>> = [], approvalEvents: Array<Record<string, unknown>> = [];
       const sealed: Array<{ id: string; value: { runId: string; name: string }; evidence: { sha256: string }; actorKind: string }> = [];
       const updates: Record<string, unknown>[] = [];
-      let sent = 0, aborted = 0, drained = false, approvalDone = false, evidenceIndex = 0, reads = 0;
+      let sent = 0, aborted = 0, drained = false, approvalDone = false, evidenceIndex = 0, reads = 0, transactions = 0;
       let storageBytes = bytes;
       let evidenceRoot = '', evidenceDirPath = '', stagedUploadPath = '';
       let queued: Record<string, unknown> | undefined, run: Record<string, unknown> | undefined;
@@ -185,13 +185,14 @@ describe('approved filing worker to Cloud upload fence', () => {
       },
         transaction: async (fn: (value: unknown) => Promise<unknown>) => {
           if (!approvalDone) { const approved = await fn(approvalTx); approvalDone = true; return approved; }
+          transactions++;
           let result;
           try { result = await fn(tx); } catch (error) {
-            if (scenario === 'rollback_unacknowledged') throw new Error('rollback acknowledgement lost');
+            if (transactions > 1 && scenario === 'rollback_unacknowledged') throw new Error('rollback acknowledgement lost');
             throw error;
           }
-          if (scenario === 'commit_unacknowledged') throw new Error('commit acknowledgement lost');
-          if (scenario === 'finish_budget_after_claim') clockOffset = 12 * 60_000;
+          if (transactions > 1 && scenario === 'commit_unacknowledged') throw new Error('commit acknowledgement lost');
+          if (transactions > 1 && scenario === 'finish_budget_after_claim') clockOffset = 12 * 60_000;
           return result;
         } } as unknown as DB;
       vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on'); vi.stubEnv('PANE_WRITE_ATTACH', 'lab');
@@ -241,6 +242,17 @@ describe('approved filing worker to Cloud upload fence', () => {
         ...native, guestId: '123' } });
       paneHmsWriteLoaders.spawnAttach = async (input) => {
         stagedUploadPath = input.file;
+        if (scenario === 'intervening_resolved_write') {
+          const holdId = randomUUID(), otherGrant = randomUUID();
+          events.push({ id: holdId, workItemId, type: 'write.evidence', actorKind: 'system', value: {
+            version: 1, kind: 'intent', holdId, ownerDigest: 'f'.repeat(64), workItemId, transportId: item.transportId,
+            actorUserId: 'other', grantId: otherGrant, propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest',
+            nativeGuestId: '123', operation: 'attach_document', sourceDigest: 'a'.repeat(64), approvedDigest: 'b'.repeat(64),
+            requestDigest: 'c'.repeat(64), recovery: { synthetic: true } } });
+          events.push({ workItemId, type: 'write.evidence', actorKind: 'system', value: { version: 1, kind: 'resolved',
+            holdId, operation: 'attach_document', confirmation: form.confirmation, readbackDigest: 'd'.repeat(64),
+            savedShot: { runId: approved.runId, sha256: 'e'.repeat(64) } } });
+        }
         return runCloudPaneAttach(input, {
           openSession: async (fn: (page: object) => Promise<unknown>) => {
             const result = await fn({});
@@ -331,7 +343,10 @@ describe('approved filing worker to Cloud upload fence', () => {
         expect(events).toHaveLength(1);
         expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN', reason: 'upload_unconfirmed' }));
         expect(await runLabtestAttachOnce({ ownerId: 'worker', db, env: enabled, claim: claim as never })).toBe(true);
-        expect(sent).toBe(1); expect(aborted).toBe(1); expect(events).toHaveLength(1);
+        expect(sent).toBe(1); expect(aborted).toBe(0); expect(events).toHaveLength(1);
+      } else if (scenario === 'intervening_resolved_write') {
+        expect(sent).toBe(0); expect(aborted).toBe(1); expect(events).toHaveLength(2);
+        expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'UNKNOWN', reason: 'dispatch_claim_unresolved' }));
       } else {
         expect(sent).toBe(0); expect(aborted).toBe(1); expect(updates.filter((row) => row.state === 'succeeded')).toHaveLength(0);
         expect(events).toHaveLength(['commit_unacknowledged', 'finish_budget_after_claim', 'finish_budget_after_arm',
