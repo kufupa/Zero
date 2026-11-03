@@ -35,10 +35,13 @@ function validIsoDate(value) {
 }
 
 // The native reader permits 200 characters per name; its search hint accepts
-// at most 256 combined. Confirmation and arrival still select uniquely, and
-// the opened native record is always checked against both exact names.
+// at most 256 combined. Its matcher needs two name tokens longer than one
+// character, so an initial-only hint would reject an otherwise valid lookup.
 function lookupOptions(guestName, arrival) {
-  return { ...(guestName.length <= 256 ? { guestName } : {}), arrivalDate: arrival };
+  const tokens = guestName.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/\p{L}+/gu) ?? [];
+  const matchableTokens = tokens.filter((word, index) => word !== 'and' || index === 0 || index === tokens.length - 1);
+  const hasVerifiableName = matchableTokens.filter((word) => word.length > 1).length >= 2;
+  return { ...(guestName.length <= 256 && hasVerifiableName ? { guestName } : {}), arrivalDate: arrival };
 }
 
 /** The selected native identity must be the stay staff reviewed. */
