@@ -258,7 +258,11 @@ export const quoteWorkflowRouter = router({
     });
     if (!voucher) return { status: 'not_voucher' };
     const readable = voucherReadFiles(files);
-    const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(readable, AbortSignal.timeout(15_000));
+    const signal = AbortSignal.timeout(15_000);
+    const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
+      : await readVoucherAttachmentText(readable, signal, {
+          transportId: ctx.activeTransportId, messageId: candidate.messageId, internetMessageId,
+        });
     // A voucher PDF whose text was not read (over the reader's cap, scanned, or unreadable) is counted for the card.
     const withText = new Set(texts.filter((entry) => entry.text?.trim()).map((entry) => entry.id));
     return {
