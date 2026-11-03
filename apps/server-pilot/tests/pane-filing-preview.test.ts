@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
-import { FakeS3Storage } from '../src/storage/s3.js';
+import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 
 const stubs = vi.hoisted(() => ({ find: vi.fn(), read: vi.fn() }));
 vi.mock('../src/ai/pane-stay-lookup.js', async (original) => ({
@@ -12,6 +12,7 @@ vi.mock('../src/mail/artifacts/pane-pop3-attachment.js', async (original) => ({
 }));
 
 import { previewFiling } from '../src/ai/pane-filing-preview.js';
+import { bindAttachDocumentForm } from '../src/ai/pane-hms-write.js';
 
 const input = { transportId: 'transport-centurion', actorUserId: 'user-1', workItemId: 'item-1',
   sourceMessageId: 'mail-1', attachmentId: 'attachment-1', confirmation: '123456-1',
@@ -45,10 +46,24 @@ beforeEach(() => {
 
 afterEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  resetS3Storage();
   vi.unstubAllEnvs();
 });
 
 describe('read-only filing preview', () => {
+  it('refuses an unconfirmable filename before storing a form or creating approval', async () => {
+    const f = fixture();
+    const transaction = vi.fn();
+    const db = { ...f.db, transaction } as unknown as DB;
+    setS3Storage(f.s3);
+    for (const filename of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
+      stubs.read.mockResolvedValueOnce({ source: { ...source, filename }, bytes: Buffer.from('%PDF-'), locator: {} });
+      await expect(bindAttachDocumentForm({ ...input, db, internetMessageId: 'selected@example.test',
+        env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
+        .resolves.toEqual({ status: 'refused', reason: 'form_invalid' });
+    }
+    expect(transaction).not.toHaveBeenCalled();
+  });
   it('rechecks the selected PDF and exact HMS booking without creating a grant or run', async () => {
     const f = fixture();
     await expect(previewFiling({ ...input, db: f.db, s3: f.s3 })).resolves.toEqual({

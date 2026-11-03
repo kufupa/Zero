@@ -5759,6 +5759,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('PANE_HMS_LAB_ATTACH_WORKER');
       expect(keys).toContain('PANE_BRAIN');
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');

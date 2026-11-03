@@ -197,3 +197,13 @@ export async function recoverHmsLabtestCreate(db: DB, holdId: string): Promise<v
     withLock: driver.withRecoveryLock, prove: driver.proveCreateRecovery, record: driver.recordRecoveredCreate,
   });
 }
+
+/** Operator-only positive Filing reconciliation; no client supplies proof or a driver. */
+export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-attach-recovery.js');
+  await recoverPositiveDispatch(db, holdId, 'attach_document', {
+    withLock: driver.withAttachRecoveryLock,
+    prove: (intent) => driver.proveAttachRecovery(db, intent),
+    record: driver.recordRecoveredAttach,
+  });
+}

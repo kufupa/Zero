@@ -7,7 +7,7 @@ import test from 'node:test';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentLabtestRecord } from './labtest-record.mjs';
-import { attachLabtestDocument, createDocumentUploadGate, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
+import { attachLabtestDocument, createDocumentUploadGate, documentUploadRequestDigest, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
   matchesDocumentUpload } from './stay360-document-attach.mjs';
 
 const fields = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg', 'typecode',
@@ -25,7 +25,7 @@ const token = new URLSearchParams({ requestToken: 'session-token', browserTabID:
 function multipart(values = payload, data = file.bytes, name = file.name, contentType = file.mimeType) {
   const boundary = 'test-boundary';
   const parts = fields.map((key) => `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${Buffer.from(values.get(key), 'utf8').toString('latin1')}\r\n`);
-  parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="filename"; filename="${name}"\r\nContent-Type: ${contentType}\r\n\r\n${data.toString('latin1')}\r\n`);
+  parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="filename"; filename="${Buffer.from(name, 'utf8').toString('latin1')}"\r\nContent-Type: ${contentType}\r\n\r\n${data.toString('latin1')}\r\n`);
   return { body: Buffer.from(parts.join('') + `--${boundary}--\r\n`, 'latin1'),
     contentType: `multipart/form-data; boundary=${boundary}` };
 }
@@ -77,6 +77,17 @@ test('multipart and query bind the current frame, target, token, name and exact 
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);
 });
 
+test('dispatch digest binds target, content type and the exact multipart bytes', () => {
+  const original = documentUploadRequestDigest(upload());
+  assert.match(original, /^[a-f0-9]{64}$/);
+  assert.equal(documentUploadRequestDigest(upload()), original);
+  for (const request of [upload({ bytes: Buffer.from('changed') }),
+    upload({ query: (q) => q.set('requestToken', 'changed') }), upload({ contentType: 'multipart/form-data; boundary=changed' })]) {
+    assert.notEqual(documentUploadRequestDigest(request), original);
+  }
+  assert.equal(documentUploadRequestDigest(upload({ method: 'GET' })), null);
+});
+
 test('exact upload bytes may contain text that resembles a form action', () => {
   const bytes = Buffer.from('Synthetic &pageaction=SAVE& bytes');
   const request = upload({ bytes });
@@ -116,6 +127,162 @@ test('upload gate releases only the exact candidate once, after exclusive intent
     assert.equal(gate(route(request), ready).result, 'continued');
     assert.equal(gate(route(request), ready), null);
     assert.equal(dispatched, 1); assert.equal(continued, 1); assert.equal(failed, 0); assert.equal(aborted, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('strict dispatch sends once without following an upload redirect', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+  try {
+    let dispatched = 0, sent = 0, aborted = 0;
+    const { fulfillGuestLookupRequest } = await import('./pane-guest-search.mjs');
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => assert.fail('intent failed'),
+      dispatchRequest: fulfillGuestLookupRequest });
+    const request = upload(), route = { request: () => request,
+      fetch: async (options) => { sent++; assert.equal(options.maxRedirects, 0); assert.equal(options.maxRetries, 0);
+        return { status: () => 307 }; },
+      abort: () => { aborted++; return 'aborted'; }, fulfill: () => assert.fail('redirect was fulfilled') };
+    const ready = { candidate: request, armed: true, checkStatus: 200 };
+    assert.equal(await gate(route, ready).result, 'aborted');
+    assert.equal(gate(route, ready), null);
+    assert.equal(dispatched, 1); assert.equal(sent, 1); assert.equal(aborted, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('native upload stays paused inside dispatch authority and never resumes after expiry', async () => {
+  for (const scenario of ['allow', 'deny', 'expired', 'commit-failed']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+    try {
+      let entered, release, armed = true, sent = 0, aborted = 0, dispatched = 0, authorityErrors = 0;
+      const started = new Promise((resolve) => { entered = resolve; });
+      const readyToContinue = new Promise((resolve) => { release = resolve; });
+      const request = upload(), route = { request: () => request,
+        continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => assert.fail('intent failed'),
+        stillArmed: () => armed, onAuthorityError: () => { authorityErrors++; },
+        dispatchWithAuthority: async (continueOnce) => {
+          entered(); await readyToContinue;
+          if (scenario === 'deny') throw new Error('authority revoked');
+          const result = await continueOnce();
+          if (scenario === 'commit-failed') throw new Error('transaction commit failed');
+          return result;
+        } });
+      const ready = { candidate: request, armed: true, checkStatus: 200 };
+      const pending = gate(route, ready).result;
+      await started; assert.equal(sent, 0); assert.equal(gate(route, ready), null);
+      if (scenario === 'expired') armed = false;
+      release();
+      assert.equal(await pending, scenario === 'allow' ? 'continued' : scenario === 'commit-failed' ? undefined : 'aborted');
+      assert.equal(sent, ['allow', 'commit-failed'].includes(scenario) ? 1 : 0);
+      assert.equal(dispatched, sent);
+      assert.equal(aborted, ['deny', 'expired'].includes(scenario) ? 1 : 0);
+      assert.equal(authorityErrors, scenario === 'allow' ? 0 : 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('a delayed timeout callback cannot release an upload past its monotonic deadline', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-deadline-test-'));
+  try {
+    let enter, release, sent = 0, aborted = 0;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const waiting = new Promise((resolve) => { release = resolve; });
+    const request = upload(), route = { request: () => request,
+      continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+    const deadline = performance.now() + 20;
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir, deadline,
+      confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {}, onAuthorityError: () => {},
+      stillArmed: () => true, dispatchWithAuthority: async (next) => { enter(); await waiting; return next(); } });
+    const pending = gate(route, { candidate: request, armed: true, checkStatus: 200 }).result;
+    await entered;
+    while (performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    assert.equal(await pending, 'aborted');
+    assert.equal(sent, 0); assert.equal(aborted, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the final continuation fails closed when its completion budget expires or is unreadable', async () => {
+  for (const scenario of ['expired', 'throws']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-finish-budget-'));
+    try {
+      let sent = 0, aborted = 0, armed = true;
+      const request = upload(), route = { request: () => request,
+        continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => assert.fail('must not dispatch'), onIntentError: () => {},
+        onAuthorityError: () => {}, continuationAllowed: () => {
+          if (scenario === 'throws') throw new Error('deadline unavailable');
+          return armed;
+        }, dispatchWithAuthority: async (next) => { armed = false; return next(); } });
+      assert.equal(await gate(route, { candidate: request, armed: true, checkStatus: 200 }).result, 'aborted');
+      assert.equal(sent, 0); assert.equal(aborted, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('an authority callback cannot continue the same upload twice', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-gate-test-'));
+  try {
+    let sent = 0, authorityErrors = 0;
+    const request = upload(), route = { request: () => request,
+      continue: () => { sent++; return 'continued'; }, abort: () => 'aborted' };
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => {}, onIntentError: () => assert.fail('intent failed'),
+      onAuthorityError: () => { authorityErrors++; }, dispatchWithAuthority: async (proceed) => {
+        assert.equal(await proceed(), 'continued');
+        assert.equal(await proceed(), undefined);
+        return 'done';
+      } });
+    assert.equal(await gate(route, { candidate: request, armed: true, checkStatus: 200 }).result, 'done');
+    assert.equal(sent, 1); assert.equal(authorityErrors, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('disarm drains a pending authority callback and prevents a late upload', async () => {
+  for (const phase of ['before', 'authority']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-drain-test-'));
+    try {
+      let enter, release, sent = 0, aborted = 0;
+      const entered = new Promise((resolve) => { enter = resolve; });
+      const waiting = new Promise((resolve) => { release = resolve; });
+      const request = upload(), route = { request: () => request,
+        continue: () => { sent++; return 'continued'; }, abort: () => { aborted++; return 'aborted'; } };
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {}, onAuthorityError: () => {},
+        ...(phase === 'before' ? { beforeDispatch: async () => { enter(); await waiting; return true; } }
+          : { dispatchWithAuthority: async (next) => { enter(); await waiting; return next(); } }) });
+      const pending = gate(route, { candidate: request, armed: true, checkStatus: 200 }).result;
+      await entered;
+      assert.equal(await gate.drain(5), false); // Disarm is required first.
+      gate.disarm();
+      assert.equal(await gate.drain(5), false); // A stalled callback is not quiescent.
+      assert.equal(gate(route, { candidate: request, armed: true, checkStatus: 200 }), null);
+      release();
+      assert.equal(await pending, 'aborted');
+      assert.equal(await gate.drain(100), true);
+      assert.equal(sent, 0); assert.equal(aborted, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('drain waits for the native request even if authority fails to await it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'document-drain-test-'));
+  try {
+    let release, sent = 0;
+    const network = new Promise((resolve) => { release = resolve; });
+    const request = upload(), route = { request: () => request,
+      continue: () => { sent++; return network; }, abort: () => 'aborted' };
+    const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+      confirmation: '456-1', onDispatch: () => {}, onIntentError: () => {},
+      dispatchWithAuthority: (next) => { void next(); return 'callback-finished'; } });
+    assert.equal(await gate(route, { candidate: request, armed: true, checkStatus: 200 }).result, 'callback-finished');
+    gate.disarm();
+    assert.equal(await gate.drain(5), false);
+    release('sent');
+    assert.equal(await gate.drain(100), true);
+    assert.equal(sent, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -168,6 +335,40 @@ test('multipart compares UTF-8 field bytes without accepting a changed descripti
     frame, values, unicodeFile, token), false);
 });
 
+test('multipart compares an exact UTF-8 filename', () => {
+  const name = "Café O'Neil [voucher].pdf";
+  const values = new Map(payload); values.set('filename', `C:\\fakepath\\${name}`);
+  const request = upload({ filename: name, values, query: (q) => q.set('filename', values.get('filename')) });
+  assert.equal(matchesDocumentUpload(request, frame, values, { ...file, name }, token), true);
+  assert.equal(matchesDocumentUpload(request, frame, values, { ...file, name: 'Cafe voucher.pdf' }, token), false);
+});
+
+test('the upload stays paused until authority is confirmed and aborts if authority is lost', async () => {
+  for (const scenario of ['allow', 'deny', 'timeout', 'throw']) {
+    const dir = mkdtempSync(join(tmpdir(), 'document-authority-test-'));
+    try {
+      let release, armed = true, continued = 0, aborted = 0, dispatched = 0, authorityErrors = 0;
+      const check = new Promise((resolve, reject) => { release = scenario === 'throw' ? () => reject(new Error('lost')) : resolve; });
+      const gate = createDocumentUploadGate({ frame, fields: payload, file, token, evidenceDir: dir,
+        confirmation: '456-1', onDispatch: () => { dispatched++; }, onIntentError: () => assert.fail('intent failed'),
+        beforeDispatch: () => check, stillArmed: () => armed, onAuthorityError: () => { authorityErrors++; } });
+      const request = upload(), route = { request: () => request, continue: () => { continued++; return 'continued'; },
+        abort: () => { aborted++; return 'aborted'; } };
+      const ready = { candidate: request, armed: true, checkStatus: 200 };
+      const pending = gate(route, ready).result;
+      assert.equal(continued, 0);
+      assert.equal(gate(route, ready), null);
+      if (scenario === 'timeout') armed = false;
+      release(scenario === 'allow' || scenario === 'timeout');
+      assert.equal(await pending, scenario === 'allow' ? 'continued' : 'aborted');
+      assert.equal(continued, scenario === 'allow' ? 1 : 0);
+      assert.equal(dispatched, continued);
+      assert.equal(aborted, scenario === 'allow' ? 0 : 1);
+      assert.equal(authorityErrors, aborted);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
 test('multipart fields cannot diverge from the validated form or repeat a field', () => {
   const changed = new Map(payload);
   changed.set('daeCode', 'other#stay#HRCEN');
@@ -192,6 +393,10 @@ test('explicit blank note can be verified but an omitted note is refused', async
 test('refuses invalid files and contexts before any browser action', async () => {
   assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name: '../guest.txt' }, { evidenceRoot: '/tmp' }),
     { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
+  for (const name of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
+    assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name }, { evidenceRoot: '/tmp' }),
+      { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
+  }
   assert.deepEqual(await attachLabtestDocument(null, {}, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' });
   const page = { context: () => ({ _options: { serviceWorkers: 'allow' } }) };

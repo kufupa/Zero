@@ -10,6 +10,8 @@ export type CloudStayRunInput = {
   request: PaneStayFindInput;
   target: HmsReadTarget;
   signal?: AbortSignal;
+  /** Filing only: observe the exact target identity without requiring rate or occupancy fields. */
+  nativeIdentityOnly?: boolean;
 };
 
 export type HmsCloudFieldObservation = { state: 'observed' | 'blank' | 'unknown'; value: string | null };
@@ -364,7 +366,7 @@ export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknow
   return module.withSavedStayAgentSession(async (session) => {
     // A fallback timestamp bounds both attempts from before the first read begins.
     const readStartedAt = new Date().toISOString();
-    const result = await readCloudStayForPane(session, input.request);
+    const result = await readCloudStayForPane(session, input.request, input.nativeIdentityOnly === true);
     return stampCloudStayReadResult(result, readStartedAt);
   }, { signal: input.signal, readOnly: true, readOnlyConfirmation: input.request.confirmation });
 }
@@ -373,16 +375,18 @@ export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknow
 export async function readCloudStayForPane(
   session: { runTool: (request: Record<string, unknown>) => Promise<unknown> },
   request: PaneStayFindInput,
+  nativeIdentityOnly = false,
 ): Promise<unknown> {
+  const identity = nativeIdentityOnly ? { includeNativeIdentityOnly: true } : {};
   const first = await session.runTool({
     tool: 'read', confirmation: request.confirmation,
-    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record', includeNativePreimage: true,
+    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record', includeNativePreimage: true, ...identity,
   });
   const failure = record(first);
   if (!request.arrival || failure?.outcome !== 'read_failed' || failure.issue !== 'CONFIRMATION_HINT_MISMATCH') {
     return first;
   }
-  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true });
+  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true, ...identity });
   if (record(second)?.outcome !== 'ok') return second;
   const checked = projectCloudStayFind(request, second);
   if (checked.outcome !== 'found' || !checked.arrivalMismatch) {

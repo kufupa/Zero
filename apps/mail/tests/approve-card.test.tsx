@@ -24,7 +24,14 @@ import { unmaskedPii } from './helpers/pii-marks';
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // The pane block binds its write card off the shared tRPC client. Only the hmsApproval routes answer here.
-const paneWrite = vi.hoisted(() => ({ view: null as unknown, calls: [] as unknown[] }));
+const paneWrite = vi.hoisted(() => ({ view: null as unknown, calls: [] as unknown[],
+  voucherProps: null as null | { approvalAvailable?: boolean; onPrepared?: () => void } }));
+vi.mock('@/components/quote-workflow/voucher-find-card', () => ({
+  VoucherFindCard: (props: { approvalAvailable?: boolean; onPrepared?: () => void }) => {
+    paneWrite.voucherProps = props;
+    return null;
+  },
+}));
 vi.mock('@/providers/query-provider', () => ({
   trpcClient: {
     hmsApproval: {
@@ -116,9 +123,35 @@ function renderCard(
   );
 }
 
-afterEach(() => { cleanup(); paneWrite.calls = []; });
+afterEach(() => { cleanup(); paneWrite.calls = []; paneWrite.voucherProps = null; });
 
 describe('ApproveCard approval', () => {
+  it('uses filing availability rather than the unrelated create flag and shows the selected document and booking', async () => {
+    const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf',
+      confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14',
+      sourceMessageId: 'internal-source-id', pdfSha256: 'a'.repeat(64) },
+      before: { confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14' }, filingAvailable: true }));
+    renderCard(client, { writesEnabled: false });
+    const list = await screen.findByRole('list', { name: 'Values to write' });
+    expect(list.textContent).toContain('voucher.pdf');
+    expect(list.textContent).toContain('123456-1');
+    expect(list.textContent).toContain('Labtest');
+    expect(list.textContent).not.toContain('internal-source-id');
+    expect(list.textContent).not.toContain('a'.repeat(64));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve these values' }));
+    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST }));
+  });
+
+  it('reports a verified listing while keeping an unresolved upload blocked', async () => {
+    const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
+      filingAvailable: true, manualResolve: false, needsCheck: true,
+      run: runWith('dead_letter', { failureClass: 'UNKNOWN', lastError: 'confirmed_hold_unsettled' }) }));
+    renderCard(client);
+    expect(await screen.findByText(/HMS lists the document by its code and name/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
+  });
+
   it('disables Go and hides note-based resolution for unavailable filing', async () => {
     const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
       filingAvailable: false, needsCheck: true, run: runWith('dead_letter', { failureClass: 'LEASE_LOST' }) }));
@@ -376,6 +409,29 @@ describe('BookingVoucherCard write card', () => {
     };
     return { ...initialQuoteSession(), analysis };
   };
+
+  it('refreshes an approval immediately after the voucher form and snapshot are prepared', async () => {
+    paneWrite.view = viewWith({ form: attachForm, snapshot: null });
+    render(<BookingVoucherCard session={emailSession('create_booking')} internetMessageId="selected@example.test"
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
+      mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
+    await waitFor(() => expect(paneWrite.calls.length).toBe(1));
+    expect(paneWrite.voucherProps?.approvalAvailable).toBe(true);
+    paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(); });
+    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    expect(paneWrite.calls.length).toBe(2);
+  });
+
+  it('does not offer filing preparation on an amendment with no approval card', () => {
+    const amendment: QuoteAmendment = { kind: 'amend', confirmationNumber: '57291630-1', guestLastName: 'Mokoena',
+      arrival: '2027-10-12', departure: '2027-10-14', requestedChange: 'Change room' };
+    render(<BookingVoucherCard session={emailSession('other', amendment)} internetMessageId="selected@example.test"
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
+      mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" writesEnabled />);
+    expect(paneWrite.voucherProps?.approvalAvailable).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+  });
 
   it('shows OTA attribution on amendment and booking mail without enabling automation', () => {
     const amendment: QuoteAmendment = {

@@ -1,0 +1,136 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { and, eq, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import type { DB } from '../db/client.js';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { workEvent } from '../db/schema/work.js';
+import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
+import { getS3Storage } from '../storage/s3.js';
+import { canonicalJson } from './draft-approval.js';
+import { hmsWriteEvidenceKey, readVerifiedHmsWriteGrant, recordHmsWriteEvidence } from './hms-approval.js';
+import type { HmsLabtestIntent } from './hms-labtest-dispatch.js';
+import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
+import { paneStayPropertyLock } from './pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_WRITE_RUN_KIND, mergeTerminalRunMetrics } from './run-ledger.js';
+
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const receipt = z.object({ eventId: z.string().uuid(), sha256: digest }).strict();
+const readbackSchema = z.object({ confirmation: z.string(), nativeGuestId: z.string(), documentCode: z.string(),
+  documentName: z.string(), uniqueFreshListing: z.literal(true) }).strict();
+const recoverySchema = z.object({
+  confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), documentCode: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/),
+  documentName: z.string().max(120).refine((s) => /\.pdf$/i.test(s) && !/[\\/\p{Cc}]/u.test(s) && s === s.replace(/\s+/g, ' ').trim()),
+  pdfSha256: digest, runId: z.string().uuid(), claimDigest: digest, before: receipt, writer: z.unknown(),
+}).strict();
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+
+type AttachRecoveryProof = { confirmation: string; readbackDigest: string; savedShot: { runId: string; sha256: string };
+  screenshot: { eventId: string; sha256: string; name: string } };
+
+/** The same property lock protects the original write and this fresh read. */
+export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
+  const target = paneStayHmsTargetForTransport(intent.transportId);
+  const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+  if (!target.ok || keys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+    throw new Error('filing_recovery_property_unavailable');
+  }
+  const lock = paneStayPropertyLock(target.target);
+  if (!lock) throw new Error('filing_recovery_lock_unavailable');
+  return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+}
+
+/** Verify the sealed before-image and obtain a fresh, independent positive listing. */
+export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Promise<AttachRecoveryProof> {
+  const parsed = recoverySchema.safeParse(intent.recovery);
+  if (!parsed.success || intent.operation !== 'attach_document') throw new Error('filing_recovery_unavailable');
+  const recovery = parsed.data;
+  const beforeKey = hmsWriteEvidenceKey({ transportId: intent.transportId, workItemId: intent.workItemId,
+    runId: recovery.runId, name: 'before.png' });
+  const [before] = await db.select({ actorKind: workEvent.actorKind, value: workEvent.value, evidence: workEvent.evidence })
+    .from(workEvent).where(and(eq(workEvent.id, recovery.before.eventId), eq(workEvent.workItemId, intent.workItemId),
+      eq(workEvent.type, 'write.evidence'))).limit(1);
+  const beforeValue = z.object({ runId: z.string(), name: z.string() }).safeParse(before?.value);
+  const beforeEvidence = z.object({ key: z.string(), sha256: digest }).passthrough().safeParse(before?.evidence);
+  if (before?.actorKind !== 'system' || !beforeValue.success || beforeValue.data.runId !== recovery.runId ||
+      beforeValue.data.name !== 'before.png' || !beforeEvidence.success || beforeEvidence.data.key !== beforeKey ||
+      beforeEvidence.data.sha256 !== recovery.before.sha256) throw new Error('filing_recovery_evidence_unavailable');
+  const beforeObject = await getS3Storage().getObjectBounded(beforeKey, 10 * 1024 * 1024);
+  if (!beforeObject || !pngSignature.equals(beforeObject.body.subarray(0, pngSignature.length)) ||
+      sha256(beforeObject.body) !== recovery.before.sha256) throw new Error('filing_recovery_evidence_unavailable');
+  const reader = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
+    provePositiveAttachRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; confirmation?: unknown;
+      readback?: unknown; screenshot?: unknown }>;
+  };
+  const observed = await reader.provePositiveAttachRecovery(intent);
+  const readback = readbackSchema.safeParse(observed.readback);
+  if (observed.outcome !== 'verified' || observed.confirmation !== recovery.confirmation || !readback.success ||
+      readback.data.confirmation !== recovery.confirmation || readback.data.nativeGuestId !== intent.nativeGuestId ||
+      readback.data.documentCode !== recovery.documentCode || readback.data.documentName !== recovery.documentName ||
+      !Buffer.isBuffer(observed.screenshot)) throw new Error('filing_recovery_readback_unavailable');
+  const name = `recovery-${randomBytes(8).toString('hex')}.png`;
+  const sealed = await recordHmsWriteEvidence({ db, transportId: intent.transportId, workItemId: intent.workItemId,
+    runId: recovery.runId, name, png: observed.screenshot });
+  const stored = await getS3Storage().getObjectBounded(sealed.key, 10 * 1024 * 1024);
+  if (!stored || !pngSignature.equals(stored.body.subarray(0, pngSignature.length)) || sha256(stored.body) !== sealed.sha256) {
+    throw new Error('filing_recovery_evidence_unavailable');
+  }
+  return { confirmation: recovery.confirmation, readbackDigest: sha256(canonicalJson(readback.data)),
+    savedShot: { runId: recovery.runId, sha256: sealed.sha256 },
+    screenshot: { eventId: sealed.eventId, sha256: sealed.sha256, name } };
+}
+
+/** Mark only the original run, and resolve its hold in the caller's transaction. */
+export async function recordRecoveredAttach(tx: CreateFenceTransaction, intent: HmsLabtestIntent, proof: AttachRecoveryProof) {
+  const parsed = recoverySchema.safeParse(intent.recovery);
+  if (!parsed.success || intent.operation !== 'attach_document' || proof.confirmation !== parsed.data.confirmation ||
+      proof.savedShot.runId !== parsed.data.runId || proof.savedShot.sha256 !== proof.screenshot.sha256) {
+    throw new Error('filing_recovery_scope_changed');
+  }
+  const recovery = parsed.data;
+  const [run] = await tx.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, recovery.runId),
+    eq(aiWorkflowRun.workItemId, intent.workItemId), eq(aiWorkflowRun.transportId, intent.transportId),
+    eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND), eq(aiWorkflowRun.promptVersion, HMS_LABTEST_ATTACH_PROMPT_VERSION),
+    eq(aiWorkflowRun.idempotencyKey, `hms-write:${intent.grantId}`))).limit(1).for('update');
+  if (!run || !(['claimed', 'running'].includes(run.state) ||
+      (run.state === 'dead_letter' && ['UNKNOWN', 'LEASE_LOST', 'RUN_DEADLINE', 'WORKER_SHUTDOWN'].includes(run.failureClass ?? '')))) {
+    throw new Error('filing_recovery_run_changed');
+  }
+  if (['claimed', 'running'].includes(run.state) && (!run.claimOwner || !run.claimToken ||
+      sha256(canonicalJson({ claimOwner: run.claimOwner, claimToken: run.claimToken })) !== recovery.claimDigest)) {
+    throw new Error('filing_recovery_run_changed');
+  }
+  const { grant, payloadHash } = await readVerifiedHmsWriteGrant(tx as DB, intent.workItemId, intent.grantId, true);
+  if (grant.grantId !== intent.grantId || grant.workItemId !== intent.workItemId || grant.transportId !== intent.transportId ||
+      grant.actorUserId !== intent.actorUserId || !grant.sessionId || !grant.sessionProfile || grant.formDigest !== intent.approvedDigest) {
+    throw new Error('filing_recovery_grant_changed');
+  }
+  const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, intent.workItemId),
+    eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'), eq(workEvent.payloadHash, payloadHash),
+    sql`${workEvent.value}->>'runId' = ${recovery.runId}`, sql`${workEvent.value}->>'grantId' = ${intent.grantId}`)).limit(2).for('share');
+  if (consumed.length !== 1) throw new Error('filing_recovery_grant_changed');
+  for (const [name, seal] of [['before.png', recovery.before], [proof.screenshot.name, proof.screenshot]] as const) {
+    const [row] = await tx.select({ actorKind: workEvent.actorKind, value: workEvent.value, evidence: workEvent.evidence })
+      .from(workEvent).where(and(eq(workEvent.id, seal.eventId), eq(workEvent.workItemId, intent.workItemId),
+        eq(workEvent.type, 'write.evidence'))).limit(1).for('share');
+    const value = z.object({ runId: z.string(), name: z.string() }).safeParse(row?.value);
+    const evidence = z.object({ key: z.string(), sha256: digest }).passthrough().safeParse(row?.evidence);
+    const key = hmsWriteEvidenceKey({ transportId: intent.transportId, workItemId: intent.workItemId, runId: recovery.runId, name });
+    if (row?.actorKind !== 'system' || !value.success || value.data.runId !== recovery.runId || value.data.name !== name ||
+        !evidence.success || evidence.data.key !== key || evidence.data.sha256 !== seal.sha256) {
+      throw new Error('filing_recovery_evidence_changed');
+    }
+  }
+  const now = new Date();
+  await tx.update(aiWorkflowRun).set({ state: 'succeeded', failureClass: null, lastError: null,
+    claimOwner: null, claimToken: null, finishedAt: now, updatedAt: now,
+    metrics: mergeTerminalRunMetrics(run.metrics, { action: 'attach_document', outcome: 'confirmed', listed: true, recovered: true }),
+  }).where(eq(aiWorkflowRun.id, recovery.runId));
+  await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
+    value: { kind: 'hms_attach_verified', holdId: intent.holdId, grantId: intent.grantId,
+      runId: recovery.runId, documentCode: recovery.documentCode, documentName: recovery.documentName,
+      pdfSha256: recovery.pdfSha256, readbackDigest: proof.readbackDigest, recovered: true } });
+}

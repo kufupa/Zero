@@ -7,7 +7,7 @@ import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { NavaReadAs } from '@/lib/quote-workflow/workflow-vocabulary';
 import { otaBookingChannel } from '@/lib/quote-workflow/ota-channel';
 import { trpcClient } from '@/providers/query-provider';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { OtaBookingChannelChip } from './ota-booking-channel-chip';
 
 /**
@@ -56,6 +56,7 @@ export function BookingVoucherCard({
     [transportId, internetMessageId],
   );
   const amendment = amendmentOf(session);
+  const [approvalRevision, setApprovalRevision] = useState(0);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
   const showVoucherFindCard = readAs === 'payment' || hasBookingWorkflow || amendment !== null;
@@ -92,7 +93,7 @@ export function BookingVoucherCard({
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId])}
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId, approvalRevision])}
           client={approvalClient}
           workItemId={workItemId}
           writesEnabled={writesEnabled}
@@ -113,6 +114,8 @@ export function BookingVoucherCard({
           syncPending={syncPending}
           workItemId={workItemId}
           writesEnabled={writesEnabled && !amendment}
+          approvalAvailable={Boolean(approvalClient && workItemId && !amendment && mailboxScope && transportId && internetMessageId)}
+          onPrepared={() => setApprovalRevision((revision) => revision + 1)}
           propertyCode={propertyCode}
         />
       ) : null}
