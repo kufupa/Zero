@@ -47,7 +47,7 @@ export type HmsCloudFindResult = PaneStayFindResult & {
   nativePreimage?: HmsCloudNativePreimage | null;
   /** Full name is kept intact; no heuristic split into first/last name. */
   guestName: string | null;
-  /** Record View exposes party display names here, but does not expose native party IDs. */
+  /** Party IDs are included only when native and visible observations agree. */
   commercial?: PaneStayCommercial;
   /** Known stay-level amounts and their displayed currencies; blank differs from unread. */
   financialObservations?: HmsCloudFinancialObservations;
@@ -258,12 +258,20 @@ function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<Record
     adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages] };
 }
 
-function paneStayCommercial(stay: PaneStayFields): PaneStayCommercial | undefined {
+function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNative: HmsCloudNativePreimage | null): PaneStayCommercial | undefined {
   const company = stay.organization?.trim();
   const agency = stay.bookingAgency?.trim();
+  const observed = record(record(rawNative)?.commercial);
+  const party = (name: string, value: unknown) => {
+    const candidate = record(value);
+    const nativeId = candidate?.nativeId;
+    return verifiedNative && name.length <= 200 && !/\p{Cc}/u.test(name) && candidate?.name === name &&
+      typeof nativeId === 'string' && /^\d{1,100}$/.test(nativeId) && !/^0+$/.test(nativeId)
+      ? { name, nativeId } : { name };
+  };
   const commercial: PaneStayCommercial = {};
-  if (company) commercial.company = { name: company };
-  if (agency) commercial.agency = { name: agency };
+  if (company) commercial.company = party(company, observed?.company);
+  if (agency) commercial.agency = party(agency, observed?.agency);
   return Object.keys(commercial).length ? commercial : undefined;
 }
 
@@ -287,9 +295,10 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
     const stay = paneStayFields(confirmation, fields);
     const guestName = [stay.firstName, stay.lastName].filter((part): part is string => Boolean(part?.trim())).join(' ') ||
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
-    const commercial = paneStayCommercial(stay);
+    const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields);
+    const commercial = paneStayCommercial(stay, details?.nativePreimage, verifiedNative);
     return {
-      outcome: 'found', reason: null, stay, nativePreimage: nativePreimage(details?.nativePreimage, stay, fields),
+      outcome: 'found', reason: null, stay, nativePreimage: verifiedNative,
       ...(commercial ? { commercial } : {}),
       financialObservations: financialObservations(fields),
       reservationObservations: reservationObservations(fields),
