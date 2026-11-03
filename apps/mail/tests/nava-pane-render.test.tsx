@@ -73,6 +73,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     screenshotReads: [] as string[],
     // Replaces the default quote analysis for one test (an amendment email, for example).
     analysisOverride: null as null | Record<string, unknown>,
+    analyseMutation: null as null | ((input: { entryId: string }) => Promise<Record<string, unknown>>),
     analyseCalls: 0,
     staffQuoteSourceCalls: 0,
     storedWorkLookups: 0,
@@ -287,8 +288,9 @@ vi.mock('../providers/query-provider', () => ({
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
-        mutate: async () => {
+        mutate: async (input: { entryId: string }) => {
           bridgeMockState.analyseCalls += 1;
+          if (bridgeMockState.analyseMutation) return bridgeMockState.analyseMutation(input);
           if (bridgeMockState.analyseFails) throw new Error('Nava could not read this email.');
           return bridgeMockState.analysisOverride ?? ({
             status: 'ready' as const,
@@ -432,6 +434,7 @@ describe('NavaPane', () => {
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseMutation = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
@@ -1609,6 +1612,38 @@ describe('NavaPane', () => {
   }, 15_000);
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
+  it('ignores a late read after webmail selects A, B, then A again', async () => {
+    let finishFirstRead!: (value: Record<string, unknown>) => void;
+    const firstRead = new Promise<Record<string, unknown>>((resolve) => { finishFirstRead = resolve; });
+    const ready = (adults: number) => ({
+      status: 'ready', sourceRevision: 1,
+      ...STORED_READY.analysis,
+      groups: STORED_READY.analysis.groups.map((group) => ({ ...group, adults })),
+    });
+    let aReads = 0;
+    bridgeMockState.analyseMutation = async ({ entryId }) => {
+      if (entryId === '001' && ++aReads === 1) return firstRead;
+      return ready(entryId === '002' ? 4 : 2);
+    };
+    const other = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail!, entryId: '002',
+        internetMessageId: '<other-quote@example.invalid>', subject: 'Other request',
+      },
+    } as unknown as PaneBridge;
+    const onOpenThread = vi.fn();
+    const { rerender } = render(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);
+    await waitFor(() => expect(aReads).toBe(1));
+    rerender(<NavaPane bridge={other} preview onOpenThread={onOpenThread} />);
+    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    rerender(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);
+    expect(await screen.findByText('2 adults per room')).toBeDefined();
+    await act(async () => { finishFirstRead(ready(9)); await firstRead; });
+    expect(screen.getByText('2 adults per room')).toBeDefined();
+    expect(screen.queryByText('9 adults per room')).toBeNull();
+  });
+
   it('keeps a stay edit after switching to two other mails and back', async () => {
     bridgeMockState.storedWork = STORED_READY;
     const other = {

@@ -64,12 +64,13 @@ import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { Button } from '../ui/button';
 import { Avatar } from '../ui/avatar';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { focusThreadElement } from '@/lib/mail/mail-row-focus';
 import { getMailRowSelectionClasses } from '@/lib/mail/mail-row-selection';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { beginMailSelectionIntent, isCurrentMailSelectionIntent } from '@/lib/mail/source-message-navigation';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import {
   isUnsupportedSearchOperatorError,
@@ -153,7 +154,10 @@ const Thread = memo(
       () => buildCategoryIdToSlugMap(categorySettings),
       [categorySettings],
     );
-    const [id, setThreadId] = useQueryState('threadId');
+    const [{ threadId: id }, setMailSelection] = useQueryStates({
+      threadId: parseAsString,
+      sourceMessageId: parseAsString,
+    });
     const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
 
     const { latestMessage, idToUse, cleanName } = useMemo(() => {
@@ -286,17 +290,19 @@ const Thread = memo(
 
     const handleNext = useCallback(
       (id: string) => {
-        if (!id || !threads.length || focusedIndex === null) return setThreadId(null);
+        beginMailSelectionIntent();
+        if (!id || !threads.length || focusedIndex === null)
+          return setMailSelection({ threadId: null, sourceMessageId: null });
         if (focusedIndex < threads.length - 1) {
           const nextThread = threads[focusedIndex];
           if (nextThread) {
-            setThreadId(nextThread.id);
+            void setMailSelection({ threadId: nextThread.id, sourceMessageId: null });
             // Don't clear activeReplyId - let ThreadDisplay handle Reply All auto-opening
             setFocusedIndex(focusedIndex);
           }
         }
       },
-      [threads, id, focusedIndex],
+      [threads, id, focusedIndex, setMailSelection, setFocusedIndex],
     );
 
     const moveThreadTo = useCallback(
@@ -912,7 +918,10 @@ export const MailList = memo(function MailList() {
     const { folder } = useParams<{ folder: string }>();
     const { data: settingsData } = useSettings();
     const autoReadEnabled = settingsData?.settings?.autoRead ?? true;
-    const [, setThreadId] = useQueryState('threadId');
+    const [{ threadId, sourceMessageId }, setMailSelection] = useQueryStates({
+      threadId: parseAsString,
+      sourceMessageId: parseAsString,
+    });
     const [, setMode] = useQueryState('mode');
     const [, setDraftId] = useQueryState('draftId');
     const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -944,6 +953,12 @@ export const MailList = memo(function MailList() {
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
     const itemsRef = useRef(items);
+    const navigationSequence = useRef(0);
+    const currentSelection = useRef({ threadId, sourceMessageId });
+    if (currentSelection.current.threadId !== threadId || currentSelection.current.sourceMessageId !== sourceMessageId) {
+      currentSelection.current = { threadId, sourceMessageId };
+      navigationSequence.current += 1;
+    }
     const parentRef = useRef<HTMLDivElement>(null);
     const vListRef = useRef<VListHandle>(null);
 
@@ -963,13 +978,19 @@ export const MailList = memo(function MailList() {
 
     const handleNavigateToThread = useCallback(
       (threadId: string | null) => {
+        const sequence = ++navigationSequence.current;
+        const intent = beginMailSelectionIntent();
         void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          if (sequence !== navigationSequence.current || !isCurrentMailSelectionIntent(intent)) return;
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setThreadId(threadId));
+        }).then(() => {
+          if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent))
+            void setMailSelection({ threadId, sourceMessageId: null });
+        });
       },
-      [setMode, setActiveReplyId, setDraftId, setThreadId],
+      [setMode, setActiveReplyId, setDraftId, setMailSelection],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -1071,12 +1092,16 @@ export const MailList = memo(function MailList() {
         const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
         setFocusedIndex(clickedIndex);
         if (message.unread && autoReadEnabled) optimisticMarkAsRead([messageThreadId], true);
+        const sequence = ++navigationSequence.current;
+        const intent = beginMailSelectionIntent();
         await runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          if (sequence !== navigationSequence.current || !isCurrentMailSelectionIntent(intent)) return;
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
         });
-        setThreadId(messageThreadId);
+        if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent))
+          void setMailSelection({ threadId: messageThreadId, sourceMessageId: null });
       },
       [
         getSelectMode,
@@ -1084,7 +1109,7 @@ export const MailList = memo(function MailList() {
         handleMouseEnter,
         setFocusedIndex,
         optimisticMarkAsRead,
-        setThreadId,
+        setMailSelection,
         setDraftId,
         setMode,
         setActiveReplyId,
@@ -1166,13 +1191,19 @@ export const MailList = memo(function MailList() {
 
     const handleNavigateToLinkedThread = useCallback(
       (threadId: string) => {
+        const sequence = ++navigationSequence.current;
+        const intent = beginMailSelectionIntent();
         void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          if (sequence !== navigationSequence.current || !isCurrentMailSelectionIntent(intent)) return;
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setThreadId(threadId));
+        }).then(() => {
+          if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent))
+            void setMailSelection({ threadId, sourceMessageId: null });
+        });
       },
-      [setMode, setActiveReplyId, setDraftId, setThreadId],
+      [setMode, setActiveReplyId, setDraftId, setMailSelection],
     );
 
     const vListRenderer = useCallback(
