@@ -70,7 +70,7 @@ function normalizeConfirmation(input) {
 export function normalizeCloudCreateRequest(input) {
   const issue = objectKeys(input,
     ['version', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
-      'parties', 'note', 'billingReference', 'cmsMessageId', 'sendHmsConfirmation'],
+      'parties', 'note', 'billingReference', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
     ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sendHmsConfirmation'], '');
   if (issue) return issue;
   const canonical = Object.hasOwn(input, 'version');
@@ -136,6 +136,25 @@ export function normalizeCloudCreateRequest(input) {
     return fail('CREATE_CMS_MESSAGE_INVALID', 'cmsMessageId');
   }
   if (input.note !== undefined && !exactText(input.note, { max: 200 })) return fail('CREATE_NOTE_INVALID', 'note');
+  if (input.cmsRecipient !== undefined && (!exactText(input.cmsRecipient, { max: 255 }) ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.cmsRecipient))) return fail('CREATE_CMS_RECIPIENT_INVALID', 'cmsRecipient');
+  if (input.booker !== undefined) {
+    const bookerIssue = objectKeys(input.booker, ['name', 'contact'], [], 'booker');
+    if (bookerIssue) return bookerIssue;
+    if (!Object.keys(input.booker).length ||
+        (input.booker.name !== undefined && !exactText(input.booker.name, { max: 50 })) ||
+        (input.booker.contact !== undefined && !exactText(input.booker.contact, { max: 80 }))) {
+      return fail('CREATE_BOOKER_INVALID', 'booker');
+    }
+  }
+  if (input.track !== undefined) {
+    const trackIssue = objectKeys(input.track, ['lookupCode', 'display'], ['lookupCode', 'display'], 'track');
+    if (trackIssue) return trackIssue;
+    if (typeof input.track.lookupCode !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.track.lookupCode) ||
+        !exactText(input.track.display, { max: 200 })) return fail('CREATE_TRACK_INVALID', 'track');
+  }
+  // True needs a separately verified consent-write contract.
+  if (input.guestOptIn !== undefined && input.guestOptIn !== false) return fail('CREATE_GUEST_OPT_IN_UNSUPPORTED', 'guestOptIn');
   const confirmation = normalizeConfirmation(input.sendHmsConfirmation);
   if (confirmation.outcome !== 'ok') return confirmation;
 
@@ -153,6 +172,10 @@ export function normalizeCloudCreateRequest(input) {
     ...(input.note !== undefined ? { note: input.note } : {}),
     ...(input.billingReference !== undefined ? { billingReference: input.billingReference } : {}),
     ...(input.cmsMessageId !== undefined ? { cmsMessageId: input.cmsMessageId } : {}),
+    ...(input.cmsRecipient !== undefined ? { cmsRecipient: input.cmsRecipient } : {}),
+    ...(input.booker !== undefined ? { booker: { ...input.booker } } : {}),
+    ...(input.track !== undefined ? { track: { lookupCode: input.track.lookupCode, display: input.track.display } } : {}),
+    ...(input.guestOptIn !== undefined ? { guestOptIn: false } : {}),
     sendHmsConfirmation: confirmation.value,
   };
   return { outcome: 'ok', request };

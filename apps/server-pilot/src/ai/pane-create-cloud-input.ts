@@ -139,6 +139,8 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown):
   // This pane subset cannot request these fields. A prepared form containing them
   // must not become approval evidence for a different, narrower staff request.
   if (request.reasonForStay !== undefined || request.billingReference !== undefined ||
+      request.cmsRecipient !== undefined || request.booker !== undefined ||
+      request.track !== undefined || request.guestOptIn !== undefined ||
       (parties && Object.hasOwn(parties, 'arAccount'))) {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }

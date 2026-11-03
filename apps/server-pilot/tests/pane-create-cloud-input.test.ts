@@ -69,6 +69,10 @@ describe('Cloud pane create mapping', () => {
       { ...proof, sendHmsConfirmation: { kind: 'send', recipient: 'a@example.test' } },
       { ...proof, reasonForStay: { value: 'A', display: 'A' } },
       { ...proof, parties: { arAccount: { nativeId: '1234', name: 'Account' } }, billingReference: 'ref' },
+      { ...proof, cmsRecipient: 'a@example.test' },
+      { ...proof, booker: { name: 'Different Booker' } },
+      { ...proof, track: { lookupCode: 'BAR', display: 'Best Available' } },
+      { ...proof, guestOptIn: false },
     ];
     for (const mismatch of mismatches) expect(digestPaneCloudCreateProof(stay, mismatch).outcome).toBe('refused');
   });
