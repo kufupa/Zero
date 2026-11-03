@@ -17,7 +17,7 @@ const profile = { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', emai
 const generatedNote = JSON.parse(readFileSync(new URL('./fixtures/generated-reservation-note.json', import.meta.url), 'utf8')).note;
 const values = { guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
   arrivaldate: '15-MAR-2027', departuredate: '17-MAR-2027', adults: '2', children: '2', child1: '0', child2: '2', child3: '0',
-  roomtype: 'DLXKNG', rateplan: 'BAR', sourceofbusinessdesc: 'E-Mail', company: 'Example Company',
+  roomtype: 'DLXKNG', rateplan: 'BAR', averagerate: '1450.00', sourceofbusinessdesc: 'E-Mail', company: 'Example Company',
   guaranteetype: 'Non-Guaranteed Individual', reservationnote: 'Synthetic proof', udfchkbox04: false, udfchar13: '', emailaddress: '' };
 const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
   status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
