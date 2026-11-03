@@ -3003,17 +3003,18 @@ if (!realMailGate) {
       'printf -v Q_BUNDLE_REF \'%q\' "refs/remotes/bundle/${GIT_BRANCH}"',
     );
     expect(sync).toContain(
-      'printf -v Q_BUNDLE_REFSPEC \'%q\' "+refs/heads/${GIT_BRANCH}:refs/remotes/bundle/${GIT_BRANCH}"',
+      'printf -v Q_BUNDLE_REFSPEC \'%q\' "+${BUNDLE_SOURCE_REF}:refs/remotes/bundle/${GIT_BRANCH}"',
     );
+    expect(sync).toContain('BUNDLE_SOURCE_REF="refs/heads/$GIT_BRANCH"');
     expect(sync).toContain(
       'git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}"',
     );
     expect(sync).toContain(
-      'git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"',
+      'git bundle create "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF"',
     );
     expect(sync).toContain('git bundle list-heads "$BUNDLE_FILE"');
     expect(
-      sync.indexOf('git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"'),
+      sync.indexOf('git bundle create "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF"'),
     ).toBeLessThan(sync.indexOf('git bundle list-heads "$BUNDLE_FILE"'));
     expect(sync).not.toContain(
       'BUNDLE_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}")"',
@@ -6471,9 +6472,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(retry).toContain('assert_http_loopback_only && return 0');
       expect(retry).toMatch(/\bsleep\s+1\b/);
       expect(retry).toContain('return 1');
-      expect(boot).toMatch(
-        /start_legacy_processes\s*\nstart_remote_http\s*\nassert_http_loopback_with_retry\s+\|\|/,
-      );
+      const legacyStart = boot.lastIndexOf('\nstart_legacy_processes\n');
+      const remoteStart = boot.indexOf('start_remote_http', legacyStart);
+      const check = boot.indexOf('assert_http_loopback_with_retry ||', remoteStart);
+      expect(legacyStart).toBeGreaterThan(0);
+      expect(remoteStart).toBeGreaterThan(legacyStart);
+      expect(check).toBeGreaterThan(remoteStart);
     });
   });
 });
