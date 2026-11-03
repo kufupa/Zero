@@ -176,6 +176,7 @@ describe('HOLD file stops ops-deploy.sh before SSM', () => {
 
 describe('write-ec2-remote-env.sh canary SHA', () => {
   function runWriter(opts: {
+    attachWorkerOn?: boolean;
     liveSha: string;
     canaryLine: string | null;
     quoteOn: boolean;
@@ -192,6 +193,7 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     writeFileSync(
       join(serverPilot, '.env.production'),
       [
+        ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
         "NODE_ENV='production'",
         "DATABASE_URL='postgres://example.invalid/zero'",
         "AWS_REGION='af-south-1'",
@@ -260,6 +262,18 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/CANARY PASS|stale/i);
     expect(result.stderr).toMatch(/HMS_DAVINCI_MAKE_QUOTE|quote/);
+  });
+
+  it('requires an attach canary before enabling the Labtest upload worker', () => {
+    const sha = 'abcdef1234567890abcdef1234567890abcdef12';
+    for (const canaryLine of [null, `CANARY PASS attach HRDAV ${sha}`, 'CANARY PASS attach HRCEN deadbeef']) {
+      const result = runWriter({ liveSha: sha, canaryLine, quoteOn: false, attachWorkerOn: true });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/PANE_HMS_LAB_ATTACH_WORKER|attach/);
+    }
+    const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS attach HRCEN ${sha}`,
+      quoteOn: false, attachWorkerOn: true });
+    expect(passed.status, passed.stderr).toBe(0);
   });
 
   it('does not treat an already-on flag as a flip', () => {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { paneCloudPreviewLoaders } from '../src/ai/pane-cloud-preview.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
+import { readResolvedHmsLabtestCreates } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { consumeNeverDispatchedCreateProof, installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
@@ -53,27 +54,33 @@ vi.mock('../src/ai/pane-create-actor-lock.js', () => ({
 }));
 vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
   const actual = await original<typeof import('../src/ai/hms-labtest-dispatch.js')>();
-  class HmsLabtestDispatchError extends Error {
-    constructor(readonly reason: string) { super(`hms_labtest_dispatch_${reason}`); }
-  }
-  return { ...actual, HmsLabtestDispatchError,
-    captureHmsLabtestDispatchEpoch: async () => '0'.repeat(64),
+  const { HmsLabtestDispatchError } = actual;
+  return { ...actual,
+    captureHmsLabtestDispatchEpoch: async () => {
+      if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');
+      return '0'.repeat(64);
+    },
     claimHmsLabtestDispatch: async (_db: unknown, input: Record<string, unknown>, authorize: (tx: unknown, input: Record<string, unknown>) => Promise<void>) => {
       h.createMutexCalls += 1; h.onCreateMutex?.();
       if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');
       h.onClaimEntered?.();
       if (h.claimWait) await h.claimWait;
       await authorize(h.tx, input);
-      h.sharedHold = structuredClone(input);
+      const holdId = randomUUID();
+      h.sharedHold = { ...structuredClone(input), version: 1, kind: 'intent', holdId, ownerDigest: 'a'.repeat(64) };
+      h.events.push({ id: holdId, itemId: input.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: structuredClone(h.sharedHold) });
       h.sharedHoldResolved = false;
       if (h.loseAckAfterClaim) throw new Error('synthetic_commit_ack_lost');
-      return { holdId: 'hold-1', ownerToken: 'a'.repeat(64) };
+      return { holdId, ownerToken: 'a'.repeat(64) };
     },
     resolveHmsLabtestDispatch: async (_db: unknown, _handle: unknown, evidence: Record<string, unknown>,
       record: (tx: unknown, intent: Record<string, unknown>) => Promise<void>) => {
       if (!h.sharedHold || h.sharedHoldResolved) throw new HmsLabtestDispatchError('owner');
       await record(h.tx, h.sharedHold);
-      h.events.push({ value: { kind: 'resolved', ...structuredClone(evidence) } });
+      h.events.push({ id: randomUUID(), itemId: h.sharedHold.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: { version: 1, kind: 'resolved',
+          holdId: h.sharedHold.holdId, ...structuredClone(evidence) } });
       h.sharedHoldResolved = true;
     },
     resolveNeverDispatchedCreate: async (_db: unknown, _handle: unknown, receipt: unknown, request: unknown,
@@ -81,7 +88,9 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
       if (!h.sharedHold || h.sharedHoldResolved || !consumeNeverDispatchedCreateProof(receipt, request) ||
           actual.nativeCreateSaveDigest(request) !== h.sharedHold.requestDigest) throw new HmsLabtestDispatchError('owner');
       await record(h.tx, h.sharedHold);
-      h.events.push({ value: { kind: 'not_dispatched' } });
+      h.events.push({ id: randomUUID(), itemId: h.sharedHold.workItemId, type: 'write.evidence', actorKind: 'system',
+        fieldPath: 'nava.hms.labtest.dispatch.v1', value: { version: 1, kind: 'not_dispatched',
+          holdId: h.sharedHold.holdId, operation: 'create' } });
       h.sharedHoldResolved = true;
     },
   };
@@ -128,6 +137,7 @@ function query(columns: Record<string, unknown>) {
     if ('extractionId' in columns) return [h.cursor];
     if ('direction' in columns) return [h.mail];
     if ('state' in columns) return [{ state: h.state }];
+    if ('actorKind' in columns && 'value' in columns) return h.events.filter((event: any) => event.fieldPath === 'nava.hms.labtest.dispatch.v1');
     throw new Error('unexpected query');
   };
   const chain = Object.assign(Promise.resolve().then(rows), {
@@ -375,8 +385,19 @@ describe('mounted Cloud create route', () => {
     expect(dispatches).toBe(0);
   });
 
-  it('resolves a late committed claim after the native fence has timed out and failed its first drain', async () => {
+  it.each(['single', 'first batch room'])('resolves a late committed claim for %s after the first drain timed out', async (mode) => {
+    if (mode === 'first batch room') {
+      (h.payload.stays as any)[0].totalRooms = 2;
+      (h.payload.stays as any)[0].rows[0].rooms = 2;
+    }
     const digest = await prepared();
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const secondDigest = mode === 'first batch room' ? (await caller().quoteWorkflow.previewStay(second)).previewDigest : undefined;
+    const batch = secondDigest ? { kind: 'start' as const, id: randomUUID(), rooms: [
+      { ...first, previewDigest: digest }, { ...second, previewDigest: secondDigest },
+    ] } : undefined;
     let release!: () => void, entered!: () => void;
     h.claimWait = new Promise<void>((resolve) => { release = resolve; });
     const claiming = new Promise<void>((resolve) => { entered = resolve; });
@@ -401,15 +422,20 @@ describe('mounted Cloud create route', () => {
         expect(await chain.drain({ timeoutMs: 5 })).toBe(false);
       }),
     });
-    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: digest, ...(batch ? { batch } : {}) }))
       .toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
     expect(dispatches).toBe(0);
     release();
     await lateRoute;
-    expect(h.events).toContainEqual({ value: { kind: 'not_dispatched' } });
+    expect(h.events).toContainEqual(expect.objectContaining({
+      value: expect.objectContaining({ kind: 'not_dispatched' }),
+    }));
     expect(h.sharedHoldResolved).toBe(true);
     expect(h.state).toMatchObject({ stays: {} });
+    if (batch) expect(h.state).not.toHaveProperty('cloudCreateBatch');
     expect(dispatches).toBe(0);
+    // A spent but never-dispatched grant is not a completed batch sibling.
+    expect(await readResolvedHmsLabtestCreates(h.tx, workItemId)).toEqual([]);
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
       .toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
@@ -485,8 +511,8 @@ describe('mounted Cloud create route', () => {
         coverage: { displayed: 0, total: 0, complete: true } } });
     expect(JSON.stringify(h.sharedHold)).not.toContain('transient-proof');
     expect(h.sharedHoldResolved).toBe(true);
-    expect(h.events).toHaveLength(1);
-    expect(h.events[0]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
+    expect(h.events).toHaveLength(2);
+    expect(h.events[1]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
   });
 
   it('binds the selected agency, company, guarantee and no-send recipient through Go', async () => {
@@ -662,6 +688,8 @@ describe('mounted Cloud create route', () => {
     const digest = await prepared();
     h.sharedHold = { operation: 'attach_document', workItemId: 'other-item' };
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest })).toMatchObject({ reason: 'cloud_create_recovery_required' });
+    expect(h.createMutexCalls).toBe(0);
+    expect(h.state).not.toHaveProperty('stays');
     expect(dispatches).toBe(0);
   });
 
@@ -731,5 +759,113 @@ describe('mounted Cloud create route', () => {
     expect(h.state).toHaveProperty('cloudCreatePreviews');
     expect(h.state).not.toHaveProperty('stays');
     expect(dispatches).toBe(0);
+  });
+
+  it('one Go captures both previews and commits separately only after a trusted sibling read', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const laterStay = structuredClone((h.payload.stays as any)[0]);
+    laterStay.id = 's2'; laterStay.rows[0].id = 'r2';
+    (h.payload.stays as any[]).push(laterStay);
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const third = { ...request('123'), stayId: 's2_1',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 } } };
+    const fourth = { ...request('123'), stayId: 's2_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondPreview = await caller().quoteWorkflow.previewStay(second);
+    const secondDigest = secondPreview.previewDigest!;
+    const batchId = randomUUID();
+    const batch = { kind: 'start' as const, id: batchId, rooms: [
+      { ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest },
+    ] };
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch }))
+      .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-1' });
+    const thirdDigest = (await caller().quoteWorkflow.previewStay(third)).previewDigest!;
+    const fourthDigest = (await caller().quoteWorkflow.previewStay(fourth)).previewDigest!;
+    const laterBatch = { kind: 'start' as const, id: randomUUID(), rooms: [
+      { ...third, previewDigest: thirdDigest }, { ...fourth, previewDigest: fourthDigest },
+    ] };
+    expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: laterBatch }))
+      .toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(1);
+    const originalRun = paneCloudPreviewLoaders.run, originalVerify = paneCloudPreviewLoaders.verifySiblings;
+    const verifier = vi.fn<typeof paneCloudPreviewLoaders.verifySiblings>(async (_census, siblings) => {
+      expect(siblings).toHaveLength(1);
+      expect(siblings[0]).toMatchObject({ confirmation: '123456-1' });
+      return true;
+    });
+    paneCloudPreviewLoaders.verifySiblings = verifier;
+    paneCloudPreviewLoaders.run = async (input, options) => {
+      const row = { confirmation: '123456-1', firstName: 'Proof', lastName: 'Labtest',
+        arrival: stay.arrival, departure: stay.departure, status: 'Reserved' };
+      const census = { outcome: 'existing_matches', arrival: stay.arrival, coverage: { complete: true }, sameArrival: [row] };
+      if (input.mode === 'commit') expect(await options.verifyLabtestMatches?.(census)).toBe(true);
+      const dispatch = options.dispatchCandidate;
+      const result = await originalRun(input, { ...options, dispatchCandidate: dispatch && ((request, next, evidence: any) =>
+        dispatch(request, next, { ...evidence, preimage: { ...evidence.preimage,
+          coverage: { displayed: 1, total: 1, complete: true }, sameArrival: [row], verifiedExisting: true } })) });
+      return input.mode === 'commit' ? { ...result, confirmation: '123456-2' } : result;
+    };
+    try {
+      expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+        batch: { kind: 'continue', id: batchId, index: 1 } }))
+        .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-2' });
+      expect(dispatches).toBe(2);
+      expect(verifier).toHaveBeenCalledOnce();
+      expect(h.state).toMatchObject({ stays: { s1_1: { status: 'booked' }, s1_2: { status: 'booked' } } });
+      paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify;
+      expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: laterBatch }))
+        .toMatchObject({ status: 'ok', outcome: 'committed' });
+      expect(h.state).toMatchObject({ cloudCreateBatch: { id: laterBatch.id } });
+      expect(dispatches).toBe(3);
+    } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
+  });
+
+  it.each(['missing resolution', 'wrong confirmation', 'wrong digest', 'wrong item', 'wrong actor'])(
+    'rejects %s before another Cloud session starts', async (variant) => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const id = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
+      kind: 'start', id, rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }],
+    } })).toMatchObject({ status: 'ok' });
+    const intent = h.events.find((event: any) => event.value?.kind === 'intent') as any;
+    const resolution = h.events.find((event: any) => event.value?.kind === 'resolved') as any;
+    if (variant === 'missing resolution') h.events = h.events.filter((event: any) => event !== resolution);
+    if (variant === 'wrong confirmation') resolution.value.confirmation = '999999-1';
+    if (variant === 'wrong digest') intent.value.approvedDigest = '0'.repeat(64);
+    if (variant === 'wrong item') intent.itemId = randomUUID();
+    if (variant === 'wrong actor') resolution.actorKind = 'user';
+    const callsBefore = calls.length;
+    expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+      batch: { kind: 'continue', id, index: 1 } })).toMatchObject({ status: 'refused' });
+    expect(calls).toHaveLength(callsBefore);
+    expect(dispatches).toBe(1);
+  });
+
+  it('does not dispatch the first room when any room lacks its own reviewed preview', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
+      kind: 'start', id: randomUUID(), rooms: [
+        { ...first, previewDigest: firstDigest }, { ...second, previewDigest: '0'.repeat(64) },
+      ],
+    } })).toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(0);
+    expect(h.state).not.toHaveProperty('stays');
+    expect((h.state.cloudCreatePreviews as any).s1_2.digest).toBe(secondDigest);
   });
 });

@@ -27,6 +27,7 @@ import {
 import { sweepLostHmsWriteLeases } from './hms-approval.js';
 import { runLabtestAmendOnce } from './hms-labtest-amend-worker.js';
 import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
+import { labtestAttachWorkerEnabled, runLabtestAttachOnce } from './hms-labtest-attach-worker.js';
 import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
@@ -5826,6 +5827,18 @@ async function runLabtestAmendLoop(signal: AbortSignal, recovery: HmsRecoveryGat
   }
 }
 
+/** This dedicated loop can claim only source-bound Labtest attachment grants. */
+async function runLabtestAttachLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
+  while (!signal.aborted) {
+    const worked = await runLabtestAttachOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
+      .catch((error: unknown) => {
+        console.error('labtest_attach_loop_failed', error instanceof Error ? error.message : 'unknown');
+        return false;
+      });
+    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+  }
+}
+
 export async function runAiWorkerDrain(
   input: RunAiWorkerDrainInput,
 ): Promise<RunAiWorkerDrainResult> {
@@ -5929,6 +5942,10 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && labtestAmendWorkerEnabled() && !scope.idempotencyPrefix
       ? runLabtestAmendLoop(shutdown.signal, hmsRecovery)
       : null;
+  const hmsLabtestAttach =
+    resolveWorkerLane() === 'default' && labtestAttachWorkerEnabled() && !scope.idempotencyPrefix
+      ? runLabtestAttachLoop(shutdown.signal, hmsRecovery)
+      : null;
 
   try {
     while (!stopping) {
@@ -5948,6 +5965,7 @@ export async function runAiWorkerLoop(
     // Let a running HMS job settle its run row before the database closes.
     shutdown.abort();
     await hmsJobs;
+    await hmsLabtestAttach;
     await hmsWriteSweep;
     await hmsLabtestAmend;
     await closeAiWorkerResources();

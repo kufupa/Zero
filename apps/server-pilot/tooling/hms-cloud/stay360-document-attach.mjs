@@ -1,12 +1,13 @@
 // Attach one file to an already-open, verified HRCEN Proof Labtest stay.
 // A dispatched upload is never retried on this page; reconcile it in a fresh session.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { readDocumentsFromStay360 } from './stay360-documents.mjs';
-import { cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
+import { cleanLabtestRecord, currentLabtestDocumentRecord, currentLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { fulfillGuestLookupRequest } from './pane-guest-search.mjs';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -15,9 +16,18 @@ const UPLOAD = '/web/base/BSUPLD.upload', REFRESH = '/web/base/OSRESV.DOC';
 const FIELD_NAMES = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg',
   'typecode', 'uploaddoc', 'pagemode', 'recordid', 'uploadorcreatedoc', 'daeRentity', 'daeType', 'daeCode', 'pages', 'filetype'];
 const usedPages = new WeakSet();
+const neverDispatchedAttachProofs = new WeakMap();
 const text = (v) => v == null ? '' : String(v);
 const scalar = (v) => v == null || ['string', 'number', 'boolean'].includes(typeof v);
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'DOCUMENT_ACTION_FAILED';
+
+/** Consume only a proof minted for this exact, permanently disarmed upload request. */
+export function consumeNeverDispatchedAttachProof(proof, request) {
+  if (!proof || typeof proof !== 'object' || !neverDispatchedAttachProofs.has(proof) ||
+      neverDispatchedAttachProofs.get(proof) !== request) return false;
+  neverDispatchedAttachProofs.delete(proof);
+  return true;
+}
 
 // Derive all fields from the staged native model and controls, not a captured stay.
 export function documentValidationFields(snapshot) {
@@ -67,7 +77,9 @@ export function matchesDocumentMultipart(request, expected, file) {
       const name = /(?:^|;)\s*name="([^"\r\n]+)"/i.exec(dispositions[0])?.[1];
       const filename = /(?:^|;)\s*filename="([^"\r\n]*)"/i.exec(dispositions[0])?.[1];
       if (filename !== undefined) {
-        if (name !== 'filename' || filename !== file.name || ++fileCount !== 1 ||
+        const decodedFilename = Buffer.from(filename, 'latin1').toString('utf8');
+        if (name !== 'filename' || decodedFilename !== file.name ||
+            Buffer.from(decodedFilename, 'utf8').toString('latin1') !== filename || ++fileCount !== 1 ||
             !Buffer.from(payload, 'latin1').equals(file.bytes) ||
             lines.filter((line) => /^content-type:/i.test(line)).length !== 1 ||
             lines.find((line) => /^content-type:/i.test(line)).slice(13).trim().toLowerCase() !== file.mimeType.toLowerCase()) return false;
@@ -96,23 +108,113 @@ export function matchesDocumentUpload(request, frame, expected, file, token) {
   } catch { return false; }
 }
 
+/** Hash the exact captured request without storing session tokens or document bytes. */
+export function documentUploadRequestDigest(request) {
+  try {
+    const body = request.postDataBuffer(), contentType = request.headers()['content-type'];
+    if (!Buffer.isBuffer(body) || !contentType || request.method() !== 'POST') return null;
+    const parts = [Buffer.from(request.method()), Buffer.from(request.url()), Buffer.from(contentType), body];
+    const hash = createHash('sha256');
+    for (const part of parts) {
+      const length = Buffer.alloc(8);
+      length.writeBigUInt64BE(BigInt(part.length));
+      hash.update(length).update(part);
+    }
+    return hash.digest('hex');
+  } catch { return null; }
+}
+
 // Called only after the lifetime page fence has approved this same Request.
 // An intent is exclusive and is written before the one permitted continuation.
-export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError }) {
-  let consumed = false;
-  return (route, { candidate, armed, checkStatus, blocked }) => {
-    const request = route.request();
-    if (consumed || request !== candidate || !armed || blocked || checkStatus !== 200 ||
-        !matchesDocumentUpload(request, frame, fields, file, token)) return null;
-    consumed = true;
-    try {
-      writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation,
-        documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }),
-      { flag: 'wx', mode: 0o600 });
-    } catch { onIntentError(); return { result: route.abort() }; }
-    onDispatch();
-    return { result: route.continue() };
+export function createDocumentUploadGate({ frame, fields, file, token, evidenceDir, confirmation, onDispatch, onIntentError,
+  beforeDispatch, stillArmed = () => true, onAuthorityError = onIntentError, dispatchRequest = (route) => route.continue(),
+  dispatchWithAuthority, continuationAllowed = () => true, deadline = Infinity }) {
+  let consumed = false, disarmed = false;
+  const pending = new Set();
+  const track = (result) => {
+    if (!result || typeof result.then !== 'function') return result;
+    const task = Promise.resolve(result);
+    pending.add(task);
+    void task.then(() => pending.delete(task), () => pending.delete(task));
+    return task;
   };
+  const gate = (route, { candidate, armed, checkStatus, blocked }) => {
+    const request = route.request();
+    if (disarmed || consumed || request !== candidate || !armed || blocked || checkStatus !== 200 ||
+        !matchesDocumentUpload(request, frame, fields, file, token)) return null;
+    const requestDigest = documentUploadRequestDigest(request);
+    if (!requestDigest) return null;
+    consumed = true;
+    const dispatch = () => {
+      let released = false, continued = false, wrapperFinished = false, proofIssued = false, authorityFailed = false;
+      const failAuthority = () => { if (!authorityFailed) { authorityFailed = true; onAuthorityError(); } };
+      const continueOnce = () => {
+        // Even a faulty authority callback cannot send this native request twice.
+        if (continued || wrapperFinished) { failAuthority(); return undefined; }
+        continued = true;
+        let budget = false;
+        try { budget = continuationAllowed() === true; } catch { /* Refuse on an unavailable deadline. */ }
+        if (disarmed || performance.now() >= deadline || !stillArmed() || !budget) {
+          failAuthority();
+          if (dispatchWithAuthority) throw new Error('DOCUMENT_DISPATCH_NOT_AUTHORIZED');
+          return route.abort();
+        }
+        try {
+          writeFileSync(join(evidenceDir, 'dispatch-intent.json'), JSON.stringify({ confirmation,
+            documentCode: file.documentCode, filename: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }),
+          { flag: 'wx', mode: 0o600 });
+        } catch {
+          onIntentError();
+          if (dispatchWithAuthority) throw new Error('DOCUMENT_DISPATCH_INTENT_UNAVAILABLE');
+          return route.abort();
+        }
+        released = true; onDispatch();
+        // Track the actual request even if a faulty authority callback starts
+        // it but neglects to await or return its promise.
+        return track(dispatchRequest(route));
+      };
+      continueOnce.proveNeverDispatched = () => {
+        // The page/context fences admit this single multipart candidate only.
+        // Permanently disarm before minting, and never mint after an attempted send.
+        if (wrapperFinished || released || proofIssued) return null;
+        disarmed = true; proofIssued = true;
+        const proof = Object.freeze({});
+        neverDispatchedAttachProofs.set(proof, request);
+        return proof;
+      };
+      if (!dispatchWithAuthority) return continueOnce();
+      return Promise.resolve().then(() => dispatchWithAuthority(continueOnce, requestDigest, join(evidenceDir, 'before.png'), request)).catch(() => {
+        failAuthority();
+        // Once released, the outcome is unknown; the browser may already have received a response.
+        return released ? undefined : route.abort();
+      }).finally(() => { wrapperFinished = true; });
+    };
+    if (!beforeDispatch) return { result: track(dispatch()) };
+    // The server checks its live grant, lease, source and approved bytes while
+    // this exact request is paused. A timeout or failed check cannot release it.
+    return { result: track(Promise.resolve().then(beforeDispatch).then((allowed) => {
+      if (disarmed || allowed !== true || performance.now() >= deadline || !stillArmed()) { onAuthorityError(); return route.abort(); }
+      return dispatch();
+    }, () => { onAuthorityError(); return route.abort(); })) };
+  };
+  // A timeout, shutdown or browser close must prevent delayed authority checks
+  // from releasing this request. A caller may only use drain as one part of a
+  // separate browser-quiescence and fresh-readback proof.
+  gate.disarm = () => { disarmed = true; };
+  gate.drain = async (timeoutMs = 5000) => {
+    if (!disarmed || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return false;
+    if (!pending.size) return true;
+    let timer;
+    const settled = await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+    clearTimeout(timer);
+    // A callback may start another tracked continuation before it settles.
+    // A snapshot finishing alone is not proof that the whole gate drained.
+    return settled && pending.size === 0;
+  };
+  return gate;
 }
 
 function matchesForm(request, path, frame, expected) {
@@ -126,7 +228,9 @@ function matchesForm(request, path, frame, expected) {
 }
 
 function validFile(file) {
-  return file && typeof file === 'object' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,150}$/.test(file.name || '') &&
+  return file && typeof file === 'object' && typeof file.name === 'string' && file.name.length > 0 &&
+    file.name.length <= 150 && file.name === file.name.replace(/\s+/g, ' ').trim() && !/["\\/\p{Cc}]/u.test(file.name) &&
+    Buffer.from(file.name, 'utf8').toString('utf8') === file.name &&
     /^[A-Z0-9][A-Z0-9_-]{0,39}$/.test(file.documentCode || '') &&
     typeof file.description === 'string' && file.description.trim() === file.description && file.description.length > 0 &&
     file.description.length <= 200 && ![...file.description].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
@@ -135,12 +239,22 @@ function validFile(file) {
 }
 
 /** Returns awaiting_readback, uncertain, or not_dispatched. A fresh session must reconcile every dispatch. */
-export async function attachLabtestDocument(page, expected, file, { evidenceRoot, expectedOrganization, timeoutMs = 30000 } = {}) {
+export async function attachLabtestDocument(page, expected, file, { evidenceRoot, expectedOrganization, expectedDocumentContext, timeoutMs = 30000,
+  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false } = {}) {
   if (!validFile(file) || typeof evidenceRoot !== 'string' || !isAbsolute(evidenceRoot) ||
-      !Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' };
+      !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
+      (beforeDispatch !== undefined && typeof beforeDispatch !== 'function') ||
+      (finalAuthority !== undefined && typeof finalAuthority !== 'function') ||
+      (dispatchWithAuthority !== undefined && typeof dispatchWithAuthority !== 'function') ||
+      (continuationAllowed !== undefined && typeof continuationAllowed !== 'function') ||
+      (onDispatched !== undefined && typeof onDispatched !== 'function') ||
+      (expectedDocumentContext !== undefined && expectedOrganization !== undefined) || typeof strictNetwork !== 'boolean') {
+    return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' };
+  }
   if (!page || typeof page.context !== 'function' || usedPages.has(page)) return { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' };
   file = { ...file, bytes: Buffer.from(file.bytes) };
-  try { expected = structuredClone(expected); expectedOrganization = structuredClone(expectedOrganization); }
+  try { expected = structuredClone(expected); expectedOrganization = structuredClone(expectedOrganization);
+    expectedDocumentContext = structuredClone(expectedDocumentContext); }
   catch { return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' }; }
   const context = page.context();
   if (context?._options?.serviceWorkers !== 'block' || typeof context.serviceWorkers !== 'function' ||
@@ -154,13 +268,14 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   const responsesObserved = new Promise((resolve) => { notifyResponses = resolve; });
   let notifyStop;
   const interrupted = new Promise((resolve) => { notifyStop = resolve; });
-  const stop = (reason) => { stopped ||= reason; armed = false; fence?.quarantine(); notifyStop(stopped); };
+  const stop = (reason) => { stopped ||= reason; armed = false; uploadGate?.disarm(); fence?.quarantine(); notifyStop(stopped); };
   const rejectRequest = () => { blocked++; if (!possible) stop('DOCUMENT_REQUEST_BLOCKED'); };
   const bounded = async (action) => {
     const result = await Promise.race([Promise.resolve(action).then((value) => ({ value })), interrupted.then((reason) => ({ reason }))]);
     if (result.reason) throw new Error(result.reason);
     return result.value;
   };
+  const deadline = performance.now() + timeoutMs;
   const timer = setTimeout(() => stop('DOCUMENT_TIMEOUT'), timeoutMs);
   const onDialog = () => stop('UNEXPECTED_DIALOG');
   const onWorker = () => stop('UNEXPECTED_SERVICE_WORKER');
@@ -170,7 +285,9 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if (!root.isDirectory() || (root.mode & 0o077)) throw new Error('EVIDENCE_ROOT_UNSAFE');
     evidenceDir = await mkdtemp(join(evidenceRoot, 'hms-document-'));
     const recordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true, ...(expectedOrganization ? { expectedOrganization } : {}) };
-    const state = await bounded(currentLabtestRecord(page, expected, recordOptions)); frame = state.frame;
+    const state = await bounded(expectedDocumentContext !== undefined
+      ? currentLabtestDocumentRecord(page, expected, expectedDocumentContext)
+      : currentLabtestRecord(page, expected, recordOptions)); frame = state.frame;
     baseline = await bounded(snapshotLabtestRecord(frame));
     if (!cleanLabtestRecord(baseline)) throw new Error('RECORD_NOT_CLEAN');
     const onRequest = (request) => {
@@ -208,8 +325,12 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     await context.route('**/*', async (route) => {
       const request = route.request(); let url;
       try { url = new URL(request.url()); } catch { rejectRequest(); return route.abort(); }
-      if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) { initAllowed = true; return route.fallback(); }
-      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, expectedFields)) return route.fallback();
+      if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) {
+        initAllowed = true; return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
+      }
+      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, expectedFields)) {
+        return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
+      }
       if (!stopped && uploadGate) {
         const release = uploadGate(route, { candidate: uploadCandidate, armed, checkStatus, blocked });
         if (release) return release.result;
@@ -270,27 +391,44 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if ([...token.keys()].length !== 2 || token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');
     uploadGate = createDocumentUploadGate({ frame, fields: expectedFields, file, token, evidenceDir,
-      confirmation: expected.confirmation,
-      onDispatch: () => { possible = true; dispatched = true; armed = false; },
-      onIntentError: () => stop('DISPATCH_INTENT_FAILED') });
-    const before = join(evidenceDir, `${randomUUID()}-before.png`);
+      confirmation: expected.confirmation, deadline,
+      ...(strictNetwork ? { dispatchRequest: fulfillGuestLookupRequest } : {}),
+      ...(dispatchWithAuthority ? { dispatchWithAuthority } : {}),
+      ...(continuationAllowed ? { continuationAllowed } : {}),
+      onDispatch: () => { possible = true; dispatched = true; armed = false; onDispatched?.(); },
+      onIntentError: () => stop('DISPATCH_INTENT_FAILED'),
+      beforeDispatch: beforeDispatch && (async () => {
+        if (await beforeDispatch() !== true) return false;
+        // The record form is hidden on the Documents tab. The server's
+        // independent fresh stay read supplies the post-prepare recheck.
+        return !finalAuthority || await finalAuthority() === true;
+      }),
+      stillArmed: () => armed && !stopped && !blocked && checkStatus === 200,
+      onAuthorityError: () => stop('DOCUMENT_AUTHORITY_LOST') });
+    const before = join(evidenceDir, 'before.png');
     await bounded(writeFile(before, await bounded(page.screenshot({ fullPage: true })), { flag: 'wx', mode: 0o600 }));
     const submit = popup.getByText('Submit', { exact: true });
     if (await submit.count() !== 1 || stopped || blocked) throw new Error('DOCUMENT_SUBMIT_UNVERIFIED');
     armed = true; await bounded(submit.click({ timeout: 5000, noWaitAfter: true }).catch(() => {}));
-    await bounded(Promise.race([responsesObserved, page.waitForTimeout(10000)]));
+    // The live approval check includes a fresh independent browser read.
+    await bounded(Promise.race([responsesObserved, page.waitForTimeout(beforeDispatch ? 390000 : 10000)]));
     armed = false;
-    const after = join(evidenceDir, `${randomUUID()}-after.png`);
+    const after = join(evidenceDir, 'after.png');
     await bounded(writeFile(after, await bounded(page.screenshot({ fullPage: true })), { flag: 'wx', mode: 0o600 }));
     const visibleDialogs = await bounded(frame.locator('.x-window:visible:not(.x-menu)').count());
+    armed = false; uploadGate?.disarm();
+    const dispatchCallbacksDrained = !uploadGate || await uploadGate.drain();
     return { outcome: dispatched && uploadStatus === 200 && refreshStatus === 200 && !visibleDialogs && !stopped && !blocked
       ? 'awaiting_readback' : possible ? 'uncertain' : 'not_dispatched',
-      checkStatus, uploadStatus, refreshStatus, visibleDialogs, blockedRequests: blocked, evidenceDir, screenshots: [before, after], baselineCoverage: docs.coverage };
+      checkStatus, uploadStatus, refreshStatus, visibleDialogs, blockedRequests: blocked, evidenceDir, screenshots: [before, after],
+      dispatchCallbacksDrained, baselineCoverage: docs.coverage };
   } catch (error) {
+    armed = false; uploadGate?.disarm();
+    const dispatchCallbacksDrained = !uploadGate || await uploadGate.drain();
     return { outcome: possible ? 'uncertain' : 'not_dispatched', issue: stopped || issue(error), checkStatus, uploadStatus, refreshStatus,
-      blockedRequests: blocked, evidenceDir };
+      blockedRequests: blocked, evidenceDir, dispatchCallbacksDrained };
   } finally {
-    clearTimeout(timer); armed = false; fence?.quarantine(); scope?.close();
+    clearTimeout(timer); armed = false; uploadGate?.disarm(); fence?.quarantine(); scope?.close();
     // Keep the page/context fences and dialog watcher until the session closes.
   }
 }

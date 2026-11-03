@@ -10,10 +10,10 @@ import {
 } from '../../ai/hms-approval.js';
 import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, cloudAmendWriteState } from '../../ai/pane-cloud-amend.js';
 import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
-import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
-import { parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
+import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { previewFiling } from '../../ai/pane-filing-preview.js';
+import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
@@ -34,6 +34,7 @@ const cloudReviewInput = z.discriminatedUnion('decision', [
   z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema,
     decision: z.literal('flag'), note: z.string().trim().min(3).max(500) }).strict(),
 ]);
+const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, note: z.string().trim().min(3).max(500) }).strict();
 // A flag must say why. An OK carries no note. Both name the run the reviewer was shown.
@@ -104,6 +105,19 @@ export const hmsApprovalRouter = router({
     const after = await cloudAmendWriteState(selected);
     return after?.run?.runId === before.run.runId && after.run.evidence.some((row) => row.eventId === input.eventId)
       ? evidence : { status: 'unavailable' as const, reason: 'evidence_unavailable' };
+  }),
+  /** Binding prepares the reviewed PDF and booking; it never approves or sends the upload. */
+  bindAttach: mailboxProcedure.input(bindAttachInput).mutation(async ({ input, ctx }) => {
+    try {
+      const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+      if (!target.ok || target.target.propertyCode !== 'HRCEN') return { status: 'refused' as const, reason: 'filing_unavailable' };
+      const bound = await bindAttachDocumentForm({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
+      if (bound.status !== 'bound' || !bound.formDigest) return bound;
+      const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+        selectedInternetMessageId: input.internetMessageId, expectedFormDigest: bound.formDigest,
+        confirmation: bound.form.confirmation, arrival: bound.form.arrival });
+      return snapshot.status === 'stored' ? bound : snapshot;
+    } catch (err) { return refusal(err); }
   }),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {
     try {

@@ -29,6 +29,7 @@ export type HmsWriteView = {
   } | null;
   needsCheck: boolean;
   filingAvailable?: boolean;
+  manualResolve?: boolean;
 };
 
 export type HmsApproved = { grantId: string; runId: string; hmsReadAt: string; expiresAt: string };
@@ -158,6 +159,7 @@ const NEEDS_CHECK_REASON: Record<string, string> = {
   form_changed: 'The values changed after you approved them. Nothing was written.',
   reread_failed: 'Nava could not read HMS again before saving. Nothing was written.',
   LEASE_LOST: 'Nava lost its hold on the write, so the outcome is not known.',
+  confirmed_hold_unsettled: 'HMS lists the document by its code and name. The write still needs a safety check before another upload.',
 };
 
 const STOP_REASON: Record<string, string> = {
@@ -332,6 +334,9 @@ const LEAF_LABELS: Record<string, string> = {
   retainRates: 'Retain current rates',
   board: 'Board',
   removed: 'Removed',
+  confirmation: 'Booking',
+  lastName: 'Guest surname',
+  documentName: 'Document',
 };
 
 /** Scalar leaves of a nested form, keyed by dotted path. Arrays of scalars are one leaf. */
@@ -446,14 +451,17 @@ export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteR
   // digests and unrelated work-item state are not staff decisions.
   const cloudAmend = view.form.action === 'amend' && typeof view.form.cloudAmend === 'object' && view.form.cloudAmend !== null;
   const after = leavesOf(cloudAmend ? { fields: view.form.fields } : view.form);
+  const filing = view.form.action === 'attach_document';
+  const filingFields = new Set(['documentName', 'confirmation', 'lastName', 'arrival']);
   const before = view.before ? leavesOf(view.before) : null;
   const labels = labelsOf([...after.keys()]);
   const rows: WriteRow[] = [];
   for (const [key, value] of after) {
+    if (filing && !filingFields.has(key)) continue;
     const beforeText =
       before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : NONE;
     const afterText = valueText(key, value);
-    if (beforeText !== afterText || (cloudAmend && key === 'fields.ratePlan')) {
+    if (filing || beforeText !== afterText || (cloudAmend && key === 'fields.ratePlan')) {
       rows.push({ key, label: labels.get(key) ?? key, before: beforeText, after: afterText });
     }
   }

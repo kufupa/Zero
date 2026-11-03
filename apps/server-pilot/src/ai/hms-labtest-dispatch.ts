@@ -29,7 +29,7 @@ const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('reso
   holdId: z.string().uuid(), operation, confirmation: z.string().max(40).regex(/^\d+-\d+$/),
   readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
 const noDispatchSchema = z.object({ version: z.literal(1), kind: z.literal('not_dispatched'),
-  holdId: z.string().uuid(), operation: z.literal('create') }).strict();
+  holdId: z.string().uuid(), operation: z.enum(['create', 'attach_document']) }).strict();
 const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema, noDispatchSchema]);
 type Claim = z.infer<typeof claimSchema>;
 type Intent = z.infer<typeof intentSchema>;
@@ -100,7 +100,17 @@ async function readHistory(tx: CreateFenceTransaction) {
   }
   const active = [...intents.values()].filter((intent) => !resolved.has(intent.holdId));
   if (active.length > 1) throw new HmsLabtestDispatchError('corrupt');
-  return { active, grants };
+  const completed = completions.map(({ value }) => ({ intent: intents.get(value.holdId)!, resolution: value }));
+  return { active, grants, completed };
+}
+
+/** Read only validated intent/resolution pairs for this work item. */
+export async function readResolvedHmsLabtestCreates(tx: CreateFenceTransaction, workItemId: string) {
+  const history = await readHistory(tx);
+  return history.completed.flatMap(({ intent, resolution }) =>
+    intent.operation === 'create' && intent.workItemId === workItemId && resolution.kind === 'resolved'
+      ? [{ intent, resolution }]
+      : []);
 }
 
 const historyEpoch = (history: Awaited<ReturnType<typeof readHistory>>) =>
@@ -156,7 +166,7 @@ export async function claimHmsLabtestDispatch(
   return { holdId, ownerToken };
 }
 
-async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create'; notDispatched: true },
+async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create' | 'attach_document'; notDispatched: true },
   authorize: (intent: Intent) => void, record: (tx: CreateFenceTransaction, intent: Intent) => Promise<void>) {
   await db.transaction(async (tx) => {
     await lockProperty(tx);
@@ -183,6 +193,26 @@ export async function resolveNeverDispatchedCreate(db: DB, handle: HmsLabtestWri
       !digest.safeParse(requestDigest).success || typeof record !== 'function' ||
       !consumeNeverDispatchedCreateProof(proof, request)) throw new HmsLabtestDispatchError('invalid');
   await finishDispatch(db, handle.holdId, { operation: 'create', notDispatched: true }, (intent) => {
+    if (intent.requestDigest !== requestDigest ||
+        !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
+      throw new HmsLabtestDispatchError('owner');
+    }
+  }, record);
+}
+
+/** Only the upload gate can prove that its exact multipart request was never continued. */
+export async function resolveNeverDispatchedAttach(db: DB, handle: HmsLabtestWriteHandle, proof: unknown,
+  request: unknown, record: (tx: CreateFenceTransaction, intent: Readonly<Intent>) => Promise<void>): Promise<void> {
+  const { consumeNeverDispatchedAttachProof, documentUploadRequestDigest } =
+    await import('../../tooling/hms-cloud/stay360-document-attach.mjs' as string) as {
+      consumeNeverDispatchedAttachProof(proof: unknown, request: unknown): boolean;
+      documentUploadRequestDigest(request: unknown): string | null;
+    };
+  const requestDigest = documentUploadRequestDigest(request);
+  if (!z.string().uuid().safeParse(handle?.holdId).success || !digest.safeParse(handle?.ownerToken).success ||
+      !digest.safeParse(requestDigest).success || typeof record !== 'function' ||
+      !consumeNeverDispatchedAttachProof(proof, request)) throw new HmsLabtestDispatchError('invalid');
+  await finishDispatch(db, handle.holdId, { operation: 'attach_document', notDispatched: true }, (intent) => {
     if (intent.requestDigest !== requestDigest ||
         !timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex'))) {
       throw new HmsLabtestDispatchError('owner');
@@ -248,5 +278,15 @@ export async function recoverHmsLabtestCreate(db: DB, holdId: string): Promise<v
   const driver = await import('./pane-cloud-preview.js');
   await recoverPositiveDispatch(db, holdId, 'create', {
     withLock: driver.withRecoveryLock, prove: driver.proveCreateRecovery, record: driver.recordRecoveredCreate,
+  });
+}
+
+/** Operator-only positive Filing reconciliation; no client supplies proof or a driver. */
+export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-attach-recovery.js');
+  await recoverPositiveDispatch(db, holdId, 'attach_document', {
+    withLock: driver.withAttachRecoveryLock,
+    prove: (intent) => driver.proveAttachRecovery(db, intent),
+    record: driver.recordRecoveredAttach,
   });
 }

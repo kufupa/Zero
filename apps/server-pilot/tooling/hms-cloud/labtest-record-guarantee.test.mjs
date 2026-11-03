@@ -11,23 +11,29 @@ const recordOptions = { allowUnchangedBusinessParties: true, expectedOrganizatio
 const agentGuarantee = { code: 'GTDAGT', display: 'Guaranteed By Agent' };
 
 // Execute the actual saved-record browser predicate against a synthetic Ext form.
-function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', note = expected.note, recipient = '', send = false,
-  agency = null, mutate = () => {} } = {}) {
+function savedPage({ code = 'GTDAGT', display = 'Guaranteed By Agent', note = expected.note, recipient = '', recipientModel = recipient,
+  recipientForm = recipient, agency = null, companyId = organization.nativeId, companyName = organization.name,
+  agencyId = agency?.nativeId, agencyName = agency?.name, send = false, guestEmail = '',
+  noteCount = 1, modelChanges = {}, visibleChanges = {}, mutate = () => {} } = {}) {
   const values = { confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '12-NOV-2027', departuredate: '14-NOV-2027',
     roomtype: expected.roomType, rateplan: expected.ratePlan, track: 'BAR', guaranteetype: display,
-    reservationnote: note, udfchkbox04: '', udfchar13: recipient, emailaddress: '' };
-  const inputs = Object.entries(values).map(([name, value]) => ({ name, value, id: `${name}-inputEl`,
+    reservationnote: note, udfchkbox04: '', udfchar13: recipient, emailaddress: guestEmail, ...visibleChanges };
+  const inputs = Object.entries(values).filter(([name]) => name !== 'reservationnote' || noteCount > 0)
+    .map(([name, value]) => ({ name, value, id: `${name}-inputEl`,
     offsetWidth: 1, offsetHeight: 1, closest: () => null }));
-  const company = { name: 'company', value: organization.name, offsetWidth: 1, offsetHeight: 1, closest: () => null };
+  if (noteCount > 1) inputs.push({ ...inputs.find((input) => input.name === 'reservationnote') });
+  const company = { name: 'company', value: companyName, offsetWidth: 1, offsetHeight: 1, closest: () => null };
+  const agencyInput = agency ? { name: 'ta1', value: agency.name, offsetWidth: 1, offsetHeight: 1, closest: () => null } : null;
   const party = Object.fromEntries(blankSavedPartyFields.map((key) => [key, '']));
-  party.companyid = organization.nativeId; party.company = organization.name;
-  if (agency) { party.taid1 = agency.nativeId; party.ta1 = agency.name; }
-  const partyInputs = [company, ...(agency ? [{ name:'ta1', value:agency.name, offsetWidth:1, offsetHeight:1, closest:() => null }] : [])];
-  const formValues = { company: organization.name, udfchar13:recipient, ...(agency ? { ta1:agency.name } : {}) };
+  party.companyid = companyId; party.company = companyName;
+  if (agency) { party.taid1 = agencyId; party.ta1 = agencyName; }
   const data = { ...party, propertycode: 'HRCEN', confirmationnumber: expected.confirmation, guestid: expected.guestId,
-    status: 'Reserved', firstname: 'Proof', lastname: 'Labtest', PKID: 'pk', bookingsessionid: 'session',
-    reservationid: 'reservation', reservationstayid: 'stay', recordid: 'record', udfchar13:recipient };
+    status: 'Reserved', firstname: 'Proof', lastname: 'Labtest', arrivaldate: '11/12/2027', departuredate: '11/14/2027',
+    PKID: 'pk', bookingsessionid: 'session', reservationid: '41', reservationstayid: '42', recordid: 'record',
+    udfchar13: recipientModel, ...modelChanges };
+  const partyInputs = [company, ...(agencyInput ? [agencyInput] : [])];
+  const formValues = { company: companyName, udfchar13: recipientForm, ...(agency ? { ta1: agencyName } : {}) };
   mutate({ data, inputs, partyInputs, formValues });
   const form = { el: { dom: { contains: () => true, querySelectorAll: () => partyInputs } },
     getRecord: () => ({ data }), getForm: () => ({ getValues: () => formValues }) };
@@ -89,6 +95,34 @@ test('the existing action guard remains NGI-only', async () => {
 test('the default saved-action guard refuses an otherwise valid linked company', async () => {
   await assert.rejects(records.currentLabtestRecord(savedPage({ code: 'NGI', display: 'Non-Guaranteed Individual' }),
     expected, { allowBlankNote: true }), /LABTEST_LINKED_PARTY_UNVERIFIED/);
+});
+
+test('document-only guard permits unrelated stay details but binds fake identity and no-send', async () => {
+  const agency = { nativeId: '99', name: 'Example Agency' };
+  const context = { cmsSend: false };
+  const options = { code: 'GTDAGT', display: 'Guaranteed By Agent', recipient: 'booker@example.invalid', agency };
+  const record = await records.currentLabtestDocumentRecord(savedPage(options), expected, context);
+  assert.equal(record.native.reservationstayid, '42');
+  // The ordinary amend/cancel guard still refuses the same nonblank recipient.
+  await assert.rejects(records.currentLabtestRecord(savedPage(options), expected, recordOptions), /LABTEST_RECORD_UNVERIFIED/);
+  for (const changed of [{ recipient: 'other@example.invalid' }, { recipientModel: 'other@example.invalid' },
+    { recipientForm: 'other@example.invalid' }, { guestEmail: 'guest@example.invalid' }, { noteCount: 0 }, { noteCount: 2 },
+    { companyId: '42' }, { companyName: 'Other Company' }, { agencyId: '100' }, { agencyName: 'Other Agency' },
+    { code: 'NGI', display: 'Non-Guaranteed Individual' },
+    { modelChanges: { roomtype: 'OTHER', rateplan: 'OTHER' }, visibleChanges: { roomtype: 'DIFFERENT', rateplan: 'DIFFERENT' } }]) {
+    assert.ok(await records.currentLabtestDocumentRecord(savedPage({ ...options, ...changed }), expected, context));
+  }
+  for (const changed of [{ send: true }, { modelChanges: { propertycode: 'HRDAV' } },
+    { modelChanges: { guestid: '124' } }, { visibleChanges: { guestid: '124' } },
+    { modelChanges: { status: 'Cancelled' } }, { modelChanges: { firstname: 'Other' } },
+    { visibleChanges: { lastname: 'Other' } }, { visibleChanges: { arrivaldate: '13-NOV-2027' } },
+    { modelChanges: { departuredate: '11/15/2027' } }]) {
+    await assert.rejects(records.currentLabtestDocumentRecord(savedPage({ ...options, ...changed }), expected, context),
+      /LABTEST_RECORD_UNVERIFIED/);
+  }
+  for (const bad of [{ cmsSend: true }, {}, { ...context, extra: true }]) {
+    await assert.rejects(records.currentLabtestDocumentRecord(savedPage(options), expected, bad), /LABTEST_RECORD_INPUT_INVALID/);
+  }
 });
 
 test('create reconciliation rejects unsupported or malformed guarantee expectations', async () => {

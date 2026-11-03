@@ -30,6 +30,57 @@ export async function currentLabtestRecord(page, expected, options = {}) {
   return readLabtestRecord(page, expected, options, { code: 'NGI', display: 'Non-Guaranteed Individual' });
 }
 
+// The Documents request does not save the surrounding stay form. Verify only
+// its exact fake-stay target and the no-send control; linked parties and notes
+// are not part of this native upload.
+export async function currentLabtestDocumentRecord(page, expected, context) {
+  const { confirmation, guestId, arrival, departure } = expected || {};
+  const start = date(arrival), end = date(departure);
+  if (!context || Object.keys(context).length !== 1 || context.cmsSend !== false ||
+      !/^\d+-\d+$/.test(confirmation || '') || confirmation.length > 100 ||
+      !/^\d{1,30}$/.test(guestId || '') || !start || !end ||
+      arrival < '2027-01-01' || arrival >= departure) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+    throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
+  }
+  const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
+  if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
+  const frame = await (await frames.elementHandle())?.contentFrame();
+  if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
+  const state = await frame.evaluate(({ expected, start, end, origin }) => {
+    if (location.origin !== origin) return null;
+    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
+      getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'udfchkbox04'];
+    const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
+      .filter((el) => el.name === name && visible(el))]));
+    if (names.some((name) => fields[name].length !== 1)) return null;
+    const cmp = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
+    const form = cmp('guestid')?.up?.('form'), data = form?.getRecord?.()?.data;
+    if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
+    const keys = Object.keys(data);
+    const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
+    const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
+    const value = (name) => fields[name][0].value.trim();
+    if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
+        !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', 'Proof') ||
+        !exact('lastname', 'Labtest') || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
+        value('confirmationnumber') !== expected.confirmation || value('guestid') !== expected.guestId ||
+        value('status') !== 'Reserved' || value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' ||
+        value('arrivaldate') !== start.display || value('departuredate') !== end.display ||
+        cmp('udfchkbox04')?.getValue?.() !== false) return null;
+    const native = {};
+    for (const key of ['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid']) {
+      if (!unique(key) || !String(data[key] ?? '').trim()) return null;
+      native[key] = String(data[key]).trim();
+    }
+    if (!/^\d{1,100}$/.test(native.reservationid) || !/^\d{1,100}$/.test(native.reservationstayid)) return null;
+    return { native };
+  }, { expected, start, end, origin: ORIGIN });
+  if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
+  return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
+}
+
 export async function readCreatedLabtestRecord(page, expected, options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('LABTEST_RECORD_INPUT_INVALID');
   const { expectedGuarantee, ...recordOptions } = options;

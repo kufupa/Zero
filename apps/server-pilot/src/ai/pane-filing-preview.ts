@@ -9,7 +9,7 @@ import { findStay } from './pane-stay-lookup.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 
-type PreviewInput = {
+export type PreviewInput = {
   transportId: string;
   actorUserId: string;
   workItemId: string;
@@ -27,7 +27,7 @@ type PreviewResult =
   | { status: 'refused'; reason: string };
 
 /** Recheck the selected message, work item and current mailbox access around the remote reads. */
-async function currentSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
+export async function currentFilingSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
   const rows = await db.select({ itemThread: workItem.threadId, messageThread: message.threadId,
     itemMessage: workItem.sourceMessageId, messageId: message.id, transportId: workItem.transportId,
     actorUserId: mailboxAccess.userId, active: mailboxTransport.isActive, status: workItem.status,
@@ -62,9 +62,9 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
     return { status: 'refused', reason: 'property_unavailable' };
   }
   const db = input.db ?? getDb();
-  const threadId = await currentSourceThread(db, input);
+  const threadId = await currentFilingSourceThread(db, input);
   if (!threadId) return { status: 'refused', reason: 'source_unavailable' };
-  const checkAuthority = async () => (await currentSourceThread(db, input)) === threadId;
+  const checkAuthority = async () => (await currentFilingSourceThread(db, input)) === threadId;
   const originAllowed = async () => {
     try {
       const target = await assertHmsReadOriginAllowed({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });

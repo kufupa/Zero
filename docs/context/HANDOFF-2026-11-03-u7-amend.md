@@ -2,12 +2,13 @@
 
 ## Current — 12:22 UTC
 
-- PR #987: `codex/connected-labtest-amend-20261103`, pushed `089be5b27`; worktree `/home/orca/.codex/worktrees/u7-integration-preview-20261103/zero`. U3 #982 and U8 #986 landed; U6 #981 `078f798` awaiting merge.
+- PR #987: `codex/connected-labtest-amend-20261103`; worktree `/home/orca/.codex/worktrees/u7-integration-preview-20261103/zero`. U3 #982, U8 #986 and U6 #981 landed; integration base `0da451edd5cbc6188d45fb05e619d5e2e12c97e0`.
 - U6+U8 rehearsal: `e8d6d66` in `/home/orca/.codex/worktrees/u7-u6-rehearsal-078-20261103/zero`. U6 screenshot filter and U7 resume guard preserved. Gate-equivalent diff vs combined U6/U8: **2,556 product lines**, 56 over owner cap 2,500. No trimming or override authorized; keep unmerged.
 - Hosted P1 fixed: selected-message-bound history resumes status/screenshots without reprepare or second Go. Synthetic forward/backward one-night date shifts fixed and covered. No live rate-retention or date-save proof.
 - Combined rehearsal checks: Node 77/77, mail 234/234, mocked server 64/64; `/tmp/nava-u7-u6-u8-{node,mail,server}-e8d6d66.log`. Pilot-RDS suites skipped. Final-head typechecks, Apex and live proof remain.
+- Deployed Outlook smoke passed on `757e52e80ae1`: synthetic selected messages switch and exact IDs reach mocked source/analysis calls; webmail refuses an unknown ID. `/tmp/nava-u7-outlook-smoke-757-v2-20261103.log`. Auth/API/bridge mocked; no HMS/RDS/send, no real Outlook proof. Final deployment may change the SHA.
 - Scope remains one-night to one-night, dates/adults, same rate and explicit retain=yes. Children, changed rate, retain=no and multi-night stay refused. Full U7 incomplete. No clean one-night proof target yet; coordinator owns freeze and flags.
-- Next: after U6 lands, integrate actual main and recount. Preserve all guards, epoch and UNKNOWN. Respect cap; no live Save or deployment claim without reviewed final head, coordinated target/freeze and fresh readback.
+- Next: recount against landed main; preserve all guards, epoch and UNKNOWN. Respect cap; no live Save or deployment claim without reviewed final head, coordinated target/freeze and fresh readback.
 
 - WIP: `/home/orca/.codex/worktrees/hrcen-occupancy-retain-20261103/zero`, branch `codex/hrcen-amend-full-20261103`. Earlier full draft: `/home/orca/.codex/worktrees/amend-connected-20261103/zero`. Preserve both.
 - Owner now authorizes one supervised fake write to learn semantics; hard stop 12:30 UTC, product gate waiver 2,500 gross lines. No live Save before coordinator freeze. No blind retries, penalty acceptance, real guest, guest send, pilot RDS, or implicit target.

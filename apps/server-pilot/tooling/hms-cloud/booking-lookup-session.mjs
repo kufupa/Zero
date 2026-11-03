@@ -523,11 +523,14 @@ export function bookingSessionPageOptions({ headless = true, blockServiceWorkers
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
-  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
+  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches } = {}) {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
-      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)) ||
+      (verifyLabtestMatches !== undefined && (typeof verifyLabtestMatches !== 'function' || !authorizeCandidate))) {
+    throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
+  }
   const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
@@ -538,7 +541,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
   return withCenturionStay360Page(async (page) => {
     let labtestPreimage;
     if (labtestDates !== undefined) {
-      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {});
+      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {}, { verifyExisting: verifyLabtestMatches });
       if (labtestPreimage.outcome !== 'clear') {
         const error = new Error('LABTEST_PREIMAGE_NOT_CLEAR');
         error.phase = 'labtest_preimage';

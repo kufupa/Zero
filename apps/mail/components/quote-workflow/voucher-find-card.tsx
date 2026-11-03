@@ -37,6 +37,7 @@ const infoNoteClass = 'text-[11.5px] text-[#334155]';
 
 export const VOUCHER_ATTACH_COPY = {
   attach: 'Attach to HMS booking',
+  prepare: 'Prepare upload for approval',
   attaching: 'Preparing attach…',
   checkInInfor: 'Check in Infor',
   documentsRow: 'Documents row in HMS',
@@ -44,7 +45,8 @@ export const VOUCHER_ATTACH_COPY = {
   review: 'Check document and booking',
   reviewing: 'Checking document and booking…',
   reviewFailed: 'Nava could not verify the document and booking. Check in Infor.',
-  reviewReady: 'Document available. Booking found. Check they belong together. Upload is not available yet.',
+  reviewReady: 'Document available. Booking found. Check they belong together.',
+  listedWithHold: 'HMS lists the document by code and name. Another upload needs a safety check.',
 } as const;
 
 export type VoucherAttachBindInput = {
@@ -53,6 +55,7 @@ export type VoucherAttachBindInput = {
   arrival: string;
   lastName: string;
   attachmentId: string;
+  sourceMessageId: string;
 };
 
 type VoucherAttachBindReply =
@@ -62,6 +65,7 @@ type VoucherAttachBindReply =
 type VoucherAttachWriteView = {
   form?: { action?: string };
   needsCheck?: boolean;
+  filingConfigured?: boolean;
   run: { state: string; lastError: string | null; failureClass?: string | null; evidence: { name: string }[] } | null;
 };
 
@@ -82,24 +86,27 @@ type TrpcAttachRoutes = {
     getAttachment?: { query: (input: { messageId: string; attachmentId: string },
       options: MailboxOptions & { signal: AbortSignal }) => Promise<{ url: string }> };
   };
-  quoteWorkflow?: { bindVoucherAttach?: { mutate: (input: VoucherAttachBindInput, options: MailboxOptions) => Promise<VoucherAttachBindReply> } };
+  quoteWorkflow?: { bindVoucherAttach?: { mutate: (input: Omit<VoucherAttachBindInput, 'sourceMessageId'>, options: MailboxOptions) => Promise<VoucherAttachBindReply> } };
   hmsApproval?: {
-    bindAttach?: { mutate: (input: VoucherAttachBindInput, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
+    bindAttach?: { mutate: (input: VoucherAttachBindInput & { internetMessageId: string }, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
     previewAttach?: { mutate: (input: VoucherPreviewInput, options: MailboxOptions) => Promise<VoucherPreviewReply> };
     writeState?: { query: (input: { workItemId: string; internetMessageId: string }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
   };
 };
 
-function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, internetMessageId: string | null): VoucherAttachClient | null {
+function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, internetMessageId: string | null,
+  propertyCode: string | null): VoucherAttachClient | null {
   const mailbox = inMailbox(transportId);
   if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = trpc as TrpcAttachRoutes;
-  const bind = routes.quoteWorkflow?.bindVoucherAttach?.mutate ?? routes.hmsApproval?.bindAttach?.mutate;
+  const bindCloud = propertyCode === 'HRCEN' ? routes.hmsApproval?.bindAttach?.mutate : undefined;
+  const bindLegacy = propertyCode === 'HRCEN' ? undefined : routes.quoteWorkflow?.bindVoucherAttach?.mutate;
   const writeState = routes.hmsApproval?.writeState?.query;
   const preview = routes.hmsApproval?.previewAttach?.mutate;
-  if (!bind && !writeState && !preview) return null;
+  if (!bindCloud && !bindLegacy && !writeState && !preview) return null;
   return {
-    ...(bind ? { bind: (input: VoucherAttachBindInput) => bind(input, mailbox) } : {}),
+    ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId }, mailbox) }
+      : bindLegacy ? { bind: ({ sourceMessageId: _source, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
     ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
     ...(writeState ? { writeState: (input: { workItemId: string }) => writeState({ ...input, internetMessageId }, mailbox) } : {}),
   };
@@ -131,6 +138,10 @@ type VoucherFindCardProps = {
   workItemId?: string | null;
   /** Attach is a write. Hidden when the pane has writes off. */
   writesEnabled?: boolean;
+  /** An approval card for this same selected work item is mounted. */
+  approvalAvailable?: boolean;
+  /** Refresh the sibling approval card only after the reviewed form and snapshot are stored. */
+  onPrepared?: () => void;
   /** Registry-backed property for the active mailbox; unknown disables filing actions. */
   propertyCode?: string | null;
 };
@@ -150,14 +161,17 @@ function VoucherFindCardBody({
   syncPending = false,
   workItemId = null,
   writesEnabled = false,
+  approvalAvailable = false,
+  onPrepared,
   propertyCode = null,
 }: VoucherFindCardProps) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
-  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId), [trpc, transportId, internetMessageId]);
+  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId, propertyCode),
+    [trpc, transportId, internetMessageId, propertyCode]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
-  const [attach, setAttach] = useState<'idle' | 'binding' | 'bound' | 'refused'>('idle');
+  const [attachState, setAttach] = useState<{ key: string; status: 'binding' | 'bound' | 'refused' } | null>(null);
   const [attachStatus, setAttachStatus] = useState<{
     workItemId: string; view: VoucherAttachWriteView | null; valid: boolean;
   } | null>(null);
@@ -214,11 +228,12 @@ function VoucherFindCardBody({
     normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(voucherGuest.lastName)
       ? searchRun.rows[0]!
       : null;
-  const previewKey = JSON.stringify([internetMessageId, workItemId, replyMessageId,
+  const previewKey = JSON.stringify([internetMessageId, workItemId, replyMessageId, approvalAvailable,
     reply?.status === 'voucher' ? reply.file : null,
     reply?.status === 'voucher' ? reply.guest : null, singleMatch]);
   previewKeyRef.current = previewKey;
   const previewStatus = preview?.key === previewKey ? preview.status : 'idle';
+  const attach = attachState?.key === previewKey ? attachState.status : 'idle';
   const detailRequest = singleMatch
     ? {
         kind: 'find' as const,
@@ -285,7 +300,7 @@ function VoucherFindCardBody({
       checkedFor.current = internetMessageId;
       setReply(null);
       setSave('idle');
-      setAttach('idle');
+      setAttach(null);
       setAttachStatus(null);
       setDetailsRequested(false);
       detailsStartedFor.current = null;
@@ -427,16 +442,17 @@ function VoucherFindCardBody({
       if (mounted.current) setSave('failed');
     }
   };
-  const unconfirmedAttach = attachWrite?.run?.lastError === 'upload_unconfirmed' ||
+  const listedWithHold = attachWrite?.run?.lastError === 'confirmed_hold_unsettled';
+  const unconfirmedAttach = !listedWithHold && (attachWrite?.run?.lastError === 'upload_unconfirmed' ||
     (attachWrite?.form?.action === 'attach_document' &&
-      (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? '')));
-  const attachSucceeded = attachWrite?.run?.state === 'succeeded';
+      (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? ''))));
+  const attachSucceeded = listedWithHold || attachWrite?.run?.state === 'succeeded';
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
-  const canAttach = Boolean(
-    propertyCode && propertyCode !== 'HRCEN' && singleMatch && attachPdf && workItemId && writesEnabled && attachStatusKnown &&
-    !unconfirmedAttach && !attachSucceeded,
-  );
+  const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
+  const canAttach = Boolean(propertyCode && singleMatch && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
+    filingEnabled && attachStatusKnown && !unconfirmedAttach && !attachSucceeded &&
+    (propertyCode !== 'HRCEN' || previewStatus === 'ready'));
   const canPreview = Boolean(propertyCode === 'HRCEN' && singleMatch && attachPdf && workItemId && reply.messageId && attachClient?.preview &&
     !unconfirmedAttach && !attachSucceeded);
   const reviewAttach = async () => {
@@ -456,8 +472,9 @@ function VoucherFindCardBody({
     }
   };
   const bindAttach = async () => {
-    if (!singleMatch || !file || !workItemId || !attachClient?.bind || attach === 'binding') return;
-    setAttach('binding');
+    if (!singleMatch || !file || !workItemId || !reply.messageId || !attachClient?.bind || attach === 'binding') return;
+    const key = previewKey;
+    setAttach({ key, status: 'binding' });
     try {
       const result = await attachClient.bind({
         workItemId,
@@ -465,18 +482,21 @@ function VoucherFindCardBody({
         arrival: singleMatch.arrival ?? voucherGuest?.arrival ?? '',
         lastName: singleMatch.lastName,
         attachmentId: file.id,
+        sourceMessageId: reply.messageId,
       });
-      if (!mounted.current) return;
-      setAttach(result.status === 'bound' ? 'bound' : 'refused');
+      if (!mounted.current || previewKeyRef.current !== key) return;
+      setAttach({ key, status: result.status === 'bound' ? 'bound' : 'refused' });
+      if (result.status === 'bound') onPrepared?.();
     } catch {
-      if (mounted.current) setAttach('refused');
+      if (mounted.current && previewKeyRef.current === key) setAttach({ key, status: 'refused' });
     }
   };
 
   // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
     <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
-      <p className={captionClass}>{VOUCHER_COPY.caption}</p>
+      <p className={captionClass}>{propertyCode === 'HRCEN'
+        ? 'Find the booking and review the document before upload.' : VOUCHER_COPY.caption}</p>
       {line ? (
         <p data-pii className={valueClass}>
           {line}
@@ -555,11 +575,13 @@ function VoucherFindCardBody({
             }}
             onRetryDetails={detailsJob.retry}
             canAttach={canAttach}
+            cloudFiling={propertyCode === 'HRCEN'}
             canPreview={canPreview}
             previewStatus={previewStatus}
             onPreview={() => void reviewAttach()}
             attaching={attach === 'binding'}
             unconfirmedAttach={unconfirmedAttach}
+            listedWithHold={listedWithHold}
             documentsSeen={attachSucceeded && (attachWrite?.run?.evidence.length ?? 0) > 0}
             attachRefused={attach === 'refused'}
             onAttach={() => void bindAttach()}
@@ -619,11 +641,13 @@ function MatchedBooking({
   onReadDetails,
   onRetryDetails,
   canAttach,
+  cloudFiling,
   canPreview,
   previewStatus,
   onPreview,
   attaching,
   unconfirmedAttach,
+  listedWithHold,
   documentsSeen,
   attachRefused,
   onAttach,
@@ -640,11 +664,13 @@ function MatchedBooking({
   onReadDetails: () => void;
   onRetryDetails: () => void;
   canAttach: boolean;
+  cloudFiling: boolean;
   canPreview: boolean;
   previewStatus: 'idle' | 'loading' | 'ready' | 'refused';
   onPreview: () => void;
   attaching: boolean;
   unconfirmedAttach: boolean;
+  listedWithHold: boolean;
   documentsSeen: boolean;
   attachRefused: boolean;
   onAttach: () => void;
@@ -661,7 +687,7 @@ function MatchedBooking({
       data-testid="voucher-matched-booking"
       className="rounded-xs flex flex-col gap-1 border border-[#b7d5ef] bg-[#f5faff] p-2"
     >
-      <p className={captionClass}>{VOUCHER_COPY.matchedBooking}</p>
+      <p className={captionClass}>{cloudFiling ? 'Booking found' : VOUCHER_COPY.matchedBooking}</p>
       <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
       {company ? <p className={captionClass}>{`Company: ${company}`}</p> : null}
@@ -685,6 +711,7 @@ function MatchedBooking({
           {VOUCHER_ATTACH_COPY.checkInInfor}
         </Notice>
       ) : null}
+      {listedWithHold ? <Notice tone="warn" role="status">{VOUCHER_ATTACH_COPY.listedWithHold}</Notice> : null}
       {attachRefused && !unconfirmedAttach ? (
         <Notice tone="warn" role="status">
           {VOUCHER_ATTACH_COPY.refused}
@@ -697,7 +724,7 @@ function MatchedBooking({
       ) : null}
       {canAttach ? (
         <PrimaryButton disabled={attaching} onClick={onAttach}>
-          {attaching ? VOUCHER_ATTACH_COPY.attaching : VOUCHER_ATTACH_COPY.attach}
+          {attaching ? VOUCHER_ATTACH_COPY.attaching : cloudFiling ? VOUCHER_ATTACH_COPY.prepare : VOUCHER_ATTACH_COPY.attach}
         </PrimaryButton>
       ) : null}
       {canPreview ? (
@@ -708,8 +735,8 @@ function MatchedBooking({
       {canPreview && previewStatus === 'refused' ? <Notice tone="warn" role="status">{VOUCHER_ATTACH_COPY.reviewFailed}</Notice> : null}
       {canPreview && previewStatus === 'ready' ? (
         <>
-          <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.reviewReady}</p>
-          <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
+          <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.reviewReady}{!canAttach ? ' Upload is not available yet.' : ''}</p>
+          {!canAttach ? <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton> : null}
         </>
       ) : null}
     </div>

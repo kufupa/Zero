@@ -155,9 +155,10 @@ function forget(page) {
 }
 
 // Returns private candidate data. A clear result is usable once, on this page, for five minutes.
-export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
+export async function searchLabtestPreimage(page, { arrival, departure } = {}, { verifyExisting } = {}) {
   const start = date(arrival), end = date(departure);
   if (!start || !end || arrival < '2027-01-01' || arrival >= departure) return { outcome: 'input_gap', issue: 'INVALID_LABTEST_DATES' };
+  if (verifyExisting !== undefined && typeof verifyExisting !== 'function') return { outcome: 'input_gap', issue: 'INVALID_EXISTING_VERIFIER' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'SEARCH_IN_PROGRESS' };
   busy.add(page);
   forget(page);
@@ -205,8 +206,9 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
       row.lastName.toLowerCase() === 'labtest' && row.arrival === arrival);
     const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
-    if (sameArrival.length) return result;
-    const proof = { id: randomUUID(), arrival, departure, expiresAt: Date.now() + 5 * 60_000 };
+    if (sameArrival.length && !verifyExisting) return result;
+    const observedAt = Date.now();
+    const proof = { id: randomUUID(), arrival, departure, expiresAt: observedAt + 5 * 60_000 };
     proof.invalidate = (request) => {
       try {
         const url = new URL(request.url());
@@ -217,7 +219,18 @@ export async function searchLabtestPreimage(page, { arrival, departure } = {}) {
     };
     proofs.set(page, proof);
     page.on('request', proof.invalidate);
-    return { ...result, preimageId: proof.id, expiresAt: new Date(proof.expiresAt).toISOString() };
+    // Existing matches are never accepted from browser input. A trusted caller
+    // must independently identify and read every earlier approved sibling.
+    if (sameArrival.length) {
+      let verified = false;
+      try { verified = await verifyExisting(structuredClone(result)) === true; } catch { /* fail closed */ }
+      if (!verified || proofs.get(page) !== proof || Date.now() >= proof.expiresAt) {
+        forget(page);
+        return result;
+      }
+    }
+    return { ...result, outcome: 'clear', ...(sameArrival.length ? { verifiedExisting: true } : {}),
+      preimageId: proof.id, observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(proof.expiresAt).toISOString() };
   } catch (error) {
     const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'SEARCH_UNVERIFIED';
     return { outcome: 'incomplete', issue };

@@ -148,7 +148,15 @@ export type PaneStayInput = {
   bookerEmail?: string;
   /** HMS confirmation recipient; test saves keep Send Mail off. */
   confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
+  stayId?: string;
+  workItemId?: string;
+  parentStayId?: string;
 };
+
+export type PaneStayBatch =
+  | { kind: 'start'; id: string; rooms: Array<PaneStayInput & { stayId: string; workItemId: string;
+      createSelection: NonNullable<PaneStayInput['createSelection']>; previewDigest: string }> }
+  | { kind: 'continue'; id: string; index: number };
 
 // Mirrors the server's PaneStayResult from quoteWorkflow.previewStay / commitStay.
 export type PaneStayResult = {
@@ -215,7 +223,7 @@ export function paneStayAvailabilityRequestFor(
 
 export type PaneStayClient = {
   preview: (stay: PaneStayInput) => Promise<PaneStayResult>;
-  commit: (stay: PaneStayInput, previewDigest: string) => Promise<PaneStayResult>;
+  commit: (stay: PaneStayInput, previewDigest: string, batch?: PaneStayBatch) => Promise<PaneStayResult>;
   /** Screenshot as a PNG data URL, or null when the run is gone or not this owner's. */
   screenshot: (runId: string, name: string) => Promise<string | null>;
   /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
@@ -228,7 +236,7 @@ type PaneStayTrpc = {
   quoteWorkflow?: {
     previewStay?: { mutate: (input: PaneStayInput) => Promise<PaneStayResult> };
     commitStay?: {
-      mutate: (input: PaneStayInput & { previewDigest: string }) => Promise<PaneStayResult>;
+      mutate: (input: PaneStayInput & { previewDigest: string; batch?: PaneStayBatch }) => Promise<PaneStayResult>;
     };
   };
   paneStayCancel?: {
@@ -292,10 +300,10 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
       if (!previewStay) throw new Error('pane_save_client_missing');
       return previewStay.mutate(stay);
     },
-    commit: async (stay, previewDigest) => {
+    commit: async (stay, previewDigest, batch) => {
       const commitStay = row.quoteWorkflow?.commitStay;
       if (!commitStay) throw new Error('pane_save_client_missing');
-      return commitStay.mutate({ ...stay, previewDigest });
+      return commitStay.mutate({ ...stay, previewDigest, ...(batch ? { batch } : {}) });
     },
     screenshot: async (runId, name) => {
       const screenshot = row.paneStayCancel?.paneStayScreenshot;
