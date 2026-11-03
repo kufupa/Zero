@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,8 +109,14 @@ describe('server build identity', () => {
     const hms = spawnSync('bash', [wrapper, 'ai-worker'], {
       encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', AI_WORKER_LANE: 'hms', PRINT_EXEC_PATH: '1' },
     });
-    expect(hms.status, hms.stderr).toBe(0);
-    expect(hms.stdout).toBe('/usr/bin/node');
+    if (existsSync('/usr/bin/node')) {
+      expect(hms.status, hms.stderr).toBe(0);
+      expect(hms.stdout).toBe(realpathSync('/usr/bin/node'));
+    } else {
+      // The VPS has no system Node; EC2 does. Failure identifies the pinned binary.
+      expect(hms.status).toBe(127);
+      expect(hms.stderr).toContain('/usr/bin/node');
+    }
     writeFileSync(join(server, '.nava-build-in-progress'), 'BUILD_IN_PROGRESS\n');
     for (const [entry] of entries) {
       const blocked = invoke(entry);
