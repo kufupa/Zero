@@ -77,6 +77,41 @@ describe('quote workflow backend bind', () => {
     expect(open.mutate).not.toHaveBeenCalled();
   });
 
+  it('opens only the separate work item for existing-stay mail', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'other', existingStayInformation: true,
+      separateAsk: 'Please send the catering menu.', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-mixed', refs: {}, analysis: {} as never, contact: {} as never,
+      language: null, translation: null,
+    };
+    const opened = { ...stored, workItemId: 'other-work', workItemStatus: 'needs_you' };
+    const open = { mutate: vi.fn(async () => opened) };
+    const result = await bindStoredWork({
+      query: { query: vi.fn(async () => stored) }, open,
+      internetMessageId: '<mixed@example.invalid>', transportId: 'transport-other',
+    });
+    expect(result).toBe(opened);
+    expect(open.mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens an existing-stay separate ask even when ordinary channel work items are disabled', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'other', existingStayInformation: true,
+      separateAsk: 'Please review this request.', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-mixed', refs: {}, analysis: {} as never, contact: {} as never,
+      language: null, translation: null,
+    };
+    const open = { mutate: vi.fn(async () => ({ ...stored, workItemId: 'item', workItemStatus: 'needs_you' })) };
+    await bindStoredWork({ query: { query: vi.fn(async () => stored) }, open,
+      allowOpen: false, internetMessageId: '<mixed@example.invalid>', transportId: 'transport-other' });
+    expect(open.mutate).toHaveBeenCalledTimes(1);
+
+    open.mutate.mockClear();
+    await bindStoredWork({ query: { query: vi.fn(async () => ({ ...stored, existingStayInformation: false })) }, open,
+      allowOpen: false, internetMessageId: '<mixed@example.invalid>', transportId: 'transport-other' });
+    expect(open.mutate).not.toHaveBeenCalled();
+  });
+
   it('reports unavailable when analyseSelection is not on the client', async () => {
     const result = await bindAnalyseSelection({
       input: {

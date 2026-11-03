@@ -207,6 +207,7 @@ export type StoredWork =
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
       kind: string;
       existingStayInformation?: boolean;
+      separateAsk?: string | null;
       confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
@@ -269,10 +270,10 @@ type WorkItemsClient = {
   };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: {
-    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
+    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }, opts?: ReturnType<typeof inMailbox>) => Promise<NeedsYouRow[]>;
   };
   dismiss?: {
-    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+    mutate: (input: { workItemId: string; expectedActor?: { userId: string; sessionId: string } }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
   };
 };
 
@@ -297,6 +298,8 @@ export async function bindStoredWork(args: {
   transportId?: string | null;
   /** True once the caller no longer wants this lookup. Checked after the read, before any open. */
   isStale?: () => boolean;
+  /** Suppress ordinary opens for channel/system mail; a grounded separate pre-stay ask still needs an item. */
+  allowOpen?: boolean;
   /** Called when the stored read is in and only the open is left, so the caller's lookup deadline can stop there. */
   onRead?: () => void;
   /** How long the open may take. Past it the read shows without an item, the same as a failed open. */
@@ -314,7 +317,8 @@ export async function bindStoredWork(args: {
   if (
     stored.status !== 'ready' ||
     stored.workItemId ||
-    stored.existingStayInformation ||
+    (stored.existingStayInformation && !stored.separateAsk) ||
+    (args.allowOpen === false && !(stored.existingStayInformation && stored.separateAsk)) ||
     !args.open ||
     args.isStale?.()
   ) {

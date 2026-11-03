@@ -4,14 +4,14 @@ import {
   buildLiveGuestStayChromeGetRules,
   buildLiveGuestStayReadManifest,
 } from '../../src/hms/live-read-manifest.ts';
-import { enforceRequestPolicy } from '../../src/hms/request-policy.ts';
+import { enforceRequestPolicy, rejectDuplicateJsonBodyKeys } from '../../src/hms/request-policy.ts';
 import { hmsProductionOriginForSlot } from '../../src/hms/browser-artifacts.ts';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { createReadCliLease } from './read-cli-lease.mjs';
 import { attachGuardedQuoteSession, installQuoteRequestGuard, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
 
 const modules = { buildLiveGuestStayChromeGetRules, buildLiveGuestStayReadManifest,
-  enforceRequestPolicy, hmsProductionOriginForSlot };
+  enforceRequestPolicy, rejectDuplicateJsonBodyKeys, hmsProductionOriginForSlot };
 const property = getPropertyRegistration('HRCEN');
 const origin = hmsProductionOriginForSlot(property.browserSlot);
 const secret = { loginUrl: `${origin}/web/base/logindisp?tenant=${property.expectedTenant}`,
@@ -71,6 +71,7 @@ test('only the reviewed Centurion property, tenant, credential identity and orig
   assert.ok(allowed.manifest.rules.length > 0);
   assert.ok(allowed.manifest.rules.every((rule) => rule.origin === origin));
   assert.equal(allowed.manifest.rules.some((rule) => /OSRESV|inquiryForGrid/.test(rule.path)), false);
+  assert.equal(allowed.manifest.rules.some((rule) => rule.path === '/web/base/OSMPAV'), true);
   for (const change of [
     { expectedPropertyCode: 'HRDAV' }, { expectedTenant: 'OTHER' },
     { expectedPropertyName: 'Other Hotel' }, { username: 'other' },
@@ -91,6 +92,194 @@ test('a reviewed request uses no-follow fetch and is fulfilled only after a non-
   assert.deepEqual(route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
   assert.equal(context.closed, 0);
   assert.equal(guard.failureError(), null);
+});
+
+test('the optional ServiceNow script is blocked without fetching or ending the HMS session', async () => {
+  const url = 'https://inforsaas.service-now.com/optional.js';
+  const { route, guard, context } = await routed({ url });
+  assert.deepEqual(route.calls, [['abort', 'blockedbyclient']]);
+  assert.equal(context.closed, 0);
+  assert.equal(guard.failureError(), null);
+  for (const input of [
+    { url, method: 'POST' },
+    { url, resourceType: 'document' },
+    { url: 'https://inforsaas.service-now.com.evil.example/optional.js' },
+  ]) {
+    const denied = await routed(input);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('only the reviewed Hotel Availability screen forms are fetched', async () => {
+  const valid = {
+    url: `${origin}/web/base/OSMPAV?USER_FUNCTION_NAME=OSMPAV&FUNCTION_CLASS=WEBL`,
+    method: 'POST', resourceType: 'xhr', headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    body: 'USER_FUNCTION_NAME=OSMPAV&FUNCTION_CLASS=WEBL&SYSTEM_FUNCTION_NAME=OSMPAV&CURRENT_TAB_NAME=&MENU_MODULE_KEY=0&removescreenflows=yes',
+  };
+  const allowed = await routed(valid);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, body: `${valid.body}&pageaction=SAVE` },
+    { ...valid, body: `${valid.body}&USER_FUNCTION_NAME=OSRESV` },
+    { ...valid, url: `${valid.url}&pageaction=SAVE` },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('the company picker permits only its reviewed lookup form, not a write or another grid', async () => {
+  const input = {
+    url: `${origin}/web/base/GRIDDATA`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'GRID_ID=1134&GRID_NAME=LVCOMPANIES2&DATASPY_ID=1224&MADDON_FILTER_ALIAS_NAME_1=companyname' +
+      '&MADDON_FILTER_OPERATOR_1=CONTAINS&MADDON_FILTER_JOINER_1=AND&MADDON_FILTER_SEQNUM_1=1' +
+      '&MADDON_FILTER_VALUE_1=Example+Hotels&USER_FUNCTION_NAME=OSMPAV&CURRENT_TAB_NAME=HDR' +
+      '&GRID_TYPE=LOV&REQUEST_TYPE=LOV.DATA_ONLY.STORED&LOV_TAGNAME=organization',
+  };
+  const allowed = await routed(input);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...input, body: input.body.replace('GRID_ID=1134', 'GRID_ID=9999') },
+    { ...input, body: `${input.body}&pageaction=SAVE` },
+    { ...input, body: `${input.body}&MADDON_FILTER_VALUE_1=Another` },
+    { ...input, body: input.body.replace('companyname', 'guestname') },
+    { ...input, url: `${input.url}?action=SAVE` },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('the room-type picker only opens the HRCEN read-only list', async () => {
+  const fields = { GRID_NAME: 'LVMULTIROOMTYPESMULTIPROP', GRID_TYPE: 'LIST', REQUEST_TYPE: 'LIST.HEAD_DATA.STORED',
+    dataspytoolbar: 'true', LOV_ALIAS_NAME_1: 'param.propertycodes', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text' };
+  const input = { url: `${origin}/web/base/BSMSLV`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() };
+  const allowed = await routed(input);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const body of [
+    new URLSearchParams({ ...fields, LOV_ALIAS_VALUE_1: 'HRDAV' }).toString(),
+    new URLSearchParams({ ...fields, GRID_NAME: 'OSRESV' }).toString(),
+    input.body + '&pageaction=SAVE',
+  ]) {
+    const denied = await routed({ ...input, body });
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('agency, organization ID and group pickers admit only their reviewed read forms', async () => {
+  const shared = { USER_FUNCTION_NAME: 'OSMPAV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV' };
+  const groupScope = {
+    LOV_ALIAS_NAME_1: 'param.propertycodes', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text',
+    LOV_ALIAS_NAME_2: 'param.arrivaldate', LOV_ALIAS_VALUE_2: '03/15/2027', LOV_ALIAS_TYPE_2: 'text',
+    LOV_ALIAS_NAME_3: 'param.nights', LOV_ALIAS_VALUE_3: '14', LOV_ALIAS_TYPE_3: 'integer',
+  };
+  const picker = (grid, tag, extra = {}) => ({
+    ...shared, GRID_NAME: grid, LOV_TAGNAME: tag, REQUEST_TYPE: 'LOV.HEAD_DATA.STORED', popup: 'true', ...extra,
+  });
+  const search = (grid, id, spy, tag, alias, extra = {}) => ({
+    ...shared, GRID_NAME: grid, GRID_ID: id, DATASPY_ID: spy, LOV_TAGNAME: tag,
+    REQUEST_TYPE: 'LOV.DATA_ONLY.STORED', MADDON_FILTER_ALIAS_NAME_1: alias,
+    MADDON_FILTER_OPERATOR_1: 'CONTAINS', MADDON_FILTER_JOINER_1: 'AND', MADDON_FILTER_SEQNUM_1: '1',
+    MADDON_FILTER_VALUE_1: 'Example Travel', ...extra,
+  });
+  const post = (path, fields) => ({
+    url: origin + '/web/base/' + path, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString(),
+  });
+  const cases = [
+    post('LOVPOP', picker('LVTRAVELAGENCIES5', 'travelagency')),
+    post('GRIDDATA', search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'travelagencyname')),
+    post('GRIDDATA', search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'iatanumber')),
+    post('GRIDDATA', search('LVCOMPANIES2', '1134', '1224', 'organization', 'companyid')),
+    post('LOVPOP', picker('LVGROUPS5', 'groupname', groupScope)),
+    post('GRIDDATA', search('LVGROUPS5', '2512', '2872', 'groupname', 'groupsname', groupScope)),
+    post('GRIDDATA', search('LVGROUPS5', '2512', '2872', 'groupname', 'confirmationnumber', groupScope)),
+  ];
+  for (const input of cases) {
+    const allowed = await routed(input);
+    assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+    for (const bad of [
+      { ...input, body: input.body + '&pageaction=SAVE' },
+      { ...input, body: input.body + '&GRID_NAME=OTHER' },
+      { ...input, url: input.url + '?action=SAVE' },
+    ]) {
+      const denied = await routed(bad);
+      assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+      assert.equal(denied.context.closed, 1);
+    }
+  }
+  for (const fields of [
+    { ...groupScope, LOV_ALIAS_VALUE_1: 'HRDAV' },
+    { ...groupScope, LOV_ALIAS_VALUE_2: 'not-a-date' },
+    { ...groupScope, LOV_ALIAS_VALUE_3: '0' },
+  ]) {
+    const denied = await routed(post('LOVPOP', picker('LVGROUPS5', 'groupname', fields)));
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+  }
+  const unknownAlias = await routed(post('GRIDDATA',
+    search('LVGROUPS5', '2512', '2872', 'groupname', 'guestname', groupScope)));
+  assert.deepEqual(unknownAlias.route.calls, [['abort', 'blockedbyclient']]);
+  const newline = await routed(post('GRIDDATA',
+    { ...search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'travelagencyname'),
+      MADDON_FILTER_VALUE_1: 'Name\r\nInjected' }));
+  assert.deepEqual(newline.route.calls, [['abort', 'blockedbyclient']]);
+});
+
+test('only the typed, duplicate-free, Centurion availability inquiry is fetched', async () => {
+  const body = { propertyCodes: 'HRCEN', startDate: '2027-03-15T00:00:00', numberOfDays: '14',
+    lengthOfStay: 'DY', adultCount: 2, childCount: 0, salesStrategy: 'BAR', roomTypeCodes: 'STQN',
+    ratePlanCodes: 'BAR', currency: null, convertFromPropertyCurrency: false, shopByDay: false,
+    showCollapsedByProperty: false, showCollapsedByRoomType: false, excludeOverbookingLimits: false,
+    showRestrictedSellOptions: true, showExclusiveRates: false, launchedFrom: 'hotelavailability',
+    showCollapsedByBuilding: false, buildingCodes: [''], showArrivalDepartureCount: false,
+    showSubGroupView: false, groupID: '', organizationID: '', travelAgencyID: '', bookingSessionID: 'opaque/token+value==' };
+  const valid = { url: `${origin}/api/internalBooking/rateshop/inquiryForGrid?houseAvailabilityOnly=false`,
+    method: 'POST', resourceType: 'xhr', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+  const allowed = await routed(valid);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  assert.equal(allowed.guard.failureError(), null);
+  const adultAge = await routed({ ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [99] }) });
+  assert.deepEqual(adultAge.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, body: JSON.stringify({ ...body, propertyCodes: 'OTHER' }) },
+    { ...valid, body: valid.body.replace('{', '{"propertyCodes":"OTHER",') },
+    { ...valid, body: JSON.stringify({ ...body, pageaction: 'SAVE' }) },
+    { ...valid, body: JSON.stringify({ ...body, excludeOverbookingLimits: true }) },
+    { ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [100] }) },
+    { ...valid, body: JSON.stringify({ ...body, startDate: '2027-02-30T00:00:00' }) },
+    { ...valid, url: `${valid.url}&pageaction=SAVE` },
+    { ...valid, url: `${origin}/web/base/OSRESV.HDR?pageaction=SAVE` },
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, method: 'PUT' },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('an unreviewed HMS image is skipped without fetching, but other requests still fail closed', async () => {
+  const image = `${origin}/web/resources/inforhms/images/tree/plusminus-folder-open.svg`;
+  const skipped = await routed({ url: image, resourceType: 'image' });
+  assert.deepEqual(skipped.route.calls, [['abort', 'blockedbyclient']]);
+  assert.equal(skipped.context.closed, 0);
+  for (const input of [
+    { url: `${image}?action=save`, resourceType: 'image' },
+    { url: image, method: 'POST', resourceType: 'image' },
+    { url: image, resourceType: 'script' },
+  ]) {
+    const denied = await routed(input);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
 });
 
 test('canonical policy aborts external, unreviewed, altered and mutation-shaped requests before fetching', async () => {

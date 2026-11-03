@@ -21,6 +21,7 @@ import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { formatFileSuccessMessage } from '@/lib/mail/file-drag';
+import { beginThreadMove, cancelThreadMove, finishThreadMove, hasThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -352,16 +353,11 @@ export function useOptimisticActions() {
         });
         preferences = result?.preferences ?? [];
       }
-
       posthog.capture(actionEventNames[ActionType.MOVE]({ destination: 'spam' }));
 
       if (mail.bulkSelected.length > 0) {
         setMail({ ...mail, bulkSelected: [] });
       }
-
-      threadIds.forEach((id) => {
-        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-      });
 
       await refreshData();
       removeOptimisticAction(optimisticId);
@@ -402,9 +398,6 @@ export function useOptimisticActions() {
     } catch (error) {
       console.error('Action failed:', error);
       removeOptimisticAction(optimisticId);
-      threadIds.forEach((id) => {
-        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-      });
       toast.error('Action failed');
     }
   }
@@ -413,8 +406,18 @@ export function useOptimisticActions() {
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
+    options?: { preserveSelection?: boolean; moveIntent?: number },
   ) {
     if (!threadIds.length || !destination) return;
+    if (options?.moveIntent !== undefined &&
+        (threadIds.length !== 1 || !hasThreadMove(threadIds[0]!, options.moveIntent))) return;
+    const moveIntents = new Map(threadIds.map((id) => [id, options?.moveIntent ?? beginThreadMove(id)]));
+    const currentThreads = () => threadIds.filter((id) => isCurrentThreadMove(id, moveIntents.get(id)!));
+    const finishMoves = (ids: string[]) => ids.forEach((id) => finishThreadMove(id, moveIntents.get(id)!));
+    const cancelMoves = (ids: string[]) => ids.forEach((id) => cancelThreadMove(id, moveIntents.get(id)!));
+    const clearFinished = (ids: string[]) => ids.filter((id) => !hasThreadMove(id)).forEach((id) => {
+      setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+    });
 
     const optimisticId = addOptimisticAction({
       type: 'MOVE',
@@ -426,13 +429,17 @@ export function useOptimisticActions() {
       setBackgroundQueue({ type: 'add', threadId: `thread:${id}` });
     });
 
-    if (threadId && threadIds.includes(threadId)) {
+    if (!options?.preserveSelection && threadId && threadIds.includes(threadId)) {
       setThreadId(null);
       setActiveReplyId(null);
     }
 
     if (destination === 'spam') {
-      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId);
+      // A rejected request can have saved already. Never revive an older move once dispatch starts.
+      finishMoves(threadIds);
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).then(() => {
+        clearFinished(threadIds);
+      });
       return;
     }
 
@@ -449,29 +456,31 @@ export function useOptimisticActions() {
       params: { currentFolder, destination },
       optimisticId,
       execute: async () => {
+        const activeIds = currentThreads();
+        cancelMoves(threadIds.filter((id) => !activeIds.includes(id)));
+        if (!activeIds.length) { clearFinished(threadIds); return; }
+        finishMoves(activeIds);
+        try {
           if (frontendOnlyDemo) {
-            await demoMoveThreadsTo({ threadIds, currentFolder, destination });
+            await demoMoveThreadsTo({ threadIds: activeIds, currentFolder, destination });
           } else {
             await moveThreadsTo({
-              threadIds,
+              threadIds: activeIds,
               currentFolder,
               destination,
             });
           }
-
-        if (mail.bulkSelected.length > 0) {
-          setMail({ ...mail, bulkSelected: [] });
+          if (mail.bulkSelected.length > 0) {
+            setMail({ ...mail, bulkSelected: [] });
+          }
+        } finally {
+          clearFinished(activeIds);
         }
-
-        threadIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
-        threadIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
+        cancelMoves(threadIds);
+        clearFinished(threadIds);
       },
       toastMessage: successMessage,
       folders: [currentFolder, destination],

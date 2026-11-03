@@ -319,8 +319,14 @@ export const workItemsRouter = router({
       return { status: 'done' as const, translation: storedTranslation(result.translation) };
     }),
   dismiss: mailboxProcedure
-    .input(z.object({ workItemId: z.string().uuid() }).strict())
+    .input(z.object({ workItemId: z.string().uuid(), expectedActor: z.object({
+      userId: z.string().min(1).max(200), sessionId: z.string().min(1).max(200),
+    }).strict().optional() }).strict())
     .mutation(async ({ input, ctx }) => {
+      if (input.expectedActor && (ctx.sessionUser.id !== input.expectedActor.userId ||
+          ctx.sessionUser.sessionId !== input.expectedActor.sessionId)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'The signed-in session changed.' });
+      }
       const result = await dismissWorkItem(getDb(), {
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,

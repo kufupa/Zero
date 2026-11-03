@@ -1,6 +1,7 @@
 import {
   createArtifactReader,
   readQuoteAttachments,
+  type QuoteAttachmentReader,
   type QuoteAttachmentRow,
   type SyncedQuoteAttachment,
 } from './quote-workflow-synced-selection.js';
@@ -13,7 +14,9 @@ import { isScannedPdfVisionEnabled } from '../env.js';
 import { maskCardNumbers } from './card-mask.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
-import { renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
+import { extractEmbeddedPdfText, renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
+import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
+import { getS3Storage } from '../storage/s3.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
@@ -348,14 +351,52 @@ export async function loadVoucherCandidate(input: {
   };
 }
 
+/** Preserve the selected-mail boundary when a POP3 object's key still names its original ingest row. */
+async function readReconciledPop3Pdf(
+  row: QuoteAttachmentRow,
+  signal: AbortSignal,
+  scope: { transportId: string; messageId: string; internetMessageId: string },
+): ReturnType<QuoteAttachmentReader> {
+  if (row.messageId !== scope.messageId) return { text: null, reason: 'source changed' };
+  try {
+    const db = getDb();
+    const checkAuthority = async () => {
+      const rows = await db.select({ id: message.id }).from(message).where(and(
+        eq(message.transportId, scope.transportId), eq(message.messageIdHeader, scope.internetMessageId),
+      )).limit(2);
+      return rows.length === 1 && rows[0]?.id === scope.messageId;
+    };
+    const input = { transportId: scope.transportId, messageId: scope.messageId,
+      attachmentId: row.id, db, s3: getS3Storage(), signal, checkAuthority };
+    const original = await readPanePop3Attachment(input);
+    if (!original || original.source.filename !== row.filename || original.locator.s3Key !== row.s3Key ||
+        original.locator.mimeType !== row.mimeType || original.locator.sizeBytes !== row.sizeBytes ||
+        (row.sha256 && row.sha256 !== original.source.sha256)) return { text: null, reason: 'source changed' };
+    const parsed = await extractEmbeddedPdfText({ body: original.bytes, declaredSize: original.bytes.length,
+      declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { signal, attachmentId: row.id });
+    // Extraction may take time. Do not return text or bytes if the selected mail or PDF moved meanwhile.
+    if (!(await readPanePop3Attachment({ ...input, expected: original.source }))) {
+      return { text: null, reason: 'source changed' };
+    }
+    if (parsed.data.text?.trim()) return { text: parsed.data.text };
+    if (parsed.data.reason === 'no_embedded_text') return { text: null, pdf: new Uint8Array(original.bytes) };
+    return { text: null, reason: parsed.data.reason.replaceAll('_', ' ') };
+  } catch { return { text: null, reason: 'source unavailable' }; }
+}
+
 /** PDF text for the voucher's own files only. Same reader and caps as the analyse loader. */
 export async function readVoucherAttachmentText(
   files: QuoteAttachmentRow[],
   signal: AbortSignal,
+  scope?: { transportId: string; messageId: string; internetMessageId: string },
 ): Promise<SyncedQuoteAttachment[]> {
-  let reader;
+  let reader: QuoteAttachmentReader;
   try {
-    reader = createArtifactReader(files, signal);
+    const existing = createArtifactReader(files, signal);
+    reader = async (row) => {
+      const result = await existing(row);
+      return result.text || result.pdf || !scope || signal.aborted ? result : readReconciledPop3Pdf(row, signal, scope);
+    };
   } catch {
     reader = async () => ({ text: null, reason: 'storage unavailable' });
   }

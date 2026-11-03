@@ -1,11 +1,13 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual } from '../components/mail/mail-list';
+import { TooltipProvider } from '../components/ui/tooltip';
+import { beginMailSelectionIntent } from '../lib/mail/source-message-navigation';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +18,13 @@ const mocks = vi.hoisted(() => ({
   useThread: vi.fn(),
   useDraft: vi.fn(),
   folder: 'inbox',
+  navigate: null as ((threadId: string | null) => void) | null,
+  setMailSelection: vi.fn(),
+  setComposeState: vi.fn(),
+  selection: { threadId: null as string | null, sourceMessageId: 'old-message' as string | null },
+  selectionListeners: new Set<() => void>(),
+  flushCompose: vi.fn(),
+  moveThreads: vi.fn(),
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -95,11 +104,10 @@ vi.mock('@/hooks/use-mail-navigation', async () => {
   const { atom } = await import('jotai');
   return {
     focusedIndexAtom: atom<number | null>(null),
-    useMailNavigation: () => ({
-      focusedIndex: null,
-      handleMouseEnter: vi.fn(),
-      keyboardActive: false,
-    }),
+    useMailNavigation: ({ onNavigate }: { onNavigate: (id: string | null) => void }) => {
+      mocks.navigate = onNavigate;
+      return { focusedIndex: null, handleMouseEnter: vi.fn(), keyboardActive: false };
+    },
   };
 });
 
@@ -124,15 +132,33 @@ vi.mock('@/components/mail/use-mail', () => ({
 }));
 
 vi.mock('@/hooks/use-optimistic-actions', () => ({
-  useOptimisticActions: () => ({ optimisticMarkAsRead: vi.fn() }),
+  useOptimisticActions: () => ({ optimisticMarkAsRead: vi.fn(), optimisticMoveThreadsTo: mocks.moveThreads }),
 }));
+
+vi.mock('@/components/context/thread-context', () => ({
+  ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock('@/components/ui/bimi-avatar', () => ({ BimiAvatar: () => null }));
 
 vi.mock('react-router', () => ({
   useParams: () => ({ folder: mocks.folder }),
 }));
 
-vi.mock('nuqs', () => ({
-  useQueryState: () => [null, vi.fn()],
+vi.mock('nuqs', async () => {
+  const { useSyncExternalStore } = await import('react');
+  return {
+    parseAsString: {},
+    useQueryState: (name: string) => [name === 'threadId' ? mocks.selection.threadId : null, mocks.setComposeState],
+    useQueryStates: () => [useSyncExternalStore(
+      (listener) => { mocks.selectionListeners.add(listener); return () => { mocks.selectionListeners.delete(listener); }; },
+      () => mocks.selection,
+    ), mocks.setMailSelection],
+  };
+});
+
+vi.mock('@/lib/mail/compose-flush-registry', () => ({
+  flushComposeBeforeLeave: () => mocks.flushCompose(),
 }));
 
 vi.mock('@/components/icons/empty-state-svg', () => ({
@@ -145,6 +171,12 @@ type MemoExoticComponent = typeof MailList & {
 
 beforeEach(() => {
   mocks.folder = 'inbox';
+  mocks.navigate = null;
+  mocks.setMailSelection.mockReset();
+  mocks.setComposeState.mockReset();
+  mocks.moveThreads.mockReset();
+  mocks.selection = { threadId: null, sourceMessageId: 'old-message' };
+  mocks.flushCompose.mockReset().mockResolvedValue(undefined);
   mocks.searchValue = {
     ...EMPTY_SEARCH_VALUE,
     value: 'deposit',
@@ -182,6 +214,79 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('keeps the selected email and draft when a different row is archived', () => {
+    mocks.selection = { threadId: 'thread-a', sourceMessageId: 'message-a' };
+    const rows = [{ id: 'thread-a' }, { id: 'thread-b' }];
+    mocks.useThreads.mockReturnValue([{ isLoading: false, isFetching: false, isError: false }, rows, true, vi.fn()]);
+    mocks.useThread.mockImplementation((id: string) => ({ data: {
+      latest: { id: `${id}-message`, threadId: id, subject: id, sender: { name: id, email: `${id}@example.invalid` },
+        tags: [], receivedOn: '2026-11-01T12:00:00.000Z', body: '' },
+      messages: [], labels: [], hasUnread: false,
+    }, isGroupThread: false, latestDraft: null }));
+    render(createElement(TooltipProvider, null, createElement(MailList)));
+    const row = document.querySelector('[data-thread-id="thread-b"]');
+    expect(row).toBeTruthy();
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: /archive/i }));
+    expect(mocks.moveThreads).toHaveBeenCalledWith(['thread-b'], 'inbox', 'archive');
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    expect(mocks.flushCompose).not.toHaveBeenCalled();
+  });
+  it('clears the selected email when that row is archived', () => {
+    mocks.selection = { threadId: 'thread-a', sourceMessageId: 'message-a' };
+    mocks.useThreads.mockReturnValue([{ isLoading: false, isFetching: false, isError: false }, [{ id: 'thread-a' }], true, vi.fn()]);
+    mocks.useThread.mockReturnValue({ data: {
+      latest: { id: 'message-a', threadId: 'thread-a', subject: 'thread-a', sender: { name: 'a', email: 'a@example.invalid' },
+        tags: [], receivedOn: '2026-11-01T12:00:00.000Z', body: '' },
+      messages: [], labels: [], hasUnread: false,
+    }, isGroupThread: false, latestDraft: null });
+    render(createElement(TooltipProvider, null, createElement(MailList)));
+    fireEvent.click(within(document.querySelector('[data-thread-id="thread-a"]') as HTMLElement).getByRole('button', { name: /archive/i }));
+    expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: null, sourceMessageId: null });
+    expect(mocks.moveThreads).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive');
+  });
+  it('keyboard thread navigation clears the prior message after flushing the draft', async () => {
+    render(createElement(MailList));
+    act(() => mocks.navigate?.('thread-b'));
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: null }));
+    expect(mocks.flushCompose).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a late draft flush move selection back to an earlier thread', async () => {
+    let finishFirst: (() => void) | undefined;
+    let finishSecond: (() => void) | undefined;
+    mocks.flushCompose
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve; }));
+    render(createElement(MailList));
+    act(() => { mocks.navigate?.('thread-b'); mocks.navigate?.('thread-a'); });
+    await act(async () => { finishSecond?.(); });
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-a', sourceMessageId: null }));
+    await act(async () => { finishFirst?.(); });
+    expect(mocks.setMailSelection).toHaveBeenCalledTimes(1);
+  });
+  it('does not let a pending thread navigation override a newer message choice or clear its draft', async () => {
+    let finish!: () => void;
+    mocks.flushCompose.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(createElement(MailList));
+    act(() => mocks.navigate?.('thread-b'));
+    act(() => {
+      mocks.selection = { threadId: 'thread-a', sourceMessageId: 'new-message' };
+      mocks.selectionListeners.forEach((listener) => listener());
+    });
+    await act(async () => { finish(); });
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    expect(mocks.setComposeState).not.toHaveBeenCalled();
+  });
+  it('cancels a pending navigation when another control makes a choice before the URL changes', async () => {
+    let finish!: () => void;
+    mocks.flushCompose.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(createElement(MailList));
+    act(() => mocks.navigate?.('thread-b'));
+    act(() => { beginMailSelectionIntent(); });
+    await act(async () => { finish(); });
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    expect(mocks.setComposeState).not.toHaveBeenCalled();
+  });
   it('shows effective query miss copy and preserves query state when trying all folders', () => {
     render(createElement(MailList));
 

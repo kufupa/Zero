@@ -52,6 +52,62 @@ describe('Cloud saved-stay projection', () => {
     }
   });
 
+  it('passes party IDs to sender history only for the matching native stay and visible names', () => {
+    const fields = [
+      { name: 'status', value: 'Reserved' }, { name: 'guestid', value: '42' },
+      { name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' },
+      { name: 'arrivaldate', value: '10-Jan-2027' }, { name: 'departuredate', value: '12-Jan-2027' },
+      { name: 'roomtype', value: 'STQN' }, { name: 'rateplan', value: 'BAR' },
+      { name: 'adults', value: '2' }, { name: 'children', value: '0' },
+      { name: 'company', value: 'Test Company' }, { name: 'ta1', value: 'Test Agency' },
+    ];
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
+      guestId: '42', reservationStayId: '81', reservationId: '82', recordId: '83', status: 'Reserved',
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-01-10', departure: '2027-01-12',
+      roomType: 'STQN', ratePlan: 'BAR', adults: 2, children: 0, childAges: 'unknown',
+      commercial: { company: { name: 'Test Company', nativeId: '0042' }, agency: { name: 'Test Agency', nativeId: '73' } } };
+    const read = (observed: unknown, visible = fields) => projectCloudStayFind({ confirmation: '123456-1' }, {
+      outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
+      record: { details: { fields: visible }, nativePreimage: observed },
+    });
+    expect(read(native).commercial).toEqual(native.commercial);
+    const namesOnly = { company: { name: 'Test Company' }, agency: { name: 'Test Agency' } };
+    expect(read({ ...native, propertyCode: 'HRDAV' }).commercial).toEqual(namesOnly);
+    expect(read({ ...native, confirmation: '999999-1' }).commercial).toEqual(namesOnly);
+    expect(read({ ...native, guestId: '44' }).commercial).toEqual(namesOnly);
+    expect(read({ ...native, commercial: { company: { name: 'Other Company', nativeId: '0042' } } }).commercial).toEqual(namesOnly);
+    expect(read({ ...native, commercial: { company: { name: 'Test Company', nativeId: '0' } } }).commercial).toEqual(namesOnly);
+    expect(read({ ...native, commercial: { company: { name: 'Test Company', nativeId: 'x42' } } }).commercial).toEqual(namesOnly);
+    expect(read(native, [...fields, { name: 'company', value: 'Other Company' }]).commercial).toEqual({ agency: native.commercial.agency });
+  });
+
+  it('accepts exact adult labels only when the visible and native counts agree', () => {
+    const fields = [
+      { name: 'status', value: 'Reserved' }, { name: 'guestid', value: '42' },
+      { name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' },
+      { name: 'arrivaldate', value: '10-Jan-2027' }, { name: 'departuredate', value: '12-Jan-2027' },
+      { name: 'roomtype', value: 'STQN' }, { name: 'rateplan', value: 'BAR' },
+      { name: 'adults', value: '1 Adult' }, { name: 'children', value: '0' },
+    ];
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
+      guestId: '42', reservationStayId: '81', reservationId: '82', recordId: '83', status: 'Reserved',
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-01-10', departure: '2027-01-12',
+      roomType: 'STQN', ratePlan: 'BAR', adults: 1, children: 0, childAges: 'unknown' };
+    const read = () => projectCloudStayFind({ confirmation: '123456-1' }, {
+      outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
+      record: { details: { fields }, nativePreimage: native },
+    });
+    expect(read()).toMatchObject({ stay: { adults: 1 }, nativePreimage: native });
+    fields.find((field) => field.name === 'adults')!.value = '2 Adults';
+    expect(read()).toMatchObject({ stay: { adults: 2 }, nativePreimage: null });
+    native.adults = 2;
+    expect(read()).toMatchObject({ stay: { adults: 2 }, nativePreimage: native });
+    for (const invalid of ['2 Adults extra', '2 Adults1 Child', '2.5 Adults', '-2 Adults']) {
+      fields.find((field) => field.name === 'adults')!.value = invalid;
+      expect(read()).toMatchObject({ stay: { adults: null }, nativePreimage: null });
+    }
+  });
+
   it('reports bounded not-found as ambiguous and preserves a valid search range', () => {
     const result = projectCloudStayFind({ confirmation: '123456-1' }, {
       outcome: 'read_failed', issue: 'CONFIRMATION_NOT_FOUND',

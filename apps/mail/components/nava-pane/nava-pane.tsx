@@ -39,7 +39,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuotePaneConfig, QuoteSelectionBinding, QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -170,7 +170,10 @@ function externalSenderFallback(
   };
 }
 
-function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumbers: string[] }) {
+function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
+  confirmationNumbers: string[];
+  separateAsk: string | null;
+}) {
   return (
     <section
       role="status"
@@ -188,6 +191,11 @@ function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumb
             {confirmationNumbers.length === 1 ? 'Confirmation number' : 'Confirmation numbers'}
           </span>
           : {confirmationNumbers.join(', ')}
+        </p>
+      ) : null}
+      {separateAsk ? (
+        <p className="text-[13px] leading-5 text-[#475569]">
+          <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
         </p>
       ) : null}
     </section>
@@ -272,7 +280,7 @@ type NavaPaneProps = {
   bridge: PaneBridge;
   preview?: boolean;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
-  onOpenThread?: (threadId: string) => void;
+  onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
   /** Normal inbox only: allow owners to save this message's workflow as a gold label. */
   goldLabelEnabled?: boolean;
   /** Webmail keeps notice state above its keyed thread panel so lookups survive email switches. */
@@ -509,6 +517,11 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  // Effects clean up after a render. A result can arrive in the meantime, including
+  // after A → B → A, so identity alone is not enough to accept it.
+  const isCurrentBinding = (binding: QuoteSelectionBinding) =>
+    binding.selectionEpoch === contextRevision.current.selectionEpoch &&
+    binding.scopeEpoch === contextRevision.current.scopeEpoch;
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
@@ -794,7 +807,7 @@ export function NavaPane({
   useEffect(() => {
     if (isNonActionableMessage) return;
     const binding = quoteSession.binding;
-    if (!binding || !quoteAdmissionKey) return;
+    if (!binding || !quoteAdmissionKey || !isCurrentBinding(binding)) return;
     // The binding follows the selected mail one render later. Until then it names the previous mail.
     if ((binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
     dispatchQuote({ type: 'analysis_started' });
@@ -838,7 +851,7 @@ export function NavaPane({
       },
     })
       .then((remote) => {
-        if (cancelled) return;
+        if (cancelled || !isCurrentBinding(binding)) return;
         if (remote.kind === 'ready') {
           dispatchQuote({ type: 'mailbox_status', status: 'ready' });
           dispatchQuote({
@@ -869,7 +882,7 @@ export function NavaPane({
         dispatchQuote({ type: 'analysis_failed', message: remote.reason });
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
+        if (cancelled || !isCurrentBinding(binding)) return;
         const message =
           error instanceof Error && error.message.trim() ? error.message : 'Nava could not read this email. Select it again and try again.';
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
@@ -884,7 +897,8 @@ export function NavaPane({
   useEffect(() => {
     if (isNonActionableMessage) return;
     const binding = quoteSession.binding;
-    if (!binding || !quoteAdmissionKey || (binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
+    if (!binding || !quoteAdmissionKey || !isCurrentBinding(binding) ||
+      (binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
     let cancelled = false;
     let candidateTimer: ReturnType<typeof setTimeout> | undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
@@ -892,7 +906,7 @@ export function NavaPane({
       query: staff.workstation.staffQuoteSource?.query,
       internetMessageId: binding.internetMessageId,
     }).then((source) => {
-      if (cancelled) return;
+      if (cancelled || !isCurrentBinding(binding)) return;
       if (source.kind === 'message_not_synced') {
         dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
         return;
@@ -907,7 +921,7 @@ export function NavaPane({
           messageId: source.source.messageId,
           ...(paneWorkItemId ? { workItemId: paneWorkItemId } : {}),
         });
-        if (cancelled || generation !== preparedTaskGeneration.current || actions.kind !== 'ready') return false;
+        if (cancelled || !isCurrentBinding(binding) || generation !== preparedTaskGeneration.current || actions.kind !== 'ready') return false;
         dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions, tasks: actions.tasks });
         return true;
       };
@@ -916,21 +930,21 @@ export function NavaPane({
       } } }).ai?.hmsCandidateState?.query;
       void (async () => {
         await refreshActions();
-        if (cancelled) return;
+        if (cancelled || !isCurrentBinding(binding)) return;
         let sawActive = false, idleChecks = 0;
         const watch = async () => {
           let running = false, statusRead = false;
           try {
             if (candidateQuery) {
               const state = await candidateQuery({ threadId: source.source.threadId }, inMailbox(binding.transportId));
-              if (cancelled) return;
+              if (cancelled || !isCurrentBinding(binding)) return;
               statusRead = true;
               running = Boolean(state.activeRun);
               if (running) { sawActive = true; idleChecks = 0; }
             }
           } catch { /* Review can still be available when candidate status is not. */ }
           if (!running && await refreshActions() && sawActive && statusRead) return;
-          if (!cancelled && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
+          if (!cancelled && isCurrentBinding(binding) && (running || ++idleChecks < 12)) candidateTimer = setTimeout(() => void watch(), 5000);
         };
         await watch();
       })();
@@ -1420,14 +1434,17 @@ export function NavaPane({
   const existingStayConfirmationNumbers =
     storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
   const savedStays = storedWork.pane.state === 'ready' ? storedWork.pane.savedStays : undefined;
+  const separateAsk = storedWork.pane.state === 'ready'
+    ? storedWork.pane.separateAsk ?? null
+    : null;
   const classifiedReadAs = isExistingStayInformation
-    ? 'not_for_nava'
+    ? separateAsk ? 'other_to_do' : 'not_for_nava'
     : readAsForAnalysis(quoteSession.analysis, {
         kind: selectedReadKind,
         treatAs: quoteSession.treatAs,
       });
   // Channel/system mail never opens the quote flow. A stored payment kind may still show its read-only voucher lookup.
-  const readAs = isNonActionableMailSource
+  const readAs = isNonActionableMailSource && !isExistingStayInformation
     ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
     : classifiedReadAs;
   const contactInPeople =
@@ -2081,6 +2098,21 @@ export function NavaPane({
     dispatchQuote({ type: handled ? 'handle_review_item' : 'unhandle_review_item', itemId });
   };
 
+  // Selection effects update the reducer after the bridge changes. Hide its previous
+  // email's actions for that render instead of showing them under the new email.
+  const pendingWebSelection = Boolean(
+    preview && onOpenThread && currentScope && activeEmail && (
+      quoteSession.binding?.transportId !== activeConnection?.id ||
+      quoteSession.binding?.entryId !== activeEmail.entryId ||
+      quoteSession.binding?.storeId !== (activeEmail.storeId ?? '') ||
+      quoteSession.binding?.folderEntryId !== (activeEmail.folderEntryId ?? '') ||
+      quoteSession.binding?.internetMessageId !== activeEmail.internetMessageId ||
+      quoteSession.binding?.selectionEpoch !== contextRevision.current.selectionEpoch ||
+      quoteSession.binding?.scopeEpoch !== contextRevision.current.scopeEpoch
+    ),
+  );
+  if (pendingWebSelection) return <p role="status" className="p-4">Loading selected email…</p>;
+
   return (
     <HmsJobNoticeProvider
       emailKey={activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null}
@@ -2304,7 +2336,7 @@ export function NavaPane({
             {isExistingStayInformation ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? (
-                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} />
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} />
                 ) : null}
               </div>
             ) : nonActionableMailSource ? (

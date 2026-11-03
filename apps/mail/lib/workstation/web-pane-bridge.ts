@@ -9,11 +9,12 @@ import type { WorkstationInfo } from './use-outlook-bridge';
 import type { PaneBridge } from './pane-bridge-types';
 import { useThread } from '@/hooks/use-threads';
 import { useMemo } from 'react';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 /**
  * Web stand-in for the Outlook bridge, used by the /nava-preview viewer. It serves one
- * read-only selection: the thread's latest inbound message, as the pane would see it in
- * Outlook. Every write is refused, and the Outlook ticket path is never used.
+ * read-only selection. The webmail pane requires an exact stored-message id; the separate
+ * preview page may show the latest inbound message. Every bridge write is refused.
  */
 
 export const PREVIEW_ONLY_MESSAGE = 'Preview only: copy the reply or download the PDF.';
@@ -29,7 +30,7 @@ type MailAddress = { name?: string; email: string };
 export type PreviewSelection =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' }
+  | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' | 'select_message' | 'source_message_unavailable' }
   | { status: 'ready'; email: WorkstationEmailPayload };
 
 function sameAddress(left: string, right: string): boolean {
@@ -40,10 +41,29 @@ function sameAddress(left: string, right: string): boolean {
  * Whether a message is the guest's mail. The stored direction decides. Payloads without
  * it fall back to the sender: a message from the mailbox's own address is a reply.
  */
-export function isInboundMessage(message: ThreadMessage, mailboxEmail: string): boolean {
+export function isInboundMessage(
+  message: Pick<ThreadMessage, 'direction' | 'sender'>,
+  mailboxEmail: string,
+): boolean {
   if (message.direction) return message.direction === 'inbound';
   if (!mailboxEmail.trim()) return false;
   return !sameAddress(message.sender.email, mailboxEmail);
+}
+
+/** A single inbound can be selected on open; multiple inbound messages require staff choice. */
+export function singleInboundMessageId(
+  messages: readonly Pick<ThreadMessage, 'id' | 'threadId' | 'isDraft' | 'direction' | 'sender'>[],
+  mailboxEmail: string,
+  threadId: string,
+): string | null {
+  if (!mailboxEmail.trim() || !threadId) return null;
+  const inbound = messages.filter(
+    (message) => message.threadId === threadId && !message.isDraft && isInboundMessage(message, mailboxEmail),
+  );
+  if (inbound.length !== 1 || !inbound[0]?.id.trim()) return null;
+  return messages.filter((message) => message.id === inbound[0]!.id).length === 1
+    ? inbound[0]!.id
+    : null;
 }
 
 /**
@@ -99,13 +119,37 @@ export function activeEmailFromMessage(
   };
 }
 
-/** Selects the latest inbound message, optionally pinned to a workflow row's source thread. */
+/** Select an explicit stored id without substituting another email when it cannot be resolved. */
 export function selectPreviewMessage(
   messages: readonly ThreadMessage[],
   mailboxEmail: string,
   transportId: string,
   sourceThreadId?: string,
+  sourceMessageId?: string | null,
+  requireSelectedMessage = false,
 ): PreviewSelection {
+  if (sourceMessageId != null) {
+    const matches = messages.filter((message) => message.id === sourceMessageId);
+    const match = matches[0];
+    if (
+      !sourceMessageId.trim() || !mailboxEmail.trim() || !transportId.trim() ||
+      matches.length !== 1 || !match ||
+      (sourceThreadId && match.threadId !== sourceThreadId) ||
+      match.isDraft || !isInboundMessage(match, mailboxEmail)
+    ) {
+      return { status: 'unsynced', reason: 'source_message_unavailable' };
+    }
+    const email = activeEmailFromMessage(match, transportId);
+    return email ? { status: 'ready', email } : { status: 'unsynced', reason: 'no_message_id' };
+  }
+  if (requireSelectedMessage) {
+    // Do not mutate navigation state for an automatic default. Reuse the same
+    // exact-selection checks, and never guess when there are multiple inbounds.
+    const onlyInbound = sourceThreadId && singleInboundMessageId(messages, mailboxEmail, sourceThreadId);
+    return onlyInbound
+      ? selectPreviewMessage(messages, mailboxEmail, transportId, sourceThreadId, onlyInbound, true)
+      : { status: 'unsynced', reason: 'select_message' };
+  }
   const sourceMessages = sourceThreadId
     ? messages.filter((message) => message.threadId === sourceThreadId)
     : messages;
@@ -163,9 +207,13 @@ export function buildPreviewBridge(activeEmail: WorkstationEmailPayload | null):
 export function useWebPreview({
   threadId,
   sourceThreadId,
+  sourceMessageId,
+  requireSelectedMessage = false,
 }: {
   threadId: string;
   sourceThreadId?: string;
+  sourceMessageId?: string | null;
+  requireSelectedMessage?: boolean;
 }): {
   selection: PreviewSelection;
   bridge: PaneBridge;
@@ -175,12 +223,22 @@ export function useWebPreview({
   const mailboxEmail = connection?.email ?? '';
   const transportId = connection?.id ?? '';
   const threadMessages = thread.data?.messages;
+  const threadTransportId = (thread.data as (IGetThreadResponse & { transportId?: string }) | undefined)?.transportId;
 
   const selection = useMemo<PreviewSelection>(() => {
     if (thread.isError) return { status: 'error' };
-    if (!connection || !threadMessages) return { status: 'loading' };
-    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId);
-  }, [connection, mailboxEmail, sourceThreadId, thread.isError, threadMessages, transportId]);
+    if (thread.isThreadDataMismatch || !connection || !threadMessages) return { status: 'loading' };
+    if (requireSelectedMessage && !isFrontendOnlyDemo() && threadTransportId !== transportId)
+      return { status: 'unsynced', reason: 'source_message_unavailable' };
+    return selectPreviewMessage(
+      threadMessages,
+      mailboxEmail,
+      transportId,
+      sourceThreadId ?? (requireSelectedMessage || sourceMessageId != null ? threadId : undefined),
+      sourceMessageId,
+      requireSelectedMessage,
+    );
+  }, [connection, mailboxEmail, requireSelectedMessage, sourceMessageId, sourceThreadId, thread.isError, thread.isThreadDataMismatch, threadId, threadMessages, threadTransportId, transportId]);
 
   const stableKey = selection.status === 'ready' ? JSON.stringify(selection.email) : '';
   const activeEmail = useMemo(

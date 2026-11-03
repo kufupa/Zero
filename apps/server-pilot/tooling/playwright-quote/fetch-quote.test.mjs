@@ -752,6 +752,7 @@ function hotelMenuPage({revealOnClick=2,alreadyVisible=false,dateField='startdat
       filter:({hasText})=>treeNode([...matchers,hasText]),
       count:async()=>matching().length,
       click:async()=>{const[name]=matching();if(!name)throw new Error('TimeoutError: node is not visible');log.push(name);if(name==='Availability')availabilityClicks+=1;},
+      evaluate:async()=>{},
       waitFor:async()=>{if(!matching().length)throw new Error('TimeoutError: waitFor');},
     };
   };

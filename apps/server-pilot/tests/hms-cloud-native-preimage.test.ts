@@ -38,6 +38,25 @@ describe('bounded native saved-stay preimage', () => {
       { ...paired, data: { ...paired.data, GuaranteeType: 'GTDAGT' } },
     ]) expect(projectNativeSavedStayPreimage(changed, expected)?.guaranteeCode).toBeUndefined();
   });
+  it('reports party IDs only when the clean model and same-form visible names agree', () => {
+    const row = snapshot();
+    const paired = { ...row, data: { ...row.data, companyid: '0042', company: 'Test Company', taid1: '73', ta1: 'Test Agency' },
+      controls: { company: 'Test Company', ta1: 'Test Agency' } };
+    expect(projectNativeSavedStayPreimage(paired, expected)?.commercial).toEqual({
+      company: { name: 'Test Company', nativeId: '0042' }, agency: { name: 'Test Agency', nativeId: '73' },
+    });
+    for (const changed of [
+      { ...paired, controls: { ...paired.controls, company: 'Another Company' } },
+      { ...paired, controls: { ...paired.controls, company: '' } },
+      { ...paired, data: { ...paired.data, companyid: '0' } },
+      { ...paired, data: { ...paired.data, companyid: 'not-an-id' } },
+      { ...paired, data: { ...paired.data, companyid: '0042', CompanyID: '0042' } },
+      { ...paired, data: { ...paired.data, company: 'Test\u0000Company' } },
+    ]) expect(projectNativeSavedStayPreimage(changed, expected)?.commercial?.company).toBeUndefined();
+    expect(projectNativeSavedStayPreimage({ ...paired, formDirty: true }, expected)).toBeNull();
+    expect(projectNativeSavedStayPreimage({ ...paired, data: { ...paired.data, propertycode: 'HRDAV' } }, expected)).toBeNull();
+    expect(projectNativeSavedStayPreimage({ ...paired, data: { ...paired.data, confirmationnumber: '999999-1' } }, expected)).toBeNull();
+  });
   it('refuses mismatched identity, dirty forms, duplicate keys and malformed native IDs', () => {
     const row = snapshot();
     for (const bad of [
@@ -95,6 +114,23 @@ describe('native browser preimage reader', () => {
     guarantee.getValue = () => 'GTDAGT';
     vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [input, input] });
     expect((await readNativeSavedStayPreimage(f.frame, expected))?.guaranteeCode).toBeUndefined();
+  });
+
+  it('captures party names only from unique visible controls in the selected form', async () => {
+    const f = browserFixture();
+    Object.assign(f.record.data, { companyid: '0042', company: 'Test Company', taid1: '73', ta1: 'Test Agency' });
+    const company = { name: 'company', value: 'Test Company', id: 'company-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
+    const agency = { name: 'ta1', value: 'Test Agency', id: 'ta1-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
+    f.panel.el.dom.contains = (node: unknown) => node === f.guest || node === company || node === agency;
+    vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [company, agency] });
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.commercial).toEqual({
+      company: { name: 'Test Company', nativeId: '0042' }, agency: { name: 'Test Agency', nativeId: '73' },
+    });
+    vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [company, company, agency] });
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.commercial?.company).toBeUndefined();
+    vi.stubGlobal('document', { querySelectorAll: (selector: string) => selector.includes('guestid') ? [f.guest] : [company, agency] });
+    f.panel.el.dom.contains = (node: unknown) => node === f.guest || node === agency;
+    expect((await readNativeSavedStayPreimage(f.frame, expected))?.commercial?.company).toBeUndefined();
   });
 
   it('rejects dirty fields, dirty models, duplicate keys and duplicate guest controls', async () => {
