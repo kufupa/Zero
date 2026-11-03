@@ -1,4 +1,4 @@
-import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
+import { AmendLookupPanel, type AmendReadOnlyContext } from '@/components/quote-workflow/amend-lookup-panel';
 import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
@@ -26,6 +26,7 @@ export function BookingVoucherCard({
   senderEmail = null,
   subject = null,
   bodyText = null,
+  readOnlyAmend = null,
 }: {
   session: QuoteSession;
   internetMessageId: string | null;
@@ -40,6 +41,7 @@ export function BookingVoucherCard({
   senderEmail?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  readOnlyAmend?: AmendReadOnlyContext | null;
 }) {
   const amendment = amendmentOf(session);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
@@ -59,7 +61,13 @@ export function BookingVoucherCard({
       {ota ? (
         <OtaBookingChannelChip source={ota} />
       ) : null}
-      <AmendLookupPanel session={session} trpc={trpcClient} />
+      {readOnlyAmend?.selectionCurrent === false ? null : (
+        <AmendLookupPanel
+          key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,
+            session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash]) : undefined}
+          session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend}
+        />
+      )}
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment ? (
         <ApproveCard

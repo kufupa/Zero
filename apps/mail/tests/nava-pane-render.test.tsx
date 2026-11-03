@@ -3019,6 +3019,7 @@ describe('NavaPane', () => {
     return {
       runId: 'hms-job-found-amendment',
       sourceMessageId: 'mail-1',
+      sourceHash: 'ab'.repeat(32),
       request: { kind: 'find', confirmation, arrival: '2026-10-17' },
       prefetch: false,
       status: 'done',
@@ -3055,6 +3056,38 @@ describe('NavaPane', () => {
       },
     };
   }
+
+  it('HRCEN mounts the local amendment review from the selected email and HMS lookup', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [],
+      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+    bridgeMockState.analysisOverride = {
+      status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+      amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+        arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
+    };
+    const pane = render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    const adults = await within(card).findByLabelText('Requested adults');
+    expect(adults).toBeTruthy();
+    expect(within(card).getByLabelText('Rate plan to review in HMS')).toBeTruthy();
+    expect(within(card).getByText(/has not checked availability or the new price/)).toBeTruthy();
+    expect(within(card).queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
+    fireEvent.change(adults, { target: { value: '3' } });
+    try {
+      bridgeMockState.userId = 'staff-2';
+      bridgeMockState.sessionId = 'session-2';
+      pane.rerender(<NavaPane bridge={fakeBridge} />);
+      const afterSwitch = screen.queryByLabelText('Requested adults') as HTMLInputElement | null;
+      expect(afterSwitch === null || afterSwitch.value !== '3').toBe(true);
+    } finally {
+      bridgeMockState.userId = 'staff-1';
+      bridgeMockState.sessionId = 'session-1';
+    }
+  });
 
   it('amendment: no requested change shows one plain line and each HMS date once', async () => {
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');

@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import * as hmsJobs from '../src/ai/hms-jobs.js';
-import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
   claimNextAiRun,
@@ -1871,6 +1871,57 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }
   });
+
+  it('keeps selected-message queue deduplication and resume on the same inbound and mailbox', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId: older } = await seedThread(db);
+      const newer = `msg-${randomUUID()}`;
+      const outbound = `msg-${randomUUID()}`;
+      await db.insert(message).values([
+        { id: newer, transportId: TRANSPORT_ID, threadId, direction: 'inbound', fromAddress: 'guest@example.test', receivedAt: new Date(Date.now() + 1000) },
+        { id: outbound, transportId: TRANSPORT_ID, threadId, direction: 'outbound', fromAddress: 'staff@example.test', receivedAt: new Date(Date.now() + 2000) },
+      ]);
+      const other = await seedThread(db);
+      const queue = (messageId: string, userId = CENTURION_USER_ID) => queueUserHmsJob({ transportId: TRANSPORT_ID, userId,
+        threadId, messageId, request: { kind: 'find', confirmation: CONFIRMATION }, idempotencyKey: 'same-auto-key' }, db);
+      const oldRun = await queue(older);
+      const newRun = await queue(newer);
+      expect(oldRun?.triggerMessageId).toBe(older);
+      expect(newRun?.triggerMessageId).toBe(newer);
+      expect(newRun?.id).not.toBe(oldRun?.id);
+      expect((await queue(older))?.id).toBe(oldRun?.id);
+      const otherActorRun = await queue(older, 'another-staff');
+      expect(otherActorRun?.id).not.toBe(oldRun?.id);
+      expect(await queue(outbound)).toBeNull();
+      expect(await queue(other.messageId)).toBeNull();
+      const resume = (messageId: string) => readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId, selectedActorId: CENTURION_USER_ID,
+        kind: 'find', confirmation: CONFIRMATION }, db);
+      expect((await resume(older))?.runId).toBe(oldRun?.id);
+      expect((await resume(newer))?.runId).toBe(newRun?.id);
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId: newer, selectedActorId: CENTURION_USER_ID, runId: oldRun!.id }, db)).toBeNull();
+      expect(await readHmsJobView({ transportId: DAVINCI_TRANSPORT_ID, threadId, messageId: older, selectedActorId: CENTURION_USER_ID, runId: oldRun!.id }, db)).toBeNull();
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId: older, selectedActorId: 'another-staff', runId: oldRun!.id }, db)).toBeNull();
+      const [source] = await db.select().from(message).where(eq(message.id, older));
+      const oldHash = staffQuoteSourceHash(source!);
+      const versioned = (sourceHash: string) => queueUserHmsJob({ transportId: TRANSPORT_ID, userId: CENTURION_USER_ID,
+        threadId, messageId: older, sourceHash, request: { kind: 'find', confirmation: CONFIRMATION }, idempotencyKey: 'versioned-auto-key' }, db);
+      const oldVersion = await versioned(oldHash);
+      expect(oldVersion).not.toBeNull();
+      const datedVersion = await queueUserHmsJob({ transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId,
+        messageId: older, sourceHash: oldHash, request: { kind: 'find', confirmation: CONFIRMATION, arrival: '2027-09-14' },
+        idempotencyKey: 'versioned-auto-key' }, db);
+      expect(datedVersion?.id).not.toBe(oldVersion?.id);
+      expect((await readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId: older, sourceHash: oldHash,
+        selectedActorId: CENTURION_USER_ID, kind: 'find', confirmation: CONFIRMATION, arrival: null }, db))?.runId).toBe(oldVersion?.id);
+      expect((await readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId: older, sourceHash: oldHash,
+        selectedActorId: CENTURION_USER_ID, kind: 'find', confirmation: CONFIRMATION, arrival: '2027-09-14' }, db))?.runId).toBe(datedVersion?.id);
+      await db.update(message).set({ textBody: 'different content, same message id' }).where(eq(message.id, older));
+      const newHash = staffQuoteSourceHash({ ...source!, textBody: 'different content, same message id' });
+      expect(await versioned(oldHash)).toBeNull();
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, threadId, messageId: older, sourceHash: newHash,
+        selectedActorId: CENTURION_USER_ID, kind: 'find', confirmation: CONFIRMATION }, db)).toBeNull();
+      expect((await versioned(newHash))?.id).not.toBe(oldVersion?.id);
+    }));
 
   it('AE5: a queued find completes and its status and result come back from the database after remount', () =>
     withSeededTestDb(async (db) => {

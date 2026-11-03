@@ -1,5 +1,6 @@
 import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 
 /**
  * Shared HMS read helpers for quote, amend and cancel mail.
@@ -192,6 +193,7 @@ export type FindStayInput = {
   arrival?: string;
   threadId?: string;
   messageId?: string;
+  sourceHash?: string;
 };
 
 /**
@@ -233,6 +235,7 @@ export type GuestSearchInput = {
   departure?: string;
   threadId?: string;
   messageId?: string;
+  sourceHash?: string;
 };
 
 /** The reply a search job stores. rows are complete only for outcome ok. */
@@ -264,6 +267,7 @@ export type HmsJobView = {
   runId: string;
   /** Message that produced the job; party prefetch read-back is scoped to the selected message. */
   sourceMessageId?: string | null;
+  sourceHash?: string | null;
   request: HmsJobRequest | null;
   prefetch: boolean;
   status: HmsJobStatus;
@@ -311,15 +315,17 @@ export type HmsJobClient = {
   }) => Promise<PartyFindReply>;
   jobStatus: (
     input:
-      | { runId: string }
+      | { runId: string; threadId?: string; messageId?: string; sourceHash?: string }
       | {
           threadId: string;
+          messageId?: string;
+          sourceHash?: string;
           kind: HmsJobKind;
           confirmation?: string;
           lastName?: string;
           name?: string;
           partyKind?: 'company' | 'agency';
-          arrival?: string;
+          arrival?: string | null;
           departure?: string | null;
         },
   ) => Promise<HmsJobView | null>;
@@ -339,30 +345,33 @@ export type HmsJobTransport = {
           lastName?: string;
           name?: string;
           partyKind?: 'company' | 'agency';
-          arrival?: string;
+          arrival?: string | null;
           departure?: string | null;
         },
   ) => Promise<HmsJobView | null>;
 };
 
+type MailboxCall<T> = T extends (input: infer I) => infer R
+  ? (input: I, options?: ReturnType<typeof inMailbox>) => R : never;
+
 type TrpcPaneStayLookupRoutes = {
   paneStayLookup?: {
-    jobQueueEnabled?: { query: NonNullable<HmsJobClient['jobQueueEnabled']> };
-    queueFind?: { mutate: HmsJobClient['queueFind'] };
-    queueSearchGuest?: { mutate: HmsJobClient['queueSearchGuest'] };
-    queueParty?: { mutate: NonNullable<HmsJobClient['queueParty']> };
-    findStay?: { mutate: NonNullable<HmsJobClient['findStay']> };
-    searchGuest?: { mutate: NonNullable<HmsJobClient['searchGuest']> };
-    jobStatus?: { query: HmsJobClient['jobStatus'] };
-    screenshot?: { query: (input: ScreenshotInput) => Promise<ScreenshotReply> };
+    jobQueueEnabled?: { query: (input?: undefined, options?: ReturnType<typeof inMailbox>) => Promise<boolean> };
+    queueFind?: { mutate: MailboxCall<HmsJobClient['queueFind']> };
+    queueSearchGuest?: { mutate: MailboxCall<HmsJobClient['queueSearchGuest']> };
+    queueParty?: { mutate: MailboxCall<NonNullable<HmsJobClient['queueParty']>> };
+    findStay?: { mutate: MailboxCall<NonNullable<HmsJobClient['findStay']>> };
+    searchGuest?: { mutate: MailboxCall<NonNullable<HmsJobClient['searchGuest']>> };
+    jobStatus?: { query: MailboxCall<HmsJobClient['jobStatus']> };
+    screenshot?: { query: MailboxCall<HmsJobClient['screenshot']> };
   };
   panePartyLookup?: {
-    findParty?: { mutate: NonNullable<HmsJobClient['findParty']> };
+    findParty?: { mutate: MailboxCall<NonNullable<HmsJobClient['findParty']>> };
   };
 };
 
 /** Binds the paneStayLookup job routes and screenshot off a tRPC client. Null when any of them is missing. */
-export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
+export function amendFindClientFromTrpc(trpc: unknown, transportId?: string | null): HmsJobClient | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcPaneStayLookupRoutes).paneStayLookup;
   const queueFind = routes?.queueFind;
@@ -374,11 +383,12 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
   const search = routes?.searchGuest;
   const party = (trpc as TrpcPaneStayLookupRoutes).panePartyLookup?.findParty;
   if (!queueFind || !queueSearch || !status || !shot) return null;
+  const pinned = inMailbox(transportId ?? null);
   const client: HmsJobClient = {
-    queueFind: (input) => queueFind.mutate(input),
-    queueSearchGuest: (input) => queueSearch.mutate(input),
-    ...(find ? { findStay: (input: FindStayInput) => find.mutate(input) } : {}),
-    ...(search ? { searchGuest: (input: GuestSearchInput) => search.mutate(input) } : {}),
+    queueFind: (input) => pinned ? queueFind.mutate(input, pinned) : queueFind.mutate(input),
+    queueSearchGuest: (input) => pinned ? queueSearch.mutate(input, pinned) : queueSearch.mutate(input),
+    ...(find ? { findStay: (input: FindStayInput) => pinned ? find.mutate(input, pinned) : find.mutate(input) } : {}),
+    ...(search ? { searchGuest: (input: GuestSearchInput) => pinned ? search.mutate(input, pinned) : search.mutate(input) } : {}),
     ...(party
       ? {
           findParty: (input: {
@@ -386,14 +396,15 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
             kind?: 'company' | 'agency';
             threadId?: string;
             messageId?: string;
-          }) => party.mutate(input),
+          }) => pinned ? party.mutate(input, pinned) : party.mutate(input),
         }
       : {}),
-    jobStatus: (input) => status.query(input),
-    screenshot: (input) => shot.query(input),
+    jobStatus: (input) => pinned ? status.query(input, pinned) : status.query(input),
+    screenshot: (input) => pinned ? shot.query(input, pinned) : shot.query(input),
   };
-  if (queueParty) client.queueParty = (input) => queueParty.mutate(input);
-  if (routes.jobQueueEnabled) client.jobQueueEnabled = () => routes.jobQueueEnabled!.query();
+  if (queueParty) client.queueParty = (input) => pinned ? queueParty.mutate(input, pinned) : queueParty.mutate(input);
+  if (routes.jobQueueEnabled) client.jobQueueEnabled = () => pinned
+    ? routes.jobQueueEnabled!.query(undefined, pinned) : routes.jobQueueEnabled!.query();
   return client;
 }
 
@@ -401,9 +412,13 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
 function syncView(
   request: HmsJobRequest,
   reply: FindStayReply | GuestSearchReply | PartyFindReply,
+  sourceMessageId?: string,
+  sourceHash?: string,
 ): HmsJobView {
   return {
     runId: 'runId' in reply ? (reply.runId ?? '') : '',
+    ...(sourceMessageId ? { sourceMessageId } : {}),
+    ...(sourceHash ? { sourceHash } : {}),
     request,
     prefetch: false,
     status: 'done',
@@ -430,9 +445,13 @@ export function hmsJobTransport(
   client: HmsJobClient | null,
   threadId: string | null,
   messageId?: string | null,
+  sourceOptions?: { exactSource: true; sourceHash?: string },
 ): HmsJobTransport | null {
-  if (!client || !threadId) return null;
-  const mail = mailAnchor(threadId, messageId);
+  if (!client || !threadId || (sourceOptions?.exactSource && !messageId?.trim()) ||
+      (sourceOptions?.sourceHash && !/^[a-f0-9]{64}$/.test(sourceOptions.sourceHash))) return null;
+  const mail = { ...mailAnchor(threadId, messageId),
+    ...(sourceOptions?.sourceHash ? { sourceHash: sourceOptions.sourceHash } : {}) };
+  const selectedMessageId = sourceOptions?.exactSource ? mail.messageId : undefined;
   return {
     ...(client.jobQueueEnabled ? { jobQueueEnabled: client.jobQueueEnabled } : {}),
     queue: async (request, options) => {
@@ -448,9 +467,10 @@ export function hmsJobTransport(
         if (runId) return { runId };
         if (options?.autoStart) return { runId: null };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
-        return { runId: null, view: syncView(request, await client.findStay({ ...input, ...mail })) };
+        return { runId: null, view: syncView(request, await client.findStay({ ...input, ...mail }), selectedMessageId, sourceOptions?.sourceHash) };
       }
       if (request.kind === 'party') {
+        if (sourceOptions?.exactSource) throw new Error('Party lookup is not bound to the selected email');
         // Party reads are never generated from read-back: only the pane's explicit Find action may queue one.
         if (options?.autoStart) return { runId: null };
         const queued = client.queueParty
@@ -487,9 +507,18 @@ export function hmsJobTransport(
       // Auto-start with the queue off must not run the live search: it would repeat on every card open.
       if (options?.autoStart) return { runId: null };
       if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
-      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, ...mail })) };
+      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, ...mail }), selectedMessageId, sourceOptions?.sourceHash) };
     },
-    status: (input) => client.jobStatus('runId' in input ? input : { threadId, ...input }),
+    status: async (input) => {
+      if (selectedMessageId && !('runId' in input) && input.kind === 'party') return null;
+      const query = selectedMessageId
+        ? { ...input, threadId, messageId: selectedMessageId,
+            ...(sourceOptions?.sourceHash ? { sourceHash: sourceOptions.sourceHash } : {}) }
+        : 'runId' in input ? input : { threadId, ...input };
+      const view = await client.jobStatus(query);
+      return (selectedMessageId && view?.sourceMessageId !== selectedMessageId) ||
+        (sourceOptions?.sourceHash && view?.sourceHash !== sourceOptions.sourceHash) ? null : view;
+    },
   };
 }
 

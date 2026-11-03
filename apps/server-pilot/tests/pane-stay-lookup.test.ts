@@ -29,6 +29,7 @@ import { appRouter } from '../src/trpc/router.js';
 const jobMocks = vi.hoisted(() => ({
   readHmsJobView: vi.fn(),
   queueUserHmsJob: vi.fn(),
+  isSelectedHmsInboundMessage: vi.fn(),
   queueUserPartyHmsJob: vi.fn(),
   enqueueHmsBatch: vi.fn(),
 }));
@@ -44,6 +45,7 @@ vi.mock('../src/ai/hms-jobs.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/hms-jobs.js')>()),
   readHmsJobView: jobMocks.readHmsJobView,
   queueUserHmsJob: jobMocks.queueUserHmsJob,
+  isSelectedHmsInboundMessage: jobMocks.isSelectedHmsInboundMessage,
   queueUserPartyHmsJob: jobMocks.queueUserPartyHmsJob,
   enqueueHmsBatch: jobMocks.enqueueHmsBatch,
 }));
@@ -119,6 +121,7 @@ function mailboxCaller(activeTransportId = 'transport-centurion') {
 const cleanupDirs: string[] = [];
 
 beforeEach(() => {
+  jobMocks.isSelectedHmsInboundMessage.mockResolvedValue(true);
   mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
     fromAddress: 'guest@example.invalid',
     toAddresses: ['centurion@legacyhotels.co.za'],
@@ -128,6 +131,7 @@ beforeEach(() => {
 afterEach(async () => {
   jobMocks.readHmsJobView.mockReset().mockResolvedValue(null);
   jobMocks.queueUserHmsJob.mockReset();
+  jobMocks.isSelectedHmsInboundMessage.mockReset();
   jobMocks.queueUserPartyHmsJob.mockReset();
   jobMocks.enqueueHmsBatch.mockReset();
   paneStayLookupLoaders.spawn = null;
@@ -893,6 +897,53 @@ describe('paneStayLookup router origin guard', () => {
 });
 
 describe('paneStayLookup router', () => {
+  it('binds find, search, resume and run polling to the selected mailbox message', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const caller = mailboxCaller();
+    const source = { threadId: 'thread-1', messageId: 'older-inbound', sourceHash: 'a'.repeat(64) };
+    const runId = '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab';
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: runId });
+    await caller.paneStayLookup.queueFind({ ...source, confirmation: '57291630-1', autoStart: true });
+    await caller.paneStayLookup.queueSearchGuest({ ...source, lastName: 'Mokoena', arrival: '2027-09-14', autoStart: true });
+    expect(jobMocks.isSelectedHmsInboundMessage).toHaveBeenCalledWith({ transportId: 'transport-centurion', ...source });
+    expect(jobMocks.queueUserHmsJob).toHaveBeenCalledTimes(2);
+    for (const [input] of jobMocks.queueUserHmsJob.mock.calls) {
+      expect(input).toMatchObject({ transportId: 'transport-centurion', ...source });
+    }
+    await caller.paneStayLookup.jobStatus({ ...source, kind: 'search_guest', lastName: 'Mokoena', arrival: '2027-09-14' });
+    expect(jobMocks.readHmsJobView).toHaveBeenLastCalledWith(expect.objectContaining({ transportId: 'transport-centurion', ...source }));
+    await caller.paneStayLookup.jobStatus({ ...source, runId });
+    expect(jobMocks.readHmsJobView).toHaveBeenLastCalledWith(expect.objectContaining({ transportId: 'transport-centurion', ...source, runId }));
+  });
+
+  it('refuses missing, foreign or outbound selected messages before sync, queue or resume', async () => {
+    const caller = mailboxCaller();
+    const source = { threadId: 'thread-1', messageId: 'wrong-message' };
+    jobMocks.isSelectedHmsInboundMessage.mockResolvedValue(false);
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    await expect(caller.paneStayLookup.queueFind({ ...source, confirmation: '57291630-1' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller.paneStayLookup.queueSearchGuest({ ...source, lastName: 'Mokoena', arrival: '2027-09-14' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller.paneStayLookup.jobStatus({ ...source, kind: 'find', confirmation: '57291630-1' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller.paneStayLookup.jobStatus({ ...source, runId: '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    vi.stubEnv('HMS_JOB_QUEUE', '');
+    await expect(caller.paneStayLookup.findStay({ ...source, confirmation: '57291630-1' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller.paneStayLookup.searchGuest({ ...source, lastName: 'Mokoena', arrival: '2027-09-14' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+    expect(jobMocks.readHmsJobView).not.toHaveBeenCalled();
+  });
+
+  it('discards a synchronous lookup if the same selected message changes while HMS is reading', async () => {
+    const source = { threadId: 'thread-1', messageId: 'message-1', sourceHash: 'a'.repeat(64) };
+    jobMocks.isSelectedHmsInboundMessage.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    paneStayLookupLoaders.enabled = () => true;
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult());
+    await expect(mailboxCaller().paneStayLookup.findStay({ ...source, confirmation: '57291630-1' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(paneStayLookupLoaders.spawn).toHaveBeenCalledOnce();
+    expect(jobMocks.isSelectedHmsInboundMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('threads the authenticated user into run-id job status reads for staff-quote ownership checks', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     const runId = '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab';

@@ -2512,6 +2512,18 @@ export function NavaPane({
               }
               workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
               writesEnabled={attachWritesEnabled}
+              readOnlyAmend={activePaneConfig?.propertyCode === 'HRCEN' ? {
+                propertyCode: 'HRCEN',
+                ratePlans: activePaneConfig.ratePlans,
+                selectionCurrent: Boolean(activeEmail?.entryId && activeEmail.internetMessageId &&
+                  quoteSession.binding?.transportId === activeConnection?.id &&
+                  quoteSession.binding?.entryId === activeEmail.entryId &&
+                  quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&
+                  quoteSession.binding?.folderEntryId === (activeEmail.folderEntryId ?? '') &&
+                  quoteSession.binding?.internetMessageId === activeEmail.internetMessageId &&
+                  quoteSession.binding?.scopeEpoch === contextRevision.current.scopeEpoch &&
+                  quoteSession.binding?.selectionEpoch === contextRevision.current.selectionEpoch),
+              } : null}
             />
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
