@@ -43,6 +43,13 @@ export async function installLabtestSaveRouteChain(page, {
   let authorizing = false;
   let dispatching = false;
   let continuedRequest = null;
+  const pendingCallbacks = new Set();
+  const trackCallback = (callback) => {
+    const pending = Promise.resolve().then(callback);
+    pendingCallbacks.add(pending);
+    void pending.then(() => pendingCallbacks.delete(pending), () => pendingCallbacks.delete(pending));
+    return pending;
+  };
   const childCandidates = new WeakSet(), continuedChildren = new WeakSet();
   let finishDispatch;
   const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
@@ -85,7 +92,7 @@ export async function installLabtestSaveRouteChain(page, {
       // The server wrapper must await this function while holding any source locks.
       // A delayed or repeated call cannot dispatch after it has returned.
       const continueOnce = () => {
-        const task = (async () => {
+        const task = trackCallback(async () => {
           if (wrapperFinished || attempted || !active || !isArmed() || fence.isQuarantined() || !isSameFrame(request)) {
             throw new Error('SAVE_DISPATCH_NOT_AUTHORIZED');
           }
@@ -97,7 +104,7 @@ export async function installLabtestSaveRouteChain(page, {
             continuationSucceeded = true;
             return result;
           } finally { continuationSettled = true; }
-        })();
+        });
         // A buggy wrapper may fail to await the continuation. Its rejection is
         // still returned to a correct caller without becoming unhandled.
         void task.catch(() => {});
@@ -197,19 +204,30 @@ export async function installLabtestSaveRouteChain(page, {
     return route.abort();
   };
 
+  // Register before invoking an effectful route. A drain also tracks its
+  // asynchronous wrapper and any unawaited native continuation.
+  const trackEffectfulRoute = (handler) => (route) => {
+    let path;
+    try { path = new URL(route.request().url()).pathname.toLowerCase(); }
+    catch { return handler(route); }
+    return path === SAVE_PATH.toLowerCase() || SAVED_CHILD_STAGE_PATHS.some((item) => item.toLowerCase() === path)
+      ? trackCallback(() => handler(route)) : handler(route);
+  };
+  const trackedContextRoute = trackEffectfulRoute(contextRoute);
+  const trackedPageRoute = trackEffectfulRoute(pageRoute);
   let contextInstalled = false;
   let pageInstalled = false;
   try {
     // Registered after installReadOnlyGuard(context): only the exact candidate
     // may continue; unapproved mutations/send paths are denied context-wide.
-    await context.route('**/*', contextRoute);
+    await context.route('**/*', trackedContextRoute);
     contextInstalled = true;
-    await page.route('**/*', pageRoute);
+    await page.route('**/*', trackedPageRoute);
     pageInstalled = true;
   } catch (error) {
     active = false;
-    if (pageInstalled) await page.unroute('**/*', pageRoute).catch(() => {});
-    if (contextInstalled) await context.unroute('**/*', contextRoute).catch(() => {});
+    if (pageInstalled) await page.unroute('**/*', trackedPageRoute).catch(() => {});
+    if (contextInstalled) await context.unroute('**/*', trackedContextRoute).catch(() => {});
     throw error;
   }
 
@@ -218,6 +236,23 @@ export async function installLabtestSaveRouteChain(page, {
     continued: () => continuedRequest,
     waitForDispatch: () => dispatchFinished,
     disarm: () => { active = false; },
+    async drain({ timeoutMs = 5_000 } = {}) {
+      active = false;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return false;
+      const deadline = performance.now() + timeoutMs;
+      while (pendingCallbacks.size) {
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return false;
+        let timer;
+        const settled = await Promise.race([
+          Promise.allSettled(pendingCallbacks).then(() => true),
+          new Promise((resolve) => { timer = setTimeout(() => resolve(false), remaining); }),
+        ]);
+        clearTimeout(timer);
+        if (!settled) return false;
+      }
+      return true;
+    },
     async close() {
       active = false;
       // Keep both deny routes for the context lifetime. Only the one exact

@@ -98,6 +98,26 @@ test('timeout quarantines the page before a delayed child request reaches the fe
   assert.deepEqual(fake.calls, ['abort']);
 });
 
+test('drain waits for a paused child route and disarm blocks its eventual dispatch', async () => {
+  const paused = { entered: deferred(), release: deferred() }, fake = mockPage({ paused });
+  await installReadOnlyGuard(fake.context);
+  const gate = createSavedChildStageRequestGate(target());
+  const fence = await installPageRequestFence(fake.page, [READ, VALIDATE]);
+  const scope = fence.open();
+  const chain = await installLabtestSaveRouteChain(fake.page, {
+    frame, fence, scope, childStageGate: gate, isChildStageActive: () => true,
+    isArmed: () => false, matches: () => false,
+  });
+  assert.equal(gate.armRead(), true);
+  const pending = fake.visit(read());
+  await paused.entered.promise;
+  assert.equal(await chain.drain({ timeoutMs: 5 }), false);
+  paused.release.resolve();
+  await pending;
+  assert.equal(await chain.drain({ timeoutMs: 50 }), true);
+  assert.deepEqual(fake.calls, ['abort']);
+});
+
 test('rejects a forged gate before installing request exceptions', async () => {
   const fake = mockPage(); let clicks = 0;
   const result = await runLabtestAmendSave(fake.page, config({ consume: () => true }, async () => ({}),

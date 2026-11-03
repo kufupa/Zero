@@ -575,6 +575,18 @@ function safeCreateContext(page) {
   } catch { return false; }
 }
 
+// This covers route callbacks only; browser shutdown and HMS settlement need separate proof.
+export async function finishLabtestCreateFence(result, routeChain, fence) {
+  if (!routeChain) return result;
+  let drained = false;
+  try { drained = await routeChain.drain() === true; } catch { /* Keep an unknown outcome. */ }
+  if (!drained) {
+    try { fence?.quarantine(); } catch { /* The closed route remains disarmed. */ }
+    return { ...result, outcome: 'uncertain', issue: 'SAVE_CALLBACK_DRAIN_UNCONFIRMED', dispatchCallbacksDrained: false };
+  }
+  return { ...result, dispatchCallbacksDrained: true };
+}
+
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note, guaranteeSelection,
@@ -616,7 +628,8 @@ export async function saveNewLabtestStay(page, {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
-  let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest, billingAttempted = false, billingStaged = false;
+  let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest, finishedResult;
+  let billingAttempted = false, billingStaged = false;
   const observedBlocked = new WeakSet();
   const createBodyMismatches = new WeakMap();
   const stopped = new Promise((resolve) => { signalStop = resolve; });
@@ -792,7 +805,7 @@ export async function saveNewLabtestStay(page, {
     const dialogs = await bounded(page.locator('.x-window:visible:not(.x-menu)').allTextContents().catch(() => []));
     const httpStatus = response?.status() || null;
     const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
-    return { outcome: guestStaySaveOutcome({ dispatched, possiblyDispatched, httpStatus,
+    finishedResult = { outcome: guestStaySaveOutcome({ dispatched, possiblyDispatched, httpStatus,
       hasConfirmation: Boolean(requestSeen && snapshot.confirmation), nativeDialog, dialogs: dialogs.length, blockedAfterDispatch }),
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
@@ -804,7 +817,7 @@ export async function saveNewLabtestStay(page, {
     if (possiblyDispatched || billingAttempted) fence?.quarantine();
     if (billingAttempted && !possiblyDispatched && !stopReason) stop('BILLING_ACTION_UNCERTAIN');
     const draftCheck = safeDraftCheck(error?.draftCheck);
-    return { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue: safeIssue(error),
+    finishedResult = { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue: safeIssue(error),
       ...(draftCheck ? { draftCheck } : {}),
       requestSeen, httpStatus: response?.status() || null, blockedRequests: blocked,
       blockedRequestsAfterDispatch: Math.max(0, blocked - blockedAtDispatch),
@@ -814,7 +827,9 @@ export async function saveNewLabtestStay(page, {
     armed = false;
     routeChain?.disarm();
     scope?.close();
+    finishedResult = await finishLabtestCreateFence(finishedResult, routeChain, fence);
     await routeChain?.close();
     if (!nativeDialog && !usedPages.has(page)) page.off('dialog', onDialog);
   }
+  return finishedResult;
 }
