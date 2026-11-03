@@ -240,6 +240,7 @@ export function AmendLookupPanel({
   if (!amendment) return null;
 
   const findView: HmsJobView | null = find.view;
+  const shownFindRequest = findView?.request?.kind === 'find' ? findView.request : null;
   const findRun = findRunFromJob(findView, find.queueFailed, find.queueFailureMessage);
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
@@ -507,7 +508,7 @@ export function AmendLookupPanel({
           data-testid={stay ? 'amend-hms-result-card' : undefined}
           className="flex min-w-0 flex-col gap-2"
         >
-          <p className={headingClass}>Booking in HMS now</p>
+          <p className={headingClass}>{readOnlyAmend ? 'Booking at last HMS lookup' : 'Booking in HMS now'}</p>
           {stay ? (
             <>
               <dl data-testid="amend-hms-facts" className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
@@ -541,6 +542,13 @@ export function AmendLookupPanel({
                 />
               ) : null}
               {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
+              {readOnlyAmend && shownFindRequest && shownFindRequest.confirmation === foundNumber ? (
+                <button type="button" className={buttonClass} disabled={!key || !transport || busy}
+                  title="Refreshing clears the entries on this card."
+                  onClick={() => find.start(shownFindRequest)}>
+                  Refresh HMS lookup
+                </button>
+              ) : null}
             </>
           ) : (
             <>

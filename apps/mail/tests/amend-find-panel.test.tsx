@@ -2212,6 +2212,15 @@ describe('AmendLookupPanel amend form', () => {
       { context: { activeTransportId: 't1' } });
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
+    const callsBeforeRefresh = trpc.queueFind.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh HMS lookup' }));
+    await waitFor(() => expect(trpc.queueFind).toHaveBeenCalledTimes(callsBeforeRefresh + 1));
+    expect(trpc.queueFind).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1',
+      sourceHash: 'a'.repeat(64), confirmation: CONFIRMATION, arrival: AMEND.arrival }),
+      { context: { activeTransportId: 't1' } });
+    await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1'));
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('clears local choices when the selected email or booking changes', async () => {

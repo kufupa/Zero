@@ -3082,6 +3082,8 @@ describe('NavaPane', () => {
     const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
     const adults = await within(card).findByLabelText('Requested adults');
     expect(adults).toBeTruthy();
+    expect(within(card).getByText('Booking at last HMS lookup')).toBeTruthy();
+    expect(within(card).getAllByText(/^HMS at lookup:/)).toHaveLength(4);
     expect(within(card).getByLabelText('Rate plan to review in HMS')).toBeTruthy();
     expect(within(card).getByText(/has not checked availability or the new price/)).toBeTruthy();
     expect(within(card).queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
