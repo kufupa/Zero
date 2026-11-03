@@ -90,6 +90,20 @@ describe('self-sent pre-stay information', () => {
     expect(groundedSeparateAsk(gmail, current)).toBe(current);
   });
 
+  it.each(['OutlookMessageHeader', 'divRplyFwdMsg'])(
+    'excludes sibling Outlook history after a nested %s boundary',
+    (marker) => {
+      const current = 'Please send the catering menu.';
+      const old = 'Please book the old room.';
+      const attribute = marker === 'OutlookMessageHeader' ? `class="${marker}"` : `id="${marker}"`;
+      const html = `<div><p>${current}</p><div><div ${attribute}>From: Prior Guest</div>${old}</div><p>${old}</p></div>`;
+      expect(preStaySourceText(null, html)).toContain(current);
+      expect(preStaySourceText(null, html)).not.toContain(old);
+      expect(groundedSeparateAsk(html, old)).toBeNull();
+      expect(groundedSeparateAsk(html, current)).toBe(current);
+    },
+  );
+
   it('uses an extracted confirmation number to override a model booking kind', async () => {
     const confirmationNumber = '57291630-1';
     const model = fakeModel(() => ({

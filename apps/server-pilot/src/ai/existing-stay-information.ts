@@ -39,7 +39,18 @@ export function preStaySourceText(textBody: string | null | undefined, htmlBody:
   if (textBody?.trim()) return textBody;
   if (!htmlBody) return '';
   const document = load(htmlBody, null, false);
-  document('blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').remove();
+  // Self-contained quotes can occur before more authored text. Outlook's
+  // reply header instead marks the start of all following quoted history,
+  // including bare text and siblings outside the header's parent.
+  document('blockquote, .gmail_quote').remove();
+  const boundary = document('#divRplyFwdMsg, .OutlookMessageHeader').first();
+  let cursor = boundary;
+  while (cursor.length) {
+    const node = cursor[0];
+    while (node?.next) document(node.next).remove();
+    cursor = cursor.parent();
+  }
+  boundary.remove();
   return htmlToPlainText(document.root().html() ?? '');
 }
 
