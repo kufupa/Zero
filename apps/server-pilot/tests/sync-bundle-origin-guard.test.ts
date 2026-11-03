@@ -116,6 +116,23 @@ function sandbox() {
   return { root, repo, origin, bundle, bin, awsCalls, ssmCalls, run, commit, uploaded: () => existsSync(awsCalls) };
 }
 
+// Execute the actual generated SSM payload against an isolated local checkout.
+function runRemoteCheckout(box: ReturnType<typeof sandbox>, remote: string, sha?: string) {
+  const result = box.run({ EC2_REPO_PATH: remote, ...(sha ? { SANDBOX_EC2_SHA: sha } : {}) });
+  expect(result.status, result.stderr).toBe(0);
+  const payload = readFileSync(box.ssmCalls, 'utf8').split('\n').find((line) => line.startsWith('set -euo pipefail;'));
+  expect(payload).toBeTruthy();
+  const safePayload = payload!
+    .replaceAll('/home/ubuntu/.nava-deploy.lock', join(box.root, 'deploy.lock'))
+    .replaceAll('/home/ubuntu/repos', join(box.root, 'remote'))
+    .replaceAll('/home/ubuntu/.nvm', join(box.root, 'absent-nvm'))
+    .replace(/\/tmp\/zero-git-bundle-\d+\.bundle/g, join(box.root, 'remote.bundle'));
+  return spawnSync('bash', ['-c', safePayload], {
+    encoding: 'utf8', timeout: 20_000,
+    env: { ...cleanEnv(), PATH: `${box.bin}:${process.env.PATH}`, AWS_CALLS: box.awsCalls, BUNDLE_CAPTURE: box.bundle },
+  });
+}
+
 describe('sync-ec2-git-bundle refuses a local main that differs from origin', () => {
   it('bundles when local main matches origin/main', () => {
     const box = sandbox();
@@ -157,7 +174,7 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
     expect(git(box.root, '--git-dir', receiver, 'rev-parse', 'refs/heads/main')).toBe(head);
   });
 
-  it('holds the shared deploy lock before resetting the remote checkout', async () => {
+  it('holds the shared deploy lock before switching the remote checkout', async () => {
     const box = sandbox();
     const remoteParent = join(box.root, 'remote');
     const remote = join(remoteParent, 'zero');
@@ -197,6 +214,69 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
     expect(status).toBe(0);
     expect(git(remote, 'rev-parse', 'HEAD')).toBe(sha);
   }, 10_000);
+
+  it.each(['unstaged', 'staged'])('refuses an %s edit and preserves the remote checkout', (state) => {
+    const box = sandbox();
+    const remote = join(box.root, 'remote', 'zero');
+    mkdirSync(join(box.root, 'remote'));
+    git(box.root, 'clone', '-q', box.origin, remote);
+    const before = git(remote, 'rev-parse', 'HEAD');
+    const edited = join(remote, 'apps/server-pilot/deploy/ssm-run-command.sh');
+    writeFileSync(edited, 'another session\n');
+    if (state === 'staged') git(remote, 'add', 'apps/server-pilot/deploy/ssm-run-command.sh');
+    box.commit('new-main');
+    git(box.repo, 'push', '-q', 'origin', 'main');
+    const result = runRemoteCheckout(box, remote, before);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('EC2 checkout has tracked changes');
+    expect(readFileSync(edited, 'utf8')).toBe('another session\n');
+    expect(git(remote, 'rev-parse', 'HEAD')).toBe(before);
+  });
+
+  it.each(['untracked', 'ignored'])('refuses an %s checkout collision without overwriting it', (kind) => {
+    const box = sandbox();
+    const remote = join(box.root, 'remote', 'zero');
+    mkdirSync(join(box.root, 'remote'));
+    git(box.root, 'clone', '-q', box.origin, remote);
+    const before = git(remote, 'rev-parse', 'HEAD');
+    const collision = join(remote, 'new-main.txt');
+    if (kind === 'ignored') writeFileSync(join(remote, '.git/info/exclude'), 'new-main.txt\n');
+    writeFileSync(collision, 'another session\n');
+    box.commit('new-main');
+    git(box.repo, 'push', '-q', 'origin', 'main');
+    const result = runRemoteCheckout(box, remote, before);
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(collision, 'utf8')).toBe('another session\n');
+    expect(git(remote, 'rev-parse', 'HEAD')).toBe(before);
+  });
+
+  it('updates a clean checkout while preserving unrelated untracked files', () => {
+    const box = sandbox();
+    const remote = join(box.root, 'remote', 'zero');
+    mkdirSync(join(box.root, 'remote'));
+    git(box.root, 'clone', '-q', box.origin, remote);
+    const before = git(remote, 'rev-parse', 'HEAD');
+    const unrelated = join(remote, 'unrelated.local');
+    writeFileSync(unrelated, 'another session\n');
+    box.commit('new-main');
+    git(box.repo, 'push', '-q', 'origin', 'main');
+    const result = runRemoteCheckout(box, remote, before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(unrelated, 'utf8')).toBe('another session\n');
+    expect(git(remote, 'rev-parse', 'HEAD')).toBe(git(box.repo, 'rev-parse', 'HEAD'));
+  });
+
+  it('refuses to initialize a nonempty non-repository directory', () => {
+    const box = sandbox();
+    const remote = join(box.root, 'remote', 'zero');
+    mkdirSync(remote, { recursive: true });
+    writeFileSync(join(remote, 'unrelated.local'), 'another session\n');
+    const result = runRemoteCheckout(box, remote);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not an empty checkout');
+    expect(readFileSync(join(remote, 'unrelated.local'), 'utf8')).toBe('another session\n');
+    expect(existsSync(join(remote, '.git'))).toBe(false);
+  });
 
   it('stops before upload when local main is behind origin', () => {
     const box = sandbox();
