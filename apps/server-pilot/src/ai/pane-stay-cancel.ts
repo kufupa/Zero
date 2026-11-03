@@ -298,6 +298,9 @@ async function runPaneStayCancel(
   );
   if (!resolved.ok) return refused('refused_unknown_transport');
   const target = resolved.target;
+  // This legacy path has no durable target hold. Do not open the cancel dialog
+  // or dispatch against HRCEN until it can respect other uncertain HMS writes.
+  if (target.propertyCode === 'HRCEN') return refused('refused_legacy_cancel_unavailable');
   // The lock key is the session hotel. A caller-supplied property never selects it.
   const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return refused('refused_lock_unavailable');

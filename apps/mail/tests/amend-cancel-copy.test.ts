@@ -99,6 +99,12 @@ describe('cancellation charge copy', () => {
 });
 
 describe('cancel outcome copy', () => {
+  it('a held Cloud cancel explains the earlier-write check before any change', () => {
+    expect(cancelOutcomeNote('refused_legacy_cancel_unavailable', CONFIRMATION)).toBe(
+      `Nava cannot cancel ${CONFIRMATION} yet. Check any earlier HMS write before changing the booking.`,
+    );
+  });
+
   it('a real guest refused by the lab guard gets the test-only line', () => {
     expect(cancelOutcomeNote('refused_not_lab', CONFIRMATION)).toBe(AMEND_CANCEL_COPY.testOnly);
   });
@@ -197,6 +203,13 @@ describe('amend preview and commit views', () => {
     expect(viewAfterAmendCommit(amendRun({ outcome: 'refused_payment_unknown' }), CONFIRMATION)).toEqual({
       kind: 'idle',
       note: AMEND_SAVE_COPY.handleInHms,
+    });
+  });
+
+  it('a blocked legacy Cloud commit gives staff the manual path', () => {
+    expect(viewAfterAmendCommit(amendRun({ outcome: 'refused_legacy_amend_unavailable' }), CONFIRMATION)).toEqual({
+      kind: 'idle',
+      note: `Nava cannot change ${CONFIRMATION} yet. Check any earlier HMS write before changing the booking.`,
     });
   });
 });

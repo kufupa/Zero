@@ -29,7 +29,7 @@ import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
-const owner = 'user-ropperman:transport-centurion';
+const owner = 'user-ropperman:transport-davinci';
 
 // Replaces the cancel CLI process for the real defaultSpawn. Null keeps the real execFile.
 const cliFake = vi.hoisted(() => ({
@@ -65,7 +65,7 @@ function digestOf(input: { confirmation: string; arrival: string }): string {
     .digest('hex');
 }
 
-function mailboxCallerAs(userId: string) {
+function mailboxCallerAs(userId: string, transportId = 'transport-davinci') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -74,7 +74,7 @@ function mailboxCallerAs(userId: string) {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-centurion',
+    activeTransportId: transportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -403,7 +403,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: null,
       allowRealGuest: false,
-      target: CENTURION_HMS_READ_TARGET,
+      target: DAVINCI_HMS_READ_TARGET,
     });
   });
 
@@ -412,6 +412,18 @@ describe('pane stay cancel', () => {
     guaranteeType: 'Non-Guaranteed Individual',
     depositReceived: '0',
   };
+
+  it('holds both mounted HRCEN cancel actions before any browser spawn', async () => {
+    const calls = enableCancel();
+    const caller = mailboxCallerAs('user-held', 'transport-centurion');
+    await expect(caller.paneStayCancel.previewCancel(stay)).resolves.toMatchObject({
+      outcome: 'refused_legacy_cancel_unavailable', previewDigest: null,
+    });
+    await expect(caller.paneStayCancel.commitCancel({
+      ...stay, reason: 'Duplicate Booking', previewDigest: digestOf(stay),
+    })).resolves.toMatchObject({ outcome: 'refused_legacy_cancel_unavailable' });
+    expect(calls).toEqual([]);
+  });
 
   it('paid folio at commit refuses before spawn, unpaid proceeds, and preview does not call folio', async () => {
     const folioCalls: string[] = [];
@@ -478,7 +490,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: 'Duplicate Booking',
       allowRealGuest: false,
-      target: CENTURION_HMS_READ_TARGET,
+      target: DAVINCI_HMS_READ_TARGET,
     });
     expect(result).toMatchObject({
       outcome: 'cancelled',
@@ -537,7 +549,7 @@ describe('pane stay cancel', () => {
     await expect(
       commitCancel({
         ...stay,
-        owner: 'user-other:transport-centurion',
+        owner: 'user-other:transport-davinci',
         reason: 'Duplicate Booking',
         previewDigest: digest,
       }),
@@ -1051,7 +1063,7 @@ describe('pane cancel modes', () => {
     const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-penalty-'));
     try {
       await writeFile(join(dir, 'penalty.png'), Buffer.from('penalty-png'));
-      const fresh = 'user-penalty-shot:transport-centurion';
+      const fresh = 'user-penalty-shot:transport-davinci';
       enableCancel({
         preview: {
           outcome: 'refused_penalty',
@@ -1075,7 +1087,7 @@ describe('pane cancel modes', () => {
 
   it('a penalty dialog at preview refuses the preview, so no commit grant is issued', async () => {
     // A fresh owner: grants from earlier tests for this stay must not satisfy this commit.
-    const fresh = 'user-penalty-preview:transport-centurion';
+    const fresh = 'user-penalty-preview:transport-davinci';
     const calls = enableCancel({ preview: { outcome: 'refused_penalty', penaltyText: CHARGE } });
     await expect(previewCancel({ ...stay, owner: fresh })).resolves.toMatchObject({
       outcome: 'refused_penalty',
@@ -1200,12 +1212,12 @@ describe('pane stay cancel HMS target', () => {
     expect(calls[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
   });
 
-  it('a Centurion transport cancel gets the HRCEN target before spawn', async () => {
+  it('a Centurion transport cancel is held before spawn', async () => {
     const calls = enableCancel();
     await expect(previewCancel({ ...stay, owner, transportId: 'transport-centurion' })).resolves.toMatchObject({
-      outcome: 'preview_ok',
+      outcome: 'refused_legacy_cancel_unavailable',
     });
-    expect(calls[0]?.target).toEqual(CENTURION_HMS_READ_TARGET);
+    expect(calls).toEqual([]);
   });
 
   it('an unknown transport is refused before any spawn', async () => {
