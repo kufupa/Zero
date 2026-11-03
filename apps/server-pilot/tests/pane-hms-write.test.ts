@@ -6,7 +6,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
-import { aiWorkflowRun, attachment } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport } from '../src/db/schema/mail.js';
 import { workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
 import {
   approveHmsWrite,
@@ -86,6 +86,8 @@ const amendCliRules = (await import('../tooling/playwright-quote/amend-stay-rule
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
+const DAVINCI_TRANSPORT_ID = 'transport-davinci';
+const DAVINCI_TRANSPORT_EMAIL = 'davinci@legacyhotels.co.za';
 const USER = 'user-ropperman';
 const CONFIRMATION = '57291630-1';
 const ARRIVAL = '2027-09-14';
@@ -274,19 +276,25 @@ afterEach(async () => {
 
 async function seedWriteItem(
   db: DB,
-  opts: { n?: number; state: Record<string, unknown> },
+  opts: { n?: number; state: Record<string, unknown>; transportId?: string },
 ): Promise<string> {
   const n = opts.n ?? 1;
+  const transportId = opts.transportId ?? TRANSPORT_ID;
+  const transportEmail = transportId === DAVINCI_TRANSPORT_ID ? DAVINCI_TRANSPORT_EMAIL : TRANSPORT_EMAIL;
+  if (transportId === DAVINCI_TRANSPORT_ID) {
+    await db.insert(mailboxTransport).values({ id: transportId, email: transportEmail,
+      ownerHeaderValue: transportEmail, mailboxType: 'personal', sendFromConfig: { aliases: [] } }).onConflictDoNothing();
+  }
   await seedInboxThread(db, {
     threadId: `thread-${n}`,
-    transportId: TRANSPORT_ID,
-    transportEmail: TRANSPORT_EMAIL,
+    transportId,
+    transportEmail,
     messageId: `msg-${n}`,
   });
   const [item] = await db
     .insert(workItem)
     .values({
-      transportId: TRANSPORT_ID,
+      transportId,
       threadId: `thread-${n}`,
       sourceMessageId: `msg-${n}`,
       kind: 'quote',
@@ -316,8 +324,8 @@ async function seedPdf(
   });
 }
 
-function approve(db: DB, workItemId: string) {
-  return approveHmsWrite({ db, transportId: TRANSPORT_ID, actorUserId: USER, workItemId });
+function approve(db: DB, workItemId: string, transportId = TRANSPORT_ID) {
+  return approveHmsWrite({ db, transportId, actorUserId: USER, workItemId });
 }
 
 async function claimWrite(db: DB): Promise<{ runId: string; fence: AiRunFence }> {
@@ -326,10 +334,10 @@ async function claimWrite(db: DB): Promise<{ runId: string; fence: AiRunFence }>
   return { runId: run.id, fence: toAiRunFence(run) as AiRunFence };
 }
 
-async function prepare(db: DB, workItemId: string): Promise<void> {
+async function prepare(db: DB, workItemId: string, transportId = TRANSPORT_ID): Promise<void> {
   const prepared = await prepareHmsWriteSnapshot({
     db,
-    transportId: TRANSPORT_ID,
+    transportId,
     workItemId,
     confirmation: CONFIRMATION,
     arrival: ARRIVAL,
@@ -716,9 +724,9 @@ describe('pane HMS write (U26)', () => {
 
   it('a cancellation penalty after OK ends unknown, and approval stays blocked until the booking is read back', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       onCancel = async () => {
         const runDir = await runDirWithPngs(['before.png', 'after.png']);
         return {
@@ -739,7 +747,7 @@ describe('pane HMS write (U26)', () => {
         reason: 'cancel_penalty_pending',
       });
       expect(cancelCalls).toHaveLength(1);
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 
@@ -765,11 +773,24 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  it('a cancel that is confirmed as cancelled succeeds and records its evidence', async () => {
+  it('refuses the queued unfenced legacy HRCEN cancellation before spawning', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
       await prepare(db, workItemId);
       await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'ended', failureClass: 'NEEDS_CHECK', reason: 'refused_legacy_cancel_unavailable',
+      });
+      expect(cancelCalls).toEqual([]);
+    });
+  });
+
+  it('a cancel that is confirmed as cancelled succeeds and records its evidence', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toMatchObject({
         status: 'succeeded',
@@ -787,7 +808,7 @@ describe('pane HMS write (U26)', () => {
           allowRealGuest: false,
           // The read that matched the approval: the cancel CLI compares its own read of the record with it before OK.
           expectStay: cancelExpectStay(LAB_STAY),
-          target: CENTURION_HMS_READ_TARGET,
+          target: DAVINCI_HMS_READ_TARGET,
         },
       ]);
       expect(cancelCalls[0]?.expectStay).not.toHaveProperty('depositReceived');
@@ -797,9 +818,9 @@ describe('pane HMS write (U26)', () => {
 
   it('a cancel whose record changed after the pre-Save read is refused by the CLI with no OK, and ends in needs-check', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       onCancel = async () => ({
         outcome: 'refused_stay_changed',
         statusBefore: 'Reserved',
@@ -894,30 +915,36 @@ describe('pane HMS write (U26)', () => {
     });
   });
 
-  it('dispatches a digest-bound amend only after approval and records screenshots', async () => {
+  it('refuses the unfenced legacy Centurion amend even after approval', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
       await prepare(db, workItemId);
       await approve(db, workItemId);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
-        status: 'succeeded',
-        action: 'amend',
-        outcome: 'amended',
-        evidence: ['before.png', 'after.png'],
+        status: 'ended',
+        failureClass: 'NEEDS_CHECK',
+        reason: 'refused_legacy_amend_unavailable',
       });
-      expect(amendCalls).toEqual([
-        {
-          confirmation: CONFIRMATION,
-          currentArrival: AMEND_FORM.arrival,
-          expectedLastName: 'Labtest',
-          fields: AMEND_FIELDS,
-          previewDigest: AMEND_FORM.previewDigest,
-          target: CENTURION_HMS_READ_TARGET,
-        },
-      ]);
+      expect(amendCalls).toEqual([]);
       expect(attachCalls).toHaveLength(0);
       expect(cancelCalls).toHaveLength(0);
+    });
+  });
+
+  it('keeps the existing approved Da Vinci amend path', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: AMEND_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toMatchObject({
+        status: 'succeeded', action: 'amend', outcome: 'amended', evidence: ['before.png', 'after.png'],
+      });
+      expect(amendCalls).toEqual([{
+        confirmation: CONFIRMATION, currentArrival: AMEND_FORM.arrival, expectedLastName: 'Labtest',
+        fields: AMEND_FIELDS, previewDigest: AMEND_FORM.previewDigest, target: DAVINCI_HMS_READ_TARGET,
+      }]);
     });
   });
 

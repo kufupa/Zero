@@ -651,6 +651,9 @@ async function runPaneAmend(
   );
   if (!resolved.ok) return refusedAmend('refused_unknown_transport');
   const target = resolved.target;
+  // Even the legacy preview edits the native form without a request fence.
+  // Close both entry points until the approved Cloud path owns dispatch and recovery.
+  if (target.propertyCode === 'HRCEN') return refusedAmend('refused_legacy_amend_unavailable');
   const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return refusedAmend('refused_lock_unavailable');
   const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
@@ -761,6 +764,11 @@ async function saveCancel(
   approvedStay: PaneStayFields,
   target: HmsReadTarget,
 ): Promise<SaveOutcome> {
+  // The queued legacy cancel has a grant but does not own the durable target
+  // hold shared by Cloud writes, so it cannot safely change HRCEN yet.
+  if (target.propertyCode === 'HRCEN') {
+    return { outcome: 'refused_legacy_cancel_unavailable', clickedOk: false, uploadSent: false, screenshots: [] };
+  }
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
   const request: PaneStayCancelSpawnInput = {
     mode: 'commit',
@@ -786,6 +794,8 @@ const amendRefusal = (outcome: string): SaveOutcome => ({ outcome, clickedOk: fa
 async function saveAmend(form: AmendForm, stay: PaneStayFields, target: HmsReadTarget): Promise<SaveOutcome> {
   if (stay.status !== 'Reserved' && stay.status !== 'Confirmed') return amendRefusal('refused_status_unsupported');
   if (classifyAmendPayment(stay) !== 'unpaid') return amendRefusal('refused_payment_unknown');
+  // The queued approval path must not bypass the same Cloud Save hold.
+  if (target.propertyCode === 'HRCEN') return amendRefusal('refused_legacy_amend_unavailable');
   const fields = Object.fromEntries(AMEND_FIELDS.filter((field) => form.fields[field] !== undefined &&
     String(form.fields[field]) !== String(stay[field] ?? '')).map((field) => [field, form.fields[field]])) as AmendRequest;
   if (!Object.keys(fields).length) return amendRefusal('no_changes');

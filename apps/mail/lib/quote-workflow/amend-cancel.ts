@@ -82,6 +82,8 @@ export function cancelOutcomeNote(
   switch (outcome) {
     case 'refused_flag_off':
       return cancelSwitchedOffNote(confirmation);
+    case 'refused_legacy_cancel_unavailable':
+      return `Nava cannot cancel ${confirmation} yet. Check any earlier HMS write before changing the booking.`;
     case 'refused_penalty':
       return cancellationChargeCopy(penaltyText);
     case 'refused_not_lab':
@@ -359,6 +361,7 @@ export type AmendView =
   | { kind: 'done'; run: AmendRun; text: string };
 
 function amendOutcomeNote(outcome: string, confirmation: string): string {
+  if (outcome === 'refused_legacy_amend_unavailable') return `Nava cannot change ${confirmation} yet. Check any earlier HMS write before changing the booking.`;
   if (outcome === 'refused_flag_off') return `${AMEND_SAVE_COPY.switchedOff} Open ${confirmation} in HMS and save the change there.`;
   if (outcome === 'refused_not_lab') return AMEND_SAVE_COPY.testOnly;
   if (outcome === 'refused_payment_unknown') return AMEND_SAVE_COPY.handleInHms;

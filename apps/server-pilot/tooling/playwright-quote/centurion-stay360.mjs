@@ -1,10 +1,12 @@
 // Centurion-only browser bootstrap for UI tools that start at Stay 360.
 // One Chromium context is owned for the full callback; callers must not retain its page.
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { login } from './session-reuse.mjs';
 import { installStay360NotesHandler, notesHandlerFailure } from './stay360-notes.mjs';
 
+const execFileAsync = promisify(execFile);
 const secretId = 'nava-zero/server-pilot/infor-hms-read';
 const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const tenant = 'THECENTURION_PRD';
@@ -47,10 +49,10 @@ function validateCenturionSecret(secret) {
   return secret;
 }
 
-function readCenturionSecret() {
+async function readCenturionSecret() {
   let secret;
   try {
-    secret = JSON.parse(execFileSync('aws', [
+    const { stdout } = await execFileAsync('aws', [
       'secretsmanager', 'get-secret-value', '--secret-id', secretId,
       '--region', process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'af-south-1',
       '--query', 'SecretString', '--output', 'text',
@@ -58,8 +60,8 @@ function readCenturionSecret() {
       encoding: 'utf8',
       timeout: 9_000,
       maxBuffer: 1_000_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim());
+    });
+    secret = JSON.parse(stdout.trim());
   } catch {
     throw new Error('HMS_CREDENTIALS_UNAVAILABLE');
   }
@@ -99,8 +101,14 @@ export function centurionContextOptions(blockServiceWorkers = false) {
   return blockServiceWorkers ? { viewport: { ...viewport }, serviceWorkers: 'block' } : { viewport: { ...viewport } };
 }
 
+/** Let a caller install context routes before the first page or network request. */
+export async function newPreparedCenturionPage(context, prepareContext) {
+  await prepareContext?.(context);
+  return context.newPage();
+}
+
 export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal,
-  blockServiceWorkers = false } = {}) {
+  blockServiceWorkers = false, prepareContext } = {}) {
   const contextOptions = centurionContextOptions(blockServiceWorkers);
   let browser;
   let context;
@@ -122,7 +130,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
 
   try {
     signal?.throwIfAborted();
-    const secret = readCenturionSecret();
+    const secret = await readCenturionSecret();
     signal?.throwIfAborted();
 
     phase = 'browser_launch';
@@ -135,7 +143,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     context = await browser.newContext(contextOptions);
     signal?.throwIfAborted();
 
-    page = await context.newPage();
+    page = await newPreparedCenturionPage(context, prepareContext);
     signal?.throwIfAborted();
 
     phase = 'login';

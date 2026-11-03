@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { centurionContextOptions } from './centurion-stay360.mjs';
+import { centurionContextOptions, newPreparedCenturionPage, withCenturionStay360Page } from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 
@@ -17,6 +20,41 @@ test('service-worker blocking is explicit and the default context is unchanged',
   });
   for (const value of [null, 'block', 1, {}]) {
     assert.throws(() => centurionContextOptions(value), /SERVICE_WORKER_OPTION_INVALID/);
+  }
+});
+
+test('the optional context preparation finishes before page creation and failures stop the page', async () => {
+  const seen = [];
+  const context = { newPage: async () => { seen.push('page'); return 'page'; } };
+  const page = await newPreparedCenturionPage(context, async (value) => {
+    assert.equal(value, context); seen.push('guard');
+  });
+  assert.equal(page, 'page');
+  assert.deepEqual(seen, ['guard', 'page']);
+  await newPreparedCenturionPage(context);
+  assert.deepEqual(seen, ['guard', 'page', 'page']);
+  await assert.rejects(newPreparedCenturionPage(context, async () => { throw new Error('guard failed'); }), /guard failed/);
+  assert.deepEqual(seen, ['guard', 'page', 'page']);
+});
+
+test('credential lookup does not block unrelated requests', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hms-secret-test-'));
+  const previousPath = process.env.PATH;
+  const credentials = { loginUrl: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD',
+    username: 'synthetic', password: 'synthetic', expectedTenant: 'THECENTURION_PRD',
+    expectedPropertyCode: 'HRCEN', expectedPropertyName: 'test' };
+  await writeFile(join(dir, 'aws'), `#!/usr/bin/env node\nsetTimeout(() => console.log(${JSON.stringify(JSON.stringify(credentials))}), 150);\n`, { mode: 0o700 });
+  process.env.PATH = `${dir}:${previousPath}`;
+  let timerFired = false;
+  const timer = setTimeout(() => { timerFired = true; }, 20);
+  try {
+    await assert.rejects(withCenturionStay360Page(() => {}, { beforeLaunch: () => { throw new Error('STOP_BEFORE_BROWSER'); } }), /STOP_BEFORE_BROWSER/);
+    assert.equal(timerFired, true);
+  } finally {
+    clearTimeout(timer);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

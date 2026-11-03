@@ -24,7 +24,7 @@ const stay = {
   lastName: 'Labtest',
   fields: { arrival: '2027-09-15' as const },
 };
-const owner = 'user-ropperman:transport-centurion';
+const owner = 'user-ropperman:transport-davinci';
 const DIGEST = 'ab'.repeat(32);
 
 function passingLock(): PaneStayLock {
@@ -103,7 +103,7 @@ function mailboxCaller() {
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: 'user-ropperman', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
-    activeTransportId: 'transport-centurion',
+    activeTransportId: 'transport-davinci',
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -233,6 +233,19 @@ describe('pane stay amend', () => {
       previewDigest: null,
     });
     expect(calls.map((call) => call.mode)).toEqual(['preview']);
+  });
+
+  it('does not run the unfenced legacy preview or commit for Centurion', async () => {
+    vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'lab');
+    const calls = enableAmend();
+    const centurion = 'user-ropperman:transport-centurion';
+    await expect(previewAmend({ ...stay, owner: centurion })).resolves.toMatchObject({
+      outcome: 'refused_legacy_amend_unavailable',
+    });
+    await expect(commitAmend({ ...stay, owner: centurion, previewDigest: DIGEST })).resolves.toMatchObject({
+      outcome: 'refused_legacy_amend_unavailable',
+    });
+    expect(calls).toEqual([]);
   });
 
   it('the preview route refuses a non-Labtest last name when mode is lab', async () => {
