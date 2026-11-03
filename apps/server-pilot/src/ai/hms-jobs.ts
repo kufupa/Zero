@@ -291,6 +291,7 @@ export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed'
 export type HmsJobView = {
   runId: string;
   sourceMessageId: string;
+  sourceHash?: string | null;
   request: HmsJobRequest | null;
   prefetch: boolean;
   status: HmsJobStatus;
@@ -664,6 +665,20 @@ async function latestInboundMessageId(
   return trigger?.id ?? null;
 }
 
+/** A selected pane message must still be an inbound in this exact mailbox and thread. */
+export async function isSelectedHmsInboundMessage(
+  input: { transportId: string; threadId: string; messageId: string; sourceHash?: string },
+  db: DB = getDb(),
+): Promise<boolean> {
+  if (input.sourceHash !== undefined && !/^[a-f0-9]{64}$/.test(input.sourceHash)) return false;
+  const [selected] = await db.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+    htmlBody: message.htmlBody }).from(message).where(and(
+    eq(message.id, input.messageId), eq(message.transportId, input.transportId),
+    eq(message.threadId, input.threadId), eq(message.direction, 'inbound'),
+  )).limit(1);
+  return Boolean(selected && (input.sourceHash === undefined || staffQuoteSourceHash(selected) === input.sourceHash));
+}
+
 type HmsJobEnqueueInput = {
   transportId: string;
   threadId: string;
@@ -952,6 +967,8 @@ export async function queueUserHmsJob(
     transportId: string;
     userId: string;
     threadId: string;
+    messageId?: string;
+    sourceHash?: string;
     request: HmsJobRequest;
     idempotencyKey?: string;
     target?: HmsReadTarget;
@@ -960,23 +977,37 @@ export async function queueUserHmsJob(
   },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
-  const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
+  if (input.sourceHash !== undefined && (!input.messageId || !/^[a-f0-9]{64}$/.test(input.sourceHash))) return null;
+  const triggerMessageId = input.messageId
+    ? (await isSelectedHmsInboundMessage({ transportId: input.transportId, threadId: input.threadId,
+        messageId: input.messageId, ...(input.sourceHash ? { sourceHash: input.sourceHash } : {}) }, db) ? input.messageId : null)
+    : await latestInboundMessageId(db, input.transportId, input.threadId);
   if (!triggerMessageId) return null;
   const target = input.target ?? hmsReadTargetForTransport(input.transportId);
+  // Auto-start keys previously spanned messages. Never reuse another selected email's job.
+  const idempotencyKey = input.idempotencyKey && input.messageId
+    ? `hms-job:selected:${createHash('sha256').update(JSON.stringify([
+        input.idempotencyKey, hmsRequestKey(input.request), input.transportId, input.threadId, input.messageId,
+        input.sourceHash, input.userId, target.propertyCode,
+      ])).digest('hex')}`
+    : input.idempotencyKey ?? `hms-job:user:${randomUUID()}`;
   const { run } = await enqueueHmsJob(
     {
       transportId: input.transportId,
       threadId: input.threadId,
       triggerMessageId,
-      workItemId: await latestWorkItemId(db, input.transportId, input.threadId),
+      workItemId: input.messageId
+        ? (await workItemForMessage(db, input.transportId, input.threadId, input.messageId))?.id ?? null
+        : await latestWorkItemId(db, input.transportId, input.threadId),
       userId: input.userId,
       request: input.request,
       priority: input.devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER,
-      idempotencyKey: input.idempotencyKey ?? `hms-job:user:${randomUUID()}`,
+      idempotencyKey,
       extraMetrics: {
         ...hmsReadAuditMetrics({ actorKind: 'user', actorUserId: input.userId, target }),
         ...hmsReadTargetJobMetrics(target),
         ...input.extraMetrics,
+        ...(input.sourceHash ? { selectedSourceHash: input.sourceHash } : {}),
         ...(input.devEval ? { devEval: true } : {}),
       },
     },
@@ -4226,6 +4257,7 @@ async function toView(
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
+    sourceHash: typeof run.metrics?.selectedSourceHash === 'string' ? run.metrics.selectedSourceHash : null,
     request: request.success ? request.data : null,
     prefetch: isSystemPreparedPriority(run.priority),
     status,
@@ -4408,7 +4440,7 @@ function staffQuoteRunFreshness(now: Date) {
  */
 export async function readHmsJobView(
   input:
-    | { transportId: string; runId: string; userId?: string; staffQuoteOwnerId?: string }
+    | { transportId: string; runId: string; threadId?: string; messageId?: string; sourceHash?: string; selectedActorId?: string; userId?: string; staffQuoteOwnerId?: string }
     | {
         transportId: string;
         userId: string;
@@ -4419,6 +4451,9 @@ export async function readHmsJobView(
     | {
         transportId: string;
         threadId: string;
+        messageId?: string;
+        sourceHash?: string;
+        selectedActorId?: string;
         kind: 'find' | 'search_guest' | 'party' | 'availability';
         confirmation?: string;
         /** A guest search's surname, compared case- and space-insensitively: one thread can carry two guests' searches. */
@@ -4430,13 +4465,14 @@ export async function readHmsJobView(
         /** Narrows a party search to the company or agency field that is resuming it. */
         partyKind?: PanePartyKind;
         /** A stay's dates pick its availability snapshot; its rooms tell apart two stays on the same dates. */
-        arrival?: string;
+        arrival?: string | null;
         /** Null explicitly matches a guest-search request with no departure constraint. */
         departure?: string | null;
         rooms?: AvailabilityRequest['rooms'];
       },
   db: DB = getDb(),
 ): Promise<HmsJobView | null> {
+  if ('runId' in input && Boolean(input.threadId) !== Boolean(input.messageId)) return null;
   const quoteInput = 'kind' in input && input.kind === 'staff_quote' ? input : null;
   const staffQuoteByInput = quoteInput !== null;
   const quoteCopies = quoteInput
@@ -4446,6 +4482,12 @@ export async function readHmsJobView(
     ? getPropertyTransportIds(quoteCopies.propertyCode)
     : [];
   const staffQuoteByOwner = 'staffQuoteOwnerId' in input && Boolean(input.staffQuoteOwnerId);
+  const selectedSource = 'threadId' in input && 'messageId' in input && input.threadId && input.messageId
+    ? { threadId: input.threadId, messageId: input.messageId } : null;
+  const selectedActorId = 'selectedActorId' in input ? input.selectedActorId : undefined;
+  const sourceHash = 'sourceHash' in input ? input.sourceHash : undefined;
+  if (selectedSource && !selectedActorId) return null;
+  if (sourceHash !== undefined && (!selectedSource || !/^[a-f0-9]{64}$/.test(sourceHash))) return null;
   const scope = and(
     or(
       eq(aiWorkflowRun.transportId, input.transportId),
@@ -4456,6 +4498,16 @@ export async function readHmsJobView(
     ),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    ...(selectedSource ? [
+      eq(aiWorkflowRun.transportId, input.transportId),
+      eq(aiWorkflowRun.threadId, selectedSource.threadId),
+      eq(aiWorkflowRun.triggerMessageId, selectedSource.messageId),
+      or(
+        sql`${aiWorkflowRun.metrics}->>'userId' = ${selectedActorId}`,
+        and(lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH), sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`),
+      ),
+      ...(sourceHash ? [sql`${aiWorkflowRun.metrics}->>'selectedSourceHash' = ${sourceHash}`] : []),
+    ] : []),
     ...('userId' in input && input.userId && !staffQuoteByInput && !staffQuoteByOwner
       ? [sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`]
       : []),
@@ -4549,9 +4601,9 @@ export async function readHmsJobView(
                     ),
                   ]
                 : []),
-              ...(input.arrival
-                ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]
-                : []),
+              ...(input.arrival === undefined ? [] : input.arrival === null
+                ? [sql`${aiWorkflowRun.readRequest}->>'arrival' IS NULL`]
+                : [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]),
               ...(input.departure === undefined
                 ? []
                 : input.departure === null

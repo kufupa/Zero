@@ -118,7 +118,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
         </time>
       </section>
       <div
-        class="mx-3 mt-2 shrink-0"
+        class="mx-3 mt-2 flex shrink-0 flex-col gap-1.5"
       >
         <section
           aria-label="Nava reads this as: Amendment"
@@ -234,13 +234,17 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
             <div
               class="flex flex-wrap items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2"
             >
-              <button
-                aria-expanded="false"
-                class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
-                type="button"
+              <div
+                class="flex flex-wrap items-center gap-2"
               >
-                Edit
-              </button>
+                <button
+                  aria-expanded="false"
+                  class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
+                  type="button"
+                >
+                  Edit
+                </button>
+              </div>
               <p
                 class="text-[11.5px] text-[#64748b]"
               >
