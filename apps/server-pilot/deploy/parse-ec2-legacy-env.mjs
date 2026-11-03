@@ -31,6 +31,29 @@ function quote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function validateReleaseControl(key, value) {
+  if (value === undefined || value === '') return;
+  const groups = [
+    [['PANE_WRITE_CREATE', 'PANE_WRITE_AMEND', 'PANE_WRITE_AMEND_UNPAID', 'PANE_WRITE_AMEND_PAID',
+      'PANE_WRITE_CANCEL_UNPAID', 'PANE_WRITE_CANCEL_PAID', 'PANE_WRITE_ATTACH'], ['off', 'lab', 'on']],
+    [['PANE_HMS_LAB_CREATE_WORKER', 'PANE_HMS_LAB_ATTACH_WORKER', 'PANE_HMS_LAB_AMEND_WORKER',
+      'PANE_CLOUD_CREATE_DISPATCH', 'HMS_JOB_QUEUE', 'HMS_AVAILABILITY_PREFETCH'], ['off', 'on']],
+    [['HMS_PREFETCH_ENABLED', 'HMS_LANE_PAUSED', 'PARTY_MATCH_V2'], ['true', 'false', '1', '0']],
+    [['HMS_QUOTE_PREPARE'], ['true', 'false', '1', '0', 'on', 'off']],
+  ];
+  for (const [keys, allowed] of groups) {
+    if (keys.includes(key) && !allowed.includes(value)) throw new Error('invalid');
+  }
+  if (['HMS_PREFETCH_PER_HOUR', 'HMS_GUEST_PREFETCH_PER_HOUR', 'HMS_AVAILABILITY_PER_HOUR',
+    'HMS_QUOTE_PREPARE_PER_HOUR'].includes(key) && !/^\d{1,15}$/.test(value)) throw new Error('invalid');
+  const patterns = {
+    HMS_EXPECTED_TENANT: /^[A-Z][A-Z0-9_]+$/,
+    HMS_EXPECTED_PROPERTY_CODE: /^[A-Z][A-Z0-9]+$/,
+    HMS_EXPECTED_TRANSPORT_ID: /^transport-[a-z0-9]+(?:-[a-z0-9]+)*$/,
+  };
+  if (Object.hasOwn(patterns, key) && !patterns[key].test(value)) throw new Error('invalid');
+}
+
 try {
   const [legacyEnvPath, remoteCommonPath, ...allowlist] = process.argv.slice(2);
   if (
@@ -54,6 +77,7 @@ try {
   const lines = ["NODE_ENV='production'"];
   for (const key of allowlist) {
     const value = values.get(key);
+    validateReleaseControl(key, value);
     if (key === 'PANE_BRAIN' && value && !['agent', 'classifier'].includes(value)) {
       throw new Error('invalid');
     }
