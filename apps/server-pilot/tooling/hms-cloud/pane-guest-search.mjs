@@ -60,7 +60,8 @@ export function guestLookupMayRequest({ method, url, postData, contentType }) {
     if (!body || [...query.keys()].some((key) => !rule.menuQuery || !['function_class', 'user_function_name'].includes(key)) ||
         rule.fields.some((key) => !body.has(key)) ||
         [...body.keys()].some((key) => !rule.fields.includes(key) && !(rule.search && searchField.test(key)))) return false;
-    if (rule.menuQuery && (query.size !== 2 || query.get('user_function_name') !== rule.user || !query.get('function_class'))) return false;
+    if (rule.menuQuery && (query.size !== 2 || query.get('user_function_name') !== rule.user ||
+        query.get('function_class') !== 'WEBL' || body.get('function_class') !== 'WEBL')) return false;
     if (decodedPath === '/web/base/login' && (body.get('tenant') !== 'THECENTURION_PRD' ||
         !body.get('csrftckt') || !body.get('userid') || !body.get('password') ||
         !['', 'false', '0'].includes(body.get('resetpassword').toLowerCase()))) return false;

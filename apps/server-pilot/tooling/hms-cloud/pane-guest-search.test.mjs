@@ -16,8 +16,10 @@ const hdr = 'SYSTEM_FUNCTION_NAME=OSRESV&USER_FUNCTION_NAME=OSRESV&CURRENT_TAB_N
 test('lookup guard admits only the observed login and read request shapes', () => {
   for (const input of [
     request('/web/base/login', 'SYSTEM_FUNCTION_NAME=LOGIN&USER_FUNCTION_NAME=LOGIN&userid=x&password=x&csrftckt=x&resetpassword=&tenant=THECENTURION_PRD'),
-    request('/web/base/OSRESV?FUNCTION_CLASS=MAIN&USER_FUNCTION_NAME=OSRESV',
-      'SYSTEM_FUNCTION_NAME=OSRESV&USER_FUNCTION_NAME=OSRESV&CURRENT_TAB_NAME=&function_class=x&menu_module_key=&removescreenflows='),
+    request('/web/base/OSRESV?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESV',
+      'SYSTEM_FUNCTION_NAME=OSRESV&USER_FUNCTION_NAME=OSRESV&CURRENT_TAB_NAME=&function_class=WEBL&menu_module_key=&removescreenflows='),
+    request('/web/base/OSRESS?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESS',
+      'SYSTEM_FUNCTION_NAME=OSRESS&USER_FUNCTION_NAME=OSRESS&CURRENT_TAB_NAME=&function_class=WEBL&menu_module_key=&removescreenflows='),
     request('/web/base/OSRESV.HDR', hdr),
     request('/web/base/OSRESS.search', 'SYSTEM_FUNCTION_NAME=OSRESS&USER_FUNCTION_NAME=OSRESV&CURRENT_TAB_NAME=LST&' +
       'maddon_filter_value_1=x&component_info_type=&dataspy_id=&externalconfirmation=&grid_id=&grid_name='),
@@ -37,6 +39,10 @@ test('lookup guard denies unknown POSTs, upload, altered shapes and mutation act
     request('/web/base/OSRESV.HDR', `${hdr}&CURRENT_TAB_NAME=HDR`),
     request('/web/base/OSRESV.HDR', hdr.replace('&account=', '')),
     request('/web/base/OSRESV.HDR', hdr.replace('CURRENT_TAB_NAME=HDR', 'CURRENT_TAB_NAME=LST')),
+    request('/web/base/OSRESV?FUNCTION_CLASS=MAIN&USER_FUNCTION_NAME=OSRESV',
+      'SYSTEM_FUNCTION_NAME=OSRESV&USER_FUNCTION_NAME=OSRESV&CURRENT_TAB_NAME=&function_class=WEBL&menu_module_key=&removescreenflows='),
+    request('/web/base/OSRESS?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESS',
+      'SYSTEM_FUNCTION_NAME=OSRESS&USER_FUNCTION_NAME=OSRESS&CURRENT_TAB_NAME=&function_class=MAIN&menu_module_key=&removescreenflows='),
     request('/web/base/login', 'SYSTEM_FUNCTION_NAME=LOGIN&USER_FUNCTION_NAME=LOGIN&userid=x&password=x&csrftckt=x&resetpassword=&tenant=OTHER'),
     request('/web/base/login', 'SYSTEM_FUNCTION_NAME=LOGIN&USER_FUNCTION_NAME=LOGIN&userid=x&password=x&csrftckt=x&resetpassword=true&tenant=THECENTURION_PRD'),
     { ...request('/web/base/OSRESV.HDR', hdr), contentType: 'application/json' },
