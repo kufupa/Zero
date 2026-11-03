@@ -7,9 +7,8 @@ import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { NavaReadAs } from '@/lib/quote-workflow/workflow-vocabulary';
 import { otaBookingChannel } from '@/lib/quote-workflow/ota-channel';
 import { trpcClient } from '@/providers/query-provider';
+import { useMemo } from 'react';
 import { OtaBookingChannelChip } from './ota-booking-channel-chip';
-
-const HMS_APPROVAL_CLIENT = hmsApprovalFromTrpc(trpcClient);
 
 /**
  * Booking and voucher block: the read-only change or cancellation lookup, approval and review for non-amend work items
@@ -52,6 +51,10 @@ export function BookingVoucherCard({
   amendPropertyResolved?: boolean;
   readOnlyAmend?: AmendReadOnlyContext | null;
 }) {
+  const approvalClient = useMemo(
+    () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId),
+    [transportId, internetMessageId],
+  );
   const amendment = amendmentOf(session);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
@@ -87,10 +90,10 @@ export function BookingVoucherCard({
         />
       )}
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
-      {workItemId && !amendment ? (
+      {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
-          key={workItemId}
-          client={HMS_APPROVAL_CLIENT}
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId])}
+          client={approvalClient}
           workItemId={workItemId}
           writesEnabled={writesEnabled}
           confirmation={null}

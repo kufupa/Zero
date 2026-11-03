@@ -24,14 +24,16 @@ import { unmaskedPii } from './helpers/pii-marks';
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // The pane block binds its write card off the shared tRPC client. Only the hmsApproval routes answer here.
-const paneWrite = vi.hoisted(() => ({ view: null as unknown }));
+const paneWrite = vi.hoisted(() => ({ view: null as unknown, calls: [] as unknown[] }));
 vi.mock('@/providers/query-provider', () => ({
   trpcClient: {
     hmsApproval: {
       writeState: {
-        query: async () => {
-          if (paneWrite.view instanceof Error) throw paneWrite.view;
-          return paneWrite.view;
+        query: async (_input: unknown, options: unknown) => {
+          paneWrite.calls.push(options);
+          const view = await paneWrite.view;
+          if (view instanceof Error) throw view;
+          return view;
         },
       },
       approve: { mutate: async () => ({}) },
@@ -114,7 +116,7 @@ function renderCard(
   );
 }
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); paneWrite.calls = []; });
 
 describe('ApproveCard approval', () => {
   it('disables Go and hides note-based resolution for unavailable filing', async () => {
@@ -428,15 +430,48 @@ describe('BookingVoucherCard write card', () => {
     render(
       <BookingVoucherCard
         session={initialQuoteSession()}
-        internetMessageId={null}
+        internetMessageId="selected@example.test"
         syncCommitted={null}
         syncPending={false}
         workItemId={WORK_ITEM}
+        transportId="mailbox-a"
+        mailboxScope="actor:session:mailbox-a"
         writesEnabled
       />,
     );
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+  });
+
+  it('does not load an approval without the selected email and mailbox session', async () => {
+    paneWrite.view = viewWith({ form: attachForm });
+    const props = { session: initialQuoteSession(), syncCommitted: null, syncPending: false,
+      workItemId: WORK_ITEM, writesEnabled: true };
+    const { rerender } = render(<BookingVoucherCard {...props} internetMessageId={null}
+      transportId="mailbox-a" mailboxScope="actor:session:mailbox-a" />);
+    rerender(<BookingVoucherCard {...props} internetMessageId="selected@example.test"
+      transportId="mailbox-a" mailboxScope={null} />);
+    await act(async () => {});
+    expect(paneWrite.calls).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+  });
+
+  it('discards an old read when the selected email and mailbox change', async () => {
+    let finishOld!: (view: HmsWriteView) => void;
+    paneWrite.view = new Promise<HmsWriteView>((resolve) => { finishOld = resolve; });
+    const props = { session: initialQuoteSession(), syncCommitted: null, syncPending: false,
+      workItemId: WORK_ITEM, writesEnabled: true };
+    const { rerender } = render(<BookingVoucherCard {...props} internetMessageId="old@example.test"
+      transportId="mailbox-a" mailboxScope="actor:session:mailbox-a" />);
+    await waitFor(() => expect(paneWrite.calls).toEqual([{ context: { activeTransportId: 'mailbox-a' } }]));
+    paneWrite.view = viewWith({ form: { ...attachForm, documentName: 'new.pdf' }, before: null });
+    rerender(<BookingVoucherCard {...props} internetMessageId="new@example.test"
+      transportId="mailbox-b" mailboxScope="actor:session:mailbox-b" />);
+    expect(await screen.findByText('new.pdf')).toBeTruthy();
+    expect(paneWrite.calls).toContainEqual({ context: { activeTransportId: 'mailbox-b' } });
+    await act(async () => finishOld(viewWith({ form: { ...attachForm, documentName: 'old.pdf' } })));
+    expect(screen.queryByText('old.pdf')).toBeNull();
+    expect(screen.getByText('new.pdf')).toBeTruthy();
   });
 
   it('marks the confirmation, guest name and file name rows data-pii, and leaves the dates visible', async () => {
@@ -447,10 +482,12 @@ describe('BookingVoucherCard write card', () => {
     const { container } = render(
       <BookingVoucherCard
         session={initialQuoteSession()}
-        internetMessageId={null}
+        internetMessageId="selected@example.test"
         syncCommitted={null}
         syncPending={false}
         workItemId={WORK_ITEM}
+        transportId="mailbox-a"
+        mailboxScope="actor:session:mailbox-a"
         writesEnabled
       />,
     );
@@ -466,10 +503,12 @@ describe('BookingVoucherCard write card', () => {
     const { container } = render(
       <BookingVoucherCard
         session={initialQuoteSession()}
-        internetMessageId={null}
+        internetMessageId="selected@example.test"
         syncCommitted={null}
         syncPending={false}
         workItemId={WORK_ITEM}
+        transportId="mailbox-a"
+        mailboxScope="actor:session:mailbox-a"
         writesEnabled
       />,
     );
@@ -484,10 +523,12 @@ describe('BookingVoucherCard write card', () => {
       const { container } = render(
         <BookingVoucherCard
           session={initialQuoteSession()}
-          internetMessageId={null}
+          internetMessageId="selected@example.test"
           syncCommitted={null}
           syncPending={false}
           workItemId={WORK_ITEM}
+          transportId="mailbox-a"
+          mailboxScope="actor:session:mailbox-a"
           writesEnabled
         />,
       );
@@ -513,10 +554,12 @@ describe('BookingVoucherCard write card', () => {
       const { container } = render(
         <BookingVoucherCard
           session={initialQuoteSession()}
-          internetMessageId={null}
+          internetMessageId="selected@example.test"
           syncCommitted={null}
           syncPending={false}
           workItemId={WORK_ITEM}
+          transportId="mailbox-a"
+          mailboxScope="actor:session:mailbox-a"
           writesEnabled
         />,
       );
@@ -545,10 +588,12 @@ describe('BookingVoucherCard write card', () => {
     render(
       <BookingVoucherCard
         session={initialQuoteSession()}
-        internetMessageId={null}
+        internetMessageId="selected@example.test"
         syncCommitted={null}
         syncPending={false}
         workItemId={WORK_ITEM}
+        transportId="mailbox-a"
+        mailboxScope="actor:session:mailbox-a"
         writesEnabled
       />,
     );
@@ -604,10 +649,12 @@ describe('BookingVoucherCard write card', () => {
       render(
         <BookingVoucherCard
           session={session}
-          internetMessageId={null}
+          internetMessageId="selected@example.test"
           syncCommitted={null}
           syncPending={false}
           workItemId={WORK_ITEM}
+          transportId="mailbox-a"
+          mailboxScope="actor:session:mailbox-a"
           writesEnabled
         />,
       );
@@ -656,23 +703,39 @@ describe('ApproveCard gated off', () => {
 
 describe('hmsApprovalFromTrpc and refusals', () => {
   it('binds all six routes, and is null while any is missing', async () => {
-    expect(hmsApprovalFromTrpc({})).toBeNull();
-    expect(hmsApprovalFromTrpc({ hmsApproval: { writeState: { query: vi.fn() } } })).toBeNull();
+    expect(hmsApprovalFromTrpc({}, 'mailbox-a', '<selected@example.test>')).toBeNull();
+    expect(hmsApprovalFromTrpc({ hmsApproval: { writeState: { query: vi.fn() } } }, 'mailbox-a', '<selected@example.test>')).toBeNull();
 
+    const state = vi.fn(async () => viewWith());
     const approve = vi.fn(async () => APPROVED);
-    const client = hmsApprovalFromTrpc({
+    const review = vi.fn(async () => REVIEWED);
+    const resolve = vi.fn(async () => ({}));
+    const reread = vi.fn(async () => ({ status: 'stored' as const, readAt: READ_AT }));
+    const evidence = vi.fn(async () => ({ status: 'unavailable' as const, reason: 'x' }));
+    const trpc = {
       hmsApproval: {
-        writeState: { query: vi.fn(async () => viewWith()) },
+        writeState: { query: state },
         approve: { mutate: approve },
-        review: { mutate: vi.fn(async () => REVIEWED) },
-        resolveNeedsCheck: { mutate: vi.fn(async () => ({})) },
-        reread: { mutate: vi.fn(async () => ({ status: 'stored' as const, readAt: READ_AT })) },
-        evidence: { query: vi.fn(async () => ({ status: 'unavailable' as const, reason: 'x' })) },
+        review: { mutate: review },
+        resolveNeedsCheck: { mutate: resolve },
+        reread: { mutate: reread },
+        evidence: { query: evidence },
       },
-    });
+    };
+    expect(hmsApprovalFromTrpc(trpc, null, '<selected@example.test>')).toBeNull();
+    expect(hmsApprovalFromTrpc(trpc, 'mailbox-a', null)).toBeNull();
+    const client = hmsApprovalFromTrpc(trpc, 'mailbox-a', '<selected@example.test>');
     expect(client).not.toBeNull();
+    await client?.writeState({ workItemId: WORK_ITEM });
     await client?.approve({ workItemId: WORK_ITEM, formDigest: DIGEST });
-    expect(approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST });
+    await client?.review({ workItemId: WORK_ITEM, runId: 'run-1', decision: 'ok' });
+    await client?.resolveNeedsCheck({ workItemId: WORK_ITEM, note: 'checked' });
+    await client?.reread({ workItemId: WORK_ITEM });
+    await client?.evidence({ workItemId: WORK_ITEM, eventId: EVENT_ID });
+    const mailbox = { context: { activeTransportId: 'mailbox-a' } };
+    for (const call of [state, approve, review, resolve, reread, evidence]) {
+      expect(call).toHaveBeenCalledWith(expect.objectContaining({ workItemId: WORK_ITEM, internetMessageId: '<selected@example.test>' }), mailbox);
+    }
   });
 
   it('turns a refusal name into words, and an unknown one into a generic line', () => {

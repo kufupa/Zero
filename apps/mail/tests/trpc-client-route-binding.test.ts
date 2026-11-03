@@ -58,7 +58,7 @@ describe('pane tRPC helpers bind routes off the real client', () => {
   });
 
   it('binds the HMS approve, review and re-read routes off the real client', () => {
-    expect(hmsApprovalFromTrpc(client)).not.toBeNull();
+    expect(hmsApprovalFromTrpc(client, 'mailbox-a', '<message@example.test>')).not.toBeNull();
   });
 
   it('still refuses a missing client', () => {

@@ -359,6 +359,8 @@ export async function prepareHmsWriteSnapshot(input: {
   db?: DB;
   transportId: string;
   workItemId: string;
+  selectedInternetMessageId?: string;
+  expectedFormDigest?: string;
   confirmation: string;
   arrival: string;
   env?: NodeJS.Dict<string>;
@@ -394,6 +396,8 @@ export async function prepareHmsWriteSnapshot(input: {
     db: input.db,
     transportId: input.transportId,
     workItemId: input.workItemId,
+    selectedInternetMessageId: input.selectedInternetMessageId,
+    expectedFormDigest: input.expectedFormDigest,
     readHmsState: async () => stay,
     now: readAt,
   });
