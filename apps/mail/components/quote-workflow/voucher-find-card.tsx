@@ -153,7 +153,7 @@ function VoucherFindCardBody({
   propertyCode = null,
 }: VoucherFindCardProps) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
-  const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
+  const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
@@ -176,7 +176,7 @@ function VoucherFindCardBody({
   const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
   const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
   const transport = useMemo(
-    () => hmsJobTransport(jobClient, replyThread, replyMessageId),
+    () => hmsJobTransport(jobClient, replyThread, replyMessageId, { exactSource: true }),
     [jobClient, replyThread, replyMessageId],
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.

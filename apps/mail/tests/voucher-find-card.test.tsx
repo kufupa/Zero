@@ -66,6 +66,7 @@ const SMITH_ROW = {
 
 type JobStatusQuery = (input: {
   threadId: string;
+  messageId?: string;
   kind: 'find' | 'search_guest' | 'availability';
   confirmation?: string;
   lastName?: string;
@@ -105,6 +106,7 @@ function fakeTrpc(options: {
     const runId = `run-${++issued}`;
     jobs.set(runId, {
       runId,
+      sourceMessageId: input.messageId,
       request: { kind: 'search_guest', ...input },
       prefetch: false,
       status: 'done',
@@ -126,6 +128,7 @@ function fakeTrpc(options: {
     const runId = `run-${++issued}`;
     jobs.set(runId, {
       runId,
+      sourceMessageId: input.messageId,
       request: { kind: 'find', ...input },
       prefetch: false,
       status: 'done',
@@ -158,8 +161,8 @@ function fakeTrpc(options: {
                   departure?: string | null;
                 },
           ) => {
-            if ('threadId' in input && options.status) return options.status(input);
             if ('runId' in input) return jobs.get(input.runId) ?? null;
+            if ('threadId' in input && options.status) return options.status(input);
             if (input.kind === 'find') {
               return [...jobs.values()].find((view) =>
                 view.request?.kind === 'find' &&
@@ -267,7 +270,7 @@ describe('voucher find card: the existing search', () => {
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
-    });
+    }, MAILBOX);
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
@@ -321,7 +324,7 @@ describe('voucher find card: the existing search', () => {
       messageId: 'm1',
       confirmation: '57291630-1',
       arrival: '2026-11-12',
-    });
+    }, MAILBOX);
   });
 
   it('passes the selected voucher message id on guest search and stay find', async () => {
@@ -334,9 +337,11 @@ describe('voucher find card: the existing search', () => {
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(queueSearchGuest).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+      MAILBOX,
     );
     expect(searchGuest).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+      MAILBOX,
     );
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.readDetails }));
     await waitFor(() =>
@@ -346,6 +351,7 @@ describe('voucher find card: the existing search', () => {
           messageId: 'm1',
           confirmation: '57291630-1',
         }),
+        MAILBOX,
       ),
     );
     expect(findStay).toHaveBeenCalledWith(
@@ -354,13 +360,14 @@ describe('voucher find card: the existing search', () => {
         messageId: 'm1',
         confirmation: '57291630-1',
       }),
+      MAILBOX,
     );
   });
 
   it('with the job queue off, opening the card runs no HMS search and the Find button runs one on click', async () => {
     const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, queueOff: true });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ autoStart: true })));
+    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ autoStart: true }), MAILBOX));
     expect(searchGuest).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
@@ -370,12 +377,13 @@ describe('voucher find card: the existing search', () => {
       arrival: '2026-11-12',
       threadId: 'thread-1',
       messageId: 'm1',
-    });
+    }, MAILBOX);
   });
 
   it('hydrates a matching prefetched result on open and never queues another lookup', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-1',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -394,9 +402,42 @@ describe('voucher find card: the existing search', () => {
     expect(queueSearchGuest).not.toHaveBeenCalled();
   });
 
+  it('rejects a same-thread result from another email and scopes resume and polling to this mailbox', async () => {
+    const wrong: HmsJobView = {
+      runId: 'other-email', sourceMessageId: 'm2',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true, status: 'done', position: null, attempts: 1, failureClass: null, asOf: AS_OF,
+      result: { outcome: 'ok', rows: [{ ...SMITH_ROW, firstName: 'Wrong' }], screenshots: [], runId: null },
+    };
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, resumed: wrong });
+    const status = vi.spyOn(trpc.paneStayLookup.jobStatus, 'query');
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByText('Wrong Smith · 57291630-1')).toBeNull();
+    expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm1' }), MAILBOX);
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', kind: 'search_guest',
+    }), MAILBOX);
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', runId: 'run-1',
+    }), MAILBOX);
+  });
+
+  it('does not search or offer a preview without a selected source message', async () => {
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: { ...VOUCHER, messageId: '' } });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="wi-1" propertyCode="HRCEN" />);
+    expect(await screen.findByText(VOUCHER_COPY.caption)).toBeTruthy();
+    await act(async () => {});
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
+  });
+
   it('keeps Find hidden until a slow read-back settles, then shows the existing result', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-slow',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -441,6 +482,7 @@ describe('voucher find card: the existing search', () => {
   it('does not promote a narrower one-row search when an unfiltered search is ambiguous', async () => {
     const narrow: HmsJobView = {
       runId: 'narrow-1',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' },
       prefetch: false,
       status: 'done',
@@ -467,6 +509,7 @@ describe('voucher find card: the existing search', () => {
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
     expect(status).toHaveBeenCalledWith({
       threadId: 'thread-1',
+      messageId: 'm1',
       kind: 'search_guest',
       lastName: 'Smith',
       arrival: '2026-11-12',
@@ -478,7 +521,7 @@ describe('voucher find card: the existing search', () => {
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
-    });
+    }, MAILBOX);
     expect(searchGuest).toHaveBeenCalledWith({
       lastName: 'Smith',
       arrival: '2026-11-12',
@@ -505,6 +548,7 @@ describe('voucher find card: the existing search', () => {
   it('uses a retry status read to hydrate a job instead of creating a duplicate', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-after-retry',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -618,8 +662,8 @@ describe('voucher find card: the existing search', () => {
       arrival: '2026-11-12',
       autoStart: true,
     };
-    expect(queueSearchGuest).toHaveBeenNthCalledWith(1, idempotentAutoStart);
-    expect(queueSearchGuest).toHaveBeenNthCalledWith(2, idempotentAutoStart);
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(1, idempotentAutoStart, MAILBOX);
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(2, idempotentAutoStart, MAILBOX);
   });
 
   it("never reads back another guest's search from the same thread, and still reads back this guest's", async () => {
