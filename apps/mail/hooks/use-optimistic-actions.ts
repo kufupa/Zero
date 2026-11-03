@@ -340,7 +340,6 @@ export function useOptimisticActions() {
     currentFolder: string,
     optimisticId: string,
   ) {
-    let moved = false;
     try {
       let preferences: SenderPreference[] = [];
 
@@ -354,8 +353,6 @@ export function useOptimisticActions() {
         });
         preferences = result?.preferences ?? [];
       }
-      moved = true;
-
       posthog.capture(actionEventNames[ActionType.MOVE]({ destination: 'spam' }));
 
       if (mail.bulkSelected.length > 0) {
@@ -403,7 +400,6 @@ export function useOptimisticActions() {
       removeOptimisticAction(optimisticId);
       toast.error('Action failed');
     }
-    return moved;
   }
 
   function optimisticMoveThreadsTo(
@@ -439,8 +435,9 @@ export function useOptimisticActions() {
     }
 
     if (destination === 'spam') {
-      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).then((moved) => {
-        (moved ? finishMoves : cancelMoves)(threadIds);
+      // A rejected request can have saved already. Never revive an older move once dispatch starts.
+      finishMoves(threadIds);
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).then(() => {
         clearFinished(threadIds);
       });
       return;
@@ -462,6 +459,7 @@ export function useOptimisticActions() {
         const activeIds = currentThreads();
         cancelMoves(threadIds.filter((id) => !activeIds.includes(id)));
         if (!activeIds.length) { clearFinished(threadIds); return; }
+        finishMoves(activeIds);
         try {
           if (frontendOnlyDemo) {
             await demoMoveThreadsTo({ threadIds: activeIds, currentFolder, destination });
@@ -472,14 +470,9 @@ export function useOptimisticActions() {
               destination,
             });
           }
-          finishMoves(activeIds);
-
           if (mail.bulkSelected.length > 0) {
             setMail({ ...mail, bulkSelected: [] });
           }
-        } catch (error) {
-          cancelMoves(activeIds);
-          throw error;
         } finally {
           clearFinished(activeIds);
         }

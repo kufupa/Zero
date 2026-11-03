@@ -88,21 +88,23 @@ it('does not revive an older move that already expired when a newer move is undo
   expect(mocks.move).not.toHaveBeenCalled();
 });
 
-it('preserves an older pending archive when the newer spam move fails', async () => {
-  mocks.move.mockRejectedValueOnce(new Error('spam failed'));
+it('does not send an older archive when a spam request fails after saving', async () => {
+  let saved = 'inbox';
+  mocks.move.mockImplementationOnce(async () => { saved = 'spam'; throw new Error('reply lost'); });
   const { result } = renderHook(() => useOptimisticActions());
   act(() => result.current.optimisticMoveThreadsTo(['thread-e'], 'inbox', 'archive'));
   const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
   act(() => result.current.optimisticMoveThreadsTo(['thread-e'], 'inbox', 'spam'));
   await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
   await act(async () => { archive.onAutoClose(); });
-  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
-    threadIds: ['thread-e'], currentFolder: 'inbox', destination: 'archive',
-  }));
+  await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
+  expect(mocks.move).toHaveBeenCalledOnce();
+  expect(saved).toBe('spam');
 });
 
-it('preserves an older pending archive when the newer bin move fails', async () => {
-  mocks.move.mockRejectedValueOnce(new Error('bin failed'));
+it('does not send an older archive when a bin request fails after saving', async () => {
+  let saved = 'inbox';
+  mocks.move.mockImplementationOnce(async () => { saved = 'bin'; throw new Error('reply lost'); });
   const { result } = renderHook(() => useOptimisticActions());
   act(() => result.current.optimisticMoveThreadsTo(['thread-f'], 'inbox', 'archive'));
   const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
@@ -111,9 +113,9 @@ it('preserves an older pending archive when the newer bin move fails', async () 
   await act(async () => { bin.onAutoClose(); });
   await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
   await act(async () => { archive.onAutoClose(); });
-  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
-    threadIds: ['thread-f'], currentFolder: 'inbox', destination: 'archive',
-  }));
+  await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
+  expect(mocks.move).toHaveBeenCalledOnce();
+  expect(saved).toBe('bin');
 });
 
 it('does not revive an older archive when spam saved but refresh failed', async () => {
