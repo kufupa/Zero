@@ -34,6 +34,7 @@ export async function runLabtestAmendSave(page, {
   stage,
   matches,
   validate,
+  dispatchCandidate,
   stageDetails = () => ({}),
 } = {}) {
   const result = (outcome, details = {}) => ({ outcome, ...resultFields, ...details });
@@ -44,7 +45,8 @@ export async function runLabtestAmendSave(page, {
     return result('input_gap', { issue: 'PAGE_REQUIRED' });
   }
   if (usedPages.has(page)) return result('refused', { issue: 'PAGE_WRITE_ALREADY_USED' });
-  if ([prepare, stage, matches, validate].some((callback) => typeof callback !== 'function')) {
+  if ([prepare, stage, matches, validate].some((callback) => typeof callback !== 'function') ||
+      (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function')) {
     return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
   }
 
@@ -113,6 +115,7 @@ export async function runLabtestAmendSave(page, {
       isArmed: () => !prepareOnly && armed && withinDeadline(),
       childStageGate,
       isChildStageActive: () => inStage && withinDeadline(),
+      dispatchCandidate,
       matches: (request, requestFrame) => staged !== undefined &&
         matches(request, requestFrame, prepared, staged),
       onCandidate: (request) => {
@@ -184,6 +187,14 @@ export async function runLabtestAmendSave(page, {
     await bounded(prepared.save.click({ timeout: 5_000, noWaitAfter: true }));
     response = await bounded(pending);
     armed = false;
+    // The native response can precede the server wrapper's completion. A
+    // wrapper failure or timeout after dispatch is uncertain, never success.
+    if (dispatched) {
+      const wrapperCompleted = await bounded(routeChain.waitForDispatch());
+      // A blocked event loop may delay the timer past the monotonic deadline.
+      if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
+      if (!wrapperCompleted) throw new Error('SAVE_DISPATCH_UNCERTAIN');
+    }
     await bounded(page.waitForTimeout(500));
     const dialogs = await bounded(prepared.frame.locator('.x-window:visible:not(.x-menu)').count());
     const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
