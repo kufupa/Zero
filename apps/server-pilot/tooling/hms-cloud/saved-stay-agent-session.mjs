@@ -253,7 +253,12 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       tail = result.then(() => undefined, () => undefined);
       return result;
     };
-    try { return await operation({ runTool }); }
+    const screenshotRecord = async () => {
+      await tail;
+      if (!readOnly || !recordOpen || sealed || nativeDialog || !accepting) throw new Error('RECORD_SCREENSHOT_UNAVAILABLE');
+      return page.screenshot({ fullPage: true });
+    };
+    try { return await operation({ runTool, screenshotRecord }); }
     finally {
       accepting = false;
       await tail;

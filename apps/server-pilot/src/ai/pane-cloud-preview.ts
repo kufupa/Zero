@@ -1,19 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { workItem } from '../db/schema/work.js';
+import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { canonicalJson } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
-import { persistHmsShots, readStoredHmsShot, verifyStoredHmsPreview } from './hms-shots-store.js';
+import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
-  type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+  type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
@@ -171,7 +173,7 @@ function staysClear(state: Record<string, unknown>): boolean {
 }
 const hasStay = (state: Record<string, unknown>, stayId: string) =>
   !!state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays) && Object.hasOwn(state.stays, stayId);
-const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsPreview({ ...grant.previewShot, name: 'filled.png',
+const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsShot({ ...grant.previewShot, name: 'filled.png',
   owner: `${input.actorUserId}:${input.transportId}`, propertyCode: 'HRCEN', workItemId: input.workItemId });
 
 async function saveScreenshots(native: Native, input: Input, beforeSha256: string) {
@@ -183,26 +185,32 @@ async function saveScreenshots(native: Native, input: Input, beforeSha256: strin
   await copyFile(join(dir, 'after.png'), join(dir, 'saved.png'));
   registerPaneRun({ runId, dir, owner, now: Date.now() });
   const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() }).catch(() => null);
+  const saved = shots?.find((shot) => shot.name === 'saved.png');
   if (!shots || !shots.some((shot) => shot.name === 'before.png' && shot.sha256 === beforeSha256) ||
-      !shots.some((shot) => shot.name === 'saved.png')) return null;
+      !saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256, owner,
+        propertyCode: 'HRCEN', workItemId: input.workItemId }, 'saved.png')) return null;
   return { runId, screenshots: ['before.png', 'saved.png'], shots };
 }
 
 /** Persist the last clean preimage and before image before creating an UNKNOWN intent. */
 async function createRecoveryEvidence(value: unknown, input: Input) {
+  const processIdentity = z.object({ pid: z.number().int().safe().min(2), started: z.string().regex(/^\d+$/) }).strict();
+  const writerIdentity = z.object({ host: digest, bootId: z.string().uuid(), pidNamespace: z.string().regex(/^pid:\[\d+\]$/),
+    node: processIdentity, browser: processIdentity }).strict();
   const parsed = z.object({ beforeScreenshot: z.string(), preimage: z.object({ outcome: z.literal('clear'),
     arrival: labDate, departure: labDate, searchedDateRange: z.object({ from: isoDate, to: isoDate }),
     expiresAt: z.string().datetime(),
     coverage: z.object({ displayed: z.number().int().nonnegative().safe(), total: z.number().int().nonnegative().safe(),
       complete: z.literal(true) }),
     sameArrival: z.array(z.unknown()).length(0),
-  }).passthrough() }).strict().safeParse(value);
+  }).passthrough(), writer: writerIdentity, guaranteeDisplay: z.string().min(1).max(200) }).strict().safeParse(value);
   if (!parsed.success || parsed.data.preimage.arrival !== input.stay.arrival ||
       parsed.data.preimage.departure !== input.stay.departure || input.stay.arrival >= input.stay.departure ||
       parsed.data.preimage.searchedDateRange.from > input.stay.arrival ||
       parsed.data.preimage.searchedDateRange.to < input.stay.arrival ||
       Date.parse(parsed.data.preimage.expiresAt) <= Date.now() ||
-      parsed.data.preimage.coverage.displayed !== parsed.data.preimage.coverage.total) {
+      parsed.data.preimage.coverage.displayed !== parsed.data.preimage.coverage.total ||
+      !centurionWriterCurrent(parsed.data.writer)) {
     throw new Error('cloud_create_preimage_unavailable');
   }
   const before = parsed.data.beforeScreenshot, dir = dirname(before);
@@ -211,10 +219,11 @@ async function createRecoveryEvidence(value: unknown, input: Input) {
   const runId = match[1]!, owner = `${input.actorUserId}:${input.transportId}`;
   const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
   const shot = shots?.find((item) => item.name === 'before.png');
-  const stored = await readStoredHmsShot({ runId, name: 'before.png', owner });
-  if (!shot || !stored || createHash('sha256').update(stored).digest('hex') !== shot.sha256) throw new Error('cloud_create_before_unavailable');
-  const { arrival, departure, searchedDateRange, coverage, expiresAt } = parsed.data.preimage;
-  return { beforeShot: { runId, sha256: shot.sha256 }, preimage: { arrival, departure, searchedDateRange, coverage, expiresAt } };
+  if (!shot || !await verifyStoredHmsShot({ runId, name: 'before.png', sha256: shot.sha256, owner,
+    propertyCode: 'HRCEN', workItemId: input.workItemId }, 'before.png')) throw new Error('cloud_create_before_unavailable');
+  const { arrival, departure, searchedDateRange, coverage, expiresAt, sameArrival } = parsed.data.preimage;
+  return { beforeShot: { runId, sha256: shot.sha256 }, preimage: { arrival, departure, searchedDateRange, coverage, expiresAt, sameArrival },
+    writer: parsed.data.writer, guaranteeDisplay: parsed.data.guaranteeDisplay };
 }
 
 /** Preview the exact request; a one-use Go grant is issued only when saving is enabled. */
@@ -265,7 +274,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
     registerPaneRun({ runId, dir, owner, now: Date.now() });
     const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
     const filled = shots?.find((item) => item.name === 'filled.png');
-    if (!filled || !await verifyStoredHmsPreview({ runId, name: filled.name, sha256: filled.sha256,
+    if (!filled || !await verifyStoredHmsShot({ runId, name: filled.name, sha256: filled.sha256,
       owner, propertyCode: 'HRCEN', workItemId: input.workItemId })) return refused('cloud_preview_unavailable');
     return await withLockedCreateSource(db, key, async (tx, source) => {
       const after = await checkSource(tx, source, input, before.accessId);
@@ -317,7 +326,6 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
   const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target.target);
   if (!lock) return refused('pane_save_lock_unavailable');
   let claimAttempted = false;
-  let claimed = false;
   const dispatch: { handle: HmsLabtestWriteHandle | null } = { handle: null };
   let beforeSha256: string | null = null;
   let claimError: unknown;
@@ -383,7 +391,6 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             }); } catch (error) { authorizationError = error; throw error; }
             });
           } catch (error) { claimError = error; throw error; }
-          claimed = true;
           beforeSha256 = recovery.beforeShot.sha256;
           if (Date.parse(recovery.preimage.expiresAt) <= Date.now()) throw new Error('cloud_create_preimage_expired');
           // Commit is the authority boundary. Source/access changes after this
@@ -391,7 +398,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           return await next();
         },
       });
-      if (!claimed || !dispatch.handle) return noClaimResult();
+      if (!dispatch.handle) return noClaimResult();
       const shots = beforeSha256 ? await saveScreenshots(native, input, beforeSha256) : null;
       const savedShot = shots?.shots.find((shot) => shot.name === 'saved.png');
       if (native.outcome !== 'saved' || native.writerSessionClosed !== true || native.save?.dispatchCallbacksDrained !== true ||
@@ -405,20 +412,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
         if (intent.workItemId !== input.workItemId || intent.transportId !== input.transportId ||
             intent.actorUserId !== input.actorUserId || intent.grantId !== grant.grantId || intent.stayId !== input.stayId ||
             intent.approvedDigest !== grant.requestDigest) throw new Error('cloud_create_result_scope_changed');
-        const [current] = await tx.select({ state: workItem.state }).from(workItem)
-          .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1).for('update');
-        if (!current) throw new Error('cloud_create_result_scope_changed');
-        const stays = current.state.stays;
-        if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_create_result_scope_changed');
-        const stay = (stays as Record<string, unknown>)[input.stayId] as Record<string, unknown> | undefined;
-        if (!stay || stay.status !== 'unknown' || stay.cloudCreateGrantId !== grant.grantId) throw new Error('cloud_create_result_scope_changed');
-        const state: Record<string, unknown> = { ...current.state,
-          stays: { ...stays, [input.stayId]: { status: 'booked', confirmationNumber,
-            screenshotRef: { runId: shots.runId, name: 'saved.png' }, runId: shots.runId, shots: shots.shots } } };
-        await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
-        await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
-          value: { kind: 'cloud_create_verified', grantId: grant.grantId, stayId: input.stayId, confirmationNumber,
-            requestDigest: grant.requestDigest, readbackDigest: hash(native.readback), runId: shots.runId } });
+        await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest: hash(native.readback),
+          savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots });
       });
       return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true, ...shots };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
@@ -426,4 +421,74 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     if (claimAttempted) return noClaimResult();
     return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'cloud_create_unavailable');
   }
+}
+
+const refs = z.object({ previewShot: grantSchema.shape.previewShot, beforeShot: grantSchema.shape.previewShot }).passthrough();
+
+export type CreateRecoveryProof = { confirmation: string; readbackDigest: string;
+  savedShot: { runId: string; sha256: string }; shots: HmsShotMeta[] };
+
+/** Serialize against the same property operation lock as the original pane writer. */
+export async function withRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
+  const target = paneStayCreateTarget({ transportId: intent.transportId, propertyCode: 'HRCEN' });
+  if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion') {
+    throw new Error('cloud_create_recovery_property_unavailable');
+  }
+  const lock = paneStayPropertyLock(target.target);
+  if (!lock) throw new Error('cloud_create_recovery_lock_unavailable');
+  return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+}
+
+/** This uses the fixed read-only HMS reader, never caller-provided proof. */
+export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<CreateRecoveryProof> {
+  const parsed = refs.safeParse(intent.recovery);
+  if (!parsed.success) throw new Error('cloud_create_recovery_evidence_unavailable');
+  const owner = `${intent.actorUserId}:${intent.transportId}`;
+  for (const [name, ref] of [['filled.png', parsed.data.previewShot], ['before.png', parsed.data.beforeShot]] as const) {
+    if (!await verifyStoredHmsShot({ ...ref, name, owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, name)) {
+      throw new Error('cloud_create_recovery_evidence_unavailable');
+    }
+  }
+  const reader = await import(new URL('../../tooling/hms-cloud/create-positive-recovery.mjs', import.meta.url).href) as {
+    provePositiveCreateRecovery: (intent: HmsLabtestIntent) => Promise<{
+      outcome: string; confirmation?: unknown; readback?: unknown; screenshot?: unknown;
+    }>;
+  };
+  const observed = await reader.provePositiveCreateRecovery(intent);
+  if (observed.outcome !== 'verified' || typeof observed.confirmation !== 'string' ||
+      !/^\d{6,10}-\d{1,2}$/.test(observed.confirmation) || !observed.readback ||
+      !Buffer.isBuffer(observed.screenshot) || observed.screenshot.length > 20 * 1024 * 1024) {
+    throw new Error('cloud_create_recovery_readback_unavailable');
+  }
+  const runId = randomUUID(), dir = await mkdtemp(join(tmpdir(), 'hms-create-recovery-'));
+  try {
+    await writeFile(join(dir, 'saved.png'), observed.screenshot, { flag: 'wx', mode: 0o600 });
+    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: intent.workItemId,
+      runId, sourceDir: dir, owner, now: Date.now() });
+    const saved = shots?.find((item) => item.name === 'saved.png');
+    if (!saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256,
+      owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, 'saved.png')) {
+      throw new Error('cloud_create_recovery_evidence_unavailable');
+    }
+    return { confirmation: observed.confirmation, readbackDigest: hash(observed.readback),
+      savedShot: { runId, sha256: saved.sha256 }, shots };
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+/** Update only the original unknown stay and retain durable proof on the same transaction. */
+export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: HmsLabtestIntent, proof: CreateRecoveryProof) {
+  if (intent.operation !== 'create' || !intent.stayId) throw new Error('cloud_create_recovery_scope_changed');
+  const [current] = await tx.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
+  if (!current) throw new Error('cloud_create_recovery_scope_changed');
+  const stays = current.state.stays;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_create_recovery_scope_changed');
+  const stay = (stays as Record<string, unknown>)[intent.stayId] as Record<string, unknown> | undefined;
+  if (!stay || stay.status !== 'unknown' || stay.cloudCreateGrantId !== intent.grantId) {
+    throw new Error('cloud_create_recovery_scope_changed');
+  }
+  const state = { ...current.state, stays: { ...stays, [intent.stayId]: { status: 'booked',
+    confirmationNumber: proof.confirmation, screenshotRef: { runId: proof.savedShot.runId, name: 'saved.png' },
+    runId: proof.savedShot.runId, shots: proof.shots } } };
+  await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
 }

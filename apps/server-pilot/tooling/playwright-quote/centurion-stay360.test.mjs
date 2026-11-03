@@ -1,16 +1,54 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { once } from 'node:events';
 import test from 'node:test';
 import {
   assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserHoldPath, centurionBrowserIdentity, centurionContextOptions,
+  centurionWriterCurrent, centurionWriterIdentity, centurionWriterQuiesced,
   closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, prepareCenturionLaunch, withCenturionStay360Page,
 } from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
+
+test('recovery refuses until the original writer and the entire owned browser group have exited', async () => {
+  const writer = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const browser = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  try {
+    await Promise.all([once(writer, 'spawn'), once(browser, 'spawn')]);
+    const start = (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8').split(/\)\s/)[1].trim().split(/\s+/)[19];
+    const identity = {
+      host: createHash('sha256').update(readFileSync('/etc/machine-id', 'utf8').trim()).update('\0').update(hostname()).digest('hex'),
+      bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      pidNamespace: readlinkSync('/proc/self/ns/pid'),
+      node: { pid: writer.pid, started: start(writer.pid) }, browser: centurionBrowserIdentity(browser.pid),
+    };
+    const current = { ...identity, node: { pid: process.pid, started: start(process.pid) } };
+    assert.equal(centurionWriterCurrent(current), true);
+    assert.equal(centurionWriterCurrent({ ...current, browser: { ...current.browser, started: '0' } }), false);
+    assert.equal(centurionWriterIdentity({}), null);
+    assert.equal(centurionWriterQuiesced(identity), false);
+    writer.kill('SIGTERM');
+    await once(writer, 'exit');
+    assert.equal(centurionWriterQuiesced(identity), false);
+    browser.kill('SIGTERM');
+    await once(browser, 'exit');
+    assert.equal(centurionWriterQuiesced(identity), true);
+    for (const wrong of [{ host: '0'.repeat(64) }, { bootId: '00000000-0000-4000-8000-000000000000' },
+      { pidNamespace: 'pid:[0]' }, { node: { pid: 1, started: '1' } }]) {
+      assert.equal(centurionWriterQuiesced({ ...identity, ...wrong }), false);
+    }
+  } finally {
+    if (writer.exitCode === null && writer.signalCode === null) writer.kill('SIGKILL');
+    if (browser.exitCode === null && browser.signalCode === null) browser.kill('SIGKILL');
+  }
+});
 
 test('failed or incomplete browser cleanup remains uncertain and still closes the other layers', async () => {
   for (const failing of ['context', 'browser', 'server', 'group']) {

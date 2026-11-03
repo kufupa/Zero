@@ -3,7 +3,7 @@ import {
   normalizeCloudCreateRequest,
   validCreateNote,
 } from '../../tooling/hms-cloud/create-request-binding.mjs';
-import { normalizeCreateTrack } from '../../tooling/hms-cloud/create-track.mjs';
+import { normalizeCreateTrack } from '../../tooling/playwright-quote/create-request.mjs';
 import type { PaneStay } from './pane-stay-save.js';
 
 // Cloud preparation permits an omitted track; legacy pane saves still require one.

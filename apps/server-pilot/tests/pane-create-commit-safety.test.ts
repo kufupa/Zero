@@ -26,8 +26,13 @@ const h = vi.hoisted(() => ({
   sharedHold: null as null | Record<string, unknown>,
   sharedHoldResolved: false,
   loseAckAfterClaim: false,
+  writerCurrent: true,
   tx: {} as any,
   db: {} as any,
+}));
+vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
+  ...await original<typeof import('../tooling/playwright-quote/centurion-stay360.mjs')>(),
+  centurionWriterCurrent: () => h.writerCurrent,
 }));
 vi.mock('../src/db/client.js', async (original) => ({
   ...await original<typeof import('../src/db/client.js')>(), getDb: () => h.db,
@@ -165,6 +170,7 @@ beforeEach(async () => {
   h.sourceDigest = 'f'.repeat(64); h.actorAccessId = 'access-1'; h.events = []; h.failBookedWrite = false;
   h.onCreateMutex = null; h.createMutexCalls = 0; h.sessionActive = true; h.threadActive = true;
   h.sharedHold = null; h.sharedHoldResolved = false; h.loseAckAfterClaim = false;
+  h.writerCurrent = true;
   h.tx = { select: query, execute: async () => { h.createMutexCalls += 1; h.onCreateMutex?.(); },
     update: () => ({ set: ({ state }: { state: Record<string, unknown> }) => ({ where: async () => {
     if (h.failBookedWrite && (state.stays as any)?.s1_1?.status === 'booked') throw new Error('storage failed');
@@ -201,6 +207,9 @@ beforeEach(async () => {
     if (!await options.authorizeCandidate?.(candidate)) throw new Error('no authority');
     await options.dispatchCandidate?.(candidate, async () => { dispatches += 1; return true; }, {
       beforeScreenshot: join(dir, 'before.png'),
+      writer: { host: 'a'.repeat(64), bootId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', pidNamespace: 'pid:[123]',
+        node: { pid: 20, started: '10' }, browser: { pid: 21, started: '11' } },
+      guaranteeDisplay: 'Non-Guaranteed Individual',
       preimage: { outcome: 'clear', arrival: stay.arrival, departure: stay.departure,
         searchedDateRange: { from: '2027-02-01', to: '2027-04-01' },
         coverage: { displayed: 0, total: 0, complete: true }, sameArrival: [], preimageId: 'transient-proof',
@@ -230,6 +239,14 @@ async function prepared() {
 }
 
 describe('mounted Cloud create route', () => {
+  it('does not dispatch when the owned browser or writer identity cannot be verified', async () => {
+    const digest = await prepared();
+    h.writerCurrent = false;
+    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+      .toMatchObject({ status: 'refused' });
+    expect(h.sharedHold).toBeNull();
+    expect(dispatches).toBe(0);
+  });
   it('allows a saved rowless-group correction through preview and one Go', async () => {
     (h.payload.stays as any[])[0].rows = [];
     h.state['stays[s1].rows[s1_row].count'] = 1;
@@ -413,9 +430,8 @@ describe('mounted Cloud create route', () => {
         coverage: { displayed: 0, total: 0, complete: true } } });
     expect(JSON.stringify(h.sharedHold)).not.toContain('transient-proof');
     expect(h.sharedHoldResolved).toBe(true);
-    expect(h.events).toHaveLength(2);
-    expect(h.events[0]).toMatchObject({ value: { kind: 'cloud_create_verified', stayId: 's1_1' } });
-    expect(h.events[1]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({ value: { kind: 'resolved', confirmation: '123456-1' } });
   });
 
   it('binds the selected agency, company, guarantee and no-send recipient through Go', async () => {

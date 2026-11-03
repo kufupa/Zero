@@ -3,12 +3,13 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { withBookingLookupSession } from './booking-lookup-session.mjs';
+import { centurionWriterIdentity } from '../playwright-quote/centurion-stay360.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
 import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
-import { normalizeCreateTrack } from './create-track.mjs';
+import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -384,6 +385,7 @@ export async function createReservation(input, { withSession = withBookingLookup
   try {
     await withSession(async ({ page, runTool, labtestPreimage }) => {
       state.preimage = labtestPreimage;
+      if (commit && dispatchCandidate) state.writer = centurionWriterIdentity(page);
       const propertyCode = input.propertyCode;
       if (commit) {
         state.guest = await selectGuest(runTool, input.guest, true);
@@ -639,7 +641,8 @@ export async function createReservation(input, { withSession = withBookingLookup
     }, { memory: null, blockServiceWorkers: true, ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure },
       ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}),
       ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate: (request, next) => dispatchCandidate(request, next, {
-        preimage: state.preimage, beforeScreenshot: output.screenshots.before,
+        preimage: state.preimage, beforeScreenshot: output.screenshots.before, writer: state.writer,
+        guaranteeDisplay: state.guarantee?.actual?.display,
       }) } : {}) } : {}) });
     if (state.saveAttempted) output.writerSessionClosed = true;
   } catch (error) {
