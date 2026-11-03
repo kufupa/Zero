@@ -74,6 +74,7 @@ export type AmendReadOnlyContext = {
   ratePlans: RatePlanCatalogueEntry[];
   selectionCurrent: boolean;
   sourceContentChanged?: boolean;
+  sourceSelectionUnavailable?: boolean;
 };
 
 type SearchForm = { lastName: string; arrival: string; departure: string };

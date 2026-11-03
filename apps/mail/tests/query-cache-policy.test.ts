@@ -5,7 +5,7 @@ import {
   resolveQueryHashPrefix,
   runLogoutCleanup,
 } from '../lib/mail/query-cache-policy';
-import { setMailCacheScope, subscribeMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { getMailCacheScope, setMailCacheScope, subscribeMailCacheScope } from '../lib/mail/mail-cache-scope';
 
 describe('query cache policy', () => {
   afterEach(() => {
@@ -37,6 +37,13 @@ describe('query cache policy', () => {
     setMailCacheScope({ userId: 'u1', activeTransportId: 't1' });
     expect(listener).toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it('keeps the same snapshot for an unchanged mailbox scope', () => {
+    setMailCacheScope({ userId: 'u1', activeTransportId: 't1' });
+    const scope = getMailCacheScope();
+    setMailCacheScope({ userId: 'u1', activeTransportId: 't1' });
+    expect(getMailCacheScope()).toBe(scope);
   });
 
   it('clears query cache and idb on logout', async () => {

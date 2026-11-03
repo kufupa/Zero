@@ -2,7 +2,7 @@
 // This is not an approval, a write grant, or proof that an ID is stable across sessions.
 const KEYS = ['propertycode', 'confirmationnumber', 'guestid', 'status', 'firstname', 'lastname',
   'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3',
-  'childages', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype'];
+  'childages', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype', 'companyid', 'company', 'taid1', 'ta1'];
 const FORM_KEYS = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'arrivaldate',
   'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -26,6 +26,18 @@ const day = (input, kind) => {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : null;
 };
 const count = (input, max) => /^(0|[1-9]\d*)$/.test(input ?? '') && Number(input) <= max ? Number(input) : null;
+const partyName = (source, key) => {
+  if (typeof source?.[key] !== 'string' || source[key].length > 200 || /\p{Cc}/u.test(source[key])) return null;
+  return value(source, key)?.replace(/\s+/g, ' ') || null;
+};
+const verifiedParty = (data, controls, idKey, nameKey) => {
+  const rawId = data?.[idKey];
+  if (typeof rawId === 'number' && !Number.isSafeInteger(rawId)) return null;
+  const nativeId = value(data, idKey), name = partyName(data, nameKey);
+  if (!nativeId || !/^\d{1,100}$/.test(nativeId) || /^0+$/.test(nativeId) || !name ||
+      name !== partyName(controls, nameKey)) return null;
+  return { name, nativeId };
+};
 
 /** Validates bounded observations from one clean, uniquely selected form. */
 export function projectNativeSavedStayPreimage(snapshot, expected) {
@@ -62,11 +74,16 @@ export function projectNativeSavedStayPreimage(snapshot, expected) {
   const controlGuarantee = value(snapshot.controls, 'guaranteetype');
   const verifiedGuarantee = guaranteeCode && /^[A-Z0-9]{1,40}$/.test(guaranteeCode) &&
     guaranteeCode === controlGuarantee ? guaranteeCode : null;
+  // Party IDs are useful only when the clean model and the unique visible control name agree.
+  const company = verifiedParty(data, snapshot.controls, 'companyid', 'company');
+  const agency = verifiedParty(data, snapshot.controls, 'taid1', 'ta1');
+  const commercial = { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
   return { source: 'record_view_ext_model', propertyCode: expected.propertyCode, confirmation: expected.confirmation,
     reservationStayId: field('reservationstayid'), reservationId: field('reservationid'), recordId: field('recordid'),
     guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
     arrival, departure, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
-    ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}) };
+    ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}),
+    ...(company || agency ? { commercial } : {}) };
 }
 
 /** Observe only allowlisted fields, not the full model, which can contain credentials and card data. */
@@ -104,7 +121,14 @@ export async function readNativeSavedStayPreimage(frame, expected) {
             (typeof selected === 'string' || typeof selected === 'number')) guarantee = selected;
       }
     } catch { /* Missing or ambiguous guarantee evidence stays unknown. */ }
-    return { data: pick(data, keys), values: pick(values, formKeys), controls: { guaranteetype: guarantee },
+    const partyControl = (name) => {
+      const inputs = [...document.querySelectorAll('input,textarea,select')]
+        .filter((el) => typeof el.name === 'string' && el.name.toLowerCase() === name && visible(el));
+      return inputs.length === 1 && inputs[0].name === name && panel.el.dom.contains(inputs[0]) &&
+        typeof inputs[0].value === 'string' ? inputs[0].value : null;
+    };
+    return { data: pick(data, keys), values: pick(values, formKeys),
+      controls: { guaranteetype: guarantee, company: partyControl('company'), ta1: partyControl('ta1') },
       formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}) };

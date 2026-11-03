@@ -52,6 +52,7 @@ import {
 } from '@/components/quote-workflow/hms-job-notices';
 import { trpcClient } from '@/providers/query-provider';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { beginMailSelectionIntent, isCurrentMailSelectionIntent } from '@/lib/mail/source-message-navigation';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 const ThreadDisplay = lazy(() =>
@@ -411,7 +412,7 @@ function MailLayoutContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
-  const [{ threadId }, setMailSelection] = useQueryStates({
+  const [{ threadId, sourceMessageId }, setMailSelection] = useQueryStates({
     threadId: parseAsString,
     sourceMessageId: parseAsString,
   });
@@ -422,13 +423,26 @@ function MailLayoutContent() {
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
-  // Opening a list row leaves the compose the same way a thread link in the list does.
-  const openListThread = (id: string, sourceMessageId?: string) => {
+  // A later selection must win if draft flushes finish out of order.
+  const openListSequence = useRef(0);
+  const currentMailSelection = useRef({ threadId, sourceMessageId });
+  if (currentMailSelection.current.threadId !== threadId ||
+      currentMailSelection.current.sourceMessageId !== sourceMessageId) {
+    currentMailSelection.current = { threadId, sourceMessageId };
+    openListSequence.current += 1;
+  }
+  const openListThread = (id: string, nextSourceMessageId?: string) => {
+    const sequence = ++openListSequence.current;
+    const intent = beginMailSelectionIntent();
     void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+      if (sequence !== openListSequence.current || !isCurrentMailSelectionIntent(intent)) return;
       setMode(null);
       setActiveReplyId(null);
       setDraftId(null);
-    }).then(() => setMailSelection({ threadId: id, sourceMessageId: sourceMessageId ?? null }));
+    }).then(() => {
+      if (sequence === openListSequence.current && isCurrentMailSelectionIntent(intent))
+        void setMailSelection({ threadId: id, sourceMessageId: nextSourceMessageId ?? null });
+    });
   };
   const [navaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const [listCollapsed, setListCollapsed] = useState(false);
@@ -757,6 +771,8 @@ function MailLayoutContent() {
                       key={threadId}
                       threadId={threadId}
                       sourceThreadId={sourceThreadId}
+                      sourceMessageId={sourceMessageId}
+                      requireSelectedMessage
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent

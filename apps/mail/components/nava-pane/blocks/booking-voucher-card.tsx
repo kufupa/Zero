@@ -69,6 +69,9 @@ export function BookingVoucherCard({
       {readOnlyAmend?.sourceContentChanged && amendment ? (
         <p role="status" className="text-[11.5px] text-[#64748b]">This email changed. Reopen it before reviewing the booking.</p>
       ) : null}
+      {!readOnlyAmend?.sourceContentChanged && readOnlyAmend?.sourceSelectionUnavailable && amendment ? (
+        <p role="status" className="text-[11.5px] text-[#64748b]">Select this guest email in webmail before reviewing the booking.</p>
+      ) : null}
       {!amendPropertyResolved || readOnlyAmend?.selectionCurrent === false ? null : (
         <AmendLookupPanel
           key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,

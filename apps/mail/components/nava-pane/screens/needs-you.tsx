@@ -7,8 +7,11 @@ import {
   readAsForKind,
   type NavaWorkState,
 } from '@/lib/quote-workflow/workflow-vocabulary';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { getMailCacheScope, inMailbox, subscribeMailCacheScope, type MailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { useActiveConnection } from '@/hooks/use-connections';
+import { getSession, useSession } from '@/lib/auth-client';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { toast } from 'sonner';
 import { Notice, SecondaryButton } from '../pane-ui';
 import { Button } from '@/components/ui/button';
@@ -17,9 +20,6 @@ import { Button } from '@/components/ui/button';
 export const NEEDS_YOU_LIMIT = 200;
 /** Time to cancel a dismissal before the existing server mutation is sent. */
 export const NEEDS_YOU_UNDO_MS = 5000;
-/** Temporary rollout gate for the Needs-you entry controls. */
-const NEEDS_YOU_CONTROLS_ENABLED = false;
-
 export type NeedsYouFilter = 'open' | 'finished';
 export type NeedsYouStatus = 'loading' | 'ready' | 'failed' | 'unavailable';
 
@@ -45,6 +45,8 @@ const CHIP_CLASS: Record<NavaWorkState, string> = {
 };
 
 type NeedsYouViewState = {
+  scope: MailCacheScope;
+  ownerKey: string;
   status: NeedsYouStatus;
   openRows: NeedsYouRow[];
   finishedRows: NeedsYouRow[];
@@ -52,6 +54,19 @@ type NeedsYouViewState = {
   finishedLoaded: boolean;
   notice: string | null;
 };
+
+function emptyView(scope: MailCacheScope, ownerKey: string): NeedsYouViewState {
+  return {
+    scope,
+    ownerKey,
+    status: scope.userId && scope.activeTransportId ? 'loading' : 'unavailable',
+    openRows: [],
+    finishedRows: [],
+    openLoaded: false,
+    finishedLoaded: false,
+    notice: null,
+  };
+}
 
 export type NeedsYou = {
   status: NeedsYouStatus;
@@ -86,6 +101,18 @@ function restoreAt(rows: NeedsYouRow[], row: NeedsYouRow, index: number): NeedsY
  * the existing mutation only after a short client-side Undo window.
  */
 export function useNeedsYou(trpc: unknown): NeedsYou {
+  const scope = useSyncExternalStore(subscribeMailCacheScope, getMailCacheScope, getMailCacheScope);
+  const { data: session, isPending: sessionPending } = useSession();
+  const { data: connection, isLoading: connectionLoading } = useActiveConnection();
+  const demo = isFrontendOnlyDemo();
+  const userId = demo ? scope.userId : session?.user?.id ?? null;
+  const transportId = demo ? scope.activeTransportId : connection?.id ?? null;
+  const sessionId = demo ? 'demo' : session?.session?.id ?? null;
+  const matches = Boolean(!demo && userId && sessionId && transportId && scope.userId === userId &&
+    scope.activeTransportId === transportId && !sessionPending && !connectionLoading);
+  const ownerKey = JSON.stringify([userId, transportId, sessionId]);
+  const host = useRef({ ownerKey, userId, sessionId, matches });
+  host.current = { ownerKey, userId, sessionId, matches };
   const trpcRef = useRef(trpc);
   trpcRef.current = trpc;
   const mounted = useRef(false);
@@ -96,34 +123,38 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
   const pendingDismissals = useRef(new Map<string, PendingDismissal>());
   const [filter, setFilterState] = useState<NeedsYouFilter>('open');
   filterRef.current = filter;
-  const [view, setView] = useState<NeedsYouViewState>({
-    status: 'loading',
-    openRows: [],
-    finishedRows: [],
-    openLoaded: false,
-    finishedLoaded: false,
-    notice: null,
-  });
+  const [view, setView] = useState<NeedsYouViewState>(() => emptyView(scope, ownerKey));
+  // Object identity is a scope generation: A -> B -> A must not revive A's old rows or replies.
+  const visible = !matches ? { ...emptyView(scope, ownerKey), status: 'unavailable' as const }
+    : view.scope === scope && view.ownerKey === ownerKey ? view : emptyView(scope, ownerKey);
 
   const load = useCallback(async (
     requestedFilter: NeedsYouFilter = filterRef.current,
     preserveNotice = false,
   ) => {
+    if (!mounted.current) return;
+    const owner = getMailCacheScope();
+    const key = host.current.ownerKey;
+    const current = () => mounted.current && getMailCacheScope() === owner && host.current.matches && host.current.ownerKey === key;
+    if (!owner.userId || !owner.activeTransportId || !current()) return;
     const query = workItemsFromTrpc(trpcRef.current).list?.query;
     if (!query) {
-      if (mounted.current && filterRef.current === requestedFilter) {
-        setView((prev) => ({ ...prev, status: 'unavailable' }));
+      if (current() && filterRef.current === requestedFilter) {
+        setView((prev) => current() ? { ...emptyView(owner, key), status: 'unavailable' } : prev);
       }
       return;
     }
 
     const sequence = ++loadSequence.current[requestedFilter];
-    if (mounted.current && filterRef.current === requestedFilter) {
+    const accepted = () => current() && sequence === loadSequence.current[requestedFilter];
+    if (current() && filterRef.current === requestedFilter) {
       setView((prev) => {
-        const hasLoaded = requestedFilter === 'open' ? prev.openLoaded : prev.finishedLoaded;
+        if (!current()) return prev;
+        const existing = prev.scope === owner && prev.ownerKey === key ? prev : emptyView(owner, key);
+        const hasLoaded = requestedFilter === 'open' ? existing.openLoaded : existing.finishedLoaded;
         return {
-          ...prev,
-          status: hasLoaded ? prev.status : 'loading',
+          ...existing,
+          status: hasLoaded ? existing.status : 'loading',
           ...(preserveNotice ? {} : { notice: null }),
         };
       });
@@ -132,23 +163,25 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
       const result = await query({
         limit: NEEDS_YOU_LIMIT,
         statuses: FILTER_STATUSES[requestedFilter],
-      });
+      }, inMailbox(owner.activeTransportId));
       const rows = requestedFilter === 'open'
         ? result.filter((row) => !dismissed.current.has(row.id))
         : result;
-      if (!mounted.current || sequence !== loadSequence.current[requestedFilter]) return;
-      setView((prev) => ({
-        ...prev,
+      if (!accepted()) return;
+      setView((prev) => accepted() ? {
+        ...(prev.scope === owner && prev.ownerKey === key ? prev : emptyView(owner, key)),
         ...(requestedFilter === 'open'
           ? { openRows: rows, openLoaded: true }
           : { finishedRows: rows, finishedLoaded: true }),
         ...(filterRef.current === requestedFilter
           ? { status: 'ready' as const, ...(preserveNotice ? {} : { notice: null }) }
           : {}),
-      }));
+      } : prev);
     } catch {
-      if (mounted.current && sequence === loadSequence.current[requestedFilter] && filterRef.current === requestedFilter) {
-        setView((prev) => ({ ...prev, status: 'failed' }));
+      if (accepted() && filterRef.current === requestedFilter) {
+        setView((prev) => accepted()
+          ? { ...(prev.scope === owner && prev.ownerKey === key ? prev : emptyView(owner, key)), status: 'failed' }
+          : prev);
       }
     }
   }, []);
@@ -168,7 +201,7 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
 
   useEffect(() => {
     void load(filter);
-  }, [filter, load]);
+  }, [filter, load, scope, ownerKey, matches]);
 
   const setFilter = useCallback((next: NeedsYouFilter) => {
     if (filterRef.current === next) return;
@@ -183,20 +216,27 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
       const mutate = client.dismiss?.mutate;
       if (!mutate || pendingDismissals.current.has(workItemId)) return;
 
+      const ownerScope = getMailCacheScope();
+      const ownerHost = host.current;
+      if (!ownerHost.matches || view.ownerKey !== ownerHost.ownerKey || view.scope !== ownerScope ||
+          !ownerScope.userId || !ownerScope.activeTransportId || !ownerHost.sessionId) return;
+      const transportId = ownerScope.activeTransportId;
+      const owner = { workItemId, transportId };
+      const expectedActor = { userId: ownerScope.userId, sessionId: ownerHost.sessionId };
+      // A return to the same mailbox is a new scope, not the original view.
+      const mailboxChanged = () => getMailCacheScope() !== ownerScope || !host.current.matches ||
+        host.current.ownerKey !== ownerHost.ownerKey;
+
       const row = view.openRows.find((item) => item.id === workItemId);
       if (!row) return;
       const index = view.openRows.indexOf(row);
       dismissed.current.add(workItemId);
-      setView((prev) => ({
+      setView((prev) => prev.scope === ownerScope && !mailboxChanged() ? {
         ...prev,
         openRows: prev.openRows.filter((item) => item.id !== workItemId),
         notice: null,
-      }));
+      } : prev);
 
-      const transportId = getMailCacheScope().activeTransportId;
-      const owner = { workItemId, transportId };
-      // After a mailbox switch the list shows another mailbox: re-read it instead of putting this row into it.
-      const mailboxChanged = () => getMailCacheScope().activeTransportId !== transportId;
       const undo = () => {
         const pending = pendingDismissals.current.get(workItemId);
         if (!pending) return;
@@ -207,31 +247,48 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
           void load('open', true);
           return;
         }
-        setView((prev) => ({
+        setView((prev) => prev.scope === ownerScope && !mailboxChanged() ? {
           ...prev,
           openRows: restoreAt(prev.openRows, pending.row, pending.index),
           notice: null,
-        }));
+        } : prev);
       };
       const flush = () => {
+        const pending = pendingDismissals.current.get(workItemId);
         pendingDismissals.current.delete(workItemId);
-        const mailbox = inMailbox(transportId);
-        (mailbox ? mutate({ workItemId }, mailbox) : mutate({ workItemId }))
-          .then(() => {
+        const actorChanged = () =>
+          (host.current.userId != null && host.current.userId !== ownerHost.userId) ||
+          (host.current.sessionId != null && host.current.sessionId !== ownerHost.sessionId) ||
+          (getMailCacheScope().userId != null && getMailCacheScope().userId !== ownerHost.userId);
+        const cancel = () => {
+          dismissed.current.delete(workItemId);
+          if (pending) toast.dismiss(pending.toastId);
+          toast.error("Couldn't verify the signed-in user. Dismissal wasn't saved.");
+          if (mounted.current) void load('open', true);
+        };
+        void (async () => {
+          if (actorChanged()) return cancel();
+          let verified;
+          try { verified = (await getSession()).data; } catch { return cancel(); }
+          if (verified?.user?.id !== ownerHost.userId || verified.session?.id !== ownerHost.sessionId || actorChanged())
+            return cancel();
+          const mailbox = inMailbox(transportId);
+          try {
+            await (mailbox ? mutate({ workItemId, expectedActor }, mailbox) : mutate({ workItemId, expectedActor }));
             trackPaneAction({ type: 'item.dismissed' }, owner);
-            return Promise.all([load('open'), load('finished')]);
-          })
-          .catch(() => {
+            await Promise.all([load('open'), load('finished')]);
+          } catch {
             dismissed.current.delete(workItemId);
             if (mounted.current && !mailboxChanged()) {
-              setView((prev) => ({
+              setView((prev) => prev.scope === ownerScope && !mailboxChanged() ? {
                 ...prev,
                 openRows: restoreAt(prev.openRows, row, index),
                 notice: "Couldn't dismiss that email. It is back on your list.",
-              }));
+              } : prev);
             }
             void load('open', true);
-          });
+          }
+        })();
       };
       const timer = setTimeout(flush, NEEDS_YOU_UNDO_MS);
       const toastId = toast('Email dismissed', {
@@ -240,18 +297,19 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
       });
       pendingDismissals.current.set(workItemId, { row, index, timer, flush, toastId });
     },
-    [load, view.openRows],
+    [load, view.openRows, view.scope, view.ownerKey],
   );
 
-  const rows = filter === 'open' ? view.openRows : view.finishedRows;
+  const rows = filter === 'open' ? visible.openRows : visible.finishedRows;
   return {
-    status: view.status,
+    status: visible.status,
     filter,
     rows,
-    openCount: view.openRows.length,
-    openLoaded: view.openLoaded,
-    notice: view.notice,
-    canDismiss: Boolean(workItemsFromTrpc(trpcRef.current).dismiss?.mutate),
+    openCount: visible.openRows.length,
+    openLoaded: visible.openLoaded,
+    notice: visible.notice,
+    canDismiss: matches && view.scope === scope && view.ownerKey === ownerKey &&
+      Boolean(workItemsFromTrpc(trpcRef.current).dismiss?.mutate),
     setFilter,
     reload: () => void load(filterRef.current),
     dismiss,
@@ -478,7 +536,7 @@ export function NeedsYouScreen({
   );
 }
 
-/** The Outlook pane's Needs-you entry, temporarily gated by the default-off rollout flag. */
+/** The Outlook pane's Needs-you entry. */
 export function NeedsYouEntry({
   list,
   onOpen,
@@ -488,7 +546,7 @@ export function NeedsYouEntry({
   onOpen: () => void;
   compact?: boolean;
 }) {
-  if (!NEEDS_YOU_CONTROLS_ENABLED || list.status === 'unavailable') return null;
+  if (list.status === 'unavailable') return null;
   const label = list.openLoaded ? `Needs you (${countLabel(list.openCount)})` : 'Needs you';
   if (compact) {
     return (
@@ -532,7 +590,6 @@ export function NeedsYouWebControl({
   trpc: unknown;
   onOpenThread: (threadId: string, sourceMessageId: string) => void;
 }) {
-  if (!NEEDS_YOU_CONTROLS_ENABLED) return null;
   return <NeedsYouWebControlContent trpc={trpc} onOpenThread={onOpenThread} />;
 }
 
