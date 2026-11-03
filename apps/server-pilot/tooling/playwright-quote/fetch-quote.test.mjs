@@ -11,13 +11,29 @@ const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
 test('Centurion attaches only through its prepared cloud guard',async()=>{
   const calls=[];
-  const policy={reviewed:true}, guard={assertActive(){}};
+  const policy={reviewed:true}, guard={assertActive(){}}, quoteRequest={...request,details:'full'};
   const attached=await quote.attachQuoteSession({href:'ws://localhost:1',env:{},property:{propertyCode:'HRCEN'},secret:{},
-    connectOverCDP:()=>{},buildPolicy:async()=>{calls.push('policy');return policy;},
+    quoteRequest,connectOverCDP:()=>{},buildPolicy:async options=>{calls.push('policy');assert.equal(options.quoteRequest,quoteRequest);return policy;},
     guardedAttach:async options=>{calls.push('guarded');assert.equal(options.policy,policy);return {guard};},
     legacyAttach:async()=>{throw new Error('unexpected legacy fallback');}});
   assert.equal(attached.guard,guard);
   assert.deepEqual(calls,['policy','guarded']);
+});
+test('detail date binds the visible active Cloud tab or legacy label inside the chosen panel',async()=>{
+  const browser=await quote.playwright().chromium.launch({headless:true});
+  try {
+    const page=await browser.newPage();
+    await page.setContent(`<div id="details"><a class="x-tab x-tab-active">Mon 15-MAR-2027</a>
+      <a class="x-tab">Tue 16-MAR-2027</a><a class="x-tab x-tab-active" hidden>Tue 16-MAR-2027</a></div>
+      <div><a class="x-tab x-tab-active">Tue 16-MAR-2027</a></div>`);
+    const panel=page.locator('#details');
+    assert.equal(await quote.selectedDetailDate(panel,'2027-03-15',1000),'Mon 15-MAR-2027');
+    await assert.rejects(quote.selectedDetailDate(panel,'2027-03-16',100),/Timeout/);
+    await panel.evaluate(el=>{el.innerHTML='<span>Selected Date : Monday 15-03-2027</span>';});
+    assert.equal(await quote.selectedDetailDate(panel,'2027-03-15',1000),'Selected Date : Monday 15-03-2027');
+    await panel.evaluate(el=>{el.innerHTML='<a class="x-tab x-tab-active">Mon 15-MAR-2027</a>'.repeat(2);});
+    await assert.rejects(quote.selectedDetailDate(panel,'2027-03-15',1000),/AMBIGUOUS_SELECTED_DETAIL_DATE/);
+  } finally {await browser.close();}
 });
 test('Centurion guard failures never fall back to the legacy reader',async()=>{
   let legacyUsed=false;
