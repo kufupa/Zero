@@ -57,7 +57,7 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { pdfBlockReason } from './document-review';
-import { QuoteBookingHost } from './quote-booking-host';
+import { QuoteBookingHost, type BookingBatchReview } from './quote-booking-host';
 import { ShuttleDraft } from './shuttle-draft';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
 import { QuotePeopleStep } from './quote-people-step';
@@ -476,6 +476,7 @@ export function QuoteWorkflowPanel({
   onContactEdit,
   makeQuote = true,
   workItemPane = null,
+  batchReview,
 }: {
   session: QuoteSession;
   /** Outlook draft creation is capability-checked by the connected mailbox bridge. */
@@ -551,6 +552,8 @@ export function QuoteWorkflowPanel({
   /** Server-backed Make quote. False disables Search availability / Make quote. Default true. */
   makeQuote?: boolean;
   workItemPane?: WorkItemPaneControls | null;
+  /** Unmounted integration seam; source refs always come from the stored work item. */
+  batchReview?: Omit<BookingBatchReview, 'refs'>;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
@@ -1641,6 +1644,8 @@ export function QuoteWorkflowPanel({
         savedStays={savedStays}
         screenshot={screenshot ?? paneSave?.screenshot}
         propertyCode={paneConfig?.propertyCode ?? null}
+        batchReview={batchReview ? { ...batchReview, refs: workItemPane?.refs ?? {},
+          client: workItemPane ? batchReview.client : undefined } : undefined}
       />
     </div>
   );

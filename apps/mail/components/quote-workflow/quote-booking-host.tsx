@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, type ComponentProps } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
@@ -6,6 +6,8 @@ import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
+
+export type BookingBatchReview = NonNullable<ComponentProps<typeof BookingCards>['batchReview']>;
 
 export function QuoteBookingHost({
   session,
@@ -16,6 +18,7 @@ export function QuoteBookingHost({
   screenshot,
   propertyCode,
   onSaveDefault,
+  batchReview,
 }: {
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
@@ -26,6 +29,8 @@ export function QuoteBookingHost({
   screenshot?: PaneStayClient['screenshot'] | null;
   propertyCode?: string | null;
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Disconnected opt-in only; callers must separately authorize the client. */
+  batchReview?: BookingBatchReview;
 }) {
   const confirmation = useConfirmationSources();
   const requestKey = JSON.stringify([
@@ -68,6 +73,7 @@ export function QuoteBookingHost({
               propertyCode={propertyCode}
               confirmation={confirmation}
               onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
+              batchReview={batchReview}
             />
           </Fragment>
         ))}
