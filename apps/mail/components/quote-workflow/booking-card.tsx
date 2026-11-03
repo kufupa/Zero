@@ -1702,7 +1702,8 @@ export function BookingCards({
             runId: outcome.runId,
             screenshots: outcome.screenshots,
             ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON ||
-              (cloudPreview && ['cloud_create_recovery_required', 'write_in_flight'].includes(result.reason))
+              (cloudPreview && typeof result.reason === 'string' &&
+                ['cloud_create_recovery_required', 'write_in_flight'].includes(result.reason))
               ? { statusChip: 'check' as const } : {}),
           };
     } catch {
