@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest';
 import { ThreadDisplay } from '@/components/mail/thread-display';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
+import { beginMailSelectionIntent } from '@/lib/mail/source-message-navigation';
 import { getDefaultStore } from 'jotai';
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   flushCompose: vi.fn(),
   optimisticMove: vi.fn(),
   clearSelection: null as (() => void) | null,
+  selectThread: null as ((value: { threadId: string | null; sourceMessageId: string | null }) => void) | null,
   items: [] as Array<{ id: string }>,
 }));
 
@@ -25,6 +27,7 @@ vi.mock('nuqs', async () => {
       });
       if (!('threadId' in shape)) return [{}, vi.fn()];
       mocks.clearSelection = () => setSelection({ threadId: null, sourceMessageId: null });
+      mocks.selectThread = setSelection;
       return [selection, (value: typeof selection) => {
         mocks.setMailSelection(value);
         setSelection(value);
@@ -77,7 +80,7 @@ vi.mock('@/components/mail/mail-display', () => ({ default: () => null, ThreadAt
 vi.mock('@/components/mail/reply-composer', () => ({ default: () => null }));
 vi.mock('@/components/mail/note-panel', () => ({ NotesPanel: () => null }));
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.items = []; mocks.clearSelection = null; });
+afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.items = []; mocks.clearSelection = null; mocks.selectThread = null; });
 
 it('finishes a pending close when a single inbound message arrives during draft save', async () => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
@@ -109,4 +112,24 @@ it('opens the next thread after a move clears the old selection', async () => {
   await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: null }));
   expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive');
   expect(mocks.flushCompose).toHaveBeenCalledOnce();
+});
+
+it('still moves the clicked thread when a later selection wins the draft-save race', async () => {
+  let finishSave!: () => void;
+  mocks.items = [{ id: 'thread-a' }, { id: 'thread-b' }];
+  mocks.thread = { transportId: 'transport-1', messages: [], latest: undefined };
+  mocks.flushCompose.mockReturnValue(new Promise<void>((resolve) => { finishSave = resolve; }));
+  mocks.optimisticMove.mockImplementation((_ids, _folder, _destination, options) => {
+    if (!options?.preserveSelection) mocks.clearSelection?.();
+  });
+  getDefaultStore().set(focusedIndexAtom, 0);
+  render(<ThreadDisplay />);
+  fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.archive' }));
+  act(() => {
+    beginMailSelectionIntent();
+    mocks.selectThread?.({ threadId: 'thread-b', sourceMessageId: 'message-b' });
+  });
+  await act(async () => finishSave());
+  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive', { preserveSelection: true });
+  expect(mocks.setMailSelection).not.toHaveBeenCalled();
 });

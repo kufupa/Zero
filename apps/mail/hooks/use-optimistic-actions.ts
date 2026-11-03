@@ -413,6 +413,7 @@ export function useOptimisticActions() {
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
+    options?: { preserveSelection?: boolean },
   ) {
     if (!threadIds.length || !destination) return;
 
@@ -426,7 +427,7 @@ export function useOptimisticActions() {
       setBackgroundQueue({ type: 'add', threadId: `thread:${id}` });
     });
 
-    if (threadId && threadIds.includes(threadId)) {
+    if (!options?.preserveSelection && threadId && threadIds.includes(threadId)) {
       setThreadId(null);
       setActiveReplyId(null);
     }

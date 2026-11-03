@@ -290,12 +290,14 @@ const Thread = memo(
 
     const handleNext = useCallback(
       (id: string) => {
-        beginMailSelectionIntent();
-        if (!id || !threads.length || focusedIndex === null)
+        if (!id || !threads.length || focusedIndex === null) {
+          beginMailSelectionIntent();
           return setMailSelection({ threadId: null, sourceMessageId: null });
+        }
         if (focusedIndex < threads.length - 1) {
           const nextThread = threads[focusedIndex];
           if (nextThread) {
+            beginMailSelectionIntent();
             void setMailSelection({ threadId: nextThread.id, sourceMessageId: null });
             // Don't clear activeReplyId - let ThreadDisplay handle Reply All auto-opening
             setFocusedIndex(focusedIndex);

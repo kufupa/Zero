@@ -442,7 +442,12 @@ export function ThreadDisplay() {
       const revision = ++selectionRevision.current;
       const intent = beginMailSelectionIntent();
       await clearComposeContext(revision, intent);
-      if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) return;
+      if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) {
+        // The move belongs to the clicked thread even if staff navigated while
+        // the draft saved. Do not clear or replace their newer selection.
+        optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true });
+        return;
+      }
 
       const nextThread = focusedIndex !== null && focusedIndex < items.length - 1
         ? items[Math.max(1, focusedIndex + 1)] : undefined;
