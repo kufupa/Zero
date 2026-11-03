@@ -25,7 +25,7 @@ Reads may be automatic. Writes are Prepare → staff Go → native guard → Sav
 3. **Create** — single stay after staff approve: existing guest lookup, agency/organization, guarantee, CMS recipient. **Multi-room** = several single-room creates under one staff Go; partial success stays partial; no native linking assumed.
 4. **Filing** — voucher / proof-of-payment attachment filed into the HMS stay's Documents, with readback.
 5. **Amend** — dates, occupancy, rate-plan, retain-rate choice. Manual amount entry is dropped (owner 2026-11-02).
-6. **Cancel** — lab only until the owner says otherwise.
+6. **Cancel** — plan a generic Infor HMS Cloud tool for the general production workflow, not a Labtest-only tool. This is planned scope, not approval or a claim the workflow is enabled/live. Staff Go is required, and any real-guest cancellation still needs explicit owner authority in the executing session, including pane-triggered runs. Never accept a cancellation-penalty dialog.
 
 Backlog: custom rate typed at create, billing, groups/XLSX, OCR/POP intake.
 
