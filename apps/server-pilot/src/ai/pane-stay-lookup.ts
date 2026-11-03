@@ -399,9 +399,9 @@ async function defaultSpawn(
     }));
     // The mounted pane must not present a partial or mismatched record as a found stay.
     if (result.outcome === 'found' && (!result.nativePreimage || result.nativePreimage.confirmation !== input.confirmation)) {
-      return { ...refused('execution_failure'), reason: 'SAVED_STAY_IDENTITY_UNVERIFIED', rows: [] };
+      return { ...refused('execution_failure'), reason: 'SAVED_STAY_IDENTITY_UNVERIFIED', rows: [], runId: undefined };
     }
-    return { ...result, rows: [] };
+    return { ...result, rows: [], runId: result.runId ?? undefined };
   }
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
