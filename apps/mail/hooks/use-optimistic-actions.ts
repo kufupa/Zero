@@ -21,7 +21,7 @@ import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { formatFileSuccessMessage } from '@/lib/mail/file-drag';
-import { beginThreadMove, finishThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
+import { beginThreadMove, cancelThreadMove, finishThreadMove, hasThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -360,10 +360,6 @@ export function useOptimisticActions() {
         setMail({ ...mail, bulkSelected: [] });
       }
 
-      threadIds.forEach((id) => {
-        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-      });
-
       await refreshData();
       removeOptimisticAction(optimisticId);
 
@@ -403,9 +399,6 @@ export function useOptimisticActions() {
     } catch (error) {
       console.error('Action failed:', error);
       removeOptimisticAction(optimisticId);
-      threadIds.forEach((id) => {
-        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-      });
       toast.error('Action failed');
     }
   }
@@ -418,10 +411,14 @@ export function useOptimisticActions() {
   ) {
     if (!threadIds.length || !destination) return;
     if (options?.moveIntent !== undefined &&
-        (threadIds.length !== 1 || !isCurrentThreadMove(threadIds[0]!, options.moveIntent))) return;
+        (threadIds.length !== 1 || !hasThreadMove(threadIds[0]!, options.moveIntent))) return;
     const moveIntents = new Map(threadIds.map((id) => [id, options?.moveIntent ?? beginThreadMove(id)]));
     const currentThreads = () => threadIds.filter((id) => isCurrentThreadMove(id, moveIntents.get(id)!));
     const finishMoves = (ids: string[]) => ids.forEach((id) => finishThreadMove(id, moveIntents.get(id)!));
+    const cancelMoves = (ids: string[]) => ids.forEach((id) => cancelThreadMove(id, moveIntents.get(id)!));
+    const clearFinished = (ids: string[]) => ids.filter((id) => !hasThreadMove(id)).forEach((id) => {
+      setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+    });
 
     const optimisticId = addOptimisticAction({
       type: 'MOVE',
@@ -439,7 +436,10 @@ export function useOptimisticActions() {
     }
 
     if (destination === 'spam') {
-      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).finally(() => finishMoves(threadIds));
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId).finally(() => {
+        finishMoves(threadIds);
+        clearFinished(threadIds);
+      });
       return;
     }
 
@@ -457,7 +457,8 @@ export function useOptimisticActions() {
       optimisticId,
       execute: async () => {
         const activeIds = currentThreads();
-        if (!activeIds.length) return;
+        cancelMoves(threadIds.filter((id) => !activeIds.includes(id)));
+        if (!activeIds.length) { clearFinished(threadIds); return; }
         try {
           if (frontendOnlyDemo) {
             await demoMoveThreadsTo({ threadIds: activeIds, currentFolder, destination });
@@ -473,19 +474,14 @@ export function useOptimisticActions() {
             setMail({ ...mail, bulkSelected: [] });
           }
         } finally {
-          currentThreads().forEach((id) => {
-            setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-          });
           finishMoves(activeIds);
+          clearFinished(activeIds);
         }
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
-        const activeIds = currentThreads();
-        activeIds.forEach((id) => {
-          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
-        });
-        finishMoves(activeIds);
+        cancelMoves(threadIds);
+        clearFinished(threadIds);
       },
       toastMessage: successMessage,
       folders: [currentFolder, destination],

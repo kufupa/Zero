@@ -148,7 +148,26 @@ it('honors the newer move when two moves wait for the same draft save', async ()
   fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.archive' }));
   fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.moveToSpam' }));
   await act(async () => finishSave());
+  expect(mocks.optimisticMove).toHaveBeenCalledTimes(2);
+  expect(mocks.optimisticMove).toHaveBeenNthCalledWith(1, ['thread-a'], 'inbox', 'archive',
+    { preserveSelection: true, moveIntent: expect.any(Number) });
+  expect(mocks.optimisticMove).toHaveBeenNthCalledWith(2, ['thread-a'], 'inbox', 'spam',
+    { moveIntent: expect.any(Number) });
+});
+
+
+it('does not send an older spam action when a newer archive waits for the draft', async () => {
+  let finishSave!: () => void;
+  mocks.items = [{ id: 'thread-a' }, { id: 'thread-b' }];
+  mocks.thread = { transportId: 'transport-1', messages: [], latest: undefined };
+  mocks.flushCompose.mockReturnValue(new Promise<void>((resolve) => { finishSave = resolve; }));
+  mocks.optimisticMove.mockImplementation(() => {});
+  getDefaultStore().set(focusedIndexAtom, 0);
+  render(<ThreadDisplay />);
+  fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.moveToSpam' }));
+  fireEvent.click(screen.getByRole('button', { name: 'common.threadDisplay.archive' }));
+  await act(async () => finishSave());
   expect(mocks.optimisticMove).toHaveBeenCalledOnce();
-  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'spam',
+  expect(mocks.optimisticMove).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive',
     { moveIntent: expect.any(Number) });
 });

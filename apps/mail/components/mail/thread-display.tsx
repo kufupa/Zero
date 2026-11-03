@@ -47,7 +47,7 @@ import {
   shouldSuppressLatestAutoScroll,
   useExactSourceMessageSelection,
 } from '@/lib/mail/source-message-navigation';
-import { beginThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
+import { beginThreadMove, cancelThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -443,8 +443,19 @@ export function ThreadDisplay() {
       const moveIntent = beginThreadMove(id);
       const revision = ++selectionRevision.current;
       const intent = beginMailSelectionIntent();
-      await clearComposeContext(revision, intent);
-      if (!isCurrentThreadMove(id, moveIntent)) return;
+      try {
+        await clearComposeContext(revision, intent);
+      } catch (error) {
+        cancelThreadMove(id, moveIntent);
+        throw error;
+      }
+      if (!isCurrentThreadMove(id, moveIntent)) {
+        // Spam dispatches immediately; a superseded draft-stage spam must not
+        // send before the later action. Other moves remain undoable in queue.
+        if (destination === 'spam') cancelThreadMove(id, moveIntent);
+        else optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true, moveIntent });
+        return;
+      }
       if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) {
         // The move belongs to the clicked thread even if staff navigated while
         // the draft saved. Do not clear or replace their newer selection.

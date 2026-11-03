@@ -60,3 +60,29 @@ it('still archives unaffected threads in an older bulk move', async () => {
   }));
   await waitFor(() => expect(optimisticActionsManager.pendingActions.size).toBe(0));
 });
+
+
+it('restores an older pending archive when a newer bin move is undone', async () => {
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-c'], 'inbox', 'archive'));
+  const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-c'], 'inbox', 'bin'));
+  const bin = mocks.toast.mock.calls[1]![1] as { action: { onClick: () => void } };
+  act(() => bin.action.onClick());
+  await act(async () => { archive.onAutoClose(); });
+  await waitFor(() => expect(mocks.move).toHaveBeenCalledWith({
+    threadIds: ['thread-c'], currentFolder: 'inbox', destination: 'archive',
+  }));
+  expect(mocks.move).toHaveBeenCalledOnce();
+});
+
+it('does not revive an older move that already expired when a newer move is undone', async () => {
+  const { result } = renderHook(() => useOptimisticActions());
+  act(() => result.current.optimisticMoveThreadsTo(['thread-d'], 'inbox', 'archive'));
+  const archive = mocks.toast.mock.calls[0]![1] as { onAutoClose: () => void };
+  act(() => result.current.optimisticMoveThreadsTo(['thread-d'], 'inbox', 'bin'));
+  const bin = mocks.toast.mock.calls[1]![1] as { action: { onClick: () => void } };
+  await act(async () => { archive.onAutoClose(); });
+  act(() => bin.action.onClick());
+  expect(mocks.move).not.toHaveBeenCalled();
+});
