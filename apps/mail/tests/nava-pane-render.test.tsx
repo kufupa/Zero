@@ -700,16 +700,37 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
     expect(screen.getByText(/Guest Smith/)).toBeDefined();
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+      { context: { activeTransportId: 'transport-1' } });
   });
 
   it('keeps the Find the booking card hidden for an email that is not a voucher', async () => {
     analysisForBookingVoucher();
     render(<NavaPane bridge={fakeBridge} />);
     await waitFor(() =>
-      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+        { context: { activeTransportId: 'transport-1' } }),
     );
     expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+  });
+
+  it('clears the voucher when session identity goes missing', async () => {
+    analysisForBookingVoucher();
+    voucherFindQuery.mockResolvedValue({ status: 'voucher', messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' }, file: null });
+    const previous = bridgeMockState.sessionId;
+    try {
+      const { rerender } = render(<NavaPane bridge={fakeBridge} />);
+      expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
+      const calls = voucherFindQuery.mock.calls.length;
+      bridgeMockState.sessionId = '';
+      rerender(<NavaPane bridge={fakeBridge} />);
+      expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+      await act(async () => {});
+      expect(voucherFindQuery).toHaveBeenCalledTimes(calls);
+    } finally {
+      bridgeMockState.sessionId = previous;
+    }
   });
 
   /**
@@ -3546,7 +3567,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(bridgeMockState.analyseCalls).toBe(0);
     expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
     expect(bridgeMockState.storedWorkLookups).toBe(1);
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+      { context: { activeTransportId: 'transport-1' } });
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 

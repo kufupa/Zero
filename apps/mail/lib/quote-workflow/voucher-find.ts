@@ -1,4 +1,5 @@
 import { formatStayDate } from './amend-find';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 
 /**
  * The "Find the booking" card for voucher and proof-of-payment mail. The server reads the guest surname and arrival
@@ -39,16 +40,17 @@ export type VoucherFindClient = {
 
 type TrpcVoucherRoutes = {
   quoteWorkflow?: {
-    voucherFind?: { query: (input: { internetMessageId: string }) => Promise<VoucherFindReply> };
+    voucherFind?: { query: (input: { internetMessageId: string }, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
   };
 };
 
 /** Binds quoteWorkflow.voucherFind off a tRPC client. Null when the route is missing. */
-export function voucherFindClientFromTrpc(trpc: unknown): VoucherFindClient | null {
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+export function voucherFindClientFromTrpc(trpc: unknown, transportId: string | null): VoucherFindClient | null {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const route = (trpc as TrpcVoucherRoutes).quoteWorkflow?.voucherFind;
   if (!route) return null;
-  return { check: (input) => route.query(input) };
+  return { check: (input) => route.query(input, mailbox) };
 }
 
 export const VOUCHER_COPY = {

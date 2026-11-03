@@ -8,6 +8,7 @@ import { parseEnv } from '../env.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
 import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import {
   HMS_WRITE_RUN_KIND,
   NONTERMINAL_AI_RUN_STATES,
@@ -76,6 +77,7 @@ export type HmsApprovalRefusal =
   | 'no_executed_write'
   | 'already_reviewed'
   | 'form_outdated'
+  | 'filing_unavailable'
   | 'run_changed';
 
 export class HmsApprovalError extends Error {
@@ -409,6 +411,10 @@ export async function approveHmsWrite(input: {
     if (!item) throw new HmsApprovalError('not_found');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
+    const target = paneStayHmsTargetForTransport(input.transportId);
+    if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
+      throw new HmsApprovalError('filing_unavailable');
+    }
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }
@@ -502,6 +508,10 @@ export async function resolveHmsNeedsCheck(input: {
       .limit(1)
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
+    const target = paneStayHmsTargetForTransport(input.transportId);
+    if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
+      throw new HmsApprovalError('filing_unavailable');
+    }
     await assertNoWriteInFlight(tx as DB, item.id);
     const runId = await unresolvedNeedsCheckRunId(tx as DB, item.id);
     if (!runId) throw new HmsApprovalError('no_needs_check');
@@ -1092,6 +1102,8 @@ export type HmsWriteStateView = {
   } | null;
   /** True while a needs-check blocks approval and review: the outcome is unknown until someone reads HMS back. */
   needsCheck: boolean;
+  /** False while HRCEN document filing has only a read-only preview. */
+  filingAvailable?: boolean;
 };
 
 const HEX_SHA256 = /^[a-f0-9]{64}$/;
@@ -1186,8 +1198,11 @@ export async function hmsWriteStateOf(input: {
       reviewed,
     };
   }
+  const target = paneStayHmsTargetForTransport(input.transportId);
   return {
     status: item.status,
+    ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')
+      ? { filingAvailable: false } : {}),
     form: maskedStrings(formOf(item.state)),
     formDigest: formDigest(item.state),
     before: storedValues.success ? maskedStrings(storedValues.data) : null,

@@ -6,7 +6,9 @@ import { FakeS3Storage } from '../src/storage/s3.js';
 
 const identity = { transportId: 'transport-1', messageId: 'canonical-message', attachmentId: 'attachment-1' };
 const bytes = Buffer.from('%PDF-1.7 synthetic voucher');
-const makeRow = () => ({ ...identity, mailboxId: 'mailbox-1', uidl: 'uidl-1', direction: 'inbound',
+const makeRow = () => ({ ...identity, threadId: 'thread-1', subject: 'Voucher', textBody: 'Please file this',
+  htmlBody: '<p>Please file this</p>', fromAddress: 'sender@example.test', toAddresses: ['staff@example.test'],
+  ccAddresses: [] as string[], mailboxId: 'mailbox-1', uidl: 'uidl-1', direction: 'inbound',
   historyOnly: false, provenance: null as null | { attention: string }, filename: 'voucher.pdf',
   mimeType: 'application/pdf', sizeBytes: bytes.length, sha256: null as string | null,
   s3Key: 'attachments/original-ingest-id/001-voucher.pdf', isInline: false });
@@ -52,6 +54,10 @@ describe('pane POP3 attachment binding', () => {
     const approved = await readPanePop3Attachment(s.input);
     expect(approved).not.toBeNull();
     s.set({ uidl: 'other-uidl' });
+    expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
+    s.set({ textBody: 'Different request' });
+    expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
+    s.set({ threadId: 'other-thread' });
     expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
     s.set({});
     const altered = Buffer.from(bytes); altered[6] ^= 1;

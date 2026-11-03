@@ -16,9 +16,11 @@ export async function readPanePop3Attachment(input: Identity & {
 }): Promise<{ source: Source; bytes: Buffer; locator: AttachmentLocator } | null> {
   const load = async (): Promise<Candidate | null> => {
     const rows = await input.db.select({
-      transportId: message.transportId, messageId: message.id, attachmentId: attachment.id,
+      transportId: message.transportId, messageId: message.id, threadId: message.threadId, attachmentId: attachment.id,
       mailboxId: message.ingestMailboxId, uidl: message.pop3Uidl, direction: message.direction,
       historyOnly: message.historyOnly, provenance: message.sourceProvenance,
+      subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
+      fromAddress: message.fromAddress, toAddresses: message.toAddresses, ccAddresses: message.ccAddresses,
       filename: attachment.filename, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes,
       sha256: attachment.sha256, s3Key: attachment.s3Key, isInline: attachment.isInline,
     }).from(attachment).innerJoin(message, eq(message.id, attachment.messageId)).where(and(
@@ -41,6 +43,7 @@ export async function readPanePop3Attachment(input: Identity & {
     const locator: AttachmentLocator = { s3Key: row.s3Key, messageId: key[1]!, mimeType: row.mimeType,
       sizeBytes: row.sizeBytes, sha256: row.sha256 };
     const fingerprint = createHash('sha256').update(JSON.stringify([input.s3.bucket, row.transportId, row.messageId,
+      row.threadId, row.subject, row.textBody, row.htmlBody, row.fromAddress, row.toAddresses, row.ccAddresses,
       row.attachmentId, row.mailboxId, row.uidl, row.filename, row.mimeType, row.sizeBytes, row.sha256, row.s3Key])).digest('hex');
     return { locator, filename: row.filename, fingerprint, sha256: row.sha256 };
   };

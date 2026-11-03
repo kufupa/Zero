@@ -27,6 +27,7 @@ export type HmsWriteView = {
     reviewed: 'ok' | 'flag' | null;
   } | null;
   needsCheck: boolean;
+  filingAvailable?: boolean;
 };
 
 export type HmsApproved = { grantId: string; runId: string; hmsReadAt: string; expiresAt: string };

@@ -117,6 +117,15 @@ function renderCard(
 afterEach(() => cleanup());
 
 describe('ApproveCard approval', () => {
+  it('disables Go and hides note-based resolution for unavailable filing', async () => {
+    const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
+      filingAvailable: false, needsCheck: true, run: runWith('dead_letter', { failureClass: 'LEASE_LOST' }) }));
+    renderCard(client);
+    expect((await screen.findByRole('button', { name: 'Go' })).hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
+    expect(client.approve).not.toHaveBeenCalled();
+    expect(client.resolveNeedsCheck).not.toHaveBeenCalled();
+  });
   it('lists each changed value as before to after, with one Approve button', async () => {
     renderCard(fakeClient(viewWith()));
     const list = await screen.findByRole('list', { name: 'Values to write' });
