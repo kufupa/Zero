@@ -8,10 +8,13 @@ import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-read
 import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
 import { digestCloudCreateRequest } from './create-request-binding.mjs';
+import { normalizeCreateTrack } from './create-track.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
 const code = (value, limit) => typeof value === 'string' && value === value.trim() && value.length > 0 && value.length <= limit && !/[\r\n]/.test(value);
+const exactField = (value, limit) => code(value, limit) &&
+  ![...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
 const date = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') &&
   !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const stop = (outcome, issue, extra = {}) => { throw Object.assign(new Error(issue), { result: { outcome, issue, ...extra } }); };
@@ -32,8 +35,21 @@ function validate(input) {
     fidelity.unsupported.push({ field: 'billingReference', issue: 'commit_only' });
   }
   if (input.cms?.messageId != null && !code(input.cms.messageId, 100)) fidelity.invalid.push('cms.messageId');
+  if (input.cms?.recipient != null && (!exactField(input.cms.recipient, 255) ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.cms.recipient))) fidelity.invalid.push('cms.recipient');
+  if (input.mode === 'prepare' && input.cms?.recipient != null && input.cms.send !== false) {
+    fidelity.unsupported.push({ field: 'cms.recipient', issue: 'explicit_no_send_required' });
+  }
+  if (input.booker && (Object.keys(input.booker).length === 0 ||
+      (input.booker.name != null && !exactField(input.booker.name, 50)) ||
+      (input.booker.contact != null && !exactField(input.booker.contact, 80)))) fidelity.invalid.push('booker');
   if (input.reasonForStay != null && !code(input.reasonForStay, 100)) fidelity.invalid.push('reasonForStay');
   if (input.cms?.send === true) fidelity.unsupported.push({ field: 'cms.send', issue: 'sending_not_supported' });
+  if (input.mode === 'prepare' && input.track != null && !normalizeCreateTrack(input.track)) {
+    fidelity.unsupported.push({ field: 'track', issue: 'track_not_supported' });
+  }
+  if (input.mode === 'prepare' && input.guestoptin4 === true) fidelity.unsupported.push({ field: 'guestoptin4', issue: 'opt_in_not_supported' });
+  if (input.guestoptin4 != null && typeof input.guestoptin4 !== 'boolean') fidelity.invalid.push('guestoptin4');
   if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
   if (input.guaranteeType != null && !isSupportedLabtestGuarantee(input.guaranteeType)) {
     fidelity.unsupported.push({ field: 'guaranteeType', issue: 'guarantee_not_supported_yet' });
@@ -93,11 +109,14 @@ const requestShape = {
   room: ['roomType', 'ratePlan'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
   cms: ['send', 'messageId', 'recipient'], booker: ['name', 'contact'],
 };
-const unsupportedPaths = new Set(['booker', 'cms.recipient',
-  'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient']);
+const unsupportedPaths = new Set(['price', 'marketSegment', 'confirmationRecipient']);
+// These fields are observed on an unsaved form only. Existing commit callers
+// must continue to refuse them until native Save and fresh readback bind them.
+const prepareOnlyPaths = new Set(['booker', 'cms.recipient', 'track', 'guestoptin4']);
 const optionalNoClear = new Set(['billingReference', 'sourceOfBusiness', 'reasonForStay', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
   'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'parties.agencyId', 'parties.agencyName',
-  'parties.arAccountId', 'parties.arAccountName', 'cms.send', 'cms.messageId']);
+  'parties.arAccountId', 'parties.arAccountName', 'cms.send', 'cms.messageId', 'cms.recipient',
+  'booker', 'booker.name', 'booker.contact', 'track', 'guestoptin4']);
 
 function inspectRequest(input) {
   const unsupported = [], invalid = [];
@@ -111,9 +130,10 @@ function inspectRequest(input) {
     for (const [key, value] of Object.entries(object)) {
       const field = path ? `${path}.${key}` : key;
       if (!requestShape[path].includes(key)) { unknown(value, field); continue; }
-      if (unsupportedPaths.has(field)) addUnsupported(field);
+      const fieldUnsupported = unsupportedPaths.has(field) || (input.mode === 'commit' && prepareOnlyPaths.has(field));
+      if (fieldUnsupported) addUnsupported(field);
       if (value === undefined) { invalid.push(field); continue; }
-      if (value === null && optionalNoClear.has(field)) { addUnsupported(field); continue; }
+      if (value === null && optionalNoClear.has(field)) { if (!fieldUnsupported) addUnsupported(field); continue; }
       if (Object.hasOwn(requestShape, field)) {
         if (value === null) {
           if (['parties', 'cms'].includes(field)) addUnsupported(field);
@@ -333,6 +353,10 @@ function draftRequestBinding(input, state, output, formFields) {
     ...(Object.keys(parties).length ? { parties } : {}),
     ...(Object.hasOwn(output.applied, 'note') ? { note: output.applied.note } : {}),
     ...(state.cms ? { cmsMessageId: state.cms.actual } : {}),
+    ...(state.cmsRecipient !== undefined ? { cmsRecipient: state.cmsRecipient } : {}),
+    ...(state.booker ? { booker: state.booker } : {}),
+    ...(state.track ? { track: state.track } : {}),
+    ...(input.guestoptin4 === false ? { guestOptIn: false } : {}),
     sendHmsConfirmation: { kind: 'never' },
   };
   return digestCloudCreateRequest(request);
@@ -473,7 +497,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         }
       }
       if (commit && missing.length) return;
-      if (commit) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
+      if (commit || input.cms?.recipient != null) await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
       // Only verified Labtest prepares get a synthetic note. Commit reuses its input.
       const note = input.note === undefined && !commit && labtestDraft
         ? `Proof Labtest create ${randomUUID()}` : input.note;
@@ -481,6 +505,18 @@ export async function createReservation(input, { withSession = withBookingLookup
         const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'reservationNote', value: note });
         if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });
         output.applied.note = result.actual;
+      }
+      for (const [key, field] of [['name', 'bookerName'], ['contact', 'bookerContact']]) {
+        if (input.booker?.[key] != null) {
+          const result = await call(runTool, 'setGuestStayText', { propertyCode, field, value: input.booker[key] });
+          if (result.actual !== input.booker[key]) stop('uncertain', 'requested_field_not_staged', { field: 'booker.' + key });
+          (state.booker ||= {})[key] = result.actual;
+        }
+      }
+      if (input.cms?.recipient != null) {
+        const result = await call(runTool, 'setGuestStayText', { propertyCode, field: 'cmsRecipient', value: input.cms.recipient });
+        if (result.actual !== input.cms.recipient) stop('uncertain', 'requested_field_not_staged', { field: 'cms.recipient' });
+        state.cmsRecipient = result.actual;
       }
       let form;
       try { form = await call(runTool, 'readGuestStayForm', { propertyCode }); }
@@ -508,7 +544,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.guarantee ? [['guaranteetype', state.guarantee.actual.display]] : []),
         ...(state.cms ? [['udfchar09', state.cms.actual]] : []),
         ...(state.reason ? [['reasonforstay', state.reason.actual.display]] : []),
-        ...(commit || input.cms?.send === false ? [['udfchkbox04', false]] : []),
+        ...(commit || input.cms?.send === false || input.cms?.recipient != null ? [['udfchkbox04', false]] : []),
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
       if (state.guestNameDraft) {
         if (formValue(form.fields, 'guestid') !== '' || formValue(form.fields, 'firstname') !== state.guestNameDraft.firstName ||
@@ -519,6 +555,24 @@ export async function createReservation(input, { withSession = withBookingLookup
       }
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
+      if (input.track != null) {
+        state.track = normalizeCreateTrack(input.track);
+        if (!state.track || formValue(form.fields, 'track') !== state.track.display) {
+          stop('needs_input', 'requested_track_not_staged', { field: 'track' });
+        }
+        output.applied.track = state.track.display;
+      }
+      if (input.guestoptin4 === false) {
+        if (formValue(form.fields, 'guestoptin4') !== false) stop('uncertain', 'draft_readback_mismatch', { field: 'guestoptin4' });
+        output.applied.guestOptIn = false;
+      }
+      for (const [field, expected] of [
+        ...(state.booker?.name !== undefined ? [['caller', state.booker.name]] : []),
+        ...(state.booker?.contact !== undefined ? [['udfchar06', state.booker.contact]] : []),
+        ...(state.cmsRecipient !== undefined ? [['udfchar13', state.cmsRecipient]] : []),
+      ]) if (formValue(form.fields, field) !== expected) stop('uncertain', 'draft_readback_mismatch', { field });
+      if (state.booker) output.applied.booker = { ...state.booker };
+      if (state.cmsRecipient !== undefined) output.applied.cmsRecipient = state.cmsRecipient;
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),
         ...(state.organization ? { organizationId: 'at_selection_only' } : {}),
         ...(state.agency ? { agencyId: 'at_selection_only' } : {}), ...(state.arAccount ? { arAccountId: 'at_selection_only' } : {}) };
@@ -563,7 +617,7 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (state.organization && !state.agency && !state.arAccount && state.save.outcome === 'saved_same_form') {
         state.organizationReadback = await runTool({ tool: 'readSavedLabtestRecord', confirmation: state.save.confirmation });
       }
-    }, { memory: null, ...(commit ? { blockServiceWorkers: true, labtestDates: { arrival: stay.arrival, departure: stay.departure },
+    }, { memory: null, blockServiceWorkers: true, ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure },
       ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}),
       ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}) } : {}) });
   } catch (error) {
@@ -625,6 +679,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     let raw = '';
     for await (const chunk of process.stdin) raw += chunk;
-    process.stdout.write(`${JSON.stringify(await createReservation(JSON.parse(raw)))}\n`);
+    const input = JSON.parse(raw);
+    // The shared cross-workflow write hold is not yet installed on this CLI.
+    const result = input?.mode === 'commit'
+      ? { outcome: 'refused', issue: 'standalone_create_authority_unavailable', approvalReady: false }
+      : await createReservation(input);
+    process.stdout.write(JSON.stringify(result) + '\n');
   } catch { process.stdout.write(`${JSON.stringify({ outcome: 'needs_input', issue: 'invalid_json_or_input' })}\n`); process.exitCode = 1; }
 }

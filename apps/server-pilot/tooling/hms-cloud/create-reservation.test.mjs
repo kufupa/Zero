@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname } from 'node:path';
 import { rm, stat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
 
 const input = {
@@ -83,6 +85,9 @@ function harness(options = {}) {
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
       case 'setGuestStayText':
         if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
+        if (request.field === 'bookerName') partyFields.caller = request.value;
+        if (request.field === 'bookerContact') partyFields.udfchar06 = request.value;
+        if (request.field === 'cmsRecipient') partyFields.udfchar13 = request.value;
         return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
       case 'saveNewLabtestStay':
@@ -127,6 +132,100 @@ test('unsupported commit requests, nested unknowns and explicit clears stop befo
     assert.deepEqual(result.unsupportedFields.map(({ field }) => field).sort(), fields.sort());
   }
   assert.equal(sessions, 0);
+});
+
+test('new fields are visible in an unsaved draft and included in its binding', async () => {
+  const requested = { ...input, mode: 'prepare', track: 'BAR', guestoptin4: false,
+    booker: { name: 'Staff Booker', contact: 'booker@example.test' },
+    cms: { send: false, recipient: 'client@example.test' } };
+  const run = harness({ draft: { ...values, caller: requested.booker.name, udfchar06: requested.booker.contact,
+    udfchar13: requested.cms.recipient, track: 'Best Available', guestoptin4: false } });
+  const result = await createReservation(requested, run.options);
+  assert.equal(result.outcome, 'prepared');
+  assert.equal(result.approvalReady, false);
+  assert.deepEqual(result.applied.booker, requested.booker);
+  assert.equal(result.applied.cmsRecipient, requested.cms.recipient);
+  assert.equal(result.applied.track, 'Best Available');
+  assert.equal(result.applied.guestOptIn, false);
+  assert.deepEqual(result.requestBinding.request.booker, requested.booker);
+  assert.equal(result.requestBinding.request.cmsRecipient, requested.cms.recipient);
+  assert.deepEqual(result.requestBinding.request.track, { lookupCode: 'BAR', display: 'Best Available' });
+  assert.equal(result.requestBinding.request.guestOptIn, false);
+  assert.ok(run.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
+  assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  assert.equal(run.sessionOptions.blockServiceWorkers, true);
+});
+
+test('mismatched new fields never become a prepared draft', async () => {
+  const requested = { ...input, mode: 'prepare', track: 'BAR', guestoptin4: false,
+    booker: { name: 'Staff Booker', contact: 'booker@example.test' },
+    cms: { send: false, recipient: 'client@example.test' } };
+  const draft = { ...values, caller: requested.booker.name, udfchar06: requested.booker.contact,
+    udfchar13: requested.cms.recipient, track: 'Best Available', guestoptin4: false };
+  for (const [field, value, issue] of [
+    ['track', 'Corporate Rate', 'requested_track_not_staged'],
+    ['guestoptin4', true, 'draft_readback_mismatch'],
+    ['caller', 'Other Booker', 'draft_readback_mismatch'],
+    ['udfchar06', 'other@example.test', 'draft_readback_mismatch'],
+    ['udfchar13', 'other@example.test', 'draft_readback_mismatch'],
+  ]) {
+    const run = harness({ draft: { ...draft, [field]: value } });
+    const result = await createReservation(requested, run.options);
+    assert.equal(result.issue, issue, field);
+    assert.notEqual(result.outcome, 'prepared', field);
+    assert.equal(result.requestBinding, undefined, field);
+    assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false, field);
+  }
+});
+
+test('enhanced fields remain unavailable to commit, including programmatic callers', async () => {
+  for (const change of [
+    { booker: { name: 'Staff Booker' } },
+    { cms: { send: false, recipient: 'client@example.test' } },
+    { track: 'BAR' },
+    { guestoptin4: false },
+  ]) {
+    let sessions = 0;
+    const result = await createReservation({ ...input, ...change }, { withSession: async () => { sessions += 1; } });
+    assert.equal(result.outcome, 'unsupported');
+    assert.equal(sessions, 0);
+  }
+});
+
+test('new fields reject malformed input and require explicit CMS no-send', async () => {
+  for (const change of [
+    { booker: { name: 'unsafe\u0000name' } },
+    { booker: {} },
+    { cms: { send: false, recipient: 'not-an-address' } },
+    { guestoptin4: 'false' },
+  ]) {
+    let sessions = 0;
+    const result = await createReservation({ ...input, ...change, mode: 'prepare' },
+      { withSession: async () => { sessions += 1; } });
+    assert.equal(result.outcome, 'needs_input');
+    assert.equal(sessions, 0);
+  }
+  const run = harness();
+  const missingNoSend = await createReservation({ ...input, mode: 'prepare',
+    cms: { recipient: 'client@example.test' } }, run.options);
+  assert.equal(missingNoSend.outcome, 'unsupported');
+  assert.ok(missingNoSend.unsupportedFields.some(({ field, issue }) =>
+    field === 'cms.recipient' && issue === 'explicit_no_send_required'));
+  assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const changed = harness({ draft: { ...values, udfchkbox04: true, udfchar13: 'client@example.test' } });
+  const sendStillOn = await createReservation({ ...input, mode: 'prepare',
+    cms: { send: true, recipient: 'client@example.test' } }, changed.options);
+  assert.equal(sendStillOn.issue, 'draft_readback_mismatch');
+  assert.equal(sendStillOn.field, 'udfchkbox04');
+  assert.equal(changed.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('CLI holds standalone commit without opening a browser', () => {
+  const script = fileURLToPath(new URL('./create-reservation.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, [script], { input: JSON.stringify(input), encoding: 'utf8' });
+  assert.equal(child.status, 0);
+  assert.deepEqual(JSON.parse(child.stdout), { outcome: 'refused', issue: 'standalone_create_authority_unavailable', approvalReady: false });
 });
 
 test('guarded Labtest commit saves once, verifies fresh readback and reconciles uncertainty', async (t) => {
@@ -446,7 +545,7 @@ test('prepare stages supported partial fields while retaining unsupported values
     [{ sourceOfBusiness: null }, ['sourceOfBusiness']],
     [{ note: null }, ['note']],
     [{ cms: { send: true, recipient: null }, price: 2 }, ['cms.send', 'cms.recipient', 'price']],
-    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker', 'booker.surprise']],
+    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker.surprise']],
   ]) {
     const fake = harness();
     const result = await createReservation({ ...input, ...change, mode: 'prepare' }, fake.options);
@@ -702,13 +801,13 @@ test('reason for stay uses current dropdown and saved visible readback', async (
 });
 
 
-test('guarded create requests blocked workers before opening its booking session', async () => {
+test('guarded create and prepare block service workers before opening a booking session', async () => {
   const fake = harness();
   await createReservation(input, fake.options);
   assert.equal(fake.sessionOptions.blockServiceWorkers, true);
   const prepare = harness();
   await createReservation({ ...input, mode: 'prepare' }, prepare.options);
-  assert.equal(prepare.sessionOptions.blockServiceWorkers, undefined);
+  assert.equal(prepare.sessionOptions.blockServiceWorkers, true);
 });
 
 test('explicit billing reference with selected A/R is passed exactly to the guarded writer and fresh readback', async (t) => {

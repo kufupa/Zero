@@ -1,7 +1,10 @@
 # Cloud create reservation
 
-`create-reservation.mjs` prepares an HRCEN Guest Stay from private JSON and
-can commit only a guarded Proof Labtest fake stay. This standalone interface
+`create-reservation.mjs` prepares an unsaved HRCEN Guest Stay from private JSON.
+Its standalone CLI currently refuses every commit because the shared
+cross-workflow write hold is not installed. The programmatic module still
+contains an older fake-only commit path; do not run live commits until that
+path and the other writers participate in the same hold. This interface
 does not implement the owner's staff-approved real-guest booking authorization.
 Caller-supplied approval fields are rejected and do not grant authority. See the
 live proof and limitations below.
@@ -88,8 +91,20 @@ shapes. Explicit unsupported fields and unrecognized nested fields appear in
 refuses the unsupported request before opening a session. Malformed types may take precedence
 as `needs_input`; requested fields are never silently dropped. This
 includes explicit null for an unsupported field or an optional field whose
-clear is not supported. An omitted optional field is different. Booker, CMS recipient, price, track, market
-segment, guest opt-in and confirmation recipient are not staged here.
+clear is not supported. An omitted optional field is different. Price, market
+segment, true guest opt-in and confirmation recipient are not staged here.
+
+Prepare accepts explicit `booker.name`, `booker.contact`, and `cms.recipient`;
+the last requires `cms.send: false`. The values must read back exactly on the
+unsaved form. `track` checks that the form's current display matches the
+requested known code or label; it does not select a track or prove its saved
+native code. `guestoptin4: false` checks the current form value; it does not
+change guest consent. When a complete draft permits a `requestBinding`, these
+observed fields are included in its digest. Existing programmatic commit
+callers reject every one of these new fields until the native save and fresh
+readback bind them. The preview blocks service workers and the known Save and
+Guest Stay Check Availability endpoints; unsaved staging does not prove
+availability, persistence or every possible HMS side effect.
 
 `billingReference` is optional only for commit with an explicit A/R ID and name
 query. It must be caller-supplied, nonblank text without control characters.
@@ -114,7 +129,7 @@ at selection, but fresh saved-record readback exposes age bands rather than
 exact ages. Party IDs are checked at selection only on the unsaved draft. Selected party IDs require separate saved verification. Neither a
 visible label nor a selection proves persistence.
 
-`mode: "commit"` requires complete supported inputs and selects the current
+The legacy programmatic `mode: "commit"` implementation requires complete supported inputs and selects the current
 Proof Labtest profile. Agency, organization and A/R selections are independent.
 A/R additionally requires the current page-bound account/profile proof. The save
 matches selected IDs, party names, the full native body, optional CMS code and reason for stay;

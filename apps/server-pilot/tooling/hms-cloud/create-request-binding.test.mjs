@@ -111,3 +111,20 @@ test('distinguishes absent and explicitly reviewed create notes', () => {
   assert.equal(Object.hasOwn(absent.request, 'note'), false);
   assert.notEqual(absent.normalizedRequestDigest, present.normalizedRequestDigest);
 });
+
+test('binds exact observed booker, recipient, track and no-opt-in values', () => {
+  const fields = { booker: { name: 'Booker', contact: 'booker@example.test' },
+    cmsRecipient: 'client@example.test', track: { lookupCode: 'BAR', display: 'Best Available' }, guestOptIn: false };
+  const original = digestCloudCreateRequest({ ...request, ...fields });
+  assert.equal(original.outcome, 'ok');
+  assert.equal(digestCloudCreateRequest(original.request).normalizedRequestDigest, original.normalizedRequestDigest);
+  for (const changed of [
+    { booker: { ...fields.booker, name: 'Other' } },
+    { cmsRecipient: 'other@example.test' },
+    { track: { ...fields.track, display: 'Different' } },
+  ]) assert.notEqual(digestCloudCreateRequest({ ...request, ...fields, ...changed }).normalizedRequestDigest,
+    original.normalizedRequestDigest);
+  assert.equal(normalizeCloudCreateRequest({ ...request, ...fields, guestOptIn: true }).issue, 'CREATE_GUEST_OPT_IN_UNSUPPORTED');
+  assert.equal(normalizeCloudCreateRequest({ ...request, ...fields, booker: { name: 'Booker\u0000' } }).issue, 'CREATE_BOOKER_INVALID');
+  assert.equal(normalizeCloudCreateRequest({ ...request, ...fields, cmsRecipient: 'bad' }).issue, 'CREATE_CMS_RECIPIENT_INVALID');
+});
