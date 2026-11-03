@@ -1034,6 +1034,7 @@ export function NavaPane({
     const isQuote = quoteSession.analysis?.intent === 'quote' || quoteSession.analysis?.luna?.workflow === 'quote';
     if (
       isNonActionableMessage ||
+      quoteSession.phase === 'analysing' ||
       !isQuote ||
       !source ||
       !binding ||
@@ -1116,6 +1117,7 @@ export function NavaPane({
     priorQuoteKey,
     quoteStrategyRegistryKey,
     staffQuoteQueueMode,
+    quoteSession.phase,
   ]);
 
   useEffect(() => {
