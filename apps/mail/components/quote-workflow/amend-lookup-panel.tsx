@@ -73,6 +73,7 @@ export type AmendReadOnlyContext = {
   propertyCode: 'HRCEN';
   ratePlans: RatePlanCatalogueEntry[];
   selectionCurrent: boolean;
+  sourceContentChanged?: boolean;
 };
 
 type SearchForm = { lastName: string; arrival: string; departure: string };

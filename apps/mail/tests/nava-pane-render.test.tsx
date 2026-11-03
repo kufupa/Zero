@@ -3116,6 +3116,30 @@ describe('NavaPane', () => {
     expect(screen.getByText('Nava cannot confirm the property yet. Open the booking in HMS.')).toBeTruthy();
   });
 
+  it.each(['subject', 'bodyText', 'bodyHtml'] as const)(
+    'hides the HRCEN review if the selected email changes its %s without changing identity', async (field) => {
+      bridgeMockState.quotePaneConfig = {
+        transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+        boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      };
+      bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+      bridgeMockState.analysisOverride = {
+        status: 'ready', intent: 'other', groups: [], secondaryAsks: [], alternatives: [], sourceRevision: 1,
+        amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
+          arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
+      };
+      const pane = render(<NavaPane bridge={fakeBridge} />);
+      expect(await screen.findByLabelText('Requested adults')).toBeTruthy();
+      const changedBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, [field]: 'Changed content' } };
+      pane.rerender(<NavaPane bridge={changedBridge} />);
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+      expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
+      pane.rerender(<NavaPane bridge={fakeBridge} />);
+      expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
+      expect(screen.getByText('This email changed. Reopen it before reviewing the booking.')).toBeTruthy();
+    },
+  );
+
   it('amendment: no requested change shows one plain line and each HMS date once', async () => {
     resolveDavinciProperty();
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');

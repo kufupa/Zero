@@ -517,6 +517,26 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  // Keep a separate display snapshot: a same-ID edit must not leave a settled amend lookup on screen.
+  const amendSourceSnapshot = useRef<{
+    scopeEpoch: number; selectionEpoch: number; internetMessageId?: string;
+    subject: string; bodyText: string; bodyHtml: string; invalidated: boolean;
+  } | null>(null);
+  if (activeEmail && selectedIdentity && (
+    amendSourceSnapshot.current?.scopeEpoch !== contextRevision.current.scopeEpoch ||
+    amendSourceSnapshot.current?.selectionEpoch !== contextRevision.current.selectionEpoch
+  )) {
+    amendSourceSnapshot.current = { scopeEpoch: contextRevision.current.scopeEpoch,
+      selectionEpoch: contextRevision.current.selectionEpoch, internetMessageId: activeEmail.internetMessageId,
+      subject: activeEmail.subject, bodyText: activeEmail.bodyText, bodyHtml: activeEmail.bodyHtml, invalidated: false };
+  }
+  if (activeEmail && amendSourceSnapshot.current && (
+    amendSourceSnapshot.current.internetMessageId !== activeEmail.internetMessageId ||
+    amendSourceSnapshot.current.subject !== activeEmail.subject ||
+    amendSourceSnapshot.current.bodyText !== activeEmail.bodyText ||
+    amendSourceSnapshot.current.bodyHtml !== activeEmail.bodyHtml
+  )) amendSourceSnapshot.current.invalidated = true;
+  const amendSourceChanged = amendSourceSnapshot.current?.invalidated === true;
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
@@ -2516,7 +2536,8 @@ export function NavaPane({
               readOnlyAmend={activePaneConfig?.propertyCode === 'HRCEN' ? {
                 propertyCode: 'HRCEN',
                 ratePlans: activePaneConfig.ratePlans,
-                selectionCurrent: Boolean(activeEmail?.entryId && activeEmail.internetMessageId &&
+                sourceContentChanged: amendSourceChanged,
+                selectionCurrent: Boolean(!amendSourceChanged && activeEmail?.entryId && activeEmail.internetMessageId &&
                   quoteSession.binding?.transportId === activeConnection?.id &&
                   quoteSession.binding?.entryId === activeEmail.entryId &&
                   quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&

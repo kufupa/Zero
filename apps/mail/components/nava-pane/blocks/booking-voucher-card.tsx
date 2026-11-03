@@ -66,6 +66,9 @@ export function BookingVoucherCard({
       {!amendPropertyResolved && amendment ? (
         <p role="status" className="text-[11.5px] text-[#64748b]">Nava cannot confirm the property yet. Open the booking in HMS.</p>
       ) : null}
+      {readOnlyAmend?.sourceContentChanged && amendment ? (
+        <p role="status" className="text-[11.5px] text-[#64748b]">This email changed. Reopen it before reviewing the booking.</p>
+      ) : null}
       {!amendPropertyResolved || readOnlyAmend?.selectionCurrent === false ? null : (
         <AmendLookupPanel
           key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,
