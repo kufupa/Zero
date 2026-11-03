@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
+import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
 
 const input = {
   mode: 'commit', propertyCode: 'HRCEN', guest: { profileId: '123' },
@@ -92,7 +93,9 @@ function harness(options = {}) {
         if (request.field === 'bookerContact') partyFields.udfchar06 = request.value;
         if (request.field === 'cmsRecipient') partyFields.udfchar13 = request.value;
         return { outcome: 'updated_unsaved', actual: request.value };
-      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
+      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft
+        ? { ...options.draft, ...(partyFields.track !== undefined ? { track: partyFields.track } : {}) }
+        : { ...values, ...partyFields }) };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
         return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
@@ -102,6 +105,10 @@ function harness(options = {}) {
     }
   };
   return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, get sessionOptions() { return sessionOptions; }, options: {
+    selectTrack: async (_page, code) => {
+      calls.push({ tool: 'selectTrack', code });
+      if (!options.trackUnchanged) partyFields.track = normalizeCreateTrack(code)?.display;
+    },
     withSession: async (operation, options) => { sessionOptions = options; return operation({ runTool, page: { screenshot: async () => Buffer.from('private screenshot') },
       labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
@@ -272,7 +279,7 @@ test('track and false guest opt-in match preview, native Save and fresh readback
   assert.equal(save.guestOptIn, false);
   assert.deepEqual(saved.readback.mismatches, []);
 
-  const changedTrack = harness({ draft: { ...seen, track: 'Corporate Rate' } });
+  const changedTrack = harness({ draft: { ...seen, track: 'Corporate Rate' }, trackUnchanged: true });
   const refused = await createReservation(requested, changedTrack.options);
   assert.equal(refused.issue, 'requested_track_not_staged');
   assert.equal(changedTrack.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
@@ -286,6 +293,23 @@ test('track and false guest opt-in match preview, native Save and fresh readback
   if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
   assert.equal(uncertain.outcome, 'uncertain');
   assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'guestOptIn'));
+});
+
+test('stages the reviewed track when the rate supplied a different default', async (t) => {
+  const request = { ...input, track: 'COR', guestoptin4: false };
+  const initial = { ...values, track: 'Best Available', guestoptin4: false };
+  const prepare = harness({ draft: initial });
+  const preview = await createReservation({ ...request, mode: 'prepare' }, prepare.options);
+  assert.equal(preview.outcome, 'prepared');
+  assert.deepEqual(preview.requestBinding.request.track, { lookupCode: 'COR', display: 'Corporate Rate' });
+  assert.deepEqual(prepare.calls.filter(({ tool }) => tool === 'selectTrack'), [{ tool: 'selectTrack', code: 'COR' }]);
+  const commit = harness({ draft: initial, record: { ...initial, track: 'Corporate Rate' } });
+  const saved = await createReservation(request, { ...commit.options, expectedRequestDigest: preview.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.equal(commit.calls.find(({ tool }) => tool === 'saveNewLabtestStay').track, 'Corporate Rate');
+  assert.deepEqual(saved.readback.mismatches, []);
 });
 
 test('booker and no-send CMS recipient survive native staging and fresh readback', async (t) => {
@@ -1073,4 +1097,16 @@ test('native guard callbacks travel only in server-owned commit session options'
   await createReservation({ ...input, mode: 'prepare' }, { ...prepare.options, authorizeCandidate, dispatchCandidate });
   assert.equal(Object.hasOwn(prepare.sessionOptions, 'authorizeCandidate'), false);
   assert.equal(Object.hasOwn(prepare.sessionOptions, 'dispatchCandidate'), false);
+});
+
+test('staff create holds confirmation when fresh native no-party readback disagrees', async (t) => {
+  let checked;
+  const fake = harness({ partyReadback: (request) => { checked = request; return { outcome: 'unverified' }; } });
+  const result = await createReservation(input, { ...fake.options,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(checked.agency, null);
+  assert.equal(checked.organization, null);
+  assert.equal(checked.arAccount, null);
 });

@@ -84,6 +84,19 @@ async function readHistory(tx: CreateFenceTransaction) {
   return { active, grants };
 }
 
+const historyEpoch = (history: Awaited<ReturnType<typeof readHistory>>) =>
+  createHash('sha256').update([...history.grants].sort().join('\0')).digest('hex');
+
+/** Snapshot the append-only writer history before reading an HMS preimage. */
+export async function captureHmsLabtestDispatchEpoch(db: DB): Promise<string> {
+  return db.transaction(async (tx) => {
+    await lockProperty(tx);
+    const history = await readHistory(tx);
+    if (history.active.length) throw new HmsLabtestDispatchError('occupied');
+    return historyEpoch(history);
+  }, { isolationLevel: 'read committed' });
+}
+
 /**
  * Atomic one-shot claim across all HRCEN Proof Labtest profiles. The caller must
  * independently verify the native profile and validate operation-specific
@@ -97,9 +110,10 @@ async function readHistory(tx: CreateFenceTransaction) {
  */
 export async function claimHmsLabtestDispatch(
   db: DB, raw: Claim, authorize: (tx: CreateFenceTransaction, input: Readonly<Claim>) => Promise<void>,
+  expectedEpoch: string,
 ): Promise<HmsLabtestWriteHandle> {
   const parsed = claimSchema.safeParse(raw);
-  if (!parsed.success || typeof authorize !== 'function' ||
+  if (!parsed.success || typeof authorize !== 'function' || !digest.safeParse(expectedEpoch).success ||
       (parsed.data.operation === 'create') !== Boolean(parsed.data.stayId)) throw new HmsLabtestDispatchError('invalid');
   const input = Object.freeze(parsed.data);
   let encoded: string;
@@ -112,7 +126,9 @@ export async function claimHmsLabtestDispatch(
   await db.transaction(async (tx) => {
     await lockProperty(tx);
     const history = await readHistory(tx);
-    if (history.active.length || history.grants.has(input.grantId)) throw new HmsLabtestDispatchError('occupied');
+    if (history.active.length || historyEpoch(history) !== expectedEpoch || history.grants.has(input.grantId)) {
+      throw new HmsLabtestDispatchError('occupied');
+    }
     await authorize(tx, input);
     if (canonicalJson(input) !== encoded) throw new HmsLabtestDispatchError('invalid');
     await tx.insert(workEvent).values({ id: holdId, workItemId: input.workItemId, actorKind: 'system',

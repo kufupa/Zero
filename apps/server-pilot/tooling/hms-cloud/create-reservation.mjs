@@ -10,6 +10,7 @@ import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
 import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
 import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
+import { fillTrackBeforeGuarantee } from '../playwright-quote/create-lab-stay.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -362,7 +363,7 @@ function draftRequestBinding(input, state, output, formFields) {
 /** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
   partyReadback = readCreateParties, census, authorizeCandidate, dispatchCandidate, expectedRequestDigest,
-  capturePrepareScreenshot = false, requireExplicitGuestSelection = false } = {}) {
+  capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
       ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)) ||
@@ -435,6 +436,10 @@ export async function createReservation(input, { withSession = withBookingLookup
           if (selected.code !== room.ratePlan) stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
           output.applied.ratePlan = selected.code;
         }
+      }
+      state.track = input.track != null ? normalizeCreateTrack(input.track) : null;
+      if (state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
+        await selectTrack(page, state.track.lookupCode);
       }
       if (text(input.sourceOfBusiness)) {
         state.source = await selectSource(runTool, input.sourceOfBusiness);
@@ -561,7 +566,6 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
       if (input.track != null) {
-        state.track = normalizeCreateTrack(input.track);
         if (!state.track || formValue(form.fields, 'track') !== state.track.display) {
           stop('needs_input', 'requested_track_not_staged', { field: 'track' });
         }
@@ -684,7 +688,7 @@ export async function createReservation(input, { withSession = withBookingLookup
     if (state.cms && formValue(output.readback.fields, 'udfchar09') !== state.cms.actual) {
       output.readback.mismatches.push({ field: 'cmsMessageId', issue: 'missing_or_mismatched' });
     }
-    if (state.agency || state.organization || state.arAccount) {
+    if (authorizeCandidate || state.agency || state.organization || state.arAccount) {
       output.readback.partyProof = await partyReadback({ confirmation: output.confirmation, arrival: stay.arrival,
         guestId: state.guest.selected.nativeId,
         agency: state.agency ? { nativeId: state.agency.nativeId, name: state.agency.displayedAgency } : null,
@@ -693,7 +697,7 @@ export async function createReservation(input, { withSession = withBookingLookup
           profileId: state.save.arProfileId } : null,
         ...(input.billingReference != null ? { billingReference: input.billingReference } : {}) });
     }
-    const partiesVerified = !(state.agency || state.organization || state.arAccount) ||
+    const partiesVerified = !(authorizeCandidate || state.agency || state.organization || state.arAccount) ||
       output.readback.partyProof?.outcome === 'verified';
     const callbacksDrained = !authorizeCandidate || state.save.dispatchCallbacksDrained === true;
     if (state.save.outcome === 'saved_same_form' && callbacksDrained && !state.afterScreenshotFailed && !state.sessionFailedAfterSave &&

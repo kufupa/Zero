@@ -53,6 +53,7 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', () => {
     constructor(readonly reason: string) { super(`hms_labtest_dispatch_${reason}`); }
   }
   return { HmsLabtestDispatchError,
+    captureHmsLabtestDispatchEpoch: async () => '0'.repeat(64),
     claimHmsLabtestDispatch: async (_db: unknown, input: Record<string, unknown>, authorize: (tx: unknown, input: Record<string, unknown>) => Promise<void>) => {
       h.createMutexCalls += 1; h.onCreateMutex?.();
       if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');

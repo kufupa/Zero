@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch } from '../src/ai/hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, resolveHmsLabtestDispatch } from '../src/ai/hms-labtest-dispatch.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 
 const binding = digestCloudCreateRequest({ propertyCode: 'HRCEN',
@@ -42,7 +42,26 @@ function historyDb() {
   return { rows, db: { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(tx) } as unknown as DB };
 }
 
+async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWithEpoch>[1], authorize: Parameters<typeof claimWithEpoch>[2]) {
+  return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db));
+}
+
 describe('shared Labtest dispatch intent', () => {
+  it('rejects an intervening completed writer even when the preimage lock is lost', async () => {
+    const fake = historyDb(), staleEpoch = await captureHmsLabtestDispatchEpoch(fake.db);
+    const handle = await claimWithEpoch(fake.db, input(), async () => {}, staleEpoch);
+    await resolveHmsLabtestDispatch(fake.db, handle, { operation: 'create', confirmation: '123456-1',
+      readbackDigest: 'e'.repeat(64), savedShot: { runId: randomUUID(), sha256: 'f'.repeat(64) } }, async () => {});
+    let continued = false;
+    await expect(claimWithEpoch(fake.db, { ...input(), grantId: randomUUID() }, async () => { continued = true; }, staleEpoch))
+      .rejects.toMatchObject({ reason: 'occupied' });
+    expect(continued).toBe(false);
+    const nextEpoch = await captureHmsLabtestDispatchEpoch(fake.db);
+    expect(nextEpoch).not.toBe(staleEpoch);
+    await claimWithEpoch(fake.db, { ...input(), grantId: randomUUID() }, async () => { continued = true; }, nextEpoch);
+    expect(continued).toBe(true);
+  });
+
   it('rejects nested recovery changes during authorization', async () => {
     const fake = fakeDb();
     await expect(claimHmsLabtestDispatch(fake.db, input(), async (_tx, claim) => {

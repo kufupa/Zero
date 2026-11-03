@@ -14,7 +14,7 @@ import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_
 import { canonicalJson } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
-import { claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
@@ -351,6 +351,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
       const grant = item && grantOf(item.state, input.stayId);
       if (!grant || !sameGrant(grant, input, previewDigest) || !await previewShotValid(grant, input)) return refused('pane_save_preview_required');
       const key = sourceKey(input, grant.cursor);
+      const epoch = await captureHmsLabtestDispatchEpoch(db);
       const native = await paneCloudPreviewLoaders.run(mapped.input, {
         expectedRequestDigest: grant.requestDigest,
         authorizeCandidate: async () => grant.expiresAt > Date.now(),
@@ -389,7 +390,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
                   status: 'unknown', confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: grant.grantId } } };
               await lockedTx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
             }); } catch (error) { authorizationError = error; throw error; }
-            });
+            }, epoch);
           } catch (error) { claimError = error; throw error; }
           beforeSha256 = recovery.beforeShot.sha256;
           if (Date.parse(recovery.preimage.expiresAt) <= Date.now()) throw new Error('cloud_create_preimage_expired');

@@ -5,7 +5,11 @@ import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
 import type { DB } from '../src/db/client.js';
-import { claimHmsLabtestDispatch, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
+
+async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWithEpoch>[1], authorize: Parameters<typeof claimWithEpoch>[2]) {
+  return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db));
+}
 
 const f = vi.hoisted(() => ({ quiesced: true, proofFails: false, recordFails: false, reads: 0 }));
 vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
