@@ -1270,16 +1270,27 @@ export function BookingCards({
     try {
       const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
       const result = await pane.preview(previewInput);
-      if (result.reason === 'guest_choice_required' && Array.isArray(result.guestCandidates) &&
+      if ((result.reason === 'guest_choice_required' || result.reason === 'guest_not_found') &&
+          Array.isArray(result.guestCandidates) &&
           previewInputsRef.current[roomKey]?.key === key) {
         setGuestCandidates((current) => ({ ...current, [roomKey]: result.guestCandidates! }));
       }
       const outcome = previewOutcome(result);
+      const noMatchingGuestProfile =
+        result.reason === 'guest_not_found' &&
+        Array.isArray(result.guestCandidates) &&
+        result.guestCandidates.length === 0;
       preview = outcome.ok
         ? 'previewOnly' in outcome
           ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots }
           : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
-        : { status: 'refused', key, message: outcome.message };
+        : {
+            status: 'refused',
+            key,
+            message: noMatchingGuestProfile
+              ? 'HMS found no matching existing guest profile. Create the profile by hand in HMS, then preview again to choose it.'
+              : outcome.message,
+          };
     } catch {
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
