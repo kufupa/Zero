@@ -24,7 +24,7 @@ vi.mock('../components/quote-workflow/workflow-gold-label', () => ({
 }));
 
 import { WorkflowBadge } from '../components/quote-workflow/workflow-badge';
-import { NAVA_READ_AS_LABEL, readAsForAnalysis, readAsForKind } from '../lib/quote-workflow/workflow-vocabulary';
+import { mixedStayActions, NAVA_READ_AS_LABEL, readAsForAnalysis, readAsForKind } from '../lib/quote-workflow/workflow-vocabulary';
 import type { LunaAnalysisWire, QuoteAmendment, QuoteAnalysis } from '../lib/quote-workflow/types';
 
 const CHANGE_HINT = 'Nava thinks the guest wants to change an existing booking.';
@@ -78,6 +78,7 @@ describe('shared Nava read-as vocabulary', () => {
       ['voucher_pop', 'Payment'],
       ['billing', 'Billing'],
       ['group', 'Group'],
+      ['other_actionable', 'Other to do'],
       ['other', 'Not for Nava'],
       ['spam', 'Not for Nava'],
       ['unknown_future_kind', 'Not for Nava'],
@@ -86,6 +87,24 @@ describe('shared Nava read-as vocabulary', () => {
       const readAs = readAsForKind(kind);
       expect(NAVA_READ_AS_LABEL[readAs]).toBe(label);
     }
+  });
+
+  it('keeps other actionable mail distinct from skipped mail', () => {
+    expect(readAsForAnalysis(analysis('other'), { kind: 'other_actionable' })).toBe('other_to_do');
+    expect(readAsForAnalysis(analysis('skip'), { kind: 'other' })).toBe('not_for_nava');
+    expect(readAsForAnalysis(analysis('skip'), { kind: 'other_actionable' })).toBe('not_for_nava');
+    expect(readAsForAnalysis(analysis('quote'), { kind: 'other_actionable' })).toBe('quote');
+    expect(readAsForAnalysis(analysis('amend'), { kind: 'other_actionable' })).toBe('amendment');
+  });
+
+  it('offers each explicit action once and excludes passive stays', () => {
+    const group = { id: 'one', board: 'bb' as const, childrenAges: [], specialRequests: [], fields: {} };
+    expect(mixedStayActions(analysis('other', { groups: [
+      { ...group, stayAction: 'no_action' },
+      { ...group, id: 'two', stayAction: 'amend' },
+      { ...group, id: 'three', stayAction: 'amend' },
+      { ...group, id: 'four', stayAction: 'new_booking' },
+    ] }))).toEqual(['amend', 'new_booking']);
   });
 
   it('uses amendment, group, payment and booking evidence before the generic quote label', () => {

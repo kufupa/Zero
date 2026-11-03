@@ -15,8 +15,10 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('revisionRef');
     expect(emailComposerSource).toContain('markUnsavedChanges');
     expect(emailComposerSource).toMatch(/hasLocalEdits:\s*revisionRef\.current\.localRevision > 0/);
-    expect(emailComposerSource).toContain('onValueChange={markUnsavedChanges}');
-    expect(emailComposerSource).toContain('onApply={markUnsavedChanges}');
+    for (const field of ['to', 'cc', 'bcc']) {
+      expect(emailComposerSource).toContain(`onValueChange={() => markHeaderChanges('${field}')}`);
+    }
+    expect(emailComposerSource).toContain("onApply={() => markHeaderChanges('to', 'cc', 'bcc', 'subject')}");
     expect(recipientSource).toContain('onValueChange();');
     expect(templateSource).toContain('onApply();');
     expect(emailComposerSource).toMatch(
@@ -28,7 +30,7 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('saveInFlightRef');
     expect(emailComposerSource).toContain('activeDraftIdRef');
     expect(emailComposerSource).toContain('capturedRevision');
-    expect(emailComposerSource).toContain("type: 'saved', capturedRevision");
+    expect(emailComposerSource).toMatch(/type: 'saved',\s*capturedRevision/);
     expect(emailComposerSource).toContain('flushDraftUntilCurrent');
     expect(emailComposerSource).toContain('autosaveSuppressedAfterFailure');
     expect(emailComposerSource).toContain('setAutosaveSuppressedAfterFailure(true)');
@@ -43,6 +45,15 @@ describe('compose draft ownership wiring', () => {
       emailComposerSource.indexOf('flushDraftUntilCurrent'),
     );
     expect(saveSuccessSection).not.toMatch(/setHasUnsavedChanges\(false\);\s*\n\s*return true;/);
+  });
+
+  it('reads synchronous revision state, not stale rendered state, after a save', () => {
+    const check = emailComposerSource.slice(emailComposerSource.indexOf('const hasSynchronousDraftChanges'),
+      emailComposerSource.indexOf('const processAndSetAttachments'));
+    expect(check).toContain('revisionRef.current.localRevision > revisionRef.current.savedRevision');
+    expect(check).toContain('pendingAttachmentWorkRef.current > 0');
+    expect(check).toContain('pendingInlineImageWorkRef.current > 0');
+    expect(check).not.toContain('hasUnsavedChanges ||');
   });
 
   it('keeps fresh new-mail composer mounted after first draft id', () => {

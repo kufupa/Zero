@@ -71,6 +71,70 @@ describe('batch create scope reconciliation', () => {
     f.manifest.rooms[1]!.identity.roomIndex = 3;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
   });
+  it('requires an explicit remaining count when another source row was removed', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.totalRooms = 3; stay.totalAdults = null as never; stay.totalChildren = null as never;
+    stay.rows[0]!.rooms = null as never;
+    f.state['stays[s1].rows[r2].removed'] = true;
+    const first = f.manifest.rooms[0]!;
+    f.manifest.rooms = [first, { ...structuredClone(first), allocationId: 'b', identity: { ...first.identity, roomIndex: 2 } },
+      { ...structuredClone(first), allocationId: 'c', identity: { ...first.identity, roomIndex: 3 } }];
+    expect(isActivePaneBatchChild({ ...f, identity: first.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[2]!.identity })).toBe(false);
+    f.manifest.rooms.pop();
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('does not inherit a total of two after removing the other one-room source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.totalRooms = 2;
+    stay.rows[0]!.rooms = null as never;
+    stay.rows[1]!.rooms = 1;
+    f.state['stays[s1].rows[r2].removed'] = true;
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[0]!.identity })).toBe(false);
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('retains total-room defaults for a genuinely sole source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [{ ...stay.rows[0]!, rooms: null as never }];
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(true);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('requires an explicit count after a staff-added sibling is removed from a sole source row', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [{ ...stay.rows[0]!, rooms: null as never }];
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 'r1', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+    f.state['stays[s1].rows[added].removed'] = true;
+    expect(isActivePaneBatchChild({ ...f, identity: f.manifest.rooms[1]!.identity })).toBe(false);
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[r1].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
+  it('defaults an originally rowless stay only while its own row is the sole composition', () => {
+    const f = fixture(), stay = f.payload.stays[0]!;
+    stay.rows = [];
+    f.state = { 'stays[s1].rows[s1_row].roomType': 'STQN', 'stays[s1].rows[s1_row].adults': 1,
+      'stays[s1].rows[s1_row].childAges': [] };
+    f.manifest.rooms[0]!.identity = { stayId: 's1', rowId: 's1_row', roomIndex: 1 };
+    f.manifest.rooms[1]!.identity = { stayId: 's1', rowId: 's1_row', roomIndex: 2 };
+    f.manifest.rooms[1]!.roomType = 'STQN';
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+    f.state['stays[s1].rows[added].removed'] = true;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
+    f.state['stays[s1].rows[s1_row].count'] = 2;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
+  });
   it('accepts separate stays with the same arrival and binds each row to its stay', () => {
     const f = fixture(), first = f.payload.stays[0]!;
     first.rows = [first.rows[0]!]; first.totalRooms = 1; first.totalAdults = 1;
@@ -167,10 +231,17 @@ describe('batch create scope reconciliation', () => {
   it('allows an explicit changed count while retaining complete active row counts', () => {
     const f = fixture(), stay = f.payload.stays[0]!;
     stay.totalAdults = null as never; stay.totalChildren = null as never;
+    f.payload.stays[0]!.rows.push({ ...f.payload.stays[0]!.rows[1]!, id: 'r3' });
     f.state['stays[s1].rows[r1].count'] = 2;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(ready);
-    f.state['stays[s1].rows[r2].count'] = null;
+    // An unselected row still contributes to the stay-wide composition.
+    f.state['stays[s1].rows[r3].count'] = null;
     expect(reconcilePaneBatchCreateScope(f)).toEqual(held('occupancy_unverified'));
+  });
+  it('holds an unresolved selected room count as a source change', () => {
+    const f = fixture();
+    f.state['stays[s1].rows[r2].count'] = null;
+    expect(reconcilePaneBatchCreateScope(f)).toEqual(held('source_room_changed'));
   });
   it('holds cross-stay removal-ID collisions that hide an approved row in the pane', () => {
     const f = fixture();

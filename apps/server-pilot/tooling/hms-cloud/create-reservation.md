@@ -97,10 +97,11 @@ A fully staged unsaved draft returns `prepared` with `approvalReady: false`.
 When eligible, `requestBinding` contains a versioned canonical request and digest.
 The digest helper accepts either its raw input or returned canonical request; it
 is not authorization and does not prove equality to the native save body.
-This does not claim approval, a save, or persistence. NGI is staged only when
-an eligible verified Proof Labtest profile and valid 2027+ dates are present.
-Other drafts retain their staged fields but report `guaranteeType.staging` as
-missing. Non-NGI guarantees remain unsupported. Exact child ages are checked
+This does not claim approval, a save, or persistence. NGI and Guaranteed By
+Agent (`GTDAGT`) are staged only with an eligible verified Proof Labtest profile
+and valid 2027+ dates. Other drafts retain their staged fields but report
+`guaranteeType.staging` as missing. Other guarantees remain unsupported; an
+agent-guarantee save has not yet been proved in HMS. Exact child ages are checked
 at selection, but fresh saved-record readback exposes age bands rather than
 exact ages. Party IDs are checked at selection only on the unsaved draft. Selected party IDs require separate saved verification. Neither a
 visible label nor a selection proves persistence.
@@ -119,7 +120,7 @@ reference, the writer stages it with the save route unarmed, then captures the
 before screenshot after staging. Fresh readback requires exact native-model and
 visible text. An uncertain create without confirmation cannot yet verify billing
 or party identity through its census candidates. No implicit retry occurs.
-If no note is supplied, a unique synthetic marker helps reconciliation.
+For a verified Proof Labtest draft, prepare generates a unique synthetic note only when the note is omitted. Review the returned `applied.note` and pass that exact value to commit; a note-less Labtest commit is refused. An explicit null note is unsupported and is not replaced.
 
 Outcomes are `prepared`, `saved`, `refused`, `needs_input`, `unsupported`, or
 `uncertain`. `applied` records observed draft values and `appliedVerification`

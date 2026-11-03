@@ -1,4 +1,4 @@
-import type { QuoteAnalysis } from './types';
+import type { LunaAnalysisWire, MixedStayAction, QuoteAnalysis } from './types';
 
 /** The one reservation-staff label set used by both the selected-email banner and Needs-you rows. */
 export type NavaReadAs =
@@ -9,6 +9,7 @@ export type NavaReadAs =
   | 'payment'
   | 'billing'
   | 'group'
+  | 'other_to_do'
   | 'not_for_nava';
 
 export const NAVA_READ_AS_LABEL: Record<NavaReadAs, string> = {
@@ -19,7 +20,24 @@ export const NAVA_READ_AS_LABEL: Record<NavaReadAs, string> = {
   payment: 'Payment',
   billing: 'Billing',
   group: 'Group',
+  other_to_do: 'Other to do',
   not_for_nava: 'Not for Nava',
+};
+
+/** Explicit stay actions only. Passive rows never become a choice. */
+export function mixedStayActions(analysis: QuoteAnalysis | null | undefined): MixedStayAction[] {
+  return [...new Set((analysis?.groups ?? []).flatMap((group) =>
+    group.stayAction && group.stayAction !== 'no_action' ? [group.stayAction] : []))];
+}
+
+export const MIXED_ACTION_READ_AS: Record<MixedStayAction, NavaReadAs> = {
+  quote_availability: 'quote', new_booking: 'new_booking', amend: 'amendment', cancel: 'cancellation',
+  payment_proof: 'payment', billing: 'billing', group_event: 'group', other_actionable: 'other_to_do',
+};
+
+export const MIXED_ACTION_WORKFLOW: Record<MixedStayAction, LunaAnalysisWire['workflow']> = {
+  quote_availability: 'quote', new_booking: 'create_booking', amend: 'amend', cancel: 'cancel',
+  payment_proof: 'payment_ack', billing: 'send_document', group_event: 'forward_to_partner', other_actionable: 'other',
 };
 
 export type NavaWorkState = 'needs_you' | 'queued' | 'in_hms' | 'review';
@@ -58,6 +76,8 @@ export function readAsForKind(kind: string | null | undefined): NavaReadAs {
     case 'invoice':
     case 'folio':
       return 'billing';
+    case 'other_actionable':
+      return 'other_to_do';
     case 'group':
     case 'group_block':
     case 'conference':
@@ -118,6 +138,7 @@ export function readAsForAnalysis(
   if (kindReadAs === 'quote' || kindReadAs === 'new_booking') return kindReadAs;
   if (analysis?.luna?.workflow === 'create_booking') return 'new_booking';
   if (analysis?.luna?.workflow === 'quote' || analysis?.intent === 'quote') return 'quote';
+  if (kindReadAs === 'other_to_do' && analysis?.luna?.workflow !== 'skip') return 'other_to_do';
   if (kindReadAs === 'not_for_nava' || analysis) return 'not_for_nava';
   return null;
 }

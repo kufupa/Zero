@@ -81,7 +81,9 @@ function harness(options = {}) {
       case 'closeCmsMessageIdPicker': return { outcome: 'closed_unsaved' };
       case 'selectCmsMessageId': partyFields.udfchar09 = request.code; return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: request.code, actual: request.code };
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
-      case 'setGuestStayText': return { outcome: 'updated_unsaved', actual: request.value };
+      case 'setGuestStayText':
+        if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
+        return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
@@ -96,7 +98,8 @@ function harness(options = {}) {
       labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
-      return operation({ runTool: async () => ({ outcome: 'ok', record: { details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
+      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: options.nativePreimage ?? null,
+        details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
     },
     partyReadback: async (request) => options.partyReadback?.(request) ?? { outcome: 'verified' },
     census: async () => { censuses += 1; return { outcome: 'existing_matches', coverage: { complete: true }, sameArrival: [{ confirmation: '123456-1' }] }; },
@@ -178,6 +181,64 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
     assert.equal(changed.result.outcome, 'uncertain');
     assert.equal(changed.fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
   }
+});
+
+test('agent guarantee is selected, bound, saved once and independently read back in simulation', async (t) => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const agentValues = { ...values, guaranteetype: 'Guaranteed By Agent' };
+  const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
+    status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
+    roomType: input.room.roomType, ratePlan: input.room.ratePlan, adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
+  const options = { guaranteeResult: selection, draft: agentValues, record: agentValues, nativePreimage };
+  const preparing = harness(options);
+  const prepared = await createReservation({ ...input, mode: 'prepare', guaranteeType: 'GTDAGT' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.equal(prepared.applied.guaranteeType, 'Guaranteed By Agent');
+  assert.equal(prepared.requestBinding.request.guaranteeType, 'GTDAGT');
+  assert.equal(preparing.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const committing = harness(options);
+  const saved = await createReservation({ ...input, guaranteeType: 'GTDAGT' }, committing.options);
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.deepEqual(saved.readback.mismatches, []);
+  const calls = committing.calls.filter(({ tool }) => tool === 'saveNewLabtestStay');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].guaranteeSelection, selection);
+  assert.ok(committing.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
+
+  // An agency ID alone cannot select a party without the required name query.
+  const idOnly = harness(options);
+  const held = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties: { agencyId: '99' } }, idOnly.options);
+  assert.equal(held.outcome, 'needs_input');
+  assert.ok(held.missing.includes('parties.agencyName'));
+  assert.equal(idOnly.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  // The same visible label is not proof of the saved native code, with or without a party.
+  for (const parties of [{}, { agencyId: '99', agencyName: 'Example' }, { organizationId: '41' }]) {
+    const partyValues = { ...agentValues, company: parties.organizationId ? 'Example Company' : '',
+      ...(parties.agencyId ? { ta1: 'Example Agency' } : {}) };
+    const matching = harness({ ...options, draft: partyValues, record: partyValues, nativePreimage });
+    const verified = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties }, matching.options);
+    if (verified.screenshots?.before) t.after(() => rm(dirname(verified.screenshots.before), { recursive: true, force: true }));
+    assert.equal(verified.outcome, 'saved');
+    assert.equal(matching.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+    for (const proof of [null, { ...nativePreimage, guaranteeCode: 'NGI' }, { ...nativePreimage, guestId: '999' }]) {
+      const fake = harness({ ...options, draft: partyValues, record: partyValues, nativePreimage: proof });
+      const uncertain = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties }, fake.options);
+      if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+      assert.equal(uncertain.outcome, 'uncertain');
+      assert.ok(uncertain.readback?.mismatches?.some(({ field }) => field === 'guaranteeTypeCode'));
+      assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+    }
+  }
+
+  const mismatch = harness({ ...options, guaranteeResult: { ...selection, actual: { ...selection.actual, submitted: 'NGI' } } });
+  const refused = await createReservation({ ...input, guaranteeType: 'GTDAGT' }, mismatch.options);
+  assert.equal(refused.outcome, 'uncertain');
+  assert.equal(refused.issue, 'requested_field_not_staged');
+  assert.equal(mismatch.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
 });
 
 test('real profiles and blocked preimages do not reach save', async () => {
@@ -394,6 +455,10 @@ test('prepare stages supported partial fields while retaining unsupported values
     assert.equal(result.appliedVerification.visibleFields, true);
     assert.equal(result.applied.guest.nativeId, '123');
     assert.deepEqual(result.unsupportedFields.map(({ field }) => field).sort(), unsupported.sort());
+    if (change.note === null) {
+      assert.equal(Object.hasOwn(result.applied, 'note'), false);
+      assert.equal(fake.calls.some(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote'), false);
+    }
     assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'GTDCC');
     assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay' || tool === 'setCmsSendCheckbox'), false);
     assert.equal(fake.freshReads, 0);
@@ -751,6 +816,41 @@ test('guest name lookup returns none, selects one, and refuses ambiguity without
   assert.equal(result.outcome, 'refused');
   assert.equal(result.issue, REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
   assert.equal(refused.calls.some(({ tool }) => tool === 'selectGuestProfile' || tool === 'saveNewLabtestStay'), false);
+});
+
+test('prepares a synthetic Labtest note once and requires it explicitly at commit', async (t) => {
+  const { note: omitted, ...withoutNote } = input;
+  assert.equal(omitted, 'Synthetic proof');
+  const preparing = harness();
+  const prepared = await createReservation({ ...withoutNote, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.match(prepared.applied.note, /^Proof Labtest create [0-9a-f-]{36}$/);
+  assert.equal(prepared.requestBinding.request.note, prepared.applied.note);
+  assert.equal(preparing.calls.find((call) => call.tool === 'setGuestStayText' && call.field === 'reservationNote').value,
+    prepared.applied.note);
+
+  const missing = harness();
+  const refused = await createReservation(withoutNote, missing.options);
+  assert.equal(refused.outcome, 'needs_input');
+  assert.ok(refused.missing.includes('note'));
+  assert.equal(missing.calls.some((call) => call.tool === 'saveNewLabtestStay'), false);
+  assert.equal(missing.calls.some((call) => call.tool === 'setGuestStayText'), false);
+
+  const committing = harness({ save: { outcome: 'not_dispatched' } });
+  const result = await createReservation({ ...withoutNote, note: prepared.applied.note }, committing.options);
+  if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
+  assert.equal(committing.calls.find((call) => call.tool === 'saveNewLabtestStay')?.note, prepared.applied.note);
+});
+
+test('does not invent a note for a real guest prepare', async () => {
+  const { note: omitted, ...withoutNote } = input;
+  assert.equal(omitted, 'Synthetic proof');
+  const realProfile = { ...profile, firstName: 'Real', lastName: 'Guest' };
+  const fake = harness({ profiles: [realProfile], draft: { ...values, firstname: 'Real', lastname: 'Guest', reservationnote: '' } });
+  const prepared = await createReservation({ ...withoutNote, mode: 'prepare' }, fake.options);
+  assert.equal(Object.hasOwn(prepared.applied, 'note'), false);
+  assert.equal(fake.calls.some((call) => call.tool === 'setGuestStayText' && call.field === 'reservationNote'), false);
+  assert.equal(fake.calls.some((call) => call.tool === 'saveNewLabtestStay'), false);
 });
 
 test('native guard callbacks travel only in server-owned commit session options', async (t) => {
