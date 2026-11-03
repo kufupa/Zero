@@ -81,6 +81,7 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  confirmationSendMail?: boolean;
   confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
   marketSegment?: string;
   guestoptin4?: boolean;
@@ -702,6 +703,11 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: resolved.reason };
   }
   const target = resolved.target;
+  // The legacy create runner does not participate in the shared Cloud write
+  // claim. Keep it available for preview, but never let it bypass that claim.
+  if (input.mode === 'commit' && target.propertyCode === PANE_STAY_PROPERTY_CODE) {
+    return { status: 'refused', reason: 'cloud_create_required' };
+  }
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
       assertCreateLabStay(input.stay);

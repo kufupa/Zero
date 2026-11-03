@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   guestStaySaveOutcome,
@@ -276,6 +277,24 @@ test('agent guarantee requires matching selector evidence and a current strict d
   assert.equal(unsupported.issue, 'INVALID_LABTEST_SAVE_INPUT');
 });
 
+test('reviewed contact values are required by the strict Labtest draft and reject consent to send', async () => {
+  let expected;
+  const page = pageStub();
+  page.evaluate = async (_fn, args) => { expected = args.expected; return 'DRAFT_REVIEWED_CONTACT_FIELDS'; };
+  const request = { ...saveInputs, track: 'Best Available', guestOptIn: false,
+    booker: { name: 'Booker', contact: 'booker@example.test' }, cmsRecipient: 'client@example.test' };
+  const result = await saveNewLabtestStay(page, request);
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.draftCheck, 'DRAFT_REVIEWED_CONTACT_FIELDS');
+  assert.equal(expected.strictCreateProof, true);
+  assert.equal(expected.approvedTrack, request.track);
+  assert.equal(expected.guestOptIn, false);
+  assert.deepEqual(expected.booker, request.booker);
+  assert.equal(expected.cmsRecipient, request.cmsRecipient);
+  const invalid = await saveNewLabtestStay(pageStub(), { ...request, guestOptIn: true });
+  assert.equal(invalid.issue, 'INVALID_LABTEST_SAVE_INPUT');
+});
+
 test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');
@@ -479,6 +498,48 @@ function nativeCreateDraftPage() {
     } };
   return page;
 }
+
+test('native create schema accepts only the two observed blank confirmation flags', async () => {
+  const originalKeys = JSON.parse(readFileSync(new URL('./fixtures/native-create-model-keys.json', import.meta.url), 'utf8'));
+  const newFlags = ['confirmcheckinautoaddons', 'confirmratenotallowedforrestemplate'];
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    for (const key of originalKeys) if (!Object.hasOwn(page.data, key)) page.data[key] = '';
+    page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
+    page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
+    page.elements.find((element) => element.name === 'araccountname').value = '';
+    return page;
+  };
+  const withFlags = () => {
+    const page = makePage();
+    for (const key of newFlags) page.data[key] = '';
+    return page;
+  };
+  const run = (page) => saveNewLabtestStay(page, saveInputs, {
+    authorizeCandidate: async () => false,
+    dispatchCandidate: async () => { throw new Error('unexpected dispatch'); },
+  });
+  assert.equal((await run(makePage())).issue, 'LABTEST_PROFILE_PROOF_STALE');
+  const observed = withFlags();
+  assert.equal((await run(observed)).issue, 'LABTEST_PROFILE_PROOF_STALE');
+  const body = createSaveBody(observed.lastDraft.formData);
+  assert.equal(matchesFullCreateBody(body, observed.lastDraft.formData), true);
+  for (const key of newFlags) {
+    body.set(key, 'confirmed');
+    assert.equal(matchesFullCreateBody(body, observed.lastDraft.formData), false);
+    body.set(key, '');
+    for (const value of ['confirmed', ' ', null]) {
+      const changed = withFlags(); changed.data[key] = value;
+      assert.equal((await run(changed)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+    }
+  }
+  const missingFlag = withFlags(); delete missingFlag.data[newFlags[0]];
+  const unexpectedField = withFlags(); unexpectedField.data.unreviewedfield = '';
+  const missingOriginal = withFlags(); delete missingOriginal.data[originalKeys.find((key) => !Object.hasOwn(nativeCreateDraftPage().data, key))];
+  for (const page of [missingFlag, unexpectedField, missingOriginal]) {
+    assert.equal((await run(page)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  }
+});
 
 test('native draft checks agent guarantee display, native value and submitted value', async () => {
   const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',

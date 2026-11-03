@@ -94,8 +94,12 @@ Strict proof snapshots the full native `record.getData()` key set and requires
 the one outgoing form payload to match every expected value, alongside the
 three fixed OSRESV/HDR controls. A read-only comparison found 985 unique
 `record.getData()` keys, matching the 985 non-control keys in the captured
-988-key save request; proof mode pins that observed field-key set and fails
-closed if it changes. This is a schema allowlist: complete model/body equality
+988-key save request; proof mode pins that observed field-key set. A later
+unsaved HRCEN draft and blocked native request had the same fields plus
+`confirmcheckinautoaddons` and `confirmratenotallowedforrestemplate`, both
+blank. The native client sets them only after their respective confirmation
+dialogs. Proof mode accepts the pair only when both are blank, and fails closed
+for any other field-set change. This is a schema allowlist: complete model/body equality
 alone would also accept a newly added field without establishing whether it
 carries a create-side effect. Any field-set change therefore needs re-review
 before proof mode is enabled. Raw `record.data` had 1,109 keys, including 123
@@ -115,7 +119,8 @@ agree across those same native surfaces. It describes the selected guest's
 history, not this stay's duration. Exact arrival and departure values in both
 the visible form and outgoing request define stay length (for example,
 2027-12-11 through 2027-12-13 is two nights). Every request must still match
-the full 985-key expected snapshot; all other values stay pinned to the model.
+the full expected snapshot, including any blank confirmation flags; all other
+values stay pinned to the model.
 
 One strict full-body Proof Labtest create dispatched successfully with an agency,
 organization, no A/R account, zero children and CMS message `03`; fresh saved

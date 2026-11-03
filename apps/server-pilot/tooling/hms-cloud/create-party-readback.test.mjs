@@ -13,6 +13,28 @@ test('rejects incomplete or mismatched identity inputs before opening HMS', asyn
   }
 });
 
+test('fresh party session blocks service workers and installs the read guard before opening a page', async () => {
+  const requests = [];
+  const context = { route: async (_pattern, handler) => { context.handler = handler; } };
+  const result = await readCreateParties({ confirmation: '123456-1', arrival: '2028-09-19', guestId: '123' }, {
+    openSession: async (_operation, options) => {
+      assert.equal(options.blockServiceWorkers, true);
+      await options.prepareContext(context);
+      for (const [method, url] of [
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE'],
+        ['POST', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR.GetCheckAvailability'],
+        ['GET', 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp'],
+      ]) {
+        await context.handler({ request: () => ({ method: () => method, url: () => url, postData: () => null }),
+          abort: async () => requests.push('blocked'), fallback: async () => requests.push('allowed') });
+      }
+      return { outcome: 'verified' };
+    },
+  });
+  assert.deepEqual(requests, ['blocked', 'blocked', 'allowed']);
+  assert.deepEqual(result, { outcome: 'verified' });
+});
+
 
 test('fresh native and visible party evidence must all match the fake stay', () => {
   const expected = { confirmation: '123456-1', guestId: '123', agency: { nativeId: '99', name: 'Agency' },

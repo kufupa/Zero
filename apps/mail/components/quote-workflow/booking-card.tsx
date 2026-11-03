@@ -34,6 +34,7 @@ import {
   paneUnconfirmedMessage,
   previewOutcome,
   type PaneSaveMode,
+  type PaneGuestCandidate,
   type PaneStayChoice,
   type PaneStayClient,
   type PaneStayInput,
@@ -255,6 +256,7 @@ const textareaClass =
 type PreviewView =
   | { status: 'running'; key: string; requestId: symbol }
   | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
+  | { status: 'view_only'; key: string; runId?: string; screenshots: string[] }
   | { status: 'refused'; key: string; message: string }
   | { status: 'stale'; key: string };
 
@@ -471,6 +473,7 @@ function RoomSave({
   save,
   screenshot,
   bookLabel,
+  previewOnly = false,
   frozen = false,
   onPreview,
   onBook,
@@ -481,6 +484,7 @@ function RoomSave({
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
   bookLabel: string;
+  previewOnly?: boolean;
   frozen?: boolean;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
@@ -489,9 +493,10 @@ function RoomSave({
   const noRetry = commit?.status === 'refused' && commit.statusChip === 'check';
   const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
   const fresh = stay && preview?.status === 'ready' && preview.key === previewKey ? preview : null;
+  const viewOnly = stay && preview?.status === 'view_only' && preview.key === previewKey ? preview : null;
   const changed =
     preview?.status === 'stale' ||
-    ((preview?.status === 'running' || preview?.status === 'ready') && preview.key !== previewKey);
+    ((preview?.status === 'running' || preview?.status === 'ready' || preview?.status === 'view_only') && preview.key !== previewKey);
 
   if (commit?.status === 'booked') {
     const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
@@ -535,7 +540,8 @@ function RoomSave({
     );
   }
 
-  const previewShot = fresh?.runId ? pickScreenshot(fresh.screenshots, PREVIEW_SHOT) : null;
+  const displayed = viewOnly ?? fresh;
+  const previewShot = displayed?.runId ? pickScreenshot(displayed.screenshots, PREVIEW_SHOT) : null;
   const refusedShot = commit?.status === 'refused' ? pickScreenshot(commit.screenshots ?? [], SAVED_SHOT) : null;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
@@ -554,18 +560,35 @@ function RoomSave({
           You changed the booking – preview again.
         </p>
       ) : null}
-      {fresh && stay && fresh.runId && previewShot ? (
+      {displayed && stay && displayed.runId && previewShot ? (
         <PaneScreenshot
           caption="See what Nava filled in HMS"
-          runId={fresh.runId}
+          runId={displayed.runId}
           name={previewShot}
           screenshot={screenshot}
         />
       ) : null}
-      {fresh && stay ? (
+      {displayed && stay ? (
         <p data-pii className="text-[12px] text-[#1e293b]">
-          {`Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
+          {viewOnly
+            ? `Preview only: ${stay.firstName} ${stay.lastName}, ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing was saved. Booking from Nava is not available yet.`
+            : `Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
         </p>
+      ) : null}
+      {displayed && stay?.createSelection?.nativeGuestId ? (
+        <dl aria-label="Reviewed booking details" data-pii className="grid grid-cols-2 gap-x-3 text-[11px] text-[#475569]">
+          {[
+            ['Guest profile', `${stay.firstName} ${stay.lastName} · #${stay.createSelection.nativeGuestId}`],
+            ['Guests', `${stay.adults} adult(s); child ages: ${stay.childAges?.join(', ') || 'none'}`],
+            ['Room and rate', `${stay.roomType} · ${stay.ratePlan} · ${stay.track}`],
+            ['Source and guarantee', `${stay.sourceOfBusiness} · ${stay.guaranteeType}`],
+            ['Agency', stay.bookingAgency ? `${stay.bookingAgency.name} · #${stay.bookingAgency.nativeId}` : 'None'],
+            ['Company', stay.organization ? `${stay.organization.name} · #${stay.organization.nativeId}` : 'None'],
+            ['Booker', [stay.bookerName, stay.bookerEmail].filter(Boolean).join(' · ') || 'None'],
+            ['Confirmation', `${stay.cmsMessageId ?? 'None'} · ${stay.confirmationRecipient?.address ?? 'No recipient'} · Send off`],
+            ['Reservation note', stay.reservationNote ?? 'None'],
+          ].map(([label, value]) => <div key={label}><dt className="font-semibold">{label}</dt><dd>{value}</dd></div>)}
+        </dl>
       ) : null}
       {commit?.status === 'running' ? (
         <p role="status" className="text-[11.5px] text-[#334155]">
@@ -605,8 +628,8 @@ function RoomSave({
           Preview in HMS
         </SecondaryButton>
         <PrimaryButton
-          disabled={!fresh || busy}
-          disabledReason={!stay || busy ? null : 'Preview in HMS first'}
+          disabled={previewOnly || !fresh || busy}
+          disabledReason={previewOnly || viewOnly ? 'Booking from Nava is not available yet' : !stay || busy ? null : 'Preview in HMS first'}
           onClick={() => {
             if (stay && fresh) onBook(stay, fresh.digest);
           }}
@@ -698,6 +721,7 @@ type RoomChoice = {
   ratePlan?: string;
   adults?: string;
   childAges?: string[];
+  nativeGuestId?: string;
 };
 
 const NO_CHOICE: RoomChoice = {
@@ -906,6 +930,8 @@ export function BookingCards({
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
+  const cloudPreview = Boolean(client?.canPreview?.() && propertyCode !== 'HRDAV');
+  const previewsOn = cloudPreview || savesOn;
   const selectedGuestName = useSyncExternalStore(
     subscribeStayingGuestName,
     () => readSelectedGuestName(guestEditorKey, guestName),
@@ -948,6 +974,7 @@ export function BookingCards({
         }),
       ),
   );
+  const [guestCandidates, setGuestCandidates] = useState<Record<string, PaneGuestCandidate[]>>({});
 
   const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
@@ -980,6 +1007,7 @@ export function BookingCards({
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
+  const sendHmsConfirmation = cloudPreview ? false : sendConfirmation;
   const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(null);
   const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
   const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
@@ -1076,6 +1104,7 @@ export function BookingCards({
           ...nextChoice,
           firstName: names.firstName,
           lastName: names.lastName,
+          nativeGuestId: undefined,
           // Consent is guest-specific; a People change needs a fresh explicit opt-in.
           guestoptin4: false,
         };
@@ -1173,9 +1202,16 @@ export function BookingCards({
     let preview: Exclude<PreviewView, { status: 'running' }>;
     try {
       const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
-      const outcome = previewOutcome(await pane.preview(previewInput));
+      const result = await pane.preview(previewInput);
+      if (result.reason === 'guest_choice_required' && Array.isArray(result.guestCandidates) &&
+          previewInputsRef.current[roomKey]?.key === key) {
+        setGuestCandidates((current) => ({ ...current, [roomKey]: result.guestCandidates! }));
+      }
+      const outcome = previewOutcome(result);
       preview = outcome.ok
-        ? { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
+        ? 'previewOnly' in outcome
+          ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots }
+          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
         : { status: 'refused', key, message: outcome.message };
     } catch {
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
@@ -1218,6 +1254,7 @@ export function BookingCards({
     const group = roomGroupFor(room, groups);
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
     const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+    const boundCompany = parties?.company?.nativeId ? parties.company : undefined;
     const unboundName = textValue(room.request.agency).trim();
     const agencyUnresolved = choice.bookingAgency !== '__none__' && !boundAgency && Boolean(unboundName);
     const currentEmail = currentContact ? textValue(currentContact.email) :
@@ -1226,23 +1263,48 @@ export function BookingCards({
       mode: effectiveRecipientMode, customAddress, userEmail: sources?.userEmail ?? '', clientEmail: currentEmail,
       invalidSetting: sources?.invalidSetting, staffChose,
     });
-    const roomChoice = roomChoiceFor(room, group, choice, currentContact, sendConfirmation && recipient.ok ? recipient.recipient : null);
+    const roomChoice = roomChoiceFor(room, group, choice, currentContact,
+      (sendHmsConfirmation || cloudPreview) && recipient.ok ? recipient.recipient : null);
     if (!reservationNoteDirty.current[roomKeyOf(room)] && choice.generatedReservationNote !== undefined &&
       choice.reservationNote === choice.generatedReservationNote) {
       roomChoice.reservationNote = generatedNoteForChoice(session, propertyCode, room, group, choice) ?? '';
     }
     roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
       ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
-    roomChoice.confirmationSendMail = sendConfirmation;
+    if (cloudPreview && choice.organization.trim() && boundCompany && choice.organization.trim() === boundCompany.name) {
+      roomChoice.organization = { name: boundCompany.name, nativeId: boundCompany.nativeId };
+    }
+    roomChoice.confirmationSendMail = sendHmsConfirmation;
     roomChoice.cmsMessageId = cmsMessage;
-    const built = paneStayInputForConfiguredRoom(roomRequestFor(room, group, choice), roomChoice, requiredCreateFields);
+    const request = roomRequestFor(room, group, choice);
+    const built = paneStayInputForConfiguredRoom(request, roomChoice, requiredCreateFields);
     const missing = [...built.missing];
     if (agencyUnresolved) missing.push('booking agency');
-    if (sendConfirmation && !recipient.ok) missing.push('confirmation recipient');
+    if (cloudPreview && choice.organization.trim() && (!boundCompany || choice.organization.trim() !== boundCompany.name)) missing.push('company selected from HMS');
+    if (sendHmsConfirmation && !recipient.ok) missing.push('confirmation recipient');
+    if (cloudPreview && staffChose && !recipient.ok) missing.push('confirmation recipient');
     if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
     const selectedRoom = roomChoice.roomType ?? '';
     if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
-    return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
+    if (!cloudPreview) {
+      const legacy = built.stay && client?.canPreview?.() && propertyCode === 'HRDAV'
+        ? { ...built.stay, propertyCode } : built.stay;
+      return { stay: missing.length ? null : legacy, missing: [...new Set(missing)] };
+    }
+    if (!Array.isArray(request.childAges)) missing.push('number of children');
+    const source = session?.staffSource;
+    const stableId = /^[A-Za-z0-9_-]{1,40}$/;
+    const selectedId = group?.stayId;
+    if (!workItemId || !source || !/^[a-f0-9]{64}$/.test(source.sourceHash) || !source.messageId.trim() ||
+        !source.threadId.trim() || !selectedId || !stableId.test(selectedId) || !stableId.test(group?.id ?? '') ||
+        !stableId.test(`${selectedId}_${room.roomIndex}`)) missing.push('selected email and saved booking request');
+    const stay = !missing.length && built.stay && source && selectedId && group
+      ? { ...built.stay, childAges: request.childAges as number[], ...(propertyCode ? { propertyCode } : {}), createSelection: {
+          source, identity: { stayId: selectedId, rowId: group.id, roomIndex: room.roomIndex },
+          ...(choice.nativeGuestId ? { nativeGuestId: choice.nativeGuestId } : {}),
+        } }
+      : null;
+    return { stay, missing: [...new Set(missing)] };
   }
 
   function previewKeyForRoom(
@@ -1430,16 +1492,18 @@ export function BookingCards({
   return (
     <section aria-label="Booking details" className="flex flex-col gap-2">
       <p className="text-[11px] text-[#64748b]">
-        {savesOn
-          ? 'Preview each room using the Stay details above, then create it in HMS.'
+        {cloudPreview
+          ? 'HMS testing is currently limited to Proof Labtest stays in 2027 or later.'
+          : savesOn ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
-          <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
-            disabled={stayBooking} onChange={(event) => setSendConfirmation(event.target.checked)} />
+          <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendHmsConfirmation}
+            disabled={stayBooking || cloudPreview} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
+        {cloudPreview ? <p className="text-[11px] text-[#64748b]">Test previews cannot send HMS confirmations.</p> : null}
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
           <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
@@ -1448,7 +1512,7 @@ export function BookingCards({
             {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
           </select>
         </label>
-      {sendConfirmation ? (
+      {sendConfirmation || cloudPreview ? (
         <div data-pii>
         <ConfirmationRecipient
           mode={effectiveRecipientMode}
@@ -1556,7 +1620,7 @@ export function BookingCards({
             const nextChoice: RoomChoice = {
               ...currentChoice,
               ...patch,
-              ...(guestChanged ? { guestoptin4: false } : {}),
+              ...(guestChanged ? { guestoptin4: false, nativeGuestId: undefined } : {}),
             };
             if (!reservationNoteDirty.current[key]) {
               const wasGenerated = currentChoice.generatedReservationNote !== undefined &&
@@ -1595,7 +1659,10 @@ export function BookingCards({
         ].filter(Boolean))];
         const ages = choice.childAges ?? (Array.isArray(group?.childrenAges ?? request.childAges)
           ? (group?.childrenAges ?? request.childAges as number[]).map(String) : []);
+        const agesKnown = choice.childAges !== undefined || Array.isArray(group?.childrenAges ?? request.childAges);
         const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+        const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
+          candidate.firstName === choice.firstName.trim() && candidate.lastName === choice.lastName.trim());
         const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
           roomPreference: selectedRoom || textValue(request.roomType),
@@ -1668,7 +1735,7 @@ export function BookingCards({
             <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
               Children
               <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
-                value={ages.length} onChange={(event) => {
+                value={cloudPreview && !agesKnown ? '' : ages.length} onChange={(event) => {
                   if (event.target.value.trim() === '') return;
                   const count = Number(event.target.value);
                   if (Number.isInteger(count) && count >= 0 && count <= 16) {
@@ -1708,6 +1775,20 @@ export function BookingCards({
                 setChoice({ lastName: value });
               }}
             />
+            {matchingGuests.length ? (
+              <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Guest profile
+                <select aria-label="Guest profile" className={paneFieldClass} disabled={locked}
+                  value={choice.nativeGuestId ?? ''} onChange={(event) => setChoice({ nativeGuestId: event.target.value })}>
+                  <option value="">Select the matching guest</option>
+                  {matchingGuests.map((candidate) => (
+                    <option key={candidate.nativeId} value={candidate.nativeId}>
+                      {[candidate.firstName, candidate.lastName, candidate.city, candidate.country, `#${candidate.nativeId}`].filter(Boolean).join(' · ')}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {selectedGuestName.trim() && guestSplit.ambiguous ? (
               <p role="status" className="text-[11px] text-[#64748b]">
                 {AMBIGUOUS_GUEST_NAME_COPY}
@@ -1831,7 +1912,7 @@ export function BookingCards({
                 ],
               })}
             />
-            {client && savesOn ? (
+            {client && previewsOn ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1839,6 +1920,7 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
+                previewOnly={cloudPreview && !savesOn}
                 frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
@@ -1863,7 +1945,7 @@ export function BookingCards({
           </article>
         );
       })}
-      {client && savesOn ? (
+      {client && savesOn && !cloudPreview ? (
         <StayBookBar
           rooms={draft.draft.rooms}
           saves={saves}

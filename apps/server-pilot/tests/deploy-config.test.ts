@@ -2516,6 +2516,7 @@ describe('deploy config', () => {
     const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
     for (const name of [
       'PANE_WRITE_CREATE',
+      'PANE_CLOUD_CREATE_DISPATCH',
       'PANE_WRITE_AMEND_UNPAID',
       'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID',
@@ -5754,6 +5755,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(keys).toContain('PANE_CLOUD_CREATE_DISPATCH');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');

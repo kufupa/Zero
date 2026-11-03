@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildLabtestOrganizationReadbackTarget } from './booking-lookup-session.mjs';
+import { buildLabtestOrganizationReadbackTarget, readSavedOrganizationCreate } from './booking-lookup-session.mjs';
 
 const organization = { outcome: 'selected_unsaved', nativeId: '41', displayedOrganization: 'Example Company',
   searchId: 'search-1', profileProofToken: 'profile-1', nativeIdEvidence: 'form_change_response',
@@ -29,4 +29,23 @@ test('organization readback target refuses an unverified or unsupported guarante
     { guaranteeSelection: { ...selection, actual: { ...selection.actual, submitted: 'NGI' } } },
     { guaranteeSelection: { ...selection, actual: { ...selection.actual, display: '' } } },
   ]) assert.equal(buildLabtestOrganizationReadbackTarget(saved, { ...request, ...bad }, organization), null);
+});
+
+test('organization readback blocks service workers and guards before the first page', async () => {
+  const target = buildLabtestOrganizationReadbackTarget(saved, request, organization);
+  let blocked = false, installed = false;
+  const result = await readSavedOrganizationCreate({ savedOrganizationCreate: target }, { confirmation: saved.confirmation }, {
+    openSession: async (_operation, options) => {
+      assert.equal(options.blockServiceWorkers, true);
+      await options.prepareContext({ route: async (_pattern, handler) => {
+        installed = true;
+        await handler({ request: () => ({ method: () => 'POST',
+          url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
+          postData: () => null }), abort: async () => { blocked = true; }, fallback: async () => {} });
+      } });
+      return { outcome: 'read_back_verified' };
+    },
+  });
+  assert.equal(installed && blocked, true);
+  assert.equal(result.outcome, 'read_back_verified');
 });

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { mailExtractionPayloadSchema, type ExtractionRow, type ExtractionStay } from './extraction/schema.js';
-import { parseFieldPath, validFieldValue, type WorkState } from './work-items.js';
+import { formStays, parseFieldPath, validFieldValue, type WorkState } from './work-items.js';
 import type { PaneStay } from './pane-stay-save.js';
 import { matchRoomType } from './room-types.js';
 import type { HistoricalOwnRow } from './pane-create-scope-origin.js';
@@ -17,6 +17,43 @@ export const paneCreateIdentitySchema = z.object({
 export type PaneCreateIdentity = z.infer<typeof paneCreateIdentitySchema>;
 export type PaneCreateParty = z.infer<typeof paneCreatePartySchema>;
 
+/** Bind the reviewed form to one currently visible, unambiguous source room. */
+export function activePaneCreateIdentity(payload: unknown, state: WorkState, identity: PaneCreateIdentity): boolean {
+  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  if (!parsed.success || !paneCreateIdentitySchema.safeParse(identity).success) return false;
+  const stayIds = parsed.data.stays.map((stay) => stay.id);
+  const rowIds = parsed.data.stays.flatMap((stay) => stay.rows.map((row) => row.id));
+  if (new Set(stayIds).size !== stayIds.length || new Set(rowIds).size !== rowIds.length) return false;
+  const original = parsed.data.stays.find((stay) => stay.id === identity.stayId);
+  if (!original && state[`stays[${identity.stayId}].removed`] !== null) return false;
+  // A rowless extraction initially renders a group named after the stay. Edits
+  // persist to its deterministic own row before the pane receives a new read.
+  const rowlessAlias = original?.rows.length === 0 && identity.rowId === identity.stayId;
+  const rowMarker = `stays[${identity.stayId}].rows[${identity.rowId}].removed`;
+  if (!rowlessAlias && !original?.rows.some((row) => row.id === identity.rowId) && state[rowMarker] !== null &&
+      !(original?.rows.length === 0 && identity.rowId === `${identity.stayId}_row`)) return false;
+  const projected = formStays(parsed.data, state);
+  const groupIds = projected.flatMap((stay) => stay.rows.length ? stay.rows.map((row) => row.id) : [stay.id]);
+  if (new Set(groupIds).size !== groupIds.length) return false;
+  const stays = projected.filter((stay) => stay.id === identity.stayId);
+  if (stays.length !== 1) return false;
+  const stay = stays[0]!;
+  const selectedRowId = rowlessAlias ? `${identity.stayId}_row` : identity.rowId;
+  if (rowlessAlias && (stay.rows.length !== 1 || groupIds.includes(identity.rowId))) return false;
+  // Room indexes are per row, while the saved key is per stay. If another row
+  // can claim the same index, the key cannot identify the reviewed room.
+  const candidates = stay.rows.filter((row) => {
+    const path = `stays[${stay.id}].rows[${row.id}].count`;
+    const count = Object.hasOwn(state, path) ? state[path] : row.rooms;
+    return !Number.isInteger(count) || (count as number) < 1 || (count as number) > 999 || (count as number) >= identity.roomIndex;
+  });
+  const row = candidates[0];
+  if (candidates.length !== 1 || row?.id !== selectedRowId) return false;
+  const path = `stays[${stay.id}].rows[${row.id}].count`;
+  const count = Object.hasOwn(state, path) ? state[path] : row.rooms;
+  return Number.isInteger(count) && (count as number) <= 999 && (count as number) >= identity.roomIndex;
+}
+
 /** Strictly project the linked extraction plus its persisted pane edits. Never guess missing occupancy. */
 export function reconcilePaneCreateScope(input: {
   payload: unknown; state: WorkState; identity: PaneCreateIdentity; party: PaneCreateParty; stay: PaneStay;
@@ -26,8 +63,10 @@ export function reconcilePaneCreateScope(input: {
 }): boolean {
   const parsed = mailExtractionPayloadSchema.safeParse(input.payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(input.identity).success ||
-      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind !== 'none' ||
-      input.stay.bookingAgency !== undefined || input.stay.organization !== undefined) return false;
+      !paneCreatePartySchema.safeParse(input.party).success || input.party.kind === 'unknown') return false;
+  const agency = input.stay.bookingAgency?.name ?? null, company = input.stay.organization?.name ?? null;
+  if (input.party.kind === 'none' ? agency !== null || company !== null :
+      input.party.agency !== agency || input.party.company !== company) return false;
   const payload = parsed.data;
   const stays = new Map<string, ExtractionStay>();
   const originallyRowless = new Set<string>();

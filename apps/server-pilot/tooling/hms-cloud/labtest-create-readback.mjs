@@ -34,12 +34,14 @@ function compareRecord(fields, expected) {
     ['firstName', 'firstname', 'Proof'], ['lastName', 'lastname', 'Labtest'],
     ['sourceOfBusiness', 'sourceofbusinessdesc', expected.source], ['organization', 'company', expected.organization],
     ['guaranteeType', 'guaranteetype', expected.guarantee], ['cmsSend', 'udfchkbox04', false],
-    ['cmsRecipient', 'udfchar13', ''], ['guestEmail', 'emailaddress', ''],
+    ['cmsRecipient', 'udfchar13', expected.cmsRecipient ?? ''], ['guestEmail', 'emailaddress', ''],
+    ['bookerName', 'caller', expected.booker?.name], ['bookerContact', 'udfchar06', expected.booker?.contact],
+    ['track', 'track', expected.track], ['guestOptIn', 'guestoptin4', expected.guestOptIn],
     ...Object.entries(expected.childBands || {}).map(([name, value]) => [name, name, value]),
   ]) {
     if (wanted == null) continue;
     const actual = uniqueValue(fields, name);
-    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'ratePlan'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
+    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'ratePlan', 'cmsRecipient', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
       mismatches.push({ field, expected: wanted, actual, ...(actual == null ? { issue: 'not_visible_or_ambiguous' } : {}) });
     }
   }
@@ -51,7 +53,8 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   if (!validExpected(stay, expected)) return { issue: 'expected_record_invalid' };
   const read = await withSavedSession(({ runTool }) => runTool({ tool: 'read', confirmation,
     guestName: 'Proof Labtest', arrivalDate: stay.arrival,
-    ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }));
+    ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }),
+  { readOnly: true, readOnlyConfirmation: confirmation });
   const fields = read?.record?.details?.fields;
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
   const mismatches = compareRecord(fields, expected);

@@ -16,6 +16,9 @@ const values = { guestid: '123', status: 'Reserved', firstname: 'Proof', lastnam
   arrivaldate: '15-MAR-2027', departuredate: '17-MAR-2027', adults: '2', children: '2', child1: '0', child2: '2', child3: '0',
   roomtype: 'DLXKNG', rateplan: 'BAR', sourceofbusinessdesc: 'E-Mail', company: 'Example Company',
   guaranteetype: 'Non-Guaranteed Individual', reservationnote: 'Synthetic proof', udfchkbox04: false, udfchar13: '', emailaddress: '' };
+const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
+  status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
+  roomType: input.room.roomType, ratePlan: input.room.ratePlan, adults: 2, children: 2, guaranteeCode: 'NGI' };
 const fields = (pairs) => Object.entries(pairs).map(([name, value]) => ({ name, value, ...(name === 'reservationnote' ? { rawValue: value } : {}) }));
 
 function harness(options = {}) {
@@ -83,13 +86,16 @@ function harness(options = {}) {
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
       case 'setGuestStayText':
         if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
+        if (request.field === 'bookerName') partyFields.caller = request.value;
+        if (request.field === 'bookerContact') partyFields.udfchar06 = request.value;
+        if (request.field === 'cmsRecipient') partyFields.udfchar13 = request.value;
         return { outcome: 'updated_unsaved', actual: request.value };
       case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft || { ...values, ...partyFields }) };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
         return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
+          dispatchCallbacksDrained: true,
           ...(request.billingReference != null ? { billingReferenceStaged: true } : {}) };
-      case 'readSavedLabtestRecord': return { outcome: 'read_back_verified', organization: { nativeId: '41', name: 'Example Company' } };
       default: throw new Error(`unexpected call ${request.tool}`);
     }
   };
@@ -98,7 +104,7 @@ function harness(options = {}) {
       labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
-      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: options.nativePreimage ?? null,
+      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: options.nativePreimage ?? nativePreimage,
         details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
     },
     partyReadback: async (request) => options.partyReadback?.(request) ?? { outcome: 'verified' },
@@ -118,7 +124,7 @@ test('unsupported commit requests, nested unknowns and explicit clears stop befo
     [{ sourceOfBusiness: null }, ['sourceOfBusiness']],
     [{ note: null }, ['note']],
     [{ cms: { send: true, recipient: null }, price: 2 }, ['cms.send', 'cms.recipient', 'price']],
-    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker', 'booker.surprise']],
+    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker.surprise']],
     [{ approval: { by: 'Owner', at: '2026-11-01T12:00:00Z', grantId: 'spoofed' } },
       ['approval.at', 'approval.by', 'approval.grantId']],
   ]) {
@@ -127,6 +133,169 @@ test('unsupported commit requests, nested unknowns and explicit clears stop befo
     assert.deepEqual(result.unsupportedFields.map(({ field }) => field).sort(), fields.sort());
   }
   assert.equal(sessions, 0);
+});
+
+test('staff-bound commit rechecks the staged native request before Save', async (t) => {
+  const preparing = harness();
+  const prepared = await createReservation({ ...input, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.match(prepared.requestBinding.digest, /^[0-9a-f]{64}$/);
+
+  const authorizeCandidate = async () => true;
+  let capturedEvidence;
+  const dispatchCandidate = async (_request, next, evidence) => { capturedEvidence = evidence; return next(); };
+  const committing = harness();
+  const saved = await createReservation(input, { ...committing.options,
+    expectedRequestDigest: prepared.requestBinding.digest, authorizeCandidate, dispatchCandidate });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.equal(committing.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+  assert.equal(committing.sessionOptions.authorizeCandidate, authorizeCandidate);
+  assert.equal(await committing.sessionOptions.dispatchCandidate({}, async () => 'continued'), 'continued');
+  assert.deepEqual(capturedEvidence.preimage, { preimageId: 'p' });
+  assert.equal(capturedEvidence.beforeScreenshot, saved.screenshots.before);
+
+  const changed = harness();
+  const refusal = await createReservation(input, { ...changed.options,
+    expectedRequestDigest: '0'.repeat(64), authorizeCandidate, dispatchCandidate });
+  assert.equal(refusal.outcome, 'refused');
+  assert.equal(refusal.issue, 'approved_request_changed');
+  assert.equal(changed.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const missingCallbacks = harness();
+  const invalid = await createReservation(input, { ...missingCallbacks.options,
+    expectedRequestDigest: prepared.requestBinding.digest });
+  assert.equal(invalid.issue, 'SAVE_GUARD_CALLBACKS_INVALID');
+  assert.equal(missingCallbacks.calls.length, 0);
+});
+
+test('staff-bound create requires drained callbacks, owned-session close, and an exact read-only fresh session', async (t) => {
+  const prepared = await createReservation({ ...input, mode: 'prepare' }, harness().options);
+  const dirs = new Set();
+  t.after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
+  const guards = { expectedRequestDigest: prepared.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() };
+  for (const drain of [undefined, false, true]) {
+    const run = harness({ save: { outcome: 'saved_same_form', confirmation: '123456-1', arProfileId: '501',
+      ...(drain !== undefined ? { dispatchCallbacksDrained: drain } : {}) } });
+    let readOptions;
+    const freshSession = run.options.withSavedSession;
+    run.options.withSavedSession = async (operation, options) => { readOptions = options; return freshSession(operation, options); };
+    const result = await createReservation(input, { ...run.options, ...guards });
+    if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+    assert.deepEqual(readOptions, { readOnly: true, readOnlyConfirmation: '123456-1' });
+    assert.equal(result.writerSessionClosed, true);
+    assert.equal(result.outcome, drain === true ? 'saved' : 'uncertain');
+    if (drain !== true) assert.equal(result.issue, 'save_callback_drain_unconfirmed');
+  }
+  const closing = harness();
+  const withSession = closing.options.withSession;
+  closing.options.withSession = async (...args) => { await withSession(...args); throw new Error('HMS_BROWSER_CLOSE_UNCONFIRMED'); };
+  const result = await createReservation(input, { ...closing.options, ...guards });
+  if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+  assert.equal(result.outcome, 'uncertain');
+  assert.notEqual(result.writerSessionClosed, true);
+  const wrongGuarantee = harness({ nativePreimage: { ...nativePreimage, guaranteeCode: 'GTDAGT' } });
+  const mismatched = await createReservation(input, { ...wrongGuarantee.options, ...guards });
+  if (mismatched.screenshots?.before) dirs.add(dirname(mismatched.screenshots.before));
+  assert.equal(mismatched.outcome, 'uncertain');
+  assert.ok(mismatched.readback.mismatches.some(({ field }) => field === 'guaranteeTypeCode'));
+});
+
+test('staff preview requires an explicit choice even when one profile matches', async () => {
+  const run = harness();
+  const result = await createReservation({ ...input, mode: 'prepare', guest: {
+    search: { firstName: 'Proof', lastName: 'Labtest' },
+  } }, { ...run.options, requireExplicitGuestSelection: true });
+  assert.equal(result.outcome, 'needs_input');
+  assert.equal(result.issue, 'guest_choice_required');
+  assert.deepEqual(result.guestCandidates.map(({ nativeId }) => nativeId), ['123']);
+  assert.equal(run.calls.some(({ tool }) => tool === 'selectGuestProfile'), false);
+  assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('staff preview stores its approved screenshot privately', async (t) => {
+  const run = harness();
+  const result = await createReservation({ ...input, mode: 'prepare' }, {
+    ...run.options, capturePrepareScreenshot: true,
+  });
+  assert.equal(result.outcome, 'prepared');
+  assert.match(result.requestBinding.digest, /^[0-9a-f]{64}$/);
+  assert.match(result.screenshots.filled, /^\/tmp\/hms-cloud-create-[0-9a-f-]+\/filled\.png$/);
+  t.after(() => rm(dirname(result.screenshots.filled), { recursive: true, force: true }));
+  assert.equal((await stat(result.screenshots.filled)).mode & 0o777, 0o600);
+  assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('track and false guest opt-in match preview, native Save and fresh readback', async (t) => {
+  const requested = { ...input, track: 'BAR', guestoptin4: false };
+  const seen = { ...values, track: 'Best Available', guestoptin4: false };
+  const preparing = harness({ draft: seen });
+  const prepared = await createReservation({ ...requested, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.deepEqual(prepared.requestBinding.request.track, { lookupCode: 'BAR', display: 'Best Available' });
+  assert.equal(prepared.requestBinding.request.guestOptIn, false);
+
+  const committing = harness({ draft: seen, record: seen });
+  const saved = await createReservation(requested, { ...committing.options,
+    expectedRequestDigest: prepared.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  const save = committing.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
+  assert.equal(save.track, 'Best Available');
+  assert.equal(save.guestOptIn, false);
+  assert.deepEqual(saved.readback.mismatches, []);
+
+  const changedTrack = harness({ draft: { ...seen, track: 'Corporate Rate' } });
+  const refused = await createReservation(requested, changedTrack.options);
+  assert.equal(refused.issue, 'requested_track_not_staged');
+  assert.equal(changedTrack.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  const selectedOptIn = harness();
+  const unsupported = await createReservation({ ...requested, guestoptin4: true }, selectedOptIn.options);
+  assert.equal(unsupported.issue, 'requested_fields_not_supported');
+  assert.equal(selectedOptIn.calls.length, 0);
+
+  const changedReadback = harness({ draft: seen, record: { ...seen, guestoptin4: true } });
+  const uncertain = await createReservation(requested, changedReadback.options);
+  if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'guestOptIn'));
+});
+
+test('booker and no-send CMS recipient survive native staging and fresh readback', async (t) => {
+  const requested = { ...input, booker: { name: 'Staff Booker', contact: 'booker@example.test' },
+    cms: { send: false, recipient: 'client@example.test' } };
+  const seen = { ...values, caller: requested.booker.name, udfchar06: requested.booker.contact,
+    udfchar13: requested.cms.recipient };
+  const preparing = harness();
+  const prepared = await createReservation({ ...requested, mode: 'prepare' }, preparing.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.deepEqual(prepared.requestBinding.request.booker, requested.booker);
+  assert.equal(prepared.requestBinding.request.cmsRecipient, requested.cms.recipient);
+  assert.equal(prepared.requestBinding.request.sendHmsConfirmation.kind, 'never');
+
+  const committing = harness({ record: seen });
+  const saved = await createReservation(requested, { ...committing.options,
+    expectedRequestDigest: prepared.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  const save = committing.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
+  assert.deepEqual(save.booker, requested.booker);
+  assert.equal(save.cmsRecipient, requested.cms.recipient);
+  assert.deepEqual(saved.readback.mismatches, []);
+  assert.ok(committing.calls.some(({ tool, checked }) => tool === 'setCmsSendCheckbox' && checked === false));
+
+  const changedReadback = harness({ record: { ...seen, udfchar13: 'wrong@example.test' } });
+  const uncertain = await createReservation(requested, changedReadback.options);
+  if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'cmsRecipient'));
+  const send = harness();
+  const rejected = await createReservation({ ...requested, cms: { ...requested.cms, send: true } }, send.options);
+  assert.equal(rejected.issue, 'sending_not_supported');
+  assert.equal(send.calls.length, 0);
 });
 
 test('guarded Labtest commit saves once, verifies fresh readback and reconciles uncertainty', async (t) => {
@@ -149,7 +318,7 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
   assert.equal(result.confirmation, '123456-1');
   assert.deepEqual(result.appliedVerification, { visibleFields: true, childAges: 'at_selection_only', organizationId: 'at_selection_only' });
   assert.deepEqual(result.readback.mismatches, []);
-  assert.equal(result.readback.organizationProof.outcome, 'read_back_verified');
+  assert.equal(result.readback.partyProof.outcome, 'verified');
   assert.equal(fake.freshReads, 1);
   const saves = fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay');
   assert.equal(saves.length, 1);
@@ -446,7 +615,7 @@ test('prepare stages supported partial fields while retaining unsupported values
     [{ sourceOfBusiness: null }, ['sourceOfBusiness']],
     [{ note: null }, ['note']],
     [{ cms: { send: true, recipient: null }, price: 2 }, ['cms.send', 'cms.recipient', 'price']],
-    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker', 'booker.surprise']],
+    [{ booker: { name: 'Example', surprise: 'x' } }, ['booker.surprise']],
   ]) {
     const fake = harness();
     const result = await createReservation({ ...input, ...change, mode: 'prepare' }, fake.options);
@@ -614,6 +783,7 @@ test('commit independently passes selected parties and requires fresh native ide
   const dirs = new Set();
   t.after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
   for (const parties of [
+    { organizationId: '41' },
     { agencyId: '99', agencyName: 'Example' },
     { arAccountId: '75', arAccountName: 'Example' },
     { agencyId: '99', agencyName: 'Example', organizationId: '41', arAccountId: '75', arAccountName: 'Example' },
@@ -629,13 +799,17 @@ test('commit independently passes selected parties and requires fresh native ide
     assert.equal(save.arSelection?.nativeId ?? null, parties.arAccountId ?? null);
     assert.equal(save.organizationSelection?.nativeId ?? null, parties.organizationId ?? null);
     assert.equal(checked.agency?.nativeId ?? null, parties.agencyId ?? null);
+    assert.equal(checked.organization?.nativeId ?? null, parties.organizationId ?? null);
     assert.equal(checked.arAccount?.profileId ?? null, parties.arAccountId ? '501' : null);
   }
-  const fake = harness({ record: { ...values, company: '' }, partyReadback: () => ({ outcome: 'unverified' }) });
-  const result = await createReservation({ ...input, parties: { agencyId: '99', agencyName: 'Example' } }, fake.options);
-  if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
-  assert.equal(result.outcome, 'uncertain');
-  assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+  for (const parties of [{ organizationId: '41' }, { agencyId: '99', agencyName: 'Example' }]) {
+    const fake = harness({ record: { ...values, company: parties.organizationId ? 'Example Company' : '' },
+      partyReadback: () => ({ outcome: 'unverified' }) });
+    const result = await createReservation({ ...input, parties }, fake.options);
+    if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
+  }
 });
 
 test('optional CMS code is selected and checked without sending', async (t) => {
@@ -702,13 +876,13 @@ test('reason for stay uses current dropdown and saved visible readback', async (
 });
 
 
-test('guarded create requests blocked workers before opening its booking session', async () => {
+test('guarded create and unsaved prepare block service workers before opening the session', async () => {
   const fake = harness();
   await createReservation(input, fake.options);
   assert.equal(fake.sessionOptions.blockServiceWorkers, true);
   const prepare = harness();
   await createReservation({ ...input, mode: 'prepare' }, prepare.options);
-  assert.equal(prepare.sessionOptions.blockServiceWorkers, undefined);
+  assert.equal(prepare.sessionOptions.blockServiceWorkers, true);
 });
 
 test('explicit billing reference with selected A/R is passed exactly to the guarded writer and fresh readback', async (t) => {
@@ -861,7 +1035,7 @@ test('native guard callbacks travel only in server-owned commit session options'
   if (result.screenshots?.before) t.after(async () => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
   assert.equal(result.outcome, 'saved');
   assert.equal(fake.sessionOptions.authorizeCandidate, authorizeCandidate);
-  assert.equal(fake.sessionOptions.dispatchCandidate, dispatchCandidate);
+  assert.equal(typeof fake.sessionOptions.dispatchCandidate, 'function');
   const save = fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
   assert.ok(save);
   assert.equal(Object.hasOwn(save, 'authorizeCandidate'), false);

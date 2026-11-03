@@ -169,6 +169,8 @@ export interface PilotCapabilities {
   catchupUpload: boolean;
   /** True when create mode is lab or on: the pane may offer Preview and Book. Alias of paneWrite.create !== 'off'. */
   paneSave: boolean;
+  /** Unsaved Cloud preview; it does not enable any write. */
+  paneCreatePreview?: boolean;
   /** The save mode behind paneSave. Alias of paneWrite.create. */
   paneSaveMode: 'off' | 'lab' | 'on';
   /** Per-workflow write switches. Create never enables attach/amend/cancel. */

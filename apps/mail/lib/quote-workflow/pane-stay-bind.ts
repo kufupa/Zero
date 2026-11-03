@@ -43,6 +43,14 @@ const REFUSAL_COPY: Record<string, string> = {
   cloud_create_proof_mismatch: 'The HMS preview does not match this request. Check the details and preview again.',
   cloud_create_party_mismatch: 'The agency or company in HMS does not match this request. Check the details and preview again.',
   cloud_create_proof_invalid: 'Nava could not verify the HMS preview. Check the details and preview again.',
+  guest_choice_required: 'Choose the matching guest profile below, then preview again.',
+  cloud_create_runtime_unavailable: 'Nava cannot connect to HMS right now. Nothing was saved. Tell the Nava team.',
+  cloud_preview_labtest_only: 'HMS preview is currently available only for Proof Labtest test stays in 2027 or later. Book real guests in HMS.',
+  cloud_create_recovery_required: 'A test booking needs checking in HMS before another test booking can be made. Ask the Nava team to resolve it; do not retry the uncertain booking.',
+  pane_stay_already_booked: 'This room already has a confirmed booking. Open it in HMS.',
+  pane_save_parent_unsupported: 'Nava cannot add a room to an existing booking from this card. Book it in HMS.',
+  cloud_create_preview_only: 'Booking from Nava is not available yet. Nothing was saved.',
+  cloud_create_scope_changed: 'This booking or selected email changed. Check its details and try the preview again.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
@@ -79,6 +87,8 @@ const REFUSAL_COPY: Record<string, string> = {
     'HMS is busy with another quote or lookup. Nothing was saved. Try again in a minute.',
   refused_save_blank_required:
     'HMS still has a blank required field. Nothing was saved. Fill in every field, then preview again.',
+  cloud_create_authority_unavailable:
+    'Booking from Nava is not available yet. Nothing was saved. Book in HMS.',
 };
 
 const REFUSED_FALLBACK = 'Nava stopped before saving anything. Check HMS, then book by hand.';
@@ -104,6 +114,9 @@ export function paneRefusalMessage(reason: string | undefined, stay?: PaneStayGu
 export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 export type PaneStayParty = { nativeId?: string; name: string };
+export type PaneGuestCandidate = {
+  nativeId: string; firstName: string; lastName: string; city?: string; country?: string;
+};
 
 // The client Book fields. Key order is fixed so edits invalidate the matching preview.
 export type PaneStayInput = {
@@ -115,6 +128,12 @@ export type PaneStayInput = {
   childAges?: number[];
   cmsMessageId?: string;
   confirmationSendMail?: boolean;
+  propertyCode?: string;
+  createSelection?: {
+    source: { messageId: string; threadId: string; sourceHash: string };
+    identity: { stayId: string; rowId: string; roomIndex: number };
+    nativeGuestId?: string;
+  };
   sourceOfBusiness: string;
   roomType: string;
   ratePlan: string;
@@ -127,7 +146,7 @@ export type PaneStayInput = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
-  /** HMS confirmation letter recipient. The create route ignores this until the letter field is wired. */
+  /** HMS confirmation recipient; test saves keep Send Mail off. */
   confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
 };
 
@@ -141,6 +160,7 @@ export type PaneStayResult = {
   previewDigest?: string | null;
   runId?: string;
   screenshots?: string[];
+  guestCandidates?: PaneGuestCandidate[];
 };
 
 export type PaneStayAvailabilityRequest = {
@@ -200,6 +220,7 @@ export type PaneStayClient = {
   screenshot: (runId: string, name: string) => Promise<string | null>;
   /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
   mode?: () => PaneSaveMode | null;
+  canPreview?: () => boolean;
   readAvailability?: PaneStayAvailabilityReader;
 };
 
@@ -222,6 +243,7 @@ type PaneStayTrpc = {
     getCapabilities: {
       query: () => Promise<{
         paneSave?: boolean;
+        paneCreatePreview?: boolean;
         paneSaveMode?: unknown;
         paneWrite?: { create?: unknown };
       }>;
@@ -235,6 +257,7 @@ type PaneStayTrpc = {
 // The mode each tRPC client last reported. The pane page reads the flag and builds its client from one tRPC object.
 // The root tRPC client is a Proxy over a function, so typeof is 'function', not 'object'.
 const paneSaveModes = new WeakMap<object, PaneSaveMode>();
+const panePreviewModes = new WeakMap<object, boolean>();
 
 function isClientKey(value: unknown): value is object {
   return (typeof value === 'object' || typeof value === 'function') && value !== null;
@@ -281,20 +304,23 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
       return result.status === 'ok' && result.dataUrl ? result.dataUrl : null;
     },
     mode: () => (isClientKey(trpc) ? (paneSaveModes.get(trpc) ?? null) : null),
+    canPreview: () => (isClientKey(trpc) ? (panePreviewModes.get(trpc) ?? false) : false),
   };
 }
 
 // The server mode, read through the tRPC client. Any failure reads as off, so the card stays copy-only.
 export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
   let mode: PaneSaveMode = 'off';
+  let preview = false;
   try {
     const capabilities = await (trpc as PaneStayTrpc).brain?.getCapabilities.query();
     mode = paneSaveModeOf(capabilities);
+    preview = capabilities?.paneCreatePreview === true;
   } catch {
     mode = 'off';
   }
-  if (isClientKey(trpc)) paneSaveModes.set(trpc, mode);
-  return mode !== 'off';
+  if (isClientKey(trpc)) { paneSaveModes.set(trpc, mode); panePreviewModes.set(trpc, preview); }
+  return preview || mode !== 'off';
 }
 
 export type PaneStayChoice = {
@@ -423,10 +449,14 @@ export function paneStayKey(stay: PaneStayInput): string {
 
 export type PreviewOutcome =
   | { ok: true; digest: string; runId?: string; screenshots: string[] }
+  | { ok: true; previewOnly: true; runId?: string; screenshots: string[] }
   | { ok: false; message: string };
 
 export function previewOutcome(result: PaneStayResult): PreviewOutcome {
   if (result.status === 'refused') return { ok: false, message: paneRefusalMessage(result.reason) };
+  if (result.outcome === 'preview_only' && result.runId) {
+    return { ok: true, previewOnly: true, runId: result.runId, screenshots: result.screenshots ?? [] };
+  }
   if (result.outcome === 'previewed' && result.previewDigest) {
     return {
       ok: true,

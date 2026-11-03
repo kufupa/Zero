@@ -194,6 +194,8 @@ append_env HMS_AVAILABILITY_PREFETCH "${HMS_AVAILABILITY_PREFETCH:-}"
 append_env HMS_AVAILABILITY_PER_HOUR "${HMS_AVAILABILITY_PER_HOUR:-}"
 # Per-workflow pane writes (KTD1). Unset unless ops pass them; never default on.
 append_env PANE_WRITE_CREATE "${PANE_WRITE_CREATE:-}"
+# Cloud Create cutover stays off until the shared write claim is ready.
+append_env PANE_CLOUD_CREATE_DISPATCH "${PANE_CLOUD_CREATE_DISPATCH:-}"
 append_env PANE_WRITE_AMEND_UNPAID "${PANE_WRITE_AMEND_UNPAID:-}"
 append_env PANE_WRITE_AMEND_PAID "${PANE_WRITE_AMEND_PAID:-}"
 append_env PANE_WRITE_CANCEL_UNPAID "${PANE_WRITE_CANCEL_UNPAID:-}"

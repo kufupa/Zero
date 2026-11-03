@@ -122,7 +122,7 @@ function sessionState(page) {
   return state;
 }
 
-async function readSavedOrganizationCreate(state, request) {
+export async function readSavedOrganizationCreate(state, request, { openSession = withCenturionStay360Page } = {}) {
   const target = state?.savedOrganizationCreate;
   if (!target) return { outcome: 'input_gap', issue: 'SAVED_ORG_LABTEST_CREATE_REQUIRED' };
   if (Object.keys(request || {}).some((key) => !['id', 'tool', 'confirmation'].includes(key)) ||
@@ -130,8 +130,7 @@ async function readSavedOrganizationCreate(state, request) {
     return { outcome: 'input_gap', issue: 'CURRENT_CREATE_CONFIRMATION_REQUIRED' };
   }
   try {
-    return await withCenturionStay360Page(async (page) => {
-      await installReadOnlyGuard(page.context());
+    return await openSession(async (page) => {
       const stay = await readConfirmationFromStay360(page, target.confirmation, {
         guestName: 'Proof Labtest', arrivalDate: target.expected.arrival,
       });
@@ -151,7 +150,7 @@ async function readSavedOrganizationCreate(state, request) {
         organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
         otherLinkedPartiesBlank: true,
       };
-    });
+    }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard });
   } catch {
     return { outcome: 'execution_failure', issue: 'LABTEST_READBACK_UNVERIFIED' };
   }
@@ -519,7 +518,7 @@ export function createBookingToolQueue(context) {
 /** Own one guarded page for the callback; the page is closed when it returns. */
 export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false } = {}) {
   if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
-  return { headless, blockServiceWorkers };
+  return { headless, blockServiceWorkers, prepareContext: installReadOnlyGuard };
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
@@ -536,7 +535,6 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     Object.assign(loaded, { memory: null, status: 'unavailable', issue: 'memory_property_mismatch' });
   }
   return withCenturionStay360Page(async (page) => {
-    await installReadOnlyGuard(page.context());
     let labtestPreimage;
     if (labtestDates !== undefined) {
       labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {});
