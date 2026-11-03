@@ -143,6 +143,7 @@ function fakeTrpc(options: {
   return {
     trpc: {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
+      hmsApproval: { writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } },
       paneStayLookup: {
         queueFind: { mutate: queueFind },
         queueSearchGuest: { mutate: queueSearchGuest },
@@ -426,7 +427,8 @@ describe('voucher find card: the existing search', () => {
 
   it('does not search or offer a preview without a selected source message', async () => {
     const { trpc, queueSearchGuest } = fakeTrpc({ reply: { ...VOUCHER, messageId: '' } });
-    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() },
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="wi-1" propertyCode="HRCEN" />);
     expect(await screen.findByText(VOUCHER_COPY.caption)).toBeTruthy();
     await act(async () => {});
@@ -887,7 +889,8 @@ describe('voucher find card: attach to HMS', () => {
   it('keeps the legacy attach action at a different verified property', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { quoteWorkflow: Record<string, unknown> }).quoteWorkflow.bindVoucherAttach = { mutate: vi.fn() };
-    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() },
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
     expect(await screen.findByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
@@ -937,6 +940,29 @@ describe('voucher find card: attach to HMS', () => {
     );
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+  });
+
+  it('pins the status read to the selected email and waits for a safe response before attach', async () => {
+    let resolve!: (value: { run: null; needsCheck: boolean }) => void;
+    const writeState = vi.fn(() => new Promise<Parameters<typeof resolve>[0]>((done) => { resolve = done; }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: writeState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(writeState).toHaveBeenCalledWith({ workItemId: WORK_ITEM, internetMessageId: 'abc@host' }, MAILBOX);
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+    await act(async () => resolve({ run: null, needsCheck: false }));
+    expect(await screen.findByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+  });
+
+  it('keeps attach unavailable if the status read fails', async () => {
+    const writeState = vi.fn(async () => { throw new Error('unavailable'); });
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: writeState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(writeState).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
   it('binds the attach form to the matched stay and the voucher PDF', async () => {

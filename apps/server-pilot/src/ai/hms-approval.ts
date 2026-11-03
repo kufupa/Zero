@@ -270,7 +270,7 @@ async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<st
   return resolved ? null : latest.id;
 }
 
-async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
+export async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
   await assertNoWriteInFlight(db, workItemId);
   if (await unresolvedNeedsCheckRunId(db, workItemId)) throw new HmsApprovalError('needs_check_open');
 }

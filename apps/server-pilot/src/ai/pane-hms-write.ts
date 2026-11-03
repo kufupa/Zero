@@ -25,6 +25,7 @@ import { canonicalJson } from './draft-approval.js';
 import { assertNoCreateDispatchFence, CreateFenceError } from './pane-create-dispatch-fence.js';
 import {
   assertHmsUnchangedBeforeSave,
+  assertNoOpenWrite,
   consumeHmsWriteApproval,
   endHmsWriteRun,
   HmsApprovalError,
@@ -303,6 +304,12 @@ export async function bindAttachDocumentForm(input: {
     }
     if (item.status === 'done' || item.status === 'dismissed') {
       return { status: 'refused' as const, reason: 'not_open' };
+    }
+    try {
+      await assertNoOpenWrite(tx as DB, item.id);
+    } catch (error) {
+      if (error instanceof HmsApprovalError) return { status: 'refused' as const, reason: error.refusal };
+      throw error;
     }
     if (!item.sourceMessageId) return { status: 'refused' as const, reason: 'source_mail_missing' };
     const [row] = await tx

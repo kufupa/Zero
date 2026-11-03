@@ -16,13 +16,14 @@ function fakeDb(rows: unknown[][]) {
     select: vi.fn(() => {
       const current = index++;
       const query = {
-        from: () => query, where: () => query,
+        from: () => query, where: () => query, orderBy: () => query,
         limit: (count: number) => {
-          if (count !== 2) return query;
-          operations.push(`read:${current}`);
-          return Promise.resolve(rows[current]);
+          const result = Promise.resolve(rows[current] ?? []);
+          if (count === 2) { operations.push(`read:${current}`); return result; }
+          return Object.assign(result, { for: async (mode: string) => {
+            operations.push(`lock:${current}:${mode}`); return result;
+          } });
         },
-        for: async (mode: string) => { operations.push(`lock:${current}:${mode}`); return rows[current]; },
       };
       return query;
     }),
@@ -50,5 +51,17 @@ describe('attach form binding during create dispatch', () => {
       .resolves.toEqual({ status: 'refused', reason: 'not_found' });
     expect(fake.operations).toEqual(['lock:0:update']);
     expect(fake.update).not.toHaveBeenCalled();
+  });
+
+  it('does not rebind a form while a write is active or its outcome needs checking', async () => {
+    for (const [remaining, reason] of [
+      [[[{ id: 'running' }]], 'write_in_flight'],
+      [[[], [{ id: 'lost', state: 'dead_letter', failureClass: 'LEASE_LOST' }], []], 'needs_check_open'],
+    ] as const) {
+      const fake = fakeDb([[item], [{ id: itemId }], [], ...remaining]);
+      await expect(bindAttachDocumentForm({ ...input, db: fake.db }))
+        .resolves.toEqual({ status: 'refused', reason });
+      expect(fake.update).not.toHaveBeenCalled();
+    }
   });
 });

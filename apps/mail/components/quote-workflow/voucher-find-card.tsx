@@ -86,13 +86,13 @@ type TrpcAttachRoutes = {
   hmsApproval?: {
     bindAttach?: { mutate: (input: VoucherAttachBindInput, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
     previewAttach?: { mutate: (input: VoucherPreviewInput, options: MailboxOptions) => Promise<VoucherPreviewReply> };
-    writeState?: { query: (input: { workItemId: string }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
+    writeState?: { query: (input: { workItemId: string; internetMessageId: string }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
   };
 };
 
-function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null): VoucherAttachClient | null {
+function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, internetMessageId: string | null): VoucherAttachClient | null {
   const mailbox = inMailbox(transportId);
-  if (!mailbox || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = trpc as TrpcAttachRoutes;
   const bind = routes.quoteWorkflow?.bindVoucherAttach?.mutate ?? routes.hmsApproval?.bindAttach?.mutate;
   const writeState = routes.hmsApproval?.writeState?.query;
@@ -101,7 +101,7 @@ function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null):
   return {
     ...(bind ? { bind: (input: VoucherAttachBindInput) => bind(input, mailbox) } : {}),
     ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
-    ...(writeState ? { writeState: (input: { workItemId: string }) => writeState(input, mailbox) } : {}),
+    ...(writeState ? { writeState: (input: { workItemId: string }) => writeState({ ...input, internetMessageId }, mailbox) } : {}),
   };
 }
 
@@ -154,11 +154,15 @@ function VoucherFindCardBody({
 }: VoucherFindCardProps) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
-  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId), [trpc, transportId]);
+  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId), [trpc, transportId, internetMessageId]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
   const [attach, setAttach] = useState<'idle' | 'binding' | 'bound' | 'refused'>('idle');
-  const [attachWrite, setAttachWrite] = useState<VoucherAttachWriteView | null>(null);
+  const [attachStatus, setAttachStatus] = useState<{
+    workItemId: string; view: VoucherAttachWriteView | null; valid: boolean;
+  } | null>(null);
+  const attachWrite = attachStatus?.workItemId === workItemId ? attachStatus.view : null;
+  const attachStatusKnown = attachStatus?.workItemId === workItemId && attachStatus.valid && attachWrite !== null;
   const [preview, setPreview] = useState<{ key: string; status: 'loading' | 'ready' | 'refused' } | null>(null);
   const previewKeyRef = useRef('');
   const [detailsRequested, setDetailsRequested] = useState(false);
@@ -282,7 +286,7 @@ function VoucherFindCardBody({
       setReply(null);
       setSave('idle');
       setAttach('idle');
-      setAttachWrite(null);
+      setAttachStatus(null);
       setDetailsRequested(false);
       detailsStartedFor.current = null;
     }
@@ -328,10 +332,11 @@ function VoucherFindCardBody({
     const read = () => {
       attachClient.writeState!({ workItemId }).then(
         (view) => {
-          if (live) setAttachWrite(view);
+          if (live) setAttachStatus({ workItemId, view, valid: view !== null });
         },
-        // A transient status failure must not erase an earlier unknown outcome.
-        () => undefined,
+        // Keep an earlier warning but never enable attach on a failed status read.
+        () => { if (live) setAttachStatus((prior) => ({ workItemId,
+          view: prior?.workItemId === workItemId ? prior.view : null, valid: false })); },
       );
     };
     read();
@@ -429,7 +434,7 @@ function VoucherFindCardBody({
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const canAttach = Boolean(
-    propertyCode && propertyCode !== 'HRCEN' && singleMatch && attachPdf && workItemId && writesEnabled &&
+    propertyCode && propertyCode !== 'HRCEN' && singleMatch && attachPdf && workItemId && writesEnabled && attachStatusKnown &&
     !unconfirmedAttach && !attachSucceeded,
   );
   const canPreview = Boolean(propertyCode === 'HRCEN' && singleMatch && attachPdf && workItemId && reply.messageId && attachClient?.preview &&
