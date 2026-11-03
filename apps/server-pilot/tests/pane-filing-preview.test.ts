@@ -113,6 +113,32 @@ describe('read-only filing preview', () => {
     await expect(previewFiling({ ...input, db: second.db, s3: second.s3 })).resolves.toEqual({ status: 'refused', reason: 'source_changed' });
   });
 
+  it('rejects a changed selected Message-ID in the mounted PDF preview', async () => {
+    const f = fixture();
+    const bytes = Buffer.from('%PDF-1.7 synthetic voucher');
+    const doc = { transportId: input.transportId, messageId: input.sourceMessageId, threadId: 'thread-1',
+      attachmentId: input.attachmentId, messageIdHeader: 'selected@example.test', mailboxId: 'mailbox-1',
+      uidl: 'uidl-1', direction: 'inbound', historyOnly: false, provenance: null, subject: 'Voucher',
+      textBody: 'Please file this', htmlBody: '', fromAddress: 'sender@example.test', toAddresses: [],
+      ccAddresses: [], filename: 'voucher.pdf', mimeType: 'application/pdf', sizeBytes: bytes.length,
+      sha256: null, s3Key: 'attachments/mail-1/voucher.pdf', isInline: false };
+    await f.s3.putObject({ key: doc.s3Key, body: bytes, contentType: doc.mimeType });
+    const db = { select: (fields: Record<string, unknown>) => {
+      const query = { from: () => query, innerJoin: () => query, where: () => query,
+        limit: async () => 'itemThread' in fields ? f.getRows() : [{ ...doc }] };
+      return query;
+    } } as unknown as DB;
+    const actual = await vi.importActual<typeof import('../src/mail/artifacts/pane-pop3-attachment.js')>(
+      '../src/mail/artifacts/pane-pop3-attachment.js');
+    stubs.read.mockImplementation((request) => actual.readPanePop3Attachment(request));
+    stubs.find.mockImplementationOnce(async () => {
+      doc.messageIdHeader = 'different@example.test';
+      return { outcome: 'found', stay, arrivalMismatch: false };
+    });
+    await expect(previewFiling({ ...input, db, s3: f.s3 }))
+      .resolves.toEqual({ status: 'refused', reason: 'source_changed' });
+  });
+
   it('refuses a mismatched booking or a different property', async () => {
     for (const mismatch of [{ confirmation: '999-1' }, { arrival: '2027-09-15' }, { lastName: 'Other' }]) {
       const f = fixture();
