@@ -1382,6 +1382,11 @@ export function BookingCards({
   async function bookThisStay(pane: PaneStayClient) {
     if (stayBookingRef.current || (cloudPreview && Object.values(savesRef.current).some(({ commit }) =>
       (commit?.status === 'refused' && commit.statusChip === 'check') || (commit?.status === 'booked' && commit.unverified)))) return;
+    // A prior run's batch ID is not yet resumable after a partial completion.
+    // Do not offer a new Go that would lose the verified sibling evidence.
+    if (cloudPreview && bookableRooms().length > 1 &&
+        bookableRooms().some((room) => savesRef.current[roomKeyOf(room)]?.commit?.status === 'booked') &&
+        bookableRooms().some((room) => savesRef.current[roomKeyOf(room)]?.commit?.status !== 'booked')) return;
     const snapshot = bookableRooms()
       .filter((room) => {
         const commit = saves[roomKeyOf(room)]?.commit;
@@ -2021,6 +2026,7 @@ function StayBookBar({
     const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
     return (commit?.status === 'refused' && commit.statusChip === 'check') || (commit?.status === 'booked' && commit.unverified);
   });
+  const partialBatch = blockWhenUncertain && !stayBooking && numbers.length > 0 && pending.length > 0;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
@@ -2030,8 +2036,10 @@ function StayBookBar({
       ) : null}
       {pending.length > 0 ? (
         <PrimaryButton
-          disabled={!allPreviewed || busy || needsCheck}
-          disabledReason={needsCheck ? 'Check the uncertain booking in HMS first' : !allPreviewed && !busy ? 'Preview in HMS first' : null}
+          disabled={!allPreviewed || busy || needsCheck || partialBatch}
+          disabledReason={needsCheck ? 'Check the uncertain booking in HMS first' : partialBatch
+            ? 'Some rooms were booked. Check HMS before handling the remaining rooms.'
+            : !allPreviewed && !busy ? 'Preview in HMS first' : null}
           onClick={() => void onBookStay(pane)}
         >
           {BOOK_THIS_STAY_LABEL}

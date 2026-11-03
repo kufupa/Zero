@@ -1132,15 +1132,16 @@ describe('Cloud create controls', () => {
       confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
   });
 
-  it.each(['confirmed', 'uncertain'] as const)('uses one Cloud Go for separately approved rooms and stops on %s', async (result) => {
+  it.each(['confirmed', 'uncertain', 'partial'] as const)('uses one Cloud Go for separately approved rooms and stops on %s', async (result) => {
     const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
       ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
         { nativeId: '123', firstName: 'Proof', lastName: 'Labtest' },
       ] });
     const commit = vi.fn<PaneStayClient['commit']>()
-      .mockResolvedValueOnce(result === 'confirmed' ? { ...COMMIT_OK, confirmationNumber: '111111-1' }
+      .mockResolvedValueOnce(result !== 'uncertain' ? { ...COMMIT_OK, confirmationNumber: '111111-1' }
         : { status: 'refused', reason: 'pane_save_unconfirmed' })
-      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '222222-1' });
+      .mockResolvedValueOnce(result === 'partial' ? { status: 'refused', reason: 'cloud_create_unavailable' }
+        : { ...COMMIT_OK, confirmationNumber: '222222-1' });
     const { client } = paneClient({ preview, commit, mode: () => 'lab', canPreview: () => true });
     const draft = draftReady();
     for (const room of draft.draft.rooms) Object.assign(room.request, { firstName: 'Proof', lastName: 'Labtest',
@@ -1163,16 +1164,22 @@ describe('Cloud create controls', () => {
     expect(bookButton(0).disabled).toBe(true);
     expect(bookButton(1).disabled).toBe(true);
     fireEvent.click(bar);
-    await waitFor(() => expect(commit).toHaveBeenCalledTimes(result === 'confirmed' ? 2 : 1));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(result === 'uncertain' ? 1 : 2));
     const started = commit.mock.calls[0]?.[2];
     expect(started).toMatchObject({ kind: 'start', rooms: [
       { stayId: 's1_1', workItemId, confirmationSendMail: false },
       { stayId: 's1_2', workItemId, confirmationSendMail: false },
     ] });
     expect(commit.mock.calls[0]?.[0]).not.toHaveProperty('parentStayId');
-    if (result === 'confirmed') {
+    if (result !== 'uncertain') {
       expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
       expect(commit.mock.calls[1]?.[2]).toMatchObject({ kind: 'continue', id: started?.id, index: 1 });
+      if (result === 'partial') {
+        await waitFor(() => expect(bar.disabled).toBe(true));
+        expect(screen.getByText(/Some rooms were booked. Check HMS before handling the remaining rooms/)).toBeDefined();
+        fireEvent.click(bar);
+        expect(commit).toHaveBeenCalledTimes(2);
+      }
     } else {
       await waitFor(() => expect(bar.disabled).toBe(true));
       expect(screen.getByText(/HMS may have saved this booking/)).toBeDefined();
