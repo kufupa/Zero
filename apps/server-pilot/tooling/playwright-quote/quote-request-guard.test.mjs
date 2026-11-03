@@ -155,6 +155,24 @@ test('the company picker permits only its reviewed lookup form, not a write or a
   }
 });
 
+test('the room-type picker only opens the HRCEN read-only list', async () => {
+  const fields = { GRID_NAME: 'LVMULTIROOMTYPESMULTIPROP', GRID_TYPE: 'LIST', REQUEST_TYPE: 'LIST.HEAD_DATA.STORED',
+    dataspytoolbar: 'true', LOV_ALIAS_NAME_1: 'param.propertycodes', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text' };
+  const input = { url: `${origin}/web/base/BSMSLV`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() };
+  const allowed = await routed(input);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const body of [
+    new URLSearchParams({ ...fields, LOV_ALIAS_VALUE_1: 'HRDAV' }).toString(),
+    new URLSearchParams({ ...fields, GRID_NAME: 'OSRESV' }).toString(),
+    input.body + '&pageaction=SAVE',
+  ]) {
+    const denied = await routed({ ...input, body });
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
 test('agency, organization ID and group pickers admit only their reviewed read forms', async () => {
   const shared = { USER_FUNCTION_NAME: 'OSMPAV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV' };
   const groupScope = {
@@ -227,12 +245,14 @@ test('only the typed, duplicate-free, Centurion availability inquiry is fetched'
   const allowed = await routed(valid);
   assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
   assert.equal(allowed.guard.failureError(), null);
+  const adultAge = await routed({ ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [99] }) });
+  assert.deepEqual(adultAge.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
   for (const bad of [
     { ...valid, body: JSON.stringify({ ...body, propertyCodes: 'OTHER' }) },
     { ...valid, body: valid.body.replace('{', '{"propertyCodes":"OTHER",') },
     { ...valid, body: JSON.stringify({ ...body, pageaction: 'SAVE' }) },
     { ...valid, body: JSON.stringify({ ...body, excludeOverbookingLimits: true }) },
-    { ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [99] }) },
+    { ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [100] }) },
     { ...valid, body: JSON.stringify({ ...body, startDate: '2027-02-30T00:00:00' }) },
     { ...valid, url: `${valid.url}&pageaction=SAVE` },
     { ...valid, url: `${origin}/web/base/OSRESV.HDR?pageaction=SAVE` },

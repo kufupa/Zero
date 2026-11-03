@@ -17,6 +17,9 @@ export function availabilityScreenRules(origin) {
     rule('quote-agency-picker', '/web/base/LOVPOP', {},
       { GRID_NAME: 'LVTRAVELAGENCIES5', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.HEAD_DATA.STORED',
         LOV_TAGNAME: 'travelagency', popup: 'true', USER_FUNCTION_NAME: 'OSMPAV', CURRENT_TAB_NAME: 'HDR' }),
+    rule('quote-roomtype-picker', '/web/base/BSMSLV', {},
+      { GRID_NAME: 'LVMULTIROOMTYPESMULTIPROP', GRID_TYPE: 'LIST', REQUEST_TYPE: 'LIST.HEAD_DATA.STORED',
+        dataspytoolbar: 'true', LOV_ALIAS_NAME_1: 'param.propertycodes', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text' }),
     { ...rule('quote-group-picker', '/web/base/LOVPOP', {},
       { GRID_NAME: 'LVGROUPS5', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.HEAD_DATA.STORED',
         LOV_TAGNAME: 'groupname', popup: 'true', USER_FUNCTION_NAME: 'OSMPAV', CURRENT_TAB_NAME: 'HDR',
@@ -120,7 +123,7 @@ export function isReviewedAvailabilityInquiry(request, { origin, propertyCode, r
         ['groupID', 'organizationID', 'travelAgencyID'].some((key) => !nativeId(body[key])) ||
         typeof body.bookingSessionID !== 'string' || !/^[\x20-\x7e]{0,128}$/.test(body.bookingSessionID)) return false;
     if (body.childAges !== undefined && (!Array.isArray(body.childAges) || body.childAges.length !== body.childCount ||
-        body.childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17))) return false;
+        body.childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 99))) return false;
     return true;
   } catch { return false; }
 }
