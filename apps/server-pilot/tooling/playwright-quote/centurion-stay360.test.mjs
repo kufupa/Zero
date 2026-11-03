@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { centurionContextOptions } from './centurion-stay360.mjs';
+import { centurionContextOptions, newPreparedCenturionPage } from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 
@@ -18,6 +18,20 @@ test('service-worker blocking is explicit and the default context is unchanged',
   for (const value of [null, 'block', 1, {}]) {
     assert.throws(() => centurionContextOptions(value), /SERVICE_WORKER_OPTION_INVALID/);
   }
+});
+
+test('the optional context preparation finishes before page creation and failures stop the page', async () => {
+  const seen = [];
+  const context = { newPage: async () => { seen.push('page'); return 'page'; } };
+  const page = await newPreparedCenturionPage(context, async (value) => {
+    assert.equal(value, context); seen.push('guard');
+  });
+  assert.equal(page, 'page');
+  assert.deepEqual(seen, ['guard', 'page']);
+  await newPreparedCenturionPage(context);
+  assert.deepEqual(seen, ['guard', 'page', 'page']);
+  await assert.rejects(newPreparedCenturionPage(context, async () => { throw new Error('guard failed'); }), /guard failed/);
+  assert.deepEqual(seen, ['guard', 'page', 'page']);
 });
 
 test('blocked service workers cannot bypass context request routes', async () => {

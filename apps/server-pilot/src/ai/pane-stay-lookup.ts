@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -394,6 +394,25 @@ async function defaultSpawn(
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
   await mkdir(dir, { mode: 0o700 });
+  if (input.mode === 'search-guest' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+    const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+    if (keys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+      await rm(dir, { recursive: true, force: true });
+      throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
+    }
+    try {
+      const moduleUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+      const cloud = await import(moduleUrl.href) as { searchGuestInCloud: (request: Extract<PaneStayLookupSpawnInput,
+        { mode: 'search-guest' }> & { dir: string }) =>
+        Promise<Partial<PaneStayLookupSpawnResult>> };
+      const result = await cloud.searchGuestInCloud({ ...input, dir });
+      return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
+        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
   let runError: unknown = null;
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {

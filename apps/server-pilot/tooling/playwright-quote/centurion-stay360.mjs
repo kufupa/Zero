@@ -99,8 +99,14 @@ export function centurionContextOptions(blockServiceWorkers = false) {
   return blockServiceWorkers ? { viewport: { ...viewport }, serviceWorkers: 'block' } : { viewport: { ...viewport } };
 }
 
+/** Let a caller install context routes before the first page or network request. */
+export async function newPreparedCenturionPage(context, prepareContext) {
+  await prepareContext?.(context);
+  return context.newPage();
+}
+
 export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch, signal,
-  blockServiceWorkers = false } = {}) {
+  blockServiceWorkers = false, prepareContext } = {}) {
   const contextOptions = centurionContextOptions(blockServiceWorkers);
   let browser;
   let context;
@@ -135,7 +141,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     context = await browser.newContext(contextOptions);
     signal?.throwIfAborted();
 
-    page = await context.newPage();
+    page = await newPreparedCenturionPage(context, prepareContext);
     signal?.throwIfAborted();
 
     phase = 'login';
