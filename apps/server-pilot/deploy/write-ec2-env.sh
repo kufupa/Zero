@@ -24,6 +24,7 @@ for key in PANE_HMS_LAB_CREATE_WORKER PANE_HMS_LAB_ATTACH_WORKER PANE_HMS_LAB_AM
   PANE_CLOUD_CREATE_DISPATCH HMS_JOB_QUEUE HMS_AVAILABILITY_PREFETCH; do
   case "${!key:-}" in ''|off|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
+case "${PANE_BRAIN:-}" in ''|agent|classifier) ;; *) echo 'invalid PANE_BRAIN' >&2; exit 2 ;; esac
 for key in HMS_PREFETCH_ENABLED HMS_LANE_PAUSED PARTY_MATCH_V2; do
   case "${!key:-}" in ''|true|false|1|0) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
@@ -195,6 +196,7 @@ if [[ -n "${AZURE_LUNA_PARSED}" ]]; then
   append_env AZURE_FOUNDRY_API_KEY "$AZURE_FOUNDRY_API_KEY"
 fi
 append_env QUOTE_WORKFLOW_LLM "${QUOTE_WORKFLOW_LLM:-}"
+append_env PANE_BRAIN "${PANE_BRAIN:-}"
 # Scanned voucher PDF vision read: off unless ops set SCANNED_PDF_VISION=on.
 append_env SCANNED_PDF_VISION "${SCANNED_PDF_VISION:-}"
 # Quote follow-up drafts (R10): off unless ops set QUOTE_FOLLOWUPS=on.
