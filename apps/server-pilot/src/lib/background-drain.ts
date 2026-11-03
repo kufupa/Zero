@@ -12,3 +12,11 @@ export function createBackgroundDrain() {
     },
   };
 }
+
+/** A disconnected HTTP client must not hide a handler that is still running. */
+export function withDrain<T extends unknown[], R>(
+  drain: ReturnType<typeof createBackgroundDrain>,
+  handler: (...args: T) => R,
+): (...args: T) => Promise<Awaited<R>> {
+  return (...args) => drain.track(Promise.resolve().then(() => handler(...args)));
+}

@@ -8,7 +8,7 @@ import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { createEmlDownloadHandler } from './http/eml-download.js';
 import { resolveAuthSessionProfile } from './lib/auth-profile.js';
-import { createBackgroundDrain } from './lib/background-drain.js';
+import { createBackgroundDrain, withDrain } from './lib/background-drain.js';
 import { getPublicAuthProviders } from './lib/auth-providers.js';
 import { startOutlookSyncDrain } from './outlook-sync/drain.js';
 import { OutlookSyncStorage } from './outlook-sync/storage.js';
@@ -150,10 +150,10 @@ const stopOutlookSyncDrain =
     ? startOutlookSyncDrain(getDb(), new OutlookSyncStorage())
     : async () => {};
 
-const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+const background = createBackgroundDrain();
+const server = serve({ fetch: withDrain(background, app.fetch), port, hostname: '127.0.0.1' }, (info) => {
   console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
-const background = createBackgroundDrain();
 
 // Each hourly pass deletes at most 5,000 old records per table; no guest mail,
 // authentication keys or active approvals are touched. A maintenance failure
