@@ -1,9 +1,9 @@
 // The pane's approved Labtest upload. Each readback owns a new browser session.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { centurionWriterIdentity, centurionWriterQuiesced, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readShallow, readRecord, readDocuments } from './hms-readers.mjs';
 import { installPaneAttachReadGuard } from './pane-attach-read-guard.mjs';
 import { attachLabtestDocument } from './stay360-document-attach.mjs';
@@ -34,18 +34,33 @@ function validIsoDate(value) {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
-/** The selected HMS record must be the fake stay staff reviewed. */
+// The native reader permits 200 characters per name; its search hint accepts
+// at most 256 combined. Confirmation and arrival still select uniquely, and
+// the opened native record is always checked against both exact names.
+function lookupOptions(guestName, arrival) {
+  return { ...(guestName.length <= 256 ? { guestName } : {}), arrivalDate: arrival };
+}
+
+/** The selected native identity must be the stay staff reviewed. */
 export function approvedLabtestRecord(record, stay) {
   const native = record?.nativePreimage;
-  if (!native || !stay || native.propertyCode !== 'HRCEN' ||
-      native.firstName !== 'Proof' || native.lastName !== 'Labtest' || native.status !== 'Reserved' ||
-      !validIsoDate(native.arrival) || native.arrival < '2027-01-01' || !validIsoDate(native.departure) ||
+  const allowRealGuest = stay?.allowRealGuest === true;
+  const firstName = stay?.firstName ?? (allowRealGuest ? null : 'Proof');
+  const lastName = stay?.lastName ?? (allowRealGuest ? null : 'Labtest');
+  if (!native || !stay || native.source !== 'record_view_ext_model' || native.propertyCode !== 'HRCEN' ||
+      typeof firstName !== 'string' || !firstName.trim() || firstName !== firstName.trim() || firstName.length > 200 || /[\p{Cc}]/u.test(firstName) ||
+      typeof lastName !== 'string' || !lastName.trim() || lastName !== lastName.trim() || lastName.length > 200 || /[\p{Cc}]/u.test(lastName) ||
+      native.firstName !== firstName || native.lastName !== lastName || native.status !== 'Reserved' ||
+      !/^\d{1,100}$/.test(native.reservationStayId || '') ||
+      (stay.nativeStayId && native.reservationStayId !== stay.nativeStayId) ||
+      (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest' || native.arrival < '2027-01-01')) ||
+      !validIsoDate(native.arrival) || !validIsoDate(native.departure) ||
       native.departure <= native.arrival) return null;
   for (const key of ['confirmation', 'arrival', 'departure']) {
     if (native[key] !== stay[key]) return null;
   }
-  return { confirmation: native.confirmation, guestId: native.guestId, arrival: native.arrival,
-    departure: native.departure };
+  return { confirmation: native.confirmation, guestId: native.guestId, nativeStayId: native.reservationStayId,
+    firstName, lastName, allowRealGuest, arrival: native.arrival, departure: native.departure };
 }
 
 /** The upload additionally pins the independently observed guest ID and forbids sending. */
@@ -76,35 +91,43 @@ function evidenceLocation(result, root) {
 }
 
 async function freshDocuments(page, input, code, setNative) {
-  await readShallow(page, input.confirmation, { guestName: 'Proof Labtest', arrivalDate: input.arrival });
+  await readShallow(page, input.confirmation, lookupOptions(input.guestName, input.arrival));
   const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
   const expected = approvedDocumentDispatch(record, input.approvedStay, input.approvedSnapshot);
   if (!expected) throw new Error('READBACK_STAY_MISMATCH');
   setNative(record.nativePreimage);
   const docs = await readDocuments(page, input.confirmation);
-  return hasUniqueDocumentListing(docs, code, input.documentName);
+  const listed = hasUniqueDocumentListing(docs, code, input.documentName);
+  const nativeReadback = { confirmation: record.nativePreimage.confirmation,
+    nativeStayId: record.nativePreimage.reservationStayId, nativeGuestId: record.nativePreimage.guestId,
+    documentCode: code, documentName: input.documentName, uniqueFreshListing: listed };
+  return { listed, nativeReadback, screenshot: listed ? await page.screenshot({ fullPage: true }) : null };
 }
 
-/** Recovery accepts only a fresh positive listing on the original fake stay. */
+/** Recovery accepts only a fresh positive listing on the original stay. */
 export async function provePositiveAttachRecovery(intent, { openSession = withCenturionStay360Page,
-  shallow = readShallow, read = readRecord, documents = readDocuments, writerQuiesced = centurionWriterQuiesced } = {}) {
+  shallow = readShallow, read = readRecord, documents = readDocuments } = {}) {
   try {
     const recovery = intent?.recovery;
     if (intent?.operation !== 'attach_document' || intent.propertyCode !== 'HRCEN' ||
-        intent.firstName !== 'Proof' || intent.lastName !== 'Labtest' ||
-        !/^[0-9]{1,30}$/.test(intent.nativeGuestId || '') || !writerQuiesced(recovery?.writer) ||
+        typeof intent.firstName !== 'string' || !intent.firstName.trim() ||
+        typeof intent.lastName !== 'string' || !intent.lastName.trim() ||
+        !/^[0-9]{1,30}$/.test(intent.nativeGuestId || '') ||
         !/^\d+-\d+$/.test(recovery?.confirmation || '') || !validIsoDate(recovery.arrival) ||
-        recovery.arrival < '2027-01-01' || !validIsoDate(recovery.departure) || recovery.departure <= recovery.arrival ||
+        !validIsoDate(recovery.departure) || recovery.departure <= recovery.arrival ||
+        (recovery.allowRealGuest !== true && (intent.firstName !== 'Proof' || intent.lastName !== 'Labtest' || recovery.arrival < '2027-01-01')) ||
+        (recovery.guestName && recovery.guestName !== `${intent.firstName} ${intent.lastName}`) ||
         !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(recovery.documentCode || '') ||
         typeof recovery.documentName !== 'string' || !/\.pdf$/i.test(recovery.documentName) ||
         recovery.documentName !== recovery.documentName.replace(/\s+/g, ' ').trim() ||
         !/^[a-f0-9]{64}$/.test(recovery.pdfSha256 || '')) return { outcome: 'unconfirmed' };
     const ref = { current: null };
     return await openSession(async (page) => {
-      await shallow(page, recovery.confirmation, { guestName: 'Proof Labtest', arrivalDate: recovery.arrival });
+      await shallow(page, recovery.confirmation, lookupOptions(`${intent.firstName} ${intent.lastName}`, recovery.arrival));
       const record = await read(page, recovery.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
       const stay = { confirmation: recovery.confirmation, arrival: recovery.arrival, departure: recovery.departure,
-        nativeGuestId: intent.nativeGuestId };
+        nativeGuestId: intent.nativeGuestId, nativeStayId: recovery.nativeStayId,
+        firstName: intent.firstName, lastName: intent.lastName, allowRealGuest: recovery.allowRealGuest === true };
       if (!approvedDocumentDispatch(record, stay, { cmsSend: false })) return { outcome: 'unconfirmed' };
       ref.current = record.nativePreimage;
       const listing = await documents(page, recovery.confirmation);
@@ -114,9 +137,11 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
         return { outcome: 'unconfirmed' };
       }
       return { outcome: 'verified', confirmation: recovery.confirmation, screenshot,
-        readback: { confirmation: recovery.confirmation, nativeGuestId: intent.nativeGuestId,
+        readback: { confirmation: record.nativePreimage.confirmation, nativeStayId: record.nativePreimage.reservationStayId,
+          nativeGuestId: intent.nativeGuestId,
           documentCode: recovery.documentCode, documentName: recovery.documentName, uniqueFreshListing: true } };
     }, { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(5 * 60_000),
+      ...(recovery.cloudTargetKey ? { cloudTargetKey: recovery.cloudTargetKey } : {}),
       prepareContext: (context) => installPaneAttachReadGuard(context, {
         confirmation: recovery.confirmation, getNative: () => ref.current,
       }) });
@@ -125,11 +150,11 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
 
 /** Caller holds the property lock and supplies a live server-side dispatch check. */
 export async function runCloudPaneAttach(input, { openSession = withCenturionStay360Page,
-  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord,
-  writerIdentity = centurionWriterIdentity } = {}) {
-  if (input.target?.propertyCode !== 'HRCEN' || input.allowRealGuest || typeof input.beforeDispatch !== 'function' ||
+  attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord } = {}) {
+  if (input.target?.propertyCode !== 'HRCEN' || typeof input.beforeDispatch !== 'function' ||
       typeof input.finalAuthority !== 'function' || typeof input.dispatchWithAuthority !== 'function' ||
       typeof input.continuationAllowed !== 'function' ||
+      typeof input.guestName !== 'string' || input.guestName !== `${input.approvedStay?.firstName} ${input.approvedStay?.lastName}` ||
       !input.approvedSnapshot || !/^[a-f0-9]{64}$/.test(input.pdfSha256 || '') ||
       typeof input.documentName !== 'string' || input.documentName !== input.documentName.replace(/\s+/g, ' ').trim()) {
     return { outcome: 'refused_input', uploadSent: false, screenshots: [] };
@@ -142,6 +167,7 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
   const root = await mkdtemp(join(tmpdir(), 'pane-cloud-attach-'));
   const code = documentCodeForUuid(randomUUID());
   const options = (ref, timeout) => ({ headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(timeout),
+    ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}),
     prepareContext: (context) => installPaneAttachReadGuard(context, {
       confirmation: input.confirmation, getNative: () => ref.current,
     }) });
@@ -149,7 +175,7 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
   let result, dispatched = false, attachAttempted = false, writerSessionClosed = false;
   try {
     result = await openSession(async (page) => {
-      await shallow(page, input.confirmation, { guestName: 'Proof Labtest', arrivalDate: input.arrival });
+      await shallow(page, input.confirmation, lookupOptions(input.guestName, input.arrival));
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
       const expected = approvedDocumentDispatch(record, input.approvedStay, input.approvedSnapshot);
       if (!expected) return { outcome: 'not_dispatched', issue: 'APPROVED_STAY_MISMATCH' };
@@ -161,7 +187,7 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
         beforeDispatch: input.beforeDispatch, finalAuthority: () => input.finalAuthority(code),
         continuationAllowed: input.continuationAllowed,
         dispatchWithAuthority: (dispatch, requestDigest, beforeShot, intercepted) =>
-          input.dispatchWithAuthority(code, expected.guestId, requestDigest, dispatch, writerIdentity(page), beforeShot, intercepted),
+          input.dispatchWithAuthority(code, expected.guestId, expected.nativeStayId, requestDigest, dispatch, beforeShot, intercepted),
         onDispatched: () => { dispatched = true; }, strictNetwork: true, timeoutMs: 7 * 60_000 });
     }, options(writing, 10 * 60_000));
     writerSessionClosed = true; // withCenturionStay360Page returns only after verified browser cleanup.
@@ -175,14 +201,24 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
   const possible = dispatched || ['awaiting_readback', 'uncertain'].includes(result.outcome);
   if (!possible) return { outcome: result.issue || result.outcome, uploadSent: false,
     ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
-  let listed;
+  let fresh;
   const reading = { current: null };
-  try { listed = await openSession((page) => freshRead(page, input, code, (native) => { reading.current = native; }),
+  try { fresh = await openSession((page) => freshRead(page, input, code, (native) => { reading.current = native; }),
     options(reading, 5 * 60_000)); } catch { /* Unknown remains fenced. */ }
+  const listed = fresh?.listed;
+  const nativeReadback = fresh?.nativeReadback;
+  if (listed === true && Buffer.isBuffer(fresh?.screenshot) && fresh.screenshot.length > 0 &&
+      fresh.screenshot.length <= 10 * 1024 * 1024 && evidence.screenshots.length === 2) {
+    await writeFile(evidence.screenshots[1], fresh.screenshot, { mode: 0o600 });
+  } else if (listed === true) {
+    return { outcome: 'uncertain', uploadSent: true, documentCode: code, ...evidence,
+      writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
+  }
   // Owner's confirmation bar is a clean upload followed by a unique fresh listing.
   // The listing is not evidence of the stored file bytes or full tree completeness.
   const outcome = result.outcome === 'awaiting_readback' && listed === true ? 'confirmed'
     : listed === false ? 'upload_unconfirmed' : 'uncertain';
   return { outcome, uploadSent: true, documentCode: code, ...(listed === undefined ? {} : { listed }),
+    ...(nativeReadback ? { nativeReadback } : {}),
     ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
 }

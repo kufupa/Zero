@@ -50,7 +50,7 @@ export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
 /** Only fully bound Labtest attachments can be claimed by the opt-in filing worker. */
 export const HMS_LABTEST_ATTACH_PROMPT_VERSION = 'hms-write/lab-attach/1';
 export function labtestAttachEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return env.PANE_HMS_LAB_ATTACH_WORKER === 'on' && env.PANE_WRITE_ATTACH === 'lab';
+  return env.PANE_HMS_LAB_ATTACH_WORKER === 'on' && ['lab', 'on'].includes(env.PANE_WRITE_ATTACH ?? '');
 }
 const HMS_LABTEST_ATTACH_RUN_DEADLINE_MS = 25 * 60_000;
 // Keep aligned with HMS_JOB_PRIORITY_PREFETCH in hms-jobs.ts without creating a module cycle.

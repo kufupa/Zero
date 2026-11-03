@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, attachment, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
@@ -54,6 +53,7 @@ import {
   PANE_SCREENSHOT_NAME_PATTERN,
   PANE_WRITE_ATTACH,
   paneStayClock,
+  paneStayCloudTargetLock,
   paneStayPropertyLock,
   paneStayTransportIdFromOwner,
   parseLabOn,
@@ -65,7 +65,8 @@ import {
   type PaneStayLock,
 } from './pane-stay-save.js';
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
-import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
+import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
+import { hmsDispatchTargetKey, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { recordNeverDispatchedAttach } from './pane-cloud-attach-recovery.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
   resolveNeverDispatchedAttach, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
@@ -110,39 +111,56 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 type FilingSnapshot = { cmsSend: false };
-type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; filingSnapshot: FilingSnapshot };
+type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
+type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string };
 
 /** Only target identity and no-send affect the approved Documents upload. */
 function filingState(cloud: CloudFilingRecord) {
   const { confirmation, firstName, lastName, status, arrival, departure } = cloud.stay;
   return { confirmation, firstName, lastName, status, arrival, departure,
-    nativeGuestId: cloud.nativeGuestId, cmsSend: cloud.filingSnapshot.cmsSend };
+    nativeGuestId: cloud.nativeGuestId, nativeStayId: cloud.nativeStayId, cmsSend: cloud.filingSnapshot.cmsSend };
 }
 
-/** Independently re-read the exact fake booking and its native guest ID. Caller holds the property lock. */
-async function readCloudFilingRecord(request: { confirmation: string; arrival: string }, target: HmsReadTarget):
+/** Independently re-read the exact booking and native IDs. */
+async function readCloudFilingRecord(request: { confirmation: string; arrival: string }, target: HmsReadTarget,
+  options: FilingReadOptions = { allowRealGuest: false }):
   Promise<CloudFilingRecord | null> {
   const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
   if (keys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) return null;
   try {
-    const raw = await runCloudStayFind({ request, target, nativeIdentityOnly: true, signal: AbortSignal.timeout(5 * 60_000) });
+    const signal = AbortSignal.timeout(5 * 60_000);
+    const raw = options.cloudTargetKey
+      ? await (async () => {
+        const session = await import('../../tooling/hms-cloud/saved-stay-agent-session.mjs' as string) as {
+          withSavedStayAgentSession: <T>(action: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>,
+            options: Record<string, unknown>) => Promise<T>;
+        };
+        return session.withSavedStayAgentSession((owned) => readCloudStayForPane(owned, request, true), {
+          signal, readOnly: true, readOnlyConfirmation: request.confirmation, cloudTargetKey: options.cloudTargetKey,
+        });
+      })()
+      : await runCloudStayFind({ request, target, nativeIdentityOnly: true, signal });
     const result = projectCloudStayFind(request, raw);
     const record = raw && typeof raw === 'object' ? (raw as { record?: { nativePreimage?: unknown } }).record : null;
     const parsed = z.object({ source: z.literal('record_view_ext_model'), propertyCode: z.literal('HRCEN'),
-      confirmation: z.string(), guestId: z.string().regex(/^\d{1,30}$/), status: z.literal('Reserved'),
-      firstName: z.literal('Proof'), lastName: z.literal('Labtest'), arrival: z.string(), departure: z.string() })
+      confirmation: z.string(), guestId: z.string().regex(/^\d{1,30}$/),
+      reservationStayId: z.string().regex(/^\d{1,100}$/), status: z.literal('Reserved'),
+      firstName: z.string().trim().min(1).max(200), lastName: z.string().trim().min(1).max(200),
+      arrival: z.string(), departure: z.string() })
       .passthrough().safeParse(record?.nativePreimage);
     if (!parsed.success || result.outcome !== 'found' || !result.stay || result.arrivalMismatch) return null;
     const native = parsed.data;
     if (native.confirmation !== request.confirmation || native.arrival !== request.arrival ||
-        native.arrival < '2027-01-01' || native.arrival >= native.departure ||
+        (!options.allowRealGuest && (native.firstName !== 'Proof' || native.lastName !== 'Labtest' || native.arrival < '2027-01-01')) ||
+        native.arrival >= native.departure ||
         (['confirmation', 'firstName', 'lastName', 'status', 'arrival', 'departure'] as const)
           .some((key) => native[key] !== result.stay?.[key])) return null;
     const { filingSnapshot } = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
       filingSnapshot: (record: unknown) => FilingSnapshot | null;
     };
     const snapshot = filingSnapshot(record);
-    return snapshot ? { stay: result.stay, nativeGuestId: native.guestId, filingSnapshot: snapshot } : null;
+    return snapshot ? { stay: result.stay, nativeGuestId: native.guestId,
+      nativeStayId: native.reservationStayId, filingSnapshot: snapshot } : null;
   } catch { return null; }
 }
 
@@ -172,7 +190,7 @@ const attachFormSchema = z.object({
   action: z.literal('attach_document'),
   confirmation: z.string().regex(CONFIRMATION),
   arrival: z.string().regex(ISO_DATE),
-  lastName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(200),
   attachmentId: z.string().min(1).max(200),
   documentName: z.string().max(120).refine(isPdfDocumentName),
   /** Digest of the PDF staff approved. A later change of the stored bytes is refused before upload. */
@@ -244,11 +262,12 @@ function formRefusal(
 /** The stay HMS shows must be the one the form names, with the same arrival, and must pass the Labtest guard. */
 function stayRefusal(
   stay: PaneStayFields,
-  form: { confirmation: string; arrival: string },
+  form: { confirmation: string; arrival: string; lastName?: string },
   { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
 ): string | null {
   if (stay.confirmation?.trim() !== form.confirmation) return 'identity_mismatch';
   if (stay.arrival !== form.arrival) return 'arrival_mismatch';
+  if (form.lastName && squash(stay.lastName ?? '').toLocaleLowerCase() !== squash(form.lastName).toLocaleLowerCase()) return 'identity_mismatch';
   if (allowRealGuest) return null;
   try {
     assertLabStayGuard({ lastName: stay.lastName ?? '', arrival: stay.arrival ?? '' });
@@ -380,7 +399,7 @@ export async function bindAttachDocumentForm(input: {
       attachmentId: input.attachmentId, documentName: source.source.filename, pdfSha256: source.source.sha256,
       sourceSnapshotDigest: source.source.snapshotDigest };
     const parsed = attachFormSchema.safeParse(form);
-    if (!parsed.success || formRefusal(form, { allowRealGuest: false })) return { status: 'refused', reason: 'form_invalid' };
+    if (!parsed.success || formRefusal(form, { allowRealGuest: paneHmsWriteMode(input.env) === 'on' })) return { status: 'refused', reason: 'form_invalid' };
     return db.transaction(async (tx) => {
       const item = await lockBoundFilingSource(tx, { transportId: input.transportId, workItemId: input.workItemId,
         form, allowUnbound: true });
@@ -523,7 +542,8 @@ export async function prepareHmsWriteSnapshot(input: {
     let cloud: CloudFilingRecord | null;
     try {
       cloud = await lock.withLock(() => (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
-        { confirmation: input.confirmation, arrival: input.arrival }, target), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+        { confirmation: input.confirmation, arrival: input.arrival }, target, { allowRealGuest: attachMode === 'on' }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     } catch (error) {
       return { status: 'refused', reason: isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure' };
     }
@@ -543,7 +563,7 @@ export async function prepareHmsWriteSnapshot(input: {
     stay = found.stay;
     reviewed = stay;
   }
-  const refusal = stayRefusal(stay, input, { allowRealGuest: attachMode === 'on' });
+  const refusal = stayRefusal(stay, form ?? input, { allowRealGuest: attachMode === 'on' });
   if (refusal) return { status: 'refused', reason: refusal };
   await storeHmsSnapshot({
     db,
@@ -609,13 +629,15 @@ export type PaneAttachSpawnInput = {
   allowRealGuest?: boolean;
   target?: HmsReadTarget;
   pdfSha256?: string;
-  approvedStay?: PaneStayFields & { nativeGuestId: string };
+  guestName?: string;
+  cloudTargetKey?: string;
+  approvedStay?: PaneStayFields & { nativeGuestId: string; nativeStayId: string; allowRealGuest: boolean };
   approvedSnapshot?: FilingSnapshot;
   beforeDispatch?: () => Promise<boolean>;
   finalAuthority?: (code: string) => Promise<boolean>;
   continuationAllowed?: () => boolean;
-  dispatchWithAuthority?: (code: string, nativeGuestId: string, requestDigest: string,
-    dispatch: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
+  dispatchWithAuthority?: (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
+    dispatch: NativeAttachContinuation, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
 };
 
 type NativeAttachContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
@@ -632,6 +654,7 @@ export type PaneAttachSpawnResult = {
   runDir?: string;
   cleanupRoot?: string;
   documentCode?: string;
+  nativeReadback?: Record<string, unknown>;
   dispatchCallbacksDrained?: boolean;
   writerSessionClosed?: boolean;
 };
@@ -665,7 +688,7 @@ export const paneHmsWriteLoaders: {
    * upload a local test PDF. The PDF and size checks still run on what it returns.
    */
   readAttachment: ((input: AttachmentReadInput) => Promise<Buffer | string>) | null;
-  readCloudFiling: ((input: { confirmation: string; arrival: string }, target: HmsReadTarget) =>
+  readCloudFiling: ((input: { confirmation: string; arrival: string }, target: HmsReadTarget, options?: FilingReadOptions) =>
     Promise<CloudFilingRecord | null>) | null;
 } = {
   lock: null,
@@ -757,7 +780,7 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
 
 /** HRCEN uploads use the owned Cloud browser and the intercepted native request, not the legacy CLI. */
 async function spawnCloudPaneAttach(input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
-  if (input.target?.propertyCode !== 'HRCEN' || input.allowRealGuest || !input.pdfSha256 || !input.approvedStay || !input.approvedSnapshot ||
+  if (input.target?.propertyCode !== 'HRCEN' || !input.pdfSha256 || !input.approvedStay || !input.approvedSnapshot ||
       !input.beforeDispatch || !input.finalAuthority || !input.dispatchWithAuthority) {
     return { outcome: 'refused_cloud_upload_unavailable', uploadSent: false, screenshots: [] };
   }
@@ -914,6 +937,7 @@ type SaveOutcome = {
   runDir?: string;
   cleanupRoot?: string;
   documentCode?: string;
+  nativeReadback?: Record<string, unknown>;
   dispatchCallbacksDrained?: boolean;
   writerSessionClosed?: boolean;
 };
@@ -1008,7 +1032,8 @@ async function saveAttach(
   file: string | null,
   target: HmsReadTarget,
   allowRealGuest: boolean,
-  cloud?: Pick<PaneAttachSpawnInput, 'approvedStay' | 'approvedSnapshot' | 'beforeDispatch' | 'finalAuthority' | 'continuationAllowed' | 'dispatchWithAuthority'>,
+  cloud?: Pick<PaneAttachSpawnInput, 'approvedStay' | 'approvedSnapshot' | 'guestName' | 'cloudTargetKey' |
+    'beforeDispatch' | 'finalAuthority' | 'continuationAllowed' | 'dispatchWithAuthority'>,
 ): Promise<SaveOutcome> {
   if (target.propertyCode === 'HRCEN' && (!cloud || !form.pdfSha256)) {
     return { outcome: 'refused_cloud_upload_unavailable', clickedOk: false, uploadSent: false, screenshots: [] };
@@ -1033,6 +1058,7 @@ async function saveAttach(
     runDir: result.runDir,
     cleanupRoot: result.cleanupRoot,
     documentCode: result.documentCode,
+    nativeReadback: result.nativeReadback,
     dispatchCallbacksDrained: result.dispatchCallbacksDrained,
     writerSessionClosed: result.writerSessionClosed,
   };
@@ -1109,6 +1135,7 @@ async function endConfirmedWithHold(db: DB, fence: AiRunFence): Promise<PaneHmsW
 }
 
 type ExecuteInput = {
+  dispatchTarget?: HmsDispatchTarget;
   db: DB;
   fence: AiRunFence;
   transportId: string;
@@ -1145,12 +1172,19 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(approved) : null;
   if (isCloudAttach && !parsedFiling?.success) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   const filing = parsedFiling?.success ? parsedFiling.data : null;
-  // A lost property-lock connection must not make an earlier Documents baseline authoritative.
-  const dispatchEpoch = isCloudAttach ? await captureHmsLabtestDispatchEpoch(db).catch(() => null) : null;
-  if (isCloudAttach && dispatchEpoch === null) return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
   const request = { confirmation: approved.confirmation, arrival: approved.arrival };
   const readCloud = paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord;
-  const cloudStay = isCloudAttach ? await readCloud(request, target) : null;
+  const dispatchTarget = input.dispatchTarget;
+  const cloudTargetKey = dispatchTarget ? hmsDispatchTargetKey(dispatchTarget) : undefined;
+  const cloudStay = isCloudAttach ? await readCloud(request, target, { allowRealGuest: input.allowRealGuest, cloudTargetKey }) : null;
+  if (isCloudAttach && (!cloudStay || dispatchTarget?.kind !== 'saved' ||
+      cloudStay.nativeStayId !== dispatchTarget.nativeStayId || cloudStay.stay.confirmation !== dispatchTarget.confirmation)) {
+    return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_changed');
+  }
+  // This epoch is captured only after the native target was re-read under its lock.
+  const dispatchEpoch = isCloudAttach && dispatchTarget
+    ? await captureHmsLabtestDispatchEpoch(db, dispatchTarget, input.workItemId).catch(() => null) : null;
+  if (isCloudAttach && dispatchEpoch === null) return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
   const found = isCloudAttach ? { outcome: cloudStay ? 'found' : 'execution_failure', stay: cloudStay?.stay ?? null }
     : await findStay(request, { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir), target });
   if (found.outcome !== 'found' || !found.stay) {
@@ -1180,9 +1214,11 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   }, HEARTBEAT_MS);
   let saved: SaveOutcome;
   const dispatch: { handle: HmsLabtestWriteHandle | null; attempted: boolean; provedAuthorityRefusal: boolean; provedNoDispatch: boolean; guestId: string | null;
+    nativeStayId: string | null;
     stay: PaneStayFields | null; filingSnapshot: FilingSnapshot | null; code: string | null; requestDigest: string | null;
     before: { eventId: string; sha256: string } | null; recovery: Record<string, unknown> | null } =
-    { handle: null, attempted: false, provedAuthorityRefusal: false, provedNoDispatch: false, guestId: null, stay: null, filingSnapshot: null,
+    { handle: null, attempted: false, provedAuthorityRefusal: false, provedNoDispatch: false, guestId: null, nativeStayId: null,
+      stay: null, filingSnapshot: null,
       code: null, requestDigest: null, before: null, recovery: null };
   // A backward wall-clock adjustment must not extend the remaining write budget.
   const finishCutoff = performance.now() + fence.deadlineAt.getTime() - Date.now() - CLOUD_ATTACH_FINISH_RESERVE_MS;
@@ -1190,15 +1226,19 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     fence.deadlineAt.getTime() - Date.now() >= CLOUD_ATTACH_FINISH_RESERVE_MS;
   try {
     const cloud = filing && cloudStay ? {
-      approvedStay: { ...stay, nativeGuestId: cloudStay.nativeGuestId },
+      approvedStay: { ...stay, nativeGuestId: cloudStay.nativeGuestId, nativeStayId: cloudStay.nativeStayId,
+        allowRealGuest: input.allowRealGuest },
+      guestName: `${stay.firstName} ${stay.lastName}`,
+      cloudTargetKey,
       approvedSnapshot: cloudStay.filingSnapshot,
       continuationAllowed: hasFinishBudget,
       beforeDispatch: async () => {
         if (!hasFinishBudget()) return false;
         const current = await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence, readHmsState: async () => {
-          const fresh = await readCloud(request, target);
+          const fresh = await readCloud(request, target, { allowRealGuest: input.allowRealGuest, cloudTargetKey });
           dispatch.stay = fresh?.stay ?? null;
           dispatch.guestId = fresh?.nativeGuestId ?? null;
+          dispatch.nativeStayId = fresh?.nativeStayId ?? null;
           dispatch.filingSnapshot = fresh?.filingSnapshot ?? null;
           return fresh ? filingState(fresh) : null;
         } });
@@ -1208,16 +1248,19 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         return hasFinishBudget() && !!bytes && pdfBytesHash(bytes) === filing.pdfSha256;
       },
       finalAuthority: async (code: string) => {
-        if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !dispatch.stay || !dispatch.guestId || !dispatch.filingSnapshot || dispatch.handle || !hasFinishBudget()) return false;
+        if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !dispatch.stay || !dispatch.guestId || !dispatch.nativeStayId ||
+            !dispatch.filingSnapshot || dispatch.handle || !hasFinishBudget()) return false;
         return (await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence,
           readHmsState: async () => filingState({ stay: dispatch.stay!, nativeGuestId: dispatch.guestId!,
-            filingSnapshot: dispatch.filingSnapshot! }) })).status === 'unchanged';
+            nativeStayId: dispatch.nativeStayId!, filingSnapshot: dispatch.filingSnapshot! }) })).status === 'unchanged';
       },
-      dispatchWithAuthority: async (code: string, nativeGuestId: string, requestDigest: string,
-        continueOnce: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => {
+      dispatchWithAuthority: async (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
+        continueOnce: NativeAttachContinuation, beforeShot: string, interceptedRequest: unknown) => {
         if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
-            typeof dispatch.stay.departure !== 'string' || !centurionWriterCurrent(writer) || !hasFinishBudget() ||
+            dispatchTarget?.kind !== 'saved' || typeof dispatch.stay.firstName !== 'string' ||
+            typeof dispatch.stay.lastName !== 'string' || typeof dispatch.stay.departure !== 'string' || !hasFinishBudget() ||
             nativeGuestId !== dispatch.guestId || !/^\d{1,30}$/.test(nativeGuestId) ||
+            nativeStayId !== dispatch.nativeStayId || nativeStayId !== dispatchTarget.nativeStayId ||
             !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !/^[a-f0-9]{64}$/.test(requestDigest)) {
           throw new Error('attachment_authority_unavailable');
         }
@@ -1234,23 +1277,25 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         const sessionId = consumed.sessionId, sessionProfile = consumed.sessionProfile;
         const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, departure: dispatch.stay.departure,
           documentCode: code, documentName: filing.documentName, pdfSha256: filing.pdfSha256,
+          nativeStayId, guestName: `${dispatch.stay.firstName} ${dispatch.stay.lastName}`,
+          allowRealGuest: input.allowRealGuest, ...(cloudTargetKey ? { cloudTargetKey } : {}),
           runId: fence.runId, claimDigest: pdfBytesHash(Buffer.from(canonicalJson({ claimOwner: fence.claimOwner,
-            claimToken: fence.claimToken }))), before: dispatch.before, writer };
+            claimToken: fence.claimToken }))), before: dispatch.before };
         dispatch.recovery = recovery;
         dispatch.attempted = true;
         let authorityRefusal: HmsApprovalError | null = null;
         let authorizationStarted = false;
         try {
           dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
-            actorUserId: consumed.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN', firstName: 'Proof',
-            lastName: 'Labtest', nativeGuestId, operation: 'attach_document', sourceDigest, approvedDigest, requestDigest, recovery },
+            actorUserId: consumed.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN',
+            firstName: dispatch.stay.firstName, lastName: dispatch.stay.lastName, target: dispatchTarget,
+            nativeGuestId, operation: 'attach_document', sourceDigest, approvedDigest, requestDigest, recovery },
           async (tx, claim) => {
             authorizationStarted = true;
             if (claim.requestDigest !== requestDigest || canonicalJson(claim.recovery) !== canonicalJson(recovery)) {
               throw new Error('attachment_recovery_changed');
             }
             try {
-              if (!centurionWriterCurrent(writer)) throw new Error('attachment_writer_unavailable');
               if (!hasFinishBudget()) throw new HmsApprovalError('lease_lost');
               await authorizeConsumedLabtestAttach(tx, { fence, transportId: input.transportId, workItemId: input.workItemId,
                 grantId: consumed.grantId, actorUserId: consumed.actorUserId, sessionId, sessionProfile, sourceDigest, approvedDigest,
@@ -1258,7 +1303,6 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
                 pdfSha256: filing.pdfSha256, env: input.env,
                 lockSource: (lockedTx) => lockBoundFilingSource(lockedTx, { transportId: input.transportId,
                   workItemId: input.workItemId, form: filing }) });
-              if (!centurionWriterCurrent(writer)) throw new Error('attachment_writer_unavailable');
               if (!hasFinishBudget()) throw new HmsApprovalError('lease_lost');
             } catch (error) {
               if (error instanceof HmsApprovalError) authorityRefusal = error;
@@ -1354,17 +1398,23 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   if (!verdict.ok) return endRun(db, fence, verdict.failureClass, verdict.reason);
   if (isCloudAttach && filing) {
     const before = receipts['before.png'], after = receipts['after.png'];
+    const nativeReadback = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
+      nativeGuestId: z.string().regex(/^\d{1,30}$/), documentCode: z.string(), documentName: z.string(),
+      uniqueFreshListing: z.literal(true) }).strict().safeParse(saved.nativeReadback);
     if (!dispatch.handle || !dispatch.code || !dispatch.requestDigest || saved.documentCode !== dispatch.code ||
-        saved.listed !== true || !before || !after || saved.dispatchCallbacksDrained !== true || saved.writerSessionClosed !== true) {
+        saved.listed !== true || !before || !after || saved.dispatchCallbacksDrained !== true || saved.writerSessionClosed !== true ||
+        !nativeReadback.success || nativeReadback.data.confirmation !== filing.confirmation ||
+        nativeReadback.data.nativeStayId !== dispatch.nativeStayId || nativeReadback.data.nativeGuestId !== dispatch.guestId ||
+        nativeReadback.data.documentCode !== dispatch.code || nativeReadback.data.documentName !== filing.documentName) {
       // The metadata listing can be confirmed while the separate write hold remains open.
       return endConfirmedWithHold(db, fence);
     }
     const recovery = dispatch.recovery;
     if (!recovery) return endConfirmedWithHold(db, fence);
-    const readbackDigest = pdfBytesHash(Buffer.from(canonicalJson({ confirmation: filing.confirmation,
-      documentCode: dispatch.code, documentName: filing.documentName, uniqueFreshListing: true })));
+    const readbackDigest = pdfBytesHash(Buffer.from(canonicalJson(nativeReadback.data)));
     try {
       await resolveHmsLabtestDispatch(db, dispatch.handle, { operation: 'attach_document', confirmation: filing.confirmation,
+        nativeStayId: nativeReadback.data.nativeStayId, nativeReadback: nativeReadback.data,
         readbackDigest, savedShot: { runId: fence.runId, sha256: after.sha256 } }, async (tx, intent) => {
         if (intent.workItemId !== input.workItemId || intent.transportId !== input.transportId ||
             intent.actorUserId !== consumed.actorUserId || intent.grantId !== consumed.grantId ||
@@ -1456,7 +1506,7 @@ async function runClaimed(
   const target = resolved.target;
   const isCloudAttach = form.action === 'attach_document' && target.propertyCode === 'HRCEN';
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(form) : null;
-  if (isCloudAttach && (!labtestAttachEnabled(env) || allowRealGuest || !parsedFiling?.success)) {
+  if (isCloudAttach && (!labtestAttachEnabled(env) || !parsedFiling?.success)) {
     return endRun(db, fence, 'POLICY_BLOCK', 'refused_cloud_upload_unavailable');
   }
 
@@ -1480,11 +1530,25 @@ async function runClaimed(
     await writeFile(file, pdf, { mode: 0o600 });
   }
 
-  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
+  // Find the native identity before taking its per-target Cloud lock. The same
+  // identity is re-read under that lock before the dispatch epoch is captured.
+  let dispatchTarget: HmsDispatchTarget | undefined;
+  if (isCloudAttach) {
+    const initial = await (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
+      { confirmation: form.confirmation, arrival: form.arrival }, target, { allowRealGuest });
+    if (!initial || stayRefusal(initial.stay, form, { allowRealGuest })) {
+      return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
+    }
+    dispatchTarget = { propertyCode: 'HRCEN', kind: 'saved', confirmation: initial.stay.confirmation!,
+      nativeStayId: initial.nativeStayId };
+  }
+  const lock = paneHmsWriteLoaders.lock ?? (dispatchTarget
+    ? paneStayCloudTargetLock(target, dispatchTarget, { kind: 'independent_cloud' }) : paneStayPropertyLock(target));
   if (!lock) return endRun(db, fence, 'POLICY_BLOCK', 'refused_lock_unavailable');
   try {
     return await lock.withLock(
-      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs, pendingCloudEvidence, allowRealGuest, env }),
+      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs, pendingCloudEvidence,
+        allowRealGuest, dispatchTarget, env }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
@@ -9,26 +10,32 @@ import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-r
 import { getS3Storage } from '../storage/s3.js';
 import { canonicalJson } from './draft-approval.js';
 import { hmsWriteEvidenceKey, readVerifiedHmsWriteGrant, recordHmsWriteEvidence } from './hms-approval.js';
-import type { HmsLabtestIntent } from './hms-labtest-dispatch.js';
+import { hmsDispatchTargetKey } from './hms-dispatch-target.js';
+import { hmsLabtestIntentTarget, type HmsLabtestIntent } from './hms-labtest-dispatch.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
-import { paneStayPropertyLock } from './pane-stay-save.js';
+import { paneStayCloudTargetLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_WRITE_RUN_KIND, mergeTerminalRunMetrics, type AiRunFence } from './run-ledger.js';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const receipt = z.object({ eventId: z.string().uuid(), sha256: digest }).strict();
-const readbackSchema = z.object({ confirmation: z.string(), nativeGuestId: z.string(), documentCode: z.string(),
+const readbackSchema = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
+  nativeGuestId: z.string(), documentCode: z.string(),
   documentName: z.string(), uniqueFreshListing: z.literal(true) }).strict();
 const recoverySchema = z.object({
   confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), documentCode: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/),
   documentName: z.string().max(120).refine((s) => /\.pdf$/i.test(s) && !/[\\/\p{Cc}]/u.test(s) && s === s.replace(/\s+/g, ' ').trim()),
-  pdfSha256: digest, runId: z.string().uuid(), claimDigest: digest, before: receipt, writer: z.unknown(),
+  pdfSha256: digest, runId: z.string().uuid(), claimDigest: digest, before: receipt, writer: z.unknown().optional(),
+  nativeStayId: z.string().regex(/^\d{1,100}$/).optional(), guestName: z.string().min(1).max(401).optional(),
+  allowRealGuest: z.boolean().optional(), cloudTargetKey: z.string().max(1024).optional(),
 }).strict();
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const recoveryTarget = new AsyncLocalStorage<{ holdId: string; nativeStayId: string }>();
 
-type AttachRecoveryProof = { confirmation: string; readbackDigest: string; savedShot: { runId: string; sha256: string };
+type AttachRecoveryProof = { confirmation: string; nativeStayId: string; nativeReadback: z.infer<typeof readbackSchema>;
+  readbackDigest: string; savedShot: { runId: string; sha256: string };
   screenshot: { eventId: string; sha256: string; name: string } };
 
 /** Reset only the original run after its native upload gate proves no dispatch. */
@@ -58,16 +65,40 @@ export async function recordNeverDispatchedAttach(tx: CreateFenceTransaction, in
     value: { needsCheck: true, runId: fence.runId, failureClass: 'NEEDS_CHECK', reason } });
 }
 
-/** The same property lock protects the original write and this fresh read. */
+/** The same verified booking target protects the original write and recovery. */
 export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
   const target = paneStayHmsTargetForTransport(intent.transportId);
   const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
   if (!target.ok || keys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
     throw new Error('filing_recovery_property_unavailable');
   }
-  const lock = paneStayPropertyLock(target.target);
+  let dispatchTarget = hmsLabtestIntentTarget(intent);
+  const recovery = recoverySchema.safeParse(intent.recovery);
+  if (!recovery.success || intent.operation !== 'attach_document') throw new Error('filing_recovery_unavailable');
+  if (dispatchTarget?.kind === 'saved' && !dispatchTarget.nativeStayId) {
+    if (recovery.data.cloudTargetKey) throw new Error('filing_recovery_target_unavailable');
+    // Older intents can lack the native alias. Establish it from a fresh
+    // native read before taking the target lock, then prove it again inside.
+    const reader = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
+      provePositiveAttachRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; readback?: unknown }>;
+    };
+    const observed = await reader.provePositiveAttachRecovery(intent);
+    const readback = readbackSchema.safeParse(observed.readback);
+    if (observed.outcome !== 'verified' || !readback.success || readback.data.confirmation !== dispatchTarget.confirmation) {
+      throw new Error('filing_recovery_target_unavailable');
+    }
+    dispatchTarget = { ...dispatchTarget, nativeStayId: readback.data.nativeStayId };
+  }
+  const lock = dispatchTarget?.kind === 'saved'
+    ? paneStayCloudTargetLock(target.target, dispatchTarget, { kind: 'independent_cloud' }) : null;
   if (!lock) throw new Error('filing_recovery_lock_unavailable');
-  return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+  const nativeStayId = dispatchTarget?.kind === 'saved' ? dispatchTarget.nativeStayId : undefined;
+  if (!nativeStayId) throw new Error('filing_recovery_target_unavailable');
+  if (recovery.data.cloudTargetKey && recovery.data.cloudTargetKey !== hmsDispatchTargetKey(dispatchTarget!)) {
+    throw new Error('filing_recovery_target_unavailable');
+  }
+  return lock.withLock(() => recoveryTarget.run({ holdId: intent.holdId, nativeStayId }, action),
+    acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
 /** Verify the sealed before-image and obtain a fresh, independent positive listing. */
@@ -94,8 +125,11 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Pro
   };
   const observed = await reader.provePositiveAttachRecovery(intent);
   const readback = readbackSchema.safeParse(observed.readback);
+  const lockedTarget = recoveryTarget.getStore();
   if (observed.outcome !== 'verified' || observed.confirmation !== recovery.confirmation || !readback.success ||
+      !lockedTarget || lockedTarget.holdId !== intent.holdId || lockedTarget.nativeStayId !== readback.data.nativeStayId ||
       readback.data.confirmation !== recovery.confirmation || readback.data.nativeGuestId !== intent.nativeGuestId ||
+      (recovery.nativeStayId !== undefined && readback.data.nativeStayId !== recovery.nativeStayId) ||
       readback.data.documentCode !== recovery.documentCode || readback.data.documentName !== recovery.documentName ||
       !Buffer.isBuffer(observed.screenshot)) throw new Error('filing_recovery_readback_unavailable');
   const name = `recovery-${randomBytes(8).toString('hex')}.png`;
@@ -105,7 +139,8 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Pro
   if (!stored || !pngSignature.equals(stored.body.subarray(0, pngSignature.length)) || sha256(stored.body) !== sealed.sha256) {
     throw new Error('filing_recovery_evidence_unavailable');
   }
-  return { confirmation: recovery.confirmation, readbackDigest: sha256(canonicalJson(readback.data)),
+  return { confirmation: readback.data.confirmation, nativeStayId: readback.data.nativeStayId,
+    nativeReadback: readback.data, readbackDigest: sha256(canonicalJson(readback.data)),
     savedShot: { runId: recovery.runId, sha256: sealed.sha256 },
     screenshot: { eventId: sealed.eventId, sha256: sealed.sha256, name } };
 }

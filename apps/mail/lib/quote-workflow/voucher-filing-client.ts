@@ -6,14 +6,14 @@ const selectionSchema = z.object({
   workItemId: id, messageId: id, attachmentId: id,
   expectedSessionId: id.nullable().optional(),
   kind: z.enum(['voucher', 'proof_of_payment']),
-  stay: z.object({ confirmation: id, arrival: z.string().date(), lastName: z.string().trim().min(1).max(100) }).strict(),
+  stay: z.object({ confirmation: id, arrival: z.string().date(), lastName: z.string().trim().min(1).max(200) }).strict(),
 }).strict();
 const preparedSchema = z.object({
   status: z.literal('prepared'), workItemId: id, messageId: id, attachmentId: id,
   expectedSessionId: id.nullable(), kind: z.enum(['voucher', 'proof_of_payment']),
   filename: z.string().min(1).max(150),
-  stay: z.object({ confirmation: id, arrival: z.string().date(), firstName: z.string().min(1).max(100),
-    lastName: z.string().min(1).max(100) }).strict(),
+  stay: z.object({ confirmation: id, arrival: z.string().date(), firstName: z.string().min(1).max(200),
+    lastName: z.string().min(1).max(200) }).strict(),
   formDigest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const queuedSchema = z.object({ status: z.literal('queued'), operationId: id }).strict();
