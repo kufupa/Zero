@@ -116,7 +116,8 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
         if (request.view === 'shallow') return { outcome: 'ok', shallow };
         try {
           const record = await readRecord(page, shallow.confirmation,
-            request.includeNativePreimage === true ? { nativePropertyCode: 'HRCEN' } : {});
+            request.includeNativePreimage === true ? { nativePropertyCode: 'HRCEN',
+              nativeIdentityOnly: readOnly && request.includeNativeIdentityOnly === true } : {});
           recordOpen = true;
           const statuses = record.details.fields.filter((field) => field.name === 'status');
           current = { confirmation: shallow.confirmation, status: statuses.length === 1 ? statuses[0].value : null,

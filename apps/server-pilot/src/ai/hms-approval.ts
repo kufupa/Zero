@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
+import { remoteSession, session } from '../db/schema/auth.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
@@ -13,10 +14,12 @@ import { canonicalJson } from './draft-approval.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import {
   HMS_WRITE_RUN_KIND,
+  HMS_LABTEST_ATTACH_PROMPT_VERSION,
   NONTERMINAL_AI_RUN_STATES,
   NOT_APPLICABLE_MODEL_ID,
   enqueueAiRun,
   heartbeatAiRun,
+  labtestAttachEnabled,
   markAiRunDeadLetter,
   markAiRunPolicyRefused,
   type AiFailureClass,
@@ -129,6 +132,8 @@ const hmsWriteGrantSchema = z
     workItemId: z.string(),
     transportId: z.string(),
     actorUserId: z.string(),
+    sessionId: z.string().min(1).max(512).optional(),
+    sessionProfile: z.enum(['legacy', 'remote']).optional(),
     formDigest: z.string(),
     hmsBeforeDigest: z.string(),
     hmsReadAt: z.string(),
@@ -154,6 +159,22 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
   delete form[HMS_SNAPSHOT_KEY];
   delete form.reservationistHandledRequests;
   return form;
+}
+
+/** This grant is only for the selected POP3 PDF and the fake HRCEN guest. */
+function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageId: string | null): boolean {
+  const arrival = typeof state.arrival === 'string' ? state.arrival : '';
+  const date = new Date(`${arrival}T00:00:00Z`);
+  const selected = typeof state.sourceInternetMessageId === 'string' ? canonicalMessageId(state.sourceInternetMessageId) : null;
+  return state.action === 'attach_document' && !!sourceMessageId && state.sourceMessageId === sourceMessageId &&
+    !!selected && selected === state.sourceInternetMessageId && typeof state.lastName === 'string' && /^labtest$/i.test(state.lastName) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !Number.isNaN(date.valueOf()) &&
+    date.toISOString().slice(0, 10) === arrival && arrival >= '2027-01-01' &&
+    typeof state.confirmation === 'string' && /^\d+-\d+$/.test(state.confirmation) &&
+    typeof state.attachmentId === 'string' && state.attachmentId.length > 0 &&
+    typeof state.documentName === 'string' && /\.pdf$/i.test(state.documentName) &&
+    typeof state.pdfSha256 === 'string' && /^[a-f0-9]{64}$/.test(state.pdfSha256) &&
+    typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest);
 }
 
 export function formDigest(state: Record<string, unknown>): string {
@@ -186,8 +207,9 @@ async function loadGrant(
   db: DB,
   workItemId: string,
   grantId: string,
+  lockRow = false,
 ): Promise<{ grant: HmsWriteGrant; payloadHash: string }> {
-  const [row] = await db
+  const query = db
     .select({ value: workEvent.value, payloadHash: workEvent.payloadHash })
     .from(workEvent)
     .where(
@@ -198,6 +220,7 @@ async function loadGrant(
       ),
     )
     .limit(1);
+  const [row] = lockRow ? await query.for('share') : await query;
   if (!row?.payloadHash) throw new HmsApprovalError('no_grant');
   const parsed = hmsWriteGrantSchema.safeParse(row.value);
   if (!parsed.success || grantHash(parsed.data) !== row.payloadHash) {
@@ -205,6 +228,9 @@ async function loadGrant(
   }
   return { grant: parsed.data, payloadHash: row.payloadHash };
 }
+
+// Internal recovery reuses the same grant integrity check as the write path.
+export { loadGrant as readVerifiedHmsWriteGrant };
 
 async function assertNoWriteInFlight(db: DB, workItemId: string): Promise<void> {
   const [open] = await db
@@ -429,6 +455,8 @@ export async function approveHmsWrite(input: {
   db?: DB;
   transportId: string;
   actorUserId: string;
+  sessionId?: string;
+  sessionProfile?: 'legacy' | 'remote';
   workItemId: string;
   selectedInternetMessageId?: string;
   /**
@@ -455,7 +483,11 @@ export async function approveHmsWrite(input: {
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
     const target = paneStayHmsTargetForTransport(input.transportId);
-    if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
+    const labtestAttach = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
+    if (item.state.action === 'attach_document' && (!target.ok || (labtestAttach &&
+        (!isBoundLabtestAttachment(item.state, item.sourceMessageId) || !labtestAttachEnabled() ||
+         !input.sessionId || !input.sessionProfile || !input.selectedInternetMessageId ||
+         canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)))) {
       throw new HmsApprovalError('filing_unavailable');
     }
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
@@ -481,6 +513,7 @@ export async function approveHmsWrite(input: {
       workItemId: item.id,
       transportId: input.transportId,
       actorUserId: input.actorUserId,
+      ...(labtestAttach ? { sessionId: input.sessionId!, sessionProfile: input.sessionProfile! } : {}),
       formDigest: formDigest(state),
       hmsBeforeDigest: snapshot.digest,
       hmsReadAt: snapshot.readAt,
@@ -505,7 +538,7 @@ export async function approveHmsWrite(input: {
         runKind: HMS_WRITE_RUN_KIND,
         idempotencyKey: `hms-write:${grant.grantId}`,
         modelId: NOT_APPLICABLE_MODEL_ID,
-        promptVersion: HMS_WRITE_PROMPT_VERSION,
+        promptVersion: labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
         executorLane: 'hms',
         workItemId: item.id,
         priority: HMS_WRITE_PRIORITY,
@@ -600,6 +633,9 @@ export async function consumeHmsWriteApproval(input: {
   grantId: string;
   payloadHash: string;
   hmsBeforeDigest: string;
+  actorUserId: string;
+  sessionId?: string;
+  sessionProfile?: 'legacy' | 'remote';
   /** The approved form, read from the locked row. A runner writes this, not a fresh read of the work item. */
   form: Record<string, unknown>;
 }> {
@@ -659,8 +695,64 @@ export async function consumeHmsWriteApproval(input: {
       .update(aiWorkflowRun)
       .set({ heartbeatAt: now, updatedAt: now })
       .where(eq(aiWorkflowRun.id, run.id));
-    return { grantId, payloadHash, hmsBeforeDigest: grant.hmsBeforeDigest, form: formOf(item.state) };
+    return { grantId, payloadHash, hmsBeforeDigest: grant.hmsBeforeDigest, actorUserId: grant.actorUserId,
+      sessionId: grant.sessionId, sessionProfile: grant.sessionProfile, form: formOf(item.state) };
   });
+}
+
+type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
+
+/** Revalidate the consumed Go and its source inside the shared native-dispatch claim. */
+export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input: {
+  fence: AiRunFence; transportId: string; workItemId: string; grantId: string; actorUserId: string;
+  sessionId: string; sessionProfile: 'legacy' | 'remote'; sourceDigest: string; approvedDigest: string;
+  confirmation: string; arrival: string; documentCode: string; documentName: string; pdfSha256: string;
+  lockSource: (tx: WorkTransaction) => Promise<typeof workItem.$inferSelect | null>;
+  env?: NodeJS.Dict<string>;
+}): Promise<void> {
+  if (!labtestAttachEnabled(input.env ?? process.env) || !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(input.documentCode) ||
+      !/^[a-f0-9]{64}$/.test(input.sourceDigest) || !/^[a-f0-9]{64}$/.test(input.approvedDigest) ||
+      !/^[a-f0-9]{64}$/.test(input.pdfSha256)) throw new HmsApprovalError('filing_unavailable');
+  const item = await input.lockSource(tx);
+  if (!item || item.id !== input.workItemId || item.transportId !== input.transportId ||
+      !isBoundLabtestAttachment(item.state, item.sourceMessageId) || item.state.confirmation !== input.confirmation ||
+      item.state.arrival !== input.arrival || item.state.sourceSnapshotDigest !== input.sourceDigest ||
+      item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const [transport] = await tx.select({ active: mailboxTransport.isActive }).from(mailboxTransport)
+    .where(eq(mailboxTransport.id, input.transportId)).limit(1).for('share');
+  const [access] = await tx.select({ userId: mailboxAccess.userId }).from(mailboxAccess).where(and(
+    eq(mailboxAccess.userId, input.actorUserId), eq(mailboxAccess.transportId, input.transportId))).limit(1).for('share');
+  const sessions = input.sessionProfile === 'remote' ? remoteSession : session;
+  const [activeSession] = await tx.select({ id: sessions.id }).from(sessions).where(and(eq(sessions.id, input.sessionId),
+    eq(sessions.userId, input.actorUserId), sql`${sessions.expiresAt} > timezone('UTC', clock_timestamp())`)).limit(1).for('share');
+  if (!transport?.active || !access || !activeSession) throw new HmsApprovalError('filing_unavailable');
+  const [run] = await tx.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, input.fence.runId),
+    eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND), eq(aiWorkflowRun.claimOwner, input.fence.claimOwner),
+    eq(aiWorkflowRun.claimToken, input.fence.claimToken), eq(aiWorkflowRun.workItemId, item.id),
+    eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.promptVersion, HMS_LABTEST_ATTACH_PROMPT_VERSION),
+    inArray(aiWorkflowRun.state, ['claimed', 'running']))).limit(1).for('update');
+  const now = new Date();
+  if (!run?.deadlineAt || run.deadlineAt.getTime() !== input.fence.deadlineAt.getTime() ||
+      run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
+      run.triggerMessageId !== item.sourceMessageId || grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('lease_lost');
+  const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
+  const snapshot = readSnapshot(item.state);
+  if (grant.workItemId !== item.id || grant.transportId !== input.transportId || grant.actorUserId !== input.actorUserId ||
+      grant.sessionId !== input.sessionId || grant.sessionProfile !== input.sessionProfile ||
+      formDigest(item.state) !== grant.formDigest || grant.formDigest !== input.approvedDigest ||
+      snapshotStale(grant.hmsReadAt, now) || !snapshot || snapshot.digest !== grant.hmsBeforeDigest ||
+      snapshot.readAt !== grant.hmsReadAt) throw new HmsApprovalError('state_changed');
+  const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, item.id),
+    eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'), eq(workEvent.payloadHash, payloadHash),
+    sql`${workEvent.value}->>'runId' = ${run.id}`, sql`${workEvent.value}->>'grantId' = ${input.grantId}`)).limit(2).for('share');
+  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  const checkedAt = new Date();
+  if (checkedAt.getTime() >= run.deadlineAt.getTime() || snapshotStale(grant.hmsReadAt, checkedAt)) {
+    throw new HmsApprovalError('lease_lost');
+  }
+  await tx.update(aiWorkflowRun).set({ heartbeatAt: checkedAt, updatedAt: checkedAt }).where(eq(aiWorkflowRun.id, run.id));
 }
 
 async function hmsRereadReason(
@@ -1001,7 +1093,7 @@ async function latestWriteRun(db: DB, workItemId: string) {
   return run ?? null;
 }
 
-/** The write.evidence events one run sealed, oldest first. */
+/** The screenshot evidence one run sealed, oldest first. */
 async function evidenceForRun(db: DB, workItemId: string, runId: string) {
   return db
     .select({ id: workEvent.id, name: sql<string>`${workEvent.value}->>'name'`, at: workEvent.at })
@@ -1011,6 +1103,9 @@ async function evidenceForRun(db: DB, workItemId: string, runId: string) {
         eq(workEvent.workItemId, workItemId),
         eq(workEvent.type, 'write.evidence'),
         sql`${workEvent.value}->>'runId' = ${runId}`,
+        sql`${workEvent.value}->>'name' ~ ${EVIDENCE_NAME_PATTERN.source}`,
+        sql`${workEvent.evidence}->>'key' is not null`,
+        sql`${workEvent.evidence}->>'sha256' is not null`,
       ),
     )
     .orderBy(workEvent.at, workEvent.id);
@@ -1156,8 +1251,12 @@ export type HmsWriteStateView = {
   } | null;
   /** True while a needs-check blocks approval and review: the outcome is unknown until someone reads HMS back. */
   needsCheck: boolean;
-  /** False while HRCEN document filing has only a read-only preview. */
+  /** False when the Labtest filing worker or bound form is unavailable. */
   filingAvailable?: boolean;
+  /** Whether a Labtest filing form may be prepared for this mailbox. */
+  filingConfigured?: boolean;
+  /** False when a staff note cannot reconcile a possibly dispatched Cloud write. */
+  manualResolve?: boolean;
 };
 
 const HEX_SHA256 = /^[a-f0-9]{64}$/;
@@ -1259,8 +1358,10 @@ export async function hmsWriteStateOf(input: {
   await assertCurrentHmsSelection(db, input);
   return {
     status: item.status,
+    ...(target.ok && target.target.propertyCode === 'HRCEN' ? { filingConfigured: labtestAttachEnabled() } : {}),
     ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')
-      ? { filingAvailable: false } : {}),
+      ? { filingAvailable: target.ok && isBoundLabtestAttachment(item.state, item.sourceMessageId) && labtestAttachEnabled(),
+        manualResolve: false } : {}),
     form: maskedStrings(formOf(item.state)),
     formDigest: formDigest(item.state),
     before: storedValues.success ? maskedStrings(storedValues.data) : null,

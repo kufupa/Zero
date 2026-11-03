@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 
 const stubs = vi.hoisted(() => ({ end: vi.fn(), running: vi.fn() }));
@@ -26,6 +26,7 @@ function approvalDb() {
 
 describe('HRCEN filing hold', () => {
   beforeEach(() => { stubs.end.mockReset().mockResolvedValue(true); stubs.running.mockReset().mockResolvedValue(true); });
+  afterEach(() => vi.unstubAllEnvs());
 
   it('refuses approval and note-only resolution before making any event or run', async () => {
     const f = approvalDb();
@@ -44,6 +45,18 @@ describe('HRCEN filing hold', () => {
     const db = { select: () => query } as unknown as DB;
     await expect(hmsWriteStateOf({ db, transportId: request.transportId, workItemId: item.id }))
       .resolves.toMatchObject({ filingAvailable: false, form: { action: 'attach_document' } });
+  });
+
+  it('reports filing configuration for the selected property independently of the create flag', async () => {
+    vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on');
+    vi.stubEnv('PANE_WRITE_ATTACH', 'lab');
+    vi.stubEnv('PANE_WRITE_CREATE', 'off');
+    const answers = [[item], []];
+    const query = { from: () => query, where: () => query, orderBy: () => query,
+      limit: async () => answers.shift() ?? [] };
+    const db = { select: () => query } as unknown as DB;
+    await expect(hmsWriteStateOf({ db, transportId: request.transportId, workItemId: item.id }))
+      .resolves.toMatchObject({ filingConfigured: true, filingAvailable: false });
   });
 
   it('stops an already-claimed legacy attach before attachment read, grant consume or native spawn', async () => {
