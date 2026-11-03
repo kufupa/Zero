@@ -155,6 +155,65 @@ test('the company picker permits only its reviewed lookup form, not a write or a
   }
 });
 
+test('agency, organization ID and group pickers admit only their reviewed read forms', async () => {
+  const shared = { USER_FUNCTION_NAME: 'OSMPAV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV' };
+  const groupScope = {
+    LOV_ALIAS_NAME_1: 'param.propertycodes', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text',
+    LOV_ALIAS_NAME_2: 'param.arrivaldate', LOV_ALIAS_VALUE_2: '03/15/2027', LOV_ALIAS_TYPE_2: 'text',
+    LOV_ALIAS_NAME_3: 'param.nights', LOV_ALIAS_VALUE_3: '14', LOV_ALIAS_TYPE_3: 'integer',
+  };
+  const picker = (grid, tag, extra = {}) => ({
+    ...shared, GRID_NAME: grid, LOV_TAGNAME: tag, REQUEST_TYPE: 'LOV.HEAD_DATA.STORED', popup: 'true', ...extra,
+  });
+  const search = (grid, id, spy, tag, alias, extra = {}) => ({
+    ...shared, GRID_NAME: grid, GRID_ID: id, DATASPY_ID: spy, LOV_TAGNAME: tag,
+    REQUEST_TYPE: 'LOV.DATA_ONLY.STORED', MADDON_FILTER_ALIAS_NAME_1: alias,
+    MADDON_FILTER_OPERATOR_1: 'CONTAINS', MADDON_FILTER_JOINER_1: 'AND', MADDON_FILTER_SEQNUM_1: '1',
+    MADDON_FILTER_VALUE_1: 'Example Travel', ...extra,
+  });
+  const post = (path, fields) => ({
+    url: origin + '/web/base/' + path, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString(),
+  });
+  const cases = [
+    post('LOVPOP', picker('LVTRAVELAGENCIES5', 'travelagency')),
+    post('GRIDDATA', search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'travelagencyname')),
+    post('GRIDDATA', search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'iatanumber')),
+    post('GRIDDATA', search('LVCOMPANIES2', '1134', '1224', 'organization', 'companyid')),
+    post('LOVPOP', picker('LVGROUPS5', 'groupname', groupScope)),
+    post('GRIDDATA', search('LVGROUPS5', '2512', '2872', 'groupname', 'groupsname', groupScope)),
+    post('GRIDDATA', search('LVGROUPS5', '2512', '2872', 'groupname', 'confirmationnumber', groupScope)),
+  ];
+  for (const input of cases) {
+    const allowed = await routed(input);
+    assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+    for (const bad of [
+      { ...input, body: input.body + '&pageaction=SAVE' },
+      { ...input, body: input.body + '&GRID_NAME=OTHER' },
+      { ...input, url: input.url + '?action=SAVE' },
+    ]) {
+      const denied = await routed(bad);
+      assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+      assert.equal(denied.context.closed, 1);
+    }
+  }
+  for (const fields of [
+    { ...groupScope, LOV_ALIAS_VALUE_1: 'HRDAV' },
+    { ...groupScope, LOV_ALIAS_VALUE_2: 'not-a-date' },
+    { ...groupScope, LOV_ALIAS_VALUE_3: '0' },
+  ]) {
+    const denied = await routed(post('LOVPOP', picker('LVGROUPS5', 'groupname', fields)));
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+  }
+  const unknownAlias = await routed(post('GRIDDATA',
+    search('LVGROUPS5', '2512', '2872', 'groupname', 'guestname', groupScope)));
+  assert.deepEqual(unknownAlias.route.calls, [['abort', 'blockedbyclient']]);
+  const newline = await routed(post('GRIDDATA',
+    { ...search('LVTRAVELAGENCIES5', '2475', '2829', 'travelagency', 'travelagencyname'),
+      MADDON_FILTER_VALUE_1: 'Name\r\nInjected' }));
+  assert.deepEqual(newline.route.calls, [['abort', 'blockedbyclient']]);
+});
+
 test('only the typed, duplicate-free, Centurion availability inquiry is fetched', async () => {
   const body = { propertyCodes: 'HRCEN', startDate: '2027-03-15T00:00:00', numberOfDays: '14',
     lengthOfStay: 'DY', adultCount: 2, childCount: 0, salesStrategy: 'BAR', roomTypeCodes: 'STQN',
