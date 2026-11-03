@@ -166,7 +166,7 @@ async function selectGuest(runTool, guest, commit) {
     (!guest.search.email || (found.correlation?.verifiedFields?.includes('emailaddress') && same(item.email, guest.search.email))));
   if (matches.length !== 1 || (field !== 'profileId' && found.coverage?.possiblyTruncated)) {
     stop('needs_input', matches.length || found.coverage?.possiblyTruncated ? 'guest_ambiguous' : 'guest_not_found',
-      { guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
+      { guestSearchOutcome: found.outcome, guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
   const chosen = matches[0];
   if (commit && (chosen.firstName !== 'Proof' || chosen.lastName !== 'Labtest')) {
@@ -263,6 +263,51 @@ async function prepareParty(runTool, kind, parties, propertyCode, output, missin
 function formValue(fields, name) {
   const matches = (fields || []).filter((field) => field.name === name);
   return matches.length === 1 ? matches[0].value : null;
+}
+
+// This stages text only on a verified empty search. It never creates or selects
+// a profile and must not make a create eligible for approval or Save.
+async function stageUnresolvedGuestName(runTool, propertyCode, search, lookup) {
+  const firstName = text(search?.firstName), lastName = text(search?.lastName);
+  const coverage = lookup.guestCoverage;
+  if (!firstName || !lastName || lookup.issue !== 'guest_not_found' ||
+      lookup.guestSearchOutcome !== 'no_match' || !Array.isArray(lookup.guestCandidates) || lookup.guestCandidates.length !== 0 ||
+      coverage?.loaded !== 0 || coverage.total !== 0 || coverage.serverMoreRecords !== false || coverage.possiblyTruncated !== false) return null;
+  const read = async () => {
+    let result;
+    try { result = await runTool({ tool: 'readGuestStayForm', propertyCode }); }
+    catch { stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' }); }
+    if (result?.outcome !== 'ok' || !Array.isArray(result.fields) ||
+        !result.fields.every((field) => field && typeof field === 'object')) {
+      stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
+    }
+    return result.fields;
+  };
+  const before = await read();
+  const editable = (fields, name) => {
+    const found = (fields || []).filter((field) => field.name === name);
+    return found.length === 1 && found[0].disabled === false && found[0].readOnly === false;
+  };
+  if (formValue(before, 'guestid') !== '' || formValue(before, 'firstname') !== '' || formValue(before, 'lastname') !== '' ||
+      !editable(before, 'firstname') || !editable(before, 'lastname')) return null;
+  const set = async (field, value) => {
+    let result;
+    try { result = await runTool({ tool: 'setGuestStayText', propertyCode, field, value }); }
+    catch { stop('uncertain', 'guest_name_stage_unverified', { field }); }
+    if (!['updated_unsaved', 'unchanged_unsaved'].includes(result?.outcome) || result.actual !== value) {
+      stop('uncertain', 'guest_name_stage_unverified', { field });
+    }
+  };
+  const verify = (fields, first, last) => {
+    if (formValue(fields, 'guestid') !== '' || formValue(fields, 'firstname') !== first || formValue(fields, 'lastname') !== last) {
+      stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
+    }
+  };
+  await set('firstName', firstName);
+  verify(await read(), firstName, '');
+  await set('lastName', lastName);
+  verify(await read(), firstName, lastName);
+  return { firstName, lastName, profileStatus: 'unverified' };
 }
 
 function draftRequestBinding(input, state, output, formFields) {
@@ -371,6 +416,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         try { state.guest = await selectGuest(runTool, input.guest, false); } catch (error) {
           if (!['guest_ambiguous', 'guest_not_found', 'guest_email_unverified'].includes(error.result?.issue)) throw error;
           Object.assign(output, error.result); missing.push('guest'); await call(runTool, 'closeGuestProfilePicker', {}, ['closed_unsaved']);
+          state.guestNameDraft = await stageUnresolvedGuestName(runTool, propertyCode, input.guest?.search, error.result);
         }
       }
       if (commit && (input.parties?.organizationId != null || text(input.parties?.organizationName))) {
@@ -436,7 +482,15 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (result.actual !== note) stop('uncertain', 'requested_field_not_staged', { field: 'note' });
         output.applied.note = result.actual;
       }
-      const form = await call(runTool, 'readGuestStayForm', { propertyCode });
+      let form;
+      try { form = await call(runTool, 'readGuestStayForm', { propertyCode }); }
+      catch (error) {
+        if (state.guestNameDraft) stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
+        throw error;
+      }
+      if (state.guestNameDraft && (!Array.isArray(form.fields) || !form.fields.every((field) => field && typeof field === 'object'))) {
+        stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
+      }
       for (const [key, name] of [['arrival', 'arrivaldate'], ['departure', 'departuredate'], ['adults', 'adults'],
         ['roomType', 'roomtype'], ['ratePlan', 'rateplan'], ['sourceOfBusiness', 'sourceofbusinessdesc'], ['note', 'reservationnote']]) {
         if (Object.hasOwn(output.applied, key)) {
@@ -456,6 +510,13 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.reason ? [['reasonforstay', state.reason.actual.display]] : []),
         ...(commit || input.cms?.send === false ? [['udfchkbox04', false]] : []),
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
+      if (state.guestNameDraft) {
+        if (formValue(form.fields, 'guestid') !== '' || formValue(form.fields, 'firstname') !== state.guestNameDraft.firstName ||
+            formValue(form.fields, 'lastname') !== state.guestNameDraft.lastName) {
+          stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
+        }
+        output.guestNameDraft = state.guestNameDraft;
+      }
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),

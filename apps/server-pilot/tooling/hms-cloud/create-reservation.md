@@ -35,8 +35,16 @@ from stdin and returns one JSON object. Programmatic callers can import
 Codes are examples, not defaults, quotes or availability claims. Provide
 `guest.profileId` or `guest.search` with `lastName` and optional `firstName`
 and `email`. The current picker must verify an explicit profile ID; ambiguous
-or incomplete name searches return candidates and coverage. `stay.childCount`,
-when supplied, must agree with `childAges`. Absent or null ages mean unknown,
+or incomplete name searches return candidates and coverage. After a verified
+empty name search and successful picker close, prepare may stage explicit first
+and last name text only if the visible guest ID and both editable name fields
+are uniquely present and blank. It rechecks those fields after each edit and
+again on the final draft. A missing or hidden guest ID is not a verified blank.
+`guestNameDraft` records text staging only: the guest remains unresolved,
+`approvalReady` remains false, and the wrapper does not create or select a
+profile. Profile persistence remains unverified. This path has only synthetic
+wrapper coverage and requires live proof before native claims.
+`stay.childCount`, when supplied, must agree with `childAges`. Absent or null ages mean unknown,
 not zero; `[]` means known zero. Missing prepare inputs do not prevent other
 supported fields from being staged.
 
