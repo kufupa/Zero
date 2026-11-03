@@ -37,6 +37,7 @@ import {
   type PaneGuestCandidate,
   type PaneStayChoice,
   type PaneStayClient,
+  type PaneStayBatch,
   type PaneStayInput,
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
@@ -474,6 +475,7 @@ function RoomSave({
   screenshot,
   bookLabel,
   previewOnly = false,
+  batchOnly = false,
   frozen = false,
   onPreview,
   onBook,
@@ -485,6 +487,7 @@ function RoomSave({
   screenshot: PaneStayClient['screenshot'];
   bookLabel: string;
   previewOnly?: boolean;
+  batchOnly?: boolean;
   frozen?: boolean;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
@@ -628,8 +631,8 @@ function RoomSave({
           Preview in HMS
         </SecondaryButton>
         <PrimaryButton
-          disabled={previewOnly || !fresh || busy}
-          disabledReason={previewOnly || viewOnly ? 'Booking from Nava is not available yet' : !stay || busy ? null : 'Preview in HMS first'}
+          disabled={previewOnly || batchOnly || !fresh || busy}
+          disabledReason={previewOnly || viewOnly ? 'Booking from Nava is not available yet' : batchOnly ? 'Use Book this stay below' : !stay || busy ? null : 'Preview in HMS first'}
           onClick={() => {
             if (stay && fresh) onBook(stay, fresh.digest);
           }}
@@ -1377,6 +1380,8 @@ export function BookingCards({
   }
 
   async function bookThisStay(pane: PaneStayClient) {
+    if (stayBookingRef.current || (cloudPreview && Object.values(savesRef.current).some(({ commit }) =>
+      (commit?.status === 'refused' && commit.statusChip === 'check') || (commit?.status === 'booked' && commit.unverified)))) return;
     const snapshot = bookableRooms()
       .filter((room) => {
         const commit = saves[roomKeyOf(room)]?.commit;
@@ -1387,18 +1392,33 @@ export function BookingCards({
         return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
       });
     if (snapshot.some((item) => item == null)) return;
+    let batchStart: Extract<PaneStayBatch, { kind: 'start' }> | undefined;
+    if (cloudPreview && snapshot.length > 1) {
+      if (!workItemId || snapshot.length > 8) return;
+      const rooms: Extract<PaneStayBatch, { kind: 'start' }>['rooms'] = [];
+      for (const item of snapshot) {
+        const room = item && draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
+        if (!item || !room || !item.stay.createSelection?.nativeGuestId) return;
+        rooms.push({ ...item.stay, createSelection: item.stay.createSelection,
+          stayId: stayIdForRoom(room, groups), workItemId, previewDigest: item.digest });
+      }
+      batchStart = { kind: 'start', id: crypto.randomUUID(), rooms };
+    }
     stayBookingRef.current = true;
     bookedInRunRef.current = {};
     setStayBooking(true);
     try {
-      for (const item of snapshot) {
+      for (const [index, item] of snapshot.entries()) {
+        if (cloudPreview && Object.values(savesRef.current).some(({ commit }) =>
+          (commit?.status === 'refused' && commit.statusChip === 'check') || (commit?.status === 'booked' && commit.unverified))) return;
         if (!item || !stayBookingRef.current || savedOutcomeBlocksRoom(item.roomKey)) return;
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room) return;
         const currentStay = roomBuilt(room, contactRef.current).stay;
         if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay) ||
             previewInputsRef.current[item.roomKey]?.inputKey !== paneStayKey(item.stay)) return;
-        if (!(await bookRoom(item.roomKey, pane, item.stay, item.digest))) return;
+        const batch = batchStart ? (index === 0 ? batchStart : { kind: 'continue' as const, id: batchStart.id, index }) : undefined;
+        if (!(await bookRoom(item.roomKey, pane, item.stay, item.digest, batch))) return;
       }
     } finally {
       stayBookingRef.current = false;
@@ -1445,7 +1465,7 @@ export function BookingCards({
     return (parent.reservationNote ?? '') === (stay.reservationNote ?? '') || (generated(parentRoom) && generated(room));
   }
 
-  async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
+  async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string, batch?: PaneStayBatch) {
     if (savedOutcomeBlocksRoom(roomKey)) return false;
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
@@ -1453,12 +1473,14 @@ export function BookingCards({
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
+      const parentStayId = !cloudPreview && room && workItemId ? bookedParentStayId(room, stay) : null;
       const persist =
         workItemId && room
           ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
-      const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+      const result = batch
+        ? await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest, batch)
+        : await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
       commit = outcome.ok
         ? {
@@ -1921,6 +1943,7 @@ export function BookingCards({
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
                 previewOnly={cloudPreview && !savesOn}
+                batchOnly={cloudPreview && draft.draft.rooms.length > 1}
                 frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
@@ -1945,13 +1968,14 @@ export function BookingCards({
           </article>
         );
       })}
-      {client && savesOn && !cloudPreview ? (
+      {client && savesOn && (!cloudPreview || draft.draft.rooms.length > 1) ? (
         <StayBookBar
           rooms={draft.draft.rooms}
           saves={saves}
           isPreviewReady={(room) => roomPreviewReady(room) !== null}
           pane={client}
           stayBooking={stayBooking}
+          blockWhenUncertain={cloudPreview}
           onBookStay={bookThisStay}
         />
       ) : null}
@@ -1965,6 +1989,7 @@ function StayBookBar({
   isPreviewReady,
   pane,
   stayBooking,
+  blockWhenUncertain,
   onBookStay,
 }: {
   rooms: BookingDraftReady['draft']['rooms'];
@@ -1972,6 +1997,7 @@ function StayBookBar({
   isPreviewReady: (room: BookingDraftReady['draft']['rooms'][number]) => boolean;
   pane: PaneStayClient;
   stayBooking: boolean;
+  blockWhenUncertain: boolean;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
 }) {
   const bookable = rooms;
@@ -1991,6 +2017,10 @@ function StayBookBar({
       return save?.preview?.status === 'running' || save?.commit?.status === 'running';
     });
   const allPreviewed = pending.every(isPreviewReady);
+  const needsCheck = blockWhenUncertain && bookable.some((room) => {
+    const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
+    return (commit?.status === 'refused' && commit.statusChip === 'check') || (commit?.status === 'booked' && commit.unverified);
+  });
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
@@ -2000,8 +2030,8 @@ function StayBookBar({
       ) : null}
       {pending.length > 0 ? (
         <PrimaryButton
-          disabled={!allPreviewed || busy}
-          disabledReason={!allPreviewed && !busy ? 'Preview in HMS first' : null}
+          disabled={!allPreviewed || busy || needsCheck}
+          disabledReason={needsCheck ? 'Check the uncertain booking in HMS first' : !allPreviewed && !busy ? 'Preview in HMS first' : null}
           onClick={() => void onBookStay(pane)}
         >
           {BOOK_THIS_STAY_LABEL}

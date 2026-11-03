@@ -128,6 +128,7 @@ function query(columns: Record<string, unknown>) {
     if ('extractionId' in columns) return [h.cursor];
     if ('direction' in columns) return [h.mail];
     if ('state' in columns) return [{ state: h.state }];
+    if ('actorKind' in columns && 'value' in columns) return h.events.filter((event: any) => event.type === 'write.evidence');
     throw new Error('unexpected query');
   };
   const chain = Object.assign(Promise.resolve().then(rows), {
@@ -731,5 +732,85 @@ describe('mounted Cloud create route', () => {
     expect(h.state).toHaveProperty('cloudCreatePreviews');
     expect(h.state).not.toHaveProperty('stays');
     expect(dispatches).toBe(0);
+  });
+
+  it('one Go captures both previews and commits separately only after a trusted sibling read', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondPreview = await caller().quoteWorkflow.previewStay(second);
+    const secondDigest = secondPreview.previewDigest!;
+    const batchId = randomUUID();
+    const batch = { kind: 'start' as const, id: batchId, rooms: [
+      { ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest },
+    ] };
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch }))
+      .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-1' });
+    const originalRun = paneCloudPreviewLoaders.run, originalVerify = paneCloudPreviewLoaders.verifySiblings;
+    const verifier = vi.fn<typeof paneCloudPreviewLoaders.verifySiblings>(async (_census, siblings) => {
+      expect(siblings).toHaveLength(1);
+      expect(siblings[0]).toMatchObject({ confirmation: '123456-1' });
+      return true;
+    });
+    paneCloudPreviewLoaders.verifySiblings = verifier;
+    paneCloudPreviewLoaders.run = async (input, options) => {
+      const row = { confirmation: '123456-1', firstName: 'Proof', lastName: 'Labtest',
+        arrival: stay.arrival, departure: stay.departure, status: 'Reserved' };
+      const census = { outcome: 'existing_matches', arrival: stay.arrival, coverage: { complete: true }, sameArrival: [row] };
+      if (input.mode === 'commit') expect(await options.verifyLabtestMatches?.(census)).toBe(true);
+      const dispatch = options.dispatchCandidate;
+      const result = await originalRun(input, { ...options, dispatchCandidate: dispatch && ((request, next, evidence: any) =>
+        dispatch(request, next, { ...evidence, preimage: { ...evidence.preimage, sameArrival: [row], verifiedExisting: true } })) });
+      return input.mode === 'commit' ? { ...result, confirmation: '123456-2' } : result;
+    };
+    try {
+      expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+        batch: { kind: 'continue', id: batchId, index: 1 } }))
+        .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-2' });
+      expect(dispatches).toBe(2);
+      expect(verifier).toHaveBeenCalledOnce();
+      expect(h.state).toMatchObject({ stays: { s1_1: { status: 'booked' }, s1_2: { status: 'booked' } } });
+    } finally { paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify; }
+  });
+
+  it('rejects a forged or missing sibling receipt before another Cloud session starts', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    const id = randomUUID();
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
+      kind: 'start', id, rooms: [{ ...first, previewDigest: firstDigest }, { ...second, previewDigest: secondDigest }],
+    } })).toMatchObject({ status: 'ok' });
+    h.events = h.events.filter((event: any) => event.type !== 'write.evidence');
+    const callsBefore = calls.length;
+    expect(await caller().quoteWorkflow.commitStay({ ...second, previewDigest: secondDigest,
+      batch: { kind: 'continue', id, index: 1 } })).toMatchObject({ status: 'refused' });
+    expect(calls).toHaveLength(callsBefore);
+    expect(dispatches).toBe(1);
+  });
+
+  it('does not dispatch the first room when any room lacks its own reviewed preview', async () => {
+    (h.payload.stays as any)[0].totalRooms = 2;
+    (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const first = request('123');
+    const second = { ...request('123'), stayId: 's1_2',
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const firstDigest = await prepared();
+    const secondDigest = (await caller().quoteWorkflow.previewStay(second)).previewDigest!;
+    expect(await caller().quoteWorkflow.commitStay({ ...first, previewDigest: firstDigest, batch: {
+      kind: 'start', id: randomUUID(), rooms: [
+        { ...first, previewDigest: firstDigest }, { ...second, previewDigest: '0'.repeat(64) },
+      ],
+    } })).toMatchObject({ status: 'refused' });
+    expect(dispatches).toBe(0);
+    expect(h.state).not.toHaveProperty('stays');
+    expect((h.state.cloudCreatePreviews as any).s1_2.digest).toBe(secondDigest);
   });
 });
