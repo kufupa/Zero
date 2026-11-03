@@ -6,7 +6,8 @@ import { FakeS3Storage } from '../src/storage/s3.js';
 
 const identity = { transportId: 'transport-1', messageId: 'canonical-message', attachmentId: 'attachment-1' };
 const bytes = Buffer.from('%PDF-1.7 synthetic voucher');
-const makeRow = () => ({ ...identity, threadId: 'thread-1', subject: 'Voucher', textBody: 'Please file this',
+const makeRow = () => ({ ...identity, threadId: 'thread-1', messageIdHeader: 'selected@example.test',
+  subject: 'Voucher', textBody: 'Please file this',
   htmlBody: '<p>Please file this</p>', fromAddress: 'sender@example.test', toAddresses: ['staff@example.test'],
   ccAddresses: [] as string[], mailboxId: 'mailbox-1', uidl: 'uidl-1', direction: 'inbound',
   historyOnly: false, provenance: null as null | { attention: string }, filename: 'voucher.pdf',
@@ -57,6 +58,8 @@ describe('pane POP3 attachment binding', () => {
     expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
     s.set({ textBody: 'Different request' });
     expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
+    s.set({ messageIdHeader: 'different@example.test' });
+    expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
     s.set({ threadId: 'other-thread' });
     expect(await readPanePop3Attachment({ ...s.input, expected: approved!.source })).toBeNull();
     s.set({});
@@ -76,6 +79,14 @@ describe('pane POP3 attachment binding', () => {
     });
     expect(await readPanePop3Attachment(s.input)).toBeNull();
     spy.mockRestore();
+    s.set({});
+    const headerChange = vi.spyOn(s.s3, 'getObjectBounded').mockImplementation(async (...args) => {
+      const result = await get(...args);
+      s.set({ messageIdHeader: 'different@example.test' });
+      return result;
+    });
+    expect(await readPanePop3Attachment(s.input)).toBeNull();
+    headerChange.mockRestore();
     s.set({});
     let checks = 0;
     expect(await readPanePop3Attachment({ ...s.input, checkAuthority: async () => ++checks < 3 })).toBeNull();
