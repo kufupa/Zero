@@ -436,16 +436,6 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (selected.selectedField?.value !== room.roomType) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomType' });
         output.applied.roomType = selected.selectedField.value;
       }
-      if (code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
-        const selected = await call(runTool, 'selectGuestStayRatePlan', { code: room.ratePlan, ...(commit ? { guestProfileId: state.guest.selected.nativeId } : {}) }, ['selected_unsaved', 'criteria_unavailable']);
-        if (selected.outcome === 'criteria_unavailable') {
-          if (commit) stop('needs_input', selected.issue || 'rate_criteria_unavailable', { detail: selected });
-          missing.push('room.ratePlanCriteria'); output.ratePlanIssue = selected;
-        } else {
-          if (selected.code !== room.ratePlan) stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
-          output.applied.ratePlan = selected.code;
-        }
-      }
       state.track = input.track != null ? normalizeCreateTrack(input.track) : null;
       if (state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
         await selectTrack(page, state.track.lookupCode);
@@ -538,6 +528,19 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (result.actual !== input.cms.recipient) stop('uncertain', 'requested_field_not_staged', { field: 'cms.recipient' });
         state.cmsRecipient = result.actual;
       }
+      // Select rates only after the final guest, track and party context is staged.
+      if (code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
+        const selected = await call(runTool, 'selectGuestStayRatePlan',
+          { code: room.ratePlan, ...(state.guest ? { guestProfileId: String(state.guest.selected.nativeId) } : {}) },
+          ['selected_unsaved', 'criteria_unavailable']);
+        if (selected.outcome === 'criteria_unavailable') {
+          if (commit) stop('needs_input', selected.issue || 'rate_criteria_unavailable', { detail: selected });
+          missing.push('room.ratePlanCriteria'); output.ratePlanIssue = selected;
+        } else {
+          if (selected.code !== room.ratePlan) stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
+          output.applied.ratePlan = selected.code;
+        }
+      }
       let form;
       try { form = await call(runTool, 'readGuestStayForm', { propertyCode }); }
       catch (error) {
@@ -584,6 +587,13 @@ export async function createReservation(input, { withSession = withBookingLookup
           stop('needs_input', 'requested_track_not_staged', { field: 'track' });
         }
         output.applied.track = state.track.display;
+      }
+      const ratePlanReadyForBinding = Object.hasOwn(output.applied, 'ratePlan') && !missing.length &&
+        !checked.unsupportedFields.length;
+      if (ratePlanReadyForBinding && !text(formValue(form.fields, 'averagerate'))) {
+        if (commit) stop('needs_input', 'rate_availability_unverified', { field: 'room.ratePlan' });
+        missing.push('room.ratePlanAvailability');
+        output.ratePlanIssue = { outcome: 'unverified', issue: 'RATE_AVAILABILITY_UNVERIFIED' };
       }
       if (input.guestoptin4 === false && formValue(form.fields, 'guestoptin4') !== false) {
         stop('uncertain', 'draft_readback_mismatch', { field: 'guestoptin4' });
