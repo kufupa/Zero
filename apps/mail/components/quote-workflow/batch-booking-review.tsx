@@ -24,8 +24,12 @@ function amountLabel(amount: BatchReviewedRoom['amount']): string {
 }
 
 /** The client is supplied only by the authenticated batch-capability route, on both pane hosts. */
-export function BatchBookingReview({ client, input, missing, onLock }: {
+export function BatchBookingReview({ client, input, missing, onLock, hideInclusion = false, revisionKey }: {
   client?: PaneBatchClient; input: BatchReviewInput | null; missing: string[]; onLock: (locked: boolean) => void;
+  /** Parent provides the full list, including incomplete rooms that staff may exclude. */
+  hideInclusion?: boolean;
+  /** Changes even when an edit affects a room outside the current selection. */
+  revisionKey?: string;
 }) {
   const [review, setReview] = useState<BatchReview | null>(null);
   const [reviewKey, setReviewKey] = useState('');
@@ -72,7 +76,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
   const countValid = !!selectedInput && selectedInput.rooms.length >= 2 && selectedInput.rooms.length <= 8;
   const sameArrival = !!selectedInput && selectedInput.rooms.every((room) => room.stay.arrival === selectedInput.rooms[0]?.stay.arrival);
   const mode = viewClient?.mode() ?? null;
-  const currentKey = JSON.stringify({ input: viewInput, missing: viewMissing, mode, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
+  const currentKey = JSON.stringify({ input: viewInput, missing: viewMissing, mode, revisionKey, selectedIds: selectedInput?.rooms.map((room) => room.allocationId) ?? [] });
   const keyRef = useRef(currentKey);
   const editGeneration = useRef(0);
   if (keyRef.current !== currentKey) editGeneration.current += 1;
@@ -181,7 +185,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
     <p className="text-xs font-semibold">Multiple rooms</p>
     <p className="text-[11.5px] text-[#475569]">Rooms are booked separately and are not linked in HMS. If one booking needs checking, later rooms will not be attempted.</p>
     {!viewClient ? <p className="text-[11.5px] text-[#475569]">Multi-room booking is not available in Nava yet. Book these rooms in HMS.</p> : null}
-    {viewClient && viewInput ? <BatchRoomInclusion
+    {viewClient && viewInput && !hideInclusion ? <BatchRoomInclusion
       rooms={viewInput.rooms.map(({ allocationId, stay }) => ({ id: allocationId,
         label: `${rowRoomLabel({ roomPreference: stay.roomType, quantity: 1 })} · ${stay.arrival} – ${stay.departure} · ${stay.firstName} ${stay.lastName}` }))}
       included={selectedInput?.rooms.map((room) => room.allocationId) ?? []} disabled={busy || approvalStarted}
