@@ -413,6 +413,7 @@ const empty = {
   centurionActiveCategoryCount: 0,
   workflowCategoryMissingCount: 0,
   workflowNonterminalCount: 0,
+  workflowPostRestartNonterminalCount: null,
   workflowDeadLetterCount: 0,
   workflowDeadLetterRecentCount: 0,
   workflowDeadLetterWindowStart: null,
@@ -476,6 +477,12 @@ try {
       count(*) FILTER (
         WHERE state IN ('queued', 'claimed', 'running', 'retry_wait')
       )::int AS nonterminal,
+      CASE WHEN ${deployStartedAt}::timestamptz IS NULL THEN NULL ELSE
+        count(*) FILTER (
+          WHERE state IN ('queued', 'claimed', 'running', 'retry_wait')
+            AND created_at >= ${deployStartedAt}::timestamptz
+        )::int
+      END AS post_restart_nonterminal,
       count(*) FILTER (WHERE state = 'dead_letter')::int AS dead_letter,
       count(*) FILTER (
         WHERE state = 'dead_letter'
@@ -511,6 +518,9 @@ try {
     centurionActiveCategoryCount: Number(categories?.count ?? 0),
     workflowCategoryMissingCount: Number(workflowCats?.missing ?? 0),
     workflowNonterminalCount: Number(workflow?.nonterminal ?? 0),
+    workflowPostRestartNonterminalCount: workflow?.post_restart_nonterminal == null
+      ? null
+      : Number(workflow.post_restart_nonterminal),
     workflowDeadLetterCount: Number(workflow?.dead_letter ?? 0),
     workflowDeadLetterRecentCount: Number(workflow?.dead_letter_recent ?? 0),
     workflowDeadLetterWindowStart: workflow?.dead_letter_window_start
@@ -2041,6 +2051,7 @@ const securityGroupCoverageValid =
   exactSecurityGroupSet;
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
+const nonterminalBacklogWaived = process.env.NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG === "1";
 let detectedRemoteAdminState = "unknown";
 
 const checks = {
@@ -2065,6 +2076,12 @@ const checks = {
   centurionCategoriesActive: db.centurionActiveCategoryCount === 12,
   workflowCategoriesComplete: Number(db.workflowCategoryMissingCount ?? 0) === 0,
   workflowNonterminalBacklogEmpty: db.workflowNonterminalCount === 0,
+  // The waiver covers only work that predates this deployment's restart.
+  ...(nonterminalBacklogWaived ? {
+    workflowPostRestartBacklogEmpty:
+      Number.isSafeInteger(db.workflowPostRestartNonterminalCount) &&
+      db.workflowPostRestartNonterminalCount === 0,
+  } : {}),
   // Fail on dead letters since this deploy's restart (or the last-good marker for standalone checks).
   workflowDeadLetterBacklogEmpty: Number(db.workflowDeadLetterRecentCount ?? 0) === 0,
   // Warn-only (see WARN_ONLY_CHECKS below): printed as a warning, never fails the gate.
@@ -2164,7 +2181,6 @@ if (remoteAdminMode) {
 const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty"]);
 // One-deploy owner waiver: keep the measured backlog visible, but do not
 // treat the existing paused-lane queue as a deploy failure.
-const nonterminalBacklogWaived = process.env.NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG === "1";
 if (nonterminalBacklogWaived) WARN_ONLY_CHECKS.add("workflowNonterminalBacklogEmpty");
 const failedChecks = Object.entries(checks)
   .filter(([, passed]) => !passed)
@@ -2203,6 +2219,7 @@ const report = {
     workflowDeadLetterWindowStart: db.workflowDeadLetterWindowStart ?? null,
     workflowLastGoodDeployRejected: db.workflowLastGoodDeployRejected === true,
     workflowNonterminalCount: db.workflowNonterminalCount ?? null,
+    workflowPostRestartNonterminalCount: db.workflowPostRestartNonterminalCount ?? null,
     workflowNonterminalBacklogWaived: nonterminalBacklogWaived,
     outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
