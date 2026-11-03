@@ -448,7 +448,7 @@ export function hmsJobTransport(
   sourceOptions?: { exactSource: true; sourceHash?: string },
 ): HmsJobTransport | null {
   if (!client || !threadId || (sourceOptions?.exactSource && !messageId?.trim()) ||
-      (sourceOptions?.sourceHash && !/^[a-f0-9]{64}$/.test(sourceOptions.sourceHash))) return null;
+      (sourceOptions?.sourceHash !== undefined && !/^[a-f0-9]{64}$/.test(sourceOptions.sourceHash))) return null;
   const mail = { ...mailAnchor(threadId, messageId),
     ...(sourceOptions?.sourceHash ? { sourceHash: sourceOptions.sourceHash } : {}) };
   const selectedMessageId = sourceOptions?.exactSource ? mail.messageId : undefined;

@@ -404,6 +404,15 @@ async function seedPartyMatchV2(
 }
 
 describe('U23 HMS job queue (pure)', () => {
+  it('refuses an explicitly empty selected-source hash before consulting the database', async () => {
+    const unavailable = {} as DB;
+    const source = { transportId: 'mailbox-a', threadId: 'thread-a', messageId: 'message-a', sourceHash: '' };
+    expect(await hmsJobs.isSelectedHmsInboundMessage(source, unavailable)).toBe(false);
+    expect(await queueUserHmsJob({ ...source, userId: 'staff-a',
+      request: { kind: 'find', confirmation: CONFIRMATION } }, unavailable)).toBeNull();
+    expect(await readHmsJobView({ ...source, selectedActorId: 'staff-a', kind: 'find',
+      confirmation: CONFIRMATION }, unavailable)).toBeNull();
+  });
   it('takes validated confirmation numbers from mail text and ignores dates and short numbers', () => {
     expect(
       extractHmsConfirmations('Amend 1234567-1 on 2026-10-09, ref 99-1, phone 10-09-2026'),

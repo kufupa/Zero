@@ -1015,6 +1015,7 @@ describe('exact selected-email HMS lookup', () => {
       setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-a' });
       const client = amendFindClientFromTrpc(trpc, 'mailbox-a');
       expect(hmsJobTransport(client, THREAD, null, { exactSource: true })).toBeNull();
+      expect(hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash: '' })).toBeNull();
       const transport = hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash })!;
       setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-b' });
       const pinned = { context: { activeTransportId: 'mailbox-a' } };

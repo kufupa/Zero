@@ -670,12 +670,13 @@ export async function isSelectedHmsInboundMessage(
   input: { transportId: string; threadId: string; messageId: string; sourceHash?: string },
   db: DB = getDb(),
 ): Promise<boolean> {
+  if (input.sourceHash !== undefined && !/^[a-f0-9]{64}$/.test(input.sourceHash)) return false;
   const [selected] = await db.select({ id: message.id, subject: message.subject, textBody: message.textBody,
     htmlBody: message.htmlBody }).from(message).where(and(
     eq(message.id, input.messageId), eq(message.transportId, input.transportId),
     eq(message.threadId, input.threadId), eq(message.direction, 'inbound'),
   )).limit(1);
-  return Boolean(selected && (!input.sourceHash || staffQuoteSourceHash(selected) === input.sourceHash));
+  return Boolean(selected && (input.sourceHash === undefined || staffQuoteSourceHash(selected) === input.sourceHash));
 }
 
 type HmsJobEnqueueInput = {
@@ -976,7 +977,7 @@ export async function queueUserHmsJob(
   },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
-  if (input.sourceHash && (!input.messageId || !/^[a-f0-9]{64}$/.test(input.sourceHash))) return null;
+  if (input.sourceHash !== undefined && (!input.messageId || !/^[a-f0-9]{64}$/.test(input.sourceHash))) return null;
   const triggerMessageId = input.messageId
     ? (await isSelectedHmsInboundMessage({ transportId: input.transportId, threadId: input.threadId,
         messageId: input.messageId, ...(input.sourceHash ? { sourceHash: input.sourceHash } : {}) }, db) ? input.messageId : null)
@@ -4486,7 +4487,7 @@ export async function readHmsJobView(
   const selectedActorId = 'selectedActorId' in input ? input.selectedActorId : undefined;
   const sourceHash = 'sourceHash' in input ? input.sourceHash : undefined;
   if (selectedSource && !selectedActorId) return null;
-  if (sourceHash && (!selectedSource || !/^[a-f0-9]{64}$/.test(sourceHash))) return null;
+  if (sourceHash !== undefined && (!selectedSource || !/^[a-f0-9]{64}$/.test(sourceHash))) return null;
   const scope = and(
     or(
       eq(aiWorkflowRun.transportId, input.transportId),
