@@ -33,6 +33,7 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) =>
 
 import { runLabtestAttachOnce } from '../src/ai/hms-labtest-attach-worker.js';
 import { approveHmsWrite, formDigest, hmsStateDigest } from '../src/ai/hms-approval.js';
+import { canonicalJson } from '../src/ai/draft-approval.js';
 import { paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 import { HmsLabtestDispatchError } from '../src/ai/hms-labtest-dispatch.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from '../src/ai/run-ledger.js';
@@ -256,14 +257,20 @@ describe('approved filing worker to Cloud upload fence', () => {
         stagedUploadPath = input.file;
         if (interveningWrite) {
           const holdId = randomUUID(), otherGrant = randomUUID();
+          const nativeReadback = { confirmation: form.confirmation, nativeStayId: native.reservationStayId,
+            nativeGuestId: native.guestId, documentCode: `NAVA${'A'.repeat(26)}`, documentName: form.documentName,
+            uniqueFreshListing: true as const };
+          const readbackDigest = createHash('sha256').update(canonicalJson(nativeReadback)).digest('hex');
           events.push({ id: holdId, workItemId, type: 'write.evidence', actorKind: 'system', value: {
             version: 1, kind: 'intent', holdId, ownerDigest: 'f'.repeat(64), workItemId, transportId: item.transportId,
             actorUserId: 'other', grantId: otherGrant, propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest',
-            nativeGuestId: '123', operation: 'attach_document', sourceDigest: 'a'.repeat(64), approvedDigest: 'b'.repeat(64),
-            requestDigest: 'c'.repeat(64), recovery: { synthetic: true } } });
+            nativeGuestId: '123', operation: 'attach_document', target: { propertyCode: 'HRCEN', kind: 'saved',
+              confirmation: form.confirmation, nativeStayId: native.reservationStayId },
+            sourceDigest: 'a'.repeat(64), approvedDigest: 'b'.repeat(64), requestDigest: 'c'.repeat(64),
+            recovery: { confirmation: form.confirmation, nativeStayId: native.reservationStayId } } });
           events.push({ workItemId, type: 'write.evidence', actorKind: 'system', value: { version: 1, kind: 'resolved',
-            holdId, operation: 'attach_document', confirmation: form.confirmation, readbackDigest: 'd'.repeat(64),
-            savedShot: { runId: approved.runId, sha256: 'e'.repeat(64) } } });
+            holdId, operation: 'attach_document', confirmation: form.confirmation, nativeStayId: native.reservationStayId,
+            nativeReadback, readbackDigest, savedShot: { runId: approved.runId, sha256: 'e'.repeat(64) } } });
         }
         return runCloudPaneAttach(input, {
           openSession: async (fn: (page: object) => Promise<unknown>) => {
