@@ -4,14 +4,14 @@ import {
   buildLiveGuestStayChromeGetRules,
   buildLiveGuestStayReadManifest,
 } from '../../src/hms/live-read-manifest.ts';
-import { enforceRequestPolicy } from '../../src/hms/request-policy.ts';
+import { enforceRequestPolicy, rejectDuplicateJsonBodyKeys } from '../../src/hms/request-policy.ts';
 import { hmsProductionOriginForSlot } from '../../src/hms/browser-artifacts.ts';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { createReadCliLease } from './read-cli-lease.mjs';
 import { attachGuardedQuoteSession, installQuoteRequestGuard, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
 
 const modules = { buildLiveGuestStayChromeGetRules, buildLiveGuestStayReadManifest,
-  enforceRequestPolicy, hmsProductionOriginForSlot };
+  enforceRequestPolicy, rejectDuplicateJsonBodyKeys, hmsProductionOriginForSlot };
 const property = getPropertyRegistration('HRCEN');
 const origin = hmsProductionOriginForSlot(property.browserSlot);
 const secret = { loginUrl: `${origin}/web/base/logindisp?tenant=${property.expectedTenant}`,
@@ -71,6 +71,7 @@ test('only the reviewed Centurion property, tenant, credential identity and orig
   assert.ok(allowed.manifest.rules.length > 0);
   assert.ok(allowed.manifest.rules.every((rule) => rule.origin === origin));
   assert.equal(allowed.manifest.rules.some((rule) => /OSRESV|inquiryForGrid/.test(rule.path)), false);
+  assert.equal(allowed.manifest.rules.some((rule) => rule.path === '/web/base/OSMPAV'), true);
   for (const change of [
     { expectedPropertyCode: 'HRDAV' }, { expectedTenant: 'OTHER' },
     { expectedPropertyName: 'Other Hotel' }, { username: 'other' },
@@ -91,6 +92,115 @@ test('a reviewed request uses no-follow fetch and is fulfilled only after a non-
   assert.deepEqual(route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
   assert.equal(context.closed, 0);
   assert.equal(guard.failureError(), null);
+});
+
+test('the optional ServiceNow script is blocked without fetching or ending the HMS session', async () => {
+  const url = 'https://inforsaas.service-now.com/optional.js';
+  const { route, guard, context } = await routed({ url });
+  assert.deepEqual(route.calls, [['abort', 'blockedbyclient']]);
+  assert.equal(context.closed, 0);
+  assert.equal(guard.failureError(), null);
+  for (const input of [
+    { url, method: 'POST' },
+    { url, resourceType: 'document' },
+    { url: 'https://inforsaas.service-now.com.evil.example/optional.js' },
+  ]) {
+    const denied = await routed(input);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('only the reviewed Hotel Availability screen forms are fetched', async () => {
+  const valid = {
+    url: `${origin}/web/base/OSMPAV?USER_FUNCTION_NAME=OSMPAV&FUNCTION_CLASS=WEBL`,
+    method: 'POST', resourceType: 'xhr', headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    body: 'USER_FUNCTION_NAME=OSMPAV&FUNCTION_CLASS=WEBL&SYSTEM_FUNCTION_NAME=OSMPAV&CURRENT_TAB_NAME=&MENU_MODULE_KEY=0&removescreenflows=yes',
+  };
+  const allowed = await routed(valid);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...valid, body: `${valid.body}&pageaction=SAVE` },
+    { ...valid, body: `${valid.body}&USER_FUNCTION_NAME=OSRESV` },
+    { ...valid, url: `${valid.url}&pageaction=SAVE` },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('the company picker permits only its reviewed lookup form, not a write or another grid', async () => {
+  const input = {
+    url: `${origin}/web/base/GRIDDATA`, method: 'POST', resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'GRID_ID=1134&GRID_NAME=LVCOMPANIES2&DATASPY_ID=1224&MADDON_FILTER_ALIAS_NAME_1=companyname' +
+      '&MADDON_FILTER_OPERATOR_1=CONTAINS&MADDON_FILTER_JOINER_1=AND&MADDON_FILTER_SEQNUM_1=1' +
+      '&MADDON_FILTER_VALUE_1=Example+Hotels&USER_FUNCTION_NAME=OSMPAV&CURRENT_TAB_NAME=HDR' +
+      '&GRID_TYPE=LOV&REQUEST_TYPE=LOV.DATA_ONLY.STORED&LOV_TAGNAME=organization',
+  };
+  const allowed = await routed(input);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  for (const bad of [
+    { ...input, body: input.body.replace('GRID_ID=1134', 'GRID_ID=9999') },
+    { ...input, body: `${input.body}&pageaction=SAVE` },
+    { ...input, body: `${input.body}&MADDON_FILTER_VALUE_1=Another` },
+    { ...input, body: input.body.replace('companyname', 'guestname') },
+    { ...input, url: `${input.url}?action=SAVE` },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('only the typed, duplicate-free, Centurion availability inquiry is fetched', async () => {
+  const body = { propertyCodes: 'HRCEN', startDate: '2027-03-15T00:00:00', numberOfDays: '14',
+    lengthOfStay: 'DY', adultCount: 2, childCount: 0, salesStrategy: 'BAR', roomTypeCodes: 'STQN',
+    ratePlanCodes: 'BAR', currency: null, convertFromPropertyCurrency: false, shopByDay: false,
+    showCollapsedByProperty: false, showCollapsedByRoomType: false, excludeOverbookingLimits: false,
+    showRestrictedSellOptions: true, showExclusiveRates: false, launchedFrom: 'hotelavailability',
+    showCollapsedByBuilding: false, buildingCodes: [''], showArrivalDepartureCount: false,
+    showSubGroupView: false, groupID: '', organizationID: '', travelAgencyID: '', bookingSessionID: 'opaque/token+value==' };
+  const valid = { url: `${origin}/api/internalBooking/rateshop/inquiryForGrid?houseAvailabilityOnly=false`,
+    method: 'POST', resourceType: 'xhr', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+  const allowed = await routed(valid);
+  assert.deepEqual(allowed.route.calls, [['fetch', { maxRedirects: 0, maxRetries: 0 }], ['fulfill']]);
+  assert.equal(allowed.guard.failureError(), null);
+  for (const bad of [
+    { ...valid, body: JSON.stringify({ ...body, propertyCodes: 'OTHER' }) },
+    { ...valid, body: valid.body.replace('{', '{"propertyCodes":"OTHER",') },
+    { ...valid, body: JSON.stringify({ ...body, pageaction: 'SAVE' }) },
+    { ...valid, body: JSON.stringify({ ...body, excludeOverbookingLimits: true }) },
+    { ...valid, body: JSON.stringify({ ...body, childCount: 1, childAges: [99] }) },
+    { ...valid, body: JSON.stringify({ ...body, startDate: '2027-02-30T00:00:00' }) },
+    { ...valid, url: `${valid.url}&pageaction=SAVE` },
+    { ...valid, url: `${origin}/web/base/OSRESV.HDR?pageaction=SAVE` },
+    { ...valid, url: valid.url.replace(origin, 'https://other.example.test') },
+    { ...valid, method: 'PUT' },
+  ]) {
+    const denied = await routed(bad);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.match(denied.guard.failureError()?.message ?? '', /^HMS_QUOTE_POLICY_BLOCKED_/);
+    assert.equal(denied.context.closed, 1);
+  }
+});
+
+test('an unreviewed HMS image is skipped without fetching, but other requests still fail closed', async () => {
+  const image = `${origin}/web/resources/inforhms/images/tree/plusminus-folder-open.svg`;
+  const skipped = await routed({ url: image, resourceType: 'image' });
+  assert.deepEqual(skipped.route.calls, [['abort', 'blockedbyclient']]);
+  assert.equal(skipped.context.closed, 0);
+  for (const input of [
+    { url: `${image}?action=save`, resourceType: 'image' },
+    { url: image, method: 'POST', resourceType: 'image' },
+    { url: image, resourceType: 'script' },
+  ]) {
+    const denied = await routed(input);
+    assert.deepEqual(denied.route.calls, [['abort', 'blockedbyclient']]);
+    assert.equal(denied.context.closed, 1);
+  }
 });
 
 test('canonical policy aborts external, unreviewed, altered and mutation-shaped requests before fetching', async () => {

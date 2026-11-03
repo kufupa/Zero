@@ -339,7 +339,7 @@ export function parseUrlEncodedMultimap(raw: string): Multimap {
 class DuplicateJsonBodyKeyError extends Error {}
 
 /** JSON.parse keeps only the last duplicate, which can hide a mutation value. */
-function rejectDuplicateJsonBodyKeys(raw: string): void {
+export function rejectDuplicateJsonBodyKeys(raw: string): void {
   const scopes: Array<{ kind: 'object'; keys: Set<string>; expectingKey: boolean } | { kind: 'array' }> = [];
   for (let index = 0; index < raw.length; index += 1) {
     const char = raw[index];
