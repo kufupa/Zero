@@ -11,6 +11,8 @@ set -euo pipefail
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 MAIL_APP="${REPO_ROOT}/apps/mail"
+# shellcheck source=build-identity.sh
+source "${SERVER_PILOT}/deploy/build-identity.sh"
 WEB_ROOT="${WEB_ROOT:-/var/www/nava-mail}"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/apps/server-pilot/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
@@ -43,7 +45,11 @@ done
 
 # Serialize staging, nginx activation, and retention pruning across deploys.
 DEPLOY_LOCK=/home/ubuntu/.nava-deploy.lock
-exec 9>>"$DEPLOY_LOCK"
+# The bundle deploy may already hold this exact descriptor across its SHA
+# check. Reuse it; direct invocations still acquire the same lock themselves.
+if ! { [ -e "/proc/$$/fd/9" ] && [ "/proc/$$/fd/9" -ef "$DEPLOY_LOCK" ]; }; then
+  exec 9>>"$DEPLOY_LOCK"
+fi
 flock -x 9
 
 echo "== deploy: repo ${REPO_ROOT} =="
@@ -184,7 +190,10 @@ sudo install -d -o ubuntu -g ubuntu -m 0700 \
 
 if [ "$QUIESCED" != "1" ]; then
   echo "== build server-pilot =="
+  SERVER_BUILD_SHA="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')"
+  nava_write_build_marker "$REPO_ROOT" BUILD_IN_PROGRESS
   pnpm --filter @zero/server build
+  nava_finish_server_build "$REPO_ROOT" "$SERVER_BUILD_SHA"
   echo "== install quote trace and HMS screenshot retention =="
   REPO_ROOT="$REPO_ROOT" SERVER_PILOT="$SERVER_PILOT" \
     bash "${SERVER_PILOT}/deploy/install-playwright-quote-purge.sh"
@@ -636,7 +645,7 @@ if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
 fi
 
 echo "== pm2 =="
-export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+nava_load_build_commit "$REPO_ROOT"
 
 # Always keep HMS off on generic deploy — ops-hms-shadow.sh start is sole HMS starter.
 # Invalidate canary/shadow proofs on build identity change.
@@ -654,6 +663,7 @@ ensure_hms_absent || {
   echo "HMS process cleanup failed" >&2
   exit 20
 }
+printf 'NAVA_PM2_RESTART_STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
 # Legacy env may contain an older build identity; retain the launch identity for remote-http.
 remote_launch_build_commit="$NAVA_BUILD_COMMIT"
 start_legacy_processes

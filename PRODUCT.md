@@ -49,7 +49,7 @@ Keep the V1 look, one primary action per step, no dead controls. Nava never send
 - Never accept a cancellation-penalty dialog. Never blind-retry an uncertain write; re-read HMS first.
 - Never Nova Lite.
 - Before Vitest: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`. Never test against pilot RDS. DB-backed suites may be skipped; report them as skipped, never passed. Typecheck only via `remote-typecheck.sh`.
-- **Deploy main:** fast-forward the deploy tree (`.worktrees/recover-parse-failure`; `ops-deploy.sh` refuses other checkouts) to `main`, then `apps/server-pilot/deploy/ops-deploy.sh` (git-bundle sync). A pane fix is live only after the bundle reloads.
+- **Deploy main:** from any clean worktree whose HEAD matches `origin/main`, run `apps/server-pilot/deploy/ops-deploy.sh` (git-bundle sync). The script and cwd must be in that same worktree; the bundle rechecks the shipping SHA after fetching origin. A pane fix is live only after the bundle reloads.
 - P0/P1 review findings fixed before merge. No `--no-verify`.
 
 ## Done
