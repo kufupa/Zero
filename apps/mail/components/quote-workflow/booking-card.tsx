@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
@@ -856,6 +856,16 @@ export function SavedStayReceipt({
   );
 }
 
+/** UI-only proposals; the server must bind and authorize every child independently. */
+export type BatchDraftSnapshot = { input: BatchReviewInput | null; missing: string[]; revisionKey: string };
+export type BatchDraftAggregation = {
+  key: string;
+  locked: boolean;
+  /** Host permits this only before batch Go and with no unresolved single attempt. */
+  singleMode?: boolean;
+  update: (key: string, snapshot: BatchDraftSnapshot | null) => void;
+};
+
 export function BookingCards({
   draft,
   groups = [],
@@ -872,6 +882,7 @@ export function BookingCards({
   confirmation,
   onSaveDefault,
   batchReview,
+  onSingleAttemptStart,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -903,7 +914,9 @@ export function BookingCards({
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
   /** Supplied only by the separately authorized batch integration. An absent client holds writes. */
-  batchReview?: { client?: PaneBatchClient; refs: Record<string, { stayId: string; rowId: string | null }>; revision?: string };
+  batchReview?: { client?: PaneBatchClient; refs: Record<string, { stayId: string; rowId: string | null }>; revision?: string; aggregate?: BatchDraftAggregation };
+  /** Local host hold only; server source fencing is still required. */
+  onSingleAttemptStart?: () => void;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -982,13 +995,20 @@ export function BookingCards({
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
-  const [batchLocked, setBatchLocked] = useState(false);
+  const [localBatchLocked, setBatchLocked] = useState(false);
+  const batchLocked = localBatchLocked || Boolean(batchReview?.aggregate?.locked);
   const [batchExcluded, setBatchExcluded] = useState<{ source: string; ids: string[] }>({ source: '', ids: [] });
   const stayBookingRef = useRef(false);
   // A transient capability loss or a changed room list cannot expose legacy write buttons again.
   const batchWasEnabled = useRef(false);
-  if (batchReview && draft.draft.rooms.length > 1) batchWasEnabled.current = true;
-  const batchMode = batchWasEnabled.current;
+  if (batchReview && (draft.draft.rooms.length > 1 || (batchReview.aggregate && !batchReview.aggregate.singleMode))) batchWasEnabled.current = true;
+  const batchMode = batchWasEnabled.current && !(batchReview?.aggregate?.singleMode &&
+    draft.draft.rooms.length === 1 && !batchLocked);
+  // An old single preview cannot authorize a write after entering or leaving batch mode.
+  const previewMode = useRef({ batchMode, generation: 0 });
+  if (previewMode.current.batchMode !== batchMode) {
+    previewMode.current = { batchMode, generation: previewMode.current.generation + 1 };
+  }
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
@@ -1180,6 +1200,7 @@ export function BookingCards({
     const { stayId } = input;
     const key = input.key;
     const requestId = Symbol();
+    const modeGeneration = previewMode.current.generation;
     const generation = previewReceipt.begin(workItemId, stayId, inputKey);
     patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
     let preview: Exclude<PreviewView, { status: 'running' }>;
@@ -1193,7 +1214,7 @@ export function BookingCards({
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
     const currentInput = previewInputsRef.current[roomKey];
-    const isCurrentInput = currentInput?.key === key;
+    const isCurrentInput = currentInput?.key === key && previewMode.current.generation === modeGeneration;
     const receipt =
       isCurrentInput && preview.status === 'ready'
         ? {
@@ -1285,6 +1306,22 @@ export function BookingCards({
   const previewInputSignature = JSON.stringify(
     Object.entries(previewInputs).map(([roomKey, input]) => [roomKey, input.key, input.stayId]),
   );
+
+  const clearedPreviewMode = useRef(batchMode);
+  useLayoutEffect(() => {
+    if (clearedPreviewMode.current === batchMode) return;
+    clearedPreviewMode.current = batchMode;
+    for (const input of Object.values(previewInputsRef.current)) previewReceipt.clear(workItemId, input.stayId);
+    setSaves((current) => {
+      let next: typeof current | undefined;
+      for (const [roomKey, save] of Object.entries(current)) {
+        if (!save.preview) continue;
+        next ??= { ...current };
+        next[roomKey] = { ...save, preview: undefined };
+      }
+      return next ?? current;
+    });
+  }, [batchMode, previewReceipt, workItemId]);
 
   useEffect(() => {
     const inputs = Object.entries(previewInputsRef.current);
@@ -1408,6 +1445,9 @@ export function BookingCards({
         workItemId && room
           ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
+      // Record the attempt synchronously, before it may reach the server. The
+      // host retains this hold even if this card disappears before the reply.
+      onSingleAttemptStart?.();
       const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
       commit = outcome.ok
@@ -1448,7 +1488,7 @@ export function BookingCards({
   const selectedRooms = batchRooms.filter(({ room }) => !excludedIds.has(roomKeyOf(room)));
   const stableId = /^[A-Za-z0-9_-]{1,40}$/;
   const sourceIdentity = ({ room, group }: typeof batchRooms[number]) => {
-    const stored = batchReview?.refs[room.groupId];
+    const stored = batchReview?.refs[room.groupId] ?? (group ? batchReview?.refs[group.id] : undefined);
     const ref = stored ?? (group?.stayId && stableId.test(group.stayId) && stableId.test(group.id)
       ? { stayId: group.stayId, rowId: group.id } : null);
     const rowId = ref?.rowId ?? (ref ? `${ref.stayId}_row` : '');
@@ -1461,6 +1501,11 @@ export function BookingCards({
     ...(!propertyCode ? ['hotel'] : []),
     ...(!workItemId || !session?.binding?.transportId || !batchSource?.threadId || batchSource.messageId !== draft.messageId ? ['email source'] : []),
     ...(selectedRooms.some((item) => !sourceIdentity(item)) ? ['room source'] : []),
+    // A single-room create can still be pending when another draft joins this batch.
+    // Do not let excluding that room bypass the hold while its outcome is uncertain.
+    ...(stayBooking || Object.values(saves).some(({ commit }) => commit?.status === 'running' ||
+      (commit?.status === 'refused' && commit.statusChip === 'check') ||
+      (commit?.status === 'booked' && commit.unverified === true)) ? ['a booking is still being checked'] : []),
     ...(selectedRooms.some(({ room }) => savedOutcomeBlocksRoom(roomKeyOf(room))) ? ['existing booking outcome must be checked'] : []),
   ])];
   const batchInput: BatchReviewInput | null = batchMode && propertyCode && workItemId && session?.binding?.transportId &&
@@ -1472,6 +1517,19 @@ export function BookingCards({
             (item.group?.rowPrice?.amountMinor ?? item.group?.quotedAmountMinor ?? null), currency: null,
             basis: 'room_night', tax: 'unknown' } })) }
     : null;
+  const batchRevisionKey = JSON.stringify([batchReview?.revision, session?.inputRevision, batchReview?.refs, draft, groups, choices,
+    contact, selectedGuestName, sendConfirmation, cmsMessage, effectiveRecipientMode, customAddress]);
+  const aggregateKey = batchReview?.aggregate?.key;
+  const aggregateUpdate = batchReview?.aggregate?.update;
+  const aggregateSnapshot = JSON.stringify({ input: batchInput, missing: batchMissing, revisionKey: batchRevisionKey });
+  // Layout effects publish every committed edit before another user action can approve a stale review.
+  useLayoutEffect(() => {
+    if (aggregateUpdate && aggregateKey) aggregateUpdate(aggregateKey, JSON.parse(aggregateSnapshot) as BatchDraftSnapshot);
+  }, [aggregateUpdate, aggregateKey, aggregateSnapshot]);
+  useLayoutEffect(() => {
+    if (!aggregateUpdate || !aggregateKey) return;
+    return () => aggregateUpdate(aggregateKey, null);
+  }, [aggregateUpdate, aggregateKey]);
 
   return (
     <section aria-label="Booking details" className="flex flex-col gap-2">
@@ -1916,9 +1974,8 @@ export function BookingCards({
           included={selectedRooms.map(({ room }) => roomKeyOf(room))} disabled={batchLocked}
           onChange={(ids) => { const included = new Set(ids); setBatchExcluded({ source: batchSourceKey,
             ids: batchRooms.map(({ room }) => roomKeyOf(room)).filter((id) => !included.has(id)) }); }} /> : null}
-        <BatchBookingReview client={batchReview?.client} input={batchInput} missing={batchMissing} onLock={setBatchLocked} hideInclusion
-          revisionKey={JSON.stringify([batchReview?.revision, session?.inputRevision, batchReview?.refs, draft, groups, choices,
-            contact, selectedGuestName, sendConfirmation, cmsMessage, effectiveRecipientMode, customAddress])} />
+        {!batchReview?.aggregate ? <BatchBookingReview client={batchReview?.client} input={batchInput} missing={batchMissing}
+          onLock={setBatchLocked} hideInclusion revisionKey={batchRevisionKey} /> : null}
       </> : null}
       {!batchMode && client && savesOn ? (
         <StayBookBar

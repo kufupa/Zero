@@ -3126,6 +3126,425 @@ describe('batch booking card integration', () => {
     };
   }
 
+  function crossDraftSession(firstRoomCount = 1): QuoteSession {
+    const first = draftReady();
+    const second = draftReady();
+    first.draft.rooms = first.draft.rooms.slice(0, firstRoomCount);
+    second.draft.rooms = [{ ...second.draft.rooms[1]!, groupId: 'g2', roomIndex: 1,
+      request: { ...second.draft.rooms[1]!.request, departure: '2026-11-15', roomType: 'DLXKNG' } }];
+    const session = quotedSession(first);
+    return { ...session,
+      groups: [{ ...g1, quantity: firstRoomCount }, { ...g1, id: 'g2', quantity: 1, departureDate: '2026-11-15' }],
+      bookingDrafts: { '2026-11-12:2026-11-14': first, '2026-11-12:2026-11-15': second },
+    };
+  }
+
+  const crossReview = { refs: { g1: { stayId: 's1', rowId: 'r1' }, g2: { stayId: 's2', rowId: 'r2' } }, revision: 'rev' };
+  const itemId = '11111111-1111-4111-8111-111111111111';
+
+  it('reviews same-arrival drafts together and preserves a partial result after one Go', async () => {
+    const api = batchClient(), single = paneClient();
+    api.read = vi.fn(async ({ workItemId, runId }) => ({ workItemId, runId, complete: true, rooms: [
+      { allocationId: 'g1:1', status: 'confirmed' as const, confirmation: '123', screenshotRecorded: true,
+        readbackRecorded: true, attempt: { runId, childId: 'a'.repeat(64) } },
+      { allocationId: 'g2:1', status: 'uncertain' as const, attempt: { runId, childId: 'b'.repeat(64) } },
+    ] }));
+    const session = crossDraftSession();
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Review these rooms' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    await screen.findByText('Booked · confirmation 123');
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 },
+        stay: expect.objectContaining({ departure: '2026-11-14', roomType: 'STQN' }) }),
+      expect.objectContaining({ identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 },
+        stay: expect.objectContaining({ departure: '2026-11-15', roomType: 'DLXKNG' }) }),
+    ] }));
+    expect(api.approve).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByLabelText('First name').every((field) => (field as HTMLInputElement).disabled)).toBe(true);
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: session.groups.slice(0, 1), bookingDrafts }} {...props} />);
+    expect(screen.getByText('Booked · confirmation 123')).toBeDefined();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(single.preview).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('does not offer another Go when an active source panel unmounts and returns', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    api.approve = vi.fn(() => new Promise<{ runId: string }>(() => {}));
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(api.approve).toHaveBeenCalledTimes(1);
+    expect(session.binding).not.toBeNull();
+    view.rerender(<QuoteBookingHost session={session} {...props} workItemId={undefined} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2, folderEntryId: 'archive' } }} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByText(/Multi-room booking is not available/)).toBeDefined();
+    expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('holds a single-draft batch after its draft disappears or selection changes', async () => {
+    const api = batchClient(), single = paneClient(), session = quotedSession(draftReady());
+    api.read = vi.fn(async ({ workItemId, runId }) => ({ workItemId, runId, complete: true, rooms: [
+      { allocationId: 'g1:1', status: 'confirmed' as const, confirmation: '123', screenshotRecorded: true,
+        readbackRecorded: true, attempt: { runId, childId: 'a'.repeat(64) } },
+      { allocationId: 'g1:2', status: 'uncertain' as const, attempt: { runId, childId: 'b'.repeat(64) } },
+    ] }));
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    await screen.findByText('Booked · confirmation 123');
+    view.rerender(<QuoteBookingHost session={{ ...session, bookingDrafts: {} }} {...props} />);
+    expect(screen.getByText('Booked · confirmation 123')).toBeDefined();
+    expect(screen.getByText('Outcome needs checking in HMS')).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, binding: { ...session.binding!, selectionEpoch: 2 } }} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('resolves a rowless stored reference when an unquoted room uses its date key', async () => {
+    const api = batchClient(), draft = draftReady();
+    for (const room of draft.draft.rooms) room.groupId = '2026-11-12:2026-11-14';
+    const group = { ...g1, stayId: 's1' };
+    render(<BookingCards draft={draft} groups={[group]} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION}
+      session={quotedSession(draft)} propertyCode={HRCEN_PROPERTY_CODE} workItemId={itemId}
+      batchReview={{ client: api, refs: { g1: { stayId: 's1', rowId: null } } }} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    expect(api.prepare).toHaveBeenCalledWith(expect.objectContaining({ rooms: [
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 's1_row', roomIndex: 1 } }),
+      expect.objectContaining({ identity: { stayId: 's1', rowId: 's1_row', roomIndex: 2 } }),
+    ] }));
+  });
+
+  it('preserves an untouched same-arrival draft when a sibling is removed before Go', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    fireEvent.change(screen.getAllByLabelText('First name')[1]!, { target: { value: 'Edited guest' } });
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props} />);
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Edited guest');
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toBeDefined();
+    expect(api.approve).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the single path held if the batch client disappears before a sibling is removed', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props} batchReview={crossReview} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('preserves a single-room draft edit when a same-arrival sibling is added', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={{ ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } }} {...props} />);
+    fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'Edited guest' } });
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toBeDefined();
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    expect((screen.getAllByLabelText('First name')[0] as HTMLInputElement).value).toBe('Edited guest');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(['finished', 'pending'] as const)('requires a new single preview after batch mode when the old preview is %s', async (timing) => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const pending = deferred<PaneStayResult>();
+    if (timing === 'pending') single.preview.mockReturnValueOnce(pending.promise);
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const oneDraft = { ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } };
+    const view = render(<QuoteBookingHost session={oneDraft} {...props} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    if (timing === 'finished') await waitFor(() => expect(bookButton(0)).toHaveProperty('disabled', false));
+    else await waitFor(() => expect(single.preview).toHaveBeenCalledTimes(1));
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    view.rerender(<QuoteBookingHost session={oneDraft} {...props} />);
+    if (timing === 'pending') await act(async () => { pending.resolve(PREVIEW_OK); await pending.promise; });
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(single.commit).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('holds batch review while a single-room booking is in flight', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms.push({ ...structuredClone(second.draft.rooms[0]!), roomIndex: 2 });
+    session.groups[1]!.quantity = 2;
+    const pending = deferred<PaneStayResult>();
+    single.commit.mockReturnValueOnce(pending.promise);
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={{ ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } }} {...props} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0)).toHaveProperty('disabled', false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(single.commit).toHaveBeenCalledTimes(1));
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(1); pickRoomChoices(2);
+    const firstInclusion = screen.getAllByRole('group', { name: 'Rooms to review' })[0]!;
+    fireEvent.click(within(firstInclusion).getByRole('checkbox'));
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    expect(api.prepare).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve(COMMIT_OK); await pending.promise; });
+  });
+
+  it.each([
+    ['uncertain', { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON }],
+    ['reported booked', COMMIT_OK],
+  ] as const)('holds batch review after an in-flight single card disappears and returns %s', async (_label, result) => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms.push({ ...structuredClone(second.draft.rooms[0]!), roomIndex: 2 });
+    session.groups[1]!.quantity = 2;
+    const pending = deferred<PaneStayResult>();
+    single.commit.mockReturnValueOnce(pending.promise);
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={{ ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } }} {...props} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0)).toHaveProperty('disabled', false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(single.commit).toHaveBeenCalledTimes(1));
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    await act(async () => { pending.resolve(result); await pending.promise; });
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    expect(api.prepare).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('does not return to single mode when a removed single card is still booking', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    const pending = deferred<PaneStayResult>();
+    single.commit.mockReturnValueOnce(pending.promise);
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={{ ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } }} {...props} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0)).toHaveProperty('disabled', false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(single.commit).toHaveBeenCalledTimes(1));
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    await act(async () => { pending.resolve({ status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON }); await pending.promise; });
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('keeps the in-flight hold when the same source opens under a different work item', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const first = session.bookingDrafts['2026-11-12:2026-11-14']!;
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms.push({ ...structuredClone(second.draft.rooms[0]!), roomIndex: 2 });
+    session.groups[1]!.quantity = 2;
+    const pending = deferred<PaneStayResult>();
+    single.commit.mockReturnValueOnce(pending.promise);
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={{ ...session, groups: [session.groups[0]!],
+      bookingDrafts: { '2026-11-12:2026-11-14': first } }} {...props} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0)).toHaveProperty('disabled', false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(single.commit).toHaveBeenCalledTimes(1));
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props}
+      workItemId="22222222-2222-4222-8222-222222222222" />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    await act(async () => { pending.resolve(COMMIT_OK); await pending.promise; });
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    expect(api.prepare).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending batch held after the same source changes work item', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    api.approve = vi.fn(() => new Promise<{ runId: string }>(() => {}));
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve and book these rooms' }));
+    expect(api.approve).toHaveBeenCalledTimes(1);
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props}
+      workItemId="22222222-2222-4222-8222-222222222222" />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).toHaveBeenCalledTimes(1); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unmatched unknown outcome held after the same source changes work item', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props}
+      savedStays={{ old_1: { status: 'unknown', confirmationNumber: null, screenshotRef: null } }} />);
+    view.rerender(<QuoteBookingHost session={{ ...session, groups: [session.groups[1]!],
+      bookingDrafts: { '2026-11-12:2026-11-15': second } }} {...props}
+      workItemId="22222222-2222-4222-8222-222222222222" />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 'C1'])('holds batch review for an excluded uncertain single booking with confirmation %s', (confirmationNumber) => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms.push({ ...structuredClone(second.draft.rooms[0]!), roomIndex: 2 });
+    session.groups[0] = { ...session.groups[0]!, stayId: 's1' };
+    session.groups[1]!.quantity = 2;
+    render(<QuoteBookingHost session={session} contact={CARD_CONTACT} paneSave={single.client}
+      propertyCode={HRCEN_PROPERTY_CODE} workItemId={itemId} batchReview={{ ...crossReview, client: api }}
+      savedStays={{ s1_1: { status: 'unknown', confirmationNumber, screenshotRef: null } }} />);
+    pickRoomChoices(1); pickRoomChoices(2);
+    const firstInclusion = screen.getAllByRole('group', { name: 'Rooms to review' })[0]!;
+    fireEvent.click(within(firstInclusion).getByRole('checkbox'));
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    expect(api.prepare).not.toHaveBeenCalled(); expect(api.approve).not.toHaveBeenCalled();
+    expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a prepared batch when an unmatched prior single outcome is unknown', async () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const props = { contact: CARD_CONTACT, paneSave: single.client, propertyCode: HRCEN_PROPERTY_CODE,
+      workItemId: itemId, batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    view.rerender(<QuoteBookingHost session={session} {...props}
+      savedStays={{ previous_1: { status: 'unknown', confirmationNumber: 'C1', screenshotRef: null } }} />);
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    view.rerender(<QuoteBookingHost session={session} {...props} />);
+    expect(screen.getByText(/a booking is still being checked/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Review these rooms' })).toHaveProperty('disabled', true);
+    expect(api.approve).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('preserves an unrelated card edit when an earlier arrival disappears without batch mode', () => {
+    const session = crossDraftSession(), second = session.bookingDrafts['2026-11-12:2026-11-15']!;
+    second.draft.rooms[0]!.request.arrival = '2026-11-13';
+    const separate = { ...session, groups: [session.groups[0]!, { ...session.groups[1]!, arrivalDate: '2026-11-13' }],
+      bookingDrafts: { '2026-11-12:2026-11-14': session.bookingDrafts['2026-11-12:2026-11-14']!,
+        '2026-11-13:2026-11-15': second } };
+    const view = render(<QuoteBookingHost session={separate} contact={CARD_CONTACT} workItemId={itemId} />);
+    fireEvent.change(screen.getAllByLabelText('First name')[1]!, { target: { value: 'Edited guest' } });
+    view.rerender(<QuoteBookingHost session={{ ...separate, groups: [separate.groups[1]!],
+      bookingDrafts: { '2026-11-13:2026-11-15': second } }} contact={CARD_CONTACT} workItemId={itemId} />);
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Edited guest');
+  });
+
+  it('invalidates a shared review when an excluded child in another draft is edited', async () => {
+    const api = batchClient();
+    render(<QuoteBookingHost session={crossDraftSession(2)} contact={CARD_CONTACT} propertyCode={HRCEN_PROPERTY_CODE}
+      workItemId={itemId} batchReview={{ ...crossReview, client: api }} />);
+    pickRoomChoices(0); pickRoomChoices(2);
+    const firstInclusion = screen.getAllByRole('group', { name: 'Rooms to review' })[0]!;
+    fireEvent.click(within(firstInclusion).getAllByRole('checkbox')[1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    await screen.findByRole('button', { name: 'Approve and book these rooms' });
+    fireEvent.change(screen.getAllByLabelText('First name')[1]!, { target: { value: 'Changed' } });
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(screen.getByText(/Booking details changed/)).toBeDefined();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
+  it('holds the whole review and legacy writes while one expected draft is absent', () => {
+    const api = batchClient(), single = paneClient(), session = crossDraftSession();
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    render(<QuoteBookingHost session={{ ...session, bookingDrafts }} contact={CARD_CONTACT} paneSave={single.client}
+      propertyCode={HRCEN_PROPERTY_CODE} workItemId={itemId} batchReview={{ ...crossReview, client: api }} />);
+    expect(screen.getByText(/booking details/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Review these rooms' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(api.prepare).not.toHaveBeenCalled(); expect(single.commit).not.toHaveBeenCalled();
+  });
+
+  it('discards a delayed review if an expected draft disappears', async () => {
+    const api = batchClient(), initialPrepare = api.prepare;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    api.prepare = vi.fn(async (input) => { await waiting; return initialPrepare(input); });
+    const session = crossDraftSession();
+    const props = { contact: CARD_CONTACT, propertyCode: HRCEN_PROPERTY_CODE, workItemId: itemId,
+      batchReview: { ...crossReview, client: api } };
+    const view = render(<QuoteBookingHost session={session} {...props} />);
+    pickRoomChoices(0); pickRoomChoices(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Review these rooms' }));
+    const { '2026-11-12:2026-11-15': omitted, ...bookingDrafts } = session.bookingDrafts;
+    expect(omitted).toBeDefined();
+    view.rerender(<QuoteBookingHost session={{ ...session, bookingDrafts }} {...props} />);
+    await act(async () => { release(); await waiting; });
+    expect(screen.queryByRole('button', { name: 'Approve and book these rooms' })).toBeNull();
+    expect(api.approve).not.toHaveBeenCalled();
+  });
+
   it('holds legacy room saves when batch capability is unavailable or disappears', () => {
     const { client, commit, preview } = paneClient();
     const props = { draft: draftReady(), paneSave: client, groups: [g1],
