@@ -59,3 +59,17 @@ test('changed approval, missing record, wrong CMS or unverified party stops the 
   changed.requestDigest = digestCloudCreateRequest(changed.approvedRequest).normalizedRequestDigest;
   assert.equal(await verifyBatchSiblings(census, [changed], { read, readParties }), false);
 });
+
+test('a no-party sibling still requires a fresh check that agency, company and AR are absent', async () => {
+  const { census, sibling } = fixture();
+  delete sibling.approvedRequest.parties;
+  sibling.requestDigest = digestCloudCreateRequest(sibling.approvedRequest).normalizedRequestDigest;
+  const absent = async ({ agency, organization, arAccount }) => {
+    assert.equal(agency, null);
+    assert.equal(organization, null);
+    assert.equal(arAccount, null);
+    return { outcome: 'verified' };
+  };
+  assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties: absent }), true);
+  assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties: async () => ({ outcome: 'unverified' }) }), false);
+});

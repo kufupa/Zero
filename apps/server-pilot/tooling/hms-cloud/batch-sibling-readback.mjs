@@ -46,11 +46,11 @@ export async function verifyBatchSiblings(census, siblings, {
         const fields = proof.fields.filter((field) => field.name === 'udfchar09');
         if (fields.length !== 1 || fields[0].value !== request.cmsMessageId) return false;
       }
-      if (request.parties?.bookingAgency || request.parties?.organization) {
-        const parties = await readParties({ confirmation, arrival: request.stay.arrival, guestId: request.guest.nativeId,
-          agency: request.parties?.bookingAgency ?? null, organization: request.parties?.organization ?? null });
-        if (parties?.outcome !== 'verified') return false;
-      }
+      // An absent party is also an approved value: independently verify that
+      // no native agency, company or AR account was linked after the save.
+      const parties = await readParties({ confirmation, arrival: request.stay.arrival, guestId: request.guest.nativeId,
+        agency: request.parties?.bookingAgency ?? null, organization: request.parties?.organization ?? null, arAccount: null });
+      if (parties?.outcome !== 'verified') return false;
     }
     return true;
   } catch { return false; }
