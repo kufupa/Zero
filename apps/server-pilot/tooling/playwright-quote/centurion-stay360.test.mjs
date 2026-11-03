@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import {
-  centurionBrowserGroup, centurionContextOptions, closeCenturionResources, newPreparedCenturionPage, withCenturionStay360Page,
+  assertNoCenturionBrowserHold, centurionBrowserGroup, centurionBrowserIdentity, centurionContextOptions,
+  closeCenturionResources, holdCenturionBrowser, newPreparedCenturionPage, withCenturionStay360Page,
 } from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
@@ -17,11 +18,13 @@ test('failed or incomplete browser cleanup remains uncertain and still closes th
     const resource = (name) => ({ close: async () => { calls.push(name); if (failing === name) throw new Error('failed'); } });
     await assert.rejects(closeCenturionResources({
       context: resource('context'), browser: resource('browser'), server: resource('server'), processGroup: 123,
-    }, { isGroupGone: async () => { calls.push('group'); return failing !== 'group'; }, groupWaitMs: 0 }),
+    }, { isGroupGone: async () => { calls.push('group'); return failing !== 'group'; },
+      onUnconfirmed: () => {}, groupWaitMs: 0 }),
     /HMS_BROWSER_CLOSE_UNCONFIRMED/);
-    assert.deepEqual(calls, ['context', 'browser', 'server', 'group']);
+    assert.deepEqual(calls, ['context', 'browser', 'server', 'group', ...(failing === 'group' ? ['group'] : [])]);
   }
-  await assert.rejects(closeCenturionResources({ server: { close: async () => {} } }), /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+  await assert.rejects(closeCenturionResources({ server: { close: async () => {} } }, { onUnconfirmed: () => {} }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
 });
 
 test('a hung close is bounded and later cleanup still runs', async () => {
@@ -52,6 +55,48 @@ test('a real owned Chromium server closes its detached process group', async () 
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
     await server?.close().catch(() => {});
+  }
+});
+
+test('a hung server is killed only when its owned group identity still matches', async () => {
+  const chromium = require('playwright').chromium;
+  const server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  const identity = centurionBrowserIdentity(server.process().pid);
+  const exited = new Promise((resolve) => server.process().once('exit', resolve));
+  let held = false;
+  try {
+    await assert.rejects(closeCenturionResources({
+      server: { close: () => new Promise(() => {}) }, processGroup: identity.pid, processIdentity: identity,
+    }, { timeoutMs: 10, groupWaitMs: 1_000, onUnconfirmed: () => { held = true; } }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    await exited;
+    assert.equal(held, false);
+    assert.throws(() => process.kill(-identity.pid, 0), { code: 'ESRCH' });
+  } finally {
+    await server.close().catch(() => {});
+  }
+});
+
+test('a mismatched group is never killed and creates a persistent hold', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hms-browser-hold-'));
+  const path = join(dir, 'hold');
+  const chromium = require('playwright').chromium;
+  const server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+    executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+  const identity = centurionBrowserIdentity(server.process().pid);
+  try {
+    const mismatch = { ...identity, started: '0' };
+    await assert.rejects(closeCenturionResources({ server: { close: async () => {} },
+      processGroup: identity.pid, processIdentity: mismatch },
+    { groupWaitMs: 0, onUnconfirmed: (value) => holdCenturionBrowser(value, path) }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.doesNotThrow(() => process.kill(identity.pid, 0));
+    assert.throws(() => assertNoCenturionBrowserHold(path), /HMS_BROWSER_HOLD/);
+    holdCenturionBrowser(mismatch, path); // An existing hold is never overwritten.
+  } finally {
+    await server.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

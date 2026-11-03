@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { login } from './session-reuse.mjs';
 import { installStay360NotesHandler, notesHandlerFailure } from './stay360-notes.mjs';
 
@@ -77,7 +77,7 @@ function centurionChromium() {
 }
 
 /** The server owns a detached Chromium group; never infer that an arbitrary PID is ours. */
-export function centurionBrowserGroup(pid) {
+export function centurionBrowserIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid < 2 || pid === process.pid) throw new Error('HMS_BROWSER_GROUP_UNVERIFIED');
   let fields;
   try {
@@ -89,13 +89,56 @@ export function centurionBrowserGroup(pid) {
     throw new Error('HMS_BROWSER_GROUP_UNVERIFIED');
   }
   // /proc stat after the command: state, parent PID, process group, session.
-  if (Number(fields[2]) !== pid || Number(fields[3]) !== pid) throw new Error('HMS_BROWSER_GROUP_UNVERIFIED');
-  return pid;
+  if (Number(fields[2]) !== pid || Number(fields[3]) !== pid || !/^\d+$/.test(fields[19] ?? '')) {
+    throw new Error('HMS_BROWSER_GROUP_UNVERIFIED');
+  }
+  return { pid, started: fields[19] };
+}
+
+export function centurionBrowserGroup(pid) { return centurionBrowserIdentity(pid).pid; }
+
+function browserHoldPath() { return `/tmp/nava-hrcen-browser-hold-${process.getuid()}`; }
+
+/** An unconfirmed browser blocks later launches in every process for this user. */
+export function assertNoCenturionBrowserHold(path = browserHoldPath()) {
+  try { lstatSync(path); } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  }
+  throw new Error('HMS_BROWSER_HOLD');
+}
+
+export function holdCenturionBrowser(identity, path = browserHoldPath()) {
+  try {
+    writeFileSync(path, JSON.stringify({ property: 'HRCEN', pid: identity?.pid ?? null,
+      started: identity?.started ?? null }) + '\n', { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  }
+}
+
+/** Kill only the exact group launched here, never a reused process id. */
+function stopOwnedGroup(identity) {
+  if (!identity) return;
+  try {
+    const current = centurionBrowserIdentity(identity.pid);
+    if (current.started === identity.started) process.kill(-identity.pid, 'SIGKILL');
+  } catch { /* Recheck whether the group is gone before deciding on a hold. */ }
 }
 
 async function groupGone(group) {
   try { process.kill(-group, 0); return false; }
   catch (error) { return error?.code === 'ESRCH'; }
+}
+
+async function waitForGroupGone(group, isGroupGone, waitMs) {
+  const deadline = Date.now() + waitMs;
+  do {
+    try { if (await isGroupGone(group)) return true; } catch { /* Unconfirmed. */ }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  return false;
 }
 
 async function closeBounded(resource, timeoutMs) {
@@ -110,22 +153,24 @@ async function closeBounded(resource, timeoutMs) {
 }
 
 /** Close every owned layer and prove the browser group is gone; a timeout is uncertain. */
-export async function closeCenturionResources({ context, browser, server, processGroup },
-  { isGroupGone = groupGone, timeoutMs = 5_000, groupWaitMs = 2_000 } = {}) {
+export async function closeCenturionResources({ context, browser, server, processGroup, processIdentity },
+  { isGroupGone = groupGone, stopGroup = stopOwnedGroup, onUnconfirmed = holdCenturionBrowser,
+    timeoutMs = 5_000, groupWaitMs = 2_000 } = {}) {
   let clean = true;
   for (const resource of [context, browser, server]) {
     if (!await closeBounded(resource, timeoutMs)) clean = false;
   }
-  if (server && !processGroup) clean = false;
+  if (server && !processGroup) { clean = false; onUnconfirmed(processIdentity); }
   if (processGroup) {
-    const deadline = Date.now() + groupWaitMs;
-    let gone = false;
-    do {
-      try { gone = await isGroupGone(processGroup); } catch { gone = false; }
-      if (gone || Date.now() >= deadline) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    } while (!gone && Date.now() < deadline);
-    if (!gone) clean = false;
+    let gone = await waitForGroupGone(processGroup, isGroupGone, groupWaitMs);
+    if (!gone) {
+      clean = false;
+      try {
+        if (processIdentity?.pid === processGroup) await stopGroup(processIdentity);
+      } catch { /* A hold is required if it still lives. */ }
+      gone = await waitForGroupGone(processGroup, isGroupGone, groupWaitMs);
+      if (!gone) onUnconfirmed(processIdentity);
+    }
   }
   if (!clean) throw new Error('HMS_BROWSER_CLOSE_UNCONFIRMED');
 }
@@ -165,6 +210,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
   let browser;
   let server;
   let processGroup;
+  let processIdentity;
   let context;
   let page;
   let phase = 'credentials';
@@ -175,11 +221,12 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
   let operationFailed = false;
 
   const closeResources = async () => {
-    const owned = { context, browser, server, processGroup };
+    const owned = { context, browser, server, processGroup, processIdentity };
     context = undefined;
     browser = undefined;
     server = undefined;
     processGroup = undefined;
+    processIdentity = undefined;
     try { await closeCenturionResources(owned); }
     catch (error) { closeError ??= error; }
   };
@@ -192,6 +239,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     signal?.throwIfAborted();
 
     phase = 'browser_launch';
+    assertNoCenturionBrowserHold();
     await beforeLaunch?.();
     signal?.throwIfAborted();
     const chromium = centurionChromium();
@@ -199,7 +247,8 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
       headless, host: '127.0.0.1',
       executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined,
     });
-    processGroup = centurionBrowserGroup(server.process()?.pid);
+    processIdentity = centurionBrowserIdentity(server.process()?.pid);
+    processGroup = processIdentity.pid;
     signal?.throwIfAborted();
     browser = await chromium.connect(server.wsEndpoint(), { timeout: 30_000 });
     signal?.throwIfAborted();
@@ -235,7 +284,7 @@ export async function withCenturionStay360Page(operation, { headless = true, bef
     await abortClose;
     await closeResources();
   }
-  if (closeError) throw closeError;
+  if (closeError) { closeError.phase = 'cleanup'; throw closeError; }
   if (operationFailed) throw operationError;
   return operationResult;
 }
