@@ -1669,25 +1669,27 @@ export function reduceQuoteSession(
     case 'treat_as': {
       if (action.treatAs === session.treatAs) return session;
       const chosen = { ...session, treatAs: action.treatAs };
-      // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
-      // and Get rates runs again for the chosen type. The stays staff have are kept.
-      if (
-        !session.staffQuote &&
-        Object.keys(session.bookingDrafts).length === 0 &&
-        Object.keys(session.staffQuotes ?? {}).length === 0 &&
-        Object.keys(quoteStrategyState(session).quoteStrategyResults).length === 0
-      ) {
-        return chosen;
-      }
+      // The type changes the request. Clear settled approvals and advance the revision even when only
+      // preparation is in flight, so its delayed result cannot land under the new type. Keep the stays.
       return clearDownstream({
         ...chosen,
         inputRevision: session.inputRevision + 1,
-        phase: 'requirements',
+        phase: 'analysing',
         steps: planQuoteSteps(session.groups),
       });
     }
-    case 'staff_note':
-      return { ...session, staffNote: action.staffNote.trim() || null };
+    case 'staff_note': {
+      const staffNote = action.staffNote.trim() || null;
+      if (staffNote === session.staffNote) return session;
+      // A correction changes the request. Drop old quote/booking approvals and advance the revision
+      // before the read starts again, so delayed results from the previous request cannot land.
+      return clearDownstream({
+        ...session,
+        staffNote,
+        inputRevision: session.inputRevision + 1,
+        phase: 'analysing',
+      });
+    }
     case 'analysis_started':
       return {
         ...session,

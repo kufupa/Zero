@@ -3665,12 +3665,12 @@ describe('type changed after rates', () => {
     expect(after.groups).toEqual(groups);
   });
 
-  it('changes only the type when there are no rates yet', () => {
+  it('invalidates the request when the type changes before rates', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
     const after = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'create_booking' });
     expect(after.treatAs).toBe('create_booking');
-    expect(after.inputRevision).toBe(s.inputRevision);
+    expect(after.inputRevision).toBe(s.inputRevision + 1);
   });
 });
 
