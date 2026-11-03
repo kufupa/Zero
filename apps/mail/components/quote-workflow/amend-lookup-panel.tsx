@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
   AMEND_FIELD_LABEL,
@@ -65,6 +65,8 @@ import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types'
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
+import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest } from '@/lib/quote-workflow/cloud-amend-client';
+import { ApproveCard } from './approve-card';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
@@ -141,11 +143,13 @@ export function AmendLookupPanel({
   savedStays,
   onStayActionResult,
   readOnlyAmend,
+  workItemId = null,
 }: {
   session: QuoteSession;
   trpc: unknown;
   savedStays?: Record<string, AmendSavedStay>;
   readOnlyAmend?: AmendReadOnlyContext | null;
+  workItemId?: string | null;
   onStayActionResult?: (input: {
     stayId: string;
     confirmationNumber: string;
@@ -684,7 +688,7 @@ export function AmendLookupPanel({
         readOnlyIdentity && stayText(stay.confirmation) === foundNumber &&
         findView?.request?.kind === 'find' && findView.request.confirmation === foundNumber ? (
           <LocalAmendReview
-            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, foundNumber])}
+            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.scopeEpoch, binding?.selectionEpoch, foundNumber, workItemId])}
             identity={readOnlyIdentity}
             revision={localReadRevision}
             confirmation={foundNumber}
@@ -692,6 +696,7 @@ export function AmendLookupPanel({
             requestedArrival={amendment.requestedArrival}
             requestedDeparture={amendment.requestedDeparture}
             ratePlans={readOnlyAmend.ratePlans}
+            writeContext={selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
           />
         ) : <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
       ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
@@ -1021,7 +1026,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 }
 
 /** A local comparison against the dated HMS lookup, never an HMS prepare or approval. */
-function LocalAmendReview({ identity, revision, confirmation, stay, requestedArrival, requestedDeparture, ratePlans }: {
+function LocalAmendReview({ identity, revision, confirmation, stay, requestedArrival, requestedDeparture, ratePlans, writeContext }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1029,6 +1034,7 @@ function LocalAmendReview({ identity, revision, confirmation, stay, requestedArr
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
   ratePlans: RatePlanCatalogueEntry[];
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
   const [draftStore] = useState(createSavedStayAmendDraftStore);
   const [draft, setDraft] = useState<SavedStayAmendDraftUpdate | null>(null);
@@ -1042,18 +1048,23 @@ function LocalAmendReview({ identity, revision, confirmation, stay, requestedArr
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
       requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
-    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft} />
-    <p className={infoNoteClass}>Nava has not checked availability or the new price. Complete the change in HMS; nothing has been saved.</p>
+    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft}
+      identity={identity} confirmation={confirmation} writeContext={writeContext} />
   </>;
 }
 
-function LocalAmendChoices({ stay, ratePlans, draft }: {
+function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, writeContext }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
   draft: SavedStayAmendDraftUpdate | null;
+  identity: SavedStayAmendEditorIdentity;
+  confirmation: string;
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
   const [ratePlan, setRatePlan] = useState('');
   const [retainRates, setRetainRates] = useState('');
+  const [boundKey, setBoundKey] = useState<string | null>(null);
+  const [availableKey, setAvailableKey] = useState<string | null>(null);
   const choiceValid = draft && draft.errors.every((error) => error === 'Choose a change to the booking.');
   const changes = draft?.proposal?.changes;
   const summary = changes || (choiceValid && (ratePlan || retainRates));
@@ -1062,6 +1073,20 @@ function LocalAmendChoices({ stay, ratePlans, draft }: {
       children: 'Children', childAges: 'Child ages' };
     return `${labels[field] ?? field}: ${Array.isArray(value) ? (value.join(', ') || 'None') : String(value)}`;
   }) : [];
+  const selectedRate = ratePlan || stay.ratePlan || '';
+  const oneNight = Boolean(stay.arrival && stay.departure &&
+    Date.parse(`${stay.departure}T00:00:00Z`) - Date.parse(`${stay.arrival}T00:00:00Z`) === 86_400_000);
+  const canPrepare = Boolean(writeContext && changes && draft?.errors.length === 0 && stay.arrival &&
+    stay.arrival >= '2027-01-01' && stay.firstName === 'Proof' && stay.lastName === 'Labtest' &&
+    selectedRate && selectedRate === stay.ratePlan && retainRates === 'yes' && oneNight &&
+    Object.keys(changes).length === 1 && Number.isInteger(changes.adults) && changes.adults !== stay.adults);
+  const request: CloudAmendRequest | null = canPrepare && writeContext && changes && stay.arrival &&
+    (retainRates === 'yes' || retainRates === 'no') ? {
+      workItemId: writeContext.workItemId, source: { threadId: identity.threadId, messageId: identity.messageId,
+        sourceHash: identity.sourceHash }, confirmation, arrival: stay.arrival,
+      changes: { ...changes, ratePlan: selectedRate, retainRates },
+    } : null;
+  const requestKey = request ? JSON.stringify(request) : null;
   return <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
     <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
       <span className="font-semibold">Rate plan to review in HMS</span>
@@ -1084,7 +1109,52 @@ function LocalAmendChoices({ stay, ratePlans, draft }: {
       <p>Rate plan: {ratePlan || stay.ratePlan || 'Not shown'}</p>
       <p>Retain current rate: {retainRates === 'yes' ? 'Yes' : retainRates === 'no' ? 'No' : 'Not chosen'}</p>
     </div> : null}
+    <p className={infoNoteClass}>{requestKey && boundKey === requestKey
+      ? 'Review the change and current amounts below. Nava will stop if HMS changes them.'
+      : requestKey && availableKey === requestKey
+        ? 'Availability and the new price have not been checked. Review the change before approval.'
+        : 'Nava has not checked availability or the new price. Complete the change in HMS; nothing has been saved.'}</p>
+    {request && requestKey && writeContext ? <CloudAmendAction key={requestKey} request={request}
+      transportId={writeContext.transportId} trpc={writeContext.trpc} onAvailable={() => setAvailableKey(requestKey)}
+      onBound={() => setBoundKey(requestKey)} /> : null}
   </div>;
+}
+
+/** Hidden unless the server advertises the complete, explicitly enabled writer. */
+function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound }: {
+  request: CloudAmendRequest; transportId: string; trpc: unknown; onAvailable: () => void; onBound: () => void;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [bound, setBound] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const liveRef = useRef(false);
+  // The component is keyed by the exact source, booking and choices.
+  const [selected] = useState(request);
+  useEffect(() => {
+    const controller = new AbortController();
+    liveRef.current = true;
+    let live = true, owned: CloudAmendClient | null = null;
+    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live })
+      .then((result) => {
+        if (!live) { result?.dispose(); return; }
+        owned = result;
+        setClient(result);
+        if (result) onAvailable();
+      });
+    return () => { live = false; liveRef.current = false; controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId]);
+  if (!client) return null;
+  return <>
+    {!bound ? <button type="button" className={buttonClass} disabled={busy} onClick={() => {
+      setBusy(true); setFailed(false);
+      void client.prepare().then((ok) => { if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); } })
+        .finally(() => { if (liveRef.current) setBusy(false); });
+    }}>{busy ? 'Checking the booking…' : 'Review change for approval'}</button> : null}
+    {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}
+    {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
+      arrival={selected.arrival} guestSurname="Labtest" writesEnabled manualResolve={false} /> : null}
+  </>;
 }
 
 function AmendSection({

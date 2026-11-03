@@ -1,0 +1,128 @@
+import { z } from 'zod';
+import { getMailCacheScope, inMailbox, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import type { HmsApprovalClient, HmsWriteView } from './hms-write';
+
+const sourceSchema = z.object({ threadId: z.string().min(1), messageId: z.string().min(1),
+  sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const changesSchema = z.object({ arrival: z.string().optional(), departure: z.string().optional(),
+  adults: z.number().int().optional(), children: z.number().int().optional(), childAges: z.array(z.number().int()).optional(),
+  ratePlan: z.string().min(1), retainRates: z.enum(['yes', 'no']) }).strict();
+const requestSchema = z.object({ workItemId: z.string().uuid(), source: sourceSchema,
+  confirmation: z.string().min(1), arrival: z.string().min(1), changes: changesSchema }).strict();
+const boundSchema = z.object({ status: z.literal('bound'), previewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  formDigest: z.string().regex(/^[a-f0-9]{64}$/), readAt: z.string().datetime() }).strict();
+export type CloudAmendRequest = z.infer<typeof requestSchema>;
+
+type MailOptions = NonNullable<ReturnType<typeof inMailbox>> & { signal: AbortSignal };
+type Routes = {
+  cloudAmendReady: { query(input: undefined, options: MailOptions): Promise<unknown> };
+  bindCloudAmend: { mutate(input: CloudAmendRequest, options: MailOptions): Promise<unknown> };
+  cloudAmendState: { query(input: { workItemId: string; source: CloudAmendRequest['source'] }, options: MailOptions): Promise<unknown> };
+  approveCloudAmend: { mutate(input: { workItemId: string; source: CloudAmendRequest['source']; formDigest: string }, options: MailOptions): Promise<unknown> };
+  reviewCloudAmend: { mutate(input: { workItemId: string; source: CloudAmendRequest['source']; runId: string;
+    decision: 'ok' | 'flag'; note?: string }, options: MailOptions): Promise<unknown> };
+  cloudAmendEvidence: { query(input: { workItemId: string; source: CloudAmendRequest['source']; eventId: string }, options: MailOptions): Promise<unknown> };
+};
+
+export type CloudAmendClient = { dispose(): void; prepare(): Promise<boolean>; approval: HmsApprovalClient };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function sameFields(a: unknown, b: CloudAmendRequest['changes']): boolean {
+  if (!isRecord(a)) return false;
+  const keys = Object.keys(a).sort(), expected = Object.keys(b).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index] &&
+    JSON.stringify(a[key]) === JSON.stringify(b[key as keyof typeof b]));
+}
+
+/** Pins all preparation and review calls to one selected message and mailbox. */
+export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendRequest, scope: {
+  transportId: string; signal: AbortSignal; isCurrent: () => boolean;
+}): Promise<CloudAmendClient | null> {
+  const request = requestSchema.safeParse(input), initial = getMailCacheScope();
+  if (!request.success || !scope.transportId || !initial.userId || initial.activeTransportId !== scope.transportId ||
+      scope.signal.aborted || typeof scope.isCurrent !== 'function') return null;
+  const userId = initial.userId, data = request.data, mailbox = { ...inMailbox(scope.transportId)!, signal: scope.signal };
+  let disposed = false, notify = () => {}, unsubscribe = () => {};
+  const invalidated = new Promise<null>((resolve) => { notify = () => resolve(null); });
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribe();
+    scope.signal.removeEventListener('abort', dispose);
+    notify();
+  };
+  const current = () => {
+    if (disposed) return false;
+    const active = getMailCacheScope();
+    try {
+      if (scope.signal.aborted || active.userId !== userId || active.activeTransportId !== scope.transportId || !scope.isCurrent()) dispose();
+    } catch { dispose(); }
+    return !disposed;
+  };
+  try {
+    unsubscribe = subscribeMailCacheScope(current);
+    scope.signal.addEventListener('abort', dispose, { once: true });
+    if (!current() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) { dispose(); return null; }
+    const routes = (trpc as { hmsApproval?: Partial<Routes> }).hmsApproval;
+    if (!routes || typeof routes.cloudAmendReady?.query !== 'function' || typeof routes.bindCloudAmend?.mutate !== 'function' ||
+        typeof routes.cloudAmendState?.query !== 'function' || typeof routes.approveCloudAmend?.mutate !== 'function' ||
+        typeof routes.reviewCloudAmend?.mutate !== 'function' || typeof routes.cloudAmendEvidence?.query !== 'function') {
+      dispose(); return null;
+    }
+    const complete = routes as Routes;
+    const call = async (fn: () => Promise<unknown>) => {
+      if (!current()) throw new Error('state_changed');
+      const result = await Promise.race([fn(), invalidated]);
+      if (result === null || !current()) throw new Error('state_changed');
+      return result;
+    };
+    const ready = await call(() => complete.cloudAmendReady.query(undefined, mailbox));
+    if (!isRecord(ready) || ready.ready !== true) { dispose(); return null; }
+    let digest: string | null = null, goUsed = false, generation = 0;
+    const prepare = async () => {
+      const attempt = ++generation;
+      digest = null;
+      goUsed = true;
+      const response = boundSchema.safeParse(await call(() => complete.bindCloudAmend.mutate(data, mailbox)));
+      if (!response.success || attempt !== generation) return null;
+      digest = response.data.formDigest;
+      goUsed = false;
+      return response.data;
+    };
+    const validItem = (itemId: string) => itemId === data.workItemId && current();
+    const approval: HmsApprovalClient = {
+      async writeState({ workItemId }) {
+        if (!validItem(workItemId) || !digest) throw new Error('state_changed');
+        const result = await call(() => complete.cloudAmendState.query({ workItemId, source: data.source }, mailbox));
+        if (!isRecord(result) || result.formDigest !== digest || !isRecord(result.form) ||
+            result.form.action !== 'amend' || result.form.confirmation !== data.confirmation ||
+            result.form.arrival !== data.arrival || !isRecord(result.form.cloudAmend) || result.form.cloudAmend.bound !== true ||
+            !sameFields(result.form.fields, data.changes)) throw new Error('state_changed');
+        return result as HmsWriteView;
+      },
+      async approve({ workItemId, formDigest }) {
+        if (!validItem(workItemId) || !digest || formDigest !== digest || goUsed) throw new Error('state_changed');
+        goUsed = true; // A lost response is not permission to submit the same Go again.
+        return await call(() => complete.approveCloudAmend.mutate({ workItemId, source: data.source, formDigest }, mailbox)) as Awaited<ReturnType<HmsApprovalClient['approve']>>;
+      },
+      async review(input) {
+        if (!validItem(input.workItemId) || !digest) throw new Error('state_changed');
+        return await call(() => complete.reviewCloudAmend.mutate({ ...input, source: data.source }, mailbox)) as Awaited<ReturnType<HmsApprovalClient['review']>>;
+      },
+      async resolveNeedsCheck() { throw new Error('amend_reconciliation_required'); },
+      async reread({ workItemId }) {
+        if (!validItem(workItemId)) throw new Error('state_changed');
+        const refreshed = await prepare();
+        return refreshed ? { status: 'stored', readAt: refreshed.readAt }
+          : { status: 'refused', reason: 'amend_refresh_required' };
+      },
+      async evidence({ workItemId, eventId }) {
+        if (!validItem(workItemId) || !digest) throw new Error('state_changed');
+        return await call(() => complete.cloudAmendEvidence.query({ workItemId, source: data.source, eventId }, mailbox)) as Awaited<ReturnType<HmsApprovalClient['evidence']>>;
+      },
+    };
+    return { dispose, async prepare() { try { return Boolean(await prepare()); } catch { return false; } }, approval };
+  } catch { dispose(); return null; }
+}

@@ -15,6 +15,9 @@ set -euo pipefail
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"
 : "${UNDO_SEND_SECONDS:=20}"
 
+case "${PANE_WRITE_AMEND:-}" in ''|off|lab) ;; *) echo 'invalid PANE_WRITE_AMEND' >&2; exit 2 ;; esac
+case "${PANE_HMS_LAB_AMEND_WORKER:-}" in ''|off|on) ;; *) echo 'invalid PANE_HMS_LAB_AMEND_WORKER' >&2; exit 2 ;; esac
+
 DATABASE_URL="$(
   aws secretsmanager get-secret-value \
     --region "$AWS_REGION" \
@@ -196,6 +199,8 @@ append_env HMS_AVAILABILITY_PER_HOUR "${HMS_AVAILABILITY_PER_HOUR:-}"
 append_env PANE_WRITE_CREATE "${PANE_WRITE_CREATE:-}"
 append_env PANE_WRITE_AMEND_UNPAID "${PANE_WRITE_AMEND_UNPAID:-}"
 append_env PANE_WRITE_AMEND_PAID "${PANE_WRITE_AMEND_PAID:-}"
+append_env PANE_WRITE_AMEND "${PANE_WRITE_AMEND:-}"
+append_env PANE_HMS_LAB_AMEND_WORKER "${PANE_HMS_LAB_AMEND_WORKER:-}"
 append_env PANE_WRITE_CANCEL_UNPAID "${PANE_WRITE_CANCEL_UNPAID:-}"
 append_env PANE_WRITE_CANCEL_PAID "${PANE_WRITE_CANCEL_PAID:-}"
 append_env PANE_WRITE_ATTACH "${PANE_WRITE_ATTACH:-}"

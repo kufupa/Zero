@@ -7,6 +7,7 @@ import {
   isGuestWriteRow,
   isStoredWrite,
   refusalCopy,
+  cloudAmendApprovalHasPrices,
   writeRowsOf,
   writeStatusOf,
   type HmsApprovalClient,
@@ -38,6 +39,7 @@ export function ApproveCard({
   guestSurname,
   arrival,
   requireStoredWrite = false,
+  manualResolve = true,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
@@ -51,6 +53,8 @@ export function ApproveCard({
    * action form such as attach_document, or a write run), so other items never get write controls.
    */
   requireStoredWrite?: boolean;
+  /** Some writes require machine-verified reconciliation instead of a staff note. */
+  manualResolve?: boolean;
 }) {
   if (!client) return null;
   return (
@@ -62,6 +66,7 @@ export function ApproveCard({
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
       writesEnabled={writesEnabled}
+      manualResolve={manualResolve}
     />
   );
 }
@@ -131,6 +136,7 @@ function LiveWriteCard({
   arrival,
   requireStoredWrite,
   writesEnabled,
+  manualResolve,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -139,6 +145,7 @@ function LiveWriteCard({
   arrival?: string | null;
   requireStoredWrite: boolean;
   writesEnabled: boolean;
+  manualResolve: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
@@ -165,6 +172,7 @@ function LiveWriteCard({
             view={view}
             onChanged={refresh}
             writesEnabled={writesEnabled}
+            manualResolve={manualResolve}
           />
         </>
       ) : failed ? (
@@ -211,22 +219,26 @@ function WriteBody({
   view,
   onChanged,
   writesEnabled,
+  manualResolve,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   view: HmsWriteView;
   onChanged: () => void;
   writesEnabled: boolean;
+  manualResolve: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
   const filingUnavailable = view.form.action === 'attach_document' && view.filingAvailable === false;
+  const pricesReady = cloudAmendApprovalHasPrices(view.form);
   return (
     <>
       <div role="status" aria-live="polite" className="text-[12px] text-[#334155]">
         {filingUnavailable ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
       <WriteRows rows={rows} />
+      {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate and total could not be verified. Check them in HMS.</p> : null}
       {filingUnavailable ? (
         <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
       ) : status.approve ? (
@@ -235,18 +247,20 @@ function WriteBody({
           workItemId={workItemId}
           formDigest={view.formDigest}
           status={status}
-          canApprove={rows.length > 0}
+          canApprove={rows.length > 0 && pricesReady}
           onChanged={onChanged}
           writesEnabled={writesEnabled}
         />
       ) : null}
-      {status.phase === 'needs_check' && !filingUnavailable ? (
+      {status.phase === 'needs_check' && !filingUnavailable && manualResolve ? (
         <NeedsCheckSection
           client={client}
           workItemId={workItemId}
           onChanged={onChanged}
           writesEnabled={writesEnabled}
         />
+      ) : status.phase === 'needs_check' ? (
+        <p className={writeClasses.note}>The HMS outcome is not confirmed. Do not retry until the previous session is closed and the booking has been verified.</p>
       ) : null}
       {status.review && view.run ? (
         <ReviewCard

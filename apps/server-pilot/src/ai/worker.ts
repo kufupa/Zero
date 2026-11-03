@@ -25,6 +25,8 @@ import {
   type CandidateReadPlanKind,
 } from './run-ledger.js';
 import { sweepLostHmsWriteLeases } from './hms-approval.js';
+import { runLabtestAmendOnce } from './hms-labtest-amend-worker.js';
+import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
@@ -5812,6 +5814,18 @@ async function runHmsJobLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Pr
   }
 }
 
+/** Claims only source-bound Labtest amend jobs, never the generic write queue. */
+async function runLabtestAmendLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
+  while (!signal.aborted) {
+    const worked = await runLabtestAmendOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
+      .catch((error: unknown) => {
+        console.error('labtest_amend_loop_failed', error instanceof Error ? error.message : 'unknown');
+        return false;
+      });
+    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+  }
+}
+
 export async function runAiWorkerDrain(
   input: RunAiWorkerDrainInput,
 ): Promise<RunAiWorkerDrainResult> {
@@ -5911,6 +5925,10 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && !scope.idempotencyPrefix
       ? runHmsWriteSweepLoop(shutdown.signal)
       : null;
+  const hmsLabtestAmend =
+    resolveWorkerLane() === 'default' && labtestAmendWorkerEnabled() && !scope.idempotencyPrefix
+      ? runLabtestAmendLoop(shutdown.signal, hmsRecovery)
+      : null;
 
   try {
     while (!stopping) {
@@ -5931,6 +5949,7 @@ export async function runAiWorkerLoop(
     shutdown.abort();
     await hmsJobs;
     await hmsWriteSweep;
+    await hmsLabtestAmend;
     await closeAiWorkerResources();
   }
 }

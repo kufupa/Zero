@@ -2518,6 +2518,7 @@ describe('deploy config', () => {
       'PANE_WRITE_CREATE',
       'PANE_WRITE_AMEND_UNPAID',
       'PANE_WRITE_AMEND_PAID',
+      'PANE_WRITE_AMEND',
       'PANE_WRITE_CANCEL_UNPAID',
       'PANE_WRITE_CANCEL_PAID',
       'PANE_WRITE_ATTACH',
@@ -5576,6 +5577,46 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('HRCEN amend flags are validated and require a same-SHA HRCEN canary', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const deploy = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
+      const parser = join(deploy, 'parse-ec2-legacy-env.mjs');
+      const writer = readFileSync(join(deploy, 'write-ec2-remote-env.sh'), 'utf8');
+      const legacyWriter = readFileSync(join(deploy, 'write-ec2-env.sh'), 'utf8');
+      const validate = writer.match(/node - "\$path" "\$kind" <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+      const gate = writer.match(/node - "\$REMOTE_COMMON_TMP" "\$REMOTE_COMMON_ENV"[\s\S]*?<<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+      expect(validate).toBeTruthy(); expect(gate).toBeTruthy();
+      expect(legacyWriter).toContain('append_env PANE_WRITE_AMEND "${PANE_WRITE_AMEND:-}"');
+      expect(legacyWriter).toContain('append_env PANE_HMS_LAB_AMEND_WORKER "${PANE_HMS_LAB_AMEND_WORKER:-}"');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-amend-env-'));
+      const legacy = join(temp, 'legacy'), next = join(temp, 'next'), previous = join(temp, 'previous'), canary = join(temp, 'canary');
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const keys = ['DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'PANE_WRITE_AMEND', 'PANE_HMS_LAB_AMEND_WORKER'];
+      const runParser = () => spawnSync(process.execPath, [parser, legacy, next, ...keys], { encoding: 'utf8' });
+      const runValidate = () => spawnSync(process.execPath, ['-', next, 'common'], { input: validate!, encoding: 'utf8' });
+      const sha = 'a'.repeat(40);
+      const runGate = () => spawnSync(process.execPath, ['-', next, previous, canary, sha], { input: gate!, encoding: 'utf8' });
+      try {
+        writeFileSync(legacy, [...base, "PANE_WRITE_AMEND='lab'", "PANE_HMS_LAB_AMEND_WORKER='on'", ''].join('\n'));
+        expect(runParser().status).toBe(0); expect(runValidate().status).toBe(0);
+        writeFileSync(previous, [...base, "PANE_WRITE_AMEND='off'", "PANE_HMS_LAB_AMEND_WORKER='off'", ''].join('\n'));
+        writeFileSync(canary, ''); expect(runGate().status).toBe(2);
+        writeFileSync(canary, `CANARY PASS amend HRDAV ${sha}\n`); expect(runGate().status).toBe(2);
+        writeFileSync(canary, `CANARY PASS amend HRCEN ${'b'.repeat(40)}\n`); expect(runGate().status).toBe(2);
+        writeFileSync(canary, `CANARY PASS amend HRCEN ${sha}\n`); expect(runGate().status).toBe(0);
+        for (const [name, bad] of [['PANE_WRITE_AMEND', 'on'], ['PANE_HMS_LAB_AMEND_WORKER', 'lab']]) {
+          writeFileSync(legacy, [...base, `${name}='${bad}'`, ''].join('\n'));
+          expect(runParser().status).toBe(2);
+          writeFileSync(next, [...base, `${name}='${bad}'`, ''].join('\n'));
+          expect(runValidate().status).toBe(2);
+        }
+      } finally { rmSync(temp, { recursive: true, force: true }); }
+    });
+
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
       const { isInboundTriageClassifierEnabled } = await import('../src/env.js');
@@ -5754,6 +5795,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(keys).toContain('PANE_HMS_LAB_AMEND_WORKER');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
@@ -5770,6 +5812,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'PANE_WRITE_CREATE',
         'PANE_WRITE_AMEND_UNPAID',
         'PANE_WRITE_AMEND_PAID',
+        'PANE_WRITE_AMEND',
         'PANE_WRITE_CANCEL_UNPAID',
         'PANE_WRITE_CANCEL_PAID',
         'PANE_WRITE_ATTACH',

@@ -72,6 +72,11 @@ test('the existing action guard remains NGI-only', async () => {
     { ...recordOptions, expectedGuarantee: agentGuarantee }), /LABTEST_RECORD_INPUT_INVALID/);
 });
 
+test('the default saved-action guard refuses an otherwise valid linked company', async () => {
+  await assert.rejects(records.currentLabtestRecord(savedPage({ code: 'NGI', display: 'Non-Guaranteed Individual' }),
+    expected, { allowBlankNote: true }), /LABTEST_LINKED_PARTY_UNVERIFIED/);
+});
+
 test('create reconciliation rejects unsupported or malformed guarantee expectations', async () => {
   for (const bad of [{ code: 'GTDCC', display: 'Card' }, { code: 'GTDAGT', display: '' },
     { code: 'NGI', display: 'Guaranteed By Agent' }, { code: 'GTDAGT', display: 'Guaranteed By Agent', extra: true }]) {

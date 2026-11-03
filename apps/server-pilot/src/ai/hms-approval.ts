@@ -10,7 +10,11 @@ import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
 import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
+import { publicCloudAmendFields, retainedPricesForApproval } from './cloud-amend-price-projection.js';
+export { retainedPricesForApproval } from './cloud-amend-price-projection.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { cloudAmendWriteReady, HMS_LABTEST_AMEND_PROMPT_VERSION, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
+import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import {
   HMS_WRITE_RUN_KIND,
   NONTERMINAL_AI_RUN_STATES,
@@ -81,6 +85,8 @@ export type HmsApprovalRefusal =
   | 'already_reviewed'
   | 'form_outdated'
   | 'filing_unavailable'
+  | 'amend_save_unavailable'
+  | 'amend_reconciliation_required'
   | 'run_changed';
 
 export class HmsApprovalError extends Error {
@@ -132,8 +138,11 @@ const hmsWriteGrantSchema = z
     formDigest: z.string(),
     hmsBeforeDigest: z.string(),
     hmsReadAt: z.string(),
+    sessionId: z.string().min(1).max(512).optional(),
+    sessionProfile: z.enum(['legacy', 'remote']).optional(),
   })
-  .strict();
+  .strict()
+  .refine((grant) => Boolean(grant.sessionId) === Boolean(grant.sessionProfile));
 type HmsWriteGrant = z.infer<typeof hmsWriteGrantSchema>;
 
 const snapshotSchema = z.object({ digest: z.string(), readAt: z.string() });
@@ -186,8 +195,9 @@ async function loadGrant(
   db: DB,
   workItemId: string,
   grantId: string,
+  lockRow = false,
 ): Promise<{ grant: HmsWriteGrant; payloadHash: string }> {
-  const [row] = await db
+  const query = db
     .select({ value: workEvent.value, payloadHash: workEvent.payloadHash })
     .from(workEvent)
     .where(
@@ -198,6 +208,7 @@ async function loadGrant(
       ),
     )
     .limit(1);
+  const [row] = lockRow ? await query.for('share') : await query;
   if (!row?.payloadHash) throw new HmsApprovalError('no_grant');
   const parsed = hmsWriteGrantSchema.safeParse(row.value);
   if (!parsed.success || grantHash(parsed.data) !== row.payloadHash) {
@@ -429,6 +440,12 @@ export async function approveHmsWrite(input: {
   db?: DB;
   transportId: string;
   actorUserId: string;
+  /** Exact authenticated session; required for a source-bound Cloud amendment. */
+  sessionId?: string;
+  sessionProfile?: 'legacy' | 'remote';
+  /** Required for Cloud amend: the selected source the person reviewed. */
+  cloudSelection?: { threadId: string; messageId: string; sourceHash: string };
+  env?: NodeJS.Dict<string>;
   workItemId: string;
   selectedInternetMessageId?: string;
   /**
@@ -444,6 +461,16 @@ export async function approveHmsWrite(input: {
   const now = input.now ?? new Date();
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    let cloudSourceBound = false;
+    if (input.cloudSelection) {
+      if (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled(input.env)) {
+        throw new HmsApprovalError('amend_save_unavailable');
+      }
+      const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
+      if (!await lockSelectedBoundCloudAmend(tx, { workItemId: input.workItemId, transportId: input.transportId,
+        source: input.cloudSelection })) throw new HmsApprovalError('state_changed');
+      cloudSourceBound = true;
+    }
     const [item] = await tx
       .select()
       .from(workItem)
@@ -458,6 +485,26 @@ export async function approveHmsWrite(input: {
     if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
       throw new HmsApprovalError('filing_unavailable');
     }
+    const cloudAmend = item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend');
+    // A rate hold is a mutation. Until its rate/retain result, shared UNKNOWN
+    // recovery and action-scoped runner are proven, do not grant or enqueue a
+    // Cloud amendment (an unclaimed Go must never look like work in progress).
+    if (cloudAmend && (!cloudAmendWriteReady() || !labtestAmendWorkerEnabled(input.env))) {
+      throw new HmsApprovalError('amend_save_unavailable');
+    }
+    if (cloudAmend !== cloudSourceBound || (cloudAmend && !input.formDigest)) {
+      throw new HmsApprovalError('state_changed');
+    }
+    if (cloudAmend) {
+      const { cloudAmendDispatchFormSchema } = await import('./pane-cloud-amend-dispatch.js');
+      const { cloudAmendFirstPilotScopeSupported } = await import('./pane-cloud-amend.js');
+      const form = cloudAmendDispatchFormSchema.safeParse(item.state);
+      if (!form.success || !cloudAmendFirstPilotScopeSupported(form.data.cloudAmend.preimage.native, form.data.fields) ||
+          !retainedPricesForApproval(form.data.cloudAmend.approvedPrices)) throw new HmsApprovalError('state_changed');
+    }
+    const cloudSession = z.object({ sessionId: z.string().trim().min(1).max(512),
+      sessionProfile: z.enum(['legacy', 'remote']) }).safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
+    if (cloudAmend && !cloudSession.success) throw new HmsApprovalError('no_grant');
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }
@@ -484,6 +531,7 @@ export async function approveHmsWrite(input: {
       formDigest: formDigest(state),
       hmsBeforeDigest: snapshot.digest,
       hmsReadAt: snapshot.readAt,
+      ...(cloudAmend && cloudSession.success ? cloudSession.data : {}),
     };
     const expiresAt = new Date(Date.parse(snapshot.readAt) + HMS_SNAPSHOT_MAX_AGE_MS);
     await tx.insert(workEvent).values({
@@ -505,7 +553,7 @@ export async function approveHmsWrite(input: {
         runKind: HMS_WRITE_RUN_KIND,
         idempotencyKey: `hms-write:${grant.grantId}`,
         modelId: NOT_APPLICABLE_MODEL_ID,
-        promptVersion: HMS_WRITE_PROMPT_VERSION,
+        promptVersion: cloudAmend ? HMS_LABTEST_AMEND_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
         executorLane: 'hms',
         workItemId: item.id,
         priority: HMS_WRITE_PRIORITY,
@@ -559,6 +607,11 @@ export async function resolveHmsNeedsCheck(input: {
     if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
       throw new HmsApprovalError('filing_unavailable');
     }
+    if (item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend')) {
+      // A note does not prove that an intercepted browser request has stopped
+      // or that HMS settled. A verified reconciliation must resolve this hold.
+      throw new HmsApprovalError('amend_reconciliation_required');
+    }
     await assertNoWriteInFlight(tx as DB, item.id);
     const runId = await unresolvedNeedsCheckRunId(tx as DB, item.id);
     if (!runId) throw new HmsApprovalError('no_needs_check');
@@ -602,6 +655,8 @@ export async function consumeHmsWriteApproval(input: {
   hmsBeforeDigest: string;
   /** The approved form, read from the locked row. A runner writes this, not a fresh read of the work item. */
   form: Record<string, unknown>;
+  /** Present only for a session-bound Cloud amendment. Never returned to the pane. */
+  authority: { actorUserId: string; sessionId: string; sessionProfile: 'legacy' | 'remote' } | null;
 }> {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
@@ -659,8 +714,68 @@ export async function consumeHmsWriteApproval(input: {
       .update(aiWorkflowRun)
       .set({ heartbeatAt: now, updatedAt: now })
       .where(eq(aiWorkflowRun.id, run.id));
-    return { grantId, payloadHash, hmsBeforeDigest: grant.hmsBeforeDigest, form: formOf(item.state) };
+    const authority = grant.sessionId && grant.sessionProfile
+      ? { actorUserId: grant.actorUserId, sessionId: grant.sessionId, sessionProfile: grant.sessionProfile }
+      : null;
+    return { grantId, payloadHash, hmsBeforeDigest: grant.hmsBeforeDigest, form: formOf(item.state), authority };
   });
+}
+
+type HmsDispatchTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
+
+/**
+ * Revalidate an already-consumed Cloud amend Go in the shared UNKNOWN claim
+ * transaction. Caller first locks and verifies the exact selected source and
+ * item, after taking the shared Labtest advisory lock. No browser or network
+ * call may occur in this transaction.
+ */
+export async function lockConsumedCloudAmendApproval(tx: HmsDispatchTransaction, input: {
+  fence: AiRunFence;
+  transportId: string;
+  item: typeof workItem.$inferSelect;
+  grantId: string;
+  approvedDigest: string;
+  authority: NonNullable<Awaited<ReturnType<typeof consumeHmsWriteApproval>>['authority']>;
+}): Promise<void> {
+  const { item, authority, fence } = input;
+  if (!item || item.transportId !== input.transportId || item.state.action !== 'amend' ||
+      !Object.hasOwn(item.state, 'cloudAmend') || !item.threadId || !item.sourceMessageId ||
+      item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('state_changed');
+  await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: authority.actorUserId });
+  await lockCreateActorSession(tx, authority);
+  const [run] = await tx.select().from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+    eq(aiWorkflowRun.workItemId, item.id), eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.promptVersion, HMS_LABTEST_AMEND_PROMPT_VERSION),
+    inArray(aiWorkflowRun.state, ['claimed', 'running']),
+  )).limit(1).for('update');
+  const now = new Date();
+  if (!run?.deadlineAt || run.promptVersion !== HMS_LABTEST_AMEND_PROMPT_VERSION ||
+      run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+      run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
+      run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
+  if (grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('no_grant');
+  const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
+  const snapshot = readSnapshot(item.state);
+  if (grant.workItemId !== item.id || grant.transportId !== input.transportId ||
+      grant.actorUserId !== authority.actorUserId || grant.sessionId !== authority.sessionId ||
+      grant.sessionProfile !== authority.sessionProfile || grant.formDigest !== input.approvedDigest ||
+      formDigest(item.state) !== input.approvedDigest || snapshotStale(grant.hmsReadAt, now) ||
+      !snapshot || snapshot.digest !== grant.hmsBeforeDigest || snapshot.readAt !== grant.hmsReadAt) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+    eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'),
+    eq(workEvent.payloadHash, payloadHash), sql`${workEvent.value}->>'runId' = ${run.id}`,
+    sql`${workEvent.value}->>'grantId' = ${input.grantId}`,
+  )).limit(2).for('share');
+  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  const at = new Date();
+  if (run.deadlineAt.getTime() <= at.getTime() || snapshotStale(grant.hmsReadAt, at)) {
+    throw new HmsApprovalError('lease_lost');
+  }
+  await tx.update(aiWorkflowRun).set({ heartbeatAt: at, updatedAt: at }).where(eq(aiWorkflowRun.id, run.id));
 }
 
 async function hmsRereadReason(
@@ -1050,6 +1165,8 @@ export async function reviewHmsWrite(input: {
   actorUserId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  /** Required for a Cloud amend review. */
+  cloudSelection?: { threadId: string; messageId: string; sourceHash: string };
   /** The run the reviewer was shown. When given, the review is refused unless it is still the latest write. */
   runId?: string;
   decision: 'ok' | 'flag';
@@ -1064,6 +1181,11 @@ export async function reviewHmsWrite(input: {
   }
   const reviewed = await db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    if (input.cloudSelection) {
+      const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
+      if (!await lockSelectedBoundCloudAmend(tx, { workItemId: input.workItemId, transportId: input.transportId,
+        source: input.cloudSelection })) throw new HmsApprovalError('state_changed');
+    }
     const [item] = await tx
       .select({ id: workItem.id, status: workItem.status, state: workItem.state, threadId: workItem.threadId,
         sourceMessageId: workItem.sourceMessageId })
@@ -1073,6 +1195,9 @@ export async function reviewHmsWrite(input: {
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
     await assertHmsSelectedSource(tx as DB, input, item, true);
+    if ((item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend')) !== Boolean(input.cloudSelection)) {
+      throw new HmsApprovalError('state_changed');
+    }
     if (item.status === 'done' || item.status === 'dismissed')
       throw new HmsApprovalError('not_open');
     await assertNoWriteInFlight(tx as DB, item.id);
@@ -1177,6 +1302,15 @@ function maskedStrings<T>(value: T, key?: string): T {
   return value;
 }
 
+/** Private native/source preimages stay server-side while their digest remains bound to Go. */
+export function publicHmsWriteForm(state: Record<string, unknown>): Record<string, unknown> {
+  const form = formOf(state);
+  if (Object.hasOwn(form, 'cloudAmend')) {
+    form.cloudAmend = publicCloudAmendFields(form.cloudAmend);
+  }
+  return maskedStrings(form);
+}
+
 /**
  * What the approve and review cards show for one work item: the form, the snapshot's age and display values, the latest
  * approval and whether it still matches the form, the latest write run with its evidence, and any open needs-check.
@@ -1261,7 +1395,7 @@ export async function hmsWriteStateOf(input: {
     status: item.status,
     ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')
       ? { filingAvailable: false } : {}),
-    form: maskedStrings(formOf(item.state)),
+    form: publicHmsWriteForm(item.state),
     formDigest: formDigest(item.state),
     before: storedValues.success ? maskedStrings(storedValues.data) : null,
     snapshot: snapshot
