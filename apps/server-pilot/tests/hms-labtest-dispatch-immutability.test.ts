@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, resolveHmsLabtestDispatch } from '../src/ai/hms-labtest-dispatch.js';
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpoch, nativeCreateSaveDigest,
+  resolveHmsLabtestDispatch, resolveNeverDispatchedCreate } from '../src/ai/hms-labtest-dispatch.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
+import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 
 const binding = digestCloudCreateRequest({ propertyCode: 'HRCEN',
   guest: { nativeId: '12345', firstName: 'Proof', lastName: 'Labtest' },
@@ -46,7 +48,61 @@ async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWit
   return claimWithEpoch(db, claim, authorize, await captureHmsLabtestDispatchEpoch(db));
 }
 
+async function neverDispatchedRequest() {
+  const frame = {};
+  const request = { method: () => 'POST', url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
+    headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }), postDataBuffer: () => Buffer.from('approved=1'), frame: () => frame };
+  let pageHandler!: (route: unknown) => Promise<unknown>, contextHandler!: (route: unknown) => Promise<unknown>;
+  let release!: () => void, entered!: () => void, proof: unknown;
+  const locked = new Promise<void>((resolve) => { release = resolve; });
+  const claiming = new Promise<void>((resolve) => { entered = resolve; });
+  const context = { route: async (_pattern: string, handler: typeof contextHandler) => { contextHandler = handler; } };
+  const page = { context: () => context, route: async (_pattern: string, handler: typeof pageHandler) => { pageHandler = handler; } };
+  const chain = await installLabtestSaveRouteChain(page, { frame, fence: { isQuarantined: () => false },
+    scope: { allow: () => true }, isArmed: () => true, matches: () => true,
+    dispatchCandidate: async (_request: unknown, next: (() => Promise<unknown>) & { proveNeverDispatched: () => unknown }) => {
+      entered(); await locked;
+      try { await next(); } catch { proof = next.proveNeverDispatched(); }
+    } });
+  const route = { request: () => request, fallback: async () => undefined, abort: async () => undefined,
+    continue: async () => { throw new Error('native request must remain blocked'); } };
+  await pageHandler(route);
+  const pending = contextHandler(route);
+  await claiming;
+  expect(await chain.drain({ timeoutMs: 5 })).toBe(false);
+  release(); await pending;
+  return { request, proof };
+}
+
 describe('shared Labtest dispatch intent', () => {
+  it('resolves only a route-proven never-dispatched create and keeps its grant spent', async () => {
+    const { request, proof } = await neverDispatchedRequest();
+    const fake = historyDb(), first = { ...input(), requestDigest: nativeCreateSaveDigest(request) };
+    const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
+    await expect(resolveNeverDispatchedCreate(fake.db, handle, {}, request, async () => {}))
+      .rejects.toMatchObject({ reason: 'invalid' });
+    await expect(resolveNeverDispatchedCreate(fake.db, handle, proof, { ...request }, async () => {}))
+      .rejects.toMatchObject({ reason: 'invalid' });
+    let recorded = false;
+    await resolveNeverDispatchedCreate(fake.db, handle, proof, request, async () => { recorded = true; });
+    expect(recorded).toBe(true);
+    expect(fake.rows.map((row) => row.value.kind)).toEqual(['intent', 'not_dispatched']);
+    await expect(resolveNeverDispatchedCreate(fake.db, handle, proof, request, async () => {}))
+      .rejects.toMatchObject({ reason: 'invalid' });
+    await expect(claimHmsLabtestDispatch(fake.db, first, async () => {})).rejects.toMatchObject({ reason: 'occupied' });
+    await claimHmsLabtestDispatch(fake.db, { ...first, grantId: randomUUID() }, async () => {});
+  });
+
+  it('keeps the hold if a genuine no-dispatch proof refers to a different request digest', async () => {
+    const { request, proof } = await neverDispatchedRequest();
+    const fake = historyDb(), handle = await claimHmsLabtestDispatch(fake.db, input(), async () => {});
+    await expect(resolveNeverDispatchedCreate(fake.db, handle, proof, request, async () => {}))
+      .rejects.toMatchObject({ reason: 'owner' });
+    expect(fake.rows.map((row) => row.value.kind)).toEqual(['intent']);
+    await expect(claimHmsLabtestDispatch(fake.db, { ...input(), grantId: randomUUID() }, async () => {}))
+      .rejects.toMatchObject({ reason: 'occupied' });
+  });
+
   it('rejects an intervening completed writer even when the preimage lock is lost', async () => {
     const fake = historyDb(), staleEpoch = await captureHmsLabtestDispatchEpoch(fake.db);
     const handle = await claimWithEpoch(fake.db, input(), async () => {}, staleEpoch);

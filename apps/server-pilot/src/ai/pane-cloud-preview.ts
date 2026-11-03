@@ -14,7 +14,8 @@ import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_
 import { canonicalJson } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
-import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
+import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, nativeCreateSaveDigest,
+  resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
@@ -37,9 +38,10 @@ type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; a
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
   writerSessionClosed?: unknown; save?: { dispatchCallbacksDrained?: unknown };
   confirmation?: unknown; readback?: { fields?: unknown; mismatches?: unknown } };
+type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 type NativeOptions = { capturePrepareScreenshot?: boolean; requireExplicitGuestSelection?: boolean; expectedRequestDigest?: string;
   authorizeCandidate?: (request: unknown) => Promise<boolean>;
-  dispatchCandidate?: (request: unknown, next: () => Promise<unknown>, evidence: unknown) => Promise<unknown> };
+  dispatchCandidate?: (request: unknown, next: NativeContinuation, evidence: unknown) => Promise<unknown> };
 export const paneCloudPreviewLoaders: {
   runtimeReady: () => boolean;
   authorityReady: () => boolean;
@@ -82,22 +84,6 @@ const grantSchema = z.object({ version: z.literal('pane-cloud-preview/v1'), gran
 type Grant = z.infer<typeof grantSchema>;
 const PREVIEWS = 'cloudCreatePreviews';
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
-
-/** Hash the exact intercepted request; the native fence separately validates every approved field. */
-function nativeSaveDigest(raw: unknown): string {
-  if (!raw || typeof raw !== 'object') throw new Error('cloud_create_request_unavailable');
-  const request = raw as { method?: () => string; url?: () => string; headers?: () => Record<string, string>;
-    postDataBuffer?: () => Buffer | null };
-  if (request.method?.() !== 'POST' || typeof request.url !== 'function' || typeof request.headers !== 'function' ||
-      typeof request.postDataBuffer !== 'function') throw new Error('cloud_create_request_unavailable');
-  const url = new URL(request.url()), contentType = request.headers()['content-type'] ?? '';
-  const bytes = request.postDataBuffer();
-  if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.pathname !== '/web/base/OSRESV.HDR' ||
-      url.hash || [...url.searchParams].length !== 1 || url.searchParams.get('pageaction') !== 'SAVE' ||
-      !/^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType) || !Buffer.isBuffer(bytes) ||
-      bytes.length === 0 || bytes.length > 1024 * 1024) throw new Error('cloud_create_request_unavailable');
-  return createHash('sha256').update(JSON.stringify(['POST', url.href, contentType])).update('\0').update(bytes).digest('hex');
-}
 
 async function currentCursor(db: DB, input: Input): Promise<Cursor> {
   const [item] = await db.select({ extractionId: workItem.extractionId, revision: workItem.revision,
@@ -356,7 +342,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
         expectedRequestDigest: grant.requestDigest,
         authorizeCandidate: async () => grant.expiresAt > Date.now(),
         dispatchCandidate: async (request, next, evidence) => {
-          const firstRequestDigest = nativeSaveDigest(request);
+          const firstRequestDigest = nativeCreateSaveDigest(request);
           const recovery = await createRecoveryEvidence(evidence, input);
           const checked = digestPaneCloudCreateProof(input.stay, grant.approvedRequest, input.stay.guaranteeType, grant.nativeGuestId);
           if (checked.outcome !== 'ok' || checked.normalizedRequestDigest !== grant.requestDigest ||
@@ -392,11 +378,26 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             }); } catch (error) { authorizationError = error; throw error; }
             }, epoch);
           } catch (error) { claimError = error; throw error; }
-          beforeSha256 = recovery.beforeShot.sha256;
-          if (Date.parse(recovery.preimage.expiresAt) <= Date.now()) throw new Error('cloud_create_preimage_expired');
-          // Commit is the authority boundary. Source/access changes after this
-          // point cannot change the captured, already-approved native request.
-          return await next();
+          try {
+            beforeSha256 = recovery.beforeShot.sha256;
+            if (Date.parse(recovery.preimage.expiresAt) <= Date.now()) throw new Error('cloud_create_preimage_expired');
+            // Commit is the authority boundary. Source/access changes after this
+            // point cannot change the captured, already-approved native request.
+            return await next();
+          } catch (error) {
+            // The route permanently disarms before issuing this one-use proof.
+            // It remains valid even when the initial callback drain has timed out.
+            const proof = next.proveNeverDispatched?.();
+            if (proof && dispatch.handle) {
+              try {
+                await resolveNeverDispatchedCreate(db, dispatch.handle, proof, request, async (tx, intent) => {
+                  await recordNeverDispatchedCreate(tx, intent);
+                });
+                dispatch.handle = null;
+              } catch { /* Ambiguous resolution remains held. */ }
+            }
+            throw error;
+          }
         },
       });
       if (!dispatch.handle) return noClaimResult();
@@ -422,6 +423,22 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     if (claimAttempted) return noClaimResult();
     return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'cloud_create_unavailable');
   }
+}
+
+/** Clear only the original unknown row, atomically with its no-dispatch event. */
+async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: HmsLabtestIntent) {
+  if (intent.operation !== 'create' || !intent.stayId) throw new Error('cloud_create_recovery_scope_changed');
+  const [current] = await tx.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
+  const stays = current?.state.stays;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_create_recovery_scope_changed');
+  const stay = (stays as Record<string, unknown>)[intent.stayId] as Record<string, unknown> | undefined;
+  if (!stay || stay.status !== 'unknown' || stay.cloudCreateGrantId !== intent.grantId ||
+      stay.confirmationNumber !== null || stay.screenshotRef !== null) throw new Error('cloud_create_recovery_scope_changed');
+  const remaining = { ...stays } as Record<string, unknown>;
+  delete remaining[intent.stayId];
+  await tx.update(workItem).set({ state: { ...current.state, stays: remaining }, updatedAt: new Date() })
+    .where(eq(workItem.id, intent.workItemId));
 }
 
 const refs = z.object({ previewShot: grantSchema.shape.previewShot, beforeShot: grantSchema.shape.previewShot }).passthrough();

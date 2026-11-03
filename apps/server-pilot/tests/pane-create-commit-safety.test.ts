@@ -7,6 +7,7 @@ import { paneCloudPreviewLoaders } from '../src/ai/pane-cloud-preview.js';
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
+import { consumeNeverDispatchedCreateProof, installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 
 // No pilot DB or live HMS. Model only the transaction's observable result;
 // this does not prove PostgreSQL row/advisory-lock behaviour.
@@ -26,6 +27,8 @@ const h = vi.hoisted(() => ({
   sharedHold: null as null | Record<string, unknown>,
   sharedHoldResolved: false,
   loseAckAfterClaim: false,
+  claimWait: null as null | Promise<void>,
+  onClaimEntered: null as null | (() => void),
   writerCurrent: true,
   tx: {} as any,
   db: {} as any,
@@ -48,15 +51,18 @@ vi.mock('../src/ai/pane-create-actor-lock.js', () => ({
     }
   },
 }));
-vi.mock('../src/ai/hms-labtest-dispatch.js', () => {
+vi.mock('../src/ai/hms-labtest-dispatch.js', async (original) => {
+  const actual = await original<typeof import('../src/ai/hms-labtest-dispatch.js')>();
   class HmsLabtestDispatchError extends Error {
     constructor(readonly reason: string) { super(`hms_labtest_dispatch_${reason}`); }
   }
-  return { HmsLabtestDispatchError,
+  return { ...actual, HmsLabtestDispatchError,
     captureHmsLabtestDispatchEpoch: async () => '0'.repeat(64),
     claimHmsLabtestDispatch: async (_db: unknown, input: Record<string, unknown>, authorize: (tx: unknown, input: Record<string, unknown>) => Promise<void>) => {
       h.createMutexCalls += 1; h.onCreateMutex?.();
       if (h.sharedHold && !h.sharedHoldResolved) throw new HmsLabtestDispatchError('occupied');
+      h.onClaimEntered?.();
+      if (h.claimWait) await h.claimWait;
       await authorize(h.tx, input);
       h.sharedHold = structuredClone(input);
       h.sharedHoldResolved = false;
@@ -68,6 +74,14 @@ vi.mock('../src/ai/hms-labtest-dispatch.js', () => {
       if (!h.sharedHold || h.sharedHoldResolved) throw new HmsLabtestDispatchError('owner');
       await record(h.tx, h.sharedHold);
       h.events.push({ value: { kind: 'resolved', ...structuredClone(evidence) } });
+      h.sharedHoldResolved = true;
+    },
+    resolveNeverDispatchedCreate: async (_db: unknown, _handle: unknown, receipt: unknown, request: unknown,
+      record: (tx: unknown, intent: Record<string, unknown>) => Promise<void>) => {
+      if (!h.sharedHold || h.sharedHoldResolved || !consumeNeverDispatchedCreateProof(receipt, request) ||
+          actual.nativeCreateSaveDigest(request) !== h.sharedHold.requestDigest) throw new HmsLabtestDispatchError('owner');
+      await record(h.tx, h.sharedHold);
+      h.events.push({ value: { kind: 'not_dispatched' } });
       h.sharedHoldResolved = true;
     },
   };
@@ -171,6 +185,7 @@ beforeEach(async () => {
   h.sourceDigest = 'f'.repeat(64); h.actorAccessId = 'access-1'; h.events = []; h.failBookedWrite = false;
   h.onCreateMutex = null; h.createMutexCalls = 0; h.sessionActive = true; h.threadActive = true;
   h.sharedHold = null; h.sharedHoldResolved = false; h.loseAckAfterClaim = false;
+  h.claimWait = null; h.onClaimEntered = null;
   h.writerCurrent = true;
   h.tx = { select: query, execute: async () => { h.createMutexCalls += 1; h.onCreateMutex?.(); },
     update: () => ({ set: ({ state }: { state: Record<string, unknown> }) => ({ where: async () => {
@@ -358,6 +373,45 @@ describe('mounted Cloud create route', () => {
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
       .toMatchObject({ reason: 'cloud_create_recovery_required' });
     expect(dispatches).toBe(0);
+  });
+
+  it('resolves a late committed claim after the native fence has timed out and failed its first drain', async () => {
+    const digest = await prepared();
+    let release!: () => void, entered!: () => void;
+    h.claimWait = new Promise<void>((resolve) => { release = resolve; });
+    const claiming = new Promise<void>((resolve) => { entered = resolve; });
+    h.onClaimEntered = entered;
+    let lateRoute: Promise<unknown> | undefined;
+    const run = paneCloudPreviewLoaders.run;
+    outcome = 'uncertain';
+    paneCloudPreviewLoaders.run = (input, options) => run(input, {
+      ...options, dispatchCandidate: options.dispatchCandidate && (async (candidate, _next, evidence) => {
+        const frame = {}, request = Object.assign(candidate as object, { frame: () => frame });
+        let pageHandler!: (route: unknown) => Promise<unknown>, contextHandler!: (route: unknown) => Promise<unknown>;
+        const context = { route: async (_pattern: string, handler: typeof contextHandler) => { contextHandler = handler; } };
+        const page = { context: () => context, route: async (_pattern: string, handler: typeof pageHandler) => { pageHandler = handler; } };
+        const chain = await installLabtestSaveRouteChain(page, { frame, fence: { isQuarantined: () => false },
+          scope: { allow: () => true }, isArmed: () => true, matches: () => true,
+          dispatchCandidate: (_request: unknown, next: () => Promise<unknown>) => options.dispatchCandidate!(candidate, next, evidence) });
+        const route = { request: () => request, fallback: async () => undefined, abort: async () => undefined,
+          continue: async () => { dispatches += 1; } };
+        await pageHandler(route);
+        lateRoute = contextHandler(route);
+        await claiming;
+        expect(await chain.drain({ timeoutMs: 5 })).toBe(false);
+      }),
+    });
+    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+      .toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+    expect(dispatches).toBe(0);
+    release();
+    await lateRoute;
+    expect(h.events).toContainEqual({ value: { kind: 'not_dispatched' } });
+    expect(h.sharedHoldResolved).toBe(true);
+    expect(h.state).toMatchObject({ stays: {} });
+    expect(dispatches).toBe(0);
+    expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: digest }))
+      .toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('does not consume Go when authority is lost before the native fence', async () => {
