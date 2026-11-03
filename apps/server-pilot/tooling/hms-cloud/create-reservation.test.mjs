@@ -1101,8 +1101,10 @@ test('native guard callbacks travel only in server-owned commit session options'
 
 test('staff create holds confirmation when fresh native no-party readback disagrees', async (t) => {
   let checked;
-  const fake = harness({ partyReadback: (request) => { checked = request; return { outcome: 'unverified' }; } });
-  const result = await createReservation(input, { ...fake.options,
+  const { parties: _parties, ...withoutParties } = input;
+  const fake = harness({ draft: { ...values, company: '' }, record: { ...values, company: '' },
+    partyReadback: (request) => { checked = request; return { outcome: 'unverified' }; } });
+  const result = await createReservation(withoutParties, { ...fake.options,
     authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
   if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
   assert.equal(result.outcome, 'uncertain');
