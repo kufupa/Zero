@@ -1260,6 +1260,7 @@ export function ThreadDisplay() {
                     <MessageList
                       messages={emailData?.messages ?? []}
                       sourceMessageId={displayedSourceMessageId}
+                      focusSourceMessageId={sourceMessageId}
                       currentThreadId={id}
                       onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                       isFullscreen={isFullscreen}
@@ -1279,6 +1280,7 @@ export function ThreadDisplay() {
                 <MessageList
                   messages={emailData?.messages ?? []}
                   sourceMessageId={displayedSourceMessageId}
+                  focusSourceMessageId={sourceMessageId}
                   currentThreadId={id}
                   onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                   isFullscreen={isFullscreen}
@@ -1304,6 +1306,7 @@ export function ThreadDisplay() {
 interface MessageListProps {
   messages: ParsedMessage[];
   sourceMessageId?: string | null;
+  focusSourceMessageId?: string | null;
   currentThreadId?: string | null;
   onSelectSourceMessage?: (message: ParsedMessage) => void;
   isFullscreen: boolean;
@@ -1321,6 +1324,7 @@ interface MessageListProps {
 export const MessageList = ({
   messages,
   sourceMessageId,
+  focusSourceMessageId = sourceMessageId,
   currentThreadId,
   onSelectSourceMessage,
   isFullscreen,
@@ -1337,7 +1341,7 @@ export const MessageList = ({
   const timezone = useTimezone();
   const { data: connection } = useActiveConnection();
   const displayMessages = orderMessagesNewestFirst(messages || []);
-  const sourceMessageRef = useExactSourceMessageSelection(sourceMessageId, messages);
+  const sourceMessageRef = useExactSourceMessageSelection(focusSourceMessageId, messages);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
   return (

@@ -83,6 +83,20 @@ vi.mock('@/components/mail/note-panel', () => ({ NotesPanel: () => null }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.items = []; mocks.clearSelection = null; mocks.selectThread = null; });
 
+it('keeps composer focus when an implicit sole inbound selection appears', () => {
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+  mocks.thread = { transportId: 'transport-1', messages: [], latest: undefined };
+  const { rerender } = render(<><input aria-label="Composer" /><ThreadDisplay /></>);
+  const composer = screen.getByRole('textbox', { name: 'Composer' });
+  composer.focus();
+  const email = { id: 'message-a', threadId: 'thread-a', direction: 'inbound', isDraft: false,
+    sender: { email: 'guest@example.com' }, to: [{ email: 'staff@example.com' }], tags: [],
+    receivedOn: '2026-11-01T12:00:00.000Z', subject: 'A', attachments: [] };
+  mocks.thread = { transportId: 'transport-1', messages: [email], latest: email };
+  rerender(<><input aria-label="Composer" /><ThreadDisplay /></>);
+  expect(document.activeElement).toBe(composer);
+});
+
 it('finishes a pending close when a single inbound message arrives during draft save', async () => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
   let finishSave!: () => void;

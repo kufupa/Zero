@@ -14,8 +14,8 @@ export type OwnStaffQuoteJob = {
   entryId: string | null;
   refused: boolean;
 };
-export type RatesReadyNotice = { runId: string; title: string; threadId: string | null; entryId: string | null };
-type OpenDeps = { onOpenThread?: (threadId: string) => void; displayMessageForm?: (itemId: string) => void };
+export type RatesReadyNotice = { runId: string; title: string; threadId: string | null; messageId: string; entryId: string | null };
+type OpenDeps = { onOpenThread?: (threadId: string, sourceMessageId?: string) => void; displayMessageForm?: (itemId: string) => void };
 type JobMeta = Omit<OwnStaffQuoteJob, 'runId' | 'status' | 'refused'>;
 const ownerKey = () => `${getMailCacheScope().userId}:${getMailCacheScope().activeTransportId}`;
 // One list for every pane mount: the web panel remounts per thread, so a pane-owned list lost the job on switch.
@@ -43,7 +43,7 @@ export function ratesReadyNotices(input: {
     if (!answers(job) || input.notifiedIds.has(job.runId) || (prior && answers(prior))) return [];
     if (job.messageId && job.messageId === input.openMessageId) return [];
     if (job.emailKey && job.emailKey === input.openEmailKey) return [];
-    return [{ runId: job.runId, title: ratesReadyToastTitle(job), threadId: job.threadId, entryId: job.entryId }];
+    return [{ runId: job.runId, title: ratesReadyToastTitle(job), threadId: job.threadId, messageId: job.messageId, entryId: job.entryId }];
   });
 }
 
@@ -78,8 +78,8 @@ export function canOpenRatesReadyMail(deps: OpenDeps = {}): boolean {
   return Boolean(deps.onOpenThread || deps.displayMessageForm || officeDisplay());
 }
 
-export function openRatesReadyMail(target: { threadId: string | null; entryId: string | null }, deps: OpenDeps = {}): void {
-  if (target.threadId && deps.onOpenThread) { deps.onOpenThread(target.threadId); return; }
+export function openRatesReadyMail(target: { threadId: string | null; messageId?: string | null; entryId: string | null }, deps: OpenDeps = {}): void {
+  if (target.threadId && deps.onOpenThread) { deps.onOpenThread(target.threadId, target.messageId ?? undefined); return; }
   const display = deps.displayMessageForm ?? officeDisplay();
   if (target.entryId && display) display(target.entryId);
 }
@@ -87,7 +87,7 @@ export function openRatesReadyMail(target: { threadId: string | null; entryId: s
 export function useRatesReadyNotice(input: {
   jobsRef: { current: OwnStaffQuoteJob[] };
   openMessageId: string | null; openEmailKey: string | null;
-  query?: StaffQuoteJobQuery; onOpenThread?: (threadId: string) => void;
+  query?: StaffQuoteJobQuery; onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
 }): void {
   const live = useRef(input);
   live.current = input;
