@@ -478,19 +478,20 @@ describe('pane HMS write (U26)', () => {
       hmsStay = guestStay;
       const workItemId = await seedWriteItem(db, {
         state: { ...ATTACH_FORM, lastName: 'Smith' },
+        transportId: DAVINCI_TRANSPORT_ID,
       });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
       const env = { PANE_WRITE_ATTACH: 'on' };
       const prepared = await prepareHmsWriteSnapshot({
         db,
-        transportId: TRANSPORT_ID,
+        transportId: DAVINCI_TRANSPORT_ID,
         workItemId,
         confirmation: CONFIRMATION,
         arrival: ARRIVAL,
         env,
       });
       expect(prepared.status).toBe('stored');
-      await approve(db, workItemId);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env })).toMatchObject({
         status: 'succeeded',
@@ -504,9 +505,9 @@ describe('pane HMS write (U26)', () => {
 
   it('PANE_WRITE_ATTACH=lab refuses a real-guest attach before consume', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
-      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
-      await approve(db, workItemId);
+      const workItemId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' }, transportId: DAVINCI_TRANSPORT_ID });
+      await storeHmsSnapshot({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: { PANE_WRITE_ATTACH: 'lab' } })).toEqual({
         status: 'ended',
@@ -538,9 +539,9 @@ describe('pane HMS write (U26)', () => {
 
   it('refuses a non-Labtest attach or cancel and a cancel before 2027 before consume, with no HMS read and no Save', async () => {
     await withIngestionDb(async ({ db }) => {
-      const attachId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
-      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId: attachId, readHmsState: async () => hmsStay });
-      await approve(db, attachId);
+      const attachId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' }, transportId: DAVINCI_TRANSPORT_ID });
+      await storeHmsSnapshot({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId: attachId, readHmsState: async () => hmsStay });
+      await approve(db, attachId, DAVINCI_TRANSPORT_ID);
       const attachRun = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...attachRun, db, env: ENV })).toEqual({
         status: 'ended',
@@ -598,10 +599,10 @@ describe('pane HMS write (U26)', () => {
 
   it('refuses an attachment that is not a PDF before consume', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: Buffer.from('plain text, not a pdf') });
-      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
-      await approve(db, workItemId);
+      await storeHmsSnapshot({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
         status: 'ended',
@@ -615,9 +616,9 @@ describe('pane HMS write (U26)', () => {
 
   it('checks the PDF magic and the size cap on bytes from any reader, before consume', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
-      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
-      await approve(db, workItemId);
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await storeHmsSnapshot({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       paneHmsWriteLoaders.readAttachment = async () =>
         Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(PANE_ATTACH_MAX_BYTES)]);
       const run = await claimWrite(db);
@@ -633,10 +634,10 @@ describe('pane HMS write (U26)', () => {
 
   it('attaches the approved PDF after a valid approval and records the before and after PNGs as evidence', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      const approval = await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      const approval = await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(run.runId).toBe(approval.runId);
 
@@ -665,10 +666,10 @@ describe('pane HMS write (U26)', () => {
 
   it('a form changed after approval is refused at consume, and no Save is sent', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       await db
         .update(workItem)
         .set({ state: { ...ATTACH_FORM, documentName: 'Changed.pdf' } })
@@ -685,10 +686,10 @@ describe('pane HMS write (U26)', () => {
 
   it('an HMS change between approve and Save ends in needs-check and drops the stored snapshot', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       hmsStay = { ...LAB_STAY, roomType: 'SUITE' };
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
@@ -704,12 +705,12 @@ describe('pane HMS write (U26)', () => {
 
   it('a stay that opens as a non-Labtest record is refused before Save as needs-check, and approval waits for a fresh read', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
       // The approval snapshot is the non-Labtest record. Prepare would refuse it, so the snapshot is stored directly.
       hmsStay = { ...LAB_STAY, lastName: 'Smith' };
-      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
-      await approve(db, workItemId);
+      await storeHmsSnapshot({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
         status: 'ended',
@@ -718,7 +719,7 @@ describe('pane HMS write (U26)', () => {
       });
       expect(attachCalls).toHaveLength(0);
       // Needs-check that wrote nothing does not block approval. The dropped snapshot makes the next approval wait for a read.
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
+      await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
     });
   });
 
@@ -753,10 +754,10 @@ describe('pane HMS write (U26)', () => {
 
   it('a lease lost after Save ends as LEASE_LOST, blocks approval, and sends no second upload', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       onAttach = async () => {
         const result = await defaultAttach();
         // The lease goes stale while the CLI is running. The sweep turns the claim into LEASE_LOST.
@@ -767,8 +768,8 @@ describe('pane HMS write (U26)', () => {
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({ status: 'lease_lost' });
       expect((await runRow(db, run.runId)).failureClass).toBe('LEASE_LOST');
-      await expect(approve(db, workItemId)).rejects.toBeInstanceOf(HmsApprovalError);
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toBeInstanceOf(HmsApprovalError);
+      await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({ refusal: 'needs_check_open' });
       expect(attachCalls).toHaveLength(1);
     });
   });
@@ -974,28 +975,28 @@ describe('pane HMS write (U26)', () => {
 
   it('a flag drops the pre-write snapshot, and the reread procedure stores a fresh read the next approval binds (U18)', async () => {
     await withIngestionDb(async ({ db, sql }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toMatchObject({
         status: 'succeeded',
       });
       const caller = appRouter.createCaller({
         auth: null as never,
-        reqHeaders: new Headers({ 'x-zero-active-transport': TRANSPORT_ID }),
+        reqHeaders: new Headers({ 'x-zero-active-transport': DAVINCI_TRANSPORT_ID }),
         sessionUser: { id: USER, email: 'staff@example.invalid', name: 'Staff' },
-        activeTransportId: TRANSPORT_ID,
+        activeTransportId: DAVINCI_TRANSPORT_ID,
         accessRole: 'owner',
-        transportEmail: TRANSPORT_EMAIL,
+        transportEmail: DAVINCI_TRANSPORT_EMAIL,
       } as never);
       __setDbForTests({ db, conn: sql } as never);
       const previousMode = process.env.RESERVATIONIST_PANE_SAVE;
       try {
         await caller.hmsApproval.review({ workItemId, runId: run.runId, decision: 'flag', note: 'Wrong document' });
         expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
-        await expect(approve(db, workItemId)).rejects.toMatchObject({
+        await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({
           refusal: 'snapshot_missing',
         });
 
@@ -1011,7 +1012,7 @@ describe('pane HMS write (U26)', () => {
         expect((await stateOf(db, workItemId)).hmsSnapshot).toMatchObject({
           digest: hmsStateDigest(hmsStay),
         });
-        const again = await approve(db, workItemId);
+        const again = await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
         const [grant] = await db.select().from(workEvent).where(eq(workEvent.id, again.grantId));
         expect(grant?.value).toMatchObject({ hmsBeforeDigest: hmsStateDigest(hmsStay) });
       } finally {
@@ -1139,11 +1140,12 @@ describe('pane HMS attach bridge (U9)', () => {
       const pdfSha256 = sha256(PDF_BYTES);
       const workItemId = await seedWriteItem(db, {
         state: { ...ATTACH_FORM, pdfSha256 },
+        transportId: DAVINCI_TRANSPORT_ID,
       });
       const other = Buffer.from('%PDF-1.7\n%other document\n');
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: other });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       const run = await claimWrite(db);
       expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
         status: 'ended',
@@ -1157,10 +1159,10 @@ describe('pane HMS attach bridge (U9)', () => {
 
   it('upload_unconfirmed is not a success and blocks a second attach', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
       await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
-      await prepare(db, workItemId);
-      await approve(db, workItemId);
+      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
+      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
       onAttach = async () => {
         const runDir = await runDirWithPngs(['before.png', 'after.png']);
         return {
@@ -1179,7 +1181,7 @@ describe('pane HMS attach bridge (U9)', () => {
       });
       expect(attachCalls).toHaveLength(1);
       expect((await runRow(db, run.runId)).state).not.toBe('succeeded');
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(approve(db, workItemId, DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 });

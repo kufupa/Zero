@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import {
   HMS_WRITE_EVIDENCE_PREFIX,
@@ -37,6 +37,8 @@ import { withIngestionDb } from './helpers/ingestion-db.js';
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
+const DAVINCI_TRANSPORT_ID = 'transport-davinci';
+const DAVINCI_TRANSPORT_EMAIL = 'davinci@legacyhotels.co.za';
 const MINUTE = 60_000;
 // Seed time comes from the wall clock once. Every later step runs on this injected clock.
 const NOW = new Date();
@@ -91,13 +93,19 @@ function sha256(data: string | Buffer): string {
 // Each n is one inbound thread with one work item. A work item is unique per (thread, kind, source message).
 async function seedItem(
   db: DB,
-  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown> } = {},
+  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown>; transportId?: string } = {},
 ): Promise<string> {
   const n = opts.n ?? 1;
+  const transportId = opts.transportId ?? TRANSPORT_ID;
+  const transportEmail = transportId === DAVINCI_TRANSPORT_ID ? DAVINCI_TRANSPORT_EMAIL : TRANSPORT_EMAIL;
+  if (transportId === DAVINCI_TRANSPORT_ID) {
+    await db.insert(mailboxTransport).values({ id: transportId, email: transportEmail,
+      ownerHeaderValue: transportEmail, mailboxType: 'personal', sendFromConfig: { aliases: [] } }).onConflictDoNothing();
+  }
   await seedInboxThread(db, {
     threadId: `thread-${n}`,
-    transportId: TRANSPORT_ID,
-    transportEmail: TRANSPORT_EMAIL,
+    transportId,
+    transportEmail,
     messageId: `msg-${n}`,
   });
   const snapshotAt = opts.snapshotAt === undefined ? NOW : opts.snapshotAt;
@@ -111,7 +119,7 @@ async function seedItem(
   const [item] = await db
     .insert(workItem)
     .values({
-      transportId: TRANSPORT_ID,
+      transportId,
       threadId: `thread-${n}`,
       sourceMessageId: `msg-${n}`,
       kind: 'quote',
@@ -1384,8 +1392,8 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
 
   it('upload_unconfirmed leaves needs-check open and refuses another approval', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedItem(db, { form: ATTACH_FORM });
-      await approve(db, workItemId);
+      const workItemId = await seedItem(db, { form: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await approve(db, workItemId, { transportId: DAVINCI_TRANSPORT_ID });
       const claim = await claimWrite(db);
       await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
       expect(
@@ -1396,13 +1404,14 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
           reason: 'upload_unconfirmed',
         }),
       ).toBe(true);
-      const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
+      const view = await hmsWriteStateOf({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, now: NOW });
       expect(view).toMatchObject({
         needsCheck: true,
         form: ATTACH_FORM,
         run: { lastError: 'upload_unconfirmed' },
       });
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(approve(db, workItemId, { transportId: DAVINCI_TRANSPORT_ID }))
+        .rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 });

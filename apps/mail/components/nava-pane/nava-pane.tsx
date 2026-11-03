@@ -2375,6 +2375,7 @@ export function NavaPane({
                     transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
                     mailboxScope={voucherMailboxScope}
                     propertyCode={activePaneConfig?.propertyCode ?? null}
+                    workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
                     trpc={trpcClient}
                     syncCommitted={sync.status?.committed ?? null}
                     syncPending={

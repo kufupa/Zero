@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 
 const stubs = vi.hoisted(() => ({ find: vi.fn(), read: vi.fn() }));
@@ -29,11 +30,21 @@ function fixture() {
 }
 
 beforeEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = vi.fn(async () => ({
+    selected: { fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] },
+    selectedFound: true,
+    inbounds: [],
+  }));
   stubs.find.mockReset().mockResolvedValue({ outcome: 'found', stay, arrivalMismatch: false });
   stubs.read.mockReset().mockImplementation(async (request) => {
     if (!await request.checkAuthority()) return null;
     return { source, bytes: Buffer.from('%PDF-'), locator: {} };
   });
+});
+
+afterEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  vi.unstubAllEnvs();
 });
 
 describe('read-only filing preview', () => {
@@ -46,6 +57,37 @@ describe('read-only filing preview', () => {
     expect(stubs.read.mock.calls[1]![0].expected).toEqual(source);
     expect(stubs.find).toHaveBeenCalledWith({ confirmation: input.confirmation, arrival: input.arrival },
       expect.objectContaining({ target: expect.objectContaining({ propertyCode: 'HRCEN' }) }));
+    expect(mailboxHmsOriginBindLoaders.loadThreadOriginScan).toHaveBeenCalledWith({
+      transportId: input.transportId, threadId: 'thread-1', messageId: input.sourceMessageId,
+    });
+  });
+
+  it('refuses a Da Vinci origin or missing selected message before searching Centurion', async () => {
+    // Even when Da Vinci reads are enabled, this preview only supports Centurion.
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    for (const scan of [
+      { selected: { toAddresses: ['davinci@legacyhotels.co.za'] }, selectedFound: true, inbounds: [] },
+      { selected: null, selectedFound: false, inbounds: [] },
+      { selected: {}, selectedFound: true, inbounds: [{ ccAddresses: ['davinci@legacyhotels.co.za'] }] },
+    ]) {
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = vi.fn(async () => scan);
+      const f = fixture();
+      await expect(previewFiling({ ...input, db: f.db, s3: f.s3 }))
+        .resolves.toEqual({ status: 'refused', reason: 'property_unavailable' });
+    }
+    expect(stubs.find).not.toHaveBeenCalled();
+  });
+
+  it('refuses a ready preview if the origin changes during the HMS read', async () => {
+    const scan = vi.fn()
+      .mockResolvedValueOnce({ selected: {}, selectedFound: true, inbounds: [] })
+      .mockResolvedValueOnce({ selected: { toAddresses: ['davinci@legacyhotels.co.za'] }, selectedFound: true, inbounds: [] });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = scan;
+    const f = fixture();
+    await expect(previewFiling({ ...input, db: f.db, s3: f.s3 }))
+      .resolves.toEqual({ status: 'refused', reason: 'property_unavailable' });
+    expect(stubs.find).toHaveBeenCalledTimes(1);
+    expect(stubs.read).toHaveBeenCalledTimes(1);
   });
 
   it('refuses wrong source, thread, mailbox access, or a closed item before reading HMS', async () => {
