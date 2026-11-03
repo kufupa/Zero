@@ -5,7 +5,7 @@ import {
   matchesFullCreateBody,
   createSelectionProofTokensMatch,
   validCreateBillingReference, billingOnlyDraftChange,
-  saveNewLabtestStay,
+  finishLabtestCreateFence, saveNewLabtestStay,
 } from './guest-stay-save.mjs';
 
 const controls = {
@@ -23,6 +23,26 @@ const saveInputs = {
   guaranteeType: 'NGI',
   note: 'synthetic offline proof',
 };
+
+test('Create cannot report success or no dispatch when route callback drain is unconfirmed', async () => {
+  for (const outcome of ['saved_same_form', 'not_dispatched']) {
+    for (const drain of [async () => false, async () => { throw new Error('drain failed'); }]) {
+      let quarantined = false;
+      const result = await finishLabtestCreateFence({ outcome, confirmation: 'synthetic' }, { drain },
+        { quarantine: () => { quarantined = true; } });
+      assert.equal(result.outcome, 'uncertain');
+      assert.equal(result.issue, 'SAVE_CALLBACK_DRAIN_UNCONFIRMED');
+      assert.equal(result.dispatchCallbacksDrained, false);
+      assert.equal(quarantined, true);
+    }
+  }
+});
+
+test('Create records callback drain separately from its original save outcome', async () => {
+  const result = await finishLabtestCreateFence({ outcome: 'saved_same_form' }, { drain: async () => true }, {});
+  assert.deepEqual(result, { outcome: 'saved_same_form', dispatchCallbacksDrained: true });
+  assert.deepEqual(await finishLabtestCreateFence({ outcome: 'not_dispatched' }, null, {}), { outcome: 'not_dispatched' });
+});
 
 function createModelData() {
   return {
