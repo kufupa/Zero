@@ -42,6 +42,7 @@ export default function NavaPreviewPage() {
   );
   const rows = (recent.data?.threads ?? []) as ListedThread[];
   const selectedId = deepLinked || rows[0]?.id || null;
+  const selectedMessageId = deepLinked ? params.get('sourceMessageId') : null;
 
   return (
     <div className="flex h-screen w-full min-w-0 overflow-hidden bg-[#f8fafc] text-[#0f172a]">
@@ -51,6 +52,11 @@ export default function NavaPreviewPage() {
           <p className="text-[11px] text-slate-500">
             Read-only preview. Nothing is written to Outlook or HMS.
           </p>
+          {selectedId ? (
+            <Link className="text-xs text-blue-700 underline" to={`/mail/inbox?threadId=${encodeURIComponent(selectedId)}${selectedMessageId ? `&sourceMessageId=${encodeURIComponent(selectedMessageId)}` : ''}`}>
+              Open in webmail
+            </Link>
+          ) : null}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {recent.isLoading ? <p className="p-4 text-sm text-slate-500">Loading threads…</p> : null}
@@ -93,7 +99,11 @@ export default function NavaPreviewPage() {
           <WebPanePanel
             key={selectedId}
             threadId={selectedId}
-            onOpenThread={(id) => setParams({ thread: id })}
+            sourceMessageId={selectedMessageId}
+            requireSelectedMessage
+            onOpenThread={(id, messageId) => setParams(messageId == null
+              ? { thread: id }
+              : { thread: id, sourceMessageId: messageId })}
           />
         ) : (
           <p className="p-4 text-sm text-slate-500">No thread selected.</p>

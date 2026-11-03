@@ -36,6 +36,8 @@ describe('rates ready notice across pane remounts', () => {
     );
     await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
     expect(toast.mock.calls[0]?.[0]).toBe('Rates ready · Twin for 3 nights');
+    toast.mock.calls[0]?.[1].action.onClick();
+    expect(onOpenThread).toHaveBeenCalledWith('thread-a', 'mail-a');
     second.unmount();
 
     renderHook(() =>

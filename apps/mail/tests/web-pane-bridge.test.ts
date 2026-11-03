@@ -158,6 +158,12 @@ describe('exact webmail selection', () => {
     expect(select(null)).toEqual({ status: 'unsynced', reason: 'select_message' });
   });
 
+  it('reports no guest email for sent-only threads, rather than asking for a missing selection', () => {
+    expect(select(null, [staffReply({ id: 'reply' })])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+    expect(select(null, [{ ...first, isDraft: true }])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+    expect(select(null, [{ ...first, threadId: 'linked' }])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+  });
+
   it('auto-selects only a single unambiguous inbound in the current thread', () => {
     expect(singleInboundMessageId([first, staffReply({ id: 'reply' })], MAILBOX, 'thread-1')).toBe('in-1');
     expect(singleInboundMessageId([first, second], MAILBOX, 'thread-1')).toBeNull();

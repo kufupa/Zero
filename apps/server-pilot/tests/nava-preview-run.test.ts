@@ -60,6 +60,15 @@ const chromiumBinary = [
 ].find(existsSync);
 
 describe('parseRunConfig', () => {
+  it('binds a proof to one explicitly selected source message', () => {
+    const selected = env({ NAVA_PREVIEW_SOURCE_MESSAGE_ID: 'message/a+1' });
+    expect(parseRunConfig(['--threads', 'thread-a'], selected, dir).sourceMessageId).toBe('message/a+1');
+    expect(() => parseRunConfig(['--threads', 'thread-a,thread-b'], selected, dir)).toThrow('one explicit thread');
+    expect(() => parseRunConfig(['--latest', '1'], selected, dir)).toThrow('one explicit thread');
+    expect(() => parseRunConfig(['--threads', 'thread-a'], env({ NAVA_PREVIEW_SOURCE_MESSAGE_ID: 'a\nb' }), dir))
+      .toThrow('invalid source message id');
+  });
+
   it('reads a latest-N selection with a default timeout and an out directory under cwd', () => {
     const config = parseRunConfig(['--latest', '5'], env(), dir, new Date('2026-10-09T07:00:00Z'));
     expect(config).toMatchObject({
