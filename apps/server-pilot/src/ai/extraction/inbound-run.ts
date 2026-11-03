@@ -19,6 +19,7 @@ import { parseMailboxMeasurementConfig } from '../../metrics/mail-measurement-co
 import type { ModelAdapter } from '../bedrock/adapter.js';
 import { AI_DURABLE_PRIMARY_CATEGORY_SLUGS } from '../categories.js';
 import { isAutoTriageNeverSpam } from '../never-spam.js';
+import { isSelfSentPreStaySubject, preStaySourceText } from '../existing-stay-information.js';
 import {
   extractMailBaselineWithApprovedRoute,
   resolveMailBaselineExtractionRoute,
@@ -268,6 +269,8 @@ export async function runInboundExtraction(
       threadId: message.threadId,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      subject: message.subject,
+      htmlBody: message.htmlBody,
       mailbox: mailboxTransport.email,
     })
     .from(message)
@@ -296,7 +299,7 @@ export async function runInboundExtraction(
   // Checked before any mail is loaded, so a spent hour costs no S3 or PDF work.
   if (callsInLastHour(clock()) >= max) return 'capped';
   // Loaded by its row id: a header can be missing or shared by two rows ingest kept apart.
-  const selection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
+  const loadedSelection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
     transportId: run.transportId,
     messageId: run.triggerMessageId,
     includeThreadState: true,
@@ -304,7 +307,7 @@ export async function runInboundExtraction(
     trackVisionImages: true,
     signal: deps.signal,
   });
-  if (!selection) {
+  if (!loadedSelection) {
     await commitRead(db, deps.claim, (tx) =>
       storeRead(tx, {
         messageId: run.triggerMessageId,
@@ -314,6 +317,11 @@ export async function runInboundExtraction(
     );
     return 'failed';
   }
+  const selection = isSelfSentPreStaySubject({
+    fromAddress: trigger.fromAddress, mailboxAddress: trigger.mailbox, subject: trigger.subject,
+  })
+    ? { ...loadedSelection, bodyText: preStaySourceText(loadedSelection.bodyText, trigger.htmlBody) }
+    : loadedSelection;
   if (!takeCallSlot(max, clock())) return 'capped';
   const extraction = await extractInboundMail({
     adapter,

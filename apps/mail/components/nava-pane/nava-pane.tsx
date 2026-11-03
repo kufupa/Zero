@@ -170,7 +170,10 @@ function externalSenderFallback(
   };
 }
 
-function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumbers: string[] }) {
+function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
+  confirmationNumbers: string[];
+  separateAsk: string | null;
+}) {
   return (
     <section
       role="status"
@@ -188,6 +191,11 @@ function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumb
             {confirmationNumbers.length === 1 ? 'Confirmation number' : 'Confirmation numbers'}
           </span>
           : {confirmationNumbers.join(', ')}
+        </p>
+      ) : null}
+      {separateAsk ? (
+        <p className="text-[13px] leading-5 text-[#475569]">
+          <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
         </p>
       ) : null}
     </section>
@@ -1420,14 +1428,17 @@ export function NavaPane({
   const existingStayConfirmationNumbers =
     storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
   const savedStays = storedWork.pane.state === 'ready' ? storedWork.pane.savedStays : undefined;
+  const separateAsk = storedWork.pane.state === 'ready'
+    ? storedWork.pane.separateAsk ?? null
+    : null;
   const classifiedReadAs = isExistingStayInformation
-    ? 'not_for_nava'
+    ? separateAsk ? 'other_to_do' : 'not_for_nava'
     : readAsForAnalysis(quoteSession.analysis, {
         kind: selectedReadKind,
         treatAs: quoteSession.treatAs,
       });
   // Channel/system mail never opens the quote flow. A stored payment kind may still show its read-only voucher lookup.
-  const readAs = isNonActionableMailSource
+  const readAs = isNonActionableMailSource && !isExistingStayInformation
     ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
     : classifiedReadAs;
   const contactInPeople =
@@ -2304,7 +2315,7 @@ export function NavaPane({
             {isExistingStayInformation ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? (
-                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} />
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} />
                 ) : null}
               </div>
             ) : nonActionableMailSource ? (

@@ -31,6 +31,9 @@ const dateRange = z.object({
 const extractionOriginSchema = z.enum(['person', 'system_notice']);
 
 const mailExtractionObjectSchema = z.object({
+  separateAsk: z.string().max(200).nullable().optional().describe(
+    'For self-sent pre-stay confirmation mail only, an exact excerpt of a separate current request in the target body; otherwise null.',
+  ),
   needsAction: z.boolean().describe('Whether this target message represents open or newly requested work.'),
   action: z.enum(MAIL_ACTIONS).describe('The target message action, considered with prior thread messages.'),
   actionEvidence: z.string().max(200).describe('Short supporting evidence, no card digits; empty when none.'),
@@ -188,6 +191,7 @@ const storedExtractionStaySchema = sourceStaySchema.extend({
 
 /** Stored mail-extraction payload. Action fields, origin, and per-stay guests/action stay optional for legacy rows. */
 export const mailExtractionPayloadSchema = z.object({
+  separateAsk: z.string().max(200).optional(),
   needsAction: z.boolean().optional(),
   action: z.enum(MAIL_ACTIONS).optional(),
   actionEvidence: z.string().max(200).optional(),

@@ -53,7 +53,9 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceText } from './existing-stay-information.js';
+import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
+import { maskCardNumbers } from './card-mask.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import {
   getPropertyTransportIds,
@@ -1252,6 +1254,9 @@ type ThreadMail = {
   id: string;
   direction: 'inbound' | 'outbound';
   fromAddress: string;
+  subject: string | null;
+  textBody: string | null;
+  htmlBody: string | null;
   receivedAt: Date | null;
   deliveredAt: Date | null;
   sentAt: Date | null;
@@ -1436,6 +1441,7 @@ export async function planThreadWork(
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
+      extractionPayload: mailExtraction.payload,
       origin,
     })
     .from(workItem)
@@ -1474,6 +1480,9 @@ export async function planThreadWork(
       id: message.id,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
       receivedAt: message.receivedAt,
       deliveredAt: MESSAGE_DELIVERED_AT,
       sentAt: message.sentAt,
@@ -1520,6 +1529,17 @@ export async function planThreadWork(
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
+    const payload = item.extractionPayload as MailExtractionPayload | null;
+    const separateAsk = currentKind && isSelfSentPreStayInformationMail({
+      fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
+      confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
+    }) && separatePreStayAsk(item.kind, payload, source.textBody, source.htmlBody);
+    // A prior pure-information read may have been automatically closed as staff-sent.
+    if (separateAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
     if (item.status === 'dismissed') {
       if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
         changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
@@ -1570,7 +1590,7 @@ export async function planThreadWork(
       }
       continue;
     }
-    const staffOther = kind === 'other' && ownSent(source);
+    const staffOther = kind === 'other' && ownSent(source) && !separateAsk;
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
@@ -1752,6 +1772,7 @@ export type StoredWork =
       kind: string;
       /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
       existingStayInformation: boolean;
+      separateAsk: string | null;
       /** Confirmation numbers stay available to staff even when the extraction kind is shown as `other`. */
       confirmationNumbers: string[];
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
@@ -1806,6 +1827,7 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
       fromAddress: message.fromAddress,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       mailboxAddress: mailboxTransport.email,
     })
     .from(message)
@@ -1816,6 +1838,13 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
 }
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
+
+/** Old booking extractions never gain a work item or a separate-ask view. */
+function separatePreStayAsk(kind: string, payload: MailExtractionPayload | null, body: string | null, html: string | null): string | null {
+  if (kind !== 'other' || payload?.needsAction !== true ||
+      !['billing', 'group_event', 'other_actionable'].includes(payload.action ?? '')) return null;
+  return groundedSeparateAsk(maskCardNumbers(preStaySourceText(body, html)), payload.separateAsk);
+}
 
 const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject', 'field.reset'] as const;
 
@@ -1873,6 +1902,7 @@ async function readyView(
     fromAddress: string | null;
     subject: string | null;
     textBody: string | null;
+    htmlBody: string | null;
     mailboxAddress: string | null;
   },
   latest: ReadyRead,
@@ -1891,7 +1921,8 @@ async function readyView(
     subject: msg.subject,
     confirmationNumbers,
   });
-  const paneItem = existingStayInformation ? null : item;
+  const separateAsk = existingStayInformation ? separatePreStayAsk(read.kind, read.payload, msg.textBody, msg.htmlBody) : null;
+  const paneItem = existingStayInformation && !separateAsk ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
@@ -1919,6 +1950,7 @@ async function readyView(
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
     existingStayInformation,
+    separateAsk,
     confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
@@ -1972,7 +2004,9 @@ export async function storedWorkFor(
     subject: msg.subject,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
+  if (existingStayInformation && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)) {
+    return readyView(db, msg, latest, null, input.transportId);
+  }
   const [item] = await db
     .select({
       id: workItem.id,
@@ -2014,7 +2048,7 @@ export async function openStoredWork(
       mailboxAddress: msg.mailboxAddress,
       subject: msg.subject,
       confirmationNumbers: payloadConfirmationNumbers(latest.payload),
-    })
+    }) && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)
   ) {
     return readyView(db, msg, latest, null, input.transportId);
   }
@@ -2363,7 +2397,8 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included. Spam, trashed and deleted threads are left out.
+ * booking, amendment, cancellation and voucher_pop items are included, plus grounded separate pre-stay requests.
+ * Spam, trashed and deleted threads are left out.
  * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
  * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
@@ -2372,82 +2407,90 @@ export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number; receivedSince?: Date },
 ) {
-  if (input.statuses.length === 0) return [];
-  // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
-  // Coalesce keeps missing origin human-written.
-  const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
-  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
-  const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
-    .mapWith(Number)
-    .as('chip_rank');
-  const rows = await db
-    .select({
-      id: workItem.id,
-      kind: workItem.kind,
-      status: workItem.status,
-      threadId: workItem.threadId,
-      sourceMessageId: workItem.sourceMessageId,
-      outlookEntryId:
-        sql<string | null>`${message.sourceProvenance} #>> '{evidence,locator,entryId}'`,
-      updatedAt: workItem.updatedAt,
-      sender: message.fromAddress,
-      subject: message.subject,
-      receivedAt: message.receivedAt,
-      confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
-      reopenReason: sql<string | null>`(
-        select we.value->>'reasonLine'
-        from ${workEvent} as we
-        where we.work_item_id = ${workItem}.id
-          and we.type = 'status.changed'
-          and we.value->>'reason' = 'reply_needs_action'
-        order by we.at desc, we.id desc
-        limit 1
-      )`,
-      chipRank,
-    })
-    .from(workItem)
-    .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
-    .leftJoin(message, eq(message.id, workItem.sourceMessageId))
-    .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        inArray(workItem.status, [...input.statuses]),
-        inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
-        ne(origin, 'system_notice'),
-        isNull(mailThread.spamAt),
-        isNull(mailThread.trashedAt),
-        ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
-      ),
-    )
-    .orderBy(
-      sql`chip_rank`,
-      asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
-      asc(workItem.id),
-    )
-    .limit(input.limit);
-  const [mailbox] = await db
-    .select({ email: mailboxTransport.email })
-    .from(mailboxTransport)
-    .where(eq(mailboxTransport.id, input.transportId))
-    .limit(1);
-  // Items opened before the pre-stay rule stay out of Needs You: the mail is about a stay already booked.
-  return rows
-    .filter(
-      (row) =>
-        !isSelfSentPreStayInformationMail({
+  if (input.statuses.length === 0 || input.limit <= 0) return [];
+  // Every candidate page must see the same order and source data.
+  return db.transaction(async (tx) => {
+    // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
+    // Coalesce keeps missing origin human-written.
+    const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
+    const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+    const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
+      .mapWith(Number);
+    const sortAge = sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`;
+    const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
+      .select({
+        id: workItem.id,
+        kind: workItem.kind,
+        status: workItem.status,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        outlookEntryId:
+          sql<string | null>`${message.sourceProvenance} #>> '{evidence,locator,entryId}'`,
+        updatedAt: workItem.updatedAt,
+        sender: message.fromAddress,
+        subject: message.subject,
+        receivedAt: message.receivedAt,
+        confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
+        extractionPayload: mailExtraction.payload,
+        sourceBody: message.textBody,
+        sourceHtml: message.htmlBody,
+        reopenReason: sql<string | null>`(
+          select we.value->>'reasonLine'
+          from ${workEvent} as we
+          where we.work_item_id = ${workItem}.id
+            and we.type = 'status.changed'
+            and we.value->>'reason' = 'reply_needs_action'
+          order by we.at desc, we.id desc
+          limit 1
+        )`,
+        chipRank: chipRank.as('chip_rank'),
+        // Preserve PostgreSQL's microseconds; JavaScript Date truncates them.
+        sortAge: sql<string>`${sortAge}::text`,
+      })
+      .from(workItem)
+      .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
+      .leftJoin(message, eq(message.id, workItem.sourceMessageId))
+      .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
+      .where(
+        and(
+          eq(workItem.transportId, input.transportId),
+          inArray(workItem.status, [...input.statuses]),
+          or(
+            and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
+            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+          ),
+          isNull(mailThread.spamAt),
+          isNull(mailThread.trashedAt),
+          ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
+          ...(cursor ? [sql`(${chipRank}, ${sortAge}, ${workItem.id}) > (${cursor.rank}, ${cursor.age}::timestamp, ${cursor.id}::uuid)`] : []),
+        ),
+      )
+      .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
+      .limit(size);
+    const [mailbox] = await tx
+      .select({ email: mailboxTransport.email })
+      .from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId))
+      .limit(1);
+    return collectNeedsYouPages({
+      limit: input.limit,
+      fetchPage: async (cursor, size) => fetchPage(cursor, size),
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, ...row }) => {
+        const isPreStay = isSelfSentPreStayInformationMail({
           fromAddress: row.sender,
           mailboxAddress: mailbox?.email,
           subject: row.subject,
-          confirmationNumbers: Array.isArray(row.confirmationNumbers)
-            ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
+          confirmationNumbers: Array.isArray(confirmationNumbers)
+            ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
             : [],
-        }),
-    )
-    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, ...row }) => ({
-      ...row,
-      chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-    }));
+        });
+        const payload = extractionPayload as MailExtractionPayload | null;
+        const separateAsk = isPreStay && separatePreStayAsk(row.kind, payload, sourceBody, sourceHtml);
+        if (isPreStay ? !separateAsk : row.kind === 'other') return null;
+        return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
+      },
+    });
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 
 export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: string };

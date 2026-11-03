@@ -21,7 +21,8 @@ import {
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
 import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled } from '../../env.js';
-import { classifyMailSource } from '../../ai/mail-source.js';
+import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
+import { isSelfSentPreStayInformationMail } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
@@ -81,6 +82,17 @@ export type NativeAdmissionEvidence = {
     sentCopySaved?: boolean;
   };
 };
+
+/** A quoted channel notice cannot hide a current request in confirmed self-sent pre-stay mail. */
+export function admissionMailSource(
+  source: MailSourceClassification,
+  mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null },
+): MailSourceClassification {
+  return source.kind !== 'direct' && isSelfSentPreStayInformationMail(mail)
+    ? { kind: 'direct', source: null, reason: 'self_sent_pre_stay_confirmation' }
+    : source;
+}
+
 export function qualifiesNativeAdmission(cutover: Date, e: NativeAdmissionEvidence): boolean {
   const start = cutover.getTime(),
     observed = Date.parse(e.event.observedAt);
@@ -312,7 +324,7 @@ export async function admitLiveMessage(
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
   const isCollector = resolvePropertyTransport(input.transportId).kind === 'collector';
-  const mailSourceDecision =
+  let mailSourceDecision =
     trigger.direction === 'inbound'
       ? classifyMailSource({
           fromAddress: trigger.fromAddress,
@@ -320,6 +332,15 @@ export async function admitLiveMessage(
           bodyText: trigger.textBody ?? trigger.htmlBody,
         })
       : null;
+  if (mailSourceDecision && mailSourceDecision.kind !== 'direct') {
+    const [mailbox] = await db.select({ email: mailboxTransport.email }).from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId)).limit(1);
+    mailSourceDecision = admissionMailSource(mailSourceDecision, {
+      fromAddress: trigger.fromAddress,
+      subject: trigger.subject,
+      mailboxAddress: mailbox?.email ?? null,
+    });
+  }
   const routeAsAutomatedChannel =
     mailSourceDecision !== null && mailSourceDecision.kind !== 'direct';
   // Existing operational rows predate this admission authority. A fresh producer

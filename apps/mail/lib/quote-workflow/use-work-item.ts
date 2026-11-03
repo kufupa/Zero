@@ -39,6 +39,7 @@ export type StoredPane =
       /** The mail kind and current work-item state, shared with the pane's read-as and work-state banners. */
       kind: string;
       existingStayInformation?: boolean;
+      separateAsk?: string | null;
       confirmationNumbers?: string[];
       workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
@@ -548,7 +549,8 @@ export function useStoredWork(args: {
     // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
     void bindStoredWork({
       query: routes.getByMessage,
-      open: openMissingWorkItem ? routes.open : undefined,
+      open: routes.open,
+      allowOpen: openMissingWorkItem,
       internetMessageId,
       transportId,
       isStale: () => !current,
@@ -574,6 +576,7 @@ export function useStoredWork(args: {
       analysis: quoteAnalysisOf(stored.analysis),
       kind: stored.kind,
       existingStayInformation: stored.existingStayInformation === true,
+      separateAsk: stored.separateAsk ?? null,
       confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,

@@ -24,7 +24,7 @@ import {
 import { computeConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
-import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import type { IndexableMessage } from '../../mail/conversation-signals.js';
 import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
@@ -118,6 +118,7 @@ export const triageResponseSchema = {
     'rationale',
     'policyFlags',
     'abstainReason',
+    'separateAsk',
   ],
   properties: {
     primaryFolder: {
@@ -148,6 +149,7 @@ export const triageResponseSchema = {
       items: { type: 'string' },
     },
     abstainReason: { type: ['string', 'null'] },
+    separateAsk: { type: ['string', 'null'], maxLength: 200 },
   },
 } as const;
 
@@ -187,6 +189,7 @@ P0 = immediate severe revenue/security/guest impact; P1 = same-day hard action; 
 5. Urgency: tax invoice today, reply within Nh, arrival tomorrow unpaid, or check-in/CI today on real booking/agency voucher can be urgent. Subject URGENT, word cancel, or far-future date alone cannot make urgent.
 6. Spam: spam is orthogonal; primaryFolder remains one of eleven workflow folders and is never spam.
 7. Source/finance constraints: branding.legacyhotels.co.za and other internal property signals are internal_property/excluded_internal, never automated-channel. Finance/payment/invoice mail from hospitality.cloud → money-billing with payment overlay and automationState=candidate; do not blanket it P4.
+8. Self-sent pre-stay confirmation mail describes an existing booking, never a new booking or quote. If the target body contains a genuinely separate current request, copy its exact wording into separateAsk (at most 200 characters) and classify that request. Otherwise set separateAsk to null. Arrival details, quoted history and already-handled requests are not separate current asks.
 
 ## Spam inclusion
 Cold vendor/sales outreach, marketing/newsletter/promo, FortiMail/quarantine bulk digest, partner booster with no booking request, and cold charity/donation solicitation → isSpam=true. noreply system mail may remain spam when no actionable work exists.
@@ -830,7 +833,8 @@ export async function classifyWorkflowMailTriage(
   const triggerMessage =
     causalMessages.find((message) => message.id === causalInput.triggerMessageId) ??
     causalMessages[causalMessages.length - 1]!;
-  const rawOutput = parseWorkflowModelOutput(model.output);
+  const modelFields = validateStructuredJsonOutput(model.output);
+  const rawOutput = parseWorkflowModelOutput(modelFields);
   const refinedOutput = refineTriageOutput(
     {
       from: triggerMessage.from,
@@ -850,7 +854,26 @@ export async function classifyWorkflowMailTriage(
     subject: triggerMessage.subject,
     confirmationNumbers: input.confirmationNumbers,
   });
-  const output = existingStayInformation
+  const separateAsk = existingStayInformation
+    ? groundedSeparateAsk(triggerMessage.body, modelFields.separateAsk)
+    : null;
+  const output = existingStayInformation && separateAsk
+    ? validateWorkflowTriageOutput({
+        ...rawOutput,
+        primaryFolder: ['bookings', 'manage-stay', 'confirm-reconcile', 'automated-channel'].includes(rawOutput.primaryFolder)
+          ? 'unknown-review' : rawOutput.primaryFolder,
+        overlays: {},
+        isSpam: false,
+        suggestedTools: [],
+        sourceScope: 'internal_property',
+        automationState: 'candidate',
+        humanAction: ['none', 'create_or_reconcile', 'answer_or_quote', 'amend_or_cancel'].includes(rawOutput.humanAction)
+          ? 'review_required' : rawOutput.humanAction,
+        rationale: 'Self-sent pre-stay confirmation describes an existing stay; a separate request needs review.',
+        policyFlags: [...rawOutput.policyFlags, 'existing-stay-information', 'separate-ask'],
+        abstainReason: null,
+      })
+    : existingStayInformation
     ? validateWorkflowTriageOutput({
         primaryFolder: 'internal-partner',
         priority: 'P5',

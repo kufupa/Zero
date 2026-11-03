@@ -3471,6 +3471,43 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
+  it('shows a separate booking ask for review without offering a new booking', async () => {
+    const ask = 'Please book a separate room for another guest.';
+    const selfMailBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Pre Stay: Property Example Confirmation No 57291630 Guest',
+        senderEmail: 'Reservations <ropperman@legacyhotels.co.za>',
+        senderName: 'Reservations',
+        bodyText: `Existing reservation information. ${ask}`,
+      },
+    } as unknown as PaneBridge;
+    const stored = storedMail('other');
+    bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseCalls = 0;
+    bridgeMockState.staffQuoteSourceCalls = 0;
+    bridgeMockState.queueStaffQuoteMutation.mockClear();
+    bridgeMockState.storedWork = {
+      ...stored, existingStayInformation: true, separateAsk: ask,
+      confirmationNumbers: ['57291630-1'], workItemId: 'other-work', workItemStatus: 'needs_you',
+      analysis: { ...stored.analysis, intent: 'quote', luna: { workflow: 'create_booking', flags: [], rateClaims: [] } },
+    };
+
+    render(<NavaPane bridge={selfMailBridge} />);
+
+    const card = await screen.findByTestId('existing-stay-information');
+    expect(card.textContent).toContain('Also needs attention');
+    expect(card.textContent).toContain(ask);
+    expect(screen.getByRole('status', { name: 'Nava reads this as: Other to do' })).toBeDefined();
+    expect(screen.queryByText('New booking')).toBeNull();
+    expect(screen.queryByLabelText('Arrival')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it('offers only read-only voucher lookup for a channel message already classified as payment', async () => {
     const channelBridge = {
       ...fakeBridge,
