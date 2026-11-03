@@ -466,7 +466,7 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
     const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: intent.workItemId,
       runId, sourceDir: dir, owner, now: Date.now() });
     const saved = shots?.find((item) => item.name === 'saved.png');
-    if (!saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256,
+    if (!shots || !saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256,
       owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, 'saved.png')) {
       throw new Error('cloud_create_recovery_evidence_unavailable');
     }
