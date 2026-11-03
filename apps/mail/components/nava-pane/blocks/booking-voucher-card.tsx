@@ -23,6 +23,9 @@ export function BookingVoucherCard({
   readAs = null,
   workItemId = null,
   writesEnabled = false,
+  propertyCode = null,
+  transportId = null,
+  mailboxScope = null,
   senderEmail = null,
   subject = null,
   bodyText = null,
@@ -39,6 +42,10 @@ export function BookingVoucherCard({
   workItemId?: string | null;
   /** Attach/approve writes. Labtest-only; create mode never turns this on. Lookup stays available when off. */
   writesEnabled?: boolean;
+  /** Registry-backed property for the active mailbox. */
+  propertyCode?: string | null;
+  transportId?: string | null;
+  mailboxScope?: string | null;
   senderEmail?: string | null;
   subject?: string | null;
   bodyText?: string | null;
@@ -94,13 +101,16 @@ export function BookingVoucherCard({
       ) : null}
       {showVoucherFindCard ? (
         <VoucherFindCard
-          key={internetMessageId ?? 'no-email'}
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId])}
           internetMessageId={internetMessageId}
+          transportId={transportId}
+          mailboxScope={mailboxScope}
           trpc={trpcClient}
           syncCommitted={syncCommitted}
           syncPending={syncPending}
           workItemId={workItemId}
           writesEnabled={writesEnabled && !amendment}
+          propertyCode={propertyCode}
         />
       ) : null}
     </>

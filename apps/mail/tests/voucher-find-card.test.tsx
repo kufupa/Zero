@@ -18,8 +18,10 @@ import {
   type GuestSearchReply,
   type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { VoucherFindCard } from '../components/quote-workflow/voucher-find-card';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { VoucherFindCard as ScopedVoucherFindCard } from '../components/quote-workflow/voucher-find-card';
+import * as attachmentAccess from '../lib/attachment-access';
+import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 
@@ -27,11 +29,18 @@ let restoreClipboard: () => void = () => {};
 afterEach(() => {
   cleanup();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   restoreClipboard();
   restoreClipboard = () => {};
 });
 
 const AS_OF = '2026-10-09T08:05:00.000Z';
+const MAILBOX = { context: { activeTransportId: 'transport-1' } };
+
+function VoucherFindCard(props: ComponentProps<typeof ScopedVoucherFindCard>) {
+  return <ScopedVoucherFindCard transportId="transport-1" mailboxScope="user-1:session-1:transport-1" {...props} />;
+}
 
 const VOUCHER: VoucherFindReply = {
   status: 'voucher',
@@ -57,6 +66,7 @@ const SMITH_ROW = {
 
 type JobStatusQuery = (input: {
   threadId: string;
+  messageId?: string;
   kind: 'find' | 'search_guest' | 'availability';
   confirmation?: string;
   lastName?: string;
@@ -96,6 +106,7 @@ function fakeTrpc(options: {
     const runId = `run-${++issued}`;
     jobs.set(runId, {
       runId,
+      sourceMessageId: input.messageId,
       request: { kind: 'search_guest', ...input },
       prefetch: false,
       status: 'done',
@@ -117,6 +128,7 @@ function fakeTrpc(options: {
     const runId = `run-${++issued}`;
     jobs.set(runId, {
       runId,
+      sourceMessageId: input.messageId,
       request: { kind: 'find', ...input },
       prefetch: false,
       status: 'done',
@@ -149,8 +161,8 @@ function fakeTrpc(options: {
                   departure?: string | null;
                 },
           ) => {
-            if ('threadId' in input && options.status) return options.status(input);
             if ('runId' in input) return jobs.get(input.runId) ?? null;
+            if ('threadId' in input && options.status) return options.status(input);
             if (input.kind === 'find') {
               return [...jobs.values()].find((view) =>
                 view.request?.kind === 'find' &&
@@ -258,7 +270,7 @@ describe('voucher find card: the existing search', () => {
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
-    });
+    }, MAILBOX);
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
@@ -312,7 +324,7 @@ describe('voucher find card: the existing search', () => {
       messageId: 'm1',
       confirmation: '57291630-1',
       arrival: '2026-11-12',
-    });
+    }, MAILBOX);
   });
 
   it('passes the selected voucher message id on guest search and stay find', async () => {
@@ -325,9 +337,11 @@ describe('voucher find card: the existing search', () => {
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(queueSearchGuest).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+      MAILBOX,
     );
     expect(searchGuest).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+      MAILBOX,
     );
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.readDetails }));
     await waitFor(() =>
@@ -337,6 +351,7 @@ describe('voucher find card: the existing search', () => {
           messageId: 'm1',
           confirmation: '57291630-1',
         }),
+        MAILBOX,
       ),
     );
     expect(findStay).toHaveBeenCalledWith(
@@ -345,13 +360,14 @@ describe('voucher find card: the existing search', () => {
         messageId: 'm1',
         confirmation: '57291630-1',
       }),
+      MAILBOX,
     );
   });
 
   it('with the job queue off, opening the card runs no HMS search and the Find button runs one on click', async () => {
     const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, queueOff: true });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ autoStart: true })));
+    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ autoStart: true }), MAILBOX));
     expect(searchGuest).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
@@ -361,12 +377,13 @@ describe('voucher find card: the existing search', () => {
       arrival: '2026-11-12',
       threadId: 'thread-1',
       messageId: 'm1',
-    });
+    }, MAILBOX);
   });
 
   it('hydrates a matching prefetched result on open and never queues another lookup', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-1',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -385,9 +402,42 @@ describe('voucher find card: the existing search', () => {
     expect(queueSearchGuest).not.toHaveBeenCalled();
   });
 
+  it('rejects a same-thread result from another email and scopes resume and polling to this mailbox', async () => {
+    const wrong: HmsJobView = {
+      runId: 'other-email', sourceMessageId: 'm2',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true, status: 'done', position: null, attempts: 1, failureClass: null, asOf: AS_OF,
+      result: { outcome: 'ok', rows: [{ ...SMITH_ROW, firstName: 'Wrong' }], screenshots: [], runId: null },
+    };
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, resumed: wrong });
+    const status = vi.spyOn(trpc.paneStayLookup.jobStatus, 'query');
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByText('Wrong Smith · 57291630-1')).toBeNull();
+    expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm1' }), MAILBOX);
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', kind: 'search_guest',
+    }), MAILBOX);
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', runId: 'run-1',
+    }), MAILBOX);
+  });
+
+  it('does not search or offer a preview without a selected source message', async () => {
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: { ...VOUCHER, messageId: '' } });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="wi-1" propertyCode="HRCEN" />);
+    expect(await screen.findByText(VOUCHER_COPY.caption)).toBeTruthy();
+    await act(async () => {});
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
+  });
+
   it('keeps Find hidden until a slow read-back settles, then shows the existing result', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-slow',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -432,6 +482,7 @@ describe('voucher find card: the existing search', () => {
   it('does not promote a narrower one-row search when an unfiltered search is ambiguous', async () => {
     const narrow: HmsJobView = {
       runId: 'narrow-1',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' },
       prefetch: false,
       status: 'done',
@@ -458,6 +509,7 @@ describe('voucher find card: the existing search', () => {
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
     expect(status).toHaveBeenCalledWith({
       threadId: 'thread-1',
+      messageId: 'm1',
       kind: 'search_guest',
       lastName: 'Smith',
       arrival: '2026-11-12',
@@ -469,7 +521,7 @@ describe('voucher find card: the existing search', () => {
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
-    });
+    }, MAILBOX);
     expect(searchGuest).toHaveBeenCalledWith({
       lastName: 'Smith',
       arrival: '2026-11-12',
@@ -496,6 +548,7 @@ describe('voucher find card: the existing search', () => {
   it('uses a retry status read to hydrate a job instead of creating a duplicate', async () => {
     const prefetched: HmsJobView = {
       runId: 'prefetch-after-retry',
+      sourceMessageId: 'm1',
       request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
       prefetch: true,
       status: 'done',
@@ -551,6 +604,7 @@ describe('voucher find card: the existing search', () => {
         trpc={trpc}
         download={vi.fn()}
         workItemId="wi-1"
+        propertyCode="HRDAV"
         writesEnabled
       />,
     );
@@ -608,8 +662,8 @@ describe('voucher find card: the existing search', () => {
       arrival: '2026-11-12',
       autoStart: true,
     };
-    expect(queueSearchGuest).toHaveBeenNthCalledWith(1, idempotentAutoStart);
-    expect(queueSearchGuest).toHaveBeenNthCalledWith(2, idempotentAutoStart);
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(1, idempotentAutoStart, MAILBOX);
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(2, idempotentAutoStart, MAILBOX);
   });
 
   it("never reads back another guest's search from the same thread, and still reads back this guest's", async () => {
@@ -660,6 +714,68 @@ describe('voucher find card: the existing search', () => {
 });
 
 describe('voucher find card: saving the file', () => {
+  it('downloads the scoped attachment after the pinned URL and bytes both arrive', async () => {
+    const getAttachment = vi.fn(async () => ({ url: 'https://example.test/attachment' }));
+    const blob = new Blob(['%PDF-test'], { type: 'application/pdf' });
+    const fetchBytes = vi.fn(async () => ({ ok: true, blob: async () => blob }));
+    const trigger = vi.spyOn(attachmentAccess, 'triggerBlobDownload').mockImplementation(() => {});
+    vi.stubGlobal('fetch', fetchBytes);
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { mail?: unknown }).mail = { getAttachment: { query: getAttachment } };
+    render(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc}
+      transportId="transport-1" mailboxScope="user-1:session-1:transport-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.save }));
+    await waitFor(() => expect(trigger).toHaveBeenCalledWith(blob, 'Smith_VCH_1879000.pdf'));
+    expect(getAttachment).toHaveBeenCalledWith({ messageId: 'm1', attachmentId: 'att-1' },
+      expect.objectContaining({ context: MAILBOX.context, signal: expect.anything() }));
+    expect(fetchBytes).toHaveBeenCalledWith('https://example.test/attachment', { signal: expect.anything() });
+  });
+
+  it('pins the attachment request and ignores its late URL after an actor switch', async () => {
+    let resolveUrl!: (result: { url: string }) => void;
+    let signal!: AbortSignal;
+    const getAttachment = vi.fn((_input: { messageId: string; attachmentId: string }, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return new Promise<{ url: string }>((resolve) => { resolveUrl = resolve; });
+    });
+    const fetchBytes = vi.fn();
+    vi.stubGlobal('fetch', fetchBytes);
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { mail?: unknown }).mail = { getAttachment: { query: getAttachment } };
+    const { rerender } = render(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc}
+      transportId="transport-1" mailboxScope="user-1:session-1:transport-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.save }));
+    await waitFor(() => expect(getAttachment).toHaveBeenCalledTimes(1));
+    expect(getAttachment).toHaveBeenCalledWith({ messageId: 'm1', attachmentId: 'att-1' },
+      expect.objectContaining({ context: MAILBOX.context, signal: expect.anything() }));
+    rerender(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc}
+      transportId="transport-1" mailboxScope="user-2:session-2:transport-1" />);
+    expect(signal.aborted).toBe(true);
+    await act(async () => resolveUrl({ url: 'https://example.test/attachment' }));
+    expect(fetchBytes).not.toHaveBeenCalled();
+  });
+
+  it('aborts an in-flight attachment fetch when the mailbox changes', async () => {
+    const getAttachment = vi.fn(async () => ({ url: 'https://example.test/attachment' }));
+    let signal!: AbortSignal;
+    const fetchBytes = vi.fn((_url: string, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    });
+    vi.stubGlobal('fetch', fetchBytes);
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { mail?: unknown }).mail = { getAttachment: { query: getAttachment } };
+    const { rerender } = render(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc}
+      transportId="transport-1" mailboxScope="user-1:session-1:transport-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.save }));
+    await waitFor(() => expect(fetchBytes).toHaveBeenCalledTimes(1));
+    rerender(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc}
+      transportId="transport-2" mailboxScope="user-1:session-1:transport-2" />);
+    expect(signal.aborted).toBe(true);
+  });
+
   it('downloads the voucher file by its attachment id, and says to upload it in HMS Documents', async () => {
     const download = vi.fn(async () => {});
     const { trpc } = fakeTrpc({ reply: VOUCHER });
@@ -696,6 +812,96 @@ describe('voucher find card: saving the file', () => {
 describe('voucher find card: attach to HMS', () => {
   const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
 
+  it('reviews the exact selected document and shows Go unavailable without enabling writes', async () => {
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect(await screen.findByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeTruthy();
+    expect(preview).toHaveBeenCalledWith({ workItemId: WORK_ITEM, sourceMessageId: 'm1', attachmentId: 'att-1',
+      confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival, lastName: SMITH_ROW.lastName }, MAILBOX);
+    expect(screen.getByRole('button', { name: 'Go' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+  });
+
+  it('does not show a stale preview after the selected work item changes', async () => {
+    let resolve!: (value: { status: 'ready'; confirmation: string; arrival: string; documentName: string }) => void;
+    const preview = vi.fn(() => new Promise<Parameters<typeof resolve>[0]>((done) => { resolve = done; }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview } };
+    const { rerender } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="other-item" propertyCode="HRCEN" />);
+    await act(async () => resolve({ status: 'ready', confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    expect(screen.queryByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeNull();
+  });
+
+  it('hides a ready preview if an upload is later found to be unconfirmed', async () => {
+    let resolveState!: (value: { run: { state: string; lastError: string; evidence: { name: string }[] } }) => void;
+    const writeState = vi.fn(() => new Promise<Parameters<typeof resolveState>[0]>((done) => { resolveState = done; }));
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, writeState: { query: writeState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect(await screen.findByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeTruthy();
+    await act(async () => resolveState({ run: { state: 'dead_letter', lastError: 'upload_unconfirmed', evidence: [] } }));
+    expect(await screen.findByText('Check in Infor')).toBeTruthy();
+    expect(screen.queryByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Go' })).toBeNull();
+  });
+
+  it('also hides the preview when a crashed attach needs an HMS check', async () => {
+    let resolveState!: (value: { form: { action: string }; needsCheck: boolean;
+      run: { state: string; lastError: string; evidence: { name: string }[] } }) => void;
+    const writeState = vi.fn(() => new Promise<Parameters<typeof resolveState>[0]>((done) => { resolveState = done; }));
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf' }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, writeState: { query: writeState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    expect(await screen.findByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeTruthy();
+    await act(async () => resolveState({ form: { action: 'attach_document' }, needsCheck: true,
+      run: { state: 'dead_letter', lastError: 'lease_lost', evidence: [] } }));
+    expect(await screen.findByText('Check in Infor')).toBeTruthy();
+    expect(screen.queryByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeNull();
+  });
+
+  it('retains an unknown attach warning if the next status read fails', async () => {
+    const writeState = vi.fn().mockResolvedValueOnce({ form: { action: 'attach_document' }, needsCheck: true,
+      run: { state: 'dead_letter', failureClass: 'UNKNOWN', lastError: 'worker_lost', evidence: [] } })
+      .mockRejectedValue(new Error('status unavailable'));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: writeState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} />);
+    expect(await screen.findByText('Check in Infor')).toBeTruthy();
+    await waitFor(() => expect(writeState.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText('Check in Infor')).toBeTruthy();
+  });
+
+  it('keeps the legacy attach action at a different verified property', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { quoteWorkflow: Record<string, unknown> }).quoteWorkflow.bindVoucherAttach = { mutate: vi.fn() };
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
+    expect(await screen.findByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
+  });
+
+  it('offers no filing action until the active property is verified', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode={null} writesEnabled />);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
+  });
+
   it('hides Attach when the voucher file is not a PDF', async () => {
     const { trpc } = fakeTrpc({
       reply: {
@@ -709,6 +915,7 @@ describe('voucher find card: attach to HMS', () => {
         trpc={trpc}
         download={vi.fn()}
         workItemId={WORK_ITEM}
+        propertyCode="HRDAV"
         writesEnabled
       />,
     );
@@ -724,6 +931,7 @@ describe('voucher find card: attach to HMS', () => {
         trpc={trpc}
         download={vi.fn()}
         workItemId={WORK_ITEM}
+        propertyCode="HRDAV"
         writesEnabled
       />,
     );
@@ -750,6 +958,7 @@ describe('voucher find card: attach to HMS', () => {
         trpc={trpc}
         download={vi.fn()}
         workItemId={WORK_ITEM}
+        propertyCode="HRDAV"
         writesEnabled
       />,
     );
@@ -761,7 +970,7 @@ describe('voucher find card: attach to HMS', () => {
         arrival: SMITH_ROW.arrival,
         lastName: SMITH_ROW.lastName,
         attachmentId: 'att-1',
-      }),
+      }, MAILBOX),
     );
   });
 
@@ -794,6 +1003,7 @@ describe('voucher find card: attach to HMS', () => {
         trpc={trpc}
         download={vi.fn()}
         workItemId={WORK_ITEM}
+        propertyCode="HRDAV"
         writesEnabled
       />,
     );
@@ -808,11 +1018,44 @@ describe('voucher find card: attach to HMS', () => {
 describe('voucher find bind and search gate', () => {
   it('binds quoteWorkflow.voucherFind off a tRPC client, and null when the route is missing', async () => {
     const { trpc, voucherFind } = fakeTrpc({ reply: VOUCHER });
-    const client = voucherFindClientFromTrpc(trpc);
+    const client = voucherFindClientFromTrpc(trpc, 'transport-1');
     expect(client).not.toBeNull();
     await expect(client!.check({ internetMessageId: 'abc@host' })).resolves.toEqual(VOUCHER);
-    expect(voucherFind).toHaveBeenCalledWith({ internetMessageId: 'abc@host' });
-    expect(voucherFindClientFromTrpc({})).toBeNull();
+    expect(voucherFind).toHaveBeenCalledWith({ internetMessageId: 'abc@host' }, MAILBOX);
+    expect(voucherFindClientFromTrpc({}, 'transport-1')).toBeNull();
+    expect(voucherFindClientFromTrpc(trpc, null)).toBeNull();
+  });
+
+  it('does not query or show a voucher without mailbox and actor scope', async () => {
+    const { trpc, voucherFind } = fakeTrpc({ reply: VOUCHER });
+    const { container, rerender } = render(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc} />);
+    rerender(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc} transportId="transport-1" />);
+    rerender(<ScopedVoucherFindCard internetMessageId="abc@host" trpc={trpc} mailboxScope="user-1:session-1" />);
+    expect(container.textContent).toBe('');
+    expect(voucherFind).not.toHaveBeenCalled();
+  });
+
+  it('pins each voucher read and discards a late reply when mailbox or actor changes', async () => {
+    let resolveOld!: (reply: VoucherFindReply) => void;
+    const oldReply = new Promise<VoucherFindReply>((resolve) => { resolveOld = resolve; });
+    const query = vi.fn().mockReturnValueOnce(oldReply).mockResolvedValue({ status: 'not_voucher' });
+    const trpc = { quoteWorkflow: { voucherFind: { query } } };
+    const { container, rerender } = render(<ScopedVoucherFindCard internetMessageId="same@host" trpc={trpc}
+      transportId="transport-1" mailboxScope="user-1:session-1:transport-1" />);
+    await waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    rerender(<ScopedVoucherFindCard internetMessageId="same@host" trpc={trpc}
+      transportId="transport-2" mailboxScope="user-2:session-2:transport-2" />);
+    await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await act(async () => resolveOld(VOUCHER));
+    expect(container.textContent).toBe('');
+    expect(query).toHaveBeenNthCalledWith(1, { internetMessageId: 'same@host' }, MAILBOX);
+    expect(query).toHaveBeenNthCalledWith(2, { internetMessageId: 'same@host' },
+      { context: { activeTransportId: 'transport-2' } });
+    rerender(<ScopedVoucherFindCard internetMessageId="same@host" trpc={trpc}
+      transportId="transport-2" mailboxScope="user-3:session-3:transport-2" />);
+    await waitFor(() => expect(query).toHaveBeenCalledTimes(3));
+    expect(query).toHaveBeenNthCalledWith(3, { internetMessageId: 'same@host' },
+      { context: { activeTransportId: 'transport-2' } });
   });
 
   it('names only what Luna read, and allows a search only with both a surname and an arrival', () => {

@@ -35,9 +35,10 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate } = vi.hoisted(() => ({
+const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate, filingPreviewMutate } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
+  filingPreviewMutate: vi.fn(),
   syncStatusQuery: vi.fn().mockResolvedValue(null),
   saveReplyMutate: vi.fn().mockResolvedValue({ id: 'draft-1', replaced: false }),
   quotePdfMutate: vi.fn().mockResolvedValue({
@@ -262,6 +263,7 @@ vi.mock('../providers/query-provider', () => ({
     panePartyLookup: {
       findParty: { mutate: (input: { name: string; kind?: 'company' | 'agency' }) => bridgeMockState.findPartyMutation(input) },
     },
+    hmsApproval: { previewAttach: { mutate: filingPreviewMutate } },
     get workItems() {
       const stored = bridgeMockState.storedWork;
       const listRoutes = {
@@ -461,6 +463,7 @@ describe('NavaPane', () => {
     bridgeMockState.jobQueueEnabledQuery.mockReset().mockResolvedValue(false);
     voucherFindQuery.mockReset();
     voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
+    filingPreviewMutate.mockReset();
     syncStatusQuery.mockReset().mockResolvedValue(null);
     saveReplyMutate.mockReset();
     saveReplyMutate.mockResolvedValue({ id: 'draft-1', replaced: false });
@@ -703,16 +706,37 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
     expect(screen.getByText(/Guest Smith/)).toBeDefined();
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+      { context: { activeTransportId: 'transport-1' } });
   });
 
   it('keeps the Find the booking card hidden for an email that is not a voucher', async () => {
     analysisForBookingVoucher();
     render(<NavaPane bridge={fakeBridge} />);
     await waitFor(() =>
-      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+        { context: { activeTransportId: 'transport-1' } }),
     );
     expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+  });
+
+  it('clears the voucher when session identity goes missing', async () => {
+    analysisForBookingVoucher();
+    voucherFindQuery.mockResolvedValue({ status: 'voucher', messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' }, file: null });
+    const previous = bridgeMockState.sessionId;
+    try {
+      const { rerender } = render(<NavaPane bridge={fakeBridge} />);
+      expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
+      const calls = voucherFindQuery.mock.calls.length;
+      bridgeMockState.sessionId = '';
+      rerender(<NavaPane bridge={fakeBridge} />);
+      expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+      await act(async () => {});
+      expect(voucherFindQuery).toHaveBeenCalledTimes(calls);
+    } finally {
+      bridgeMockState.sessionId = previous;
+    }
   });
 
   /**
@@ -3724,8 +3748,50 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(bridgeMockState.analyseCalls).toBe(0);
     expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
     expect(bridgeMockState.storedWorkLookups).toBe(1);
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+      { context: { activeTransportId: 'transport-1' } });
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('reviews a payment voucher on its existing work item while upload remains unavailable', async () => {
+    const channelBridge = {
+      ...fakeBridge,
+      activeEmail: { ...fakeBridge.activeEmail,
+        subject: 'Expedia Partner Central - Payment receipt',
+        senderEmail: 'notifications@m.expediapartnercentral.com',
+        senderName: 'Expedia Partner Central', bodyText: 'Payment received for the guest reservation.' },
+    } as unknown as PaneBridge;
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.storedWork = { ...storedMail('voucher_pop'), workItemId: 'wi-payment', workItemStatus: 'needs_you' };
+    voucherFindQuery.mockResolvedValue({ status: 'voucher', messageId: 'mail-1', threadId: 'thread-1',
+      guest: { lastName: 'Smith', arrival: '2027-11-12' },
+      file: { id: 'att-1', filename: 'voucher.pdf', mimeType: 'application/pdf', sizeBytes: 100 } });
+    bridgeMockState.hmsQueueStatus = {
+      runId: 'run-1', sourceMessageId: 'mail-1',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2027-11-12', messageId: 'mail-1' },
+      prefetch: false, status: 'done', position: null, attempts: 1, failureClass: null, asOf: '2026-11-03T00:00:00Z',
+      result: { kind: 'search_guest', outcome: 'ok', rows: [{ confirmation: '57291630-1', lastName: 'Smith',
+        firstName: 'John', status: 'Reserved', arrival: '2027-11-12', departure: '2027-11-14' }],
+        screenshots: [], runId: null, asOf: '2026-11-03T00:00:00Z' },
+    };
+    filingPreviewMutate.mockResolvedValue({ status: 'ready', confirmation: '57291630-1', arrival: '2027-11-12',
+      documentName: 'voucher.pdf' });
+    try {
+      render(<NavaPane bridge={channelBridge} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+      await waitFor(() => expect(filingPreviewMutate).toHaveBeenCalledWith({ workItemId: 'wi-payment',
+        sourceMessageId: 'mail-1', attachmentId: 'att-1', confirmation: '57291630-1', arrival: '2027-11-12',
+        lastName: 'Smith' }, { context: { activeTransportId: 'transport-1' } }));
+      expect(await screen.findByText(/Upload is not available yet/)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Go' }).hasAttribute('disabled')).toBe(true);
+    } finally {
+      bridgeMockState.quotePaneConfig = null;
+      bridgeMockState.hmsQueueStatus = null;
+      filingPreviewMutate.mockReset();
+    }
   });
 
   it('shows a system-mail no-action card without an OTA chip', async () => {

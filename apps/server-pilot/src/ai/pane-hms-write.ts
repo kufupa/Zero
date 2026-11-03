@@ -815,6 +815,10 @@ async function saveAttach(
   target: HmsReadTarget,
   allowRealGuest: boolean,
 ): Promise<SaveOutcome> {
+  // Existing queued legacy uploads do not own the Cloud dispatch/recovery fence.
+  if (target.propertyCode === 'HRCEN') {
+    return { outcome: 'refused_cloud_upload_unavailable', clickedOk: false, uploadSent: false, screenshots: [] };
+  }
   if (!file) throw new Error('attach_file_missing');
   const spawn = paneHmsWriteLoaders.spawnAttach ?? spawnAttachDocument;
   const result = await spawn({
@@ -1029,6 +1033,13 @@ async function runClaimed(
   const refusal = formRefusal(form, { allowRealGuest });
   if (refusal) return endRun(db, fence, 'POLICY_BLOCK', refusal);
 
+  const resolved = paneStayHmsTargetForTransport(transportId);
+  if (!resolved.ok) return endRun(db, fence, 'POLICY_BLOCK', 'refused_unknown_transport');
+  const target = resolved.target;
+  if (form.action === 'attach_document' && target.propertyCode === 'HRCEN') {
+    return endRun(db, fence, 'POLICY_BLOCK', 'refused_cloud_upload_unavailable');
+  }
+
   // Read before consume: a refused read ends the run with nothing consumed.
   let file: string | null = null;
   if (form.action === 'attach_document') {
@@ -1047,9 +1058,6 @@ async function runClaimed(
     await writeFile(file, pdf, { mode: 0o600 });
   }
 
-  const resolved = paneStayHmsTargetForTransport(transportId);
-  if (!resolved.ok) return endRun(db, fence, 'POLICY_BLOCK', 'refused_unknown_transport');
-  const target = resolved.target;
   const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return endRun(db, fence, 'POLICY_BLOCK', 'refused_lock_unavailable');
   try {

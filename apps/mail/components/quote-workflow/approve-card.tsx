@@ -220,13 +220,16 @@ function WriteBody({
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
+  const filingUnavailable = view.form.action === 'attach_document' && view.filingAvailable === false;
   return (
     <>
       <div role="status" aria-live="polite" className="text-[12px] text-[#334155]">
-        {status.message}
+        {filingUnavailable ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
       <WriteRows rows={rows} />
-      {status.approve ? (
+      {filingUnavailable ? (
+        <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
+      ) : status.approve ? (
         <ApproveSection
           client={client}
           workItemId={workItemId}
@@ -237,7 +240,7 @@ function WriteBody({
           writesEnabled={writesEnabled}
         />
       ) : null}
-      {status.phase === 'needs_check' ? (
+      {status.phase === 'needs_check' && !filingUnavailable ? (
         <NeedsCheckSection
           client={client}
           workItemId={workItemId}

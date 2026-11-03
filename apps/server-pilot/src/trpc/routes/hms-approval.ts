@@ -9,6 +9,7 @@ import {
   reviewHmsWrite,
 } from '../../ai/hms-approval.js';
 import { parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
+import { previewFiling } from '../../ai/pane-filing-preview.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
@@ -17,6 +18,9 @@ const uuid = z.string().uuid();
 const approveInput = z.object({ workItemId: uuid, formDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 const evidenceInput = z.object({ workItemId: uuid, eventId: uuid }).strict();
 const stateInput = z.object({ workItemId: uuid }).strict();
+const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
+  attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(100) }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, note: z.string().trim().min(3).max(500) }).strict();
 // A flag must say why. An OK carries no note. Both name the run the reviewer was shown.
@@ -43,6 +47,9 @@ function refusal(err: unknown): never {
 }
 
 export const hmsApprovalRouter = router({
+  /** This preview makes no approval and never queues a write. */
+  previewAttach: mailboxProcedure.input(filingPreviewInput).mutation(({ input, ctx }) =>
+    previewFiling({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id })),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {
     try {
       return await approveHmsWrite({

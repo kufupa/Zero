@@ -23,7 +23,8 @@ import {
   voucherGuestLine,
   type VoucherFindReply,
 } from '@/lib/quote-workflow/voucher-find';
-import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/attachment-access';
+import { fetchAttachmentBlob, triggerBlobDownload, type AttachmentAccessInput } from '@/lib/attachment-access';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, PrimaryButton, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
@@ -40,6 +41,10 @@ export const VOUCHER_ATTACH_COPY = {
   checkInInfor: 'Check in Infor',
   documentsRow: 'Documents row in HMS',
   refused: 'Nava could not prepare the attach. Check in Infor.',
+  review: 'Check document and booking',
+  reviewing: 'Checking document and booking…',
+  reviewFailed: 'Nava could not verify the document and booking. Check in Infor.',
+  reviewReady: 'Document available. Booking found. Check they belong together. Upload is not available yet.',
 } as const;
 
 export type VoucherAttachBindInput = {
@@ -55,29 +60,49 @@ type VoucherAttachBindReply =
   | { status: 'refused'; reason: string };
 
 type VoucherAttachWriteView = {
-  run: { state: string; lastError: string | null; evidence: { name: string }[] } | null;
+  form?: { action?: string };
+  needsCheck?: boolean;
+  run: { state: string; lastError: string | null; failureClass?: string | null; evidence: { name: string }[] } | null;
 };
+
+type VoucherPreviewInput = VoucherAttachBindInput & { sourceMessageId: string };
+type VoucherPreviewReply =
+  | { status: 'ready'; confirmation: string; arrival: string; documentName: string }
+  | { status: 'refused'; reason: string };
 
 type VoucherAttachClient = {
   bind?: (input: VoucherAttachBindInput) => Promise<VoucherAttachBindReply>;
+  preview?: (input: VoucherPreviewInput) => Promise<VoucherPreviewReply>;
   writeState?: (input: { workItemId: string }) => Promise<VoucherAttachWriteView | null>;
 };
 
+type MailboxOptions = { context: { activeTransportId: string } };
 type TrpcAttachRoutes = {
-  quoteWorkflow?: { bindVoucherAttach?: { mutate: NonNullable<VoucherAttachClient['bind']> } };
+  mail?: {
+    getAttachment?: { query: (input: { messageId: string; attachmentId: string },
+      options: MailboxOptions & { signal: AbortSignal }) => Promise<{ url: string }> };
+  };
+  quoteWorkflow?: { bindVoucherAttach?: { mutate: (input: VoucherAttachBindInput, options: MailboxOptions) => Promise<VoucherAttachBindReply> } };
   hmsApproval?: {
-    bindAttach?: { mutate: NonNullable<VoucherAttachClient['bind']> };
-    writeState?: { query: NonNullable<VoucherAttachClient['writeState']> };
+    bindAttach?: { mutate: (input: VoucherAttachBindInput, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
+    previewAttach?: { mutate: (input: VoucherPreviewInput, options: MailboxOptions) => Promise<VoucherPreviewReply> };
+    writeState?: { query: (input: { workItemId: string }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
   };
 };
 
-function voucherAttachClientFromTrpc(trpc: unknown): VoucherAttachClient | null {
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null): VoucherAttachClient | null {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = trpc as TrpcAttachRoutes;
   const bind = routes.quoteWorkflow?.bindVoucherAttach?.mutate ?? routes.hmsApproval?.bindAttach?.mutate;
   const writeState = routes.hmsApproval?.writeState?.query;
-  if (!bind && !writeState) return null;
-  return { ...(bind ? { bind } : {}), ...(writeState ? { writeState } : {}) };
+  const preview = routes.hmsApproval?.previewAttach?.mutate;
+  if (!bind && !writeState && !preview) return null;
+  return {
+    ...(bind ? { bind: (input: VoucherAttachBindInput) => bind(input, mailbox) } : {}),
+    ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
+    ...(writeState ? { writeState: (input: { workItemId: string }) => writeState(input, mailbox) } : {}),
+  };
 }
 
 function normalizedSurname(value: string): string {
@@ -90,17 +115,12 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'failed';
  * Find the booking for voucher or proof-of-payment mail. Renders nothing unless the server says this email is a voucher.
  * It resumes an existing guest search first, and queues one on open only when the voucher's guest and arrival are clear.
  */
-export function VoucherFindCard({
-  internetMessageId,
-  trpc,
-  download = downloadAttachmentViaBlob,
-  syncCommitted = null,
-  syncPending = false,
-  workItemId = null,
-  writesEnabled = false,
-}: {
+type VoucherFindCardProps = {
   internetMessageId: string | null;
   trpc: unknown;
+  /** The session's active transport and actor scope. Missing scope disables all voucher reads. */
+  transportId?: string | null;
+  mailboxScope?: string | null;
   /** Saves one attachment. The default fetches the signed URL and downloads the bytes. */
   download?: (input: AttachmentAccessInput) => Promise<void>;
   /** The mailbox sync's committed count. An email the server had not stored yet is checked again when it advances. */
@@ -111,17 +131,40 @@ export function VoucherFindCard({
   workItemId?: string | null;
   /** Attach is a write. Hidden when the pane has writes off. */
   writesEnabled?: boolean;
-}) {
-  const findClient = useMemo(() => voucherFindClientFromTrpc(trpc), [trpc]);
-  const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
-  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc), [trpc]);
+  /** Registry-backed property for the active mailbox; unknown disables filing actions. */
+  propertyCode?: string | null;
+};
+
+export function VoucherFindCard(props: VoucherFindCardProps) {
+  if (!props.transportId || !props.mailboxScope || !props.internetMessageId) return null;
+  // Reset pending replies and previews whenever the selected mail, mailbox or actor/session changes.
+  return <VoucherFindCardBody key={JSON.stringify([props.mailboxScope, props.transportId, props.internetMessageId])} {...props} />;
+}
+
+function VoucherFindCardBody({
+  internetMessageId,
+  trpc,
+  transportId = null,
+  download,
+  syncCommitted = null,
+  syncPending = false,
+  workItemId = null,
+  writesEnabled = false,
+  propertyCode = null,
+}: VoucherFindCardProps) {
+  const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
+  const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
+  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
   const [attach, setAttach] = useState<'idle' | 'binding' | 'bound' | 'refused'>('idle');
   const [attachWrite, setAttachWrite] = useState<VoucherAttachWriteView | null>(null);
+  const [preview, setPreview] = useState<{ key: string; status: 'loading' | 'ready' | 'refused' } | null>(null);
+  const previewKeyRef = useRef('');
   const [detailsRequested, setDetailsRequested] = useState(false);
   const detailsStartedFor = useRef<string | null>(null);
   const mounted = useRef(false);
+  const downloads = useRef(new Set<AbortController>());
   const [checkRound, setCheckRound] = useState(0);
   // The sync's committed count as of the last commit this card has seen.
   const committedSeen = useRef(syncCommitted);
@@ -133,7 +176,7 @@ export function VoucherFindCard({
   const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
   const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
   const transport = useMemo(
-    () => hmsJobTransport(jobClient, replyThread, replyMessageId),
+    () => hmsJobTransport(jobClient, replyThread, replyMessageId, { exactSource: true }),
     [jobClient, replyThread, replyMessageId],
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
@@ -167,6 +210,11 @@ export function VoucherFindCard({
     normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(voucherGuest.lastName)
       ? searchRun.rows[0]!
       : null;
+  const previewKey = JSON.stringify([internetMessageId, workItemId, replyMessageId,
+    reply?.status === 'voucher' ? reply.file : null,
+    reply?.status === 'voucher' ? reply.guest : null, singleMatch]);
+  previewKeyRef.current = previewKey;
+  const previewStatus = preview?.key === previewKey ? preview.status : 'idle';
   const detailRequest = singleMatch
     ? {
         kind: 'find' as const,
@@ -222,6 +270,8 @@ export function VoucherFindCard({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      for (const controller of downloads.current) controller.abort();
+      downloads.current.clear();
     };
   }, []);
 
@@ -280,9 +330,8 @@ export function VoucherFindCard({
         (view) => {
           if (live) setAttachWrite(view);
         },
-        () => {
-          if (live) setAttachWrite(null);
-        },
+        // A transient status failure must not erase an earlier unknown outcome.
+        () => undefined,
       );
     };
     read();
@@ -335,25 +384,72 @@ export function VoucherFindCard({
     if (!file) return;
     setSave('saving');
     try {
-      await download({
+      const input = {
         messageId: reply.messageId,
         attachmentId: file.id,
         filename: file.filename,
         mimeType: file.mimeType,
         size: file.sizeBytes,
-      });
+      };
+      if (download) await download(input);
+      else {
+        const mailbox = inMailbox(transportId);
+        const route = (trpc as TrpcAttachRoutes | null)?.mail?.getAttachment;
+        if (!mailbox || !route) throw new Error('attachment_unavailable');
+        const controller = new AbortController();
+        downloads.current.add(controller);
+        try {
+          const active = () => mounted.current && !controller.signal.aborted;
+          const blob = await fetchAttachmentBlob(input, {
+            getSignedUrl: async (messageId, attachmentId) => {
+              if (!active()) throw new Error('attachment_scope_changed');
+              const result = await route.query({ messageId, attachmentId }, { ...mailbox, signal: controller.signal });
+              if (!active()) throw new Error('attachment_scope_changed');
+              return result.url;
+            },
+            fetchBytes: (url) => {
+              if (!active()) throw new Error('attachment_scope_changed');
+              return fetch(url, { signal: controller.signal });
+            },
+          });
+          if (active()) triggerBlobDownload(blob, input.filename);
+        } finally {
+          downloads.current.delete(controller);
+        }
+      }
       if (mounted.current) setSave('saved');
     } catch {
       if (mounted.current) setSave('failed');
     }
   };
-  const unconfirmedAttach = attachWrite?.run?.lastError === 'upload_unconfirmed';
+  const unconfirmedAttach = attachWrite?.run?.lastError === 'upload_unconfirmed' ||
+    (attachWrite?.form?.action === 'attach_document' &&
+      (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? '')));
   const attachSucceeded = attachWrite?.run?.state === 'succeeded';
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const canAttach = Boolean(
-    singleMatch && attachPdf && workItemId && writesEnabled && !unconfirmedAttach && !attachSucceeded,
+    propertyCode && propertyCode !== 'HRCEN' && singleMatch && attachPdf && workItemId && writesEnabled &&
+    !unconfirmedAttach && !attachSucceeded,
   );
+  const canPreview = Boolean(propertyCode === 'HRCEN' && singleMatch && attachPdf && workItemId && reply.messageId && attachClient?.preview &&
+    !unconfirmedAttach && !attachSucceeded);
+  const reviewAttach = async () => {
+    if (!singleMatch || !file || !workItemId || !attachClient?.preview || previewStatus === 'loading') return;
+    const key = previewKey;
+    const arrival = singleMatch.arrival ?? voucherGuest?.arrival ?? '';
+    setPreview({ key, status: 'loading' });
+    try {
+      const result = await attachClient.preview({ workItemId, sourceMessageId: reply.messageId,
+        confirmation: singleMatch.confirmation, arrival, lastName: singleMatch.lastName, attachmentId: file.id });
+      if (!mounted.current || previewKeyRef.current !== key) return;
+      const ready = result.status === 'ready' && result.confirmation === singleMatch.confirmation &&
+        result.arrival === arrival && result.documentName === file.filename;
+      setPreview({ key, status: ready ? 'ready' : 'refused' });
+    } catch {
+      if (mounted.current && previewKeyRef.current === key) setPreview({ key, status: 'refused' });
+    }
+  };
   const bindAttach = async () => {
     if (!singleMatch || !file || !workItemId || !attachClient?.bind || attach === 'binding') return;
     setAttach('binding');
@@ -454,6 +550,9 @@ export function VoucherFindCard({
             }}
             onRetryDetails={detailsJob.retry}
             canAttach={canAttach}
+            canPreview={canPreview}
+            previewStatus={previewStatus}
+            onPreview={() => void reviewAttach()}
             attaching={attach === 'binding'}
             unconfirmedAttach={unconfirmedAttach}
             documentsSeen={attachSucceeded && (attachWrite?.run?.evidence.length ?? 0) > 0}
@@ -515,6 +614,9 @@ function MatchedBooking({
   onReadDetails,
   onRetryDetails,
   canAttach,
+  canPreview,
+  previewStatus,
+  onPreview,
   attaching,
   unconfirmedAttach,
   documentsSeen,
@@ -533,6 +635,9 @@ function MatchedBooking({
   onReadDetails: () => void;
   onRetryDetails: () => void;
   canAttach: boolean;
+  canPreview: boolean;
+  previewStatus: 'idle' | 'loading' | 'ready' | 'refused';
+  onPreview: () => void;
   attaching: boolean;
   unconfirmedAttach: boolean;
   documentsSeen: boolean;
@@ -589,6 +694,18 @@ function MatchedBooking({
         <PrimaryButton disabled={attaching} onClick={onAttach}>
           {attaching ? VOUCHER_ATTACH_COPY.attaching : VOUCHER_ATTACH_COPY.attach}
         </PrimaryButton>
+      ) : null}
+      {canPreview ? (
+        <PrimaryButton disabled={previewStatus === 'loading'} onClick={onPreview}>
+          {previewStatus === 'loading' ? VOUCHER_ATTACH_COPY.reviewing : VOUCHER_ATTACH_COPY.review}
+        </PrimaryButton>
+      ) : null}
+      {canPreview && previewStatus === 'refused' ? <Notice tone="warn" role="status">{VOUCHER_ATTACH_COPY.reviewFailed}</Notice> : null}
+      {canPreview && previewStatus === 'ready' ? (
+        <>
+          <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.reviewReady}</p>
+          <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
+        </>
       ) : null}
     </div>
   );

@@ -510,6 +510,9 @@ export function NavaPane({
     !requiresRelogin && session?.user?.id && activeConnection?.id
       ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
       : null;
+  const voucherMailboxScope = !requiresRelogin && session?.user?.id && session.session?.id && activeConnection?.id
+    ? JSON.stringify([session.user.id, session.session.id, activeConnection.id])
+    : null;
   const selectedIdentity = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.folderEntryId ?? ''}:${activeEmail.entryId}` : null;
   const contextRevision = useRef({ scope: currentScope, selection: selectedIdentity, scopeEpoch: 0, selectionEpoch: 0 });
@@ -2367,8 +2370,12 @@ export function NavaPane({
                 {shownScreen === 'tool' ? mailSourceNoActionNotice : null}
                 {readAs === 'payment' && activeEmail?.internetMessageId ? (
                   <VoucherFindCard
-                    key={activeEmail.internetMessageId}
+                    key={JSON.stringify([voucherMailboxScope, activeConnection?.id ?? null, activeEmail.internetMessageId])}
                     internetMessageId={activeEmail.internetMessageId}
+                    transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
+                    mailboxScope={voucherMailboxScope}
+                    propertyCode={activePaneConfig?.propertyCode ?? null}
+                    workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
                     trpc={trpcClient}
                     syncCommitted={sync.status?.committed ?? null}
                     syncPending={
@@ -2543,6 +2550,9 @@ export function NavaPane({
             />
             <BookingVoucherCard
               session={quoteSession}
+              propertyCode={activePaneConfig?.propertyCode ?? null}
+              transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
+              mailboxScope={voucherMailboxScope}
               readAs={readAs}
               internetMessageId={activeEmail?.internetMessageId ?? null}
               senderEmail={activeEmail?.senderEmail ?? null}
