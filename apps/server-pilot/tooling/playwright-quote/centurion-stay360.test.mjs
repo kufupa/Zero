@@ -5,9 +5,55 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { centurionContextOptions, newPreparedCenturionPage, withCenturionStay360Page } from './centurion-stay360.mjs';
+import {
+  centurionBrowserGroup, centurionContextOptions, closeCenturionResources, newPreparedCenturionPage, withCenturionStay360Page,
+} from './centurion-stay360.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
+
+test('failed or incomplete browser cleanup remains uncertain and still closes the other layers', async () => {
+  for (const failing of ['context', 'browser', 'server', 'group']) {
+    const calls = [];
+    const resource = (name) => ({ close: async () => { calls.push(name); if (failing === name) throw new Error('failed'); } });
+    await assert.rejects(closeCenturionResources({
+      context: resource('context'), browser: resource('browser'), server: resource('server'), processGroup: 123,
+    }, { isGroupGone: async () => { calls.push('group'); return failing !== 'group'; }, groupWaitMs: 0 }),
+    /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+    assert.deepEqual(calls, ['context', 'browser', 'server', 'group']);
+  }
+  await assert.rejects(closeCenturionResources({ server: { close: async () => {} } }), /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+});
+
+test('a hung close is bounded and later cleanup still runs', async () => {
+  const calls = [];
+  await assert.rejects(closeCenturionResources({
+    context: { close: () => new Promise(() => {}) },
+    browser: { close: async () => { calls.push('browser'); } },
+    server: { close: async () => { calls.push('server'); } }, processGroup: 123,
+  }, { timeoutMs: 10, groupWaitMs: 0, isGroupGone: async () => true }), /HMS_BROWSER_CLOSE_UNCONFIRMED/);
+  assert.deepEqual(calls, ['browser', 'server']);
+});
+
+test('a real owned Chromium server closes its detached process group', async () => {
+  const chromium = require('playwright').chromium;
+  let server, browser, context;
+  try {
+    server = await chromium.launchServer({ headless: true, host: '127.0.0.1',
+      executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+    const group = centurionBrowserGroup(server.process().pid);
+    browser = await chromium.connect(server.wsEndpoint());
+    context = await browser.newContext(centurionContextOptions(true));
+    const page = await context.newPage();
+    await page.goto('data:text/html,<title>owned browser</title>');
+    await closeCenturionResources({ context, browser, server, processGroup: group });
+    context = browser = server = undefined;
+    assert.throws(() => process.kill(-group, 0), { code: 'ESRCH' });
+  } finally {
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    await server?.close().catch(() => {});
+  }
+});
 
 test('service-worker blocking is explicit and the default context is unchanged', () => {
   assert.deepEqual(centurionContextOptions(), { viewport: { width: 1440, height: 1000 } });
