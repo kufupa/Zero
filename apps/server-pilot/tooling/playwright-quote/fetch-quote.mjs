@@ -789,6 +789,18 @@ export function detailReadOrder(options,detailsMap,stayDates) {
   return options.filter(o=>!complete(o.id));
 }
 
+/** The Cloud details panel identifies the selected day in its active date tab. */
+export async function selectedDetailDate(panel,date,timeout=20000) {
+  const [year,month,day]=date.split('-');
+  const weekday=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(`${date}T00:00:00Z`).getUTCDay()];
+  const legacy=panel.getByText(new RegExp(`Selected Date : .*${day}-${month}-${year}`));
+  const cloud=panel.locator('a.x-tab.x-tab-active').filter({hasText:new RegExp(`^${weekday}\\s+${displayDate(date)}$`)});
+  const selected=legacy.or(cloud).filter({visible:true});
+  await selected.first().waitFor({timeout});
+  if(await selected.count()!==1)throw new Error('AMBIGUOUS_SELECTED_DETAIL_DATE');
+  return selected.innerText();
+}
+
 export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, cachedRoom) {
   const row=rateRow(page,chosen.nativeRoom.code,chosen.rate.code);
   const rowInformation=await row.locator('td').first().evaluate(e=>({
@@ -796,16 +808,14 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
     labels:[...e.querySelectorAll('[data-qtip]')].map(n=>({kind:n.className,text:n.getAttribute('data-qtip')})),
   }));
   const details=[];
+  const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
   for (const [n,index] of chosen.indexes.entries()) {
     await row.locator('td').nth(index+1).click();
-    const [year,month,day]=chosen.nightly[n].date.split('-');
-    const selected=page.getByText(new RegExp(`Selected Date : .*${day}-${month}-${year}`));
-    await selected.waitFor({timeout:20000});
+    const selected=await selectedDetailDate(panel,chosen.nightly[n].date);
     const roomLabel=`Room Type : ${chosen.nativeRoom.code} - ${chosen.nativeRoom.desc}`;
     const rateLabel=`Rate Plan : ${chosen.rate.code} - ${chosen.rate.desc}`;
-    await page.getByText(roomLabel,{exact:true}).waitFor();
-    await page.getByText(rateLabel,{exact:true}).waitFor();
-    const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
+    await panel.getByText(roomLabel,{exact:true}).waitFor();
+    await panel.getByText(rateLabel,{exact:true}).waitFor();
     let sourceText=await panel.innerText();
     const roomHeader=panel.locator('.x-panel-header').filter({hasText:/^Room Type$/});
     if(await roomHeader.count()) {
@@ -813,7 +823,7 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
       if(collapsed)await roomHeader.click();
       const expanded=await panel.innerText();if(expanded!==sourceText)sourceText+='\n'+expanded;
     }
-    details.push({date:chosen.nightly[n].date,selectedDate:await selected.innerText(),room:roomLabel,rate:rateLabel,sourceText});
+    details.push({date:chosen.nightly[n].date,selectedDate:selected,room:roomLabel,rate:rateLabel,sourceText});
     await checkpoint(`${prefix}-night-${n+1}-details`);
   }
   if(cachedRoom)return {details,roomInformation:cachedRoom,rowInformation};
@@ -982,11 +992,11 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
 
 // The cloud policy is property-specific. Preserve the established HRDAV reader
 // until it has its own reviewed policy; never fall back if the HRCEN guard fails.
-export async function attachQuoteSession({href,env,property,secret,connectOverCDP,
+export async function attachQuoteSession({href,env,property,secret,quoteRequest,connectOverCDP,
   buildPolicy=prepareQuoteRequestPolicy,guardedAttach=attachGuardedQuoteSession,
   legacyAttach=attachBorrowedSession,legacyContext=newBorrowedContext}) {
   if(property.propertyCode==='HRCEN') {
-    const policy=await buildPolicy({secret,property});
+    const policy=await buildPolicy({secret,property,quoteRequest});
     const attached=await guardedAttach({href,env,policy,connectOverCDP});
     if(!attached?.guard) {
       let cleanupFailed=false;
@@ -1044,6 +1054,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
           env,
           property,
           secret,
+          quoteRequest:request,
           connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
         });
         browser=attached.browser;
