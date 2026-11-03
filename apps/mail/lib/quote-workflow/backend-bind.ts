@@ -188,6 +188,14 @@ export type StoredStayCommit = {
   screenshotRef: { runId: string; name: string } | null;
   runId?: string;
   shots?: Array<{ name: string; sha256: string; at: string }>;
+  cloudCreateTarget?: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+  cloudCreateHold?: {
+    target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+    batch?: { id: string; rooms: Array<{
+      stayId: string;
+      target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+    }> };
+  };
 };
 /** The translation the pane shows: aligned segments, or failed. Null when the read has none. */
 export type StoredTranslation =

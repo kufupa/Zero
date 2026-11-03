@@ -4,6 +4,7 @@ import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
+import { validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -87,22 +88,24 @@ async function readDraft(page) {
   },{expectedOrigin:ORIGIN,blankIds:BLANK_DRAFT_IDS});
 }
 
-async function checkedDraft(draft, guestId, page) {
+async function checkedDraft(draft, guestId, page, { allowRealGuest = false, expectedGuest } = {}) {
   if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   const arrival = dateParts(draft.arrival), departure = dateParts(draft.departure);
   if (draft.property !== PROPERTY || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
     throw new Error('NEW_DRAFT_UNVERIFIED');
   }
   const identity = draft.identity;
+  const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   const hasAr = Boolean(clean(draft.arAccountName) || identity?.arAccountId || identity?.arProfileId);
   const issue = hasAr ? 'AR_SELECTION_UNVERIFIED' : 'GUEST_PROFILE_ID_UNSUPPORTED';
-  if ((hasAr || guestId) && (!identity?.valid || identity.guestId !== guestId ||
-      clean(draft.first) !== 'Proof' || clean(draft.last) !== 'Labtest' || arrival.iso < '2027-01-01')) throw new Error(issue);
-  let guest = null, ar = null;
+  if ((hasAr || guestId) && (!identity?.valid || identity.guestId !== guestId || !validCreateGuest(guest) ||
+      clean(draft.first) !== guest.firstName || clean(draft.last) !== guest.lastName ||
+      !validCreateDates(arrival.iso, departure.iso, allowRealGuest))) throw new Error(issue);
+  let guestProof = null, ar = null;
   if (guestId) {
     const token = await verifiedLabtestProfileToken(page,{nativeId:guestId,session:identity.session});
     if (!token) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
-    guest = {nativeId:guestId,token};
+    guestProof = {nativeId:guestId,token};
   }
   if (hasAr) {
     const {session,arAccountId:accountId,arProfileId:profileId,arAccountName} = identity;
@@ -113,7 +116,7 @@ async function checkedDraft(draft, guestId, page) {
     if (!token) throw new Error('AR_SELECTION_UNVERIFIED');
     ar = {accountId,profileId,token};
   }
-  return {arrival,departure,session:guest || ar ? identity.session : null,guest,ar};
+  return {arrival,departure,session:guestProof || ar ? identity.session : null,guest:guestProof,ar};
 }
 function proofsCurrent(page, proof) {
   return (!proof.guest || isVerifiedLabtestProfileCurrent(page,{session:proof.session,...proof.guest})) &&
@@ -241,7 +244,7 @@ function bounded(promise, ms, issue) {
 }
 
 /** Select an explicit current code on a verified unsaved draft, without saving. */
-export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {}) {
+export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {}, createAuthority = {}) {
   if (guestProfileId !== undefined && (typeof guestProfileId !== 'string' || !/^\d{1,100}$/.test(guestProfileId))) {
     return {outcome:'input_gap',issue:'GUEST_PROFILE_ID_INVALID'};
   }
@@ -278,7 +281,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     fence = await installPageRequestFence(page,[CHANGE]);
     scope = fence.open();
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    const dates = await bounded(checkedDraft(before,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+    const dates = await bounded(checkedDraft(before,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
     const previousRateEvidence = !previousCode ? 'blank' : prior?.code === previousCode && prior.fingerprint === draftFingerprint(before)
       ? 'selected_by_this_tool_same_page' : 'observed_on_draft';
@@ -294,7 +297,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
         (dates.session && inquiry[0].id !== dates.session)) throw new Error('BOOKING_SESSION_UNVERIFIED');
     const sessionId = inquiry[0].id;
     const ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    const readyProof = await bounded(checkedDraft(ready,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+    const readyProof = await bounded(checkedDraft(ready,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     if (JSON.stringify(ready.fields) !== JSON.stringify(before.fields) || JSON.stringify(readyProof) !== JSON.stringify(dates)) {
       throw new Error('DRAFT_CHANGED_DURING_SEARCH');
     }
@@ -336,7 +339,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
       throw new Error('DRAFT_DATES_CHANGED');
     }
-    const afterProof = await bounded(checkedDraft(after,guestId,page),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+    const afterProof = await bounded(checkedDraft(after,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     if (JSON.stringify(afterProof) !== JSON.stringify(dates) || clean(after.first) !== clean(before.first) ||
         clean(after.last) !== clean(before.last) || clean(after.arAccountName) !== clean(before.arAccountName)) {
       throw new Error('DRAFT_IDENTITY_CHANGED');

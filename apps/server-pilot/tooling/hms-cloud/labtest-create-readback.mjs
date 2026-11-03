@@ -1,7 +1,9 @@
-// Fresh, read-only evidence for a guarded Proof Labtest create attempt.
+// Fresh, read-only evidence for a guarded HRCEN create attempt.
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
+import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
 
 const same = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
 const uniqueValue = (fields, name) => {
@@ -13,10 +15,12 @@ function validExpected(stay, expected) {
   const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') &&
     !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
   const bands = expected?.childBands, names = ['child1', 'child2', 'child3'];
+  const guest = expected?.allowRealGuest === true ? expected : { firstName: 'Proof', lastName: 'Labtest' };
   return Boolean(expected && validDate(stay?.arrival) && validDate(stay?.departure) && stay.arrival < stay.departure &&
+    validCreateGuest(guest) && (expected.allowRealGuest === true || isLabtestGuest(guest)) &&
     expected.arrival === stay.arrival && expected.departure === stay.departure && /^\d+$/.test(String(expected.guestId ?? '')) &&
     ['roomType', 'ratePlan', 'note', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
-    (expected.guaranteeCode === undefined || ['NGI', 'GTDAGT'].includes(expected.guaranteeCode)) &&
+    (expected.guaranteeCode === undefined || CREATE_GUARANTEES[expected.guaranteeCode] === expected.guarantee) &&
     Number.isInteger(expected.adults) && expected.adults > 0 && Number.isInteger(expected.children) && expected.children >= 0 &&
     bands && Object.keys(bands).length === names.length && names.every((name) => Number.isInteger(bands[name]) && bands[name] >= 0) &&
     names.reduce((sum, name) => sum + bands[name], 0) === expected.children);
@@ -31,7 +35,8 @@ function compareRecord(fields, expected) {
     ['adults', 'adults', expected.adults], ['children', 'children', expected.children],
     ['roomType', 'roomtype', expected.roomType], ['ratePlan', 'rateplan', expected.ratePlan],
     ['note', 'reservationnote', expected.note], ['guestId', 'guestid', expected.guestId], ['status', 'status', 'Reserved'],
-    ['firstName', 'firstname', 'Proof'], ['lastName', 'lastname', 'Labtest'],
+    ['firstName', 'firstname', expected.allowRealGuest ? expected.firstName : 'Proof'],
+    ['lastName', 'lastname', expected.allowRealGuest ? expected.lastName : 'Labtest'],
     ['sourceOfBusiness', 'sourceofbusinessdesc', expected.source], ['organization', 'company', expected.organization],
     ['guaranteeType', 'guaranteetype', expected.guarantee], ['cmsSend', 'udfchkbox04', false],
     ['cmsRecipient', 'udfchar13', expected.cmsRecipient ?? ''], ['guestEmail', 'emailaddress', ''],
@@ -49,12 +54,14 @@ function compareRecord(fields, expected) {
 }
 
 /** Independently reopen one confirmation and compare the visible Record View. */
-export async function readLabtestCreate({ confirmation, stay, expected }, { withSavedSession = withSavedStayAgentSession } = {}) {
+export async function readLabtestCreate({ confirmation, stay, expected }, { withSavedSession = withSavedStayAgentSession, cloudTargetKey } = {}) {
   if (!validExpected(stay, expected)) return { issue: 'expected_record_invalid' };
+  const firstName = expected.allowRealGuest ? expected.firstName : 'Proof';
+  const lastName = expected.allowRealGuest ? expected.lastName : 'Labtest';
   const read = await withSavedSession(({ runTool }) => runTool({ tool: 'read', confirmation,
-    guestName: 'Proof Labtest', arrivalDate: stay.arrival,
+    guestName: `${firstName} ${lastName}`, arrivalDate: stay.arrival,
     ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }),
-  { readOnly: true, readOnlyConfirmation: confirmation });
+  { readOnly: true, readOnlyConfirmation: confirmation, ...(cloudTargetKey ? { cloudTargetKey } : {}) });
   const fields = read?.record?.details?.fields;
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
   const mismatches = compareRecord(fields, expected);
@@ -62,7 +69,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
     const native = read.record.nativePreimage;
     const verified = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
       native.confirmation === confirmation && native.guestId === String(expected.guestId) && native.status === 'Reserved' &&
-      native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
+      native.firstName === firstName && native.lastName === lastName && native.arrival === expected.arrival &&
       native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
       native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;
     if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
@@ -70,18 +77,21 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   return { fields, captureScope: read.record.details.captureScope, mismatches };
 }
 
-const readCensus = (stay) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {
+const readCensus = (stay, expected, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {
   arrival: stay.arrival, departure: stay.departure,
-}), { headless: true });
+  ...(expected?.allowRealGuest ? { firstName: expected.firstName, lastName: expected.lastName } : {}),
+}, { allowRealGuest: expected?.allowRealGuest === true, allowPast: true }),
+{ headless: true, blockServiceWorkers: true, prepareContext: installReadOnlyGuard, ...(cloudTargetKey ? { cloudTargetKey } : {}) });
 
 /** A fresh census and record reads are evidence only; this never dispatches a save. */
-export async function reconcileLabtestCreate({ stay, expected }, { census = readCensus, withSavedSession = withSavedStayAgentSession } = {}) {
+export async function reconcileLabtestCreate({ stay, expected }, { census = readCensus, withSavedSession = withSavedStayAgentSession,
+  cloudTargetKey = createCloudTargetKey(expected?.allowRealGuest ? expected : { firstName: 'Proof', lastName: 'Labtest' }, stay?.arrival) } = {}) {
   let result;
-  try { result = await census(stay); } catch { result = { outcome: 'incomplete', issue: 'census_unverified' }; }
+  try { result = await census(stay, expected, cloudTargetKey); } catch { result = { outcome: 'incomplete', issue: 'census_unverified' }; }
   const candidates = [];
   const rows = result?.outcome === 'existing_matches' && result.coverage?.complete && Array.isArray(result.sameArrival) ? result.sameArrival : [];
   for (const row of rows) {
-    try { candidates.push({ confirmation: row.confirmation, readback: await readLabtestCreate({ confirmation: row.confirmation, stay, expected }, { withSavedSession }) }); }
+    try { candidates.push({ confirmation: row.confirmation, readback: await readLabtestCreate({ confirmation: row.confirmation, stay, expected }, { withSavedSession, cloudTargetKey }) }); }
     catch { candidates.push({ confirmation: row.confirmation, issue: 'readback_unverified' }); }
   }
   return { census: result, candidates };

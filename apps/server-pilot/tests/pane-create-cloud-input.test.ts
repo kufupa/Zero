@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
+import { CREATE_GUARANTEES } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 import generatedNote from '../tooling/hms-cloud/fixtures/generated-reservation-note.json';
 
 const stay = {
@@ -60,20 +61,25 @@ describe('Cloud pane create mapping', () => {
     expect(digestPaneCloudCreateProof(stay, proof, undefined, 'not-a-native-id').outcome).toBe('refused');
   });
 
-  it.each([
-    ['NGI', 'NGI'], ['Non-Guaranteed Individual', 'NGI'],
-    ['GTDAGT', 'GTDAGT'], ['Guaranteed By Agent', 'GTDAGT'],
-  ])('maps and binds reviewed guarantee %s to native %s', (display, native) => {
+  it.each(Object.entries(CREATE_GUARANTEES).flatMap(([native, label]) => [
+    [native, native, label], [label, native, label],
+  ]))('maps and binds reviewed guarantee %s to native %s', (display, native, label) => {
     const reviewed = { ...stay, guaranteeType: display };
     expect(mapPaneStayToCloudCreateInput(reviewed, 'commit', '123')).toMatchObject({
       outcome: 'ok', input: { guaranteeType: native },
     });
-    expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, display).outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, label, undefined, true).outcome).toBe('ok');
     const other = native === 'NGI' ? 'GTDAGT' : 'NGI';
     expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: other }, display).outcome).toBe('refused');
     if (display !== native) {
       expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }).outcome).toBe('refused');
       expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, 'different').outcome).toBe('refused');
+    }
+  });
+
+  it('rejects unobserved guarantee aliases', () => {
+    for (const guaranteeType of ['CC', '6PM', 'COMP', 'PREPAID']) {
+      expect(mapPaneStayToCloudCreateInput({ ...stay, guaranteeType }, 'commit', '123').outcome).toBe('refused');
     }
   });
 
@@ -128,6 +134,9 @@ describe('Cloud pane create mapping', () => {
     } });
     expect(mapPaneStayToCloudCreateInput(real, 'commit', '123')).toMatchObject({
       outcome: 'refused', reason: 'labtest_guest_required',
+    });
+    expect(mapPaneStayToCloudCreateInput(real, 'commit', '123', { allowRealGuest: true })).toMatchObject({
+      outcome: 'ok', input: { guest: { profileId: '123' }, cms: { send: false } },
     });
     const observed = { ...proof, guest: { ...proof.guest, firstName: 'Ada', lastName: 'Moyo' } };
     expect(digestPaneCloudCreateProof(real, observed).outcome).toBe('ok');

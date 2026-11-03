@@ -29,13 +29,33 @@ test('organization readback accepts the reviewed HMS textarea limit without chan
 
 test('organization readback target refuses an unverified or unsupported guarantee', () => {
   for (const bad of [
-    { guaranteeType: 'GTDCC' },
+    { guaranteeType: 'CC' },
     { guaranteeSelection: undefined },
     { guaranteeSelection: { ...selection, requested: 'NGI' } },
     { guaranteeSelection: { ...selection, actual: { ...selection.actual, value: 'NGI' } } },
     { guaranteeSelection: { ...selection, actual: { ...selection.actual, submitted: 'NGI' } } },
     { guaranteeSelection: { ...selection, actual: { ...selection.actual, display: '' } } },
   ]) assert.equal(buildLabtestOrganizationReadbackTarget(saved, { ...request, ...bad }, organization), null);
+});
+
+test('real organization readback binds the trusted guest and target-scoped browser', async () => {
+  const realSelection = { ...selection, requested: 'GTDCC', actual: { value: 'GTDCC', submitted: 'GTDCC',
+    display: 'Guaranteed By Credit Card' } };
+  const realRequest = { ...request, guaranteeType: 'GTDCC', guaranteeSelection: realSelection };
+  const cloudTargetKey = '["HRCEN","create","ada","moyo","2027-11-12"]';
+  const authority = { allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' }, cloudTargetKey };
+  const target = buildLabtestOrganizationReadbackTarget(saved, realRequest, organization, authority);
+  assert.deepEqual({ firstName: target.expected.firstName, lastName: target.expected.lastName }, authority.expectedGuest);
+  assert.equal(target.cloudTargetKey, cloudTargetKey);
+  assert.equal(buildLabtestOrganizationReadbackTarget(saved, realRequest, organization,
+    { ...authority, cloudTargetKey: 'wrong' }), null);
+  const result = await readSavedOrganizationCreate({ savedOrganizationCreate: target }, { confirmation: saved.confirmation }, {
+    openSession: async (_operation, options) => {
+      assert.equal(options.cloudTargetKey, cloudTargetKey);
+      return { outcome: 'read_back_verified' };
+    },
+  });
+  assert.equal(result.outcome, 'read_back_verified');
 });
 
 test('organization readback blocks service workers and guards before the first page', async () => {

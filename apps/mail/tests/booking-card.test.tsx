@@ -1,6 +1,11 @@
 /**
  * @vitest-environment happy-dom
  */
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { act, cleanup, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,7 +16,7 @@ import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import type { StoredContact, StoredStayCommit } from '../lib/quote-workflow/backend-bind';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -1070,7 +1075,8 @@ describe('Cloud create controls', () => {
     const workItemId = '11111111-1111-4111-8111-111111111111';
     render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
-    expect(screen.getByText(/HMS testing is currently limited to Proof Labtest/)).toBeDefined();
+    expect(screen.getByText(mode === 'lab' ? /HMS testing is currently limited to Proof Labtest/
+      : /Booking from this pane is off/)).toBeDefined();
     expect(previewButton(0).disabled).toBe(false);
     fireEvent.click(previewButton(0));
     const selector = await screen.findByLabelText('Guest profile');
@@ -1103,15 +1109,18 @@ describe('Cloud create controls', () => {
     await expect(client.preview({} as PaneStayInput)).rejects.toThrow('pane_save_client_missing');
   });
 
-  it('uses one Go on a bound Labtest preview and keeps HMS sending off', async () => {
+  it.each([
+    { mode: 'lab' as const, firstName: 'Proof', lastName: 'Labtest' },
+    { mode: 'on' as const, firstName: 'Ada', lastName: 'Moyo' },
+  ])('uses one Go on a bound $mode preview and keeps HMS sending off', async ({ mode, firstName, lastName }) => {
     const preview = vi.fn<PaneStayClient['preview']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
-        { nativeId: '123', firstName: 'Proof', lastName: 'Labtest', city: 'Pretoria' },
+        { nativeId: '123', firstName, lastName, city: 'Pretoria' },
       ] }).mockResolvedValueOnce(PREVIEW_OK);
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
-    const { client } = paneClient({ preview, commit, mode: () => 'lab', canPreview: () => true });
+    const { client } = paneClient({ preview, commit, mode: () => mode, canPreview: () => true });
     const draft = previewableDraft('BAR');
-    Object.assign(draft.draft.rooms[0]!.request, { firstName: 'Proof', lastName: 'Labtest',
+    Object.assign(draft.draft.rooms[0]!.request, { firstName, lastName,
       arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
     const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
@@ -1128,7 +1137,7 @@ describe('Cloud create controls', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1',
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1', firstName, lastName,
       confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
   });
 
@@ -1184,6 +1193,382 @@ describe('Cloud create controls', () => {
       await waitFor(() => expect(bar.disabled).toBe(true));
       expect(screen.getByText(/HMS may have saved this booking/)).toBeDefined();
     }
+  });
+
+  it('stops the original Cloud batch on an uncertain room but lets staff approve a new batch for another guest', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: input.firstName === 'Proof' ? '123' : '456', firstName: input.firstName, lastName: input.lastName },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>()
+      .mockResolvedValueOnce({ status: 'refused', reason: 'pane_save_unconfirmed' })
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '333333-1' })
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '444444-1' });
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    const template = draft.draft.rooms[0]!;
+    draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
+      request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
+        arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
+        guaranteeType: 'NGI', childAges: [] } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 4,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const workItemId = '22222222-2222-4222-8222-222222222222';
+    let view = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
+      workItemId={workItemId} propertyCode="HRCEN" paneSave={client} />);
+    const room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    for (const index of [0, 1, 2, 3]) {
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      fireEvent.change(await room(index).findByLabelText('Guest profile'), {
+        target: { value: index < 2 ? '123' : '456' },
+      });
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+    }
+    let go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(room(0).getByText(/HMS may have saved this booking/)).toBeDefined());
+    const original = commit.mock.calls[0]![2];
+    expect(original).toMatchObject({ kind: 'start', rooms: [
+      { stayId: 's1_1' }, { stayId: 's1_2' }, { stayId: 's1_3' }, { stayId: 's1_4' },
+    ] });
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    expect(go.disabled).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    if (!original || original.kind !== 'start') throw new Error('expected original batch');
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    const savedStays = { s1_1: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
+      cloudCreateHold: { target, batch: { id: original.id, rooms: original.rooms.map((item) => ({
+        stayId: item.stayId, target: { ...target, firstName: item.firstName, lastName: item.lastName, arrival: item.arrival },
+      })) } } } };
+    view.unmount();
+    view = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
+      workItemId={workItemId} propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />);
+    go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    expect(go.disabled).toBe(true);
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    // A different room cannot replay the held target by changing case or spacing.
+    fireEvent.change(room(2).getByLabelText('First name'), { target: { value: '  PROOF ' } });
+    fireEvent.change(room(2).getByLabelText('Last name'), { target: { value: 'LABTEST' } });
+    expect((room(2).getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(room(2).getByLabelText('First name'), { target: { value: 'Ada' } });
+    fireEvent.change(room(2).getByLabelText('Last name'), { target: { value: 'Moyo' } });
+
+    // After reopening, the remaining guest needs new previews and a new, deliberate Go.
+    for (const index of [2, 3]) {
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      fireEvent.change(await room(index).findByLabelText('Guest profile'), { target: { value: '456' } });
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      await waitFor(() => expect(room(index).getByText(/Nava will book Ada Moyo/)).toBeDefined());
+    }
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect(commit).toHaveBeenCalledTimes(1);
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(3));
+    const separate = commit.mock.calls[1]![2];
+    expect(separate).toMatchObject({ kind: 'start', rooms: [
+      { stayId: 's1_3', workItemId }, { stayId: 's1_4', workItemId },
+    ] });
+    expect(separate?.id).not.toBe(original?.id);
+    expect(commit.mock.calls[2]![2]).toMatchObject({ kind: 'continue', id: separate?.id, index: 1 });
+    await waitFor(() => expect(go.disabled).toBe(true));
+    fireEvent.click(go);
+    expect(commit).toHaveBeenCalledTimes(3);
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('reopens the real recovered route projection and requires a fresh Go for unrelated rooms', async () => {
+    // The server test runs the actual Create route and operator recovery, then
+    // writes the pane projection. No fabricated booked status crosses this seam.
+    const serverDir = resolve(process.cwd(), '../server-pilot');
+    const privateDir = await mkdtemp(join(tmpdir(), 'u1-recovery-pane-test-'));
+    const receiptFile = join(privateDir, 'projection.json');
+    const env: Record<string, string | undefined> = { ...process.env, U1_CREATE_TEST_RECOVERY_RECEIPT: receiptFile };
+    delete env.DATABASE_URL;
+    delete env.VITEST_ALLOW_PILOT_RDS;
+    delete env.TEST_DATABASE_URL;
+    let receipt: { beforeRecovery: Record<string, StoredStayCommit>; afterRecovery: Record<string, StoredStayCommit>; originalId: string };
+    try {
+      await promisify(execFile)(process.execPath, [join(serverDir, 'node_modules/vitest/vitest.mjs'),
+        'run', 'tests/pane-create-commit-safety.test.ts', '-t', 'projects the stopped original batch after route recovery',
+        '--maxWorkers=1'], { cwd: serverDir, env, timeout: 45_000, maxBuffer: 1024 * 1024 });
+      receipt = JSON.parse(await readFile(receiptFile, 'utf8'));
+    } finally { await rm(privateDir, { recursive: true, force: true }); }
+
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '456', firstName: input.firstName, lastName: input.lastName },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>()
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '333333-1' })
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '444444-1' });
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    const template = draft.draft.rooms[0]!;
+    draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
+      request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
+        arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
+        guaranteeType: 'NGI', childAges: [] } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 4,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const workItemId = '11111111-1111-4111-8111-111111111111';
+    const card = (savedStays: Record<string, StoredStayCommit>) => <BookingCards draft={draft} groups={[group]}
+      session={quotedSession(draft)} workItemId={workItemId} propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />;
+    let view = render(card(receipt.beforeRecovery));
+    let room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    expect(receipt.beforeRecovery.s1_1?.status).toBe('unknown');
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    view.unmount();
+
+    view = render(card(receipt.afterRecovery));
+    room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    const go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    expect(receipt.afterRecovery.s1_1).toMatchObject({ status: 'booked', confirmationNumber: '123456-1',
+      cloudCreateHold: { batch: { id: receipt.originalId } } });
+    expect(screen.getByText('Booked 1 of 4 – 123456-1')).toBeDefined();
+    expect(screen.queryByText(/Check the uncertain booking/)).toBeNull();
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    expect(go.disabled).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+
+    fireEvent.change(room(2).getByLabelText('First name'), { target: { value: '  PROOF ' } });
+    fireEvent.change(room(2).getByLabelText('Last name'), { target: { value: 'LABTEST' } });
+    expect((room(2).getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(room(2).getByLabelText('First name'), { target: { value: 'Ada' } });
+    fireEvent.change(room(2).getByLabelText('Last name'), { target: { value: 'Moyo' } });
+    for (const index of [2, 3]) {
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      fireEvent.change(await room(index).findByLabelText('Guest profile'), { target: { value: '456' } });
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      await waitFor(() => expect(room(index).getByText(/Nava will book Ada Moyo/)).toBeDefined());
+    }
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    const fresh = commit.mock.calls[0]![2];
+    expect(fresh).toMatchObject({ kind: 'start', rooms: [{ stayId: 's1_3' }, { stayId: 's1_4' }] });
+    expect(fresh?.id).not.toBe(receipt.originalId);
+    expect(commit.mock.calls[1]![2]).toMatchObject({ kind: 'continue', id: fresh?.id, index: 1 });
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+
+    view.unmount();
+    const singleDraft = { ...draft, draft: { ...draft.draft, rooms: draft.draft.rooms.slice(0, 3) } };
+    const singleCommit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client: singleClient } = paneClient({ preview, commit: singleCommit, mode: () => 'on', canPreview: () => true });
+    view = render(<BookingCards draft={singleDraft} groups={[{ ...group, quantity: 3 }]} session={quotedSession(singleDraft)}
+      workItemId={workItemId} propertyCode="HRCEN" paneSave={singleClient} savedStays={receipt.afterRecovery} />);
+    room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    const singleGo = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    fireEvent.click(room(2).getByRole('button', { name: 'Preview in HMS' }));
+    fireEvent.change(await room(2).findByLabelText('Guest profile'), { target: { value: '456' } });
+    fireEvent.click(room(2).getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(singleGo.disabled).toBe(false));
+    expect(singleCommit).not.toHaveBeenCalled();
+    fireEvent.click(singleGo);
+    await waitFor(() => expect(singleCommit).toHaveBeenCalledTimes(1));
+    expect(singleCommit.mock.calls[0]).toHaveLength(2);
+    expect(singleCommit.mock.calls[0]![0]).toMatchObject({ stayId: 's1_3', firstName: 'Ada', lastName: 'Moyo' });
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+  }, 60_000);
+
+  it('preserves independently previewed rooms when another date card becomes uncertain', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '456', firstName: 'Ada', lastName: 'Moyo' },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    draft.draft.rooms = draft.draft.rooms.map((room) => ({ ...room, request: { ...room.request,
+      firstName: 'Ada', lastName: 'Moyo', arrival: '2027-04-01', departure: '2027-04-03',
+      track: 'BAR', sourceOfBusiness: 'E-Mail', guaranteeType: 'NGI' } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group = { ...g1, stayId: 's2', arrivalDate: '2027-04-01', departureDate: '2027-04-03' };
+    const workItemId = '11111111-1111-4111-8111-111111111111';
+    const card = (savedStays?: Record<string, StoredStayCommit>) => <BookingCards draft={draft} groups={[group]}
+      session={quotedSession(draft)} workItemId={workItemId} propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />;
+    const view = render(card());
+    const room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    for (const index of [0, 1]) {
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      fireEvent.change(await room(index).findByLabelText('Guest profile'), { target: { value: '456' } });
+      fireEvent.click(room(index).getByRole('button', { name: 'Preview in HMS' }));
+      await waitFor(() => expect(room(index).getByText(/Nava will book Ada Moyo/)).toBeDefined());
+    }
+    const go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const, firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    view.rerender(card({ s1_1: { status: 'unknown', confirmationNumber: null, screenshotRef: null,
+      cloudCreateHold: { target, batch: { id: '33333333-3333-4333-8333-333333333333', rooms: [
+        { stayId: 's1_1', target }, { stayId: 's1_2', target },
+      ] } } } }));
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect(preview).toHaveBeenCalledTimes(4);
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(commit.mock.calls[0]![2]).toMatchObject({ kind: 'start', rooms: [{ stayId: 's2_1' }, { stayId: 's2_2' }] });
+  });
+
+  it('uses the actual booked target instead of an older held manifest after guest edits', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '456', firstName: 'Ada', lastName: 'Moyo' },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    draft.draft.rooms = draft.draft.rooms.map((room) => ({ ...room, request: { ...room.request,
+      firstName: 'Ada', lastName: 'Moyo', arrival: '2027-03-01', departure: '2027-03-03',
+      track: 'BAR', sourceOfBusiness: 'E-Mail', guaranteeType: 'NGI' } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const, firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    const before = { ...target, firstName: 'Ada', lastName: 'Moyo' }, actual = { ...target, firstName: 'Grace', lastName: 'Dube' };
+    const savedStays: Record<string, StoredStayCommit> = {
+      s0_1: { status: 'booked', confirmationNumber: '111111-1', screenshotRef: null, cloudCreateTarget: target,
+        cloudCreateHold: { target, batch: { id: '33333333-3333-4333-8333-333333333333', rooms: [
+          { stayId: 's0_1', target }, { stayId: 's1_1', target: before }, { stayId: 's1_2', target: before },
+        ] } } },
+      s1_1: { status: 'booked', confirmationNumber: '222222-1', screenshotRef: null,
+        cloudCreateTarget: actual, cloudCreateHold: { target: actual } },
+    };
+    const view = render(<BookingCards draft={draft} groups={[{ ...g1, stayId: 's1', arrivalDate: '2027-03-01', departureDate: '2027-03-03' }]}
+      session={quotedSession(draft)} workItemId="11111111-1111-4111-8111-111111111111" propertyCode="HRCEN"
+      paneSave={client} savedStays={savedStays} />);
+    const room = (index: number) => within(view.container.querySelectorAll('article')[index]!);
+    expect((room(0).getByLabelText('First name') as HTMLInputElement).value).toBe('Grace');
+    expect((room(0).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    await waitFor(() => expect((room(1).getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(room(1).getByRole('button', { name: 'Preview in HMS' }));
+    fireEvent.change(await room(1).findByLabelText('Guest profile'), { target: { value: '456' } });
+    fireEvent.click(room(1).getByRole('button', { name: 'Preview in HMS' }));
+    const go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledOnce());
+    expect(commit.mock.calls[0]![0]).toMatchObject({ firstName: 'Ada', lastName: 'Moyo', stayId: 's1_2' });
+    expect(commit.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('books one unrelated room with a fresh standalone Go after reopening an uncertain batch', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '456', firstName: 'Ada', lastName: 'Moyo' },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    const template = draft.draft.rooms[0]!;
+    draft.draft.rooms = Array.from({ length: 3 }, (_, index) => ({ ...template, roomIndex: index + 1,
+      request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
+        arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
+        guaranteeType: 'NGI', childAges: [] } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 3,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    const other = { ...target, firstName: 'Ada', lastName: 'Moyo' };
+    const savedStays = { s1_1: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
+      cloudCreateHold: { target, batch: { id: '33333333-3333-4333-8333-333333333333', rooms: [
+        { stayId: 's1_1', target }, { stayId: 's1_2', target }, { stayId: 's1_3', target: other },
+      ] } } } };
+    const { container } = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
+      workItemId="22222222-2222-4222-8222-222222222222" propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />);
+    const room = (index: number) => within(container.querySelectorAll('article')[index]!);
+    const go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    expect(commit).not.toHaveBeenCalled();
+    expect(go.disabled).toBe(true);
+    fireEvent.click(room(2).getByRole('button', { name: 'Preview in HMS' }));
+    fireEvent.change(await room(2).findByLabelText('Guest profile'), { target: { value: '456' } });
+    fireEvent.click(room(2).getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(commit.mock.calls[0]).toHaveLength(2);
+    expect(commit.mock.calls[0]![0]).toMatchObject({ stayId: 's1_3', firstName: 'Ada', lastName: 'Moyo',
+      confirmationSendMail: false });
+    expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('keeps a previously booked sibling target stopped after reopening', () => {
+    const { client, commit } = paneClient({ mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    const template = draft.draft.rooms[0]!;
+    draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
+      request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
+        arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
+        guaranteeType: 'NGI', childAges: [] } }));
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 4,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    const other = { ...target, firstName: 'Ada', lastName: 'Moyo' };
+    const savedStays = {
+      s1_1: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
+        cloudCreateHold: { target, batch: { id: '33333333-3333-4333-8333-333333333333', rooms: [
+          { stayId: 's1_1', target }, { stayId: 's1_2', target },
+          { stayId: 's1_3', target: other }, { stayId: 's1_4', target: other },
+        ] } } },
+      s1_3: { status: 'booked' as const, confirmationNumber: '333333-1', screenshotRef: null },
+    };
+    const { container } = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
+      workItemId="22222222-2222-4222-8222-222222222222" propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />);
+    const room = (index: number) => within(container.querySelectorAll('article')[index]!);
+    expect((room(3).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('preserves current previews for rooms outside a newly observed uncertain batch', async () => {
+    const preview = vi.fn<PaneStayClient['preview']>(async (input) => input.createSelection?.nativeGuestId
+      ? PREVIEW_OK : { status: 'refused', reason: 'guest_choice_required', guestCandidates: [
+        { nativeId: '456', firstName: 'Ada', lastName: 'Moyo' },
+      ] });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+    const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
+    const draft = draftReady();
+    for (const room of draft.draft.rooms) Object.assign(room.request, { firstName: 'Ada', lastName: 'Moyo',
+      arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
+      guaranteeType: 'NGI', childAges: [] });
+    draft.options = { ...draft.options, guaranteeType: ['NGI'] };
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 2,
+      arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const workItemId = '55555555-5555-4555-8555-555555555555';
+    const card = (savedStays?: Parameters<typeof BookingCards>[0]['savedStays']) =>
+      <BookingCards draft={draft} groups={[group]} session={quotedSession(draft)} workItemId={workItemId}
+        propertyCode="HRCEN" paneSave={client} savedStays={savedStays} />;
+    const { rerender } = render(card());
+    for (const index of [0, 1]) {
+      fireEvent.click(previewButton(index));
+      await waitFor(() => expect(screen.getAllByLabelText('Guest profile')).toHaveLength(index + 1));
+      fireEvent.change(screen.getAllByLabelText('Guest profile')[index]!, { target: { value: '456' } });
+      fireEvent.click(previewButton(index));
+    }
+    const go = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
+    rerender(card({ s0_1: { status: 'unknown', confirmationNumber: null, screenshotRef: null,
+      cloudCreateHold: { target, batch: { id: '33333333-3333-4333-8333-333333333333', rooms: [
+        { stayId: 's0_1', target }, { stayId: 's0_2', target },
+      ] } } } }));
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect(preview).toHaveBeenCalledTimes(4);
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.click(go);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
   });
 
   it('preserves the other hotel’s existing preview and Save controls', async () => {
@@ -1899,6 +2284,7 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText(PANE_SAVE_UNVERIFIED_COPY)).toBeDefined();
     expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
+    expect(screen.queryByText(/Booked 1 of 2/)).toBeNull();
     expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
     expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
     expect(screenshot).not.toHaveBeenCalledWith(PANE_SAVE_RUN, 'before.png');

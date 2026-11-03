@@ -282,7 +282,7 @@ test('agent guarantee requires matching selector evidence and a current strict d
   assert.equal(expected.guaranteeType, 'GTDAGT');
   assert.equal(expected.guaranteeDisplay, 'Guaranteed By Agent');
   assert.equal(expected.strictCreateProof, true);
-  const unsupported = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDCC' });
+  const unsupported = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'CC' });
   assert.equal(unsupported.issue, 'INVALID_LABTEST_SAVE_INPUT');
 });
 

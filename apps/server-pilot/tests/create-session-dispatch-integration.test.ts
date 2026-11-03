@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { blankPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
+import { CREATE_GUARANTEES } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 
 // This exercises callback propagation, not the captured native schema. The real
 // 985-key fixture is unavailable here, so only this test's synthetic field-set
@@ -106,7 +107,8 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function simulatedPage(order: string[], options: { guarantee?: string; bodyGuarantee?: string } = {}) {
+function simulatedPage(order: string[], options: { guarantee?: string; bodyGuarantee?: string;
+  firstName?: string; lastName?: string; bodyFirstName?: string } = {}) {
   const frame = {}, ready = deferred<unknown>();
   let pageHandler: ((route: unknown) => Promise<unknown>) | undefined;
   let contextHandler: ((route: unknown) => Promise<unknown>) | undefined;
@@ -117,7 +119,8 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
   };
   const form: Record<string, string> = {
     ...Object.fromEntries(blankPartyFields.map((name: string) => [name, ''])),
-    propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', firstname: 'Proof', lastname: 'Labtest',
+    propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New',
+    firstname: options.firstName ?? 'Proof', lastname: options.lastName ?? 'Labtest',
     guestid: '123', bookingsessionid: 'session', sessionID: 'synthetic-session', arrivaldate: '12/29/2027',
     departuredate: '12/31/2027', roomtype: 'STQN', rateplan: 'BAR', track: 'TRACK', reservationnote: 'Synthetic note',
     confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '', udfchkbox04: '0', udfchar13: '',
@@ -129,6 +132,7 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
   for (let n = 0; Object.keys(form).length < 985; n += 1) form[`zzsynthetic_${String(n).padStart(3, '0')}`] = '';
   const body = new URLSearchParams({ ...form, SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' });
   if (options.bodyGuarantee !== undefined) body.set('guaranteetype', options.bodyGuarantee);
+  if (options.bodyFirstName !== undefined) body.set('firstname', options.bodyFirstName);
   const request = { frame: () => frame, method: () => 'POST',
     url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
     postData: () => body.toString(), headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }) };
@@ -174,8 +178,14 @@ describe('server-owned create callbacks through the real session and writer', ()
           order.push('unlock');
         },
         withSavedSession: async (operation: (context: unknown) => Promise<unknown>) => operation({
-          runTool: async () => ({ outcome: 'ok', record: { details: { fields: visibleFields(), captureScope: 'synthetic' } } }),
+          runTool: async () => ({ outcome: 'ok', record: {
+            nativePreimage: { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
+              guestId: '123', status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: '2027-12-29',
+              departure: '2027-12-31', roomType: 'STQN', ratePlan: 'BAR', adults: 1, children: 0, guaranteeCode: 'NGI' },
+            details: { fields: visibleFields(), captureScope: 'synthetic' },
+          } }),
         }),
+        partyReadback: async () => ({ outcome: 'verified' }),
         census: async () => ({ outcome: 'no_match', coverage: { complete: true }, sameArrival: [] }),
       }).then((value: any) => { finished = true; if (value.screenshots?.before) directories.add(dirname(value.screenshots.before)); return value; });
       const reached = await Promise.race([continued.promise.then(() => true), result.then(() => false)]);
@@ -216,5 +226,38 @@ describe('agent guarantee in the real native request guard', () => {
     );
     expect(result).toMatchObject({ outcome: 'not_dispatched', requestSeen: false });
     expect(order).toEqual(['abort']);
+  }, 5000);
+});
+
+describe('observed native guarantees and real-guest identity at the Save guard', () => {
+  it.each(Object.entries(CREATE_GUARANTEES))('continues the exact submitted code %s', async (code, display) => {
+    const order: string[] = [];
+    const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: code,
+      actual: { value: code, submitted: code, display } };
+    const result = await saveNewLabtestStay(simulatedPage(order, { guarantee: code }), {
+      preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
+      roomType: 'STQN', ratePlan: 'BAR', guaranteeType: code, guaranteeSelection: selection, note: 'Synthetic note',
+    }, { timeoutMs: 1000 });
+    expect(result).toMatchObject({ outcome: 'saved_same_form', requestSeen: true });
+    expect(order).toEqual(['continue']);
+  }, 5000);
+
+  it('binds the real guest name in the outgoing native POST', async () => {
+    const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDCC',
+      actual: { value: 'GTDCC', submitted: 'GTDCC', display: 'Guaranteed By Credit Card' } };
+    const request = { preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
+      roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'GTDCC', guaranteeSelection: selection, note: 'Synthetic note' };
+    const authority = { allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' }, timeoutMs: 300,
+      authorizeCandidate: async () => true, dispatchCandidate: async (_request: unknown, next: () => Promise<unknown>) => next() };
+    const allowed: string[] = [], blocked: string[] = [];
+    expect(await saveNewLabtestStay(simulatedPage(allowed, { guarantee: 'GTDCC', firstName: 'Ada', lastName: 'Moyo' }), request, authority))
+      .toMatchObject({ outcome: 'saved_same_form', requestSeen: true });
+    expect(await saveNewLabtestStay(simulatedPage(blocked, { guarantee: 'GTDCC', firstName: 'Ada', lastName: 'Moyo',
+      bodyFirstName: 'Other' }), request, authority)).toMatchObject({ outcome: 'not_dispatched', requestSeen: false });
+    expect(allowed).toEqual(['continue']);
+    expect(blocked).toEqual(['abort']);
+    expect(await saveNewLabtestStay(simulatedPage([], { guarantee: 'GTDCC', firstName: 'Ada', lastName: 'Moyo' }), {
+      ...request, guaranteeSelection: { ...selection, actual: { ...selection.actual, submitted: 'CC' } },
+    }, authority)).toMatchObject({ outcome: 'input_gap', issue: 'GUARANTEE_SELECTION_UNVERIFIED' });
   }, 5000);
 });

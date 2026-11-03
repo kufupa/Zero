@@ -15,8 +15,10 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>) => {
+  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>,
+    options?: { prepareContext?: (context: unknown) => Promise<void> }) => {
     fixtures.events.push('context-open');
+    await options?.prepareContext?.(fixtures.context);
     return operation({ context: () => fixtures.context });
   },
 }));
@@ -124,7 +126,8 @@ describe('organization readback fresh-context guard', () => {
     expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
     expect(fixtures.recordCalls).toEqual([{
       expected: {
-        confirmation: '1234567-1', guestId: '45678', arrival: '2027-01-25', departure: '2027-01-27',
+        confirmation: '1234567-1', guestId: '45678', firstName: 'Proof', lastName: 'Labtest',
+        arrival: '2027-01-25', departure: '2027-01-27',
         roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
       },
       options: { allowUnchangedBusinessParties: true,

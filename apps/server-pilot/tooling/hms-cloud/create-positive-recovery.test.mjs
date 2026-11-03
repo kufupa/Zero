@@ -38,7 +38,6 @@ function fixture({ listing, values = fieldValues, nativeChanges = {}, party = { 
     departure: candidate.departure, roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 3,
     guaranteeCode: 'NGI', ...nativeChanges };
   return { calls, options: {
-    writerQuiesced: () => true,
     census: async () => { calls.push('census'); return listing ?? { outcome: 'existing_matches',
       arrival: candidate.arrival, departure: candidate.departure,
       searchedDateRange: { from: '2027-03-01', to: '2027-03-30' },
@@ -59,14 +58,14 @@ test('a unique positive fresh read verifies all approved fields, parties, and a 
   assert.deepEqual(result.readback.mismatches, []);
   assert.ok(Buffer.isBuffer(result.screenshot));
   assert.equal(f.calls[0], 'census');
-  assert.deepEqual(f.calls[1], ['fresh-read', { readOnly: true, readOnlyConfirmation: candidate.confirmation }]);
+  assert.deepEqual(f.calls[1], ['fresh-read', { readOnly: true, readOnlyConfirmation: candidate.confirmation,
+    cloudTargetKey: '["HRCEN","create","proof","labtest","2027-03-15"]' }]);
   assert.deepEqual(f.calls[2][1].agency, request.parties.agency);
   assert.deepEqual(f.calls[2][1].organization, request.parties.organization);
 });
 
-test('missing quiescence, changed authorization, incomplete census and ambiguity never reach fresh read', async () => {
+test('changed authorization, incomplete census and ambiguity never reach fresh read', async () => {
   const f = fixture();
-  assert.equal((await provePositiveCreateRecovery(intent, { ...f.options, writerQuiesced: () => false })).outcome, 'unconfirmed');
   assert.equal((await provePositiveCreateRecovery({ ...intent, approvedDigest: '0'.repeat(64) }, f.options)).outcome, 'unconfirmed');
   assert.equal((await provePositiveCreateRecovery({ ...intent, recovery: { ...intent.recovery,
     preimage: { ...intent.recovery.preimage, sameArrival: [candidate, candidate] } } }, f.options)).outcome, 'unconfirmed');
@@ -108,4 +107,21 @@ test('changed saved data, native guarantee, party or missing screenshot keep the
   ]) {
     assert.equal((await provePositiveCreateRecovery(intent, fixture(options).options)).outcome, 'unconfirmed');
   }
+});
+
+test('real-guest recovery binds the approved name, native credit-card guarantee and party readback', async () => {
+  const realRequest = { ...request, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' }, guaranteeType: 'GTDCC' };
+  const binding = digestCloudCreateRequest(realRequest);
+  const realIntent = { ...intent, firstName: 'Ada', lastName: 'Moyo', approvedDigest: binding.normalizedRequestDigest,
+    recovery: { ...intent.recovery, request: binding.request, guaranteeDisplay: 'Guaranteed By Credit Card' } };
+  const row = { ...candidate, firstName: 'Ada', lastName: 'Moyo' };
+  const listing = { outcome: 'existing_matches', arrival: row.arrival, departure: row.departure,
+    searchedDateRange: { from: '2027-03-01', to: '2027-03-30' },
+    coverage: { displayed: 1, total: 1, complete: true }, sameArrival: [row] };
+  const f = fixture({ listing, values: { ...fieldValues, firstname: 'Ada', lastname: 'Moyo',
+    guaranteetype: 'Guaranteed By Credit Card' }, nativeChanges: { firstName: 'Ada', lastName: 'Moyo', guaranteeCode: 'GTDCC' } });
+  assert.equal((await provePositiveCreateRecovery(realIntent, f.options)).outcome, 'verified');
+  assert.equal(f.calls[1][1].cloudTargetKey, '["HRCEN","create","ada","moyo","2027-03-15"]');
+  assert.equal(f.calls[2][1].firstName, 'Ada');
+  assert.equal((await provePositiveCreateRecovery({ ...realIntent, lastName: 'Other' }, f.options)).outcome, 'unconfirmed');
 });
