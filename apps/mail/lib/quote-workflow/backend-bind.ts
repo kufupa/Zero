@@ -273,7 +273,7 @@ type WorkItemsClient = {
     query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }, opts?: ReturnType<typeof inMailbox>) => Promise<NeedsYouRow[]>;
   };
   dismiss?: {
-    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+    mutate: (input: { workItemId: string; expectedActor?: { userId: string; sessionId: string } }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
   };
 };
 

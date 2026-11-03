@@ -24,19 +24,22 @@ import {
   useExactSourceMessageSelection,
 } from '../lib/mail/source-message-navigation';
 
-const { listQuery, dismissMutate, toastMock, toastDismissMock, hostIdentity } = vi.hoisted(() => {
+const { listQuery, dismissMutate, toastMock, toastDismissMock, hostIdentity, sessionLoading, sessionLookup } = vi.hoisted(() => {
   return {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
     toastMock: vi.fn(),
     toastDismissMock: vi.fn(),
     hostIdentity: { current: null as null | { userId: string; activeTransportId: string; sessionId: string } },
+    sessionLoading: { current: false },
+    sessionLookup: vi.fn(),
   };
 });
 
 vi.mock('../lib/auth-client', async () => {
   const { getMailCacheScope } = await import('../lib/mail/mail-cache-scope');
-  return { useSession: () => {
+  return { getSession: sessionLookup, useSession: () => {
+    if (sessionLoading.current) return { data: undefined, isPending: true };
     const scope = hostIdentity.current ?? getMailCacheScope();
     return { data: scope.userId ? { user: { id: scope.userId }, session: { id: hostIdentity.current?.sessionId ?? 'session-1' } } : null, isPending: false };
   } };
@@ -154,6 +157,8 @@ function ExactSourceMessageReader({
 
 beforeEach(() => {
   hostIdentity.current = null;
+  sessionLoading.current = false;
+  sessionLookup.mockReset().mockResolvedValue({ data: { user: { id: 'staff-1' }, session: { id: 'session-1' } } });
   localStorage.setItem('nava_onboarding_completed', 'true');
   setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
   listQuery.mockReset();
@@ -170,10 +175,64 @@ afterEach(() => {
   cleanup();
   setMailCacheScope({ userId: null, activeTransportId: null });
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
 describe('Needs-you list', () => {
+  it('keeps a dismissal pinned to its mailbox while the session reloads', async () => {
+    const { rerender } = render(<Harness host="web" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    let finish!: (value: unknown) => void;
+    sessionLookup.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    sessionLoading.current = true;
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' }));
+    rerender(<Harness host="web" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS); });
+    expect(dismissMutate).not.toHaveBeenCalled();
+    expect(sessionLookup).toHaveBeenCalledOnce();
+    await act(async () => finish({ data: { user: { id: 'staff-1' }, session: { id: 'session-1' } } }));
+    expect(dismissMutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1', expectedActor: { userId: 'staff-1', sessionId: 'session-1' } }, { context: { activeTransportId: 'transport-a' } },
+    );
+  });
+
+  it('does not dismiss if the reloaded session belongs to someone else', async () => {
+    const { rerender } = render(<Harness host="web" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    sessionLookup.mockResolvedValueOnce({ data: { user: { id: 'staff-2' }, session: { id: 'session-2' } } });
+    sessionLoading.current = true;
+    rerender(<Harness host="web" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS); });
+    expect(sessionLookup).toHaveBeenCalledOnce();
+    expect(dismissMutate).not.toHaveBeenCalled();
+  });
+
+  it('does not dismiss if the user changes while session verification is in flight', async () => {
+    render(<Harness host="web" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    let finish!: (value: unknown) => void;
+    sessionLookup.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    fireEvent.click(dismiss);
+    await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS); });
+    act(() => setMailCacheScope({ userId: 'staff-2', activeTransportId: 'transport-b' }));
+    await act(async () => finish({ data: { user: { id: 'staff-1' }, session: { id: 'session-1' } } }));
+    expect(dismissMutate).not.toHaveBeenCalled();
+  });
+
+  it('shows the list as unavailable in the frontend-only demo', async () => {
+    vi.stubEnv('VITE_ZERO_DEMO_MODE', '1');
+    vi.stubEnv('VITE_FRONTEND_ONLY', '1');
+    render(<Harness host="web" />);
+    expect(await screen.findByText(/isn't available for this mailbox/i)).toBeDefined();
+    expect(listQuery).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
   it('scope isolation: hides old rows while the active connection changes before cache scope', async () => {
     listQuery.mockResolvedValueOnce([row({ id: 'a', subject: 'Mailbox A request' })]);
     const { rerender } = render(<Harness host="web" />);
@@ -448,7 +507,7 @@ describe('Needs-you list', () => {
       action?: { onClick: () => void };
     };
 
-    act(() => unmount());
+    await act(async () => { unmount(); });
 
     expect(dismissMutate).toHaveBeenCalledTimes(1);
     expect(toastDismissMock).toHaveBeenCalledWith('needs-you-dismissal');
@@ -470,7 +529,7 @@ describe('Needs-you list', () => {
       });
 
       expect(dismissMutate).toHaveBeenCalledWith(
-        { workItemId: 'wi-1' },
+        { workItemId: 'wi-1', expectedActor: { userId: 'staff-1', sessionId: 'session-1' } },
         { context: { activeTransportId: 'transport-a' } },
       );
     } finally {
@@ -494,7 +553,7 @@ describe('Needs-you list', () => {
       await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
     });
     expect(dismissMutate).toHaveBeenCalledWith(
-      { workItemId: 'wi-1' }, { context: { activeTransportId: 'transport-a' } },
+      { workItemId: 'wi-1', expectedActor: { userId: 'staff-1', sessionId: 'session-1' } }, { context: { activeTransportId: 'transport-a' } },
     );
     expect(listQuery).toHaveBeenCalledTimes(3);
     expect(listQuery).toHaveBeenNthCalledWith(2, { limit: 200, statuses: ['needs_you', 'review'] },

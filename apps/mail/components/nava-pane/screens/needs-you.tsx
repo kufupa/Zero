@@ -10,7 +10,7 @@ import {
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { getMailCacheScope, inMailbox, subscribeMailCacheScope, type MailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { useActiveConnection } from '@/hooks/use-connections';
-import { useSession } from '@/lib/auth-client';
+import { getSession, useSession } from '@/lib/auth-client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { toast } from 'sonner';
 import { Notice, SecondaryButton } from '../pane-ui';
@@ -108,8 +108,8 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
   const userId = demo ? scope.userId : session?.user?.id ?? null;
   const transportId = demo ? scope.activeTransportId : connection?.id ?? null;
   const sessionId = demo ? 'demo' : session?.session?.id ?? null;
-  const matches = Boolean(userId && transportId && scope.userId === userId && scope.activeTransportId === transportId &&
-    (demo || (!sessionPending && !connectionLoading)));
+  const matches = Boolean(!demo && userId && sessionId && transportId && scope.userId === userId &&
+    scope.activeTransportId === transportId && !sessionPending && !connectionLoading);
   const ownerKey = JSON.stringify([userId, transportId, sessionId]);
   const host = useRef({ ownerKey, userId, sessionId, matches });
   host.current = { ownerKey, userId, sessionId, matches };
@@ -219,9 +219,10 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
       const ownerScope = getMailCacheScope();
       const ownerHost = host.current;
       if (!ownerHost.matches || view.ownerKey !== ownerHost.ownerKey || view.scope !== ownerScope ||
-          !ownerScope.userId || !ownerScope.activeTransportId) return;
+          !ownerScope.userId || !ownerScope.activeTransportId || !ownerHost.sessionId) return;
       const transportId = ownerScope.activeTransportId;
       const owner = { workItemId, transportId };
+      const expectedActor = { userId: ownerScope.userId, sessionId: ownerHost.sessionId };
       // A return to the same mailbox is a new scope, not the original view.
       const mailboxChanged = () => getMailCacheScope() !== ownerScope || !host.current.matches ||
         host.current.ownerKey !== ownerHost.ownerKey;
@@ -255,22 +256,28 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
       const flush = () => {
         const pending = pendingDismissals.current.get(workItemId);
         pendingDismissals.current.delete(workItemId);
-        if (host.current.userId !== ownerHost.userId || host.current.sessionId !== ownerHost.sessionId) {
+        const actorChanged = () =>
+          (host.current.userId != null && host.current.userId !== ownerHost.userId) ||
+          (host.current.sessionId != null && host.current.sessionId !== ownerHost.sessionId) ||
+          (getMailCacheScope().userId != null && getMailCacheScope().userId !== ownerHost.userId);
+        const cancel = () => {
           dismissed.current.delete(workItemId);
           if (pending) toast.dismiss(pending.toastId);
-          if (mounted.current) {
-            toast.error('Dismissal cancelled after the signed-in user changed.');
-            void load('open', true);
-          }
-          return;
-        }
-        const mailbox = inMailbox(transportId);
-        (mailbox ? mutate({ workItemId }, mailbox) : mutate({ workItemId }))
-          .then(() => {
+          toast.error("Couldn't verify the signed-in user. Dismissal wasn't saved.");
+          if (mounted.current) void load('open', true);
+        };
+        void (async () => {
+          if (actorChanged()) return cancel();
+          let verified;
+          try { verified = (await getSession()).data; } catch { return cancel(); }
+          if (verified?.user?.id !== ownerHost.userId || verified.session?.id !== ownerHost.sessionId || actorChanged())
+            return cancel();
+          const mailbox = inMailbox(transportId);
+          try {
+            await (mailbox ? mutate({ workItemId, expectedActor }, mailbox) : mutate({ workItemId, expectedActor }));
             trackPaneAction({ type: 'item.dismissed' }, owner);
-            return Promise.all([load('open'), load('finished')]);
-          })
-          .catch(() => {
+            await Promise.all([load('open'), load('finished')]);
+          } catch {
             dismissed.current.delete(workItemId);
             if (mounted.current && !mailboxChanged()) {
               setView((prev) => prev.scope === ownerScope && !mailboxChanged() ? {
@@ -280,7 +287,8 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
               } : prev);
             }
             void load('open', true);
-          });
+          }
+        })();
       };
       const timer = setTimeout(flush, NEEDS_YOU_UNDO_MS);
       const toastId = toast('Email dismissed', {
