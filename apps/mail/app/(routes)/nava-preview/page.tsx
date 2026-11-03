@@ -53,7 +53,7 @@ export default function NavaPreviewPage() {
             Read-only preview. Nothing is written to Outlook or HMS.
           </p>
           {selectedId ? (
-            <Link className="text-xs text-blue-700 underline" to={`/mail/inbox?threadId=${encodeURIComponent(selectedId)}`}>
+            <Link className="text-xs text-blue-700 underline" to={`/mail/inbox?threadId=${encodeURIComponent(selectedId)}${selectedMessageId ? `&sourceMessageId=${encodeURIComponent(selectedMessageId)}` : ''}`}>
               Open in webmail
             </Link>
           ) : null}

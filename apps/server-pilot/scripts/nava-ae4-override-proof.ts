@@ -87,6 +87,7 @@ import {
   READ_PANE_JS,
   READ_PROCEDURES,
   redactText,
+  previewThreadUrl,
   type PaneRead,
   type RunConfig,
 } from './nava-preview-run';
@@ -843,7 +844,7 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
       // The run's transport is the active mailbox while the pane is open; the previous default comes back after.
       await withActiveMailbox(browserMailboxApi(context, config.baseUrl, permit), config.transportId, mailbox, log, async () => {
         // 1. Open the thread and let the pane read it.
-        await page.goto(`${config.baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`, {
+        await page.goto(previewThreadUrl(config.baseUrl, threadId, config.sourceMessageId), {
           waitUntil: 'domcontentloaded',
         });
         if (new URL(page.url()).pathname.startsWith('/login')) throw new Blocker('the storage state has no session');

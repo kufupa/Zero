@@ -416,6 +416,8 @@ describe('shared WebPanePanel', () => {
     expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
       threadId: 'thread-a', sourceMessageId: 'source-a', requireSelectedMessage: true,
     });
+    expect(screen.getByRole('link', { name: 'Open in webmail' }).getAttribute('href'))
+      .toBe('/mail/inbox?threadId=thread-a&sourceMessageId=source-a');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open source B' }));
     expect(mocks.setPreviewParams).toHaveBeenCalledWith({ thread: 'thread-b', sourceMessageId: 'source-b' });

@@ -434,6 +434,23 @@ describe('quote proof driver regressions', () => {
     ).rejects.toThrow('pane error');
   });
 
+  it('opens the exact source message in a proof thread', async () => {
+    let opened = '';
+    const page = {
+      goto: async (url: string) => { opened = url; },
+      url: () => opened,
+      evaluate: async () => ({
+        subject: null, paneStatus: 'ready', unsyncedReason: null, analysing: false,
+        intent: 'quote', amendment: null, voucher: false, aiUnavailable: false,
+        alerts: [], alerting: false, fields: [], statusText: '',
+      }),
+    } as never;
+    await openThread(page, 'https://nava.example.test', 'thread-a', { outcomes: [], blocked: [] }, 'message/a+1');
+    const url = new URL(opened);
+    expect(url.searchParams.get('thread')).toBe('thread-a');
+    expect(url.searchParams.get('sourceMessageId')).toBe('message/a+1');
+  });
+
   it('includes the visible disabled reason when Prepare PDF never becomes available', async () => {
     const saveDocument = quoteProofDriverForTests.saveDocument;
     expect(saveDocument).toBeTypeOf('function');
