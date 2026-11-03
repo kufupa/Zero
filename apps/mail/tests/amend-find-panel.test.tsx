@@ -2246,14 +2246,17 @@ describe('AmendLookupPanel amend form', () => {
     view.rerender(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect((screen.getByLabelText('Rate plan to review in HMS') as HTMLSelectElement).value).not.toBe('CORP');
-    expect((screen.getByLabelText('Retain the current rate?') as HTMLSelectElement).value).not.toBe('yes');
+    expect(within(screen.getByLabelText('Rate plan to review in HMS')).getByRole('option',
+      { name: /^Current rate plan/, selected: true })).toBeTruthy();
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Not chosen', selected: true })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Rate plan to review in HMS'), { target: { value: 'CORP' } });
 
     view.rerender(<AmendLookupPanel session={makeSession('57291631-1', 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect((screen.getByLabelText('Rate plan to review in HMS') as HTMLSelectElement).value).not.toBe('CORP');
+    expect(within(screen.getByLabelText('Rate plan to review in HMS')).getByRole('option',
+      { name: /^Current rate plan/, selected: true })).toBeTruthy();
   });
 
   it('hides the local editor when its selected email is no longer current', async () => {
