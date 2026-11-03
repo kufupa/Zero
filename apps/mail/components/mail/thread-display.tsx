@@ -222,8 +222,7 @@ export function ThreadDisplay() {
     if (!isFrontendOnlyDemo() && threadTransportId !== activeConnection.id) return null;
     return singleInboundMessageId(emailData.messages, activeConnection.email ?? '', id);
   }, [activeConnection?.email, activeConnection?.id, emailData, id, isThreadDataMismatch, sourceMessageId]);
-  // An unambiguous default is for display only. Writing it into the URL while
-  // a draft flush is pending would cancel or overwrite the user's navigation.
+  // Keep the default out of the URL so it cannot overwrite pending navigation.
   const displayedSourceMessageId = sourceMessageId ?? soleInboundId;
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);

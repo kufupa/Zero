@@ -1,11 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual } from '../components/mail/mail-list';
+import { TooltipProvider } from '../components/ui/tooltip';
 import { beginMailSelectionIntent } from '../lib/mail/source-message-navigation';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   selection: { threadId: null as string | null, sourceMessageId: 'old-message' as string | null },
   selectionListeners: new Set<() => void>(),
   flushCompose: vi.fn(),
+  moveThreads: vi.fn(),
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -130,8 +132,14 @@ vi.mock('@/components/mail/use-mail', () => ({
 }));
 
 vi.mock('@/hooks/use-optimistic-actions', () => ({
-  useOptimisticActions: () => ({ optimisticMarkAsRead: vi.fn() }),
+  useOptimisticActions: () => ({ optimisticMarkAsRead: vi.fn(), optimisticMoveThreadsTo: mocks.moveThreads }),
 }));
+
+vi.mock('@/components/context/thread-context', () => ({
+  ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock('@/components/ui/bimi-avatar', () => ({ BimiAvatar: () => null }));
 
 vi.mock('react-router', () => ({
   useParams: () => ({ folder: mocks.folder }),
@@ -141,7 +149,7 @@ vi.mock('nuqs', async () => {
   const { useSyncExternalStore } = await import('react');
   return {
     parseAsString: {},
-    useQueryState: () => [null, mocks.setComposeState],
+    useQueryState: (name: string) => [name === 'threadId' ? mocks.selection.threadId : null, mocks.setComposeState],
     useQueryStates: () => [useSyncExternalStore(
       (listener) => { mocks.selectionListeners.add(listener); return () => { mocks.selectionListeners.delete(listener); }; },
       () => mocks.selection,
@@ -166,6 +174,7 @@ beforeEach(() => {
   mocks.navigate = null;
   mocks.setMailSelection.mockReset();
   mocks.setComposeState.mockReset();
+  mocks.moveThreads.mockReset();
   mocks.selection = { threadId: null, sourceMessageId: 'old-message' };
   mocks.flushCompose.mockReset().mockResolvedValue(undefined);
   mocks.searchValue = {
@@ -205,6 +214,36 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('keeps the selected email and draft when a different row is archived', () => {
+    mocks.selection = { threadId: 'thread-a', sourceMessageId: 'message-a' };
+    const rows = [{ id: 'thread-a' }, { id: 'thread-b' }];
+    mocks.useThreads.mockReturnValue([{ isLoading: false, isFetching: false, isError: false }, rows, true, vi.fn()]);
+    mocks.useThread.mockImplementation((id: string) => ({ data: {
+      latest: { id: `${id}-message`, threadId: id, subject: id, sender: { name: id, email: `${id}@example.invalid` },
+        tags: [], receivedOn: '2026-11-01T12:00:00.000Z', body: '' },
+      messages: [], labels: [], hasUnread: false,
+    }, isGroupThread: false, latestDraft: null }));
+    render(createElement(TooltipProvider, null, createElement(MailList)));
+    const row = document.querySelector('[data-thread-id="thread-b"]');
+    expect(row).toBeTruthy();
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: /archive/i }));
+    expect(mocks.moveThreads).toHaveBeenCalledWith(['thread-b'], 'inbox', 'archive');
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    expect(mocks.flushCompose).not.toHaveBeenCalled();
+  });
+  it('clears the selected email when that row is archived', () => {
+    mocks.selection = { threadId: 'thread-a', sourceMessageId: 'message-a' };
+    mocks.useThreads.mockReturnValue([{ isLoading: false, isFetching: false, isError: false }, [{ id: 'thread-a' }], true, vi.fn()]);
+    mocks.useThread.mockReturnValue({ data: {
+      latest: { id: 'message-a', threadId: 'thread-a', subject: 'thread-a', sender: { name: 'a', email: 'a@example.invalid' },
+        tags: [], receivedOn: '2026-11-01T12:00:00.000Z', body: '' },
+      messages: [], labels: [], hasUnread: false,
+    }, isGroupThread: false, latestDraft: null });
+    render(createElement(TooltipProvider, null, createElement(MailList)));
+    fireEvent.click(within(document.querySelector('[data-thread-id="thread-a"]') as HTMLElement).getByRole('button', { name: /archive/i }));
+    expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: null, sourceMessageId: null });
+    expect(mocks.moveThreads).toHaveBeenCalledWith(['thread-a'], 'inbox', 'archive');
+  });
   it('keyboard thread navigation clears the prior message after flushing the draft', async () => {
     render(createElement(MailList));
     act(() => mocks.navigate?.('thread-b'));

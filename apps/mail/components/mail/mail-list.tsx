@@ -289,8 +289,9 @@ const Thread = memo(
     );
 
     const handleNext = useCallback(
-      (id: string) => {
-        if (!id || !threads.length || focusedIndex === null) {
+      (movedId: string) => {
+        if (movedId !== id) return;
+        if (!movedId || !threads.length || focusedIndex === null) {
           beginMailSelectionIntent();
           return setMailSelection({ threadId: null, sourceMessageId: null });
         }
@@ -441,6 +442,7 @@ const Thread = memo(
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label={m['common.threadDisplay.archive']()}
                     className="h-6 w-6 [&_svg]:size-3.5"
                     onClick={(e) => {
                       e.stopPropagation();
