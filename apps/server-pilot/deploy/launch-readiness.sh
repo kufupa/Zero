@@ -2162,6 +2162,10 @@ if (remoteAdminMode) {
 }
 // Warn-only checks are reported in `warnings` and printed, but only `failures` decides READY.
 const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty"]);
+// One-deploy owner waiver: keep the measured backlog visible, but do not
+// treat the existing paused-lane queue as a deploy failure.
+const nonterminalBacklogWaived = process.env.NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG === "1";
+if (nonterminalBacklogWaived) WARN_ONLY_CHECKS.add("workflowNonterminalBacklogEmpty");
 const failedChecks = Object.entries(checks)
   .filter(([, passed]) => !passed)
   .map(([name]) => name);
@@ -2198,6 +2202,8 @@ const report = {
     workflowDeadLetterRecentCount: Number(db.workflowDeadLetterRecentCount ?? 0),
     workflowDeadLetterWindowStart: db.workflowDeadLetterWindowStart ?? null,
     workflowLastGoodDeployRejected: db.workflowLastGoodDeployRejected === true,
+    workflowNonterminalCount: db.workflowNonterminalCount ?? null,
+    workflowNonterminalBacklogWaived: nonterminalBacklogWaived,
     outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
     pm2Restarts: {
@@ -2244,11 +2250,19 @@ if (report.observations.workflowLastGoodDeployRejected) {
   );
 }
 if (report.warnings.length) {
-  console.error(
-    `WARNING launch-readiness: ${report.warnings.join(",")} not met ` +
-      `(outboundNonterminalCount=${report.observations.outboundNonterminalCount}). ` +
-      "Warn-only: this does not fail the deploy. Check the outbound queue.",
-  );
+  if (report.warnings.includes("outboundBacklogEmpty")) {
+    console.error(
+      `WARNING launch-readiness: outboundBacklogEmpty not met ` +
+        `(outboundNonterminalCount=${report.observations.outboundNonterminalCount}). ` +
+        "Warn-only: this does not fail the deploy. Check the outbound queue.",
+    );
+  }
+  if (report.warnings.includes("workflowNonterminalBacklogEmpty")) {
+    console.error(
+      "WARNING launch-readiness: owner waived workflowNonterminalBacklogEmpty " +
+        `(workflowNonterminalCount=${report.observations.workflowNonterminalCount}).`,
+    );
+  }
 }
 NODE
 

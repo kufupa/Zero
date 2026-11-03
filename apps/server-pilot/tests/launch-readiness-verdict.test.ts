@@ -81,7 +81,7 @@ function baselineRemote() {
 
 type Remote = ReturnType<typeof baselineRemote>;
 
-function runVerdict(patch: (remote: Remote) => void = () => {}) {
+function runVerdict(patch: (remote: Remote) => void = () => {}, allowBacklog = '') {
   const remote = baselineRemote();
   patch(remote);
   const env = {
@@ -133,6 +133,7 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     REMOTE_TARGET_HEALTH_REQUIRED: '0',
     REMOTE_ADMIN_LIFECYCLE_MODE: '',
     REMOTE_ADMIN_FACTS: '{}',
+    NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG: allowBacklog,
   };
   const result = spawnSync('bash', ['-c', `set -euo pipefail\n${verdict}`], {
     env,
@@ -146,6 +147,37 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     report: stdout ? (JSON.parse(stdout) as Record<string, any>) : null,
   };
 }
+
+describe('owner waiver for the existing workflow backlog', () => {
+  it('leaves the measured backlog visible as a warning', () => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, '1');
+    expect(run.status).toBe(0);
+    expect(run.report).toMatchObject({
+      status: 'READY',
+      checks: { workflowNonterminalBacklogEmpty: false },
+      failures: [],
+      warnings: ['workflowNonterminalBacklogEmpty'],
+      observations: { workflowNonterminalCount: 54, workflowNonterminalBacklogWaived: true },
+    });
+    expect(run.stderr).toContain('owner waived workflowNonterminalBacklogEmpty');
+  });
+
+  it('keeps all other failures blocking when the backlog is waived', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 54;
+      remote.db.workflowDeadLetterRecentCount = 1;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowDeadLetterBacklogEmpty']);
+    expect(run.report?.warnings).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+
+  it.each(['', '0', 'true'])('requires an explicit 1 for the waiver (%s)', (value) => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, value);
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+});
 
 describe('last-good deploy marker validation in launch-readiness', () => {
   it.each([
