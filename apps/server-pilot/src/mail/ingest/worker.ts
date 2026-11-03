@@ -799,7 +799,7 @@ export async function runWorker(
     }
   }
   await closeDb().catch(() => undefined);
-  console.log('worker: stopped, exiting 0');
+  console.log(`worker: stopped, exiting 0 pid=${process.pid}`);
 }
 
 function abortableSleep(ms: number, shouldStop: () => boolean): Promise<void> {
