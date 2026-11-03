@@ -143,6 +143,10 @@ export type StayCommitRecord = {
   cloudCreateHold?: CloudCreateHoldProjection;
   cloudCreateTarget?: CloudCreateHoldProjection['target'];
 };
+type StayCommitWriteRecord = Omit<StayCommitRecord, 'cloudCreateTarget'> & {
+  /** Hold targets remain opaque in stored state; readers schema-validate before projecting them. */
+  cloudCreateTarget?: unknown;
+};
 export type StayCommitGuard =
   | { action: 'commit' }
   | { action: 'refuse'; reason: typeof PANE_STAY_ALREADY_BOOKED }
@@ -254,7 +258,7 @@ export function stayCommitOf(state: WorkState, stayId: string): StayCommitRecord
   return stayCommitsOf(state)[stayId];
 }
 
-export function withStayCommit(state: WorkState, stayId: string, record: StayCommitRecord): WorkState {
+export function withStayCommit(state: WorkState, stayId: string, record: StayCommitWriteRecord): WorkState {
   const raw = state[STAY_COMMITS_KEY];
   const rows = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   // Validate the visible entries but retain their server-owned evidence when another stay changes.
