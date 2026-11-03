@@ -3024,14 +3024,14 @@ if (!realMailGate) {
     );
     expect(
       sync.match(/git fetch \$\{Q_REMOTE_BUNDLE\} \$\{Q_BUNDLE_REFSPEC\}/g),
-    ).toHaveLength(2);
-    expect(sync.match(/bundle commit mismatch/g)).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(sync.match(/bundle commit mismatch/g)).toHaveLength(1);
     expect(
       sync.match(
-        /git checkout -f -B \$\{Q_GIT_BRANCH\} \$\{Q_BUNDLE_COMMIT\}; git reset --hard \$\{Q_BUNDLE_COMMIT\}/g,
+        /git checkout --no-overwrite-ignore -B \$\{Q_GIT_BRANCH\} \$\{Q_BUNDLE_COMMIT\}/g,
       ),
-    ).toHaveLength(2);
-    expect(sync).toContain('else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
+    ).toHaveLength(1);
+    expect(sync).toContain('git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
     expect(sync).not.toContain('git clone ${Q_REMOTE_BUNDLE}');
     expect(sync).not.toContain(
       'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
