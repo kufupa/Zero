@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
-import { mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
+import { mailThread, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { assertHmsReadOriginAllowed, CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
@@ -30,8 +30,11 @@ type PreviewResult =
 async function currentSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
   const rows = await db.select({ itemThread: workItem.threadId, messageThread: message.threadId,
     itemMessage: workItem.sourceMessageId, messageId: message.id, transportId: workItem.transportId,
-    actorUserId: mailboxAccess.userId, active: mailboxTransport.isActive, status: workItem.status }).from(workItem)
+    actorUserId: mailboxAccess.userId, active: mailboxTransport.isActive, status: workItem.status,
+    direction: message.direction, messageHistoryOnly: message.historyOnly,
+    threadHistoryOnly: mailThread.historyOnly, threadTrashedAt: mailThread.trashedAt }).from(workItem)
     .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, input.transportId)))
+    .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, input.transportId)))
     .innerJoin(mailboxTransport, eq(mailboxTransport.id, workItem.transportId))
     .innerJoin(mailboxAccess, and(eq(mailboxAccess.transportId, mailboxTransport.id),
       eq(mailboxAccess.userId, input.actorUserId)))
@@ -40,7 +43,8 @@ async function currentSourceThread(db: DB, input: PreviewInput): Promise<string 
   const row = rows.length === 1 ? rows[0] : null;
   return row && row.itemThread && row.itemThread === row.messageThread && row.active &&
     row.itemMessage === input.sourceMessageId && row.messageId === input.sourceMessageId &&
-    row.transportId === input.transportId && row.actorUserId === input.actorUserId &&
+    row.transportId === input.transportId && row.actorUserId === input.actorUserId && row.direction === 'inbound' &&
+    !row.messageHistoryOnly && !row.threadHistoryOnly && row.threadTrashedAt === null &&
     row.status !== 'done' && row.status !== 'dismissed' ? row.itemThread : null;
 }
 
