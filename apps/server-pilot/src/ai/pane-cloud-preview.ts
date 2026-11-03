@@ -15,7 +15,7 @@ import { canonicalJson } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, nativeCreateSaveDigest,
-  resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
+  readResolvedHmsLabtestCreates, resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
@@ -33,7 +33,11 @@ export const cloudPreviewSelection = z.object({
 }).strict();
 type Input = { transportId: string; mailboxAddress: string; actorUserId: string; workItemId: string; stayId: string;
   sessionId?: string; sessionProfile?: 'legacy' | 'remote';
-  selection: z.infer<typeof cloudPreviewSelection>; stay: PaneStay };
+  selection: z.infer<typeof cloudPreviewSelection>; stay: PaneStay; batch?: PaneCloudBatch };
+export type PaneCloudBatch =
+  | { kind: 'start'; id: string; rooms: Array<{ stayId: string; selection: z.infer<typeof cloudPreviewSelection>;
+      stay: PaneStay; previewDigest: string }> }
+  | { kind: 'continue'; id: string; index: number };
 type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; applied?: { guaranteeType?: unknown };
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
   writerSessionClosed?: unknown; save?: { dispatchCallbacksDrained?: unknown };
@@ -41,11 +45,13 @@ type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; a
 type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 type NativeOptions = { capturePrepareScreenshot?: boolean; requireExplicitGuestSelection?: boolean; expectedRequestDigest?: string;
   authorizeCandidate?: (request: unknown) => Promise<boolean>;
-  dispatchCandidate?: (request: unknown, next: NativeContinuation, evidence: unknown) => Promise<unknown> };
+  dispatchCandidate?: (request: unknown, next: NativeContinuation, evidence: unknown) => Promise<unknown>;
+  verifyLabtestMatches?: (census: unknown) => Promise<boolean> };
 export const paneCloudPreviewLoaders: {
   runtimeReady: () => boolean;
   authorityReady: () => boolean;
   run: (input: Record<string, unknown>, options: NativeOptions) => Promise<Native>;
+  verifySiblings: (census: unknown, siblings: BatchSibling[]) => Promise<boolean>;
 } = {
   // Enable only after all competing HRCEN writers are held or use the shared
   // durable claim. Preview remains available while this cutover flag is off.
@@ -61,6 +67,12 @@ export const paneCloudPreviewLoaders: {
       createReservation: (input: Record<string, unknown>, options: unknown) => Promise<Native>;
     };
     return tool.createReservation(input, options);
+  },
+  verifySiblings: async (census, siblings) => {
+    const tool = await import(new URL('../../tooling/hms-cloud/batch-sibling-readback.mjs', import.meta.url).href) as {
+      verifyBatchSiblings: (census: unknown, siblings: BatchSibling[]) => Promise<boolean>;
+    };
+    return tool.verifyBatchSiblings(census, siblings);
   },
 };
 const refused = (reason: string): PaneStayResult => ({ status: 'refused', reason });
@@ -83,7 +95,13 @@ const grantSchema = z.object({ version: z.literal('pane-cloud-preview/v1'), gran
   previewShot: z.object({ runId: z.string().uuid(), sha256: digest }).strict(), expiresAt: z.number().finite() }).strict();
 type Grant = z.infer<typeof grantSchema>;
 const PREVIEWS = 'cloudCreatePreviews';
+const BATCH = 'cloudCreateBatch';
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+const batchSchema = z.object({ version: z.literal('pane-cloud-batch/v1'), id: z.string().uuid(),
+  rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), grant: grantSchema }).strict()).min(2).max(8),
+  digest }).strict();
+type StoredBatch = z.infer<typeof batchSchema>;
+type BatchSibling = { confirmation: string; approvedRequest: Record<string, unknown>; requestDigest: string };
 
 async function currentCursor(db: DB, input: Input): Promise<Cursor> {
   const [item] = await db.select({ extractionId: workItem.extractionId, revision: workItem.revision,
@@ -123,7 +141,7 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   // Staff may edit the booking. The grant binds their reviewed form and selected
   // room identity; the native request fence checks the same values before Save.
   const state = { ...source.item.state };
-  for (const key of [PREVIEWS, 'stayPreviews', 'stays']) delete state[key];
+  for (const key of [PREVIEWS, BATCH, 'stayPreviews', 'stays']) delete state[key];
   return { sourceDigest: source.sourceDigest, stateDigest: createHash('sha256').update(canonicalJson(state)).digest('hex'),
     accessId: actor.accessId };
 }
@@ -162,6 +180,99 @@ const hasStay = (state: Record<string, unknown>, stayId: string) =>
 const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsShot({ ...grant.previewShot, name: 'filled.png',
   owner: `${input.actorUserId}:${input.transportId}`, propertyCode: 'HRCEN', workItemId: input.workItemId });
 
+function storedBatch(state: Record<string, unknown>, id: string): StoredBatch | null {
+  const parsed = batchSchema.safeParse(state[BATCH]);
+  if (!parsed.success || parsed.data.id !== id) return null;
+  const { digest: actual, ...body } = parsed.data;
+  return hash(body) === actual && new Set(body.rooms.map((room) => room.stayId)).size === body.rooms.length ? parsed.data : null;
+}
+
+/** A later stay may replace a batch only after every prior room has durable positive evidence. */
+async function previousBatchComplete(tx: CreateFenceTransaction, state: Record<string, unknown>, input: Input): Promise<boolean> {
+  const raw = state[BATCH];
+  if (raw === undefined) return true;
+  const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
+  const batch = typeof id === 'string' ? storedBatch(state, id) : null;
+  const stays = state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays)
+    ? state.stays as Record<string, unknown> : null;
+  if (!batch || !stays) return false;
+  const completed = await readResolvedHmsLabtestCreates(tx, input.workItemId);
+  const confirmations = new Set<string>();
+  for (const room of batch.rooms) {
+    const prior = stays[room.stayId];
+    if (!prior || typeof prior !== 'object' || Array.isArray(prior)) return false;
+    const row = prior as Record<string, unknown>, confirmation = row.confirmationNumber;
+    if (row.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || confirmations.has(confirmation)) return false;
+    const evidence = completed.filter(({ intent, resolution }) =>
+      intent.transportId === input.transportId && intent.actorUserId === room.grant.actorUserId &&
+      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
+      intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
+    if (evidence.length !== 1) return false;
+    confirmations.add(confirmation);
+  }
+  return true;
+}
+
+/** The first Save transaction captures every previewed room under the single Go. */
+async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSource, input: Input, grant: Grant,
+  previewDigest: string): Promise<StoredBatch | null> {
+  const batch = input.batch;
+  if (!batch || batch.kind !== 'start') return null;
+  if (!z.string().uuid().safeParse(batch.id).success || batch.rooms.length < 2 || batch.rooms.length > 8 ||
+      new Set(batch.rooms.map((room) => room.stayId)).size !== batch.rooms.length ||
+      batch.rooms[0]?.stayId !== input.stayId || batch.rooms[0]?.previewDigest !== previewDigest) {
+    throw new Error('cloud_batch_stale');
+  }
+  if (!await previousBatchComplete(tx, source.item.state, input)) throw new Error('cloud_batch_stale');
+  const rooms: StoredBatch['rooms'] = [];
+  for (const room of batch.rooms) {
+    const roomInput: Input = { ...input, stayId: room.stayId, stay: room.stay, selection: room.selection, batch: undefined };
+    const candidate = grantOf(source.item.state, room.stayId);
+    const current = await checkSource(tx, source, roomInput, grant.accessId);
+    if (!candidate || room.stayId !== `${room.selection.identity.stayId}_${room.selection.identity.roomIndex}` ||
+        !sameGrant(candidate, roomInput, room.previewDigest) || !matchesSource(current, candidate) ||
+        canonicalJson(candidate.source) !== canonicalJson(grant.source) ||
+        canonicalJson(candidate.cursor) !== canonicalJson(grant.cursor) ||
+        room.stay.arrival !== input.stay.arrival || hasStay(source.item.state, room.stayId) ||
+        paneStayModeRefusal(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), room.stay) ||
+        !await previewShotValid(candidate, roomInput)) throw new Error('cloud_batch_stale');
+    rooms.push({ stayId: room.stayId, grant: candidate });
+  }
+  const body = { version: 'pane-cloud-batch/v1' as const, id: batch.id, rooms };
+  return batchSchema.parse({ ...body, digest: hash(body) });
+}
+
+/** Earlier confirmations come from this item's server-written evidence, never client JSON. */
+async function checkedSiblings(tx: CreateFenceTransaction, state: Record<string, unknown>, input: Input,
+  grant: Grant, previewDigest: string): Promise<BatchSibling[]> {
+  if (!input.batch || input.batch.kind !== 'continue') throw new Error('cloud_batch_stale');
+  const batch = storedBatch(state, input.batch.id), index = input.batch.index;
+  if (!batch || !Number.isInteger(index) || index < 1 || index >= batch.rooms.length ||
+      batch.rooms[index]?.stayId !== input.stayId || batch.rooms[index]?.grant.digest !== previewDigest ||
+      canonicalJson(batch.rooms[index]?.grant) !== canonicalJson(grant) || !staysClear(state)) {
+    throw new Error('cloud_batch_stale');
+  }
+  const stays = state.stays as Record<string, unknown> | undefined;
+  const completed = await readResolvedHmsLabtestCreates(tx, input.workItemId);
+  const siblings: BatchSibling[] = [];
+  for (const room of batch.rooms.slice(0, index)) {
+    const previous = stays?.[room.stayId] as Record<string, unknown> | undefined;
+    const confirmation = previous?.confirmationNumber;
+    const evidence = completed.filter(({ intent, resolution }) =>
+      intent.transportId === input.transportId && intent.actorUserId === input.actorUserId &&
+      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
+      intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
+    if (previous?.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || evidence.length !== 1) {
+      throw new Error('cloud_batch_stale');
+    }
+    siblings.push({ confirmation, approvedRequest: room.grant.approvedRequest, requestDigest: room.grant.requestDigest });
+  }
+  if (new Set(siblings.map((item) => item.confirmation)).size !== siblings.length) throw new Error('cloud_batch_stale');
+  return siblings;
+}
+
 async function saveScreenshots(native: Native, input: Input, beforeSha256: string) {
   const before = native.screenshots?.before;
   if (typeof before !== 'string') return null;
@@ -179,7 +290,7 @@ async function saveScreenshots(native: Native, input: Input, beforeSha256: strin
 }
 
 /** Persist the last clean preimage and before image before creating an UNKNOWN intent. */
-async function createRecoveryEvidence(value: unknown, input: Input) {
+async function createRecoveryEvidence(value: unknown, input: Input, siblings: BatchSibling[]) {
   const processIdentity = z.object({ pid: z.number().int().safe().min(2), started: z.string().regex(/^\d+$/) }).strict();
   const writerIdentity = z.object({ host: digest, bootId: z.string().uuid(), pidNamespace: z.string().regex(/^pid:\[\d+\]$/),
     node: processIdentity, browser: processIdentity }).strict();
@@ -188,7 +299,9 @@ async function createRecoveryEvidence(value: unknown, input: Input) {
     expiresAt: z.string().datetime(),
     coverage: z.object({ displayed: z.number().int().nonnegative().safe(), total: z.number().int().nonnegative().safe(),
       complete: z.literal(true) }),
-    sameArrival: z.array(z.unknown()).length(0),
+    sameArrival: z.array(z.object({ confirmation: z.string().regex(/^\d{6,10}-\d{1,2}$/), firstName: z.literal('Proof'), lastName: z.literal('Labtest'),
+      arrival: labDate, departure: labDate, status: z.literal('Reserved') }).passthrough()),
+    verifiedExisting: z.literal(true).optional(),
   }).passthrough(), writer: writerIdentity, guaranteeDisplay: z.string().min(1).max(200) }).strict().safeParse(value);
   if (!parsed.success || parsed.data.preimage.arrival !== input.stay.arrival ||
       parsed.data.preimage.departure !== input.stay.departure || input.stay.arrival >= input.stay.departure ||
@@ -196,7 +309,13 @@ async function createRecoveryEvidence(value: unknown, input: Input) {
       parsed.data.preimage.searchedDateRange.to < input.stay.arrival ||
       Date.parse(parsed.data.preimage.expiresAt) <= Date.now() ||
       parsed.data.preimage.coverage.displayed !== parsed.data.preimage.coverage.total ||
-      !centurionWriterCurrent(parsed.data.writer)) {
+      parsed.data.preimage.coverage.displayed < parsed.data.preimage.sameArrival.length ||
+      !centurionWriterCurrent(parsed.data.writer) ||
+      parsed.data.preimage.sameArrival.length !== siblings.length ||
+      (siblings.length > 0 && parsed.data.preimage.verifiedExisting !== true) ||
+      new Set(parsed.data.preimage.sameArrival.map((row) => row.confirmation)).size !== siblings.length ||
+      parsed.data.preimage.sameArrival.some((row) => row.arrival !== input.stay.arrival ||
+        !siblings.some((sibling) => sibling.confirmation === row.confirmation))) {
     throw new Error('cloud_create_preimage_unavailable');
   }
   const before = parsed.data.beforeScreenshot, dir = dirname(before);
@@ -338,12 +457,26 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
       if (!grant || !sameGrant(grant, input, previewDigest) || !await previewShotValid(grant, input)) return refused('pane_save_preview_required');
       const key = sourceKey(input, grant.cursor);
       const epoch = await captureHmsLabtestDispatchEpoch(db);
+      let siblings: BatchSibling[] = [];
+      if (input.batch?.kind === 'continue') {
+        siblings = await withLockedCreateSource(db, key, async (tx, source) => {
+          const current = await checkSource(tx, source, input, grant.accessId);
+          if (!matchesSource(current, grant)) throw new Error('cloud_batch_stale');
+          return checkedSiblings(tx, source.item.state, input, grant, previewDigest);
+        });
+      }
+      let verifiedSiblings = false;
       const native = await paneCloudPreviewLoaders.run(mapped.input, {
         expectedRequestDigest: grant.requestDigest,
         authorizeCandidate: async () => grant.expiresAt > Date.now(),
+        ...(siblings.length ? { verifyLabtestMatches: async (census: unknown) => {
+          verifiedSiblings = await paneCloudPreviewLoaders.verifySiblings(census, siblings);
+          return verifiedSiblings;
+        } } : {}),
         dispatchCandidate: async (request, next, evidence) => {
           const firstRequestDigest = nativeCreateSaveDigest(request);
-          const recovery = await createRecoveryEvidence(evidence, input);
+          if (siblings.length && !verifiedSiblings) throw new Error('cloud_batch_readback_unavailable');
+          const recovery = await createRecoveryEvidence(evidence, input, siblings);
           const checked = digestPaneCloudCreateProof(input.stay, grant.approvedRequest, input.stay.guaranteeType, grant.nativeGuestId);
           if (checked.outcome !== 'ok' || checked.normalizedRequestDigest !== grant.requestDigest ||
               canonicalJson(checked.request) !== canonicalJson(grant.approvedRequest)) {
@@ -366,12 +499,17 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
                   !await previewShotValid(grant, input)) throw new Error('cloud_create_dispatch_stale');
               await lockCreateActorSession(lockedTx, { actorUserId: input.actorUserId,
                 sessionId: input.sessionId, sessionProfile: input.sessionProfile });
+              const startedBatch = await prepareBatch(lockedTx, source, input, grant, previewDigest);
+              if (input.batch?.kind === 'continue' &&
+                  canonicalJson(await checkedSiblings(lockedTx, source.item.state, input, grant, previewDigest)) !== canonicalJson(siblings)) {
+                throw new Error('cloud_batch_stale');
+              }
               if (!sameGrant(liveGrant, input, previewDigest) || Date.parse(recovery.preimage.expiresAt) <= Date.now()) {
                 throw new Error('cloud_create_dispatch_stale');
               }
               const previews = { ...(source.item.state[PREVIEWS] as Record<string, unknown>) };
               delete previews[input.stayId];
-              const state = { ...source.item.state, [PREVIEWS]: previews,
+              const state = { ...source.item.state, [PREVIEWS]: previews, ...(startedBatch ? { [BATCH]: startedBatch } : {}),
                 stays: { ...(stays as Record<string, unknown> | undefined), [input.stayId]: {
                   status: 'unknown', confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: grant.grantId } } };
               await lockedTx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
@@ -421,6 +559,9 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (claimAttempted) return noClaimResult();
+    if (error instanceof HmsLabtestDispatchError && error.reason === 'occupied') {
+      return refused('cloud_create_recovery_required');
+    }
     return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'cloud_create_unavailable');
   }
 }
@@ -437,7 +578,17 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
       stay.confirmationNumber !== null || stay.screenshotRef !== null) throw new Error('cloud_create_recovery_scope_changed');
   const remaining = { ...stays } as Record<string, unknown>;
   delete remaining[intent.stayId];
-  await tx.update(workItem).set({ state: { ...current.state, stays: remaining }, updatedAt: new Date() })
+  const state: Record<string, unknown> = { ...current.state, stays: remaining };
+  const rawBatch = state[BATCH];
+  const batchId = rawBatch && typeof rawBatch === 'object' && !Array.isArray(rawBatch)
+    ? (rawBatch as Record<string, unknown>).id : null;
+  const batch = typeof batchId === 'string' ? storedBatch(state, batchId) : null;
+  // If the first room provably never left the browser, no room in this batch
+  // was saved. Discard its spent manifest so a fresh review can start again.
+  // Keep partial batches when any earlier room has a durable outcome.
+  if (batch?.rooms[0]?.stayId === intent.stayId && batch.rooms[0].grant.grantId === intent.grantId &&
+      batch.rooms.every((room) => !Object.hasOwn(remaining, room.stayId))) delete state[BATCH];
+  await tx.update(workItem).set({ state, updatedAt: new Date() })
     .where(eq(workItem.id, intent.workItemId));
 }
 

@@ -69,7 +69,7 @@ test('missing quiescence, changed authorization, incomplete census and ambiguity
   assert.equal((await provePositiveCreateRecovery(intent, { ...f.options, writerQuiesced: () => false })).outcome, 'unconfirmed');
   assert.equal((await provePositiveCreateRecovery({ ...intent, approvedDigest: '0'.repeat(64) }, f.options)).outcome, 'unconfirmed');
   assert.equal((await provePositiveCreateRecovery({ ...intent, recovery: { ...intent.recovery,
-    preimage: { ...intent.recovery.preimage, sameArrival: [candidate] } } }, f.options)).outcome, 'unconfirmed');
+    preimage: { ...intent.recovery.preimage, sameArrival: [candidate, candidate] } } }, f.options)).outcome, 'unconfirmed');
   const listing = { outcome: 'existing_matches', arrival: candidate.arrival, departure: candidate.departure,
     searchedDateRange: { from: '2027-03-01', to: '2027-03-30' }, coverage: { displayed: 2, total: 2, complete: true },
     sameArrival: [candidate, { ...candidate, confirmation: '1234568-1' }] };
@@ -77,6 +77,24 @@ test('missing quiescence, changed authorization, incomplete census and ambiguity
   listing.sameArrival = [candidate]; listing.coverage.complete = false;
   assert.equal((await provePositiveCreateRecovery(intent, fixture({ listing }).options)).outcome, 'unconfirmed');
   assert.deepEqual(f.calls, []);
+});
+
+test('recovery excludes sealed earlier rooms and requires one uniquely new matching stay', async () => {
+  const prior = { ...candidate, confirmation: '1234560-1', departure: '2027-03-16' };
+  const batchIntent = structuredClone(intent);
+  batchIntent.recovery.preimage.sameArrival = [prior];
+  batchIntent.recovery.preimage.coverage = { displayed: 1, total: 1, complete: true };
+  const listing = { outcome: 'existing_matches', arrival: candidate.arrival, departure: candidate.departure,
+    searchedDateRange: { from: '2027-03-01', to: '2027-03-30' },
+    coverage: { displayed: 2, total: 2, complete: true }, sameArrival: [prior, candidate] };
+  const result = await provePositiveCreateRecovery(batchIntent, fixture({ listing }).options);
+  assert.equal(result.outcome, 'verified');
+  assert.equal(result.confirmation, candidate.confirmation);
+  for (const sameArrival of [[candidate], [prior, prior], [{ ...prior, status: 'Cancelled' }, candidate],
+    [prior, candidate, { ...candidate, confirmation: '1234568-1' }]]) {
+    assert.equal((await provePositiveCreateRecovery(batchIntent, fixture({ listing: { ...listing, sameArrival } }).options)).outcome,
+      'unconfirmed');
+  }
 });
 
 test('changed saved data, native guarantee, party or missing screenshot keep the hold unresolved', async () => {

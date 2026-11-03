@@ -111,6 +111,14 @@ export const paneStayInput = z.object({
   workItemId: z.string().uuid().optional(),
   createSelection: cloudPreviewSelection.optional(),
 });
+const batchRoomInput = paneStayInput.extend({
+  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), workItemId: z.string().uuid(),
+  createSelection: cloudPreviewSelection, previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+const paneCloudBatchInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('start'), id: z.string().uuid(), rooms: z.array(batchRoomInput).min(2).max(8) }).strict(),
+  z.object({ kind: z.literal('continue'), id: z.string().uuid(), index: z.number().int().min(1).max(7) }).strict(),
+]);
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
@@ -331,6 +339,7 @@ export const quoteWorkflowRouter = router({
         previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
         // Rooms 2+ of one booking name room 1's stay; the server reads its confirmation from this work item.
         parentStayId: z.string().trim().min(1).max(200).optional(),
+        batch: paneCloudBatchInput.optional(),
       }),
     )
     .use(({ input, ctx, next }) =>
@@ -346,15 +355,23 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, parentStayId, createSelection, confirmationSendMail, ...stay } = input;
+      const { previewDigest, stayId, workItemId, parentStayId, createSelection, confirmationSendMail, batch, ...stay } = input;
       const target = resolvePropertyTransport(ctx.activeTransportId);
       if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
         if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
         if (parentStayId) return { status: 'refused' as const, reason: 'pane_save_parent_unsupported' };
+        if (batch?.kind === 'start' && batch.rooms.some((room) => room.workItemId !== workItemId)) {
+          return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+        }
+        const cloudBatch = batch?.kind === 'start' ? { ...batch, rooms: batch.rooms.map((room) => {
+          const { stayId: roomId, workItemId: _workItemId, createSelection: selection, previewDigest: roomDigest, ...roomStay } = room;
+          return { stayId: roomId, selection, previewDigest: roomDigest, stay: roomStay };
+        }) } : batch;
         return commitPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
           actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
-          workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail } }, previewDigest);
+          workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail }, batch: cloudBatch }, previewDigest);
       }
+      if (batch) return { status: 'refused' as const, reason: 'pane_batch_property_unsupported' };
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       const previewPersist =
         workItemId && stayId

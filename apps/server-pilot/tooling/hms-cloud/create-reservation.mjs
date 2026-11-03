@@ -363,10 +363,12 @@ function draftRequestBinding(input, state, output, formFields) {
 /** Prepare an unsaved draft or execute the owner-authorized, Labtest-only create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
   partyReadback = readCreateParties, census, authorizeCandidate, dispatchCandidate, expectedRequestDigest,
-  capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee } = {}) {
+  capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
+  verifyLabtestMatches } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
       ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)) ||
+      (verifyLabtestMatches !== undefined && (typeof verifyLabtestMatches !== 'function' || !authorizeCandidate || input?.mode !== 'commit')) ||
       (expectedRequestDigest !== undefined &&
         (input?.mode !== 'commit' || typeof expectedRequestDigest !== 'string' ||
           !/^[0-9a-f]{64}$/.test(expectedRequestDigest) || !authorizeCandidate)) ||
@@ -643,6 +645,7 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (state.save.billingReferenceStaged === true) output.applied.billingReference = input.billingReference;
       try { await screenshot('after'); } catch { state.afterScreenshotFailed = true; }
     }, { memory: null, blockServiceWorkers: true, ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure },
+      ...(verifyLabtestMatches ? { verifyLabtestMatches } : {}),
       ...(input.billingReference != null ? { beforeSaveScreenshot: () => state.screenshot('before') } : {}),
       ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate: (request, next) => dispatchCandidate(request, next, {
         preimage: state.preimage, beforeScreenshot: output.screenshots.before, writer: state.writer,
