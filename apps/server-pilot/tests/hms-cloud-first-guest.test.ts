@@ -91,6 +91,18 @@ describe('first-time guest lookup safety', () => {
     ]);
   });
 
+  it.each(['NGI', 'GTDAGT'])('does not treat staged name text as a verified guest for %s guarantee', async (guaranteeType) => {
+    const session = syntheticSession([]);
+    const result = await createReservation({ ...prepare, guaranteeType }, { withSession: session.withSession });
+    expect(result.outcome).toBe('needs_input');
+    expect(result.approvalReady).toBe(false);
+    expect(result.missing).toContain('guest');
+    expect(result.missing).toContain('guaranteeType.staging');
+    expect(result.guestNameDraft).toMatchObject({ ...requestedGuest, profileStatus: 'unverified' });
+    expect(names(session)).not.toContain('selectGuestStayDropdown');
+    expect(names(session)).not.toContain('saveNewLabtestStay');
+  });
+
   it('does not continue when the empty-search picker fails to close', async () => {
     const session = syntheticSession([], { closeOutcome: 'execution_failure' });
     const result = await createReservation(prepare, { withSession: session.withSession });
