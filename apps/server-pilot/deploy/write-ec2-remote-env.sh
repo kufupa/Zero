@@ -338,7 +338,7 @@ node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
   "$REMOTE_COMMON_TMP" \
   "${REMOTE_COMMON_ALLOWLIST[@]}"
 
-# On-flips need CANARY PASS <workflow> <property> <sha> on the live SHA, except the narrow Labtest bootstraps below.
+# Flip to `on` needs CANARY PASS <workflow> <property> <sha> on the live SHA, except the narrow Labtest bootstraps below.
 nava_live_sha="${NAVA_LIVE_SHA:-}"
 if [ -z "$nava_live_sha" ] && [ -d "${REPO_ROOT}/.git" ]; then
   nava_live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
