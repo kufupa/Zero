@@ -40,6 +40,7 @@ export function ApproveCard({
   arrival,
   requireStoredWrite = false,
   manualResolve = true,
+  allowApprove = true,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
@@ -55,6 +56,8 @@ export function ApproveCard({
   requireStoredWrite?: boolean;
   /** Some writes require machine-verified reconciliation instead of a staff note. */
   manualResolve?: boolean;
+  /** Historical status can be reviewed without offering a repeat approval. */
+  allowApprove?: boolean;
 }) {
   if (!client) return null;
   return (
@@ -67,6 +70,7 @@ export function ApproveCard({
       requireStoredWrite={requireStoredWrite}
       writesEnabled={writesEnabled}
       manualResolve={manualResolve}
+      allowApprove={allowApprove}
     />
   );
 }
@@ -137,6 +141,7 @@ function LiveWriteCard({
   requireStoredWrite,
   writesEnabled,
   manualResolve,
+  allowApprove,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -146,6 +151,7 @@ function LiveWriteCard({
   requireStoredWrite: boolean;
   writesEnabled: boolean;
   manualResolve: boolean;
+  allowApprove: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
@@ -173,6 +179,7 @@ function LiveWriteCard({
             onChanged={refresh}
             writesEnabled={writesEnabled}
             manualResolve={manualResolve}
+            allowApprove={allowApprove}
           />
         </>
       ) : failed ? (
@@ -220,6 +227,7 @@ function WriteBody({
   onChanged,
   writesEnabled,
   manualResolve,
+  allowApprove,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -227,6 +235,7 @@ function WriteBody({
   onChanged: () => void;
   writesEnabled: boolean;
   manualResolve: boolean;
+  allowApprove: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -241,7 +250,7 @@ function WriteBody({
       {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate, total or booking details could not be verified. Check them in HMS.</p> : null}
       {filingUnavailable ? (
         <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
-      ) : status.approve ? (
+      ) : status.approve && allowApprove ? (
         <ApproveSection
           client={client}
           workItemId={workItemId}

@@ -30,7 +30,7 @@ const ownObject = (value) => Boolean(value && typeof value === 'object' && !Arra
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Check every field against the clean preimage after local date/adult edits. */
-export function matchesComposedDateAdultDraft(before, after, expected, changes, { synced = true } = {}) {
+export function matchesComposedDateAdultDraft(before, after, expected, changes, { synced = true, previous = null } = {}) {
   if (!cleanLabtestRecord(before) || !ownObject(after?.data) || !ownObject(after?.values) ||
       !ownObject(changes) || Object.keys(changes).some((key) => !['arrival', 'departure', 'adults'].includes(key)) ||
       !Array.isArray(after.dirtyFields) || !Array.isArray(after.modifiedFields) ||
@@ -60,8 +60,13 @@ export function matchesComposedDateAdultDraft(before, after, expected, changes, 
       const old = typeof initial[name] === 'object' ? initial[name][part === 'data' ? 'wire' : 'display'] : initial[name];
       const wanted = typeof target[name] === 'object' ? target[name][part === 'data' ? 'wire' : 'display'] : target[name];
       const source = before[part], next = after[part];
+      // Before updateRecord, a second date edit may still carry the already
+      // verified first edit's model (for example its intermediate night count).
+      const prior = part === 'data' && previous?.data && Object.hasOwn(previous.data, name)
+        ? String(previous.data[name]) : null;
       if (!Object.hasOwn(source, name) || !Object.hasOwn(next, name) || String(source[name]) !== old ||
-          (String(next[name]) !== wanted && (synced || part !== 'data' || String(next[name]) !== old))) return false;
+          (String(next[name]) !== wanted && (synced || part !== 'data' ||
+            (String(next[name]) !== old && String(next[name]) !== prior)))) return false;
     }
   }
   const changed = new Set();
@@ -268,7 +273,7 @@ export async function stageSavedDatesForComposition(context, expected, changes, 
     applied[name] = value;
     const draft = await snapshotLabtestRecord(context.frame);
     active();
-    if (!matchesComposedDateAdultDraft(context.baseline, draft, expected, applied, { synced: false })) {
+    if (!matchesComposedDateAdultDraft(context.baseline, draft, expected, applied, { synced: false, previous: snapshot })) {
       throw new Error('AMEND_DRAFT_CHANGED');
     }
     const browserNow = await context.frame.evaluate(() => performance.now());

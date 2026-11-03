@@ -84,3 +84,72 @@ test('a fenced prepare-only lifecycle stages and synchronizes a date without cli
   assert.equal(clicks, 0);
   assert.equal(draft.data.departuredate, '01/21/2027');
 });
+
+for (const [label, changes, order] of [
+  ['forward', { arrival: '2027-01-19', departure: '2027-01-20' }, ['departuredate', 'arrivaldate']],
+  ['backward with adults', { arrival: '2027-01-17', departure: '2027-01-18', adults: 2 }, ['arrivaldate', 'departuredate']],
+]) {
+  test(`one-night ${label} shift stages both dates under the fence`, async () => {
+    const initial = { arrival: '2027-01-18', departure: '2027-01-19', adults: 1 };
+    const base = before();
+    Object.assign(base.data, { departuredate: '01/19/2027', nights: '1', departuredayofweek: 'Tue' });
+    Object.assign(base.values, { departuredate: '19-JAN-2027', nights: '1', departuredayofweek: 'Tue' });
+    let draft = structuredClone(base), clicks = 0;
+    const days = { arrival: initial.arrival, departure: initial.departure }, stagedOrder = [], intermediate = [];
+    const wire = (day) => `${day.slice(5, 7)}/${day.slice(8, 10)}/${day.slice(0, 4)}`;
+    const display = (day) => `${day.slice(8, 10)}-JAN-${day.slice(0, 4)}`;
+    const weekday = (day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(`${day}T00:00:00Z`).getUTCDay()];
+    const markDirty = () => {
+      draft.dirtyFields = Object.keys(draft.values).filter((key) => draft.values[key] !== base.values[key]);
+      draft.modifiedFields = Object.keys(draft.data).filter((key) => draft.data[key] !== base.data[key]);
+      draft.formDirty = draft.dirtyFields.length > 0;
+      draft.recordDirty = draft.modifiedFields.length > 0;
+    };
+    const applyDates = (part) => {
+      const format = part === 'data' ? wire : display;
+      Object.assign(draft[part], { arrivaldate: format(days.arrival), departuredate: format(days.departure),
+        nights: String((Date.parse(`${days.departure}T00:00:00Z`) - Date.parse(`${days.arrival}T00:00:00Z`)) / 86400000),
+        arrivaldayofweek: weekday(days.arrival), departuredayofweek: weekday(days.departure) });
+    };
+    const controls = Object.fromEntries(['arrival', 'departure'].map((name) => [name, {
+      count: async () => 1,
+      fill: async (value) => { assert.equal(value, display(changes[name])); days[name] = changes[name];
+        draft.data.enablecheckavailability = '-1'; applyDates('values'); markDirty(); stagedOrder.push(`${name}date`); },
+      press: async () => {},
+      evaluate: async (_callback, arg) => {
+        if (typeof arg === 'string') return { componentDate: days[name], formModelDate: days[name] };
+        if (arg?.before) { assert.deepEqual(arg.before, draft); intermediate.push(structuredClone(draft));
+          applyDates('data'); markDirty(); }
+        return true;
+      },
+    }]));
+    const frame = { locator: (selector) => selector.startsWith('input[name="arrivaldate"]') ? controls.arrival :
+      selector.startsWith('input[name="departuredate"]') ? controls.departure : { count: async () => 0 },
+      evaluate: async (_callback, arg) => Array.isArray(arg) ? structuredClone(draft) : performance.now() };
+    const save = { click: async () => { clicks += 1; } };
+    const context = { route: async () => {}, unroute: async () => {} };
+    const page = { context: () => context, route: async () => {}, unroute: async () => {},
+      locator: () => ({ count: async () => 1 }), on: () => {}, off: () => {}, waitForTimeout: async () => {} };
+    const result = await runLabtestAmendSave(page, {
+      prepareOnly: true, prepare: async () => ({ frame, save, baseline: base, enableComposedStage: true }),
+      stage: async (_bounded, _prepared, stageContext) => {
+        let preceding = null;
+        if (changes.adults) {
+          draft.data.adults = draft.values.adults = String(changes.adults);
+          draft.data.enablecheckavailability = '-1'; markDirty(); preceding = structuredClone(draft);
+        }
+        return stageSavedDatesForComposition(stageContext, initial, changes, preceding);
+      },
+      matches: () => false, validate: async () => true,
+    });
+    assert.equal(result.outcome, 'not_dispatched');
+    assert.equal(result.issue, 'PREPARE_ONLY');
+    assert.deepEqual(stagedOrder, order);
+    assert.equal(intermediate.length, 2);
+    assert.equal(intermediate[1].data.nights, '2');
+    assert.equal(intermediate[1].values.nights, '1');
+    assert.equal(draft.data.nights, '1');
+    assert.ok(draft.dirtyFields.includes('arrivaldate') && draft.dirtyFields.includes('departuredate'));
+    assert.equal(clicks, 0);
+  });
+}

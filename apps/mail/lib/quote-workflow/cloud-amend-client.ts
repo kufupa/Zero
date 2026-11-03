@@ -12,6 +12,7 @@ const requestSchema = z.object({ workItemId: z.string().uuid(), source: sourceSc
 const boundSchema = z.object({ status: z.literal('bound'), previewDigest: z.string().regex(/^[a-f0-9]{64}$/),
   formDigest: z.string().regex(/^[a-f0-9]{64}$/), readAt: z.string().datetime() }).strict();
 export type CloudAmendRequest = z.infer<typeof requestSchema>;
+export type CloudAmendSelection = Pick<CloudAmendRequest, 'workItemId' | 'source'>;
 
 type MailOptions = NonNullable<ReturnType<typeof inMailbox>> & { signal: AbortSignal };
 type Routes = {
@@ -37,13 +38,16 @@ function sameFields(a: unknown, b: CloudAmendRequest['changes']): boolean {
 }
 
 /** Pins all preparation and review calls to one selected message and mailbox. */
-export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendRequest, scope: {
-  transportId: string; signal: AbortSignal; isCurrent: () => boolean;
+export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendRequest | CloudAmendSelection, scope: {
+  transportId: string; signal: AbortSignal; isCurrent: () => boolean; resume?: boolean;
 }): Promise<CloudAmendClient | null> {
   const request = requestSchema.safeParse(input), initial = getMailCacheScope();
-  if (!request.success || !scope.transportId || !initial.userId || initial.activeTransportId !== scope.transportId ||
+  const selected = requestSchema.pick({ workItemId: true, source: true }).safeParse({
+    workItemId: input.workItemId, source: input.source,
+  });
+  if (!selected.success || (!scope.resume && !request.success) || !scope.transportId || !initial.userId || initial.activeTransportId !== scope.transportId ||
       scope.signal.aborted || typeof scope.isCurrent !== 'function') return null;
-  const userId = initial.userId, data = request.data, mailbox = { ...inMailbox(scope.transportId)!, signal: scope.signal };
+  const userId = initial.userId, mailbox = { ...inMailbox(scope.transportId)!, signal: scope.signal };
   let disposed = false, notify = () => {}, unsubscribe = () => {};
   const invalidated = new Promise<null>((resolve) => { notify = () => resolve(null); });
   const dispose = () => {
@@ -78,9 +82,25 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
       if (result === null || !current()) throw new Error('state_changed');
       return result;
     };
-    const ready = await call(() => complete.cloudAmendReady.query(undefined, mailbox));
-    if (!isRecord(ready) || ready.ready !== true) { dispose(); return null; }
-    let digest: string | null = null, goUsed = false, generation = 0;
+    let data: CloudAmendRequest, digest: string | null = null;
+    if (scope.resume) {
+      // Resume is a source-scoped read, so it remains available even if the
+      // write flag has since been turned off. Never invent choices from HMS.
+      const state = await call(() => complete.cloudAmendState.query(selected.data, mailbox));
+      if (!isRecord(state) || !isRecord(state.run) || !isRecord(state.form) ||
+          !isRecord(state.form.cloudAmend) || state.form.cloudAmend.bound !== true ||
+          typeof state.formDigest !== 'string' || !/^[a-f0-9]{64}$/.test(state.formDigest)) { dispose(); return null; }
+      const restored = requestSchema.safeParse({ ...selected.data, confirmation: state.form.confirmation,
+        arrival: state.form.arrival, changes: state.form.fields });
+      if (!restored.success) { dispose(); return null; }
+      data = restored.data;
+      digest = state.formDigest;
+    } else {
+      const ready = await call(() => complete.cloudAmendReady.query(undefined, mailbox));
+      if (!isRecord(ready) || ready.ready !== true || !request.success) { dispose(); return null; }
+      data = request.data;
+    }
+    let goUsed = Boolean(scope.resume), generation = 0;
     const prepare = async () => {
       const attempt = ++generation;
       digest = null;
@@ -114,6 +134,7 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
       async resolveNeedsCheck() { throw new Error('amend_reconciliation_required'); },
       async reread({ workItemId }) {
         if (!validItem(workItemId)) throw new Error('state_changed');
+        if (scope.resume) return { status: 'refused', reason: 'amend_refresh_required' };
         const refreshed = await prepare();
         return refreshed ? { status: 'stored', readAt: refreshed.readAt }
           : { status: 'refused', reason: 'amend_refresh_required' };

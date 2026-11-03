@@ -2278,6 +2278,61 @@ describe('AmendLookupPanel amend form', () => {
     }
   });
 
+  it('reopens the selected amendment result without another HMS find or preparation', async () => {
+    const previousScope = getMailCacheScope();
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 't1' });
+    try {
+      const workItemId = '00000000-0000-4000-8000-000000000001';
+      const source = { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64) };
+      const amount = { data: { state: 'amount', cents: '135000' }, visible: { state: 'amount', cents: '135000' },
+        dataCurrency: { state: 'currency', code: 'ZAR' }, visibleCurrency: { state: 'currency', code: 'ZAR' } };
+      const eventId = '00000000-0000-4000-8000-000000000002';
+      const run = { runId: RUN_ID, state: 'succeeded', failureClass: null, lastError: null,
+        evidence: [{ eventId, name: 'after.png', expired: false }], reviewed: null };
+      const view = { status: 'needs_you', form: { action: 'amend', confirmation: CONFIRMATION, arrival: '2027-09-16',
+        fields: { adults: 2, ratePlan: 'BAR', retainRates: 'yes' }, cloudAmend: { bound: true,
+          approvedPrices: { version: 1, currency: 'ZAR', fields: { averagenightly: amount, grandtotal: amount } },
+          preserved: { cmsRecipient: '', agency: null, organization: null } } }, formDigest: DIGEST,
+        before: { fields: { adults: 1, ratePlan: 'BAR' } }, snapshot: { readAt: AS_OF, stale: false },
+        grant: null, run, needsCheck: false };
+      const hmsApproval = {
+        cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: false }) },
+        bindCloudAmend: { mutate: vi.fn() }, cloudAmendState: { query: vi.fn().mockResolvedValue(view) },
+        approveCloudAmend: { mutate: vi.fn() }, reviewCloudAmend: { mutate: vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'done' }) },
+        cloudAmendEvidence: { query: vi.fn().mockResolvedValue({ status: 'ok', dataUrl: SHOT_PNG }) },
+      };
+      const findStay = vi.fn(NEVER_SETTLES), trpc = { ...amendTrpc(findStay, vi.fn()), hmsApproval };
+      const session = sessionWith({ ...AMEND, guestLastName: 'Labtest', arrival: '2027-09-16', departure: '2027-09-17' });
+      session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
+      render(<AmendLookupPanel session={session} trpc={trpc} workItemId={workItemId}
+        readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [] }} />);
+      expect(await screen.findByText(/Written in HMS/)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+      expect(hmsApproval.cloudAmendState.query).toHaveBeenCalledWith({ workItemId, source },
+        expect.objectContaining({ context: { activeTransportId: 't1' } }));
+      expect(await screen.findByRole('button', { name: 'See what Nava did in HMS' })).toBeTruthy();
+      expect(hmsApproval.cloudAmendEvidence.query).toHaveBeenCalledWith({ workItemId, source, eventId },
+        expect.objectContaining({ context: { activeTransportId: 't1' } }));
+      fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+      await waitFor(() => expect(hmsApproval.reviewCloudAmend.mutate).toHaveBeenCalledWith(
+        { workItemId, source, runId: RUN_ID, decision: 'ok' }, expect.objectContaining({ context: { activeTransportId: 't1' } })));
+      expect(hmsApproval.bindCloudAmend.mutate).not.toHaveBeenCalled();
+      expect(hmsApproval.approveCloudAmend.mutate).not.toHaveBeenCalled();
+      expect(findStay).not.toHaveBeenCalled();
+      cleanup();
+      hmsApproval.cloudAmendState.query.mockResolvedValue({ ...view, needsCheck: true,
+        run: { ...run, state: 'dead_letter', failureClass: 'UNKNOWN' } });
+      render(<AmendLookupPanel session={session} trpc={trpc} workItemId={workItemId}
+        readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [] }} />);
+      expect(await screen.findByText(/The outcome is not known/)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
+      expect(hmsApproval.bindCloudAmend.mutate).not.toHaveBeenCalled();
+    } finally {
+      setMailCacheScope(previousScope);
+    }
+  });
+
   it('clears local choices when the selected email or booking changes', async () => {
     const findStay = vi.fn(async ({ confirmation }: { confirmation: string }) => unpaidFound({ confirmation }));
     const trpc = amendTrpc(findStay, vi.fn(), vi.fn());

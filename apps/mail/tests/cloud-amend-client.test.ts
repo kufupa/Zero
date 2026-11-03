@@ -76,4 +76,34 @@ describe('source-bound Cloud amend client', () => {
     await expect(client!.approval.approve({ workItemId: request.workItemId, formDigest: digest })).rejects.toThrow('state_changed');
     expect(api.approveCloudAmend.mutate).not.toHaveBeenCalled();
   });
+
+  it('resumes a stored run with writes off, and cannot approve or reprepare it', async () => {
+    const { api, trpc } = routes(false);
+    api.cloudAmendState.query.mockResolvedValue({ ...view, run: { runId: 'run', state: 'succeeded' } });
+    const selection = { workItemId: request.workItemId, source: request.source };
+    const client = await cloudAmendClientFromTrpc(trpc, selection, { ...selected(), resume: true });
+    expect(client).not.toBeNull();
+    expect(api.cloudAmendReady.query).not.toHaveBeenCalled();
+    expect((await client!.approval.writeState({ workItemId: selection.workItemId })).run?.state).toBe('succeeded');
+    await expect(client!.approval.approve({ workItemId: selection.workItemId, formDigest: digest })).rejects.toThrow('state_changed');
+    await expect(client!.approval.reread({ workItemId: selection.workItemId })).resolves.toEqual({
+      status: 'refused', reason: 'amend_refresh_required',
+    });
+    expect(api.bindCloudAmend.mutate).not.toHaveBeenCalled();
+    expect(api.approveCloudAmend.mutate).not.toHaveBeenCalled();
+    client!.dispose();
+  });
+
+  it('invalidates a resumed history read if the mailbox changes while it is pending', async () => {
+    const { api, trpc } = routes();
+    let finish: (value: unknown) => void = () => {};
+    api.cloudAmendState.query.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = cloudAmendClientFromTrpc(trpc, { workItemId: request.workItemId, source: request.source },
+      { ...selected(), resume: true });
+    setMailCacheScope({ userId: 'staff', activeTransportId: 'other' });
+    setMailCacheScope({ userId: 'staff', activeTransportId: 'hotel' });
+    finish({ ...view, run: { runId: 'run', state: 'succeeded' } });
+    expect(await pending).toBeNull();
+    expect(api.approveCloudAmend.mutate).not.toHaveBeenCalled();
+  });
 });

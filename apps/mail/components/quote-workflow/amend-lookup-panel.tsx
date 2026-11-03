@@ -65,7 +65,7 @@ import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types'
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
-import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest } from '@/lib/quote-workflow/cloud-amend-client';
+import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest, type CloudAmendSelection } from '@/lib/quote-workflow/cloud-amend-client';
 import { ApproveCard } from './approve-card';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
@@ -474,6 +474,12 @@ export function AmendLookupPanel({
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
+      {amendment.kind === 'amend' && readOnlyIdentity && selectedTransportId && workItemId ? (
+        <CloudAmendHistory key={JSON.stringify([readOnlyIdentity, selectedTransportId, binding?.scopeEpoch, workItemId])}
+          trpc={trpc} transportId={selectedTransportId} selection={{ workItemId, source: {
+            threadId: readOnlyIdentity.threadId, messageId: readOnlyIdentity.messageId, sourceHash: readOnlyIdentity.sourceHash,
+          } }} />
+      ) : null}
       {savedPicks.length ? (
         <div data-testid="amend-saved-stays" className="flex flex-col gap-2">
           <p className={headingClass}>{SAVED_STAY_COPY.heading}</p>
@@ -1159,6 +1165,27 @@ function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound }: 
     {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
       arrival={selected.arrival} guestSurname="Labtest" writesEnabled manualResolve={false} /> : null}
   </>;
+}
+
+/** Restore a previous run without creating another HMS preview or approval. */
+function CloudAmendHistory({ trpc, transportId, selection }: {
+  trpc: unknown; transportId: string; selection: CloudAmendSelection;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [selected] = useState(selection);
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true, owned: CloudAmendClient | null = null;
+    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live, resume: true })
+      .then((result) => {
+        if (!live) { result?.dispose(); return; }
+        owned = result;
+        setClient(result);
+      });
+    return () => { live = false; controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId]);
+  return client ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={null}
+    writesEnabled manualResolve={false} allowApprove={false} /> : null;
 }
 
 function AmendSection({
