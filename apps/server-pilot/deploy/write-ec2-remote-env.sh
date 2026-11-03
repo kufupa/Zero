@@ -85,6 +85,23 @@ REMOTE_COMMON_ALLOWLIST=(
   PANE_HMS_LAB_ATTACH_WORKER
 )
 
+# The bounded M1 render updates only its four write controls plus the five
+# native quote/filing runtime dependencies. Everything else stays as installed.
+M1_ONLY_WRITE_CONTROLS=(
+  PANE_WRITE_CREATE
+  PANE_CLOUD_CREATE_DISPATCH
+  PANE_WRITE_ATTACH
+  PANE_HMS_LAB_ATTACH_WORKER
+)
+M1_ONLY_RUNTIME_DEPENDENCIES=(
+  HMS_EXPECTED_PROPERTY_CODE
+  HMS_EXPECTED_TENANT
+  HMS_EXPECTED_TRANSPORT_ID
+  HMS_CHROMIUM_EXECUTABLE_PATH
+  PLAYWRIGHT_BROWSERS_PATH
+)
+M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
+
 validate_remote_env_file() {
   local path="$1"
   local kind="$2"
@@ -198,6 +215,7 @@ validate_remote_env_files() {
   validate_remote_env_file "$REMOTE_ADMIN_ENV" admin
 }
 
+M1_ONLY=0
 if [ "$(id -un)" != "ubuntu" ]; then
   echo "write-ec2-remote-env.sh must run as ubuntu" >&2
   exit 2
@@ -208,6 +226,10 @@ case "${1:-}" in
     validate_remote_env_files
     exit 0
     ;;
+  --m1-only)
+    [ "$#" -eq 1 ] || exit 2
+    M1_ONLY=1
+    ;;
   --ensure-model | --validate-model | --prepare-model)
     [ "$#" -eq 1 ] || exit 2
     ;;
@@ -216,7 +238,7 @@ case "${1:-}" in
     ;;
   '') ;;
   *)
-    echo "usage: $0 [--validate|--ensure-model|--validate-model|--prepare-model|--check-model dir]" >&2
+    echo "usage: $0 [--m1-only|--validate|--ensure-model|--validate-model|--prepare-model|--check-model dir]" >&2
     exit 2
     ;;
 esac
@@ -235,7 +257,7 @@ if [ "$(stat -c '%a:%U:%G' "$LEGACY_ENV_FILE")" != "600:ubuntu:ubuntu" ]; then
 fi
 
 # Per-launch snapshots are private and disposable. Never modify older overlays.
-if [ -n "${1:-}" ]; then
+if [ -n "${1:-}" ] && [ "$M1_ONLY" -eq 0 ]; then
   validate_remote_env_files
   umask 077
   snapshot_dir=""
@@ -322,10 +344,30 @@ if [ -n "${1:-}" ]; then
   exit 0
 fi
 
+if [ "$M1_ONLY" -eq 1 ]; then
+  # Validate both existing overlays, but preserve them unless M1 common changes.
+  validate_remote_env_files
+fi
+
+M1_SOURCE_BEFORE_SHA=""
+M1_COMMON_BEFORE_SHA=""
+M1_ADMIN_BEFORE_SHA=""
+if [ "$M1_ONLY" -eq 1 ]; then
+  M1_SOURCE_BEFORE_SHA="$(sha256sum -- "$LEGACY_ENV_FILE" | awk '{print $1}')"
+  M1_COMMON_BEFORE_SHA="$(sha256sum -- "$REMOTE_COMMON_ENV" | awk '{print $1}')"
+  M1_ADMIN_BEFORE_SHA="$(sha256sum -- "$REMOTE_ADMIN_ENV" | awk '{print $1}')"
+fi
+
 REMOTE_COMMON_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-common.tmp.XXXXXX")"
-REMOTE_ADMIN_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-admin.tmp.XXXXXX")"
+REMOTE_ADMIN_TMP=""
+REMOTE_M1_SOURCE_TMP=""
+if [ "$M1_ONLY" -eq 0 ]; then
+  REMOTE_ADMIN_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-admin.tmp.XXXXXX")"
+fi
 cleanup() {
-  rm -f -- "$REMOTE_COMMON_TMP" "$REMOTE_ADMIN_TMP"
+  rm -f -- "$REMOTE_COMMON_TMP"
+  if [ -n "$REMOTE_ADMIN_TMP" ]; then rm -f -- "$REMOTE_ADMIN_TMP"; fi
+  if [ -n "$REMOTE_M1_SOURCE_TMP" ]; then rm -f -- "$REMOTE_M1_SOURCE_TMP"; fi
 }
 trap cleanup EXIT
 
@@ -333,10 +375,93 @@ quote_val() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
-node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
-  "$LEGACY_ENV_FILE" \
-  "$REMOTE_COMMON_TMP" \
-  "${REMOTE_COMMON_ALLOWLIST[@]}"
+if [ "$M1_ONLY" -eq 1 ]; then
+  REMOTE_M1_SOURCE_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-common-m1-source.tmp.XXXXXX")"
+  node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
+    "$LEGACY_ENV_FILE" \
+    "$REMOTE_M1_SOURCE_TMP" \
+    "${M1_ONLY_ALLOWLIST[@]}"
+  node - "$REMOTE_COMMON_ENV" "$REMOTE_M1_SOURCE_TMP" "$REMOTE_COMMON_TMP" \
+    "${M1_ONLY_ALLOWLIST[@]}" "${#M1_ONLY_WRITE_CONTROLS[@]}" <<'NODE'
+const fs = require("fs");
+const args = process.argv.slice(2);
+const [installedPath, sourcePath, candidatePath] = args;
+const controlCount = Number(args.pop());
+const keys = args.slice(3);
+const controlKeys = new Set(keys.slice(0, controlCount));
+const dependencyKeys = new Set(keys.slice(controlCount));
+const target = new Set(keys);
+const chunks = (text) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+const body = (line) => line.endsWith("\n") ? line.slice(0, -1) : line;
+const keyOf = (line) => /^([A-Z][A-Z0-9_]*)=/.exec(body(line))?.[1];
+const parse = (path) => {
+  const result = new Map();
+  for (const line of chunks(fs.readFileSync(path, "utf8"))) {
+    const key = keyOf(line);
+    if (!key) continue;
+    if (result.has(key)) throw new Error("duplicate");
+    result.set(key, line);
+  }
+  return result;
+};
+const fail = (message) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(2);
+};
+try {
+  const source = parse(sourcePath);
+  for (const key of keys) {
+    if (!target.has(key) || !source.has(key)) fail(`M1 durable key missing: ${key}`);
+  }
+  const installed = chunks(fs.readFileSync(installedPath, "utf8"));
+  const merged = [];
+  const replaced = new Set();
+  for (const line of installed) {
+    const key = keyOf(line);
+    if (!target.has(key)) {
+      merged.push(line);
+      continue;
+    }
+    if (replaced.has(key)) fail(`duplicate installed M1 key: ${key}`);
+    replaced.add(key);
+    if (dependencyKeys.has(key)) {
+      if (body(line) !== body(source.get(key))) {
+        fail(`existing M1 dependency conflicts with durable source: ${key}`);
+      }
+      merged.push(line);
+      continue;
+    }
+    if (!controlKeys.has(key)) fail(`unrecognized M1 key: ${key}`);
+    const ending = line.endsWith("\n") ? "\n" : "";
+    merged.push(body(source.get(key)) + ending);
+  }
+  const appended = keys.filter((key) => !replaced.has(key));
+  let candidate = merged.join("");
+  if (appended.length) {
+    if (candidate && !candidate.endsWith("\n")) {
+      fail("existing remote-common lacks final newline; refusing M1 append");
+    }
+    candidate += appended.map((key) => body(source.get(key))).join("\n") + "\n";
+  }
+  const unrelated = (text) => chunks(text).filter((line) => !target.has(keyOf(line))).join("");
+  if (unrelated(candidate) !== unrelated(fs.readFileSync(installedPath, "utf8"))) {
+    fail("unrelated remote-common bytes changed");
+  }
+  fs.writeFileSync(candidatePath, candidate, "utf8");
+} catch (error) {
+  if (error.message !== "duplicate") throw error;
+  fail("remote-common has duplicate keys");
+}
+NODE
+  rm -f -- "$REMOTE_M1_SOURCE_TMP"
+  REMOTE_M1_SOURCE_TMP=""
+  validate_remote_env_file "$REMOTE_COMMON_TMP" common
+else
+  node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
+    "$LEGACY_ENV_FILE" \
+    "$REMOTE_COMMON_TMP" \
+    "${REMOTE_COMMON_ALLOWLIST[@]}"
+fi
 
 # Flip to `on` needs CANARY PASS <workflow> <property> <sha> on the live SHA, except the narrow Labtest bootstraps below.
 nava_live_sha="${NAVA_LIVE_SHA:-}"
@@ -474,6 +599,7 @@ for (const flag of flips) {
 }
 NODE
 
+if [ "$M1_ONLY" -eq 0 ]; then
 REMOTE_AUTH_SECRET="$(
   aws secretsmanager get-secret-value \
     --region "$AWS_REGION" \
@@ -515,22 +641,40 @@ fi
 printf 'BETTER_AUTH_URL=%s\nBETTER_AUTH_SECRET=%s\n' \
   "$(quote_val "$REMOTE_AUTH_URL")" \
   "$(quote_val "$REMOTE_AUTH_SECRET")" >"$REMOTE_ADMIN_TMP"
+fi
 
-node -e 'const fs=require("fs"); for (const path of process.argv.slice(1)) { const fd=fs.openSync(path,"r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }' \
-  "$REMOTE_COMMON_TMP" "$REMOTE_ADMIN_TMP"
+if [ "$M1_ONLY" -eq 1 ]; then
+  node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' \
+    "$REMOTE_COMMON_TMP"
+else
+  node -e 'const fs=require("fs"); for (const path of process.argv.slice(1)) { const fd=fs.openSync(path,"r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }' \
+    "$REMOTE_COMMON_TMP" "$REMOTE_ADMIN_TMP"
+fi
 chmod 600 "$REMOTE_COMMON_TMP"
-chmod 600 "$REMOTE_ADMIN_TMP"
+if [ "$M1_ONLY" -eq 0 ]; then chmod 600 "$REMOTE_ADMIN_TMP"; fi
 if [ "$(stat -c '%a:%U:%G' "$REMOTE_COMMON_TMP")" != "600:ubuntu:ubuntu" ] ||
-  [ "$(stat -c '%a:%U:%G' "$REMOTE_ADMIN_TMP")" != "600:ubuntu:ubuntu" ]; then
+  { [ "$M1_ONLY" -eq 0 ] && [ "$(stat -c '%a:%U:%G' "$REMOTE_ADMIN_TMP")" != "600:ubuntu:ubuntu" ]; }; then
   echo "remote env temporary files must be ubuntu-owned mode 0600" >&2
   exit 2
 fi
+if [ "$M1_ONLY" -eq 1 ] && {
+  [ "$(sha256sum -- "$LEGACY_ENV_FILE" | awk '{print $1}')" != "$M1_SOURCE_BEFORE_SHA" ] ||
+    [ "$(sha256sum -- "$REMOTE_COMMON_ENV" | awk '{print $1}')" != "$M1_COMMON_BEFORE_SHA" ] ||
+    [ "$(sha256sum -- "$REMOTE_ADMIN_ENV" | awk '{print $1}')" != "$M1_ADMIN_BEFORE_SHA" ];
+}; then
+  echo "M1 env source or existing overlays changed during render" >&2
+  exit 2
+fi
 
-# All secret parsing and both temporary files complete before either live file changes.
+# All validation completes before promotion. M1-only replaces only common; admin stays byte-identical.
 mv -f -- "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV"
-mv -f -- "$REMOTE_ADMIN_TMP" "$REMOTE_ADMIN_ENV"
+if [ "$M1_ONLY" -eq 0 ]; then mv -f -- "$REMOTE_ADMIN_TMP" "$REMOTE_ADMIN_ENV"; fi
 node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$SERVER_PILOT"
 REMOTE_COMMON_TMP=""
-REMOTE_ADMIN_TMP=""
+if [ "$M1_ONLY" -eq 0 ]; then REMOTE_ADMIN_TMP=""; fi
 trap - EXIT
-echo "Wrote remote HTTP environment files with mode 0600"
+if [ "$M1_ONLY" -eq 1 ]; then
+  echo "Wrote remote HTTP M1 common environment with mode 0600; admin unchanged"
+else
+  echo "Wrote remote HTTP environment files with mode 0600"
+fi

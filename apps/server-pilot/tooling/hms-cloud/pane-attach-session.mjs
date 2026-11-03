@@ -240,6 +240,7 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
     await writeFile(evidence.screenshots[1], fresh.screenshot, { mode: 0o600 });
   } else if (listed === true) {
     return { outcome: 'uncertain', uploadSent: true, documentCode: code, ...evidence,
+      listed, ...(nativeReadback ? { nativeReadback } : {}),
       writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
   }
   // Owner's confirmation bar is a clean upload followed by a unique fresh listing.
