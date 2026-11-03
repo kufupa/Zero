@@ -60,7 +60,9 @@ test('a real fallback browser is closed with its process group after the read', 
   const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
   const chromium = require('playwright').chromium;
   let identity;
-  const connector = createQuoteBrowserConnector({ propertyCode: 'HRCEN', env: {},
+  const env = process.env.HMS_TEST_CHROMIUM_PATH
+    ? { HMS_CHROMIUM_EXECUTABLE_PATH: process.env.HMS_TEST_CHROMIUM_PATH } : {};
+  const connector = createQuoteBrowserConnector({ propertyCode: 'HRCEN', env,
     chromium: { connectOverCDP: refused, launchServer: options => chromium.launchServer(options),
       connect: (url, options) => chromium.connect(url, options) },
     prepare: async () => {}, identify: pid => (identity = centurionBrowserIdentity(pid)),
@@ -86,7 +88,9 @@ test('the real fallback uses the quote request guard before a page can reach an 
   let requests = 0, identity;
   const endpoint = createServer((_request, response) => { requests += 1; response.end('unexpected'); });
   await new Promise(resolve => endpoint.listen(0, '127.0.0.1', resolve));
-  const connector = createQuoteBrowserConnector({ propertyCode: 'HRCEN', env: {},
+  const env = process.env.HMS_TEST_CHROMIUM_PATH
+    ? { HMS_CHROMIUM_EXECUTABLE_PATH: process.env.HMS_TEST_CHROMIUM_PATH } : {};
+  const connector = createQuoteBrowserConnector({ propertyCode: 'HRCEN', env,
     chromium: { connectOverCDP: refused, launchServer: options => chromium.launchServer(options),
       connect: (url, options) => chromium.connect(url, options) },
     prepare: async () => {}, identify: pid => (identity = centurionBrowserIdentity(pid)),

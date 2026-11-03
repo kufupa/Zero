@@ -3,10 +3,15 @@
 For the separate Centurion Stay 360 / arrivals browser scripts, see
 [STAY360-ARRIVALS.md](./STAY360-ARRIVALS.md).
 
-Standalone, attach-only Hotel Availability reader. No Stagehand runtime, model
+Standalone Hotel Availability reader. No Stagehand runtime, model
 credentials, database, server integration or booking actions. It owns one isolated
 browser context and tab per invocation, closes that context and disconnects; it does not stop the remote
-browser. Importing the module does not start the CLI or a browser.
+browser. If Centurion's configured loopback CDP endpoint refuses the connection,
+the quote and party lookup can instead launch and close their own local Chromium.
+This fallback needs Linux process identity checks and the pinned Playwright browser
+on the host; set `HMS_CHROMIUM_EXECUTABLE_PATH` to use a different executable.
+Other properties and other connection errors retain the borrowed-browser path.
+Importing the module does not start the CLI or a browser.
 
 ## Run from the worktree root
 

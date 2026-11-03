@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import * as lookup from './party-lookup.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const schemaUrl = new URL('./party-lookup.schema.json', import.meta.url);
 
@@ -54,6 +55,20 @@ test('assertPartyLookupAccount refuses a Centurion secret for HRDAV', () => {
     () => lookup.assertPartyLookupAccount({ expectedPropertyCode: 'HRDAV' }, 'HRCEN'),
     /ACCOUNT_PROPERTY_MISMATCH/,
   );
+});
+
+test('Centurion party lookup binds its credential and login origin to the registered property', () => {
+  const property = getPropertyRegistration('HRCEN');
+  const login = new URL('/web/base/logindisp', 'https://hmsweb.hms.eu1.inforcloudsuite.com');
+  login.searchParams.set('tenant', property.expectedTenant);
+  // The documented private JSON may contain only the core credential fields.
+  const secret = { username: property.username, expectedTenant: property.expectedTenant,
+    expectedPropertyName: property.expectedPropertyName, expectedPropertyCode: property.propertyCode, loginUrl: login.href };
+  lookup.assertPartyLookupAccount(secret, 'HRCEN');
+  for (const change of [{ expectedTenant: 'OTHER' }, { loginUrl: 'https://elsewhere.invalid/web/base/logindisp?tenant=OTHER' },
+    { username: 'OTHER' }, { mailboxTransportId: 'transport-davinci' }, { credentialMode: 'write' }]) {
+    assert.throws(() => lookup.assertPartyLookupAccount({ ...secret, ...change }, 'HRCEN'), /ACCOUNT_PROPERTY_MISMATCH/);
+  }
 });
 
 test('normalizePartyLookupRequest keeps a single kind+query as one search', () => {
