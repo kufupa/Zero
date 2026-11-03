@@ -176,10 +176,10 @@ describe('HOLD file stops ops-deploy.sh before SSM', () => {
 
 describe('write-ec2-remote-env.sh canary SHA', () => {
   function runWriter(opts: {
+    attachWorkerOn?: boolean;
     liveSha: string;
     canaryLine: string | null;
     quoteOn: boolean;
-    attachWorkerOn?: boolean;
     existingOn?: boolean;
   }): SpawnSyncReturns<string> {
     const root = scratch('u12-canary-');
@@ -192,12 +192,12 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     writeFileSync(
       join(serverPilot, '.env.production'),
       [
+        ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
         "NODE_ENV='production'",
         "DATABASE_URL='postgres://example.invalid/zero'",
         "AWS_REGION='af-south-1'",
         "S3_BUCKET='nava-test-bucket'",
         ...(opts.quoteOn ? ["HMS_DAVINCI_MAKE_QUOTE='on'"] : []),
-        ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
         '',
       ].join('\n'),
     );
