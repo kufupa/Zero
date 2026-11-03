@@ -23,7 +23,8 @@ const stay = { confirmation: input.confirmation, arrival: input.arrival, lastNam
 function fixture() {
   let rows = [{ itemThread: 'thread-1', messageThread: 'thread-1', itemMessage: input.sourceMessageId,
     messageId: input.sourceMessageId, transportId: input.transportId, actorUserId: input.actorUserId,
-    active: true, status: 'needs_you' }];
+    active: true, status: 'needs_you', direction: 'inbound', messageHistoryOnly: false,
+    threadHistoryOnly: false, threadTrashedAt: null as Date | null }];
   const query = { from: () => query, innerJoin: () => query, where: () => query, limit: async () => rows };
   const db = { select: () => query } as unknown as DB;
   return { db, s3: new FakeS3Storage(), setRows: (next: typeof rows) => { rows = next; }, getRows: () => rows };
@@ -92,7 +93,8 @@ describe('read-only filing preview', () => {
 
   it('refuses wrong source, thread, mailbox access, or a closed item before reading HMS', async () => {
     for (const change of [{ itemMessage: 'other' }, { messageId: 'other' }, { messageThread: 'other' },
-      { actorUserId: 'other' }, { transportId: 'other' }, { active: false }, { status: 'dismissed' }]) {
+      { actorUserId: 'other' }, { transportId: 'other' }, { active: false }, { status: 'dismissed' },
+      { direction: 'outbound' }, { messageHistoryOnly: true }, { threadHistoryOnly: true }, { threadTrashedAt: new Date() }]) {
       const f = fixture();
       f.setRows([{ ...f.getRows()[0]!, ...change }]);
       await expect(previewFiling({ ...input, db: f.db, s3: f.s3 })).resolves.toMatchObject({ status: 'refused' });
@@ -111,6 +113,18 @@ describe('read-only filing preview', () => {
     stubs.read.mockImplementationOnce(async () => ({ source, bytes: Buffer.from('%PDF-'), locator: {} }))
       .mockResolvedValueOnce(null);
     await expect(previewFiling({ ...input, db: second.db, s3: second.s3 })).resolves.toEqual({ status: 'refused', reason: 'source_changed' });
+  });
+
+  it.each([
+    { direction: 'outbound' }, { messageHistoryOnly: true }, { threadHistoryOnly: true }, { threadTrashedAt: new Date() },
+  ])('refuses if the selected source becomes unavailable during the HMS read: %o', async (change) => {
+    const f = fixture();
+    stubs.find.mockImplementationOnce(async () => {
+      f.setRows([{ ...f.getRows()[0]!, ...change }]);
+      return { outcome: 'found', stay, arrivalMismatch: false };
+    });
+    await expect(previewFiling({ ...input, db: f.db, s3: f.s3 }))
+      .resolves.toEqual({ status: 'refused', reason: 'source_changed' });
   });
 
   it('rejects a changed selected Message-ID in the mounted PDF preview', async () => {
