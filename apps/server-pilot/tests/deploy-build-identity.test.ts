@@ -162,7 +162,7 @@ describe('server build identity', () => {
     const require = createRequire(import.meta.url);
     const config = require('../deploy/pm2.config.cjs') as { apps: Array<{ kill_timeout: number }> };
     const drainSeconds = config.apps.reduce((sum, app) => sum + app.kill_timeout / 1000, 0);
-    for (const name of ['ops-deploy.sh', 'ops-restart.sh']) {
+    for (const name of ['ops-deploy.sh', 'ops-restart.sh', 'ops-reboot.sh']) {
       const path = fileURLToPath(new URL(`../deploy/${name}`, import.meta.url));
       const script = readFileSync(path, 'utf8');
       const budgets = /SSM_EXECUTION_TIMEOUT_SECONDS=(\d+)\s+SSM_MAX_POLL_SECONDS=(\d+)\s+(?:\\\s*)?(?:remote_bound|bash)/.exec(script);
