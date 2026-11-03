@@ -12,6 +12,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { waitForOwnedProcess } from './helpers/wait-for-owned-process.js';
 
 // The bundle ships local refs/heads/main. A local main that lags or leads origin
 // once shipped the wrong commit to prod, so the sync must refuse before any upload.
@@ -179,6 +180,7 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
       holder.once('error', reject);
     });
     const checkout = spawn('bash', ['-c', safePayload], {
+      detached: true,
       env: { ...cleanEnv(), PATH: `${box.bin}:${process.env.PATH}`, AWS_CALLS: box.awsCalls,
         BUNDLE_CAPTURE: box.bundle, TEST_LOCK_ATTEMPT: attempted },
       stdio: 'ignore',
@@ -190,7 +192,7 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
       expect(existsSync(join(remote, '.git'))).toBe(false);
     } finally {
       holder.stdin.end('continue\n');
-      status = await completed;
+      status = await waitForOwnedProcess(checkout, completed);
     }
     expect(status).toBe(0);
     expect(git(remote, 'rev-parse', 'HEAD')).toBe(sha);

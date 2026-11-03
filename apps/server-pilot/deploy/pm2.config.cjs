@@ -12,7 +12,9 @@ module.exports = {
   apps: [
     {
       name: 'http',
-      script: 'dist/main.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'http',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
@@ -49,7 +51,9 @@ module.exports = {
     },
     {
       name: 'worker',
-      script: 'dist/mail/ingest/worker.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'worker',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
@@ -63,7 +67,9 @@ module.exports = {
     },
     {
       name: 'ai-worker',
-      script: 'dist/ai/worker.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'ai-worker',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
@@ -89,7 +95,7 @@ module.exports = {
       // Child-only HMS_EVIDENCE_HMAC_KEY via asm-exec resolve arg (never in env/config).
       name: 'hms-ai-worker',
       script: '/usr/local/bin/asm-exec',
-      args: '-- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /usr/bin/node dist/ai/worker.js',
+      args: '-- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /bin/bash deploy/start-guarded-server.sh ai-worker',
       interpreter: 'none',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,

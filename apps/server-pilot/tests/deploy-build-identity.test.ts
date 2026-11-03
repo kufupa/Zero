@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const helper = fileURLToPath(new URL('../deploy/build-identity.sh', import.meta.url));
@@ -75,6 +76,70 @@ describe('server build identity', () => {
     expect(loaded.stderr).toContain('identity is unverified');
   });
 
+  it('guards each PM2 server entry on every start using the built artifact', () => {
+    const repo = repository();
+    const server = join(repo.root, 'apps', 'server-pilot');
+    const deploy = join(server, 'deploy');
+    const dist = join(server, 'dist');
+    mkdirSync(deploy, { recursive: true });
+    copyFileSync(helper, join(deploy, 'build-identity.sh'));
+    const wrapper = join(deploy, 'start-guarded-server.sh');
+    copyFileSync(fileURLToPath(new URL('../deploy/start-guarded-server.sh', import.meta.url)), wrapper);
+    const entries = [
+      ['http', 'main.js'],
+      ['worker', 'mail/ingest/worker.js'],
+      ['ai-worker', 'ai/worker.js'],
+    ];
+    for (const [, relative] of entries) {
+      const file = join(dist, relative);
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(file, 'process.stdout.write(process.env.NAVA_BUILD_COMMIT);\n');
+    }
+    const invoke = (entry: string) => spawnSync('bash', [wrapper, entry], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', NAVA_BUILD_COMMIT: 'b'.repeat(40) },
+    });
+    const built = repo.head();
+    writeFileSync(join(dist, '.nava-build-commit'), `${built}\n`);
+    for (const [entry] of entries) {
+      const started = invoke(entry);
+      expect(started.status, started.stderr).toBe(0);
+      expect(started.stdout).toBe(built);
+    }
+    writeFileSync(join(server, '.nava-build-in-progress'), 'BUILD_IN_PROGRESS\n');
+    for (const [entry] of entries) {
+      const blocked = invoke(entry);
+      expect(blocked.status).not.toBe(0);
+      expect(blocked.stdout).toBe('');
+      expect(blocked.stderr).toContain('build in progress');
+    }
+    const remote = join(deploy, 'start-remote-http.sh');
+    copyFileSync(fileURLToPath(new URL('../deploy/start-remote-http.sh', import.meta.url)), remote);
+    const blockedRemote = spawnSync('bash', [remote], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
+    expect(blockedRemote.status).not.toBe(0);
+    expect(blockedRemote.stderr).toContain('build in progress');
+    rmSync(join(server, '.nava-build-in-progress'));
+    rmSync(join(dist, '.nava-build-commit'));
+    expect(invoke('http').stdout).toBe('unknown');
+    expect(invoke('invalid').status).not.toBe(0);
+  });
+
+  it('registers guarded entrypoints for all PM2 server processes', () => {
+    const require = createRequire(import.meta.url);
+    const config = require('../deploy/pm2.config.cjs') as {
+      apps: Array<{ name: string; script: string; interpreter: string; args?: string }>;
+    };
+    for (const name of ['http', 'worker', 'ai-worker']) {
+      expect(config.apps.find((app) => app.name === name)).toMatchObject({
+        script: 'deploy/start-guarded-server.sh', interpreter: '/bin/bash', args: name,
+      });
+    }
+    expect(config.apps.find((app) => app.name === 'hms-ai-worker')?.args)
+      .toContain('/bin/bash deploy/start-guarded-server.sh ai-worker');
+    expect(config.apps.find((app) => app.name === 'remote-http')?.script)
+      .toBe('deploy/start-remote-http.sh');
+  });
+
   it('binds HMS start to the built marker and allows status when identity is unknown', () => {
     const repo = repository();
     const server = join(repo.root, 'apps', 'server-pilot');
@@ -95,12 +160,16 @@ describe('server build identity', () => {
       env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: repo.root, REPO_ROOT: repo.root },
     });
     expect(invoke('start').status).toBe(10);
-    expect(invoke('status').status).toBe(0);
+    expect(invoke('status').stdout.trim()).toBe('status unknown');
     const built = repo.head();
     expect(run('nava_write_build_marker "$2" "$3"', repo.root, built).status).toBe(0);
     const started = invoke('start');
     expect(started.status, started.stderr).toBe(0);
     expect(started.stdout.trim()).toBe(`start ${built}`);
+    expect(invoke('status').stdout.trim()).toBe(`status ${built}`);
+    writeFileSync(join(server, '.nava-build-in-progress'), 'BUILD_IN_PROGRESS\n');
+    expect(invoke('status').stdout.trim()).toBe('status unknown');
+    rmSync(join(server, '.nava-build-in-progress'));
     repo.commit();
     expect(invoke('canary').status).toBe(10);
     expect(invoke('stop').status).toBe(0);

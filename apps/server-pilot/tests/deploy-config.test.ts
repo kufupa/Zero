@@ -5152,7 +5152,7 @@ if (!realMailGate) {
         /\{\{resolve:secretsmanager:nava-zero\/server-pilot\/hms-evidence-hmac\}\}/,
       );
       expect(pm2).toMatch(/\/usr\/bin\/env HMS_EVIDENCE_HMAC_KEY=/);
-      expect(pm2).toMatch(/\/usr\/bin\/node dist\/ai\/worker\.js/);
+      expect(pm2).toMatch(/\/bin\/bash deploy\/start-guarded-server\.sh ai-worker/);
       expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_SECRET_ARN/);
       expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_KEY_VERSION/);
       expect(pm2).not.toMatch(/HMS_EVIDENCE_HMAC_KEY:\s/);
@@ -5226,7 +5226,7 @@ if (!realMailGate) {
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
 
       expect(pm2).toMatch(
-        /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
+        /name:\s*['"]http['"][\s\S]*?script:\s*['"]deploy\/start-guarded-server\.sh['"][\s\S]*?args:\s*['"]http['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
       );
       expect(pm2).toMatch(
         /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]deploy\/start-remote-http\.sh['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
@@ -6259,7 +6259,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(copiedDeploy, { recursive: true });
         mkdirSync(join(server, 'dist'));
         mkdirSync(bin);
-        for (const file of ['start-remote-http.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        for (const file of ['start-remote-http.sh', 'build-identity.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), `${'a'.repeat(40)}\n`);
         writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
         writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });
         writeFileSync(join(bin, 'pm2'), '#!/usr/bin/env bash\nif [ "$1" = start ] && [[ " $* " = *" --only remote-http "* ]]; then exec /bin/bash "$SERVER_PILOT/deploy/start-remote-http.sh"; fi\n', { mode: 0o755 });
@@ -6304,11 +6305,16 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         rmSync(marker);
         env.NAVA_BUILD_COMMIT = 'unknown';
         expect((await run()).status).toBe(0);
+        expect(inspect().NAVA_BUILD_COMMIT).toBe('a'.repeat(40));
+        rmSync(marker);
+        rmSync(join(server, 'dist', '.nava-build-commit'));
+        expect((await run()).status).toBe(0);
         expect(inspect().NAVA_BUILD_COMMIT).toBe('unknown');
         rmSync(marker);
-        env.NAVA_BUILD_COMMIT = 'invalid';
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), 'invalid\n');
         expect((await run()).status).not.toBe(0);
         expect(existsSync(marker)).toBe(false);
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), `${'a'.repeat(40)}\n`);
         env.NAVA_BUILD_COMMIT = 'a'.repeat(40);
         writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
         expect((await run()).status).toBe(0);

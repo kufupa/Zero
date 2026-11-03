@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { waitForOwnedProcess } from './helpers/wait-for-owned-process.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const jobScript = join(here, '..', 'deploy', 'hms-job.sh');
@@ -521,6 +522,7 @@ exec node -e 'const {spawnSync}=require("node:child_process");const c=process.ar
     });
     const deploy = spawn('bash', [join(box.wt, 'apps/server-pilot/deploy/ops-deploy.sh')], {
       cwd: box.wt,
+      detached: true,
       env: {
         PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: box.root,
         NAVA_RUN_HOLD_FILE: join(box.root, 'absent-hold'), SYNC_STUB_EXIT: '0',
@@ -535,7 +537,7 @@ exec node -e 'const {spawnSync}=require("node:child_process");const c=process.ar
       expect(statSync(hook).mode & 0o200).toBe(0);
     } finally {
       holder.stdin.end('continue\n');
-      status = await completed;
+      status = await waitForOwnedProcess(deploy, completed);
     }
     expect(status).toBe(77); // Next install is a stub; the first remote mutation completed.
     expect(statSync(hook).mode & 0o200).not.toBe(0);

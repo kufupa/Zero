@@ -50,10 +50,10 @@ fi
 
 # Canary/start may not use stale inherited identity or an unbuilt checkout.
 # Status and stop remain available when build identity is unknown.
+# shellcheck source=build-identity.sh
+source "${SERVER_PILOT}/deploy/build-identity.sh"
 case "$ACTION" in
   canary|start|rearm)
-    # shellcheck source=build-identity.sh
-    source "${SERVER_PILOT}/deploy/build-identity.sh"
     if ! nava_load_build_commit "$REPO_ROOT" ||
       ! [[ "$NAVA_BUILD_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
       [ "$NAVA_BUILD_COMMIT" = 0000000000000000000000000000000000000000 ]; then
@@ -64,6 +64,11 @@ case "$ACTION" in
     if [ "$checkout" != "$NAVA_BUILD_COMMIT" ]; then
       echo "HMS_FAIL code=BUILD_MISMATCH" >&2
       exit 10
+    fi
+    ;;
+  status)
+    if ! nava_load_build_commit "$REPO_ROOT"; then
+      export NAVA_BUILD_COMMIT=unknown
     fi
     ;;
 esac
