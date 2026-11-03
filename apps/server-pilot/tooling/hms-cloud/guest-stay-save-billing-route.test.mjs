@@ -5,11 +5,66 @@ import { createRequire } from 'node:module';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
-import { matchesFullCreateBody } from './guest-stay-save.mjs';
+import { finishLabtestCreateFence, matchesFullCreateBody } from './guest-stay-save.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const { chromium } = require('playwright');
 const path = '/web/base/OSRESV.HDR';
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+for (const pausedPhase of ['authorization', 'dispatch']) {
+  test(`localhost Create ${pausedPhase} callback cannot dispatch after an unconfirmed drain`, { timeout: 30000 }, async () => {
+    const received = [], entered = deferred(), release = deferred();
+    const server = createServer((req, res) => {
+      received.push(req.method);
+      res.writeHead(200, { 'content-type': 'text/html' }); res.end('ok');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    let browser;
+    try {
+      browser = await chromium.launch({ headless: true, executablePath: process.env.HMS_TEST_CHROMIUM_PATH || undefined });
+      const context = await browser.newContext({ serviceWorkers: 'block' });
+      await installReadOnlyGuard(context);
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.address().port}/ready`);
+      const fence = await installPageRequestFence(page, [path]), scope = fence.open();
+      let armed = true;
+      const pause = async (phase) => { if (phase === pausedPhase) { entered.resolve(); await release.promise; } };
+      const chain = await installLabtestSaveRouteChain(page, {
+        frame: page.mainFrame(), fence, scope, isArmed: () => armed, matches: () => true,
+        authorizeCandidate: async () => { await pause('authorization'); return true; },
+        dispatchCandidate: async (_request, proceed) => { await pause('dispatch'); return proceed(); },
+        onDispatch: () => { armed = false; },
+      });
+      const request = page.evaluate(async (target) => {
+        try { return (await fetch(`${target}?pageaction=SAVE`, { method: 'POST', body: 'synthetic=1' })).status; }
+        catch { return 'blocked'; }
+      }, path);
+      await entered.promise;
+      const result = await finishLabtestCreateFence({ outcome: 'not_dispatched' },
+        { drain: () => chain.drain({ timeoutMs: 20 }) }, fence);
+      assert.equal(result.outcome, 'uncertain');
+      assert.equal(result.issue, 'SAVE_CALLBACK_DRAIN_UNCONFIRMED');
+      assert.equal(result.dispatchCallbacksDrained, false);
+      release.resolve();
+      assert.equal(await request, 'blocked');
+      assert.equal(await chain.drain({ timeoutMs: 500 }), true);
+      assert.equal(received.filter((method) => method === 'POST').length, 0);
+      scope.close();
+      await chain.close();
+      await context.close();
+    } finally {
+      release.resolve();
+      await browser?.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
 
 test('unarmed billing staging permits no POST; quarantine blocks delayed and exact saves', { timeout: 30000 }, async () => {
   const received = [];
