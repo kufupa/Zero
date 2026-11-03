@@ -233,10 +233,13 @@ async function checkedSiblings(tx: CreateFenceTransaction, state: Record<string,
   for (const room of batch.rooms.slice(0, index)) {
     const previous = stays?.[room.stayId] as Record<string, unknown> | undefined;
     const confirmation = previous?.confirmationNumber;
-    const evidence = events.filter(({ value, actorKind }) => actorKind === 'system' && value &&
-      typeof value === 'object' && !Array.isArray(value) && value.kind === 'cloud_create_verified' &&
-      value.grantId === room.grant.grantId && value.stayId === room.stayId &&
-      value.confirmationNumber === confirmation && value.requestDigest === room.grant.requestDigest);
+    const evidence = events.filter(({ value, actorKind }) => {
+      if (actorKind !== 'system' || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const entry = value as Record<string, unknown>;
+      return entry.kind === 'cloud_create_verified' && entry.grantId === room.grant.grantId &&
+        entry.stayId === room.stayId && entry.confirmationNumber === confirmation &&
+        entry.requestDigest === room.grant.requestDigest;
+    });
     if (previous?.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || evidence.length !== 1) {
       throw new Error('cloud_batch_stale');
     }
