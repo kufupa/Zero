@@ -85,7 +85,8 @@ function mockPage({ jsonFor = () => ({}) } = {}) {
   return { page, context, visit, events };
 }
 
-async function scenario({ check = checkRequest(), checkTwice = false, validateAvailability = true, authorize = true } = {}) {
+async function scenario({ check = checkRequest(), checkTwice = false, validateAvailability = true, authorize = true,
+  state = snapshot(), recipient = undefined } = {}) {
   const fake = mockPage(), sequence = [], save = { click: async () => {
     sequence.push('save-click');
     await fake.visit({ url: () => `${origin}${savePath}`, method: () => 'POST', frame: () => frame });
@@ -96,7 +97,8 @@ async function scenario({ check = checkRequest(), checkTwice = false, validateAv
     validate: async () => true, matches: (request) => request.url() === `${origin}${savePath}`,
     dispatchCandidate: async (_request, proceed) => { sequence.push('save-authority'); await proceed(); },
     availability: {
-      snapshot: async () => snapshot(),
+      recipient,
+      snapshot: async () => state,
       click: async () => { sequence.push('availability-click'); await fake.visit(check); if (checkTwice) await fake.visit(checkRequest()); },
       dispatchCandidate: async (_request, proceed) => { sequence.push('availability-authority'); if (authorize) await proceed(); },
       validate: async () => { sequence.push('availability-verified'); return validateAvailability; },
@@ -110,6 +112,17 @@ test('one approved rate hold precedes the separately approved Save', async () =>
   assert.equal(result.outcome, 'awaiting_readback', JSON.stringify({ result, sequence, events }));
   assert.deepEqual(sequence, ['availability-click', 'availability-authority', 'availability-verified', 'save-click', 'save-authority']);
   assert.deepEqual(events, ['continue', 'continue']);
+});
+
+test('availability carries the exact reviewed unsent recipient through the fence', async () => {
+  const state = snapshot();
+  state.data.udfchar13 = 'desk@example.invalid';
+  const check = checkRequest({ data: state.data });
+  const approved = await scenario({ state, check, recipient: 'desk@example.invalid' });
+  assert.equal(approved.result.outcome, 'awaiting_readback');
+  const changed = await scenario({ state, check, recipient: 'other@example.invalid' });
+  assert.equal(changed.result.outcome, 'not_dispatched');
+  assert.deepEqual(changed.events, ['abort']);
 });
 
 test('wrong payload cannot hold a rate or reach Save', async () => {

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { attachment, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { assertNoOpenWrite, formDigest, HmsApprovalError, hmsStateDigest, hmsWriteStateOf, retainedPricesForApproval } from './hms-approval.js';
 import { cloudAmendPreservedSchema } from './cloud-amend-price-projection.js';
@@ -238,7 +238,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   // Record View's complete model before showing the human approval; never persist it.
   const nativeUrl = new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url);
   const nativeModule = await import(nativeUrl.href) as { prepareCloudPaneAmend(input: {
-    target: typeof target.target; selected: typeof preimage.native; confirmation: string; arrival: string;
+    target: HmsReadTarget; selected: CloudAmendPreimage['native']; confirmation: string; arrival: string;
     changes: CloudAmendChanges; signal: AbortSignal;
   }): Promise<{ outcome: string; nativeDigest?: string; approvedPrices?: unknown; preserved?: unknown }>;
     oneNightRetainPricesMatchObservations(prices: unknown, financial: unknown): boolean };
