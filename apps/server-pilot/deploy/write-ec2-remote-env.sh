@@ -338,7 +338,7 @@ node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
   "$REMOTE_COMMON_TMP" \
   "${REMOTE_COMMON_ALLOWLIST[@]}"
 
-# Flip to `on` needs CANARY PASS <workflow> <property> <sha> on the live SHA (M3/G6).
+# On-flips need CANARY PASS <workflow> <property> <sha> on the live SHA, except the narrow Labtest bootstraps below.
 nava_live_sha="${NAVA_LIVE_SHA:-}"
 if [ -z "$nava_live_sha" ] && [ -d "${REPO_ROOT}/.git" ]; then
   nava_live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
@@ -446,6 +446,12 @@ const FLAG_PROPERTY = {
 const CONFIGURED_PROPERTY_FLAGS = new Set(["HMS_JOB_QUEUE", "HMS_QUOTE_PREPARE", "HMS_PREFETCH_ENABLED",
   "HMS_AVAILABILITY_PREFETCH", "PARTY_MATCH_V2"]);
 for (const flag of flips) {
+  // These authority switches may bootstrap only in their dedicated Labtest modes.
+  // The PANE_WRITE_* lab -> on widenings below still require an exact HRCEN canary.
+  const labOnlyBootstrap =
+    (flag === "PANE_CLOUD_CREATE_DISPATCH" && next.get("PANE_WRITE_CREATE") === "lab") ||
+    (flag === "PANE_HMS_LAB_ATTACH_WORKER" && next.get("PANE_WRITE_ATTACH") === "lab");
+  if (labOnlyBootstrap) continue;
   const neededProperty = FLAG_PROPERTY[flag] || (CONFIGURED_PROPERTY_FLAGS.has(flag) ?
     (next.get("HMS_EXPECTED_PROPERTY_CODE") || "HRCEN") : undefined);
   const exactSha = neededProperty === "HRCEN";
