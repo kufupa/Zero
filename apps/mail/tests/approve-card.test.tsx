@@ -799,7 +799,7 @@ describe('hmsApprovalFromTrpc and refusals', () => {
     for (const call of [state, approve, review, resolve, reread, evidence]) {
       expect(call).toHaveBeenCalledWith(expect.objectContaining({ workItemId: WORK_ITEM, internetMessageId: '<selected@example.test>' }), mailbox);
     }
-    for (const call of [state, approve, reread]) {
+    for (const call of [state, approve, review, resolve, reread, evidence]) {
       expect(call).toHaveBeenCalledWith(expect.objectContaining({ selectedSource }), mailbox);
     }
   });

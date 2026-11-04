@@ -96,10 +96,10 @@ export function hmsApprovalFromTrpc(
   return {
     writeState: (input) => writeState.query({ ...input, internetMessageId, ...selection }, mailbox),
     approve: (input) => approve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
-    review: (input) => review.mutate({ ...input, internetMessageId }, mailbox),
-    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId }, mailbox),
+    review: (input) => review.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
     reread: (input) => reread.mutate({ ...input, internetMessageId, ...selection }, mailbox),
-    evidence: (input) => evidence.query({ ...input, internetMessageId }, mailbox),
+    evidence: (input) => evidence.query({ ...input, internetMessageId, ...selection }, mailbox),
   };
 }
 
