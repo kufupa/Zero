@@ -105,13 +105,15 @@ async function currentSelectedHmsSource(db: DB, transportId: string, source: Hms
   return isSelectedHmsInboundMessage({ transportId, ...source }, db);
 }
 
-/** The public pane names the selected email; ambiguous or mismatched message IDs never authorize a write. */
+/** The public pane names the selected email; ambiguous legacy IDs or a mismatched selection never authorize a write. */
 async function assertHmsSelectedSource(db: DB, input: SelectedHmsSource, item: HmsSourceItem, lockRows = false): Promise<void> {
   if (input.selectedInternetMessageId !== undefined) {
     const selectedId = canonicalMessageId(input.selectedInternetMessageId.trim());
     if (!selectedId || !item.sourceMessageId || !item.threadId) throw new HmsApprovalError('source_mail_changed');
     const query = db.select({ id: message.id, threadId: message.threadId, direction: message.direction })
-      .from(message).where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, selectedId))).limit(2);
+      .from(message).where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, selectedId),
+        input.selectedSource ? eq(message.id, input.selectedSource.messageId) : undefined,
+        input.selectedSource ? eq(message.threadId, input.selectedSource.threadId) : undefined)).limit(2);
     const matches = lockRows ? await query.for('share') : await query;
     if (matches.length !== 1 || matches[0]?.id !== item.sourceMessageId ||
         matches[0].threadId !== item.threadId || matches[0].direction !== 'inbound') {
