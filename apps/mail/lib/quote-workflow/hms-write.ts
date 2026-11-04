@@ -372,6 +372,7 @@ const LEAF_LABELS: Record<string, string> = {
   board: 'Board',
   removed: 'Removed',
   confirmation: 'Booking',
+  firstName: 'Guest first name',
   lastName: 'Guest surname',
   documentName: 'Document',
   cmsSend: 'Send confirmation',
@@ -435,7 +436,7 @@ function labelsOf(keys: readonly string[]): Map<string, string> {
 }
 
 /** Leaves that name the guest or their booking (a confirmation, a name, a file name). The preview gate masks them. */
-const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest|^cmsRecipient$/i;
+const GUEST_LEAF = /^confirmation$|name$|email$|phone$|contact$|^guest|^cmsRecipient$/i;
 
 /** True when a write row shows a guest detail, so the pane marks it data-pii. */
 export function isGuestWriteRow(key: string): boolean {
@@ -493,14 +494,18 @@ function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
 }
 
 /**
- * The values the write changes, as before → after rows. A value that is the same before and after is left out. With no
- * stored read, the before side reads "Not read", so approval still shows what would be written.
+ * The values the write changes, as before → after rows. Explicit rate and confirmation choices remain visible even
+ * when unchanged. With no stored read, the before side reads "Not read".
  */
 export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteRow[] {
   // Only the reviewed amendment choices belong on this card. Source/native
   // digests and unrelated work-item state are not staff decisions.
   const cloudAmend = view.form.action === 'amend' && typeof view.form.cloudAmend === 'object' && view.form.cloudAmend !== null;
-  const after = leavesOf(cloudAmend ? { fields: view.form.fields } : view.form);
+  const amendFields = record(view.form.fields);
+  const shownFields = amendFields?.cmsSend === false
+    ? Object.fromEntries(Object.entries(amendFields).filter(([key]) => key !== 'cmsMessageId' && key !== 'cmsRecipient'))
+    : amendFields;
+  const after = leavesOf(cloudAmend ? { fields: shownFields } : view.form);
   const filing = view.form.action === 'attach_document';
   const filingFields = new Set(['documentName', 'confirmation', 'lastName', 'arrival']);
   const before = view.before ? leavesOf(view.before) : null;
@@ -509,9 +514,11 @@ export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteR
   for (const [key, value] of after) {
     if (filing && !filingFields.has(key)) continue;
     const beforeText =
-      before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : NONE;
+      before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : cloudAmend ? NOT_READ : NONE;
     const afterText = valueText(key, value);
-    if (filing || beforeText !== afterText || (cloudAmend && key === 'fields.ratePlan')) {
+    const amendChoice = cloudAmend && (key === 'fields.ratePlan' || key === 'fields.cmsSend' ||
+      (amendFields?.cmsSend === true && (key === 'fields.cmsMessageId' || key === 'fields.cmsRecipient')));
+    if (filing || beforeText !== afterText || amendChoice) {
       rows.push({ key, label: labels.get(key) ?? key, before: beforeText, after: afterText });
     }
   }

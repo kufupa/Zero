@@ -192,7 +192,8 @@ describe('adult amendment real callback chain', () => {
 
     const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 2 });
 
-    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'ADULT_PREIMAGE_UNVERIFIED' });
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue:
+      ['arrivaldate', 'departuredate'].includes(name) ? 'LABTEST_RECORD_UNVERIFIED' : 'ADULT_PREIMAGE_UNVERIFIED' });
     expect(stay.data).toEqual(dataBefore);
     expect(stay.values).toEqual(valuesBefore);
     expect(stay.combo.setValue).not.toHaveBeenCalled();
@@ -216,7 +217,8 @@ describe('adult amendment real callback chain', () => {
 
     const result = await stageLabtestAdultAmendment(stay.page, stay.expected, { adults: 1 });
 
-    expect(result).toMatchObject({ outcome: 'not_dispatched', issue: 'ADULT_PREIMAGE_UNVERIFIED' });
+    expect(result).toMatchObject({ outcome: 'not_dispatched', issue:
+      ['missing', 'duplicate'].includes(kind) ? 'LABTEST_RECORD_UNVERIFIED' : 'ADULT_PREIMAGE_UNVERIFIED' });
     expect(stay.combo.setValue).not.toHaveBeenCalled();
     expect(stay.form.updateRecord).not.toHaveBeenCalled();
     expect(stay.save.click).not.toHaveBeenCalled();

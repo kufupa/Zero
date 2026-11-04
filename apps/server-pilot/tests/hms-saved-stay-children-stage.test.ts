@@ -94,13 +94,14 @@ describe('saved child editor opening side effects', () => {
 describe('saved child read candidate', () => {
   it('requires one exact bound read request and rejects lookalikes', () => {
     expect(matchesSavedChildAgeRead(request(), frameId, '5', [8, 12])).toBe(true);
+    expect(matchesSavedChildAgeRead(request({ body: body({ propertyCode: 'HRCEN', reservationStayId: '5',
+      childAges: [8, 12], extra: 1 }).toString() }), frameId, '5', [8, 12])).toBe(true);
     const duplicate = body(); duplicate.append('params', '{}');
     const bad = [
       request({ method: 'GET' }), request({ frame: {} }), request({ url: `${ORIGIN}${READ}?x=1` }),
       request({ url: `${ORIGIN}/web/base/OSRESV.HDR.validateChildAgeDetails` }),
       request({ type: 'application/json' }), request({ body: duplicate.toString() }),
       request({ body: body({ propertyCode: 'HRCEN', reservationStayId: '', childAges: [8, 12] }).toString() }),
-      request({ body: body({ propertyCode: 'HRCEN', reservationStayId: '5', childAges: [8, 12], extra: 1 }).toString() }),
       request({ body: body({ propertyCode: 'HRCEN', reservationStayId: '5', childAges: [8] }).toString() }),
       request({ body: new URLSearchParams({ params: '{"propertyCode":"HRCEN","reservationStayId":"5","reservationStayId":"5","childAges":[8,12]}', ONLY_DATA_REQUIRED: 'true' }).toString() }),
     ];
@@ -151,6 +152,7 @@ describe('saved child validation request fence', () => {
       url: `${ORIGIN}${validationPath}`, body: body(params).toString(), ...extras,
     });
     expect(matchesSavedChildAgeValidation(candidate(), frameId, bound)).toBe(true);
+    expect(matchesSavedChildAgeValidation(candidate({ ...native, extra: true } as typeof native), frameId, bound)).toBe(true);
     const duplicates = body(native); duplicates.append('params', '{}');
     for (const invalid of [
       candidate(native, { frame: {} }), candidate(native, { method: 'GET' }),
@@ -160,7 +162,6 @@ describe('saved child validation request fence', () => {
       candidate({ ...native, childAges: [8, 12, 6] }), candidate({ ...native, updateChildCategories: false }),
       candidate({ ...native, activeChildCategories: 2 }), candidate({ ...native, confirmChildCategory: true }),
       candidate({ ...native, childCategoryCounts: { child1: 0, child2: 3, child3: 0 } }),
-      candidate({ ...native, extra: true } as typeof native),
     ]) expect(matchesSavedChildAgeValidation(invalid, frameId, bound)).toBe(false);
     const duplicateJson = JSON.stringify(native).replace('"reservationStayId":"5"', '"reservationStayId":"5","reservationStayId":"5"');
     const duplicateBody = new URLSearchParams({ params: duplicateJson, ONLY_DATA_REQUIRED: 'true' });

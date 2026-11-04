@@ -4,10 +4,10 @@ import {
   HMS_WRITE_COPY,
   HMS_WRITE_IDLE_POLL_MS,
   HMS_WRITE_POLL_MS,
+  cloudAmendApprovalHasPrices,
   isGuestWriteRow,
   isStoredWrite,
   refusalCopy,
-  cloudAmendApprovalHasPrices,
   writeRowsOf,
   writeStatusOf,
   type HmsApprovalClient,
@@ -81,9 +81,9 @@ export function ApproveCard({
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
       requiredAction={requiredAction}
-      writesEnabled={writesEnabled}
       manualResolve={manualResolve}
       allowApprove={allowApprove}
+      writesEnabled={writesEnabled}
       filingApprovalAllowed={filingApprovalAllowed}
       filingReviewAllowed={filingReviewAllowed}
       filingApprovalDigest={filingApprovalDigest}

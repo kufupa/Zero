@@ -58,12 +58,14 @@ import {
   type HmsSearchRun,
   type ScreenshotInput,
   type ScreenshotReply,
+  type StayContactObservations,
   type StayPick,
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import { cancelWriteStateClientFromTrpc, type CancelWriteSelection } from '@/lib/quote-workflow/cancel-write-state';
 import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest, type CloudAmendSelection } from '@/lib/quote-workflow/cloud-amend-client';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
@@ -71,7 +73,7 @@ import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
-import { CancelChargePrompt } from './approve-card';
+import { ApproveCard, CancelChargePrompt } from './approve-card';
 
 export type AmendReadOnlyContext = {
   propertyCode: 'HRCEN';
@@ -588,6 +590,12 @@ export function AmendLookupPanel({
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
+      {amendment.kind === 'amend' && readOnlyIdentity && selectedTransportId && workItemId ? (
+        <CloudAmendHistory key={JSON.stringify([readOnlyIdentity, selectedTransportId, binding?.selectionEpoch, workItemId])}
+          trpc={trpc} transportId={selectedTransportId} selection={{ workItemId, source: {
+            threadId: readOnlyIdentity.threadId, messageId: readOnlyIdentity.messageId, sourceHash: readOnlyIdentity.sourceHash,
+          } }} />
+      ) : null}
       {savedPicks.length ? (
         <div data-testid="amend-saved-stays" className="flex flex-col gap-2">
           <p className={headingClass}>{SAVED_STAY_COPY.heading}</p>
@@ -615,7 +623,8 @@ export function AmendLookupPanel({
           <p>{AMEND_FIND_COPY.checkHint}</p>
         </div>
       ) : null}
-      {stay && unpaidStay === false && (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
+      {stay && unpaidStay === false && (!readOnlyAmend || amendment.kind === 'cancel') &&
+        (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
         <div
           data-testid={amendment.kind === 'cancel' ? 'cancel-payment-banner' : 'amend-payment-banner'}
           className={warnNoteClass}
@@ -852,9 +861,12 @@ export function AmendLookupPanel({
             revision={localReadRevision}
             confirmation={foundNumber}
             stay={stay}
+            contactObservations={found?.reservationObservations}
             requestedArrival={amendment.requestedArrival}
             requestedDeparture={amendment.requestedDeparture}
             ratePlans={readOnlyAmend.ratePlans}
+            defaultRecipient={session.staffHeader.clientEmail}
+            writeContext={selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
           />
         ) : <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
       ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
@@ -1183,15 +1195,19 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
   );
 }
 
-/** A local comparison against the dated HMS lookup, never an HMS prepare or approval. */
-function LocalAmendReview({ identity, revision, confirmation, stay, requestedArrival, requestedDeparture, ratePlans }: {
+/** Bind the editable request to the current selected email and booking. */
+function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
+  ratePlans, defaultRecipient, writeContext }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
   stay: StayRecordWire;
+  contactObservations?: StayContactObservations;
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
   ratePlans: RatePlanCatalogueEntry[];
+  defaultRecipient: string;
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
   const [draftStore] = useState(createSavedStayAmendDraftStore);
   const [draft, setDraft] = useState<SavedStayAmendDraftUpdate | null>(null);
@@ -1205,50 +1221,182 @@ function LocalAmendReview({ identity, revision, confirmation, stay, requestedArr
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
       requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
-    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft} />
-    <p className={infoNoteClass}>Nava has not checked availability or the new price. Complete the change in HMS; nothing has been saved.</p>
+    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft}
+      identity={identity} confirmation={confirmation} contactObservations={contactObservations}
+      defaultRecipient={defaultRecipient} writeContext={writeContext} />
   </>;
 }
 
-function LocalAmendChoices({ stay, ratePlans, draft }: {
+function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
   draft: SavedStayAmendDraftUpdate | null;
+  identity: SavedStayAmendEditorIdentity;
+  confirmation: string;
+  contactObservations?: StayContactObservations;
+  defaultRecipient: string;
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
-  const [ratePlan, setRatePlan] = useState('');
-  const [retainRates, setRetainRates] = useState('');
-  const choiceValid = draft && draft.errors.every((error) => error === 'Choose a change to the booking.');
-  const changes = draft?.proposal?.changes;
-  const summary = changes || (choiceValid && (ratePlan || retainRates));
-  const changeRows = changes ? Object.entries(changes).map(([field, value]) => {
-    const labels: Record<string, string> = { arrival: 'Arrival', departure: 'Departure', adults: 'Adults',
-      children: 'Children', childAges: 'Child ages' };
-    return `${labels[field] ?? field}: ${Array.isArray(value) ? (value.join(', ') || 'None') : String(value)}`;
-  }) : [];
+  const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
+  const [roomType, setRoomType] = useState(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
+  const [ratePlan, setRatePlan] = useState(stay.ratePlan ?? '');
+  const [retainRates, setRetainRates] = useState<'yes' | 'no'>('no');
+  const [firstName, setFirstName] = useState(stay.firstName ?? '');
+  const [lastName, setLastName] = useState(stay.lastName ?? '');
+  const [guestEmail, setGuestEmail] = useState(contactObservations?.guestEmail?.value ?? '');
+  const [bookerName, setBookerName] = useState(contactObservations?.bookerName?.value ?? '');
+  const [bookerContact, setBookerContact] = useState(contactObservations?.bookerContact?.value ?? '');
+  const [editedDetails, setEditedDetails] = useState<string[]>([]);
+  const [cmsSend, setCmsSend] = useState(!labtest);
+  const [cmsMessageId, setCmsMessageId] = useState(labtest ? '' : stay.bookingAgency || stay.organization ? '03' : '01');
+  const [cmsRecipient, setCmsRecipient] = useState(labtest ? '' : defaultRecipient);
+  const [cmsTouched, setCmsTouched] = useState(false);
+  const [boundKey, setBoundKey] = useState<string | null>(null);
+  const [availableKey, setAvailableKey] = useState<string | null>(null);
+  const choicesValid = Boolean(draft && draft.errors.every((error) => error === 'Choose a change to the booking.'));
+  const changes = { ...draft?.proposal?.changes,
+    ...(roomType && roomType !== (knownRoomCode(stay.roomType ?? '') ?? stay.roomType) ? { roomType } : {}),
+    ...(ratePlan && ratePlan !== stay.ratePlan ? { ratePlan } : {}),
+    ...(firstName.trim() !== (stay.firstName ?? '') ? { firstName: firstName.trim() } : {}),
+    ...(lastName.trim() !== (stay.lastName ?? '') ? { lastName: lastName.trim() } : {}),
+    ...(editedDetails.includes('guestEmail') ? { guestEmail: guestEmail.trim() } : {}),
+    ...(editedDetails.includes('bookerName') ? { bookerName: bookerName.trim() } : {}),
+    ...(editedDetails.includes('bookerContact') ? { bookerContact: bookerContact.trim() } : {}),
+  };
+  const validRecipient = !cmsSend || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cmsRecipient.trim()) && Boolean(cmsMessageId.trim()));
+  const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
+    firstName.trim() && lastName.trim() && ratePlan && roomType && validRecipient &&
+    (Object.keys(changes).length > 0 || cmsTouched || (!labtest && cmsSend)));
+  const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
+    workItemId: writeContext.workItemId,
+    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
+    confirmation, arrival: stay.arrival,
+    changes: { ...changes, ratePlan, retainRates, cmsSend: labtest ? false : cmsSend,
+      cmsMessageId: cmsMessageId.trim(), cmsRecipient: cmsRecipient.trim() },
+  } : null;
+  const requestKey = request ? JSON.stringify(request) : null;
+  const markDetail = (name: string) => setEditedDetails((current) => current.includes(name) ? current : [...current, name]);
   return <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-    <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
-      <span className="font-semibold">Rate plan to review in HMS</span>
-      <select className={selectClass} value={ratePlan} onChange={(event) => setRatePlan(event.target.value)}>
-        <option value="">Current rate plan{stay.ratePlan ? ` (${stay.ratePlan})` : ' (not shown)'}</option>
-        {ratePlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name} ({plan.code})</option>)}
-      </select>
+    <div className="grid grid-cols-2 gap-2">
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Room type</span>
+        <select className={selectClass} value={roomType} onChange={(event) => setRoomType(event.target.value)}>
+          {roomType && !Object.hasOwn(ROOM_TYPE_NAMES, roomType) ? <option value={roomType}>{roomType}</option> : null}
+          {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => <option key={code} value={code}>{name} ({code})</option>)}
+        </select>
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Rate plan</span>
+        <select className={selectClass} value={ratePlan} onChange={(event) => setRatePlan(event.target.value)}>
+          {ratePlan && !ratePlans.some((plan) => plan.code === ratePlan) ? <option value={ratePlan}>{ratePlan}</option> : null}
+          {ratePlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name} ({plan.code})</option>)}
+        </select>
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Retain the current rate?</span>
+        <select className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value as 'yes' | 'no')}>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+      {([['Guest first name', firstName, setFirstName], ['Guest surname', lastName, setLastName],
+        ['Guest email', guestEmail, setGuestEmail], ['Booker name', bookerName, setBookerName],
+        ['Booker contact', bookerContact, setBookerContact]] as const).map(([label, value, update]) =>
+        <label key={label} className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+          <span className="font-semibold">{label}</span>
+          <input data-pii className={selectClass} value={value} onChange={(event) => {
+            update(event.target.value);
+            const detailNames: Record<string, string> = { 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };
+            const name = detailNames[label];
+            if (name) markDetail(name);
+          }} />
+        </label>)}
+    </div>
+    <label className="flex items-center gap-2 text-[11.5px] text-[#334155]">
+      <input type="checkbox" checked={cmsSend} disabled={labtest} onChange={(event) => { setCmsSend(event.target.checked); setCmsTouched(true); }} />
+      Send HMS confirmation
     </label>
-    <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
-      <span className="font-semibold">Retain the current rate?</span>
-      <select className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value)}>
-        <option value="">Not chosen</option>
-        <option value="yes">Yes</option>
-        <option value="no">No</option>
-      </select>
-    </label>
-    {summary ? <div data-testid="amend-local-summary" className={infoNoteClass}>
-      <p className="font-semibold">Review in HMS</p>
-      {changeRows.map((row) => <p key={row}>{row}</p>)}
-      <p>Rate plan: {ratePlan || stay.ratePlan || 'Not shown'}</p>
-      <p>Retain current rate: {retainRates === 'yes' ? 'Yes' : retainRates === 'no' ? 'No' : 'Not chosen'}</p>
-    </div> : null}
+    <div className="grid grid-cols-2 gap-2">
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">CMS message ID</span>
+        <input className={selectClass} value={cmsMessageId} disabled={labtest} onChange={(event) => { setCmsMessageId(event.target.value); setCmsTouched(true); }} />
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Confirmation recipient</span>
+        <input data-pii type="email" className={selectClass} value={cmsRecipient} disabled={labtest} onChange={(event) => { setCmsRecipient(event.target.value); setCmsTouched(true); }} />
+      </label>
+    </div>
+    {!validRecipient ? <p className={warnNoteClass}>Enter a confirmation message ID and recipient, or turn confirmation off.</p> : null}
+    {labtest ? <p className={infoNoteClass}>HMS confirmation is off for Labtest.</p> : null}
+    <p className={infoNoteClass}>{requestKey && boundKey === requestKey
+      ? 'Review the HMS price and change below before Go.'
+      : requestKey && availableKey === requestKey
+        ? 'Prepare the change to see the HMS price.'
+        : 'Enter the requested change and confirmation details.'}</p>
+    {request && requestKey && writeContext ? <CloudAmendAction key={requestKey} request={request}
+      guestSurname={stay.lastName || ''} transportId={writeContext.transportId} trpc={writeContext.trpc}
+      onAvailable={() => setAvailableKey(requestKey)} onBound={() => setBoundKey(requestKey)} /> : null}
   </div>;
 }
+
+/** Hidden unless the server advertises the complete, explicitly enabled writer. */
+function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname }: {
+  request: CloudAmendRequest; transportId: string; trpc: unknown; onAvailable: () => void; onBound: () => void; guestSurname: string;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [bound, setBound] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const liveRef = useRef(false);
+  // The component is keyed by the exact source, booking and choices.
+  const [selected] = useState(request);
+  useEffect(() => {
+    const controller = new AbortController();
+    liveRef.current = true;
+    let live = true, owned: CloudAmendClient | null = null;
+    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live })
+      .then((result) => {
+        if (!live) { result?.dispose(); return; }
+        owned = result;
+        setClient(result);
+        if (result) onAvailable();
+      });
+    return () => { live = false; liveRef.current = false; controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId]);
+  if (!client) return null;
+  return <>
+    {!bound ? <button type="button" className={buttonClass} disabled={busy} onClick={() => {
+      setBusy(true); setFailed(false);
+      void client.prepare().then((ok) => { if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); } })
+        .finally(() => { if (liveRef.current) setBusy(false); });
+    }}>{busy ? 'Checking the booking…' : 'Review change for approval'}</button> : null}
+    {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}
+    {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
+      arrival={selected.arrival} guestSurname={guestSurname} writesEnabled manualResolve={false} /> : null}
+  </>;
+}
+
+/** Restore a previous run without creating another HMS preview or approval. */
+function CloudAmendHistory({ trpc, transportId, selection }: {
+  trpc: unknown; transportId: string; selection: CloudAmendSelection;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [selected] = useState(selection);
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true, owned: CloudAmendClient | null = null;
+    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live, resume: true })
+      .then((result) => {
+        if (!live) { result?.dispose(); return; }
+        owned = result;
+        setClient(result);
+      });
+    return () => { live = false; controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId]);
+  return client ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={null}
+    writesEnabled manualResolve={false} allowApprove={false} /> : null;
+}
+
 
 function AmendSection({
   view,

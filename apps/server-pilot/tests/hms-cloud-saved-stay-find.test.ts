@@ -200,6 +200,7 @@ describe('Cloud saved-stay projection', () => {
       totalResortFee: { amount: { state: 'observed', value: '25.00' }, currency: { state: 'unknown', value: null } },
     });
     expect(result.reservationObservations).toEqual({
+      guestEmail: { state: 'unknown', value: null },
       groupName: { state: 'observed', value: 'Test Group' },
       promotionCode: { state: 'observed', value: 'PROMO-A' },
       arAccountName: { state: 'observed', value: 'Test Account' },

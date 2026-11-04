@@ -41,6 +41,7 @@ import {
 import { AMEND_SAVE_COPY, type CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { amendmentOf, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import { getMailCacheScope, setMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { cloudAmendClientFromTrpc } from '../lib/quote-workflow/cloud-amend-client';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
 // brain.getCapabilities answers with this flag. Tests set it before rendering.
@@ -1033,6 +1034,27 @@ describe('exact selected-email HMS lookup', () => {
       expect(await transport.status({ kind: 'search_guest', lastName: 'Mokoena', arrival: '2027-09-14' })).toBeNull();
       status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceHash: 'b'.repeat(64) });
       expect(await transport.status({ runId: RUN_ID })).toBeNull();
+
+      setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-a' });
+      const request = { workItemId: RUN_ID, source: { threadId: THREAD, messageId: 'msg-old', sourceHash },
+        confirmation: CONFIRMATION, arrival: '2026-10-12', changes: { ratePlan: 'BAR', retainRates: 'no' as const,
+          cmsSend: false, cmsMessageId: '', cmsRecipient: '', bookerContact: '+2782123456783' } };
+      const view = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: CONFIRMATION,
+        arrival: request.arrival, fields: { ...request.changes, bookerContact: '+[card ••••6783]' },
+        cloudAmend: { bound: true } }, before: null, snapshot: null, grant: null, run: null, needsCheck: false };
+      const cloud = { hmsApproval: { cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
+        bindCloudAmend: { mutate: vi.fn().mockResolvedValue({ status: 'bound', formDigest: DIGEST,
+          previewDigest: DIGEST, readAt: '2026-10-12T00:00:00.000Z' }) },
+        cloudAmendState: { query: vi.fn(async () => view) }, approveCloudAmend: { mutate: vi.fn() },
+        reviewCloudAmend: { mutate: vi.fn() }, cloudAmendEvidence: { query: vi.fn() } } };
+      const amend = await cloudAmendClientFromTrpc(cloud, request, {
+        transportId: 'mailbox-a', signal: new AbortController().signal, isCurrent: () => true,
+      });
+      expect(await amend?.prepare()).toBe(true);
+      expect(await amend?.approval.writeState({ workItemId: RUN_ID })).toMatchObject({ formDigest: DIGEST });
+      view.formDigest = 'b'.repeat(64);
+      await expect(amend?.approval.writeState({ workItemId: RUN_ID })).rejects.toThrow('state_changed');
+      amend?.dispose();
     } finally {
       setMailCacheScope(previous);
     }
@@ -2189,7 +2211,9 @@ describe('AmendLookupPanel amend form', () => {
   it('reviews the selected HMS booking locally without calling either amend route', async () => {
     capabilities.paneSave = true;
     capabilities.paneSaveMode = 'lab';
-    const preview = vi.fn(), commit = vi.fn(), findStay = vi.fn().mockResolvedValue(unpaidFound());
+    const preview = vi.fn(), commit = vi.fn(), findStay = vi.fn().mockResolvedValue(found({
+      guaranteeType: 'Guaranteed By Agent', depositReceived: '20',
+    }));
     const trpc = amendTrpc(findStay, preview, commit);
     const session = sessionWith({ ...AMEND, requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
     session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
@@ -2197,17 +2221,19 @@ describe('AmendLookupPanel amend form', () => {
       ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }] }} />);
     await pressFind();
     const form = await screen.findByTestId('amend-form');
+    expect(screen.queryByTestId('amend-payment-banner')).toBeNull();
     fireEvent.change(within(form).getByLabelText('Requested adults'), { target: { value: '3' } });
     fireEvent.change(within(form).getByLabelText('Requested children'), { target: { value: '1' } });
     fireEvent.change(within(form).getByLabelText('Requested child ages'), { target: { value: '6' } });
-    fireEvent.change(screen.getByLabelText('Rate plan to review in HMS'), { target: { value: 'CORP' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
-    const summary = await screen.findByTestId('amend-local-summary');
-    expect(within(summary).getByText('Adults: 3')).toBeTruthy();
-    expect(within(summary).getByText('Child ages: 6')).toBeTruthy();
-    expect(within(summary).getByText('Rate plan: CORP')).toBeTruthy();
-    expect(within(summary).getByText('Retain current rate: Yes')).toBeTruthy();
-    expect(screen.getByText(/has not checked availability or the new price/)).toBeTruthy();
+    expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
+    expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
+    expect(within(screen.getByLabelText('Rate plan')).getByRole('option',
+      { name: 'Corporate (CORP)', selected: true })).toBeTruthy();
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy();
+    expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
     expect(trpc.queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1' }),
       { context: { activeTransportId: 't1' } });
@@ -2240,23 +2266,21 @@ describe('AmendLookupPanel amend form', () => {
     const view = render(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-1', 7)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     fireEvent.change(await screen.findByLabelText('Requested adults'), { target: { value: '3' } });
-    fireEvent.change(screen.getByLabelText('Rate plan to review in HMS'), { target: { value: 'CORP' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
 
     view.rerender(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect(within(screen.getByLabelText('Rate plan to review in HMS')).getByRole('option',
-      { name: /^Current rate plan/, selected: true })).toBeTruthy();
+    expect(within(screen.getByLabelText('Rate plan')).getByRole('option', { name: 'BAR', selected: true })).toBeTruthy();
     expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
-      { name: 'Not chosen', selected: true })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Rate plan to review in HMS'), { target: { value: 'CORP' } });
+      { name: 'No', selected: true })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
 
     view.rerender(<AmendLookupPanel session={makeSession('57291631-1', 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect(within(screen.getByLabelText('Rate plan to review in HMS')).getByRole('option',
-      { name: /^Current rate plan/, selected: true })).toBeTruthy();
+    expect(within(screen.getByLabelText('Rate plan')).getByRole('option', { name: 'BAR', selected: true })).toBeTruthy();
   });
 
   it('hides the local editor when its selected email is no longer current', async () => {

@@ -16,6 +16,7 @@ import { installPageRequestFence } from '../tooling/hms-cloud/page-request-fence
 import {
   currentLabtestRecord,
   unchangedLabtestBusinessParties,
+  unchangedLabtestRecord,
 } from '../tooling/hms-cloud/labtest-record.mjs';
 import { blankSavedPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
 import { installReadOnlyGuard } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
@@ -39,7 +40,7 @@ const data = {
   track: state.track, reservationnote: expected.note, udfchkbox04: '0', udfchar13: '', emailaddress: '',
   guaranteetype: 'NGI', pagemode: 'view', savecctoprofile: '0', savesettlementcctoprofile: '0',
   caller: 'Synthetic Booker', udfchar06: 'Synthetic contact', child1: '0', child2: '1', child3: '0',
-  udfchar02: 'unchanged', extId: 'ignored',
+  udfchar02: '0.00', grandtotal: '100.00', extId: 'ignored',
 };
 const baseline = { values: { ...data }, data: { ...data } };
 const contactCases = [
@@ -110,7 +111,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     expect(matchesLabtestBookerContactAmendRequest(requestFor(partial), requestFrame, expected, state, baseline, changes))
       .toBe(false);
 
-    body.set('extId', 'refreshed native field');
+    body.set('grandtotal', '110.00');
     expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
       .toBe(true);
     body.set('roomtype', 'OTHER');
@@ -227,6 +228,10 @@ describe('saved Labtest Booker contact amendment guards', () => {
     expect(staged.data.caller).toBe(baseline.data.caller);
     expect(staged.data.udfchar06).toBe(baseline.data.udfchar06);
     expect(matchesLabtestBookerContactDraft(baseline, staged, changes)).toBe(true);
+    expect(unchangedLabtestRecord(baseline, staged, changes)).toBe(true);
+    expect(unchangedLabtestRecord(baseline, { ...staged, values: { ...baseline.values } }, changes)).toBe(false);
+    expect(unchangedLabtestRecord(baseline, { ...staged, data: { ...staged.data, ...changes } }, changes)).toBe(true);
+    expect(unchangedLabtestRecord(baseline, { ...staged, data: { ...staged.data, caller: 'Other' } }, changes)).toBe(false);
 
     expect(matchesLabtestBookerContactDraft(baseline, {
       ...staged,
@@ -234,7 +239,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     }, changes)).toBe(false);
     expect(matchesLabtestBookerContactDraft(baseline, {
       ...staged,
-      dirtyFields: ['caller', 'udfchar06', 'extId'],
+      dirtyFields: ['caller', 'udfchar06', 'grandtotal'],
     }, changes)).toBe(true);
     expect(matchesLabtestBookerContactDraft(baseline, staged, { ...changes, toString: 'blocked' })).toBe(false);
   });
@@ -272,7 +277,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
       };
       expect(matchesLabtestContactAmendDraft(baseline, collateralRecord, field, value)).toBe(false);
 
-      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'extId'] };
+      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'grandtotal'] };
       expect(matchesLabtestContactAmendDraft(baseline, collateralDirtyField, field, value)).toBe(true);
       expect(matchesLabtestContactAmendDraft(baseline, { ...staged, dirtyFields: [] }, field, value)).toBe(true);
     }
