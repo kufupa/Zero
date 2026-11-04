@@ -414,7 +414,7 @@ describe('BookingVoucherCard write card', () => {
     paneWrite.view = viewWith({ form: attachForm, snapshot: null, filingAvailable: true });
     const session = { ...emailSession('create_booking'),
       staffSource: { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) } };
-    const { rerender } = render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
+    const { rerender, unmount } = render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
       syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
       mailboxScope="actor:session:mailbox-a" />);
     await waitFor(() => expect(paneWrite.calls.length).toBe(1));
@@ -427,6 +427,20 @@ describe('BookingVoucherCard write card', () => {
     await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     expect(paneWrite.calls.length).toBe(2);
+
+    // A completed upload remains reviewable after reopening, without enabling a new Go.
+    unmount();
+    paneWrite.view = viewWith({ form: attachForm, filingAvailable: true,
+      grant: { grantId: 'grant-1', consumed: true, fingerprintMatches: true }, run: runWith('succeeded') });
+    const reopened = render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
+      mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
+    expect(await screen.findByRole('button', { name: 'Review OK' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    reopened.rerender(<BookingVoucherCard session={{ ...session, staffSource: null }} internetMessageId="selected@example.test"
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
+      mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Review OK' })).toBeNull());
   });
 
   it('offers filing on amendment mail and shows only the prepared filing for approval', async () => {

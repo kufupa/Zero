@@ -40,6 +40,7 @@ export function ApproveCard({
   requireStoredWrite = false,
   requiredAction,
   filingApprovalAllowed = true,
+  filingReviewAllowed = true,
   filingApprovalDigest,
 }: {
   client: HmsApprovalClient | null;
@@ -57,6 +58,7 @@ export function ApproveCard({
   /** Keep the filing card separate from another action on the same work item. */
   requiredAction?: 'attach_document';
   filingApprovalAllowed?: boolean;
+  filingReviewAllowed?: boolean;
   filingApprovalDigest?: string | null;
 }) {
   if (!client) return null;
@@ -71,6 +73,7 @@ export function ApproveCard({
       requiredAction={requiredAction}
       writesEnabled={writesEnabled}
       filingApprovalAllowed={filingApprovalAllowed}
+      filingReviewAllowed={filingReviewAllowed}
       filingApprovalDigest={filingApprovalDigest}
     />
   );
@@ -143,6 +146,7 @@ function LiveWriteCard({
   requiredAction,
   writesEnabled,
   filingApprovalAllowed,
+  filingReviewAllowed,
   filingApprovalDigest,
 }: {
   client: HmsApprovalClient;
@@ -154,6 +158,7 @@ function LiveWriteCard({
   requiredAction?: 'attach_document';
   writesEnabled: boolean;
   filingApprovalAllowed: boolean;
+  filingReviewAllowed: boolean;
   filingApprovalDigest?: string | null;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
@@ -175,6 +180,8 @@ function LiveWriteCard({
     (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
   const effectiveWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
     (view?.form.action !== 'attach_document' || filingCurrent);
+  const reviewWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+    (view?.form.action !== 'attach_document' || filingReviewAllowed);
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
       {!effectiveWritesEnabled ? <p className={writeClasses.note}>
@@ -191,6 +198,7 @@ function LiveWriteCard({
             view={view}
             onChanged={refresh}
             writesEnabled={effectiveWritesEnabled}
+            reviewWritesEnabled={reviewWritesEnabled}
           />
         </>
       ) : failed ? (
@@ -237,12 +245,14 @@ function WriteBody({
   view,
   onChanged,
   writesEnabled,
+  reviewWritesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   view: HmsWriteView;
   onChanged: () => void;
   writesEnabled: boolean;
+  reviewWritesEnabled: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -281,7 +291,7 @@ function WriteBody({
           workItemId={workItemId}
           run={view.run}
           onChanged={onChanged}
-          writesEnabled={writesEnabled}
+          writesEnabled={reviewWritesEnabled}
         />
       ) : null}
     </>

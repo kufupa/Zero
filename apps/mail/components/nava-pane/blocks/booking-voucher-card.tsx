@@ -113,6 +113,7 @@ export function BookingVoucherCard({
           requireStoredWrite
           requiredAction={amendment ? 'attach_document' : undefined}
           filingApprovalAllowed={filingSourceCurrent && preparedFiling?.scope === filingScope}
+          filingReviewAllowed={filingSourceCurrent}
           filingApprovalDigest={preparedFiling?.scope === filingScope ? preparedFiling.digest : null}
         />
       ) : null}
