@@ -123,6 +123,7 @@ export function parseFieldPath(path: string): FieldPath | null {
 export const STAY_COMMITS_KEY = 'stays';
 export const PANE_STAY_ALREADY_BOOKED = 'pane_stay_already_booked';
 const STAY_ID_PATTERN = new RegExp(`^${ID}$`);
+const STAY_COMMIT_ID_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
 const STAY_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STAY_SHOT_NAME = /^[a-z][a-z0-9-]{0,40}\.png$/;
 const STAY_SHOT_SHA256 = /^[a-f0-9]{64}$/;
@@ -226,7 +227,7 @@ export function stayCommitsOf(state: WorkState): Record<string, StayCommitRecord
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, StayCommitRecord> = {};
   for (const [stayId, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!STAY_ID_PATTERN.test(stayId)) continue;
+    if (!STAY_COMMIT_ID_PATTERN.test(stayId)) continue;
     const parsed = parseStayCommit(value);
     if (parsed) out[stayId] = parsed;
   }
@@ -321,7 +322,7 @@ export function withStayActionResult(
     screenshotRef: StayCommitScreenshotRef | null;
   },
 ): WorkState {
-  if (!STAY_ID_PATTERN.test(stayId)) return state;
+  if (!STAY_COMMIT_ID_PATTERN.test(stayId)) return state;
   const existing = stayCommitOf(state, stayId);
   const stays = state[STAY_COMMITS_KEY];
   const raw = stays && typeof stays === 'object' && !Array.isArray(stays)
@@ -2249,7 +2250,7 @@ export async function recordStayCommit(
     fence?: CreateFenceIdentity;
   },
 ): Promise<StayCommitWriteResult> {
-  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  if (!STAY_COMMIT_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ state: workItem.state })
@@ -2285,7 +2286,7 @@ export async function recordStayActionResult(
     screenshotRef: StayCommitScreenshotRef | null;
   },
 ): Promise<{ status: 'recorded' } | { status: 'not_found' }> {
-  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  if (!STAY_COMMIT_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ state: workItem.state })

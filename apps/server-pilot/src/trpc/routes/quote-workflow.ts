@@ -106,13 +106,13 @@ export const paneStayInput = z.object({
     .optional(),
   stayId: z
     .string()
-    .regex(/^[A-Za-z0-9_-]{1,40}$/)
+    .regex(/^[A-Za-z0-9_-]{1,120}$/)
     .optional(),
   workItemId: z.string().uuid().optional(),
   createSelection: cloudPreviewSelection.optional(),
 });
 const batchRoomInput = paneStayInput.extend({
-  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), workItemId: z.string().uuid(),
+  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/), workItemId: z.string().uuid(),
   createSelection: cloudPreviewSelection, previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
 });
 const paneCloudBatchInput = z.discriminatedUnion('kind', [

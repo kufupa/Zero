@@ -1160,12 +1160,13 @@ describe('Cloud create controls', () => {
       arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
       guaranteeType: 'NGI', childAges: [] });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
-    draft.draft.rooms[1]!.groupId = 'g2';
+    const otherRowId = '12345678-1234-4234-8234-123456789abc';
+    draft.draft.rooms[1]!.groupId = otherRowId;
     draft.draft.rooms[1]!.roomIndex = 1;
     Object.assign(draft.draft.rooms[1]!.request, { roomType: 'SKNG', adults: 2 });
     const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
       arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
-    const otherGroup: StayGroupRequirement = { ...group, id: 'g2', adults: 2 };
+    const otherGroup: StayGroupRequirement = { ...group, id: otherRowId, adults: 2 };
     const workItemId = '22222222-2222-4222-8222-222222222222';
     render(<BookingCards draft={draft} groups={[group, otherGroup]} session={quotedSession(draft)} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
@@ -1185,8 +1186,8 @@ describe('Cloud create controls', () => {
     expect(started).toMatchObject({ kind: 'start', rooms: [
       { stayId: 'room_g1_1', workItemId, confirmationSendMail: false,
         createSelection: { identity: { stayId: 's1', rowId: 'g1', roomIndex: 1 } } },
-      { stayId: 'room_g2_1', workItemId, confirmationSendMail: false, adults: 2, roomType: 'SKNG',
-        createSelection: { identity: { stayId: 's1', rowId: 'g2', roomIndex: 1 } } },
+      { stayId: `room_${otherRowId}_1`, workItemId, confirmationSendMail: false, adults: 2, roomType: 'SKNG',
+        createSelection: { identity: { stayId: 's1', rowId: otherRowId, roomIndex: 1 } } },
     ] });
     expect(commit.mock.calls[0]?.[0]).not.toHaveProperty('parentStayId');
     if (result !== 'uncertain') {
@@ -1216,12 +1217,14 @@ describe('Cloud create controls', () => {
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
     const draft = draftReady();
     const template = draft.draft.rooms[0]!;
+    const rowId = '12345678-1234-4234-8234-123456789abc';
+    template.groupId = rowId;
     draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
       request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
         arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
         guaranteeType: 'NGI', childAges: [] } }));
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
-    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 4,
+    const group: StayGroupRequirement = { ...g1, id: rowId, stayId: 's1', quantity: 4,
       arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
     const workItemId = '22222222-2222-4222-8222-222222222222';
     let view = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
@@ -1241,7 +1244,8 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(room(0).getByText(/HMS may have saved this booking/)).toBeDefined());
     const original = commit.mock.calls[0]![2];
     expect(original).toMatchObject({ kind: 'start', rooms: [
-      { stayId: 'room_g1_1' }, { stayId: 'room_g1_2' }, { stayId: 'room_g1_3' }, { stayId: 'room_g1_4' },
+      { stayId: `room_${rowId}_1` }, { stayId: `room_${rowId}_2` },
+      { stayId: `room_${rowId}_3` }, { stayId: `room_${rowId}_4` },
     ] });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
     expect(go.disabled).toBe(true);
@@ -1250,7 +1254,7 @@ describe('Cloud create controls', () => {
     if (!original || original.kind !== 'start') throw new Error('expected original batch');
     const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
       firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
-    const savedStays = { room_g1_1: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
+    const savedStays = { [`room_${rowId}_1`]: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
       cloudCreateHold: { target, batch: { id: original.id, rooms: original.rooms.map((item) => ({
         stayId: item.stayId, target: { ...target, firstName: item.firstName, lastName: item.lastName, arrival: item.arrival },
       })) } } } };
@@ -1282,7 +1286,7 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(3));
     const separate = commit.mock.calls[1]![2];
     expect(separate).toMatchObject({ kind: 'start', rooms: [
-      { stayId: 'room_g1_3', workItemId }, { stayId: 'room_g1_4', workItemId },
+      { stayId: `room_${rowId}_3`, workItemId }, { stayId: `room_${rowId}_4`, workItemId },
     ] });
     expect(separate?.id).not.toBe(original?.id);
     expect(commit.mock.calls[2]![2]).toMatchObject({ kind: 'continue', id: separate?.id, index: 1 });

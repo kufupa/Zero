@@ -132,11 +132,12 @@ describe('mounted read-only Cloud preview', () => {
       guestCandidates: [{ nativeId: '123', city: 'Pretoria' }] });
     expect((result as { guestCandidates?: unknown[] }).guestCandidates?.[0]).not.toHaveProperty('email');
     const rows = h.row.extraction.payload.stays[0].rows;
-    rows.push({ ...rows[0], id: 'r2', roomType: 'Standard King', adultsPerRoom: 2 });
+    const otherRowId = '12345678-1234-4234-8234-123456789abc';
+    rows.push({ ...rows[0], id: otherRowId, roomType: 'Standard King', adultsPerRoom: 2 });
     expect(await caller().quoteWorkflow.previewStay({ ...request(), stayId: 's1_1' }))
       .toMatchObject({ status: 'refused', reason: 'cloud_create_scope_changed' });
     const other = request();
-    other.stayId = 'room_r2_1'; other.createSelection.identity.rowId = 'r2';
+    other.stayId = `room_${otherRowId}_1`; other.createSelection.identity.rowId = otherRowId;
     expect(await caller().quoteWorkflow.previewStay(other)).toMatchObject({ reason: 'guest_choice_required' });
   });
 

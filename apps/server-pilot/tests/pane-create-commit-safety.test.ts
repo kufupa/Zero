@@ -826,17 +826,20 @@ describe('mounted Cloud create route', () => {
   it('one Go captures both previews and commits separately only after a trusted sibling read', async () => {
     (h.payload.stays as any)[0].totalRooms = 2;
     (h.payload.stays as any)[0].rows[0].rooms = 2;
+    const rowId = '12345678-1234-4234-8234-123456789abc';
+    (h.payload.stays as any)[0].rows[0].id = rowId;
     const laterStay = structuredClone((h.payload.stays as any)[0]);
     laterStay.id = 's2'; laterStay.rows[0].id = 'r2';
     (h.payload.stays as any[]).push(laterStay);
-    const first = request('123');
-    const second = { ...request('123'), stayId: 's1_2',
-      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId: 'r1', roomIndex: 2 } } };
+    const first = { ...request('123'), stayId: `room_${rowId}_1`,
+      createSelection: { ...request('123').createSelection, identity: { stayId: 's1', rowId, roomIndex: 1 } } };
+    const second = { ...first, stayId: `room_${rowId}_2`,
+      createSelection: { ...first.createSelection, identity: { stayId: 's1', rowId, roomIndex: 2 } } };
     const third = { ...request('123'), stayId: 's2_1',
       createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 1 } } };
     const fourth = { ...request('123'), stayId: 's2_2',
       createSelection: { ...request('123').createSelection, identity: { stayId: 's2', rowId: 'r2', roomIndex: 2 } } };
-    const firstDigest = await prepared();
+    const firstDigest = (await caller().quoteWorkflow.previewStay(first)).previewDigest!;
     const secondPreview = await caller().quoteWorkflow.previewStay(second);
     const secondDigest = secondPreview.previewDigest!;
     const batchId = randomUUID();
@@ -877,7 +880,7 @@ describe('mounted Cloud create route', () => {
         .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '123456-2' });
       expect(dispatches).toBe(2);
       expect(verifier).toHaveBeenCalledOnce();
-      expect(h.state).toMatchObject({ stays: { s1_1: { status: 'booked' }, s1_2: { status: 'booked' } } });
+      expect(h.state).toMatchObject({ stays: { [first.stayId]: { status: 'booked' }, [second.stayId]: { status: 'booked' } } });
       paneCloudPreviewLoaders.run = originalRun; paneCloudPreviewLoaders.verifySiblings = originalVerify;
       expect(await caller().quoteWorkflow.commitStay({ ...third, previewDigest: thirdDigest, batch: laterBatch }))
         .toMatchObject({ status: 'ok', outcome: 'committed' });

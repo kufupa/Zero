@@ -327,7 +327,7 @@ function cloudStopsFromSaved(savedStays: Record<string, SavedStayCommit> | undef
         !Array.isArray(hold.batch.rooms) || hold.batch.rooms.length < 2 || hold.batch.rooms.length > 8) return [];
     const members: CloudCreateStop['members'] = [];
     for (const room of hold.batch.rooms) {
-      if (!room || !/^[A-Za-z0-9_-]{1,40}$/.test(room.stayId) ||
+      if (!room || !/^[A-Za-z0-9_-]{1,120}$/.test(room.stayId) ||
           room.target?.propertyCode !== 'HRCEN' || room.target.kind !== 'create') return [];
       const memberTarget = cloudCreateTargetKey(room.target);
       if (!memberTarget || members.some((member) => member.stayId === room.stayId)) return [];
@@ -1455,7 +1455,7 @@ export function BookingCards({
     const selectedId = group?.stayId;
     if (!workItemId || !source || !/^[a-f0-9]{64}$/.test(source.sourceHash) || !source.messageId.trim() ||
         !source.threadId.trim() || !selectedId || !stableId.test(selectedId) || !stableId.test(group?.id ?? '') ||
-        !stableId.test(stayIdForRoom(room, groups))) missing.push('selected email and saved booking request');
+        !/^[A-Za-z0-9_-]{1,120}$/.test(stayIdForRoom(room, groups))) missing.push('selected email and saved booking request');
     const stay = !missing.length && built.stay && source && selectedId && group
       ? { ...built.stay, childAges: built.stay.childAges ?? [], ...(propertyCode ? { propertyCode } : {}), createSelection: {
           source, identity: { stayId: selectedId, rowId: group.id, roomIndex: room.roomIndex },

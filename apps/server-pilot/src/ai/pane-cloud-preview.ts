@@ -122,7 +122,7 @@ const PAST_BATCHES = 'cloudCreatePastBatches';
 const BATCH_HOLDS = 'cloudCreateBatchHolds';
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const batchSchema = z.object({ version: z.literal('pane-cloud-batch/v1'), id: z.string().uuid(),
-  rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), grant: grantSchema }).strict()).min(2).max(8),
+  rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/), grant: grantSchema }).strict()).min(2).max(8),
   digest }).strict();
 type StoredBatch = z.infer<typeof batchSchema>;
 type BatchSibling = { confirmation: string; approvedRequest: Record<string, unknown>; requestDigest: string };
@@ -614,7 +614,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
 /** Consume one reviewed grant, write one fenced stay, and require fresh readback. */
 export async function commitPaneCloud(db: DB, input: Input, previewDigest: string): Promise<PaneStayResult> {
   if (!cloudPreviewSelection.safeParse(input.selection).success || !z.string().uuid().safeParse(input.workItemId).success ||
-      !/^[A-Za-z0-9_-]{1,40}$/.test(input.stayId) || !matchesRoomId(input.stayId, input.selection.identity)) {
+      !/^[A-Za-z0-9_-]{1,120}$/.test(input.stayId) || !matchesRoomId(input.stayId, input.selection.identity)) {
     return refused('pane_preview_binding_required');
   }
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });

@@ -129,7 +129,8 @@ async function neverDispatchedRequest() {
 describe('shared Labtest dispatch intent', () => {
   it('resolves only a route-proven never-dispatched create and keeps its grant spent', async () => {
     const { request, proof } = await neverDispatchedRequest();
-    const fake = historyDb(), first = { ...input(), requestDigest: nativeCreateSaveDigest(request) };
+    const fake = historyDb(), first = { ...input(), stayId: `room_${'a'.repeat(36)}_1`,
+      requestDigest: nativeCreateSaveDigest(request) };
     const handle = await claimHmsLabtestDispatch(fake.db, first, async () => {});
     await expect(resolveNeverDispatchedCreate(fake.db, handle, {}, request, async () => {}))
       .rejects.toMatchObject({ reason: 'invalid' });
