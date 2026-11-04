@@ -10,6 +10,9 @@ const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
 const VALIDATE = '/web/base/fieldvalidate';
 const CHANGE = '/web/base/OSRESV.HDR.rateplanchange';
+const CHECK_AVAILABILITY = '/web/base/OSRESV.HDR.getcheckavailability';
+// Exact captured HRCEN new-draft form contract; unknown or duplicate fields fail closed.
+const CHECK_AVAILABILITY_FIELD_COUNT = 112;
 const ASSET = '/web/resources/inforhms/images/toolbar/add-ons.svg';
 const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 const busy = new WeakSet();
@@ -56,6 +59,8 @@ async function readDraft(page) {
     const bound = form?.el?.dom && [confirmation,agency,rate,arAccount,guarantee,first,last,arrival,departure,guestId]
       .every(element => form.el.dom.contains(element) && component(element)?.up?.('form') === form);
     const data = bound && form.getRecord?.()?.data, keys = data && Object.keys(data);
+    let formData = null;
+    try { formData = form?.getForm?.()?.getValues?.() || null; } catch { /* Availability admission fails closed without a form snapshot. */ }
     const unique = key => keys && Object.hasOwn(data,key) && keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
     const value = key => unique(key) ? String(data[key] ?? '').trim() : null;
     const exact = (key,expected) => unique(key) && value(key) === expected;
@@ -79,6 +84,7 @@ async function readDraft(page) {
       arAccountName:arAccount.value,arAccountNativeName:arCmp?.getValue?.() ?? null,identity,
       rateValue:cmp?.getValue?.() ?? null,rateSubmit:submit?.rateplan ?? null,rateErrors:cmp?.getActiveErrors?.() || [],
       rateInvalid:rate.getAttribute('aria-invalid'),windows:windows.length,
+      modelData:data ? Object.fromEntries(Object.entries(data)) : null, formData,
       fields:[...root.querySelectorAll('input,textarea,select')].filter(element => visible(element) && !['hidden','password'].includes(element.type))
         .map(element => ({id:element.id || null,name:element.name || null,
           label:element.closest('.x-form-item,.x-field')?.querySelector('label')?.innerText?.trim() || null,
@@ -122,7 +128,7 @@ function proofsCurrent(page, proof) {
   return (!proof.guest || isVerifiedLabtestProfileCurrent(page,{session:proof.session,...proof.guest})) &&
     (!proof.ar || isVerifiedArSelectionCurrent(page,{session:proof.session,...proof.ar}));
 }
-const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
+const draftFingerprint = draft => fingerprint([draft.fields,draft.identity,draft.modelData,draft.formData]);
 function changedFields(before, after) {
   const key = (field,index) => field.id || `${field.name || ''}:${index}`;
   const a = new Map(before.map((field,index) => [key(field,index),field]));
@@ -189,6 +195,111 @@ function rateChangeRequest(page, request, code, dates, sessionId, draft) {
       keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return false;
   return !draftIdIssue(request,clean(draft.guestId),dates.ar);
 }
+function formPostValue(value, name) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (Array.isArray(value)) return value.map(item => formPostValue(item, name)).join(',');
+  if (name === 'sessionID' && Object.keys(value).length === 1 && Object.hasOwn(value, 'sessionID')) {
+    return formPostValue(value.sessionID, name);
+  }
+  return null;
+}
+function availabilityFields(code, dates, draft, expected) {
+  const party = expected.parties || {};
+  return {
+    ONLY_DATA_REQUIRED: 'true', PKID: `@[EMPTY]#@[EMPTY]#${PROPERTY}#`, action: '', pagemode: 'display',
+    propertycode: PROPERTY, status: 'New', confirmationnumber: '', recordid: '', reservationid: '',
+    reservationstayid: '', reservationshareid: '', guestnameinfoid: '', guestid: clean(draft.guestId),
+    firstname: clean(draft.first), lastname: clean(draft.last), arrivaldate: dates.arrival.wire,
+    departuredate: dates.departure.wire, adults: String(expected.adults), children: String(expected.childCount),
+    roomtype: clean(expected.roomType), rateplan: code, track: expected.track.display, trackcode: expected.track.code,
+    guaranteetype: String(expected.guaranteeType), sourceofbus: clean(expected.source?.nativeCode),
+    sourceofbusinessdesc: clean(expected.source?.description), udfchkbox04: '0', guestoptin4: '0',
+    newprofileclick: '', reqguestprofilelookup: '', isafterreservationsave: '', createinactiveprofileflag: '0',
+    linkedprofileflag: '0', savecctoprofile: '0', savesettlementcctoprofile: '0', ignoreallrestrictions: '0',
+    usergroupignoreallrestrictionschecked: '0', bookingsessionid: dates.session,
+    ...(expected.cmsMessageId == null ? {} : {udfchar09: clean(expected.cmsMessageId)}),
+    ...(expected.cmsRecipient == null ? {} : {udfchar13: clean(expected.cmsRecipient)}),
+    reservationnote: clean(expected.note),
+    taid1: clean(party.agency?.nativeId), ta1: clean(party.agency?.name),
+    companyid: clean(party.organization?.nativeId), company: clean(party.organization?.name),
+    araccountid: dates.ar?.accountId || '', arprofileid: dates.ar?.profileId || '',
+    araccountname: dates.ar ? clean(draft.arAccountName) : '', groupname: '', bacontract: '',
+  };
+}
+function availabilitySnapshotsMatch(draft, expectedFields) {
+  const snapshots = [draft.formData, draft.modelData].filter(snapshot =>
+    snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot));
+  if (snapshots.length !== 2) return false;
+  for (const [key, value] of Object.entries(expectedFields)) {
+    for (const snapshot of snapshots) {
+      const names = Object.keys(snapshot).filter(name => name.toLowerCase() === key.toLowerCase());
+      if (names.length > 1) return false;
+      if (!names.length) continue;
+      const actual = formPostValue(snapshot[names[0]], names[0]);
+      if (actual === null || actual !== value) return false;
+    }
+  }
+  return true;
+}
+function createAvailabilityRequest(page, request, code, dates, draft, expected) {
+  if (!requestUrl(request,CHECK_AVAILABILITY)) return false;
+  try {
+    const frame = request.frame();
+    if (frame.page() !== page || frame !== page.mainFrame()) return false;
+  } catch { return false; }
+  if (!draft.formData || typeof draft.formData !== 'object' || Array.isArray(draft.formData) ||
+      !draft.modelData || typeof draft.modelData !== 'object' || Array.isArray(draft.modelData) ||
+      !expected || expected.propertyCode !== PROPERTY || !expected.guest ||
+      clean(expected.guest.nativeId) !== clean(draft.guestId) || clean(expected.guest.firstName) !== clean(draft.first) ||
+      clean(expected.guest.lastName) !== clean(draft.last) || !expected.track?.display || !expected.track?.code ||
+      !Number.isInteger(expected.adults) || expected.adults < 1 || !Number.isInteger(expected.childCount) || expected.childCount < 0 ||
+      !expected.roomType || !expected.guaranteeType || !expected.source?.nativeCode || !expected.source?.description ||
+      !dates.session) return false;
+  const entries = [...new URLSearchParams(request.postData() || '')];
+  const keys = entries.map(([key]) => key);
+  if (entries.length !== CHECK_AVAILABILITY_FIELD_COUNT ||
+      new Set(keys.map(key => key.toLowerCase())).size !== keys.length) return false;
+  const fixed = availabilityFields(code, dates, draft, expected);
+  const body = new URLSearchParams(request.postData() || '');
+  if (Object.entries(fixed).some(([key,value]) => body.getAll(key).length !== 1 || body.get(key) !== value)) return false;
+  if (!availabilitySnapshotsMatch(draft, fixed)) return false;
+  for (const [key,value] of entries) {
+    let observed = false;
+    for (const snapshot of [draft.formData,draft.modelData]) {
+      const names = Object.keys(snapshot).filter(name => name.toLowerCase() === key.toLowerCase());
+      if (names.length > 1) return false;
+      if (names.length) {
+        observed = true;
+        const actual = formPostValue(snapshot[names[0]],names[0]);
+        if (actual === null || actual !== value) return false;
+      }
+    }
+    if (!observed && !Object.hasOwn(fixed,key)) return false;
+    if (/(?:guest|profile|reservation|record|stay|share|nameinfo).*id/i.test(key) &&
+        !['guestid','arprofileid'].includes(key.toLowerCase()) && value.trim()) return false;
+    if (key.toLowerCase() === 'linkprofileflag' && !['','0'].includes(value)) return false;
+    if (key.toLowerCase() === 'arprofileid' && value !== (dates.ar?.profileId || '')) return false;
+  }
+  return true;
+}
+function fieldValue(fields, name) {
+  const matches = (fields || []).filter(field => field.name === name);
+  return matches.length === 1 ? clean(matches[0].value) : '';
+}
+function validateAvailabilityResponse(response) {
+  if (response.status() !== 200) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+  return response.text().then(body => {
+    const data = parseResponse(body);
+    return Boolean(data);
+  });
+}
+function positivePrice(value) {
+  const normalized = clean(value).replace(/^\s*(?:ZAR|R)\s*/i,'').replace(/\s*(?:ZAR)\s*$/i,'').replace(/[ ,]/g,'');
+  return /^\d+(?:\.\d{1,4})?$/.test(normalized) && Number(normalized) > 0;
+}
 
 // Normalize the vendor's data-only object literal without executing it.
 function parseResponse(body) {
@@ -244,7 +355,7 @@ function bounded(promise, ms, issue) {
 }
 
 /** Select an explicit current code on a verified unsaved draft, without saving. */
-export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {}, createAuthority = {}) {
+export async function selectGuestStayRatePlan(page, { code, guestProfileId, createDraft } = {}, createAuthority = {}) {
   if (guestProfileId !== undefined && (typeof guestProfileId !== 'string' || !/^\d{1,100}$/.test(guestProfileId))) {
     return {outcome:'input_gap',issue:'GUEST_PROFILE_ID_INVALID'};
   }
@@ -252,10 +363,23 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
   if (typeof code !== 'string' || !code.trim() || code !== code.trim() || code.length > 100 || /[\r\n]/.test(code)) {
     return {outcome:'input_gap',issue:'RATE_CODE_REQUIRED'};
   }
+  const requireM1CreateAvailability = createAuthority.requireM1CreateAvailability === true;
+  const approveM1CreateAvailabilityRequest = createAuthority.authorizeM1CreateAvailabilityRequest;
+  if (requireM1CreateAvailability && (typeof approveM1CreateAvailabilityRequest !== 'function' || !createDraft)) {
+    return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_AUTHORITY_REQUIRED'};
+  }
+  if (requireM1CreateAvailability && (createDraft.propertyCode !== PROPERTY || !createDraft.guest ||
+      clean(createDraft.guest.nativeId) !== guestId || !clean(createDraft.guest.firstName) || !clean(createDraft.guest.lastName) ||
+      !Number.isInteger(createDraft.adults) || createDraft.adults < 1 || !Number.isInteger(createDraft.childCount) ||
+      createDraft.childCount < 0 || !clean(createDraft.roomType) || !clean(createDraft.track?.display) || !clean(createDraft.track?.code) ||
+      !clean(createDraft.guaranteeType) || !clean(createDraft.source?.nativeCode) || !clean(createDraft.source?.description))) {
+    return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
+  }
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
   if (busy.has(page)) return {outcome:'execution_failure',issue:'RATE_SELECTION_IN_PROGRESS'};
   busy.add(page);
-  let nativeDialog = false, attempted = false, unsupportedId = null, before = null, after = null, guard = null, fence = null, scope = null;
+  let nativeDialog = false, attempted = false, availabilityCheckArmed = false, unsupportedId = null,
+    before = null, after = null, guard = null, fence = null, scope = null;
   const blocked = [], requests = new Map(), responses = [], sessions = [];
   const onDialog = () => {nativeDialog = true;};
   const onRequest = request => {
@@ -278,7 +402,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
   };
   page.on('dialog',onDialog); page.on('request',onRequest); page.on('response',onResponse);
   try {
-    fence = await installPageRequestFence(page,[CHANGE]);
+    fence = await installPageRequestFence(page,[CHANGE,CHECK_AVAILABILITY]);
     scope = fence.open();
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const dates = await bounded(checkedDraft(before,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
@@ -311,8 +435,14 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
       if (!Array.from(requests.values()).includes('validation') && validationRequest(request,code,dates)) kind = 'validation';
       else if (Array.from(requests.values()).includes('validation') && !Array.from(requests.values()).includes('change') &&
           rateChangeRequest(page,request,code,dates,sessionId,before)) kind = 'change';
+      else if (requireM1CreateAvailability && availabilityCheckArmed && !Array.from(requests.values()).includes('availability') &&
+          createAvailabilityRequest(page,request,code,dates,after || before,createDraft)) kind = 'availability';
       if (kind) {
         if (kind === 'change' && !scope?.allow(request)) return route.abort();
+        if (kind === 'availability') {
+          availabilityCheckArmed = false;
+          if (!scope?.allow(request) || approveM1CreateAvailabilityRequest(request) !== true) return route.abort();
+        }
         requests.set(request,kind);
         return route.fallback();
       }
@@ -353,6 +483,42 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
     if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
     await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
+    let rateAvailability = null;
+    if (requireM1CreateAvailability) {
+      const check = page.locator('a[data-qtip="Check Availability"]:visible');
+      if (await check.count() !== 1 || !await check.isEnabled().catch(() => false)) {
+        throw new Error('RATE_AVAILABILITY_CONTROL_UNAVAILABLE');
+      }
+      const responsePromise = page.waitForResponse(response => requests.get(response.request()) === 'availability',
+        { timeout: 15000 }).catch(() => null);
+      availabilityCheckArmed = true;
+      await check.click({ timeout: 5000 });
+      const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      if (!availabilityResponse) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      if (!await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED')) {
+        throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      }
+      await bounded(page.waitForLoadState('networkidle',{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
+      await bounded(page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      const availabilityResponses = responses.filter(item => item.kind === 'availability');
+      if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse || requests.size !== 3) {
+        throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      }
+      const checked = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
+      const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+      const expectedFields = availabilityFields(code,dates,checked,createDraft);
+      if (!availabilitySnapshotsMatch(checked,expectedFields) || JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
+          checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
+          checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true' ||
+          !positivePrice(fieldValue(checked.fields,'averagerate')) || !positivePrice(fieldValue(checked.fields,'totalrate'))) {
+        throw new Error('RATE_AVAILABILITY_UNVERIFIED');
+      }
+      if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
+      rateAvailability = { responseStatus:availabilityResponse.status(), averageRate:fieldValue(checked.fields,'averagerate'),
+        totalRate:fieldValue(checked.fields,'totalrate') };
+      after = checked;
+    }
     if (nativeDialog || blocked.some(item => item.method !== 'GET' || !item.originMatches || item.query || item.path !== ASSET)) {
       throw new Error(nativeDialog ? 'UNEXPECTED_DIALOG' : 'UNEXPECTED_REQUEST_BLOCKED');
     }
@@ -361,6 +527,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
       nativeCodeEvidence:'validated_row_and_draft_change_response',nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
         profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
+      ...(rateAvailability ? {rateAvailability} : {}),
       changedFields:changedFields(before.fields,after.fields),
       effects:{validationStatus:validation[0].response.status(),rateChangeStatus:change[0].response.status(),blockedRequests:blocked}};
   } catch (error) {
@@ -372,6 +539,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId } = {
       ...(blocked.length ? {blockedRequests:blocked} : {}),
       ...(before && after ? {changedFields:changedFields(before.fields,after.fields)} : {})};
   } finally {
+    availabilityCheckArmed = false;
     scope?.close();
     if (guard) await page.unroute('**/*',guard).catch(() => {});
     page.off('dialog',onDialog); page.off('request',onRequest); page.off('response',onResponse); busy.delete(page);
