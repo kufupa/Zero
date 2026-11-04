@@ -149,7 +149,7 @@ export function boundAmendRateRequest(input: {
   }
   const selectedCode = resolved('ratePlan', native.ratePlan);
   const roomCode = resolved('roomType', native.roomType);
-  const retainRates = resolved('retainRates', 'yes');
+  const retainRates = resolved('retainRates', 'no');
   const stableLookup = { ...lookup, observedAt: null };
   const rateParties = Object.fromEntries(Object.entries(lookup.parties).flatMap(([kind, party]) =>
     party.state === 'selected' ? [[kind, { nativeId: party.nativeId, name: party.name }]] : []));

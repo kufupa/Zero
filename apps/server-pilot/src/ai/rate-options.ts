@@ -123,7 +123,7 @@ export function otherBoardContractNotes(names:readonly string[],options:readonly
 
 /** Canonical pricing digest; object insertion order and display names cannot change pricing identity. */
 export function rateContextKey(context: RateContext): string {
-  const ordered = Object.fromEntries(Object.keys(context).sort().map(key => [key, context[key as keyof RateContext]]));
+  const ordered: Record<string, unknown> = Object.fromEntries(Object.keys(context).sort().map(key => [key, context[key as keyof RateContext]]));
   if (context.savedTarget) ordered.savedTarget = Object.fromEntries(Object.keys(context.savedTarget).sort().map(key =>
     [key, context.savedTarget![key as keyof NonNullable<RateContext['savedTarget']>]]));
   return createHash('sha256').update(JSON.stringify(ordered)).digest('hex');
@@ -226,8 +226,9 @@ export function buildCloudRateCandidates(context: RateContext, groups: readonly 
       const minRoomsAvailable = complete && counts.every((count): count is number => count !== null) ? Math.min(...counts) : null;
       const restricted = nightly.some(night => !night.reasons.includes('unknown') &&
         (night.stockStatus === 'restricted' || night.reasons.includes('closed_or_restricted')));
-      const shortfall = nightly.some(night => !night.reasons.includes('unknown') && !night.reasons.includes('conditions_present') &&
-        night.availableCount !== null && night.availableCount < context.quantity);
+      const shortfall = nightly.some(night => !night.reasons.includes('unknown') &&
+        (night.reasons.includes('negative_stock') || (!night.reasons.includes('conditions_present') &&
+          night.availableCount !== null && night.availableCount < context.quantity)));
       const state: RateCandidate['state'] = restricted ? 'restricted' : shortfall ? 'unavailable' : 'unchecked';
       if (!complete) reasons.push('NIGHT_COVERAGE_INCOMPLETE');
       if (state === 'unchecked') reasons.push('NATIVE_STAY_ELIGIBILITY_UNVERIFIED');
