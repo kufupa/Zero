@@ -2257,6 +2257,10 @@ describe('AmendLookupPanel amend form', () => {
         run: { runId: string; state: string; failureClass: null; lastError: null; evidence: []; reviewed: null } | null;
         needsCheck: boolean } | null = null;
       const pendingGo: { finish?: () => void } = {};
+      const nextRun = () => {
+        if (stored) stored.run = { runId: 'c2cd7d45-2784-4b6c-a835-6df0f885bd6d', state: 'succeeded',
+          failureClass: null, lastError: null, evidence: [], reviewed: null };
+      };
       const state = vi.fn(async () => stored ?? { form: {}, run: null });
       const review = vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'done' });
       const cloud = { ...trpc, hmsApproval: {
@@ -2298,10 +2302,16 @@ describe('AmendLookupPanel amend form', () => {
       await waitFor(() => expect(review).toHaveBeenCalledWith(expect.objectContaining({
         workItemId: RUN_ID, runId: RUN_ID, decision: 'ok', source: { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64) },
       }), expect.anything()));
+      await screen.findByText('HMS write reviewed.');
+      nextRun();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review OK' }, { timeout: 6500 }));
+      await waitFor(() => expect(review).toHaveBeenLastCalledWith(expect.objectContaining({
+        runId: 'c2cd7d45-2784-4b6c-a835-6df0f885bd6d', decision: 'ok',
+      }), expect.anything()));
     } finally {
       setMailCacheScope(previousScope);
     }
-  }, 10000);
+  }, 16000);
 
   it('clears local choices when the selected email or booking changes', async () => {
     const findStay = vi.fn(async ({ confirmation }: { confirmation: string }) => unpaidFound({ confirmation }));
