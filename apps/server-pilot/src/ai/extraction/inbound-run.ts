@@ -554,6 +554,17 @@ export async function executeInboundExtractionRun(input: {
         input.signal,
       );
   if (outcome === 'stale_version') {
+    // A deploy can leave admitted mail queued against the previous prompt.
+    // Queue the current version before retiring that run, preserving its source snapshot.
+    // The extraction idempotency key makes concurrent rollovers harmless.
+    await enqueueInboundExtraction({
+      transportId: run.transportId,
+      threadId: run.threadId,
+      messageId: run.triggerMessageId,
+      ...(run.admissionSnapshotId ? { admissionSnapshotId: run.admissionSnapshotId } : {}),
+      ...(run.admissionSnapshotHash ? { admissionSnapshotHash: run.admissionSnapshotHash } : {}),
+      ...(run.metrics ? { metrics: run.metrics } : {}),
+    }, db);
     await markAiRunPolicyRefused(
       {
         ...claim,
