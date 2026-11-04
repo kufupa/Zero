@@ -74,6 +74,7 @@ type VoucherAttachBindReply =
 
 type VoucherAttachWriteView = {
   form?: { action?: string };
+  grant?: { fingerprintMatches: boolean } | null;
   needsCheck?: boolean;
   filingConfigured?: boolean;
   run: { state: string; lastError: string | null; failureClass?: string | null; evidence: { name: string }[] } | null;
@@ -518,7 +519,8 @@ function VoucherFindCardBody({
   const unconfirmedAttach = !listedWithHold && (attachWrite?.run?.lastError === 'upload_unconfirmed' ||
     (attachWrite?.form?.action === 'attach_document' &&
       (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? ''))));
-  const attachSucceeded = listedWithHold || attachWrite?.run?.state === 'succeeded';
+  const attachSucceeded = listedWithHold || (attachWrite?.form?.action === 'attach_document' &&
+    attachWrite.grant?.fingerprintMatches !== false && attachWrite.run?.state === 'succeeded');
   const attachMoving = ['queued', 'claimed', 'running', 'retry_wait'].includes(attachWrite?.run?.state ?? '');
   const bindingFrozen = attachState?.workItemId === workItemId &&
     (attachState.status === 'binding' || attachState.status === 'unknown' ||
