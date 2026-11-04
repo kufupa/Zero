@@ -1015,8 +1015,8 @@ async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, s
 
 /**
  * Upserts the work item for (thread, kind, source message) and points it at this extraction when it is newer and her
- * saved values still fit it (see shouldRelink). Only the extraction link moves. `state` is never written here, so a
- * person's values survive a re-read. Returns the read the item is on.
+ * saved values still fit it (see shouldRelink). A relink advances the concurrency sequence without changing edit history.
+ * `state` is never written here, so a person's values survive a re-read. Returns the read the item is on.
  */
 export async function ensureWorkItem(
   db: DB,
@@ -1070,9 +1070,9 @@ export async function ensureWorkItem(
     if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
     await tx
       .update(workItem)
-      .set({ extractionId: input.extractionId, updatedAt: new Date() })
+      .set({ extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1, updatedAt: new Date() })
       .where(eq(workItem.id, row.id));
-    return { ...row, extractionId: input.extractionId };
+    return { ...row, extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1 };
   });
 }
 
