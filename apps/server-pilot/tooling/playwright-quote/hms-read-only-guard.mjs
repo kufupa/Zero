@@ -7,6 +7,15 @@ const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/osresv.hdr.getcheckavailab
 const HMS_WEB_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const hasWriteAction = (params) => [...params].some(([key, value]) =>
   key.toLowerCase() === 'pageaction' && MUTATION_ACTION.test(value.trim()));
+const AVAILABILITY_WRITE_SWITCHES = new Set([
+  'newprofileclick', 'createinactiveprofileflag', 'savecctoprofile', 'savesettlementcctoprofile',
+]);
+const hasAvailabilityWriteIntent = (params) => [...params].some(([rawKey, rawValue]) => {
+  const key = rawKey.toLowerCase();
+  const value = rawValue.trim().toLowerCase();
+  if ((key === 'pageaction' || key === 'action') && MUTATION_ACTION.test(value)) return true;
+  return AVAILABILITY_WRITE_SWITCHES.has(key) && !['', '0', 'false'].includes(value);
+});
 const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
 const CLOUD_CARD_ENTRY_PATH = '/Vault/servlets/showCardEntryHandler';
 // Every generic guard on a context checks the same one-shot approval. The
@@ -75,7 +84,7 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
     const approvals = state.approvals;
     if (approvals && String(request.method()).toUpperCase() === 'POST' &&
         target?.origin === HMS_WEB_ORIGIN && target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH &&
-        !target.search && !target.hash && !hasWriteAction(new URLSearchParams(request.postData?.() || '')) &&
+        !target.search && !target.hash && !hasAvailabilityWriteIntent(new URLSearchParams(request.postData?.() || '')) &&
         (firstGuard ? approvals.delete(request) : approvals.has(request))) {
       await route.fallback();
       return;
