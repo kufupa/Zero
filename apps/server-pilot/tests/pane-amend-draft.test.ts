@@ -38,10 +38,15 @@ describe('amendment request draft', () => {
     expect(stay.amendProposal).not.toHaveProperty('firstName');
     const source = { threadId: 'thread', messageId: 'msg-amend', sourceHash: 'a'.repeat(64) };
     const id = amendRequestId(source, stay.id);
-    const state = { [`requests[${id}].ratePlan`]: 'CRIC', [`requests[${id}].cms.send`]: false };
+    const arrivalPath = `stays[${stay.id}].requested.arrival`;
+    const state = { [`requests[${id}].ratePlan`]: 'CRIC', [`requests[${id}].cms.send`]: false, [arrivalPath]: null };
     const result = projectAmendRequests(source, payload, state);
     expect(result.requests[0]?.fields.value).toMatchObject({ ratePlan: 'CRIC', cms: { send: false } });
     expect(result.meta[`requests[${id}].cms.send`]?.origin).toBe('staff');
+    expect(result.meta[arrivalPath]?.origin).toBe('staff');
+    expect(result.requests[0]?.fields.value.arrival).toBeNull();
+    expect(projectAmendRequests(source, payload, {}).meta[arrivalPath]?.origin)
+      .toBe(stay.requested.arrival == null ? 'missing' : 'email');
     expect(projectAmendRequests({ ...source, sourceHash: 'b'.repeat(64) }, payload, state).unappliedEdits).toHaveLength(2);
     expect(validAmendRequestValue('cms.send', false)).toBe(true);
     expect(validAmendRequestValue('childAges', [0, 17])).toBe(true);

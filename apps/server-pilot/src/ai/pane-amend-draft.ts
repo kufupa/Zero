@@ -115,10 +115,17 @@ export function projectAmendRequests(source: DraftSource, payload: MailExtractio
       attributedTo: null, evidence: null };
     const stayValue = (field: 'arrival' | 'departure') => {
       const path = `stays[${stay.id}].requested.${field}`;
+      const edited = Object.hasOwn(state, path);
+      meta[path] = { origin: edited ? 'staff' : stay.requested[field] != null ? 'email' : 'missing',
+        attributedTo: null, evidence: null };
       return Object.hasOwn(state, path) ? state[path] : stay.requested[field];
     };
     const adultPath = `stays[${stay.id}].totalAdults`;
     const childPath = `stays[${stay.id}].totalChildren`;
+    for (const [path, original] of [[adultPath, stay.totalAdults], [childPath, stay.totalChildren]] as const) {
+      meta[path] = { origin: Object.hasOwn(state, path) ? 'staff' : original != null ? 'email' : 'missing',
+        attributedTo: null, evidence: null };
+    }
     const singleRow = stay.rows.length === 1 ? stay.rows[0] : undefined;
     const agesPath = singleRow ? `stays[${stay.id}].rows[${singleRow.id}].childAges` : '';
     const requestedChildAges = valueOf('childAges');
