@@ -57,6 +57,44 @@ describe('HRCEN filing hold', () => {
         .rejects.toMatchObject({ refusal: 'no_executed_write' });
       expect(insert).not.toHaveBeenCalled();
     }
+    const filingRun = { ...previous, promptVersion: 'hms-write/lab-attach/1' };
+    const changedForm = { ...bound, state: { ...bound.state, action: 'cancel' } };
+    for (const decision of ['ok', 'flag'] as const) {
+      const answers: unknown[][] = [[changedForm], [source], [], [filingRun], [filingRun]];
+      const query = { from: () => query, where: () => query, orderBy: () => query, limit: () => {
+        const rows = answers.shift() ?? [];
+        return Object.assign(Promise.resolve(rows), { for: async () => rows });
+      } };
+      const insert = vi.fn();
+      const tx = { select: () => query, execute: async () => undefined, insert };
+      const db = { transaction: async (fn: (value: unknown) => unknown) => fn(tx) } as unknown as DB;
+      await expect(reviewHmsWrite({ ...request, db, selectedSource, decision, note: 'Checked' }))
+        .rejects.toMatchObject({ refusal: 'no_executed_write' });
+      expect(insert).not.toHaveBeenCalled();
+    }
+    const reviewGrantId = '11111111-1111-4111-8111-111111111111';
+    for (const decision of ['ok', 'flag'] as const) {
+      for (const failure of ['corrupt', 'wrong_item', 'changed_form'] as const) {
+        const run = { ...filingRun, idempotencyKey: `hms-write:${reviewGrantId}` };
+        const grant = { grantId: reviewGrantId, workItemId: failure === 'wrong_item' ? 'other-item' : item.id,
+          transportId: request.transportId, actorUserId: 'user-1',
+          formDigest: failure === 'changed_form' ? 'old-form' : formDigest(bound.state),
+          hmsBeforeDigest: 'before', hmsReadAt: new Date().toISOString() };
+        const answers: unknown[][] = [[bound], [source], [], [run], [run], [], [],
+          [{ value: grant, payloadHash: failure === 'corrupt' ? 'corrupt' : hmsStateDigest(grant) }]];
+        const next = () => {
+          const rows = answers.shift() ?? [];
+          return Object.assign(Promise.resolve(rows), { for: async () => rows, limit: async () => rows });
+        };
+        const query = { from: () => query, where: () => query, orderBy: next, limit: next };
+        const insert = vi.fn();
+        const tx = { select: () => query, execute: async () => undefined, insert };
+        const db = { transaction: async (fn: (value: unknown) => unknown) => fn(tx) } as unknown as DB;
+        await expect(reviewHmsWrite({ ...request, db, selectedSource, decision, note: 'Checked' }))
+          .rejects.toMatchObject({ refusal: failure === 'changed_form' ? 'state_changed' : 'no_grant' });
+        expect(insert).not.toHaveBeenCalled();
+      }
+    }
 
     vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on');
     vi.stubEnv('PANE_WRITE_ATTACH', 'lab');

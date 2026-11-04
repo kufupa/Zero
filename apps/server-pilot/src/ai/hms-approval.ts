@@ -1230,14 +1230,16 @@ export async function reviewHmsWrite(input: {
     if (!run) throw new HmsApprovalError('no_executed_write');
     if (input.runId !== undefined && input.runId !== run.id) throw new HmsApprovalError('run_changed');
     const target = paneStayHmsTargetForTransport(input.transportId);
-    const cloudFiling = target.ok && target.target.propertyCode === 'HRCEN' &&
-      item.state.action === 'attach_document' && typeof item.state.sourceThreadId === 'string' &&
-      typeof item.state.sourceHash === 'string';
-    if (cloudFiling && !boundFilingSelectionMatches(item.state, input.selectedSource)) {
-      throw new HmsApprovalError('source_mail_changed');
-    }
-    if (cloudFiling && run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION) {
-      throw new HmsApprovalError('no_executed_write');
+    const cloudFiling = run.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION ||
+      (target.ok && target.target.propertyCode === 'HRCEN' && item.state.action === 'attach_document');
+    if (cloudFiling) {
+      if (!target.ok || target.target.propertyCode !== 'HRCEN' || item.state.action !== 'attach_document' ||
+          run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION) {
+        throw new HmsApprovalError('no_executed_write');
+      }
+      if (!boundFilingSelectionMatches(item.state, input.selectedSource)) {
+        throw new HmsApprovalError('source_mail_changed');
+      }
     }
     const evidence = await evidenceForRun(tx as DB, item.id, run.id);
     if (run.state !== 'succeeded' && evidence.length === 0)
@@ -1249,6 +1251,8 @@ export async function reviewHmsWrite(input: {
       const grantId = grantIdForRun(run);
       if (!grantId) throw new HmsApprovalError('no_grant');
       const { grant } = await loadGrant(tx as DB, item.id, grantId);
+      if (cloudFiling && (grant.grantId !== grantId || grant.workItemId !== item.id ||
+          grant.transportId !== input.transportId)) throw new HmsApprovalError('no_grant');
       if (formDigest(item.state) !== grant.formDigest) throw new HmsApprovalError('state_changed');
     }
 
