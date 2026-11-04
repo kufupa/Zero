@@ -87,6 +87,9 @@ export type AmendReadOnlyContext = {
   draft?: ReturnType<typeof useAmendWorkItem>;
   historyEpoch?: number;
   historyBusy?: boolean;
+  refreshPending?: boolean;
+  refreshMessage?: string | null;
+  retryRefresh?: () => void;
   requireDurableDraft?: boolean;
   retryDraft?: () => void;
   draftLoading?: boolean;
@@ -621,6 +624,13 @@ export function AmendLookupPanel({
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshPending ? <p role="status" className={infoNoteClass}>
+        Checking this email for the latest request…
+      </p> : null}
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshMessage ? <p role="status" className={warnNoteClass}>
+        {readOnlyAmend.refreshMessage}{' '}
+        {readOnlyAmend.retryRefresh ? <button type="button" className="font-semibold underline" onClick={readOnlyAmend.retryRefresh}>Try again</button> : null}
+      </p> : null}
       {amendment.kind === 'amend' && (readOnlyAmend?.draft?.requestCount ?? 0) > 1 ?
         <p role="status" className={warnNoteClass}>This email has multiple changes. Open each booking in HMS.</p> : null}
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
@@ -912,6 +922,7 @@ export function AmendLookupPanel({
             requestedChildren={projected?.children}
             requestedChildAges={projected?.childAges}
             durableDraft={durableDraft}
+            refreshPending={readOnlyAmend.refreshPending}
             ratePlans={readOnlyAmend.ratePlans}
             defaultRecipient={session.staffHeader.clientEmail}
             onApprovalVisibilityChange={setActiveAmendApproval}
@@ -1253,7 +1264,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 
 /** Bind the editable request to the current selected email and booking. */
 function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
-  requestedAdults, requestedChildren, requestedChildAges, durableDraft, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
+  requestedAdults, requestedChildren, requestedChildAges, durableDraft, refreshPending, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1265,6 +1276,7 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   requestedChildren?: number | null;
   requestedChildAges?: number[] | null;
   durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
+  refreshPending?: boolean;
   ratePlans: RatePlanCatalogueEntry[];
   defaultRecipient: string;
   onApprovalVisibilityChange: (visible: boolean) => void;
@@ -1275,14 +1287,14 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   const lastTarget = useRef('');
   useEffect(() => {
     const arrival = sendableArrival(stay.arrival ?? '');
-    if (!durableDraft || !arrival) return;
+    if (refreshPending || !durableDraft || !arrival) return;
     const target = { confirmation, arrival };
     const key = JSON.stringify(target);
     if (key !== lastTarget.current && JSON.stringify(durableDraft.request?.fields.value.target) !== key) {
       lastTarget.current = key;
       durableDraft.record('target', target);
     }
-  }, [durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
+  }, [refreshPending, durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
   const stayId = durableDraft?.request?.stayId;
   const cleared = stayId ? {
     arrival: requestedArrival == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.arrival`]?.origin === 'staff',

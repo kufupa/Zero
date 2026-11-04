@@ -607,6 +607,7 @@ export function useStoredWork(args: {
     lookupKey ?? '',
     pane.state,
     pane.state === 'ready' ? (pane.workItemId ?? '') : '',
+    pane.state === 'ready' ? (pane.amendDraft?.source.extractionId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
     String(retried),
     String(historyEpoch),
@@ -774,6 +775,21 @@ export function useStoredWork(args: {
     return snapshot;
   }, [internetMessageId, lookupKey, selection]);
 
+  const reloadRefreshedAmend = useCallback(async (expected: AmendDraftSnapshot, transportId: string,
+    extractionId: string, isCurrent: () => boolean): Promise<boolean> => {
+    const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
+    if (!getByMessage || !internetMessageId || !lookupKey) return false;
+    const pinned = inMailbox(transportId);
+    const input = { internetMessageId, ...(selection ? { selection } : {}) };
+    const result = await (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input));
+    const fresh = amendSnapshotOf(result);
+    if (!isCurrent() || lookupKeyRef.current !== lookupKey || !fresh || fresh.workItemId !== expected.workItemId ||
+        fresh.source.extractionId !== extractionId || fresh.source.threadId !== expected.source.threadId ||
+        fresh.source.messageId !== expected.source.messageId || fresh.source.sourceHash !== expected.source.sourceHash) return false;
+    setLookup((previous) => previous?.key === lookupKey && isCurrent() ? { ...previous, result } : previous);
+    return true;
+  }, [internetMessageId, lookupKey, selection]);
+
   const historyRoutes = historyRoutesFrom(trpc);
   const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
   const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection);
@@ -926,6 +942,7 @@ export function useStoredWork(args: {
     recordGroups,
     recordContact,
     reloadAmendDraft,
+    reloadRefreshedAmend,
     noteAmendSave: (cursor: HistorySeqCursor) => setHistoryCursor((previous) =>
       previous && previous.seq > cursor.seq ? previous : cursor),
     acceptUnedited,

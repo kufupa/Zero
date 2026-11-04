@@ -103,6 +103,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
+    refreshAmendExtraction: null as null | ((input: unknown) => Promise<unknown>),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
 }));
@@ -286,6 +287,7 @@ vi.mock('../providers/query-provider', () => ({
           },
         },
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
+        ...(bridgeMockState.refreshAmendExtraction ? { refreshAmendExtraction: { mutate: bridgeMockState.refreshAmendExtraction } } : {}),
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
     },
@@ -846,6 +848,7 @@ describe('NavaPane', () => {
     bridgeMockState.staffQuoteJobCalls.length = 0;
     setMailCacheScope({ userId: null, activeTransportId: null });
     bridgeMockState.recordEvent.mockReset();
+    bridgeMockState.refreshAmendExtraction = null;
     bridgeMockState.recordEvent.mockResolvedValue({ aiValue: null, value: null });
     localStorage.clear();
     sessionStorage.clear();
@@ -3178,9 +3181,22 @@ describe('NavaPane', () => {
         arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
     };
     enableSavedAmendment();
+    let finishRefresh!: () => void;
+    const refresh = vi.fn(() => new Promise((resolve) => {
+      finishRefresh = () => resolve({ status: 'current', extractionId: 'ex-amendment' });
+    }));
+    bridgeMockState.refreshAmendExtraction = refresh;
     const pane = render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
-    const adults = await within(card).findByLabelText('Requested adults');
+    let adults = await within(card).findByLabelText('Requested adults');
+    expect(await within(card).findByText('Checking this email for the latest request…')).toBeTruthy();
+    expect(screen.getByLabelText('Requested adults').closest('fieldset')?.hasAttribute('disabled')).toBe(true);
+    expect(refresh).toHaveBeenCalledWith({ workItemId: 'wi-amendment', source: {
+      threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32),
+    } }, { context: { activeTransportId: 'transport-1' } });
+    await act(async () => finishRefresh());
+    await waitFor(() => expect(screen.getByLabelText('Requested adults').closest('fieldset')?.hasAttribute('disabled')).toBe(false));
+    adults = screen.getByLabelText('Requested adults');
     expect(adults).toBeTruthy();
     expect(within(card).getByText('Booking at last HMS lookup')).toBeTruthy();
     expect(within(card).getAllByText(/^HMS at lookup:/).length).toBeGreaterThanOrEqual(4);
