@@ -1418,7 +1418,7 @@ function CloudAmendHistory({ trpc, transportId, selection, suspended }: {
     if (!suspended) void poll();
     return () => { live = false; clearTimeout(timer); controller.abort(); owned?.dispose(); };
   }, [trpc, selected, transportId, suspended]);
-  return !suspended && client ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={null}
+  return !suspended && client ? <ApproveCard key={client.resumeKey} client={client.approval} workItemId={selected.workItemId} confirmation={null}
     writesEnabled manualResolve={false} allowApprove={false} /> : null;
 }
 

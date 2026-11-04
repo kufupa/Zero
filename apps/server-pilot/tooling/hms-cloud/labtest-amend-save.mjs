@@ -42,6 +42,13 @@ const usedPages = new WeakSet();
 const stageContexts = new WeakSet();
 export const isLabtestAmendStageContext = (value) => Boolean(value && stageContexts.has(value));
 
+/** Accept only unambiguous native checkbox values. */
+export function nativeCmsSendValue(value) {
+  if ([true, 1, '1', 'true', 'on', 'yes', 'Y'].includes(value)) return true;
+  if ([false, 0, '0', 'false', 'off', 'no', 'N'].includes(value)) return false;
+  return null;
+}
+
 /** Match Check Availability to the selected stay and the staged business fields. */
 export function matchesLabtestAvailability(request, frame, snapshot, { recipient = '', guestEmail = '', cmsSend = false,
   cmsMessageId = '', expected = null, allowRealGuest = false } = {}) {
@@ -72,9 +79,8 @@ export function matchesLabtestAvailability(request, frame, snapshot, { recipient
         ...(expected.children !== undefined ? { children: expected.children } : {}) } : {}) };
     if (!Object.entries(fixed).every(([key, value]) => value !== undefined && exact(key, value)) ||
         !/^\d{6,}-\d+$/.test(String(data.confirmationnumber ?? '')) || !/^\d+$/.test(String(data.guestid ?? ''))) return false;
-    const yes = (value) => [true, 1, '1', 'true', 'on', 'yes', 'Y'].includes(value);
-    if (yes(data.udfchkbox04) !== cmsSend || fields.get('udfchkbox04')?.length !== 1 ||
-        yes(fields.get('udfchkbox04')[0]) !== cmsSend ||
+    if (fields.get('udfchkbox04')?.length !== 1 ||
+        nativeCmsSendValue(fields.get('udfchkbox04')[0]) !== cmsSend ||
         (cmsMessageId && !exact('udfchar09', cmsMessageId))) return false;
     if (expected && Array.isArray(expected.childAges)) {
       const ages = String(data.childages ?? '').trim();
