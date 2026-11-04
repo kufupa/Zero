@@ -47,8 +47,21 @@ import {
   stayCommitFromPaneResult,
   stayCommitGuard,
   workItemIdForMail,
+  formStays,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
+import { mailThread, message } from '../../db/schema/mail.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
+import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
+import { boundAmendRateRequest, type RateContext } from '../../ai/hms-availability.js';
+import { rateContextKey, recommendRateCandidate, orderRateCandidates, type RateCandidate, type RateRecommendation } from '../../ai/rate-options.js';
+import { amendRequestId, projectAmendRequests } from '../../ai/pane-amend-draft.js';
+import { mailExtractionPayloadSchema } from '../../ai/extraction/schema.js';
+import { hmsJobQueueEnabled, queueRateCandidatesHmsJob, readRateCandidatesHmsJob, readHmsJobView } from '../../ai/hms-jobs.js';
+import type { HmsCloudRateLookup } from '../../ai/hms-cloud-saved-stay-find.js';
+import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
+import { loadPaneRateHistory } from '../../ai/pane-rate-recommendation.js';
+import { and, eq } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
@@ -163,6 +176,37 @@ export const voucherLoaders: {
 
 const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998), selection: paneSourceSelectionSchema.optional() });
 
+const rateBinding = z.object({
+  workItemId: z.string().uuid(),
+  source: z.object({ threadId: z.string().trim().min(1).max(200), messageId: z.string().trim().min(1).max(200),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  request: z.object({ requestId: z.string().regex(/^[a-f0-9]{64}$/),
+    stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), rowId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).nullable(),
+    roomIndex: z.number().int().nonnegative().max(7).nullable() }).strict(),
+  expectedSeq: z.number().int().nonnegative().safe(),
+}).strict();
+export const rateCandidatesInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('start'), binding: rateBinding,
+    typedRatePlan: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), forceRefresh: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal('read'), binding: rateBinding, jobId: z.string().uuid() }).strict(),
+]);
+export type RateCandidatesReply = {
+  status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
+  requestId: string; jobId: string | null; contextKey: string | null; context: RateContext | null;
+  observedAt: string | null; expiresAt: string | null;
+  coverage: { candidateList: 'complete' | 'partial' | 'unknown'; reason: string | null };
+  options: RateCandidate[]; recommendation: RateRecommendation | null;
+  issues: Array<{ code: 'missing' | 'invalid' | 'conflict' | 'target_required' | 'not_checked' | 'unsupported' | 'identity_changed';
+    fieldPath: string | null; message: string; blocksPrepare: boolean; blocksGo: boolean }>;
+};
+
+function rateRefusal(requestId: string, status: 'blocked' | 'failed' | 'stale', reason: string, message: string): RateCandidatesReply {
+  return { status, requestId, jobId: null, contextKey: null, context: null, observedAt: null, expiresAt: null,
+    coverage: { candidateList: 'unknown', reason }, options: [], recommendation: null,
+    issues: [{ code: status === 'stale' ? 'identity_changed' : status === 'failed' ? 'not_checked' : 'unsupported',
+      fieldPath: null, message, blocksPrepare: false, blocksGo: false }] };
+}
+
 /**
  * Selection narrows the RFC match to a verified web message or synced Outlook locator when available.
  */
@@ -185,6 +229,109 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
+  rateCandidates: mailboxProcedure.input(rateCandidatesInput).mutation(async ({ input, ctx }): Promise<RateCandidatesReply> => {
+    const { binding } = input;
+    const db = getDb();
+    const [selected] = await db.select({ item: workItem, mail: message, thread: mailThread, extraction: mailExtraction })
+      .from(workItem)
+      .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, workItem.transportId)))
+      .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, workItem.transportId)))
+      .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
+      .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, ctx.activeTransportId),
+        eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
+    const valid = selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
+      !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
+      selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
+      !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
+      staffQuoteSourceHash(selected.mail) === binding.source.sourceHash;
+    const requestId = binding.request.requestId;
+    const refuse = (status: 'blocked' | 'failed' | 'stale', reason: string, message: string) =>
+      rateRefusal(requestId, status, reason, message);
+    if (!valid || !selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED', 'Rate lookup is not available for this hotel yet.');
+    const payload = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    if (!payload.success || amendRequestId(binding.source, binding.request.stayId) !== requestId) {
+      return refuse('stale', 'REQUEST_IDENTITY_CHANGED', 'This stay request has changed. Refresh the email.');
+    }
+    const state = selected.item.state;
+    const stay = formStays(payload.data, state).find(stay => stay.id === binding.request.stayId);
+    if (!stay || binding.request.roomIndex !== null || (binding.request.rowId !== null &&
+        !stay.rows.some(row => row.id === binding.request.rowId))) {
+      return refuse('stale', 'ROOM_IDENTITY_CHANGED', 'This room request has changed. Refresh the email.');
+    }
+    const request = projectAmendRequests(binding.source, payload.data, state).requests.find(request => request.requestId === requestId);
+    if (!request) return refuse('blocked', 'DURABLE_RATE_PARTIES_NOT_AVAILABLE', 'Rate lookup needs a saved stay with verified company or agency details. Prepare can still check the chosen rate.');
+    if (stay.rows.length > 1) return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Choose one saved room before checking its rates.');
+    const row = stay.rows[0];
+    const countPath = row ? `stays[${stay.id}].rows[${row.id}].count` : null;
+    const count = countPath && Object.hasOwn(state, countPath) ? state[countPath] : row?.rooms;
+    if ((count != null && count !== 1) || (countPath && Object.hasOwn(state, countPath) && count === null)) {
+      return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Rate lookup currently checks one saved room at a time.');
+    }
+    const savedTarget = request.fields.value.target as { confirmation?: unknown; arrival?: unknown } | null;
+    if (!savedTarget || typeof savedTarget.confirmation !== 'string' || typeof savedTarget.arrival !== 'string') {
+      return refuse('blocked', 'SAVED_TARGET_REQUIRED', 'Find the saved stay before checking rates.');
+    }
+    const saved = await readHmsJobView({ transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+      messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, selectedActorId: ctx.sessionUser.id,
+      kind: 'find', confirmation: savedTarget.confirmation, arrival: savedTarget.arrival }, db);
+    const lookup = saved?.result?.rateLookup as HmsCloudRateLookup | undefined;
+    const readTime = lookup?.observedAt ? Date.parse(lookup.observedAt) : NaN;
+    if (!lookup || saved?.status !== 'done' || saved.result?.outcome !== 'found' ||
+        !Number.isFinite(readTime) || readTime > Date.now() || Date.now() - readTime >= 5 * 60_000) {
+      return refuse('blocked', 'SAVED_CONTEXT_READ_REQUIRED', 'Refresh the saved stay to verify its company, agency and room details.');
+    }
+    const projected = boundAmendRateRequest({ propertyCode: target.target.propertyCode, requestId,
+      stayId: binding.request.stayId, rowId: binding.request.rowId ?? row?.id ?? null,
+      fields: { ...request.fields.value, adults: request.fields.value.adults ?? row?.adultsPerRoom ?? null },
+      state, lookup, ...(input.kind === 'start' && input.typedRatePlan ? { typedRatePlan: input.typedRatePlan } : {}) });
+    if ('reason' in projected) return refuse('blocked', projected.reason, 'Complete the stay and verified company or agency details before checking rates. Prepare can still check the chosen rate.');
+    const scope = { transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+      messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, workItemId: binding.workItemId,
+      requestId, userId: ctx.sessionUser.id, extractionId: selected.extraction.id,
+      draftContextKey: projected.draftContextKey,
+      roomBindingKey: JSON.stringify([binding.request.stayId, binding.request.rowId, binding.request.roomIndex]) };
+    let runId: string;
+    if (input.kind === 'start') {
+      if (!hmsJobQueueEnabled()) return refuse('blocked', 'RATE_QUEUE_DISABLED', 'Rate lookup is not available right now. Prepare can still check the chosen rate.');
+      runId = (await queueRateCandidatesHmsJob({ ...scope, request: projected.request,
+        partyContextVerified: true, forceRefresh: input.forceRefresh }, db)).run.id;
+    } else runId = input.jobId;
+    const job = await readRateCandidatesHmsJob({ ...scope, runId }, db);
+    if (!job || job.request?.kind !== 'availability' || !job.request.rateContext) {
+      return refuse('stale', 'RATE_JOB_CONTEXT_CHANGED', 'The stay details changed. Check rates again.');
+    }
+    const context = { ...projected.request.rateContext!, typedRatePlan: job.request.rateContext.typedRatePlan };
+    const contextKey = rateContextKey(context);
+    if (rateContextKey(job.request.rateContext) !== contextKey) return refuse('stale', 'RATE_JOB_CONTEXT_CHANGED', 'The stay details changed. Check rates again.');
+    const reply: RateCandidatesReply = { status: job.status === 'queued' || job.status === 'retrying' ? 'queued' : 'running',
+      requestId, jobId: job.runId, contextKey, context, observedAt: null, expiresAt: null,
+      coverage: { candidateList: 'unknown', reason: null }, options: [], recommendation: null, issues: [] };
+    if (job.status === 'failed') return { ...refuse('failed', 'RATE_READ_FAILED', 'Rates could not be checked. Refresh to try again.'), jobId: runId, contextKey, context };
+    if (job.status !== 'done') return reply;
+    if (job.result?.outcome === 'blocked') return { ...refuse('blocked', String(job.result.error ?? 'NATIVE_CONTEXT_UNSUPPORTED'), 'HMS could not verify this rate context. Prepare can still check the chosen rate.'), jobId: runId, contextKey, context };
+    if (job.result?.outcome !== 'read' || job.result.contextKey !== contextKey || !Array.isArray(job.result.rateCandidates)) {
+      return { ...refuse('failed', 'RATE_RESULT_UNVERIFIED', 'HMS did not return verified rate observations.'), jobId: runId, contextKey, context };
+    }
+    const observedAt = typeof job.result.observedAt === 'string' ? job.result.observedAt : null;
+    const observed = observedAt ? Date.parse(observedAt) : NaN;
+    if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed >= 5 * 60_000) {
+      return { ...refuse('stale', 'RATE_OBSERVATION_EXPIRED', 'These rate observations have expired. Check rates again.'), jobId: runId, contextKey, context };
+    }
+    const history = await loadPaneRateHistory(context, db);
+    const options = orderRateCandidates(context, job.result.rateCandidates as RateCandidate[], history);
+    const coverage = job.result.coverage as { candidateList?: 'complete' | 'partial' | 'unknown'; reason?: string | null } | undefined;
+    return { ...reply, status: 'ready', observedAt, expiresAt: new Date(observed + 5 * 60_000).toISOString(),
+      coverage: { candidateList: coverage?.candidateList ?? 'unknown', reason: coverage?.reason ?? null }, options,
+      recommendation: recommendRateCandidate({ ...context, typedRatePlan: projected.explicitCode ?? context.typedRatePlan }, options, projected.unchangedCode, history),
+      issues: [{ code: 'not_checked', fieldPath: null,
+        message: 'Nightly prices are observations. Prepare checks the chosen rate, full stay and retained pricing.',
+        blocksPrepare: false, blocksGo: false }, ...history.issues.map(reason => ({ code: 'not_checked' as const,
+          fieldPath: null, message: reason === 'NO_NATIVE_ID_BOUND_RATE_HISTORY'
+            ? 'No rate history is linked to these native company and agency IDs.' : 'Some rate history is unavailable; native rate observations are still shown.',
+          blocksPrepare: false, blocksGo: false }))] };
+  }),
   rateCatalogue: mailboxProcedure.query(async ({ ctx }) => {
     const resolved = resolvePropertyTransport(ctx.activeTransportId);
     if (resolved.kind === 'collector') {

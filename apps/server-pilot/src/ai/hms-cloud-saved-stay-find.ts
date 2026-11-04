@@ -45,6 +45,21 @@ export type HmsCloudNativePreimage = {
   guaranteeCode?: string;
 };
 
+/** Same-record observations for a contextual rate read; never a write grant. */
+export type HmsCloudRateLookup = {
+  native: HmsCloudNativePreimage;
+  observedAt: string | null;
+  currency: string | null;
+  parties: Record<'organization' | 'agency', {
+    state: 'selected' | 'blank' | 'unknown'; nativeId: string | null; name: string | null;
+  }>;
+  group: HmsCloudFieldObservation;
+  promotion: HmsCloudFieldObservation;
+  arAccount: HmsCloudFieldObservation;
+  sourceOfBusiness: HmsCloudFieldObservation;
+  track: HmsCloudFieldObservation;
+};
+
 export type HmsCloudFindResult = PaneStayFindResult & {
   source: 'hms_cloud_saved_stay';
   /** Unknown unless native model and visible fields agree on this selected stay. */
@@ -304,9 +319,27 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
     const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields);
     const commercial = paneStayCommercial(stay, details?.nativePreimage, verifiedNative);
+    const partyObservation = (names: string[], selected: PaneStayCommercial['company']) => {
+      const visible = fieldObservation(fields, names);
+      if (visible.state === 'blank') return { state: 'blank' as const, nativeId: null, name: null };
+      if (visible.state === 'observed' && selected?.nativeId && selected.name === visible.value) {
+        return { state: 'selected' as const, nativeId: selected.nativeId, name: selected.name };
+      }
+      return { state: 'unknown' as const, nativeId: null, name: visible.value };
+    };
     return {
       outcome: 'found', reason: null, stay, nativePreimage: verifiedNative,
       ...(commercial ? { commercial } : {}),
+      ...(verifiedNative ? { rateLookup: {
+        native: verifiedNative, observedAt: observationTimestamp(root.observedAt),
+        currency: financialObservations(fields).averageRate.currency.value,
+        parties: { organization: partyObservation(['company', 'organization'], commercial?.company),
+          agency: partyObservation(['ta1', 'bookingagency'], commercial?.agency) },
+        group: fieldObservation(fields, ['groupname']), promotion: fieldObservation(fields, ['promotioncode']),
+        arAccount: fieldObservation(fields, ['araccountname']),
+        sourceOfBusiness: fieldObservation(fields, ['sourceofbusinessdesc']),
+        track: fieldObservation(fields, ['track']),
+      } } : {}),
       financialObservations: financialObservations(fields),
       reservationObservations: reservationObservations(fields),
       arrivalMismatch: Boolean(request.arrival && stay.arrival && request.arrival !== stay.arrival),

@@ -71,6 +71,7 @@ import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types'
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import type { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
+import { rateMoney, rateReason, useAmendRateCandidates } from '@/lib/quote-workflow/use-amend-rate-candidates';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
@@ -87,6 +88,9 @@ export type AmendReadOnlyContext = {
   draft?: ReturnType<typeof useAmendWorkItem>;
   historyEpoch?: number;
   historyBusy?: boolean;
+  refreshPending?: boolean;
+  refreshMessage?: string | null;
+  retryRefresh?: () => void;
   requireDurableDraft?: boolean;
   retryDraft?: () => void;
   draftLoading?: boolean;
@@ -621,6 +625,13 @@ export function AmendLookupPanel({
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshPending ? <p role="status" className={infoNoteClass}>
+        Checking this email for the latest request…
+      </p> : null}
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshMessage ? <p role="status" className={warnNoteClass}>
+        {readOnlyAmend.refreshMessage}{' '}
+        {readOnlyAmend.retryRefresh ? <button type="button" className="font-semibold underline" onClick={readOnlyAmend.retryRefresh}>Try again</button> : null}
+      </p> : null}
       {amendment.kind === 'amend' && (readOnlyAmend?.draft?.requestCount ?? 0) > 1 ?
         <p role="status" className={warnNoteClass}>This email has multiple changes. Open each booking in HMS.</p> : null}
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
@@ -912,6 +923,7 @@ export function AmendLookupPanel({
             requestedChildren={projected?.children}
             requestedChildAges={projected?.childAges}
             durableDraft={durableDraft}
+            refreshPending={readOnlyAmend.refreshPending}
             ratePlans={readOnlyAmend.ratePlans}
             defaultRecipient={session.staffHeader.clientEmail}
             onApprovalVisibilityChange={setActiveAmendApproval}
@@ -1253,7 +1265,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 
 /** Bind the editable request to the current selected email and booking. */
 function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
-  requestedAdults, requestedChildren, requestedChildAges, durableDraft, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
+  requestedAdults, requestedChildren, requestedChildAges, durableDraft, refreshPending, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1265,6 +1277,7 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   requestedChildren?: number | null;
   requestedChildAges?: number[] | null;
   durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
+  refreshPending?: boolean;
   ratePlans: RatePlanCatalogueEntry[];
   defaultRecipient: string;
   onApprovalVisibilityChange: (visible: boolean) => void;
@@ -1275,14 +1288,14 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   const lastTarget = useRef('');
   useEffect(() => {
     const arrival = sendableArrival(stay.arrival ?? '');
-    if (!durableDraft || !arrival) return;
+    if (refreshPending || !durableDraft || !arrival) return;
     const target = { confirmation, arrival };
     const key = JSON.stringify(target);
     if (key !== lastTarget.current && JSON.stringify(durableDraft.request?.fields.value.target) !== key) {
       lastTarget.current = key;
       durableDraft.record('target', target);
     }
-  }, [durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
+  }, [refreshPending, durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
   const stayId = durableDraft?.request?.stayId;
   const cleared = stayId ? {
     arrival: requestedArrival == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.arrival`]?.origin === 'staff',
@@ -1374,6 +1387,10 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const [cmsEdited, setCmsEdited] = useState(false);
   const [boundKey, setBoundKey] = useState<string | null>(null);
   const [availableKey, setAvailableKey] = useState<string | null>(null);
+  const rates = useAmendRateCandidates({ trpc: writeContext?.trpc ?? null,
+    transportId: writeContext?.transportId ?? null, workItemId: writeContext?.workItemId ?? null,
+    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
+    confirmation, draft: durableDraft });
   useEffect(() => {
     if (recipientTouched || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
@@ -1500,6 +1517,51 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
       </label>
     </div>
     {retainedPriceChange ? <p className={warnNoteClass}>The new total cannot be verified while retaining rates. Choose No to reprice, or make this change in HMS.</p> : null}
+    {rates.available ? <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={buttonClass} disabled={rates.view?.status === 'checking'}
+          onClick={() => void rates.check()}>{rates.view?.status === 'checking' ? 'Checking rates…' : 'Check rates in HMS'}</button>
+        {/^[A-Z0-9]{1,12}$/.test(ratePlan) ? <button type="button" className={buttonClass}
+          disabled={rates.view?.status === 'checking' || pendingRateMatch}
+          onClick={() => void rates.check(ratePlan)}>Check {ratePlan}</button> : null}
+      </div>
+      {rates.view?.status === 'blocked' ? <p role="status" className={warnNoteClass}>{rates.view.message}</p> : null}
+      {rates.view?.status === 'ready' && rates.view.reply ? <>
+        <HmsAsOf asOf={rates.view.reply.observedAt} />
+        <p className={captionClass}>{rates.view.reply.coverage.candidateList === 'complete' ? 'Rate list complete.'
+          : rates.view.reply.coverage.candidateList === 'partial' ? 'Rate list is incomplete.' : 'Rate list coverage is unknown.'}
+          {rates.view.reply.coverage.reason ? ` ${rates.view.reply.coverage.reason}` : ''}</p>
+        {rates.view.reply.recommendation ? <p className={captionClass}>
+          {rates.view.reply.recommendation.rateCode ? `${rates.view.reply.recommendation.rateCode}: ` : ''}
+          {rates.view.reply.recommendation.explanation}
+          {rates.view.reply.recommendation.validation === 'needs_native_check' ? ' HMS check required.' : ''}
+        </p> : null}
+        {rates.view.reply.options.length ? <ul aria-label="Rates from HMS" className="max-h-48 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+          {rates.view.reply.options.map((option) => {
+            const nightly = option.price ? rateMoney(option.price.currency, option.price.averagePerNightMinor) : null;
+            const total = option.price?.totalBasis === 'native' ? rateMoney(option.price.currency, option.price.totalMinor) : null;
+            return <li key={option.id} className="border-b border-[#e2e8f0] last:border-0">
+              <button type="button" className="w-full px-2 py-1.5 text-left disabled:text-[#94a3b8]"
+                disabled={['unavailable', 'restricted', 'failed'].includes(option.state)} onClick={() => {
+                  setRatePlan(option.rateCode); setRateSearch(option.rateCode); setShowRateMatches(false); markDetail('ratePlan');
+                  durableDraft?.record('ratePlan', option.rateCode);
+                }}>
+                <span className="block text-[12px] font-semibold">{option.rateCode}{option.rateLabel ? ` · ${option.rateLabel}` : ''}</span>
+                <span className={captionClass}>{[option.roomLabel ?? option.roomCode, option.boardLabel,
+                  option.state === 'unchecked' ? 'Not fully checked' : option.state,
+                  nightly ? `${nightly} estimated per night` : null, total ? `${total} total` : null,
+                  option.minRoomsAvailable !== null ? `${option.minRoomsAvailable} rooms listed` : null].filter(Boolean).join(' · ')}</span>
+                <span className={`block ${captionClass}`}>{option.coverage.nightsObserved}/{option.coverage.nightsExpected} nights checked
+                  {!option.coverage.eligibilityVerified ? ' · eligibility not verified' : ''}
+                  {!option.coverage.nativePartyIdsMatched ? ' · company/agency not verified' : ''}
+                  {option.reasons.length ? ` · ${option.reasons.map(rateReason).join('; ')}` : ''}</span>
+              </button>
+            </li>;
+          })}
+        </ul> : <p className={captionClass}>HMS returned no rate options for this check.</p>}
+        {rates.view.reply.issues.map((issue, index) => <p key={`${issue.message}:${index}`} className={captionClass}>{issue.message}</p>)}
+      </> : null}
+    </div> : null}
     {stay.averageRate || stay.grandTotal ? <p className={captionClass}>HMS at lookup: {stay.averageRate ? `Average ${stay.averageRate}` : ''}{stay.averageRate && stay.grandTotal ? ' · ' : ''}{stay.grandTotal ? `Total ${stay.grandTotal}` : ''}</p> : null}
     <details className="rounded-sm border border-[#e2e8f0] p-2">
       <summary className="cursor-pointer text-[12px] font-semibold text-[#334155]">More · guest and booker</summary>

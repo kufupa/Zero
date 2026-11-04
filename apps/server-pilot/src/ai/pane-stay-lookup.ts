@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -82,6 +83,7 @@ export type PaneStayFindOutcome = 'found' | 'not_found' | 'ambiguous' | 'executi
 export type PaneStayFindInput = { confirmation: string; arrival?: string };
 
 export type PaneStayFindResult = {
+  rateLookup?: HmsCloudRateLookup;
   outcome:
     | PaneStayFindOutcome
     | 'refused_flag_off'
@@ -131,6 +133,7 @@ export type PaneStayGuestSearchResult = {
 
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayLookupSpawnResult = {
+  rateLookup?: HmsCloudRateLookup;
   outcome: string;
   reason: string | null;
   stay: PaneStayFields | null;
@@ -499,6 +502,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
     outcome,
     reason: run.reason,
     stay,
+    ...(outcome === 'found' && run.rateLookup ? { rateLookup: run.rateLookup } : {}),
     ...(commercial ? { commercial } : {}),
     arrivalMismatch: run.arrivalMismatch === true,
     requestedArrival: run.requestedArrival ?? input.arrival ?? null,

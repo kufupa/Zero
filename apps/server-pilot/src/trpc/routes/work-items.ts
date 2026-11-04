@@ -5,7 +5,7 @@ import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
 import { mailThread, message } from '../../db/schema/mail.js';
 import { MAIL_KINDS, mailExtraction, workEvent, workItem, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
-import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
+import { refreshSelectedAmendExtraction, retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   acceptUneditedFields,
   dismissWorkItem,
@@ -117,6 +117,16 @@ export const workItemsRouter = router({
         selection: input.selection,
       }),
     ),
+  /** Queue the current extractor for precisely the selected inbound Amendment, if it is stale. */
+  refreshAmendExtraction: mailboxProcedure
+    .input(z.object({
+      workItemId: z.string().uuid(),
+      source: z.object({ threadId: z.string().min(1).max(200), messageId: z.string().min(1).max(200),
+        sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+    }).strict())
+    .mutation(({ input, ctx }) => refreshSelectedAmendExtraction(getDb(), {
+      ...input, transportId: ctx.activeTransportId,
+    })),
   /**
    * Makes the work item for a stored read that has none yet, and returns the same view as getByMessage. The pane calls
    * it once, when getByMessage came back ready with a null workItemId, so getByMessage itself never writes.

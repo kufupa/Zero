@@ -301,6 +301,14 @@ type WorkItemsClient = {
   open?: {
     mutate: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
+  refreshAmendExtraction?: {
+    mutate: (input: { workItemId: string; source: Omit<AmendDraftSource, 'extractionId'> },
+      opts?: { context: Record<string, unknown> }) => Promise<
+        | { status: 'current'; extractionId: string }
+        | { status: 'queued'; runId: string }
+        | { status: 'blocked'; reason: string }
+      >;
+  };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
   };

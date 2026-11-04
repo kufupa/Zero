@@ -47,6 +47,7 @@ import {
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
+import { useAmendExtractionRefresh } from '@/lib/quote-workflow/use-amend-extraction-refresh';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -679,6 +680,13 @@ export function NavaPane({
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
     transportId: storedWork.transportId ?? activeConnection?.id ?? null,
     reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
+  const amendRefresh = useAmendExtractionRefresh({ trpc: trpcClient,
+    snapshot: !amendSourceChanged && storedWork.pane.state === 'ready' && storedWork.pane.kind === 'amendment'
+      ? storedWork.pane.amendDraft ?? null : null,
+    transportId: storedWork.transportId,
+    selectionKey: selectedIdentity ? JSON.stringify([currentScope, selectedIdentity, contextRevision.current.selectionEpoch]) : null,
+    editVersion: amendWorkItem.editVersion, hasDraft: amendWorkItem.available,
+    flush: amendWorkItem.flush, reload: storedWork.reloadRefreshedAmend });
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -2278,7 +2286,7 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending || amendRefresh.pending}
               />
             ) : null}
             {storedWork.historyError ? (
@@ -2607,7 +2615,10 @@ export function NavaPane({
                 ratePlans: activePaneConfig.ratePlans,
                 draft: amendWorkItem,
                 historyEpoch: storedWork.historyEpoch,
-                historyBusy: storedWork.historyPending || storedWork.historyNeedsReload,
+                historyBusy: storedWork.historyPending || storedWork.historyNeedsReload || amendRefresh.pending,
+                refreshPending: amendRefresh.pending,
+                refreshMessage: amendRefresh.message,
+                retryRefresh: amendRefresh.retry,
                 requireDurableDraft: true,
                 retryDraft: storedWork.rebindAmendDraft,
                 draftLoading: storedWork.amendRebinding,

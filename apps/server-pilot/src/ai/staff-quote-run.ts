@@ -1051,6 +1051,9 @@ export async function runStaffQuote(
               parties: effectiveQuoteInput.parties,
               actorUserId: identity.user.id,
               mailKind: extraction?.kind ?? 'quote',
+              // Numeric/custom overrides are not evidence of choosing the native prepared rate.
+              ...(rowPrices.length === 0 ? { nativeRateCodes: rateOptions.filter(option => option.selected)
+                .map(option => option.rateCode) } : {}),
             })
           : null;
         await recordPreparedQuoteOutcome(tx as unknown as DB, { workItemId: outcomeWorkItemId,

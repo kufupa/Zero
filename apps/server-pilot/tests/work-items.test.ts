@@ -1103,20 +1103,20 @@ describe('field events', () => {
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
       await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
       expect(await caller.workItems.open(lookup)).toMatchObject({
-        revision: 2, revisionHead: 2, revisionSeq: 6, workItemExtractionId: second,
+        revision: 2, revisionHead: 2, revisionSeq: 7, workItemExtractionId: second,
         contact: { company: 'New branch' },
       });
       expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Relinked' })).toEqual({
-        aiValue: 'Horizon Trail Tours', value: 'Relinked', previousSeq: 6, seq: 7,
+        aiValue: 'Horizon Trail Tours', value: 'Relinked', previousSeq: 7, seq: 8,
         revision: 3, revisionHead: 3, workItemExtractionId: second,
       });
       await db.update(workItem).set({ extractionId: null }).where(eq(workItem.id, workItemId));
       expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Unlinked' })).toEqual({
-        aiValue: null, value: 'Unlinked', previousSeq: 7, seq: 8,
+        aiValue: null, value: 'Unlinked', previousSeq: 8, seq: 9,
         revision: 4, revisionHead: 4, workItemExtractionId: null,
       });
       expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
-        revision: 4, revisionHead: 4, revisionSeq: 8, workItemExtractionId: null,
+        revision: 4, revisionHead: 4, revisionSeq: 9, workItemExtractionId: null,
         extractionId: second, contact: { company: 'Unlinked' },
       });
     }));
@@ -1135,9 +1135,12 @@ describe('field events', () => {
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
       await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
       expect(await caller.workItems.open(lookup)).toMatchObject({
-        revision: 0, revisionHead: 1, revisionSeq: 2, workItemExtractionId: second,
+        revision: 0, revisionHead: 1, revisionSeq: 3, workItemExtractionId: second,
       });
-      const stale = { workItemId, expectedSeq: 2, expectedExtractionId: first };
+      const stale = { workItemId, expectedSeq: 3, expectedExtractionId: first };
+      await expect(caller.workItems.undoRevision({ ...stale, expectedSeq: 2, expectedExtractionId: second })).rejects.toMatchObject({
+        code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
+      });
       await expect(caller.workItems.undoRevision(stale)).rejects.toMatchObject({
         code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
       });
@@ -1151,19 +1154,19 @@ describe('field events', () => {
       expect((await eventsFor(db, workItemId)).filter((event) => event.type === 'history.redo')).toHaveLength(0);
       await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.company', value: 'Second' });
       // Legacy caller omits the new guard; it can still undo the new extraction's edit.
-      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 3 })).resolves.toMatchObject({
-        revision: 0, revisionHead: 1, seq: 4,
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4 })).resolves.toMatchObject({
+        revision: 0, revisionHead: 1, seq: 5,
       });
       await db.update(workItem).set({ extractionId: null }).where(eq(workItem.id, workItemId));
-      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: null })).rejects.toMatchObject({
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 5, expectedExtractionId: null })).rejects.toMatchObject({
         code: 'NOT_FOUND', message: 'Nothing left to undo or redo.',
       });
-      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: second })).rejects.toMatchObject({
+      await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 5, expectedExtractionId: second })).rejects.toMatchObject({
         code: 'CONFLICT', message: 'This work item changed. Reload, then undo or redo.',
       });
       await db.update(workItem).set({ extractionId: second }).where(eq(workItem.id, workItemId));
-      await expect(caller.workItems.redoRevision({ workItemId, expectedSeq: 4, expectedExtractionId: second })).resolves.toMatchObject({
-        revision: 1, revisionHead: 1, seq: 5,
+      await expect(caller.workItems.redoRevision({ workItemId, expectedSeq: 5, expectedExtractionId: second })).resolves.toMatchObject({
+        revision: 1, revisionHead: 1, seq: 6,
       });
     }));
 
