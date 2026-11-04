@@ -85,7 +85,7 @@ export function WebPanePanel({
         bridge={bridge}
         preview
         webSelectedMessageId={requireSelectedMessage ? activeEmail?.entryId ?? null : null}
-        webSelectedThreadId={sourceThreadId ?? threadId}
+        webSelectedThreadId={selection.threadId}
         onOpenThread={onOpenThread}
         goldLabelEnabled={goldLabelEnabled}
         hmsNoticesManagedByParent={hmsNoticesManagedByParent}

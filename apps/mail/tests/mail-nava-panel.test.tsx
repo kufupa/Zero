@@ -47,9 +47,9 @@ vi.mock('../lib/workstation/web-pane-bridge', () => ({
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: ({ onOpenThread, webSelectedMessageId }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
-    webSelectedMessageId?: string | null }) => (
-    <div data-testid="nava-pane" data-web-selected-message={webSelectedMessageId ?? ''}>
+  NavaPane: ({ onOpenThread, webSelectedMessageId, webSelectedThreadId }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
+    webSelectedMessageId?: string | null; webSelectedThreadId?: string }) => (
+    <div data-testid="nava-pane" data-web-selected-message={webSelectedMessageId ?? ''} data-web-selected-thread={webSelectedThreadId ?? ''}>
       <button type="button" onClick={() => onOpenThread?.('thread-a', 'source-a')}>Open source A</button>
       <button type="button" onClick={() => onOpenThread?.('thread-b', 'source-b')}>Open source B</button>
       <button type="button" onClick={() => onOpenThread?.('thread-7')}>Open thread only</button>
@@ -166,6 +166,7 @@ vi.mock('@/lib/auth-proxy', () => ({ authProxy: {} }));
 const readyPreview = () => ({
   selection: {
     status: 'ready',
+    threadId: 'linked-thread',
     email: {
       entryId: 'msg-1',
       storeId: 'transport-1',
@@ -226,6 +227,7 @@ describe('Nava pane beside the open thread', () => {
   it('does not vouch for the latest inbound in the generic viewer', () => {
     render(<WebPanePanel threadId="thread-42" />);
     expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-message')).toBe('');
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-thread')).toBe('linked-thread');
   });
 
   it('passes the selected stored message through the pane on A/B/A changes', async () => {

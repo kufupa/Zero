@@ -31,7 +31,7 @@ export type PreviewSelection =
   | { status: 'loading' }
   | { status: 'error' }
   | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' | 'select_message' | 'source_message_unavailable' }
-  | { status: 'ready'; email: WorkstationEmailPayload };
+  | { status: 'ready'; email: WorkstationEmailPayload; threadId: string };
 
 function sameAddress(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
@@ -140,7 +140,7 @@ export function selectPreviewMessage(
       return { status: 'unsynced', reason: 'source_message_unavailable' };
     }
     const email = activeEmailFromMessage(match, transportId);
-    return email ? { status: 'ready', email } : { status: 'unsynced', reason: 'no_message_id' };
+    return email ? { status: 'ready', email, threadId: match.threadId } : { status: 'unsynced', reason: 'no_message_id' };
   }
   const sourceMessages = sourceThreadId
     ? messages.filter((message) => message.threadId === sourceThreadId)
@@ -156,7 +156,7 @@ export function selectPreviewMessage(
   if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
   const email = activeEmailFromMessage(inbound, transportId);
   if (!email) return { status: 'unsynced', reason: 'no_message_id' };
-  return { status: 'ready', email };
+  return { status: 'ready', email, threadId: inbound.threadId };
 }
 
 /**

@@ -57,13 +57,14 @@ describe('latest inbound selection', () => {
       message({ id: 'in-1', receivedOn: '2026-10-08T09:00:00.000Z' }),
       message({
         id: 'in-2',
+        threadId: 'linked-thread',
         receivedOn: '2026-10-08T10:00:00.000Z',
         messageId: '<guest-2@example.com>',
       }),
       staffReply({ id: 'out-1' }),
     ];
     const selection = selectPreviewMessage(messages, MAILBOX, TRANSPORT);
-    expect(selection).toMatchObject({ status: 'ready', email: { entryId: 'in-2' } });
+    expect(selection).toMatchObject({ status: 'ready', threadId: 'linked-thread', email: { entryId: 'in-2' } });
     expect(latestInboundMessage(messages, MAILBOX)?.id).toBe('in-2');
   });
 
@@ -90,6 +91,7 @@ describe('latest inbound selection', () => {
 
     expect(selection).toMatchObject({
       status: 'ready',
+      threadId: 'quotes-thread',
       email: {
         entryId: 'quotes-source-message',
         internetMessageId: '<quotes-source@example.com>',
@@ -149,7 +151,7 @@ describe('exact webmail selection', () => {
     selectPreviewMessage(messages, MAILBOX, TRANSPORT, thread, id, true);
 
   it('binds A, then B, then A even when B is the latest message', () => {
-    expect(select('in-1')).toMatchObject({ status: 'ready', email: { entryId: 'in-1', internetMessageId: '<first@example.com>' } });
+    expect(select('in-1')).toMatchObject({ status: 'ready', threadId: 'thread-1', email: { entryId: 'in-1', internetMessageId: '<first@example.com>' } });
     expect(select('in-2')).toMatchObject({ status: 'ready', email: { entryId: 'in-2', internetMessageId: '<second@example.com>' } });
     expect(select('in-1')).toMatchObject({ status: 'ready', email: { entryId: 'in-1' } });
   });
