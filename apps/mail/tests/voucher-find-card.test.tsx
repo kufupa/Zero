@@ -42,17 +42,14 @@ function VoucherFindCard(props: ComponentProps<typeof ScopedVoucherFindCard>) {
   return <ScopedVoucherFindCard transportId="transport-1" mailboxScope="user-1:session-1:transport-1" {...props} />;
 }
 
+const PDF = { id: 'att-1', filename: 'Smith_VCH_1879000.pdf', mimeType: 'application/pdf', sizeBytes: 100 };
 const VOUCHER: VoucherFindReply = {
   status: 'voucher',
   messageId: 'm1',
   threadId: 'thread-1',
   guest: { lastName: 'Smith', arrival: '2026-11-12' },
-  file: {
-    id: 'att-1',
-    filename: 'Smith_VCH_1879000.pdf',
-    mimeType: 'application/pdf',
-    sizeBytes: 100,
-  },
+  file: PDF,
+  files: [PDF],
 };
 
 const SMITH_ROW = {
@@ -85,7 +82,9 @@ function fakeTrpc(options: {
   /** The server's job queue is off: queueSearchGuest queues nothing and returns no run id. */
   queueOff?: boolean;
 }) {
-  const voucherFind = vi.fn(async (_input: { internetMessageId: string }) => options.reply);
+  const voucherFind = vi.fn(async (_input: { internetMessageId: string; attachmentId?: string }) =>
+    options.reply.status === 'voucher' ? { ...options.reply,
+      files: options.reply.files ?? (options.reply.file ? [options.reply.file] : []) } : options.reply);
   const searchGuest = vi.fn(
     async (_input: { lastName: string; arrival: string; departure?: string }) =>
       options.search ?? { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
@@ -804,7 +803,7 @@ describe('voucher find card: saving the file', () => {
   });
 
   it('offers no save action when the email has no file', async () => {
-    const { trpc } = fakeTrpc({ reply: { ...VOUCHER, file: null } });
+    const { trpc } = fakeTrpc({ reply: { ...VOUCHER, file: null, files: [] } });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     expect(await screen.findByText(VOUCHER_COPY.noFile)).toBeTruthy();
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.save })).toBeNull();
@@ -895,7 +894,7 @@ describe('voucher find card: attach to HMS', () => {
     })) } };
     const view = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
     expect(await screen.findByText(/HMS lists the document by code and name/)).toBeTruthy();
-    expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(true);
+    expect((await screen.findByLabelText('Guest surname')).hasAttribute('disabled')).toBe(true);
     expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
     view.unmount();
     const { trpc: completed } = fakeTrpc({ reply: VOUCHER });
@@ -1089,7 +1088,15 @@ describe('voucher find card: attach to HMS', () => {
         attachmentId: 'att-1',
       },
     }));
-    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    const otherPdf = { ...PDF, id: 'att-2', filename: 'second.pdf' };
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: { ...VOUCHER, files: [PDF, otherPdf] } });
+    const query = vi.fn(async (input: { internetMessageId: string; attachmentId?: string }) => ({
+      ...VOUCHER,
+      files: [PDF, otherPdf],
+      file: input.attachmentId === 'att-2' ? otherPdf : PDF,
+      guest: input.attachmentId ? VOUCHER.guest : { lastName: 'Wrong', arrival: '2026-11-12' },
+    }));
+    trpc.quoteWorkflow.voucherFind.query = query;
     (trpc as { quoteWorkflow: Record<string, unknown> }).quoteWorkflow.bindVoucherAttach = {
       mutate: bind,
     };
@@ -1103,6 +1110,14 @@ describe('voucher find card: attach to HMS', () => {
         writesEnabled
       />,
     );
+    await screen.findByLabelText('Document');
+    expect(screen.queryByText(/Guest Wrong/)).toBeNull();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Document'), { target: { value: 'att-1' } });
+    await screen.findByText('John Smith · 57291630-1');
+    fireEvent.change(screen.getByLabelText('Document'), { target: { value: 'att-2' } });
+    expect(screen.queryByText('John Smith · 57291630-1')).toBeNull();
+    await waitFor(() => expect(query).toHaveBeenCalledWith({ internetMessageId: 'abc@host', attachmentId: 'att-2' }, MAILBOX));
     fireEvent.click(await screen.findByRole('button', { name: 'Attach to HMS booking' }));
     await waitFor(() =>
       expect(bind).toHaveBeenCalledWith({
@@ -1110,7 +1125,7 @@ describe('voucher find card: attach to HMS', () => {
         confirmation: SMITH_ROW.confirmation,
         arrival: SMITH_ROW.arrival,
         lastName: SMITH_ROW.lastName,
-        attachmentId: 'att-1',
+        attachmentId: 'att-2',
       }, MAILBOX),
     );
   });
@@ -1242,7 +1257,7 @@ describe('voucher find card: waiting for the sync', () => {
       />,
     );
     expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
-    expect(voucherFind).toHaveBeenCalledTimes(2);
+    expect(voucherFind).toHaveBeenCalledTimes(3);
     expect(screen.queryByText(VOUCHER_COPY.waitingForSync)).toBeNull();
   });
 
@@ -1283,7 +1298,7 @@ describe('voucher find card: waiting for the sync', () => {
     expect(voucherFind).toHaveBeenCalledTimes(1);
     settleFirst({ status: 'unsynced' });
     expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
-    expect(voucherFind).toHaveBeenCalledTimes(2);
+    expect(voucherFind).toHaveBeenCalledTimes(3);
   });
 
   it('a slow voucher answer is shown even when commits keep advancing while it runs', async () => {
@@ -1296,7 +1311,7 @@ describe('voucher find card: waiting for the sync', () => {
             settleFirst = resolve;
           }),
       )
-      .mockResolvedValue({ status: 'not_voucher' });
+      .mockResolvedValue(VOUCHER);
     const trpc = {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
       paneStayLookup: jobRoutesOnly(),
@@ -1312,7 +1327,7 @@ describe('voucher find card: waiting for the sync', () => {
     }
     settleFirst(VOUCHER);
     expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
-    expect(voucherFind).toHaveBeenCalledTimes(1);
+    expect(voucherFind).toHaveBeenCalledTimes(2);
   });
 });
 

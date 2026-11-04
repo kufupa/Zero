@@ -203,6 +203,12 @@ function VoucherFindCardBody({
   const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId, propertyCode, selectedSource),
     [trpc, transportId, internetMessageId, propertyCode, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
+  const [inventory, setInventory] = useState<Extract<VoucherFindReply, { status: 'voucher' }> | null>(null);
+  const [selectedFileId, setSelectedFileId] = useState('');
+  const selectedFileRef = useRef('');
+  selectedFileRef.current = selectedFileId;
+  const [verifiedFileId, setVerifiedFileId] = useState('');
+  const [fileError, setFileError] = useState(false);
   const [save, setSave] = useState<SaveStatus>('idle');
   const [attachState, setAttach] = useState<{
     key: string; workItemId: string; status: 'binding' | 'bound' | 'refused' | 'unknown';
@@ -237,7 +243,9 @@ function VoucherFindCardBody({
   // The search job runs on the voucher mail's thread, which the check's reply names.
   const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
   const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
-  const sourceMatches = selectionCurrent && (selectedSource === undefined || Boolean(selectedSource &&
+  const fileReady = Boolean(selectedFileId && verifiedFileId === selectedFileId &&
+    reply?.status === 'voucher' && reply.file?.id === selectedFileId);
+  const sourceMatches = fileReady && selectionCurrent && (selectedSource === undefined || Boolean(selectedSource &&
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
   const transport = useMemo(
@@ -247,7 +255,7 @@ function VoucherFindCardBody({
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
-    reply?.status === 'voucher' && canSearchVoucher(reply.guest)
+    fileReady && reply?.status === 'voucher' && canSearchVoucher(reply.guest)
       ? searchRequestFor({ lastName: reply.guest.lastName, arrival: reply.guest.arrival })
       : null;
   const resumeFor = voucherSearch && 'request' in voucherSearch ? voucherSearch.request : null;
@@ -258,7 +266,7 @@ function VoucherFindCardBody({
       resumeFor?.kind === 'search_guest'
         ? { kind: 'search_guest', lastName: resumeFor.lastName, arrival: resumeFor.arrival, departure: null }
         : null,
-    scope: internetMessageId,
+    scope: JSON.stringify([internetMessageId, selectedFileId]),
     autoStartIfMissing: canSearch,
     targetId: 'quote-voucher-find',
   });
@@ -300,7 +308,7 @@ function VoucherFindCardBody({
     transport,
     // Explicit picks always get a new exact read; a previous result is not proof of the current row.
     resume: detailsRequested && !pickedMatch ? detailRequest : null,
-    scope: internetMessageId,
+    scope: JSON.stringify([internetMessageId, selectedFileId]),
     targetId: 'quote-voucher-find',
   });
   const detailsRequestMatches = Boolean(detailRequest && detailsJob.view?.request?.kind === 'find' &&
@@ -319,7 +327,7 @@ function VoucherFindCardBody({
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = selectedMatch !== null && (!detailsRequested || retryableDetails);
 
-  const replySeed = reply?.status === 'voucher' ? JSON.stringify([reply.messageId, reply.threadId, reply.guest, reply.file]) : null;
+  const replySeed = fileReady && reply?.status === 'voucher' ? JSON.stringify([reply.messageId, reply.threadId, reply.guest, reply.file]) : null;
   useEffect(() => {
     if (!replySeed || reply?.status !== 'voucher' || seededReply.current === replySeed) return;
     seededReply.current = replySeed;
@@ -395,6 +403,10 @@ function VoucherFindCardBody({
         }
         showingUnsynced.current = next.status === 'unsynced';
         setReply(next);
+        if (next.status === 'voucher') {
+          setInventory(next);
+          if (next.files?.length === 1) setSelectedFileId(next.files[0]!.id);
+        }
       },
       () => {
         if (!live) return;
@@ -406,6 +418,27 @@ function VoucherFindCardBody({
       live = false;
     };
   }, [findClient, internetMessageId, lookupSelection, checkRound]);
+
+  useEffect(() => {
+    if (!findClient || !internetMessageId || !selectedFileId || !inventory?.files?.some((file) => file.id === selectedFileId)) return;
+    let live = true;
+    setVerifiedFileId('');
+    setFileError(false);
+    findClient.check({ internetMessageId, ...(lookupSelection ? { selection: lookupSelection } : {}), attachmentId: selectedFileId }).then(
+      (next) => {
+        if (!live) return;
+        if (next.status !== 'voucher' || next.messageId !== inventory.messageId || next.threadId !== inventory.threadId ||
+            next.file?.id !== selectedFileId || !next.files?.some((file) => file.id === selectedFileId)) {
+          setFileError(true);
+          return;
+        }
+        setReply(next);
+        setVerifiedFileId(selectedFileId);
+      },
+      () => { if (live) setFileError(true); },
+    );
+    return () => { live = false; };
+  }, [findClient, internetMessageId, lookupSelection, selectedFileId, inventory]);
 
   // A commit while an unsynced answer shows starts one more check. A commit during a running check is compared when
   // that check answers, so the running check is left alone.
@@ -450,7 +483,8 @@ function VoucherFindCardBody({
     );
   }
   if (reply.status !== 'voucher') return null;
-  const { guest, file } = reply;
+  const { guest } = reply;
+  const file = fileReady ? reply.file : null;
   const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
@@ -511,9 +545,9 @@ function VoucherFindCardBody({
           downloads.current.delete(controller);
         }
       }
-      if (mounted.current) setSave('saved');
+      if (mounted.current && selectedFileRef.current === file.id) setSave('saved');
     } catch {
-      if (mounted.current) setSave('failed');
+      if (mounted.current && selectedFileRef.current === file.id) setSave('failed');
     }
   };
   const listedWithHold = attachWrite?.run?.lastError === 'confirmed_hold_unsettled';
@@ -536,6 +570,20 @@ function VoucherFindCardBody({
     detailsStartedFor.current = null;
     setSearchRevision((revision) => revision + 1);
     targetChanged.current?.();
+  };
+  const selectFile = (id: string) => {
+    if (searchFrozen || bindingRequest.current || id === selectedFileId) return;
+    invalidateTarget();
+    setVerifiedFileId('');
+    setFileError(false);
+    selectedFileRef.current = id;
+    setSelectedFileId(id);
+    setSearchForm({ lastName: '', arrival: '', departure: '' });
+    setSubmittedSearch(null);
+    setSearchError(null);
+    setPreview(null);
+    setSave('idle');
+    seededReply.current = null;
   };
   const editSearch = (field: keyof VoucherSearchForm, value: string) => {
     if (searchFrozen || bindingRequest.current) return;
@@ -635,12 +683,28 @@ function VoucherFindCardBody({
     <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
       <p className={captionClass}>{propertyCode === 'HRCEN'
         ? 'Find the booking and review the document before upload.' : VOUCHER_COPY.caption}</p>
-      {line ? (
+      {inventory?.files && inventory.files.length > 0 ? (
+        <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
+          Document
+          <select value={selectedFileId} disabled={searchFrozen} onChange={(event) => selectFile(event.target.value)}
+            className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12px]">
+            <option value="">Select a PDF</option>
+            {inventory.files.map((candidate) => <option data-pii key={candidate.id} value={candidate.id}>{candidate.filename}</option>)}
+          </select>
+        </label>
+      ) : <Notice tone="warn">{inventory?.files ? VOUCHER_COPY.noFile : 'Document list unavailable. Reopen this email.'}</Notice>}
+      {selectedFileId && !fileReady ? <Notice tone={fileError ? 'warn' : undefined} role="status">
+        {fileError ? 'Could not read this document. Select it again or reopen the email.' : 'Reading selected document…'}
+      </Notice> : null}
+      {!fileReady && (unconfirmedAttach || listedWithHold) ? <Notice tone="warn">
+        {listedWithHold ? VOUCHER_ATTACH_COPY.listedWithHold : 'Check the filing status in Infor before another upload.'}
+      </Notice> : null}
+      {fileReady && line ? (
         <p data-pii className={valueClass}>
           {line}
         </p>
       ) : null}
-      {warnings.length > 0 ? (
+      {fileReady && warnings.length > 0 ? (
         <Notice tone="warn">
           <ul className="flex list-disc flex-col gap-0.5 pl-4">
             {warnings.map((text) => (
@@ -651,11 +715,11 @@ function VoucherFindCardBody({
           </ul>
         </Notice>
       ) : null}
-      {!sourceMatches ? <Notice tone="warn">Select this email again to find its booking.</Notice> : null}
+      {fileReady && !sourceMatches ? <Notice tone="warn">Select this email again to find its booking.</Notice> : null}
       {bindingFrozen && attachState?.status === 'unknown' ? (
         <Notice tone="warn">Nava could not confirm preparation. Reopen this email and check the filing status.</Notice>
       ) : null}
-      <form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); searchByFields(); }}>
+      {fileReady ? <><form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); searchByFields(); }}>
         <p className={captionClass}>Search by guest surname and arrival date.</p>
         <div className="grid grid-cols-3 gap-2">
           <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
@@ -700,9 +764,6 @@ function VoucherFindCardBody({
             <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
               {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
             </SecondaryButton>
-            <span data-pii className={captionClass}>
-              {file.filename}
-            </span>
             {save === 'saved' && !unconfirmedAttach ? (
               <span role="status" className={infoNoteClass}>
                 {VOUCHER_COPY.saved}
@@ -756,7 +817,7 @@ function VoucherFindCardBody({
             onAttach={() => void bindAttach()}
           />
         ) : null}
-      </div>
+      </div></> : null}
     </Section>
   );
 }

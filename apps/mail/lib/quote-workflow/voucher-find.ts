@@ -31,17 +31,19 @@ export type VoucherFindReply =
       threadId?: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
+      /** Eligible source PDFs; facts are usable only after querying one selected id. */
+      files?: VoucherFile[];
       /** Voucher PDFs whose text was not read. Optional so older replies still type-check. The quote panel names each file. */
       unreadPdfs?: number;
     };
 
 export type VoucherFindClient = {
-  check: (input: MailSourceInput) => Promise<VoucherFindReply>;
+  check: (input: MailSourceInput & { attachmentId?: string }) => Promise<VoucherFindReply>;
 };
 
 type TrpcVoucherRoutes = {
   quoteWorkflow?: {
-    voucherFind?: { query: (input: MailSourceInput, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
+    voucherFind?: { query: (input: MailSourceInput & { attachmentId?: string }, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
   };
 };
 
