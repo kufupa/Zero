@@ -13,8 +13,13 @@ import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-gu
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const OPEN = '/web/base/BSUPLD', CHECK = '/web/base/BSUPLD.checkfile';
 const UPLOAD = '/web/base/BSUPLD.upload', REFRESH = '/web/base/OSRESV.DOC';
-const FIELD_NAMES = ['documentcode', 'description', 'organization', 'filename', 'filepath', 'multiorg',
-  'typecode', 'uploaddoc', 'pagemode', 'recordid', 'uploadorcreatedoc', 'daeRentity', 'daeType', 'daeCode', 'pages', 'filetype'];
+// Only the document staff selected and the native action/target need to match.
+// HMS may add other controls without changing the approved upload.
+const DOCUMENT_FIELDS = ['documentcode', 'description', 'organization', 'filename', 'typecode',
+  'uploaddoc', 'uploadorcreatedoc', 'daeRentity', 'daeCode'];
+const relevantFields = new Map([...DOCUMENT_FIELDS, 'callerorg', 'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME']
+  .map((name) => [name.toLowerCase(), name]));
+const unexpectedAction = (name) => /^(pageaction|autosave)$/i.test(name);
 const usedPages = new WeakSet();
 const neverDispatchedAttachProofs = new WeakMap();
 const text = (v) => v == null ? '' : String(v);
@@ -29,32 +34,44 @@ export function consumeNeverDispatchedAttachProof(proof, request) {
   return true;
 }
 
-// Derive all fields from the staged native model and controls, not a captured stay.
+// Derive the staged values without requiring unrelated model fields to have a particular shape.
 export function documentValidationFields(snapshot) {
   if (!snapshot?.data || typeof snapshot.data !== 'object' || Array.isArray(snapshot.data) || !Array.isArray(snapshot.fields)) return null;
   const names = Object.keys(snapshot.data);
-  if (!names.length || new Set(names.map((name) => name.toLowerCase())).size !== names.length ||
-      names.some((name) => !scalar(snapshot.data[name]))) return null;
-  const fields = new Map(names.map((name) => [name, text(snapshot.data[name])]));
+  const fields = new Map(), modelSeen = new Set();
+  for (const name of names) {
+    const canonical = relevantFields.get(name.toLowerCase());
+    if (canonical && (name !== canonical || modelSeen.has(canonical) || !scalar(snapshot.data[name]))) return null;
+    if (canonical) modelSeen.add(canonical);
+    if (scalar(snapshot.data[name])) fields.set(name, text(snapshot.data[name]));
+  }
   const seen = new Set();
   for (const field of snapshot.fields) {
-    if (!field?.name || seen.has(field.name.toLowerCase())) return null;
-    seen.add(field.name.toLowerCase());
-    if (fields.has(field.name) && field.submit != null) {
-      if (!scalar(field.submit)) return null;
+    if (typeof field?.name !== 'string' || !field.name) continue;
+    const canonical = relevantFields.get(field.name.toLowerCase());
+    if (canonical && (field.name !== canonical || seen.has(canonical) || !scalar(field.submit))) return null;
+    if (canonical) seen.add(canonical);
+    if ((fields.has(field.name) || canonical) && field.submit != null && scalar(field.submit)) {
       fields.set(field.name, text(field.submit));
     }
   }
-  if (fields.has('SYSTEM_FUNCTION_NAME') || fields.has('USER_FUNCTION_NAME')) return null;
+  if (['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME'].some((name) => fields.get(name) && fields.get(name) !== 'BSUPLD')) return null;
   fields.set('SYSTEM_FUNCTION_NAME', 'BSUPLD');
   fields.set('USER_FUNCTION_NAME', 'BSUPLD');
   return fields;
 }
 
+function selectedFields(fields, names) {
+  if (!(fields instanceof Map) || names.some((name) => !fields.has(name))) return null;
+  return new Map(names.map((name) => [name, fields.get(name)]));
+}
+
 export function exactDocumentParams(params, expected) {
-  const keys = [...params.keys()];
-  return expected instanceof Map && keys.length === expected.size && new Set(keys).size === keys.length &&
-    keys.every((key) => expected.has(key) && params.get(key) === expected.get(key));
+  if (!(expected instanceof Map) || !expected.size || [...params.keys()].some(unexpectedAction)) return false;
+  return [...expected].every(([name, value]) => {
+    const matches = [...params.keys()].filter((key) => key.toLowerCase() === name.toLowerCase());
+    return matches.length === 1 && matches[0] === name && params.get(name) === value;
+  });
 }
 
 export function matchesDocumentMultipart(request, expected, file) {
@@ -66,17 +83,23 @@ export function matchesDocumentMultipart(request, expected, file) {
     const body = data.toString('latin1'), delimiter = `--${boundary}`;
     if (!body.startsWith(`${delimiter}\r\n`) || !body.endsWith(`${delimiter}--\r\n`)) return false;
     const parts = body.slice(delimiter.length + 2, -(delimiter.length + 6)).split(`\r\n${delimiter}\r\n`);
-    if (parts.length !== FIELD_NAMES.length + 1) return false;
+    const required = selectedFields(expected, DOCUMENT_FIELDS);
+    if (!required) return false;
     const values = new Map(); let fileCount = 0;
     for (const part of parts) {
       const split = part.indexOf('\r\n\r\n');
       if (split < 0 || split > 4096) return false;
       const lines = part.slice(0, split).split('\r\n'), payload = part.slice(split + 4);
       const dispositions = lines.filter((line) => /^content-disposition:/i.test(line));
-      if (dispositions.length !== 1) return false;
-      const name = /(?:^|;)\s*name="([^"\r\n]+)"/i.exec(dispositions[0])?.[1];
-      const filename = /(?:^|;)\s*filename="([^"\r\n]*)"/i.exec(dispositions[0])?.[1];
-      if (filename !== undefined) {
+      if (dispositions.length !== 1 || !/^content-disposition:\s*form-data(?:\s*;|$)/i.test(dispositions[0])) return false;
+      const disposition = dispositions[0];
+      const names = [...disposition.matchAll(/(?:^|;)\s*name(?:\*)?\s*=/gi)];
+      const name = /(?:^|;)\s*name\s*=\s*"([^"\r\n]+)"/i.exec(disposition)?.[1];
+      const filenames = [...disposition.matchAll(/(?:^|;)\s*filename(?:\*)?\s*=/gi)];
+      const filename = /(?:^|;)\s*filename\s*=\s*"([^"\r\n]*)"/i.exec(disposition)?.[1];
+      if (names.length !== 1 || !name || unexpectedAction(name)) return false;
+      if (filenames.length) {
+        if (filenames.length !== 1 || filename === undefined) return false;
         const decodedFilename = Buffer.from(filename, 'latin1').toString('utf8');
         if (name !== 'filename' || decodedFilename !== file.name ||
             Buffer.from(decodedFilename, 'utf8').toString('latin1') !== filename || ++fileCount !== 1 ||
@@ -84,27 +107,32 @@ export function matchesDocumentMultipart(request, expected, file) {
             lines.filter((line) => /^content-type:/i.test(line)).length !== 1 ||
             lines.find((line) => /^content-type:/i.test(line)).slice(13).trim().toLowerCase() !== file.mimeType.toLowerCase()) return false;
       } else {
-        if (!FIELD_NAMES.includes(name) || values.has(name) ||
-            !Buffer.from(payload, 'latin1').equals(Buffer.from(expected.get(name), 'utf8'))) return false;
-        values.set(name, payload);
+        const contentTypes = lines.filter((line) => /^content-type:/i.test(line));
+        if (contentTypes.length > 1 || (contentTypes.length === 1 &&
+            !/^content-type:\s*text\/plain(?:\s*;|\s*$)/i.test(contentTypes[0]))) return false;
+        const canonical = relevantFields.get(name.toLowerCase());
+        if (canonical && required.has(canonical)) {
+          if (canonical !== name || values.has(name) ||
+              !Buffer.from(payload, 'latin1').equals(Buffer.from(required.get(name), 'utf8'))) return false;
+          values.set(name, payload);
+        }
       }
     }
-    return fileCount === 1 && values.size === FIELD_NAMES.length;
+    return fileCount === 1 && [...required.keys()].every((name) => values.has(name));
   } catch { return false; }
 }
 
 export function matchesDocumentUpload(request, frame, expected, file, token) {
   try {
     const url = new URL(request.url()), params = url.searchParams, child = request.frame();
-    const queryFields = FIELD_NAMES.filter((name) => name !== 'filetype');
-    const keys = [...queryFields, 'requestToken', 'browserTabID', 'isPopup'];
+    const queryFields = selectedFields(expected, DOCUMENT_FIELDS);
+    if (!queryFields) return false;
+    queryFields.set('requestToken', token.get('requestToken'));
+    queryFields.set('browserTabID', token.get('browserTabID'));
+    queryFields.set('isPopup', 'true');
     return request.method() === 'POST' && request.isNavigationRequest() && child.parentFrame() === frame &&
-      /^ext-gen\d+$/.test(child.name()) && child.url() === 'about:blank' && url.origin === ORIGIN &&
-      url.pathname === UPLOAD && !url.hash && [...params.keys()].length === keys.length &&
-      new Set(params.keys()).size === keys.length && [...params.keys()].every((key) => keys.includes(key)) &&
-      queryFields.every((name) => params.get(name) === expected.get(name)) &&
-      params.get('requestToken') === token.get('requestToken') && params.get('browserTabID') === token.get('browserTabID') &&
-      params.get('isPopup') === 'true' && matchesDocumentMultipart(request, expected, file);
+      child.url() === 'about:blank' && url.origin === ORIGIN && url.pathname === UPLOAD && !url.hash &&
+      exactDocumentParams(params, queryFields) && matchesDocumentMultipart(request, expected, file);
   } catch { return false; }
 }
 
@@ -263,7 +291,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   usedPages.add(page);
   let frame, fence, scope, refresh, refreshInvalid = false, refreshResponse, initAllowed = false, checkCandidate, uploadCandidate;
   let armed = false, possible = false, dispatched = false, checkStatus = null, uploadStatus = null, refreshCandidate, refreshStatus = null;
-  let stopped = null, blocked = 0, evidenceDir = null, token, expectedFields, baseline, uploadGate;
+  let stopped = null, blocked = 0, evidenceDir = null, token, expectedFields, checkFields, baseline, uploadGate;
   let notifyResponses;
   const responsesObserved = new Promise((resolve) => { notifyResponses = resolve; });
   let notifyStop;
@@ -294,13 +322,13 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       try {
         const url = new URL(request.url());
         if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== REFRESH || url.search || url.hash) return;
-        const params = new URLSearchParams(request.postData() || ''), keys = [...params.keys()];
-        if (new Set(keys).size !== keys.length || params.get('CURRENT_TAB_NAME') !== 'DOC' ||
-            params.get('confirmationnumber') !== expected.confirmation || params.get('reservationstayid') !== state.native.reservationstayid ||
-            params.get('propertycode') !== 'HRCEN' || params.get('daeRentity') !== 'RESV' ||
-            params.get('daeCode') !== `${state.native.reservationid}#${expected.confirmation}#HRCEN`) return;
+        const params = new URLSearchParams(request.postData() || '');
+        const target = new Map(Object.entries({ CURRENT_TAB_NAME: 'DOC', confirmationnumber: expected.confirmation,
+          reservationstayid: state.native.reservationstayid, propertycode: 'HRCEN', daeRentity: 'RESV',
+          daeCode: `${state.native.reservationid}#${expected.confirmation}#HRCEN` }));
+        if (!exactDocumentParams(params, target)) return;
         if (refresh || refreshInvalid) { refreshInvalid = true; return; }
-        refresh = { request, body: new Map(params) };
+        refresh = { request, body: target };
       } catch { /* Treat incomplete request observations as unverified. */ }
     };
     const onResponse = (response) => {
@@ -318,8 +346,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     }
     fence = await bounded(installPageRequestFence(page, [CHECK, UPLOAD])); scope = fence.open();
     await bounded(context.routeWebSocket('**/*', (socket) => socket.close()));
-    const init = new Map(Object.entries({ SYSTEM_FUNCTION_NAME: 'BSUPLD', USER_FUNCTION_NAME: 'BSUPLD', popup: 'true',
-      pagemode: 'display', callerfunc: 'BSDOCA', organization: '', daeRentity: 'RESV',
+    const init = new Map(Object.entries({ SYSTEM_FUNCTION_NAME: 'BSUPLD', USER_FUNCTION_NAME: 'BSUPLD', daeRentity: 'RESV',
       daeCode: `${state.native.reservationid}#${expected.confirmation}#HRCEN` }));
     const sameFrame = (request) => { try { return request.frame() === frame; } catch { return false; } };
     await context.route('**/*', async (route) => {
@@ -328,7 +355,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) {
         initAllowed = true; return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
       }
-      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, expectedFields)) {
+      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, checkFields)) {
         return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
       }
       if (!stopped && uploadGate) {
@@ -348,7 +375,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       try { path = new URL(request.url()).pathname; } catch { rejectRequest(); return route.abort(); }
       if ([CHECK.toLowerCase(), UPLOAD.toLowerCase()].includes(path.toLowerCase())) {
         const match = !stopped && armed && (path === CHECK
-          ? !checkCandidate && matchesForm(request, CHECK, frame, expectedFields)
+          ? !checkCandidate && matchesForm(request, CHECK, frame, checkFields)
           : !uploadCandidate && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token));
         if (match && scope.allow(request)) {
           if (path === CHECK) checkCandidate = request; else uploadCandidate = request;
@@ -380,7 +407,8 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       return { data, fields: fields.map((field) => ({ name: field.getName?.(), submit: field.getSubmitValue?.() })) };
     }));
     expectedFields = documentValidationFields(staged);
-    if (!expectedFields || expectedFields.get('documentcode') !== file.documentCode || expectedFields.get('description') !== file.description ||
+    checkFields = selectedFields(expectedFields, [...DOCUMENT_FIELDS, 'callerorg', 'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME']);
+    if (!checkFields || expectedFields.get('documentcode') !== file.documentCode || expectedFields.get('description') !== file.description ||
         expectedFields.get('filename') !== `C:\\fakepath\\${file.name}` || expectedFields.get('organization') !== 'HRCEN' ||
         expectedFields.get('callerorg') !== 'HRCEN' || expectedFields.get('daeRentity') !== 'RESV' ||
         expectedFields.get('daeCode') !== init.get('daeCode') || expectedFields.get('uploaddoc') !== 'U' ||
@@ -388,7 +416,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       throw new Error('DOCUMENT_DRAFT_UNVERIFIED');
     }
     token = new URLSearchParams(`requestToken=${await bounded(frame.evaluate(() => EAM.AppData.generateRequestToken()))}`);
-    if ([...token.keys()].length !== 2 || token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
+    if (token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');
     uploadGate = createDocumentUploadGate({ frame, fields: expectedFields, file, token, evidenceDir,
       confirmation: expected.confirmation, deadline,
