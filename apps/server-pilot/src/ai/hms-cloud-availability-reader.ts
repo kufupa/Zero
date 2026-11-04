@@ -1,5 +1,4 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AvailabilityRequest, RateContext } from './hms-availability.js';
 import { buildCloudRateCandidates, orderRateCandidates, rateContextKey, type RateCandidate } from './rate-options.js';
@@ -385,7 +384,8 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
     }>,
     import(guardUrl.href) as Promise<{ installReadOnlyGuard: (context: unknown) => Promise<void> }>,
   ]);
-  const directory = await mkdtemp(join(tmpdir(), PRIVATE_SNAPSHOT_PREFIX));
+  // /tmp itself is a Git worktree on this host; use the proven saved-stay quote location.
+  const directory = await mkdtemp(join('/var/tmp', PRIVATE_SNAPSHOT_PREFIX));
   try {
     return await bootstrap.withCenturionStay360Page(async (page) => {
       const groups: CloudAvailabilityGroupRead[] = [];
