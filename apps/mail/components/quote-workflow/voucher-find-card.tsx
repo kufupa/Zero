@@ -289,7 +289,8 @@ function VoucherFindCardBody({
       : null;
   const pickedMatch = picked && picked.searchKey === submittedKey && searchRun?.kind === 'rows' &&
     searchRun.rows.some((row) => JSON.stringify(row) === JSON.stringify(picked.row)) ? picked.row : null;
-  const selectedMatch = pickedMatch ?? singleMatch;
+  // For Cloud filing, even one surname match needs an explicit choice and an exact fresh HMS read.
+  const selectedMatch = pickedMatch ?? (propertyCode === 'HRCEN' ? null : singleMatch);
   const previewKey = JSON.stringify([internetMessageId, selectionEpoch, selectedSource?.sourceHash, workItemId,
     replyMessageId, approvalAvailable, searchRevision, currentSearchKey,
     reply?.status === 'voucher' ? reply.file : null,
@@ -617,7 +618,8 @@ function VoucherFindCardBody({
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
   const arrivalForMatch = selectedMatch?.arrival ?? submittedSearch?.arrival ?? '';
-  const targetVerified = Boolean(selectedMatch && detailRequest?.arrival && (!pickedMatch || pickedVerified) &&
+  const targetVerified = Boolean(selectedMatch && detailRequest?.arrival &&
+    (propertyCode === 'HRCEN' ? pickedVerified : !pickedMatch || pickedVerified) &&
     sendableArrival(arrivalForMatch));
   const canAttach = Boolean(propertyCode && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !searchFrozen && attach !== 'bound' &&
@@ -696,9 +698,11 @@ function VoucherFindCardBody({
       {selectedFileId && !fileReady ? <Notice tone={fileError ? 'warn' : undefined} role="status">
         {fileError ? 'Could not read this document. Select it again or reopen the email.' : 'Reading selected document…'}
       </Notice> : null}
-      {!fileReady && (unconfirmedAttach || listedWithHold) ? <Notice tone="warn">
-        {listedWithHold ? VOUCHER_ATTACH_COPY.listedWithHold : 'Check the filing status in Infor before another upload.'}
+      {(!fileReady || !selectedMatch) && (unconfirmedAttach || listedWithHold) ? <Notice tone="warn" role="status">
+        {listedWithHold ? VOUCHER_ATTACH_COPY.listedWithHold : VOUCHER_ATTACH_COPY.checkInInfor}
       </Notice> : null}
+      {fileReady && !selectedMatch && attachSucceeded && !unconfirmedAttach && (attachWrite?.run?.evidence.length ?? 0) > 0
+        ? <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.documentsRow}</p> : null}
       {fileReady && line ? (
         <p data-pii className={valueClass}>
           {line}
@@ -755,7 +759,7 @@ function VoucherFindCardBody({
         queueFailed={currentResult && searchJob.queueFailed}
         queueFailureMessage={searchJob.queueFailureMessage ?? AMEND_FIND_COPY.searchFailed}
       />
-      {searchRun && !singleMatch && !searchJob.queueFailed ? <SearchResult run={searchRun} onPick={pickBooking}
+      {searchRun && (propertyCode === 'HRCEN' || !singleMatch) && !searchJob.queueFailed ? <SearchResult run={searchRun} onPick={pickBooking}
         selected={pickedMatch} arrival={submittedSearch?.arrival ?? ''} disabled={searchFrozen} /> : null}
       {currentResult && searchJob.view?.status === 'done' ? <HmsAsOf asOf={searchJob.view.asOf} /> : null}
       <div data-testid="voucher-save-and-match" className="flex flex-col gap-2 sm:flex-row sm:items-start">
