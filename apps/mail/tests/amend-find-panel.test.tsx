@@ -2266,7 +2266,9 @@ describe('AmendLookupPanel amend form', () => {
             arrival: request.arrival, fields: request.changes, cloudAmend: { bound: true,
               approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', options: [] },
               preserved: { agency: null, organization: null } } }, before: { fields: {} },
-          snapshot: { readAt: AS_OF, stale: false }, grant: null, run: null, needsCheck: false };
+          snapshot: { readAt: AS_OF, stale: false }, grant: null,
+          run: { runId: 'b0f24507-0c25-4c82-a929-bc3ce167d3ef', state: 'failed', failureClass: null,
+            lastError: null, evidence: [], reviewed: null }, needsCheck: false };
           return { status: 'bound', formDigest: DIGEST, previewDigest: DIGEST, readAt: AS_OF };
         }) },
         cloudAmendState: { query: state },
@@ -2285,11 +2287,12 @@ describe('AmendLookupPanel amend form', () => {
       await pressFind();
       fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
       fireEvent.click(await screen.findByRole('button', { name: 'Review change for approval' }));
-      fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve again' }));
       await waitFor(() => expect(pendingGo.finish).toBeDefined());
       const readsBeforeEdit = state.mock.calls.length;
       fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '2' } });
       await waitFor(() => expect(state.mock.calls.length).toBeGreaterThan(readsBeforeEdit));
+      await screen.findByText(/Nothing was confirmed in HMS/);
       pendingGo.finish?.();
       fireEvent.click(await screen.findByRole('button', { name: 'Review OK' }, { timeout: 6500 }));
       await waitFor(() => expect(review).toHaveBeenCalledWith(expect.objectContaining({

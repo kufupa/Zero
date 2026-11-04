@@ -29,7 +29,7 @@ type Routes = {
   cloudAmendEvidence: { query(input: { workItemId: string; source: CloudAmendRequest['source']; eventId: string }, options: MailOptions): Promise<unknown> };
 };
 
-export type CloudAmendClient = { dispose(): void; prepare(): Promise<boolean>; approval: HmsApprovalClient };
+export type CloudAmendClient = { dispose(): void; prepare(): Promise<boolean>; approval: HmsApprovalClient; resumeKey: string | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -79,12 +79,12 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
       if (result === null || !current()) throw new Error('state_changed');
       return result;
     };
-    let data: CloudAmendRequest, digest: string | null = null;
+    let data: CloudAmendRequest, digest: string | null = null, resumeKey: string | null = null;
     if (scope.resume) {
       // Resume is a source-scoped read, so it remains available even if the
       // write flag has since been turned off. Never invent choices from HMS.
       const state = await call(() => complete.cloudAmendState.query(selected.data, mailbox));
-      if (!isRecord(state) || !isRecord(state.run) || !isRecord(state.form) ||
+      if (!isRecord(state) || !isRecord(state.run) || typeof state.run.runId !== 'string' || !state.run.runId || !isRecord(state.form) ||
           !isRecord(state.form.cloudAmend) || state.form.cloudAmend.bound !== true ||
           typeof state.formDigest !== 'string' || !/^[a-f0-9]{64}$/.test(state.formDigest)) { dispose(); return null; }
       const restored = requestSchema.safeParse({ ...selected.data, confirmation: state.form.confirmation,
@@ -92,6 +92,7 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
       if (!restored.success) { dispose(); return null; }
       data = restored.data;
       digest = state.formDigest;
+      resumeKey = JSON.stringify([digest, state.run.runId]);
     } else {
       const ready = await call(() => complete.cloudAmendReady.query(undefined, mailbox));
       if (!isRecord(ready) || ready.ready !== true || !request.success) { dispose(); return null; }
@@ -144,6 +145,6 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
         return await call(() => complete.cloudAmendEvidence.query({ workItemId, source: data.source, eventId }, mailbox)) as Awaited<ReturnType<HmsApprovalClient['evidence']>>;
       },
     };
-    return { dispose, async prepare() { try { return Boolean(await prepare()); } catch { return false; } }, approval };
+    return { dispose, async prepare() { try { return Boolean(await prepare()); } catch { return false; } }, approval, resumeKey };
   } catch { dispose(); return null; }
 }
