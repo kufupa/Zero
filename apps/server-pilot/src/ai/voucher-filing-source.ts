@@ -37,11 +37,12 @@ export type VoucherSourceDependencies = {
   checkAuthority: () => Promise<boolean>;
 };
 type Snapshot = { source: VoucherSource; receipt: SyncSealedArtifact };
+type SnapshotDependencies = { db: DB; storage: Pick<VoucherSourceStorage, 'bucket'> };
 type Refusal = { status: 'refused'; reason: 'source_unavailable' };
 const refused = (): Refusal => ({ status: 'refused', reason: 'source_unavailable' });
 
 /** Reconstruct only from mailbox-scoped DB rows and a uniquely accepted Outlook receipt. */
-async function resolveSnapshot(input: SourceIdentity, deps: VoucherSourceDependencies): Promise<Snapshot | null> {
+async function resolveSnapshot(input: SourceIdentity, deps: SnapshotDependencies): Promise<Snapshot | null> {
   if (![input.transportId, input.messageId, input.attachmentId].every((value) =>
     typeof value === 'string' && value.length > 0 && value.length <= 200)) return null;
   if (typeof deps.storage.bucket !== 'string' || !deps.storage.bucket || deps.storage.bucket.length > 255) return null;
@@ -116,7 +117,7 @@ async function resolveSnapshot(input: SourceIdentity, deps: VoucherSourceDepende
 }
 
 /** Resolve a later Outlook variant using its accepted artifact and unique committed canonical observation. */
-export async function resolveLinkedVoucherSnapshot(input: SourceIdentity, deps: VoucherSourceDependencies): Promise<Snapshot | null> {
+export async function resolveLinkedVoucherSnapshot(input: SourceIdentity, deps: SnapshotDependencies): Promise<Snapshot | null> {
   if (![input.transportId, input.messageId, input.attachmentId].every((v) => typeof v === 'string' && v.length > 0 && v.length <= 200) ||
       typeof deps.storage.bucket !== 'string' || !deps.storage.bucket || deps.storage.bucket.length > 255) return null;
   const rows = await deps.db.select({ filename: attachment.filename, mimeType: attachment.mimeType,
@@ -190,6 +191,11 @@ export async function resolveLinkedVoucherSnapshot(input: SourceIdentity, deps: 
     receipt: receipt.data };
 }
 
+/** Resolve the same sealed receipt without network I/O, including in a locked transaction. */
+export async function resolveOutlookVoucherSnapshot(input: SourceIdentity, deps: SnapshotDependencies): Promise<Snapshot | null> {
+  return await resolveSnapshot(input, deps) ?? await resolveLinkedVoucherSnapshot(input, deps);
+}
+
 /** Read POP3 rows by the authenticated message and attachment IDs, never by a client object key. */
 async function loadPop3Record(input: SourceIdentity, deps: VoucherSourceDependencies): Promise<Pop3FilingRecord | null> {
   const rows = await deps.db.select({
@@ -222,7 +228,7 @@ async function acquire(input: SourceIdentity, deps: VoucherSourceDependencies, a
         readBounded: async (key, maxBytes, signal) => (await storage.getObjectBounded(key, maxBytes, signal))?.body ?? null,
       }, approved);
     }
-    const snapshot = await resolveSnapshot(input, deps) ?? await resolveLinkedVoucherSnapshot(input, deps);
+    const snapshot = await resolveOutlookVoucherSnapshot(input, deps);
     if (!snapshot || (approved && (snapshot.source.transportId !== approved.transportId ||
         snapshot.source.messageId !== approved.messageId || snapshot.source.attachmentId !== approved.attachmentId ||
         snapshot.source.filename !== approved.filename || snapshot.source.mimeType !== approved.mimeType ||
@@ -236,11 +242,16 @@ async function acquire(input: SourceIdentity, deps: VoucherSourceDependencies, a
     if (bytes.length !== snapshot.receipt.bytes || sha(bytes) !== snapshot.source.sha256 ||
         !bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))) return null;
     if (await deps.checkAuthority() !== true) return null;
-    const current = await resolveSnapshot(input, deps) ?? await resolveLinkedVoucherSnapshot(input, deps);
+    const current = await resolveOutlookVoucherSnapshot(input, deps);
     if (!current || current.source.snapshotDigest !== snapshot.source.snapshotDigest || deps.signal.aborted ||
         await deps.checkAuthority() !== true || deps.signal.aborted) return null;
     return { source: snapshot.source, bytes };
   } catch { return null; }
+}
+
+/** Read selected sealed bytes for discovery and pane filing, with the same receipt checks as execution. */
+export async function readVoucherDiscoverySource(input: SourceIdentity, deps: VoucherSourceDependencies, expected?: VoucherSource) {
+  return acquire(input, deps, expected);
 }
 
 /** The returned source must be durably included in the staff-approved form before any execution. */

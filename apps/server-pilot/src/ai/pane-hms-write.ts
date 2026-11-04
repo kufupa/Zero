@@ -20,14 +20,13 @@ import {
   readAuthorizedArtifactBytes,
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
-import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { getS3Storage } from '../storage/s3.js';
 import { assertHmsReadOriginAllowed, CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { canonicalJson } from './draft-approval.js';
 import { assertNoCreateDispatchFence, CreateFenceError } from './pane-create-dispatch-fence.js';
 import { currentFilingSourceThread } from './pane-filing-preview.js';
-import { lockBoundFilingSource, readBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
+import { lockBoundFilingSource, readBoundFilingSource, readPaneFilingAttachment, type BoundFilingForm } from './pane-filing-source.js';
 import {
   assertHmsUnchangedBeforeSave,
   assertNoOpenWrite,
@@ -416,7 +415,7 @@ export async function bindAttachDocumentForm(input: {
         return { status: 'refused', reason: 'refused_unknown_transport' };
       }
     } catch { return { status: 'refused', reason: 'refused_unknown_transport' }; }
-    const source = await readPanePop3Attachment({ db, s3: getS3Storage(), transportId: input.transportId,
+    const source = await readPaneFilingAttachment({ db, s3: getS3Storage(), transportId: input.transportId,
       messageId: input.sourceMessageId, attachmentId: input.attachmentId, signal: AbortSignal.timeout(READ_ATTACHMENT_TIMEOUT_MS),
       checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId &&
         await currentFilingSelection(db, input.transportId, selectedSource) });

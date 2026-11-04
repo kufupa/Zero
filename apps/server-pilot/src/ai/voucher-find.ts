@@ -17,6 +17,7 @@ import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import { extractEmbeddedPdfText, renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
 import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { getS3Storage } from '../storage/s3.js';
+import { readPaneFilingAttachment } from './pane-filing-source.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
 import { MAX_VOUCHER_FILING_BYTES } from './voucher-filing-bytes.js';
@@ -425,7 +426,7 @@ export async function readVoucherAttachmentText(
   });
 }
 
-/** Extract from the same authorized POP3 bytes whose identity the filing review will check. */
+/** Extract from the same authorized bytes whose identity the filing review will check. */
 export async function readSelectedVoucherAttachment(
   file: QuoteAttachmentRow,
   signal: AbortSignal,
@@ -443,10 +444,23 @@ export async function readSelectedVoucherAttachment(
     };
     const input = { transportId: scope.transportId, messageId: scope.messageId,
       attachmentId: file.id, db, s3: getS3Storage(), signal, checkAuthority };
-    const original = await readPanePop3Attachment(input);
-    if (!original || original.source.filename !== file.filename || original.locator.s3Key !== file.s3Key ||
-        original.locator.mimeType !== file.mimeType || original.locator.sizeBytes !== file.sizeBytes ||
-        (file.sha256 && file.sha256 !== original.source.sha256)) return null;
+    const sealed = file.s3Key.startsWith('outlook-sync-originals/');
+    const checkSelected = async () => {
+      const expectedSha = file.sha256;
+      if (!expectedSha || !(await checkAuthority())) return false;
+      const rows = await db.select({ id: attachment.id }).from(attachment).where(and(
+        eq(attachment.id, file.id), eq(attachment.messageId, scope.messageId), eq(attachment.s3Key, file.s3Key),
+        eq(attachment.filename, file.filename), eq(attachment.mimeType, file.mimeType),
+        eq(attachment.sizeBytes, file.sizeBytes), eq(attachment.sha256, expectedSha),
+      )).limit(2);
+      return rows.length === 1 && rows[0]?.id === file.id;
+    };
+    const pop3 = sealed ? null : await readPanePop3Attachment(input);
+    const original = sealed ? await readPaneFilingAttachment({ ...input, checkAuthority: checkSelected }) : pop3;
+    if (!original || original.source.filename !== file.filename || original.bytes.length !== file.sizeBytes ||
+        (file.sha256 && file.sha256 !== original.source.sha256) ||
+        (!sealed && (!pop3 || pop3.locator.s3Key !== file.s3Key || pop3.locator.mimeType !== file.mimeType ||
+          pop3.locator.sizeBytes !== file.sizeBytes))) return null;
     const texts = await readQuoteAttachments([file], async () => {
       const parsed = await extractEmbeddedPdfText({ body: original.bytes, declaredSize: original.bytes.length,
         declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { signal, attachmentId: file.id });
@@ -458,7 +472,9 @@ export async function readSelectedVoucherAttachment(
     const result = await readScannedVoucherPages(texts, {
       enabled, adapter: enabled ? azureVisionAdapter() : null, signal: AbortSignal.timeout(VISION_DEADLINE_MS),
     });
-    if (!(await readPanePop3Attachment({ ...input, signal: AbortSignal.timeout(15_000), expected: original.source }))) return null;
+    const fresh = { ...input, signal: AbortSignal.timeout(15_000), expected: original.source };
+    if (!(sealed ? await readPaneFilingAttachment({ ...fresh, checkAuthority: checkSelected })
+      : await readPanePop3Attachment(fresh))) return null;
     return { texts: result, source: { sha256: original.source.sha256, snapshotDigest: original.source.snapshotDigest } };
   } catch { return null; }
 }

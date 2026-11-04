@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { resolveLinkedVoucherSnapshot, type VoucherSourceDependencies } from '../src/ai/voucher-filing-source.js';
+import { readVoucherDiscoverySource, resolveLinkedVoucherSnapshot, type VoucherSourceDependencies } from '../src/ai/voucher-filing-source.js';
 
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 const input = { transportId: 'transport', messageId: 'message', attachmentId: 'attachment' };
@@ -37,6 +37,31 @@ describe('linked Outlook voucher artifact', () => {
     expect(result?.source).toMatchObject({ ...input, filename: 'voucher.pdf', mimeType: 'application/pdf', sha256: hash });
     expect(result?.source.snapshotDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(result?.receipt).toEqual(receipt);
+
+    const bytes = Buffer.from('%PDF-synthetic-sealed');
+    const digest = sha(bytes.toString());
+    const sealedKey = `outlook-sync-originals/v1/${sha(JSON.stringify(['source', 'origin', 'artifact']))}/${digest}`;
+    const sealedReceipt = { key: sealedKey, bytes: bytes.length, sha256: digest, eTag: 'etag', versionId: 'v1' };
+    const sealedRow = { ...row, s3Key: sealedKey, sizeBytes: bytes.length, sha256: digest };
+    const sealedArtifact = { ...artifact, sealedKey, expectedBytes: bytes.length, sha256: digest,
+      verifiedReceipt: sealedReceipt };
+    const linkedRows = [[sealedRow], [{ id: input.attachmentId }], [sealedArtifact], [observation],
+      [{ id: 'artifact' }], [{ id: 'source' }]];
+    const makeDeps = () => {
+      const deps = dependencies([[sealedRow], [sealedRow], [{ id: input.attachmentId }], ...linkedRows,
+        [sealedRow], [{ id: input.attachmentId }], ...linkedRows]);
+      deps.storage = { bucket: 'private-mail', readSealedBounded: async (got, cap) => {
+        expect(got).toEqual(sealedReceipt);
+        expect(cap).toBeGreaterThanOrEqual(bytes.length);
+        return bytes;
+      } };
+      return deps;
+    };
+    const read = await readVoucherDiscoverySource(input, makeDeps());
+    expect(read?.bytes).toEqual(bytes);
+    expect(read?.source).toMatchObject({ sha256: digest, snapshotDigest: expect.any(String) });
+    if (!read) throw new Error('expected sealed source');
+    expect(await readVoucherDiscoverySource(input, makeDeps(), { ...read.source, snapshotDigest: 'b'.repeat(64) })).toBeNull();
   });
 
   it('accepts one committed observation reusing the same retained artifact content', async () => {
