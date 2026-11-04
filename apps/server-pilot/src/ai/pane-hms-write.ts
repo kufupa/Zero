@@ -1257,7 +1257,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
       },
       dispatchWithAuthority: async (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
         continueOnce: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => {
-        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
+        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay ||
+            !dispatch.filingSnapshot || dispatch.handle ||
             dispatchTarget?.kind !== 'saved' || typeof dispatch.stay.firstName !== 'string' ||
             typeof dispatch.stay.lastName !== 'string' || typeof dispatch.stay.departure !== 'string' || !hasFinishBudget() ||
             !centurionWriterCurrent(writer) ||
