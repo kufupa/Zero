@@ -38,7 +38,8 @@ const data = {
   departuredate: state.departureWire, roomtype: expected.roomType, rateplan: expected.ratePlan,
   track: state.track, reservationnote: expected.note, udfchkbox04: '0', udfchar13: '', emailaddress: '',
   guaranteetype: 'NGI', pagemode: 'view', savecctoprofile: '0', savesettlementcctoprofile: '0',
-  caller: 'Synthetic Booker', udfchar06: 'Synthetic contact', udfchar02: 'unchanged', extId: 'ignored',
+  caller: 'Synthetic Booker', udfchar06: 'Synthetic contact', child1: '0', child2: '1', child3: '0',
+  udfchar02: 'unchanged', extId: 'ignored',
 };
 const baseline = { values: { ...data }, data: { ...data } };
 const contactCases = [
@@ -288,6 +289,9 @@ describe('saved Labtest Booker contact amendment guards', () => {
     const collateral = saveBody(formName, value);
     collateral.set('roomtype', 'OTHER');
     expect(match(collateral)).toBe(false);
+    const childBand = saveBody(formName, value);
+    childBand.set('child2', '2');
+    expect(match(childBand)).toBe(false);
 
     const duplicate = saveBody(formName, value);
     duplicate.append(formName, 'second value');
