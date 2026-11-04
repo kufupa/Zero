@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { amendRequestId, projectAmendRequests, validAmendRequestValue } from '../src/ai/pane-amend-draft.js';
+import { paneStateOf, withPaneState } from '../src/ai/work-item-revision.js';
 import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
 const ACTION_OUTPUT = { ...AE1_OUTPUT, needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
 
 describe('amendment request draft', () => {
+  it('undo restores request edits without rolling back HMS commit state', () => {
+    const key = `requests[${'a'.repeat(64)}].ratePlan`;
+    const before = { [key]: 'BAR', stays: { committed: { confirmationNumber: '123456-1' } } };
+    const after = { [key]: 'CRIC', stays: before.stays };
+    expect(withPaneState(after, paneStateOf(before))).toEqual(before);
+    expect(withPaneState(after, {})).toEqual({ stays: before.stays });
+  });
   it('keeps current amendment requests, rejects quoted history and preserves a staff false override', () => {
     const current = 'Please change the rate to BAR. Do not send the confirmation.';
     const history = 'Guest name is Alice';
