@@ -113,8 +113,18 @@ async function exactSearchMatches(popup, wanted) {
 
 function nameTokens(value, stripLeadingTitle = false) {
   const titles = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'judge']);
-  const words = value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/\p{L}+/gu) ?? [];
-  if (stripLeadingTitle && words.length > 1 && titles.has(words[0]) && !value.includes(',')) words.shift();
+  const normalized = value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  const parts = normalized.split(',');
+  const tokens = (part) => part.match(/\p{L}+/gu) ?? [];
+  let words;
+  if (stripLeadingTitle && parts.length === 2) {
+    const surname = tokens(parts[0]), given = tokens(parts[1]);
+    if (given.length > 1 && titles.has(given[0])) given.shift();
+    words = [...surname, ...given];
+  } else {
+    words = tokens(normalized);
+    if (stripLeadingTitle && parts.length === 1 && words.length > 1 && titles.has(words[0])) words.shift();
+  }
   return words.filter((word, index) => word !== 'and' || index === 0 || index === words.length - 1).sort();
 }
 
