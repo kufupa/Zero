@@ -26,6 +26,8 @@ import {
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
+import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
+import { preStaySourceText } from './existing-stay-information.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -58,6 +60,8 @@ export type SyncedThreadMessage = {
 export type SyncedQuoteSelection = {
   subject: string;
   bodyText: string;
+  /** HTML-only source with quoted history removed for grounding current requests. */
+  currentBodyText?: string;
   /** Selected message receipt time; anchors year inference. */
   receivedAt?: string;
   /** Selected message's best stored time for finding its closest thread neighbours when receivedAt is missing. */
@@ -715,6 +719,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       threadId: message.threadId,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
@@ -780,7 +785,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
 
   return {
     subject: row.subject ?? '',
-    bodyText: row.textBody ?? '',
+    bodyText: row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? ''),
+    ...(!row.textBody?.trim() && row.htmlBody ? { currentBodyText: preStaySourceText(null, row.htmlBody) } : {}),
     receivedAt: row.receivedAt?.toISOString(),
     threadReferenceAt: (
       row.direction === 'outbound'

@@ -46,6 +46,7 @@ import {
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -545,15 +546,18 @@ export function NavaPane({
   }
   // Keep a separate display snapshot: a same-ID edit must not leave a settled amend lookup on screen.
   const amendSourceSnapshot = useRef<{
-    scopeEpoch: number; selectionEpoch: number; internetMessageId?: string;
+    scopeEpoch: number; locator: string; internetMessageId?: string;
     subject: string; bodyText: string; bodyHtml: string; invalidated: boolean;
   } | null>(null);
+  const amendLocator = activeEmail?.entryId ? JSON.stringify([activeEmail.entryId, activeEmail.storeId ?? '',
+    activeEmail.folderEntryId ?? '']) : null;
+  if (!activeEmail) amendSourceSnapshot.current = null;
   if (activeEmail && selectedIdentity && (
     amendSourceSnapshot.current?.scopeEpoch !== contextRevision.current.scopeEpoch ||
-    amendSourceSnapshot.current?.selectionEpoch !== contextRevision.current.selectionEpoch
+    amendSourceSnapshot.current?.locator !== amendLocator
   )) {
     amendSourceSnapshot.current = { scopeEpoch: contextRevision.current.scopeEpoch,
-      selectionEpoch: contextRevision.current.selectionEpoch, internetMessageId: activeEmail.internetMessageId,
+      locator: amendLocator!, internetMessageId: activeEmail.internetMessageId,
       subject: activeEmail.subject, bodyText: activeEmail.bodyText, bodyHtml: activeEmail.bodyHtml, invalidated: false };
   }
   if (activeEmail && amendSourceSnapshot.current && (
@@ -671,6 +675,10 @@ export function NavaPane({
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
   });
+  const amendWorkItem = useAmendWorkItem({ trpc: trpcClient,
+    snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
+    transportId: storedWork.transportId ?? activeConnection?.id ?? null,
+    reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -911,6 +919,7 @@ export function NavaPane({
               contactMessageKey,
             ),
           });
+          if (!storedOverridden && remote.analysis.amendment?.kind === 'amend') void storedWork.rebindAmendDraft();
           return;
         }
         if (remote.kind === 'unsynced') {
@@ -2269,7 +2278,7 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending}
               />
             ) : null}
             {storedWork.historyError ? (
@@ -2557,8 +2566,6 @@ export function NavaPane({
               pdfPending={pdfPending}
               replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
-            </ConfirmationSourcesBridge>
-
             {/* Supporting tools follow the four-step quote flow and stay available without competing with its actions. */}
             {storedWork.pane.state === 'ready' ? (
               <TranslationBox
@@ -2598,13 +2605,19 @@ export function NavaPane({
               readOnlyAmend={activePaneConfig?.propertyCode === 'HRCEN' ? {
                 propertyCode: 'HRCEN',
                 ratePlans: activePaneConfig.ratePlans,
+                draft: amendWorkItem,
+                historyEpoch: storedWork.historyEpoch,
+                historyBusy: storedWork.historyPending || storedWork.historyNeedsReload,
+                requireDurableDraft: true,
+                retryDraft: storedWork.rebindAmendDraft,
+                draftLoading: storedWork.amendRebinding,
                 sourceContentChanged: amendSourceChanged,
                 sourceSelectionUnavailable: preview && (!webSelectedMessageId ||
                   webSelectedMessageId !== activeEmail?.entryId ||
                   Boolean(quoteSession.staffSource && webSelectedMessageId !== quoteSession.staffSource.messageId)),
                 selectionCurrent: Boolean(!amendSourceChanged && activeEmail?.entryId && activeEmail.internetMessageId &&
                   (!preview || (webSelectedMessageId === activeEmail.entryId &&
-                    webSelectedMessageId === quoteSession.staffSource?.messageId)) &&
+                    (!quoteSession.staffSource || webSelectedMessageId === quoteSession.staffSource.messageId))) &&
                   quoteSession.binding?.transportId === activeConnection?.id &&
                   quoteSession.binding?.entryId === activeEmail.entryId &&
                   quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&
@@ -2614,6 +2627,7 @@ export function NavaPane({
                   quoteSession.binding?.selectionEpoch === contextRevision.current.selectionEpoch),
               } : null}
             />
+            </ConfirmationSourcesBridge>
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
             {!quoteOrBookingEmail && !preview ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}

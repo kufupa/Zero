@@ -26,7 +26,7 @@ export type PaneRevisionEvidence = {
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 function isPaneFieldKey(key: string): boolean {
-  return key.startsWith('stays[') || key.startsWith('contact.') || key === 'followUp.draft';
+  return key.startsWith('stays[') || key.startsWith('requests[') || key.startsWith('contact.') || key === 'followUp.draft';
 }
 
 export function paneStateOf(state: PaneState): PaneState {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { sendableArrival, type StayRecordWire } from '@/lib/quote-workflow/amend-find';
 import {
   amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal, savedStayAmendReviewBasis,
-  type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity,
+  type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity, type SavedStayAmendRequest,
   type SavedStayAmendProposal, type SavedStayAmendResult,
 } from '@/lib/quote-workflow/saved-stay-amendment';
 
@@ -20,6 +20,11 @@ type Props = {
   stay: StayRecordWire;
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
+  requestedAdults?: number | null;
+  requestedChildren?: number | null;
+  requestedChildAges?: number[] | null;
+  cleared?: SavedStayAmendRequest['cleared'];
+  onFieldEdit?: (field: keyof SavedStayAmendDraft, value: string, next: SavedStayAmendDraft) => void;
   result?: SavedStayAmendResult | null;
   /** The current source and the proposal actually submitted, not values copied from the result. */
   resultContext?: {
@@ -83,11 +88,13 @@ export function SavedStayAmendEditor(props: Props) {
     storeDraft={(value) => drafts.current.set(key, { ...value, draft: { ...value.draft }, touched: [...value.touched] })} />;
 }
 
-function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture, result, resultContext,
-  screenshot, onDraftChange, storedDraft, storeDraft }: Props & {
+function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture,
+  requestedAdults, requestedChildren, requestedChildAges, cleared, result, resultContext,
+  screenshot, onDraftChange, onFieldEdit, storedDraft, storeDraft }: Props & {
     storedDraft?: StoredDraft; storeDraft: (draft: StoredDraft) => void;
   }) {
-  const request = { arrival: requestedArrival, departure: requestedDeparture };
+  const request = { arrival: requestedArrival, departure: requestedDeparture,
+    adults: requestedAdults, children: requestedChildren, childAges: requestedChildAges, cleared };
   const basis = savedStayAmendReviewBasis(stay, request, extractionRevision);
   const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, request));
   const [touched, setTouched] = useState<DraftField[]>(() => storedDraft?.touched ?? []);
@@ -119,6 +126,7 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
     setTouched(nextTouched);
     setDraft(next);
     storeDraft({ draft: next, touched: nextTouched, acceptedBasis });
+    onFieldEdit?.(name, value, next);
     onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
       ...(needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, next)) });
   };
@@ -147,8 +155,8 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   const differences = readback && visibleResult ? amendmentReadbackDifferences(visibleResult) : [];
   return (
     <div data-testid="amend-form" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-      <p className={labelClass}>Requested change</p>
-      <p className={smallClass}>These entries stay only while this panel is open and are not saved to HMS.</p>
+      <p className={labelClass}>Stay · HMS now → requested</p>
+      <p className={smallClass}>Changes are not saved to HMS until Go.</p>
       {needsReview ? <div aria-live="polite" className={smallClass}>
         <p>{changedDetails}</p>
         <button type="button" className="min-h-8 font-semibold text-[#1e40af] underline" onClick={updateUntouched}>Update untouched entries</button>
@@ -175,8 +183,8 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
           placeholder="Ages separated by commas" aria-describedby="amend-child-ages-hint" />
       </label>
       <p id="amend-child-ages-hint" className={smallClass}>HMS child ages not shown. If changing children, enter one age per child.</p>
-      {touched.length > 0 && !needsReview && validation.errors.length ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
-        {validation.errors.map((error) => <li key={error}>{error}</li>)}
+      {!needsReview && validation.errors.some((error) => error !== 'Choose a change to the booking.') ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
+        {validation.errors.filter((error) => error !== 'Choose a change to the booking.').map((error) => <li key={error}>{error}</li>)}
       </ul> : null}
       {visibleResult ? <div aria-live="polite" className={smallClass}>
         {!resultMatchesDraft ? <p>Previous HMS attempt. Its result describes the submitted change, not the current entries.</p> : null}

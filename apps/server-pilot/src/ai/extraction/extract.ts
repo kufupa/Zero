@@ -64,6 +64,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - For each stay, guests is optional: that stay's named guests, each with name as written and confirmationNumber exactly as written for that guest, or null. Never invent or reformat a confirmation number.
 - For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.
+- For an amendment stay, amendProposal contains only changes explicitly requested NOW in the target message, never a current booking fact, historical quote, inferred identity or native ID. For each field give the value, an exact target-message excerpt of at most 200 characters proving that field and attributedTo: guest for firstName, lastName and guestEmail; booker for bookerName and bookerContact; guest or booker for an explicitly identified cmsRecipient; null for ratePlan, retainRates, cmsSend and cmsMessageId. Never assign the sender or booker's details to the guest. Use a ratePlan or CMS message ID only when its exact code is requested. retainRates is yes only for an explicit request to keep the current rate, no only for an explicit reprice request. cmsSend is true or false only for an explicit request to send or not send the confirmation. Omit every unstated or ambiguous field.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
 - missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, child ages when needed for occupancy, guest names. Never ask for rates, room type or board.
@@ -676,6 +677,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    currentMessageText: input.selection.currentBodyText ?? input.selection.bodyText,
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),
@@ -690,7 +692,7 @@ export async function extractInboundMail(input: {
     confirmationNumbers: sanitized.payload.confirmationNumbers,
   });
   const separateAsk = existingStayInformation
-    ? groundedSeparateAsk(maskCardNumbers(input.selection.bodyText), parsed.data.separateAsk)
+    ? groundedSeparateAsk(maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText), parsed.data.separateAsk)
     : null;
   if (existingStayInformation) {
     // A model's booking or quote action can never turn the confirmation into new-stay work.

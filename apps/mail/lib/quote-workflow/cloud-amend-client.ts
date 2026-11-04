@@ -12,7 +12,9 @@ const changesSchema = z.object({ arrival: z.string().optional(), departure: z.st
   cmsMessageId: z.string(), cmsRecipient: z.string() }).strict();
 
 const requestSchema = z.object({ workItemId: z.string().uuid(), source: sourceSchema,
-  confirmation: z.string().min(1), arrival: z.string().min(1), changes: changesSchema }).strict();
+  confirmation: z.string().min(1), arrival: z.string().min(1), changes: changesSchema,
+  draft: z.object({ requestId: z.string().regex(/^[a-f0-9]{64}$/), stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+    expectedSeq: z.number().int().nonnegative().safe() }).strict().optional() }).strict();
 const boundSchema = z.object({ status: z.literal('bound'), previewDigest: z.string().regex(/^[a-f0-9]{64}$/),
   formDigest: z.string().regex(/^[a-f0-9]{64}$/), readAt: z.string().datetime() }).strict();
 export type CloudAmendRequest = z.infer<typeof requestSchema>;
@@ -29,7 +31,8 @@ type Routes = {
   cloudAmendEvidence: { query(input: { workItemId: string; source: CloudAmendRequest['source']; eventId: string }, options: MailOptions): Promise<unknown> };
 };
 
-export type CloudAmendClient = { dispose(): void; prepare(): Promise<boolean>; approval: HmsApprovalClient; resumeKey: string | null };
+export type CloudAmendClient = { dispose(): void; prepare(draft?: CloudAmendRequest['draft']): Promise<boolean>;
+  approval: HmsApprovalClient; resumeKey: string | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -99,10 +102,11 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
       data = request.data;
     }
     let goUsed = Boolean(scope.resume), generation = 0;
-    const prepare = async () => {
+    const prepare = async (draft?: CloudAmendRequest['draft']) => {
       const attempt = ++generation;
       digest = null;
       goUsed = true;
+      if (draft) data = { ...data, draft };
       const response = boundSchema.safeParse(await call(() => complete.bindCloudAmend.mutate(data, mailbox)));
       if (!response.success || attempt !== generation) return null;
       digest = response.data.formDigest;
@@ -145,6 +149,6 @@ export async function cloudAmendClientFromTrpc(trpc: unknown, input: CloudAmendR
         return await call(() => complete.cloudAmendEvidence.query({ workItemId, source: data.source, eventId }, mailbox)) as Awaited<ReturnType<HmsApprovalClient['evidence']>>;
       },
     };
-    return { dispose, async prepare() { try { return Boolean(await prepare()); } catch { return false; } }, approval, resumeKey };
+    return { dispose, async prepare(draft) { try { return Boolean(await prepare(draft)); } catch { return false; } }, approval, resumeKey };
   } catch { dispose(); return null; }
 }

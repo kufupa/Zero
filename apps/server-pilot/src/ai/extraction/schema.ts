@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MAIL_KINDS } from '../../db/schema/work.js';
 import { MAIL_ACTIONS, type MailAction } from '../../mail/action-labels.js';
 import { maskCardNumbers } from '../card-mask.js';
+import { groundedSeparateAsk } from '../existing-stay-information.js';
 import { validIsoDate } from '../quote-workflow-llm.js';
 import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-anchoring.js';
 
@@ -29,6 +30,29 @@ const dateRange = z.object({
     .describe('ISO YYYY-MM-DD checkout day (exclusive), or null if not stated.'),
 });
 const extractionOriginSchema = z.enum(['person', 'system_notice']);
+
+// Each proposal carries the source phrase that states the requested change. It is
+// kept separate from native IDs and from the sender/booker contact block.
+const amendProposalValue = <T extends z.ZodTypeAny, R extends z.ZodTypeAny>(value: T, attributedTo: R) => z.object({
+  value,
+  excerpt: z.string(),
+  attributedTo,
+}).strict();
+const amendTextProposal = (role: 'guest' | 'booker' | null) =>
+  amendProposalValue(z.string(), role === null ? z.null() : z.literal(role));
+const amendChoiceProposal = <T extends z.ZodTypeAny>(value: T) => amendProposalValue(value, z.null());
+const amendProposalSchema = z.object({
+  ratePlan: amendTextProposal(null).optional(),
+  retainRates: amendChoiceProposal(z.enum(['yes', 'no'])).optional(),
+  firstName: amendTextProposal('guest').optional(),
+  lastName: amendTextProposal('guest').optional(),
+  guestEmail: amendTextProposal('guest').optional(),
+  bookerName: amendTextProposal('booker').optional(),
+  bookerContact: amendTextProposal('booker').optional(),
+  cmsSend: amendChoiceProposal(z.boolean()).optional(),
+  cmsMessageId: amendTextProposal(null).optional(),
+  cmsRecipient: amendProposalValue(z.string(), z.enum(['guest', 'booker'])).optional(),
+}).strict().describe('Only explicit current amendment requests for this stay, each with an exact source excerpt.');
 
 const mailExtractionObjectSchema = z.object({
   separateAsk: z.string().max(200).nullable().optional().describe(
@@ -108,6 +132,7 @@ const mailExtractionObjectSchema = z.object({
         .enum(MAIL_ACTIONS)
         .optional()
         .describe('Action for this stay; same enum as top-level action. Top-level action remains a summary.'),
+      amendProposal: amendProposalSchema.optional(),
       rows: z.array(
         z.object({
           roomType: nullableText.describe(
@@ -176,6 +201,7 @@ export type ExtractionStay = {
   rows: ExtractionRow[];
   guests?: ExtractionGuest[];
   action?: MailAction;
+  amendProposal?: z.infer<typeof amendProposalSchema>;
 };
 
 const sourceStaySchema = mailExtractionObjectSchema.shape.stays.element;
@@ -328,13 +354,59 @@ function rowStableId(
   return stableId('r', stayId, row.roomType ?? '', 'p', String(rowIndex));
 }
 
+/** Do not promote historical, inferred, ungrounded or native lookup values into an email proposal. */
+function sanitizeAmendProposal(
+  proposal: z.infer<typeof amendProposalSchema> | undefined,
+  currentMessageText: string,
+): z.infer<typeof amendProposalSchema> | undefined {
+  if (!proposal) return undefined;
+  const source = maskCardNumbers(currentMessageText);
+  const grounded = (excerpt: string) =>
+    excerpt.length > 0 && groundedSeparateAsk(source, excerpt) === excerpt && maskCardNumbers(excerpt) === excerpt;
+  const text = <T extends { value: string; excerpt: string }>(item: T | undefined, max: number): T | undefined => {
+    if (!item || !grounded(item.excerpt) || /[\p{Cc}]/u.test(item.value)) return undefined;
+    const value = item.value.trim();
+    if (!value || value.length > max || cleanText(value, max) !== value ||
+        !item.excerpt.toLowerCase().includes(value.toLowerCase())) return undefined;
+    return { ...item, value };
+  };
+  const ratePlan = text(proposal.ratePlan, 12);
+  const messageId = text(proposal.cmsMessageId, 8);
+  const retain = proposal.retainRates;
+  const retainExcerpt = retain?.excerpt ?? '';
+  const retainRates = retain && grounded(retainExcerpt) &&
+    (retain.value === 'yes'
+      ? /\bkeep\s+(?:the\s+)?(?:current|existing|same)\s+rates?\b/i.test(retainExcerpt) && !/\b(?:do not|don't|never|not)\s+keep\b/i.test(retainExcerpt)
+      : /\breprice\b/i.test(retainExcerpt) && !/\b(?:do not|don't|never|not)\s+reprice\b/i.test(retainExcerpt))
+    ? retain : undefined;
+  const send = proposal.cmsSend;
+  const sendExcerpt = send?.excerpt ?? '';
+  const sendNegated = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i.test(sendExcerpt);
+  const cmsSend = send && grounded(sendExcerpt) &&
+    (send.value ? /\bsend\s+(?:the\s+)?confirmation\b/i.test(sendExcerpt) && !sendNegated : sendNegated)
+    ? send : undefined;
+  const result = {
+    ...(ratePlan && /^[A-Z0-9]{1,12}$/.test(ratePlan.value) ? { ratePlan } : {}),
+    ...(retainRates ? { retainRates } : {}),
+    ...(text(proposal.firstName, 1000) ? { firstName: text(proposal.firstName, 1000) } : {}),
+    ...(text(proposal.lastName, 1000) ? { lastName: text(proposal.lastName, 1000) } : {}),
+    ...(text(proposal.guestEmail, 1000) ? { guestEmail: text(proposal.guestEmail, 1000) } : {}),
+    ...(text(proposal.bookerName, 1000) ? { bookerName: text(proposal.bookerName, 1000) } : {}),
+    ...(text(proposal.bookerContact, 1000) ? { bookerContact: text(proposal.bookerContact, 1000) } : {}),
+    ...(cmsSend ? { cmsSend } : {}),
+    ...(messageId ? { cmsMessageId: messageId } : {}),
+    ...(text(proposal.cmsRecipient, 255) ? { cmsRecipient: text(proposal.cmsRecipient, 255) } : {}),
+  };
+  return Object.keys(result).length ? result : undefined;
+}
+
 /**
  * Validates and grounds the model output. Confirmation numbers must be digits-dash-digits and appear verbatim
  * in the text the model read. The contact email must appear in that text too. Anything else is dropped to null.
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext },
+  input: { messageId: string; sourceText: string; currentMessageText?: string; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -391,6 +463,9 @@ export function sanitizeExtraction(
       })),
       ...(guests !== undefined ? { guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
+      ...(output.kind === 'amendment' && (stay.action === undefined || stay.action === 'amend')
+        ? { amendProposal: sanitizeAmendProposal(stay.amendProposal, input.currentMessageText ?? input.sourceText) }
+        : {}),
     };
   });
   const identityStays = prepared.map((stay) => ({ requested: stay.requested, guests: stay.guests }));
@@ -410,6 +485,7 @@ export function sanitizeExtraction(
       })),
       ...(stay.guests !== undefined ? { guests: stay.guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
+      ...(stay.amendProposal ? { amendProposal: stay.amendProposal } : {}),
     };
   });
   const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay, index) => {
