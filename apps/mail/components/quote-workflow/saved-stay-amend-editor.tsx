@@ -147,8 +147,8 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   const differences = readback && visibleResult ? amendmentReadbackDifferences(visibleResult) : [];
   return (
     <div data-testid="amend-form" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-      <p className={labelClass}>Requested change</p>
-      <p className={smallClass}>These entries stay only while this panel is open and are not saved to HMS.</p>
+      <p className={labelClass}>Stay · HMS now → requested</p>
+      <p className={smallClass}>Changes are not saved to HMS until Go.</p>
       {needsReview ? <div aria-live="polite" className={smallClass}>
         <p>{changedDetails}</p>
         <button type="button" className="min-h-8 font-semibold text-[#1e40af] underline" onClick={updateUntouched}>Update untouched entries</button>
@@ -175,8 +175,8 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
           placeholder="Ages separated by commas" aria-describedby="amend-child-ages-hint" />
       </label>
       <p id="amend-child-ages-hint" className={smallClass}>HMS child ages not shown. If changing children, enter one age per child.</p>
-      {touched.length > 0 && !needsReview && validation.errors.length ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
-        {validation.errors.map((error) => <li key={error}>{error}</li>)}
+      {!needsReview && validation.errors.some((error) => error !== 'Choose a change to the booking.') ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
+        {validation.errors.filter((error) => error !== 'Choose a change to the booking.').map((error) => <li key={error}>{error}</li>)}
       </ul> : null}
       {visibleResult ? <div aria-live="polite" className={smallClass}>
         {!resultMatchesDraft ? <p>Previous HMS attempt. Its result describes the submitted change, not the current entries.</p> : null}

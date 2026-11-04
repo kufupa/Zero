@@ -75,6 +75,7 @@ import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
 import { ApproveCard, CancelChargePrompt } from './approve-card';
+import { resolveConfirmationRecipient, useConfirmationSources, type ConfirmationMode } from './confirmation-recipient';
 
 export type AmendReadOnlyContext = {
   propertyCode: 'HRCEN';
@@ -634,7 +635,7 @@ export function AmendLookupPanel({
           {AMEND_SAVE_COPY.handleInHms}
         </div>
       ) : null}
-      <div className={`grid ${requestedRows.length ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
+      <div className="grid grid-cols-1 gap-3">
         <div
           data-testid={stay ? 'amend-hms-result-card' : undefined}
           className="flex min-w-0 flex-col gap-2"
@@ -1220,12 +1221,11 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
     draft.confirmation === confirmation &&
     (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
       .every((field) => draft.identity[field] === identity[field]) ? draft : null;
-  const choiceKey = JSON.stringify([basis, ratePlans.map(({ code, name }) => [code, name])]);
   return <>
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
       requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
-    <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft}
+    <LocalAmendChoices stay={stay} ratePlans={ratePlans} draft={currentDraft}
       identity={identity} confirmation={confirmation} contactObservations={contactObservations}
       defaultRecipient={defaultRecipient} writeContext={writeContext} onApprovalVisibilityChange={onApprovalVisibilityChange} />
   </>;
@@ -1253,12 +1253,35 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const [bookerName, setBookerName] = useState(contactObservations?.bookerName?.value ?? '');
   const [bookerContact, setBookerContact] = useState(contactObservations?.bookerContact?.value ?? '');
   const [editedDetails, setEditedDetails] = useState<string[]>([]);
+  const sources = useConfirmationSources();
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
+  const [customRecipient, setCustomRecipient] = useState(sources?.setting?.address ?? '');
+  const [recipientTouched, setRecipientTouched] = useState(false);
   const [cmsSend, setCmsSend] = useState(!labtest);
   const [cmsMessageId, setCmsMessageId] = useState(labtest ? '' : stay.bookingAgency || stay.organization ? '03' : '01');
-  const [cmsRecipient, setCmsRecipient] = useState(labtest ? '' : defaultRecipient);
   const [cmsTouched, setCmsTouched] = useState(false);
   const [boundKey, setBoundKey] = useState<string | null>(null);
   const [availableKey, setAvailableKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (recipientTouched || !sources?.setting) return;
+    setRecipientMode(sources.setting.mode);
+    setCustomRecipient(sources.setting.address ?? '');
+  }, [recipientTouched, sources?.setting]);
+  useEffect(() => {
+    if (!editedDetails.includes('roomType')) setRoomType(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
+    if (!editedDetails.includes('ratePlan')) setRatePlan(stay.ratePlan ?? '');
+    if (!editedDetails.includes('firstName')) setFirstName(stay.firstName ?? '');
+    if (!editedDetails.includes('lastName')) setLastName(stay.lastName ?? '');
+    if (!editedDetails.includes('guestEmail')) setGuestEmail(contactObservations?.guestEmail?.value ?? '');
+    if (!editedDetails.includes('bookerName')) setBookerName(contactObservations?.bookerName?.value ?? '');
+    if (!editedDetails.includes('bookerContact')) setBookerContact(contactObservations?.bookerContact?.value ?? '');
+  }, [stay, contactObservations, editedDetails]);
+  const recipient = resolveConfirmationRecipient({
+    mode: recipientMode, customAddress: customRecipient, userEmail: sources?.userEmail ?? '', clientEmail: defaultRecipient,
+    invalidSetting: sources?.invalidSetting || sources?.load === 'failed', staffChose: recipientTouched,
+  });
+  const recipientLoading = sources?.load === 'pending' && !recipientTouched;
+  const cmsRecipient = recipient.ok ? recipient.recipient.address : '';
   const choicesValid = Boolean(draft && draft.errors.every((error) => error === 'Choose a change to the booking.'));
   const changes = { ...draft?.proposal?.changes,
     ...(roomType && roomType !== (knownRoomCode(stay.roomType ?? '') ?? stay.roomType) ? { roomType } : {}),
@@ -1269,9 +1292,9 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     ...(editedDetails.includes('bookerName') ? { bookerName: bookerName.trim() } : {}),
     ...(editedDetails.includes('bookerContact') ? { bookerContact: bookerContact.trim() } : {}),
   };
-  const validRecipient = !cmsSend || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cmsRecipient.trim()) && Boolean(cmsMessageId.trim()));
+  const validRecipient = !cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim()));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
-    firstName.trim() && lastName.trim() && ratePlan && roomType && validRecipient &&
+    firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
     (Object.keys(changes).length > 0 || cmsTouched || (!labtest && cmsSend)));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
     workItemId: writeContext.workItemId,
@@ -1286,25 +1309,39 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     <div className="grid grid-cols-2 gap-2">
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Room type</span>
-        <select className={selectClass} value={roomType} onChange={(event) => setRoomType(event.target.value)}>
+        <span className={captionClass}>HMS: {stay.roomType || 'Not shown'}</span>
+        <select className={selectClass} value={roomType} onChange={(event) => { setRoomType(event.target.value); markDetail('roomType'); }}>
+          {!roomType ? <option value="">Choose room type</option> : null}
           {roomType && !Object.hasOwn(ROOM_TYPE_NAMES, roomType) ? <option value={roomType}>{roomType}</option> : null}
           {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => <option key={code} value={code}>{name} ({code})</option>)}
         </select>
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      <div className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Rate plan</span>
-        <select className={selectClass} value={ratePlan} onChange={(event) => setRatePlan(event.target.value)}>
+        <span className={captionClass}>HMS: {stay.ratePlan || 'Not shown'}</span>
+        <select aria-label="Rate plan" className={selectClass} value={ratePlan}
+          onChange={(event) => { setRatePlan(event.target.value); markDetail('ratePlan'); }}>
           {ratePlan && !ratePlans.some((plan) => plan.code === ratePlan) ? <option value={ratePlan}>{ratePlan}</option> : null}
+          {!ratePlan ? <option value="">Choose rate</option> : null}
           {ratePlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name} ({plan.code})</option>)}
         </select>
-      </label>
+        <input aria-label="Type rate code" className={selectClass} maxLength={12} value={ratePlan}
+          onChange={(event) => { setRatePlan(event.target.value.toUpperCase()); markDetail('ratePlan'); }} />
+        <span className={captionClass}>{ratePlans.find((plan) => plan.code === ratePlan)?.name ?? 'Availability checked by HMS when prepared'}</span>
+      </div>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Retain the current rate?</span>
-        <select className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value as 'yes' | 'no')}>
+        <select aria-label="Retain the current rate?" className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value as 'yes' | 'no')}>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
+        <span className={captionClass}>No: HMS reprices the stay.</span>
       </label>
+    </div>
+    {stay.averageRate || stay.grandTotal ? <p className={captionClass}>HMS at lookup: {stay.averageRate ? `Average ${stay.averageRate}` : ''}{stay.averageRate && stay.grandTotal ? ' · ' : ''}{stay.grandTotal ? `Total ${stay.grandTotal}` : ''}</p> : null}
+    <details className="rounded-sm border border-[#e2e8f0] p-2">
+      <summary className="cursor-pointer text-[12px] font-semibold text-[#334155]">More · guest and booker</summary>
+      <div className="mt-2 grid grid-cols-2 gap-2">
       {([['Guest first name', firstName, setFirstName], ['Guest surname', lastName, setLastName],
         ['Guest email', guestEmail, setGuestEmail], ['Booker name', bookerName, setBookerName],
         ['Booker contact', bookerContact, setBookerContact]] as const).map(([label, value, update]) =>
@@ -1312,27 +1349,40 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
           <span className="font-semibold">{label}</span>
           <input data-pii className={selectClass} value={value} onChange={(event) => {
             update(event.target.value);
-            const detailNames: Record<string, string> = { 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };
+            const detailNames: Record<string, string> = { 'Guest first name': 'firstName', 'Guest surname': 'lastName', 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };
             const name = detailNames[label];
             if (name) markDetail(name);
           }} />
         </label>)}
-    </div>
+      </div>
+    </details>
+    {!firstName.trim() || !lastName.trim() ? <p className={warnNoteClass}>Enter guest first name and surname under More.</p> : null}
+    {!/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType) ? <p className={warnNoteClass}>Choose a room type and enter a rate code (letters and numbers).</p> : null}
     <label className="flex items-center gap-2 text-[11.5px] text-[#334155]">
       <input type="checkbox" checked={cmsSend} disabled={labtest} onChange={(event) => { setCmsSend(event.target.checked); setCmsTouched(true); }} />
       Send HMS confirmation
     </label>
-    <div className="grid grid-cols-2 gap-2">
+    {cmsSend ? <div className="flex flex-col gap-2">
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">CMS message ID</span>
         <input className={selectClass} value={cmsMessageId} disabled={labtest} onChange={(event) => { setCmsMessageId(event.target.value); setCmsTouched(true); }} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
-        <span className="font-semibold">Confirmation recipient</span>
-        <input data-pii type="email" className={selectClass} value={cmsRecipient} disabled={labtest} onChange={(event) => { setCmsRecipient(event.target.value); setCmsTouched(true); }} />
+        <span className="font-semibold">Send confirmation to</span>
+        <select className={selectClass} value={(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? '' : recipientMode}
+          onChange={(event) => { setRecipientMode(event.target.value as ConfirmationMode); setRecipientTouched(true); setCmsTouched(true); }}>
+          {(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? <option value="">Choose recipient</option> : null}
+          <option value="self">Me</option><option value="client">Client</option><option value="custom">Other</option>
+        </select>
       </label>
-    </div>
-    {!validRecipient ? <p className={warnNoteClass}>Enter a confirmation message ID and recipient, or turn confirmation off.</p> : null}
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Confirmation recipient</span>
+        <input data-pii type="email" className={selectClass} value={recipientMode === 'custom' ? customRecipient : cmsRecipient}
+          onChange={(event) => { setRecipientMode('custom'); setCustomRecipient(event.target.value); setRecipientTouched(true); setCmsTouched(true); }} />
+      </label>
+      <p className={captionClass}>HMS sends this confirmation.</p>
+    </div> : null}
+    {!validRecipient ? <p className={warnNoteClass}>{recipientLoading ? 'Loading confirmation preference…' : !recipient.ok ? recipient.message : 'Enter a confirmation message ID.'}</p> : null}
     {labtest ? <p className={infoNoteClass}>HMS confirmation is off for Labtest.</p> : null}
     <p className={infoNoteClass}>{requestKey && boundKey === requestKey
       ? 'Review the HMS price and change below before Go.'

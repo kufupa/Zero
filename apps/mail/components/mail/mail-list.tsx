@@ -27,6 +27,8 @@ import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useMail, type Config } from '@/components/mail/use-mail';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
+import { useActiveConnection } from '@/hooks/use-connections';
+import { isInboundMessage } from '@/lib/workstation/web-pane-bridge';
 import { useSetAtom } from 'jotai';
 import {
   searchResultCountAtom,
@@ -920,6 +922,7 @@ Draft.displayName = 'Draft';
 
 export const MailList = memo(function MailList() {
     const { folder } = useParams<{ folder: string }>();
+    const { data: activeConnection } = useActiveConnection();
     const { data: settingsData } = useSettings();
     const autoReadEnabled = settingsData?.settings?.autoRead ?? true;
     const [{ threadId, sourceMessageId }, setMailSelection] = useQueryStates({
@@ -1104,8 +1107,14 @@ export const MailList = memo(function MailList() {
           setActiveReplyId(null);
           setDraftId(null);
         });
-        if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent))
-          void setMailSelection({ threadId: messageThreadId, sourceMessageId: null });
+        if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent)) {
+          // The row displays this message. Keep its exact ID only when it is an
+          // inbound mail; the bridge still validates mailbox, thread and identity.
+          if (message.id && !message.isDraft && activeConnection?.email && isInboundMessage(message, activeConnection.email))
+            void setMailSelection({ threadId: messageThreadId, sourceMessageId: message.id });
+          else
+            void setMailSelection({ threadId: messageThreadId, sourceMessageId: null });
+        }
       },
       [
         getSelectMode,
@@ -1118,6 +1127,7 @@ export const MailList = memo(function MailList() {
         setMode,
         setActiveReplyId,
         autoReadEnabled,
+        activeConnection?.email,
       ],
     );
 

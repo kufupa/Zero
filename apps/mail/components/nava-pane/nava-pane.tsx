@@ -2557,8 +2557,6 @@ export function NavaPane({
               pdfPending={pdfPending}
               replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
-            </ConfirmationSourcesBridge>
-
             {/* Supporting tools follow the four-step quote flow and stay available without competing with its actions. */}
             {storedWork.pane.state === 'ready' ? (
               <TranslationBox
@@ -2604,7 +2602,7 @@ export function NavaPane({
                   Boolean(quoteSession.staffSource && webSelectedMessageId !== quoteSession.staffSource.messageId)),
                 selectionCurrent: Boolean(!amendSourceChanged && activeEmail?.entryId && activeEmail.internetMessageId &&
                   (!preview || (webSelectedMessageId === activeEmail.entryId &&
-                    webSelectedMessageId === quoteSession.staffSource?.messageId)) &&
+                    (!quoteSession.staffSource || webSelectedMessageId === quoteSession.staffSource.messageId))) &&
                   quoteSession.binding?.transportId === activeConnection?.id &&
                   quoteSession.binding?.entryId === activeEmail.entryId &&
                   quoteSession.binding?.storeId === (activeEmail.storeId ?? '') &&
@@ -2614,6 +2612,7 @@ export function NavaPane({
                   quoteSession.binding?.selectionEpoch === contextRevision.current.selectionEpoch),
               } : null}
             />
+            </ConfirmationSourcesBridge>
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
             {!quoteOrBookingEmail && !preview ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}
