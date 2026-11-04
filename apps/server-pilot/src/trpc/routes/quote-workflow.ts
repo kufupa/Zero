@@ -21,6 +21,8 @@ import {
   loadVoucherCandidate,
   pickVoucherFile,
   readVoucherAttachmentText,
+  voucherFileMetadata,
+  voucherFilingFiles,
   voucherReadFiles,
   type VoucherCandidate,
   type VoucherFindReply,
@@ -68,6 +70,7 @@ import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
 
@@ -174,7 +177,8 @@ export const voucherLoaders: {
   readText: null,
 };
 
-const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998), selection: paneSourceSelectionSchema.optional() });
+const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998),
+  selection: paneSourceSelectionSchema.optional(), attachmentId: z.string().min(1).max(200).optional() });
 
 const rateBinding = z.object({
   workItemId: z.string().uuid(),
@@ -420,7 +424,14 @@ export const quoteWorkflowRouter = router({
       attachmentNames: files.map((attachment) => attachment.filename),
     });
     if (!voucher) return { status: 'not_voucher' };
-    const readable = voucherReadFiles(files);
+    const filingFiles = voucherFilingFiles(files);
+    const selected = input.attachmentId ? filingFiles.find((file) => file.id === input.attachmentId) : undefined;
+    if (input.attachmentId && !selected) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'The selected PDF is unavailable for this email.' });
+    }
+    // Once staff select a file, only that file supplies voucher facts. Never
+    // let another attachment's text determine where this file is filed.
+    const readable = selected ? [selected] : voucherReadFiles(files);
     const signal = AbortSignal.timeout(15_000);
     const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
       : await readVoucherAttachmentText(readable, signal, {
@@ -438,7 +449,8 @@ export const quoteWorkflowRouter = router({
         bodyText: candidate.bodyText,
         attachmentTexts: texts.map((text) => text.text ?? ''),
       }),
-      file: pickVoucherFile(files),
+      file: selected ? voucherFileMetadata(selected) : pickVoucherFile(files),
+      files: filingFiles.map(voucherFileMetadata),
       unreadPdfs: readable.filter((file) => !withText.has(file.id)).length,
     };
   }),

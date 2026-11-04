@@ -18,6 +18,8 @@ import { extractEmbeddedPdfText, renderPdfPagesForVision, type SandboxRunner } f
 import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { getS3Storage } from '../storage/s3.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
+import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
+import { MAX_VOUCHER_FILING_BYTES } from './voucher-filing-bytes.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
@@ -51,6 +53,8 @@ export type VoucherFindReply =
       threadId: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
+      /** Metadata candidates only; the filing path still verifies the selected bytes and source. */
+      files: VoucherFile[];
       /** Voucher PDFs with no text: over the reader's cap, scanned, or unreadable. Staff check these by hand. */
       unreadPdfs: number;
     };
@@ -89,6 +93,17 @@ export function voucherReadFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRo
   return named.length > 0 ? named : pdfs;
 }
 
+/** Only visible PDFs the existing filing adapter can accept; content is verified later. */
+export function voucherFilingFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRow[] {
+  return files.filter((file) => !file.isInline && isVoucherPdfFilename(file.filename) &&
+    isVoucherPdfMime(file.mimeType) && Number.isSafeInteger(file.sizeBytes) &&
+    file.sizeBytes > 0 && file.sizeBytes <= MAX_VOUCHER_FILING_BYTES);
+}
+
+export function voucherFileMetadata(file: QuoteAttachmentRow): VoucherFile {
+  return { id: file.id, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
+}
+
 /** The file staff upload to HMS Documents: a voucher-named file, else the first PDF, else the first file. */
 export function pickVoucherFile(files: QuoteAttachmentRow[]): VoucherFile | null {
   const visible = files.filter((file) => !file.isInline);
@@ -97,12 +112,7 @@ export function pickVoucherFile(files: QuoteAttachmentRow[]): VoucherFile | null
     visible.find(isPdfRow) ??
     visible[0];
   if (!chosen) return null;
-  return {
-    id: chosen.id,
-    filename: chosen.filename,
-    mimeType: chosen.mimeType,
-    sizeBytes: chosen.sizeBytes,
-  };
+  return voucherFileMetadata(chosen);
 }
 
 const MONTH_NAMES = [
