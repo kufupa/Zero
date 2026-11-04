@@ -68,7 +68,7 @@ describe('filing dispatch source lock', () => {
     const exactForm = { ...form, sourceThreadId: 'thread', sourceHash: staffQuoteSourceHash(mail) };
     const exactItem = { ...item, state: exactForm };
     const { tx, calls } = transaction([[{ threadId: 'thread' }], [thread], [mail],
-      [{ id: 'message', threadId: 'thread' }, { id: 'duplicate', threadId: 'other' }], [mail], [file], [exactItem]]);
+      [{ id: 'message', threadId: 'thread' }, { id: 'duplicate', threadId: 'thread' }], [mail], [file], [exactItem]]);
     await expect(lockBoundFilingSource(tx, { transportId: 'transport', workItemId: 'item', form: exactForm })).resolves.toEqual(exactItem);
     expect(calls).toEqual(['canonical-mailbox', 'row-1:share', 'row-2:no key update', 'row-3:share',
       'row-4:share', 'row-5:update', 'row-6:no key update']);

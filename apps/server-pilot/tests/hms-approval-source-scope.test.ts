@@ -89,7 +89,7 @@ describe('approval selected-email scope', () => {
 
   it('canonicalizes the selected header and admits an exact inbound source despite another identical header', async () => {
     const f = fixture();
-    f.setMessages([source, { ...source, id: 'duplicate', threadId: 'other-thread' }]);
+    f.setMessages([source, { ...source, id: 'duplicate' }]);
     const selectedSource = { messageId: source.id, threadId: source.threadId, sourceHash: staffQuoteSourceHash(source) };
     await expect(approveHmsWrite({ db: f.db, transportId, workItemId, actorUserId: 'staff',
       selectedInternetMessageId: selected, selectedSource, formDigest: 'wrong' })).rejects.toMatchObject({ refusal: 'form_outdated' });
@@ -101,7 +101,7 @@ describe('approval selected-email scope', () => {
       { ...selectedSource, threadId: 'other-thread' },
     ]) {
       const mismatch = fixture();
-      mismatch.setMessages([source, { ...source, id: 'duplicate', threadId: 'other-thread' }]);
+      mismatch.setMessages([source, { ...source, id: 'duplicate' }]);
       await expect(approveHmsWrite({ db: mismatch.db, transportId, workItemId, actorUserId: 'staff',
         selectedInternetMessageId: selected, selectedSource: changed, formDigest: 'wrong' }))
         .rejects.toMatchObject({ refusal: 'source_mail_changed' });
