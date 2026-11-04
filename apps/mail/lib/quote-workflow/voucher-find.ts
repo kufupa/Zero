@@ -32,7 +32,7 @@ export type VoucherFindReply =
       threadId?: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
-      /** Eligible source PDFs; facts are usable only after querying one selected id. */
+      /** Eligible source PDFs; filing requires querying one selected id. */
       files?: VoucherFile[];
       documentSource?: { sha256: string; snapshotDigest: string };
       /** Voucher PDFs whose text was not read. Optional so older replies still type-check. The quote panel names each file. */

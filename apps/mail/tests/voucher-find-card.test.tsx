@@ -829,10 +829,61 @@ describe('voucher find card: saving the file', () => {
   });
 
   it('offers no save action when the email has no file', async () => {
-    const { trpc } = fakeTrpc({ reply: { ...VOUCHER, file: null, files: [] } });
+    const { trpc, searchGuest } = fakeTrpc({ reply: { ...VOUCHER, file: null, files: [] } });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     expect(await screen.findByText(VOUCHER_COPY.noFile)).toBeTruthy();
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(searchGuest).toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.save })).toBeNull();
+  });
+
+  it.each([
+    { id: 'image', filename: 'proof.jpg', mimeType: 'image/jpeg', sizeBytes: 100 },
+    { id: 'oversized', filename: 'voucher.pdf', mimeType: 'application/pdf', sizeBytes: 10 * 1024 * 1024 + 1 },
+  ])('keeps read-only lookup and download for an ineligible $filename', async (file) => {
+    const download = vi.fn(async () => {});
+    const preview = vi.fn();
+    const bind = vi.fn();
+    const { trpc, searchGuest, queueFind, queueSearchGuest } = fakeTrpc({
+      reply: { ...VOUCHER, file, files: [], documentSource: undefined },
+    });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = {
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) },
+      previewAttach: { mutate: preview },
+      bindAttach: { mutate: bind },
+    };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={download}
+      workItemId="3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b" propertyCode="HRCEN" approvalAvailable />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Select booking' }));
+    await waitFor(() => expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', sourceHash: SELECTED_SOURCE.sourceHash,
+      confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
+    }), MAILBOX));
+    expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', messageId: 'm1', sourceHash: SELECTED_SOURCE.sourceHash,
+    }), MAILBOX);
+    expect(searchGuest).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm1', sourceHash: SELECTED_SOURCE.sourceHash }));
+    await waitFor(() => expect(screen.queryByText('Checking the selected booking in HMS…')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: VOUCHER_COPY.save }));
+    expect(await screen.findByText(VOUCHER_COPY.saved)).toBeTruthy();
+    expect(download).toHaveBeenCalledWith({ messageId: 'm1', attachmentId: file.id,
+      filename: file.filename, mimeType: file.mimeType, size: file.sizeBytes });
+    expect(screen.queryByRole('button', { name: VOUCHER_ATTACH_COPY.review })).toBeNull();
+    expect(screen.queryByRole('button', { name: VOUCHER_ATTACH_COPY.prepare })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('does not search an ineligible file when the selected email is different', async () => {
+    const { trpc, queueSearchGuest, queueFind } = fakeTrpc({
+      reply: { ...VOUCHER, file: { id: 'image', filename: 'proof.jpg', mimeType: 'image/jpeg', sizeBytes: 100 },
+        files: [], documentSource: undefined },
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} propertyCode="HRCEN"
+      selectedSource={{ ...SELECTED_SOURCE, messageId: 'other' }} />);
+    expect(await screen.findByText('Nava cannot verify this email and document. Reopen the email.')).toBeTruthy();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    expect(queueFind).not.toHaveBeenCalled();
   });
 });
 

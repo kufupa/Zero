@@ -212,7 +212,6 @@ function VoucherFindCardBody({
   const [inventory, setInventory] = useState<Extract<VoucherFindReply, { status: 'voucher' }> | null>(null);
   const [selectedFileId, setSelectedFileId] = useState('');
   const selectedFileRef = useRef('');
-  selectedFileRef.current = selectedFileId;
   const [verifiedFileId, setVerifiedFileId] = useState('');
   const [fileError, setFileError] = useState(false);
   const [save, setSave] = useState<SaveStatus>('idle');
@@ -254,21 +253,28 @@ function VoucherFindCardBody({
   const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
   const fileReady = Boolean(selectedFileId && verifiedFileId === selectedFileId &&
     reply?.status === 'voucher' && reply.file?.id === selectedFileId);
+  const noEligiblePdf = inventory?.files?.length === 0 && reply?.status === 'voucher' &&
+    inventory.messageId === reply.messageId && inventory.threadId === reply.threadId;
+  const lookupReady = fileReady || noEligiblePdf;
+  selectedFileRef.current = fileReady ? selectedFileId : noEligiblePdf && reply?.status === 'voucher'
+    ? reply.file?.id ?? '' : selectedFileId;
   const documentSource = reply?.status === 'voucher' ? reply.documentSource : undefined;
   const validDocumentSource = Boolean(documentSource && /^[a-f0-9]{64}$/.test(documentSource.sha256) &&
     /^[a-f0-9]{64}$/.test(documentSource.snapshotDigest));
-  const sourceMatches = fileReady && selectionCurrent && (propertyCode !== 'HRCEN' || validDocumentSource) &&
+  const emailMatches = selectionCurrent &&
     (selectedSource === undefined ? propertyCode !== 'HRCEN' : Boolean(selectedSource &&
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
+  const sourceMatches = fileReady && emailMatches && (propertyCode !== 'HRCEN' || validDocumentSource);
+  const lookupSourceMatches = sourceMatches || (noEligiblePdf && emailMatches);
   const transport = useMemo(
-    () => sourceMatches ? hmsJobTransport(jobClient, replyThread, replyMessageId,
+    () => lookupSourceMatches ? hmsJobTransport(jobClient, replyThread, replyMessageId,
       { exactSource: true, ...(selectedSource?.sourceHash ? { sourceHash: selectedSource.sourceHash } : {}) }) : null,
-    [jobClient, replyThread, replyMessageId, sourceMatches, selectedSource?.sourceHash],
+    [jobClient, replyThread, replyMessageId, lookupSourceMatches, selectedSource?.sourceHash],
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
-    fileReady && reply?.status === 'voucher' && canSearchVoucher(reply.guest)
+    lookupReady && reply?.status === 'voucher' && canSearchVoucher(reply.guest)
       ? searchRequestFor({ lastName: reply.guest.lastName, arrival: reply.guest.arrival })
       : null;
   const resumeFor = voucherSearch && 'request' in voucherSearch ? voucherSearch.request : null;
@@ -359,7 +365,7 @@ function VoucherFindCardBody({
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = selectedMatch !== null && (!detailsRequested || retryableDetails);
 
-  const replySeed = fileReady && reply?.status === 'voucher' ? JSON.stringify([reply.messageId, reply.threadId, reply.guest, reply.file]) : null;
+  const replySeed = lookupReady && reply?.status === 'voucher' ? JSON.stringify([reply.messageId, reply.threadId, reply.guest, reply.file]) : null;
   useEffect(() => {
     if (!replySeed || reply?.status !== 'voucher' || seededReply.current === replySeed) return;
     seededReply.current = replySeed;
@@ -519,7 +525,7 @@ function VoucherFindCardBody({
   }
   if (reply.status !== 'voucher') return null;
   const { guest } = reply;
-  const file = fileReady ? reply.file : null;
+  const file = lookupReady ? reply.file : null;
   const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
@@ -761,7 +767,8 @@ function VoucherFindCardBody({
             {inventory.files.map((candidate) => <option data-pii key={candidate.id} value={candidate.id}>{candidate.filename}</option>)}
           </select>
         </label>
-      ) : <Notice tone="warn">{inventory?.files ? VOUCHER_COPY.noFile : 'Document list unavailable. Reopen this email.'}</Notice>}
+      ) : !inventory?.files ? <Notice tone="warn">Document list unavailable. Reopen this email.</Notice>
+        : file ? <Notice tone="warn">No eligible PDF available for filing.</Notice> : null}
       {selectedFileId && !fileReady ? <Notice tone={fileError ? 'warn' : undefined} role="status">
         {fileError ? 'Could not read this document. Reopen the email and try again.' : 'Reading selected document…'}
       </Notice> : null}
@@ -770,12 +777,12 @@ function VoucherFindCardBody({
       </Notice> : null}
       {fileReady && !selectedMatch && attachSucceeded && !unconfirmedAttach && (attachWrite?.run?.evidence.length ?? 0) > 0
         ? <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.documentsRow}</p> : null}
-      {fileReady && line ? (
+      {lookupReady && line ? (
         <p data-pii className={valueClass}>
           {line}
         </p>
       ) : null}
-      {fileReady && warnings.length > 0 ? (
+      {lookupReady && warnings.length > 0 ? (
         <Notice tone="warn">
           <ul className="flex list-disc flex-col gap-0.5 pl-4">
             {warnings.map((text) => (
@@ -786,11 +793,11 @@ function VoucherFindCardBody({
           </ul>
         </Notice>
       ) : null}
-      {fileReady && !sourceMatches ? <Notice tone="warn">Nava cannot verify this email and document. Reopen the email.</Notice> : null}
+      {lookupReady && !lookupSourceMatches ? <Notice tone="warn">Nava cannot verify this email and document. Reopen the email.</Notice> : null}
       {bindingFrozen && attachState?.status === 'unknown' ? (
         <Notice tone="warn">Nava could not confirm preparation. Reopen this email and check the filing status.</Notice>
       ) : null}
-      {fileReady ? <><form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); searchByFields(); }}>
+      {lookupReady ? <><form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); searchByFields(); }}>
         <p className={captionClass}>Find by confirmation and arrival, or search by surname and arrival.</p>
         <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
           Confirmation number
@@ -854,6 +861,7 @@ function VoucherFindCardBody({
       <div data-testid="voucher-save-and-match" className="flex flex-col gap-2 sm:flex-row sm:items-start">
         {file ? (
           <div className="flex flex-wrap items-center gap-2">
+            {!fileReady ? <span data-pii className={captionClass}>{file.filename}</span> : null}
             <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
               {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
             </SecondaryButton>
