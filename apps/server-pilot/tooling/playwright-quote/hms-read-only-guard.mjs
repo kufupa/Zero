@@ -75,7 +75,8 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
     const approvals = state.approvals;
     if (approvals && String(request.method()).toUpperCase() === 'POST' &&
         target?.origin === HMS_WEB_ORIGIN && target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH &&
-        !target.search && !target.hash && (firstGuard ? approvals.delete(request) : approvals.has(request))) {
+        !target.search && !target.hash && !hasWriteAction(new URLSearchParams(request.postData?.() || '')) &&
+        (firstGuard ? approvals.delete(request) : approvals.has(request))) {
       await route.fallback();
       return;
     }
