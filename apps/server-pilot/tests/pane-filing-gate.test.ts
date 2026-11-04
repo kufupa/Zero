@@ -9,7 +9,7 @@ vi.mock('../src/ai/run-ledger.js', async (original) => ({
   ...(await original<typeof import('../src/ai/run-ledger.js')>()), markAiRunRunning: stubs.running,
 }));
 
-import { approveHmsWrite, formDigest, hmsWriteStateOf, resolveHmsNeedsCheck, reviewHmsWrite } from '../src/ai/hms-approval.js';
+import { approveHmsWrite, formDigest, hmsStateDigest, hmsWriteStateOf, resolveHmsNeedsCheck, reviewHmsWrite } from '../src/ai/hms-approval.js';
 import { paneHmsWriteLoaders, runPaneHmsWriteOnce } from '../src/ai/pane-hms-write.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
@@ -38,7 +38,8 @@ describe('HRCEN filing hold', () => {
     }
     expect(f.insert).not.toHaveBeenCalled();
 
-    const source = { id: item.sourceMessageId, subject: 'Voucher', textBody: 'Document', htmlBody: null };
+    const source = { id: item.sourceMessageId, threadId: item.threadId, direction: 'inbound',
+      subject: 'Voucher', textBody: 'Document', htmlBody: null };
     const selectedSource = { messageId: source.id, threadId: item.threadId, sourceHash: staffQuoteSourceHash(source) };
     const bound = { ...item, state: { ...item.state, sourceMessageId: source.id,
       sourceThreadId: item.threadId, sourceHash: selectedSource.sourceHash } };
@@ -56,6 +57,31 @@ describe('HRCEN filing hold', () => {
         .rejects.toMatchObject({ refusal: 'no_executed_write' });
       expect(insert).not.toHaveBeenCalled();
     }
+
+    vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on');
+    vi.stubEnv('PANE_WRITE_ATTACH', 'lab');
+    const ready = { ...bound, state: { ...bound.state, sourceInternetMessageId: 'voucher@example.test',
+      pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64) } };
+    const grantId = '11111111-1111-4111-8111-111111111111';
+    const grant = { grantId, workItemId: item.id, transportId: request.transportId, actorUserId: 'user-1',
+      formDigest: formDigest(ready.state), hmsBeforeDigest: 'before', hmsReadAt: new Date().toISOString() };
+    for (const kind of ['missing', 'corrupt', 'valid'] as const) {
+      const prior = { ...previous, promptVersion: 'hms-write/lab-attach/1',
+        idempotencyKey: kind === 'missing' ? 'missing-grant' : `hms-write:${grantId}` };
+      const answers: unknown[][] = [[ready], [source], [source], [prior], [], [prior], [prior],
+        ...(kind === 'missing' ? [] : [[{ value: grant, payloadHash: kind === 'valid' ? hmsStateDigest(grant) : 'corrupt' }]])];
+      const query = { from: () => query, where: () => query, orderBy: () => query, limit: () => {
+        const rows = answers.shift() ?? [];
+        return Object.assign(Promise.resolve(rows), { for: async () => rows });
+      } };
+      const insert = vi.fn();
+      const tx = { select: () => query, execute: async () => undefined, insert };
+      const db = { transaction: async (fn: (value: unknown) => unknown) => fn(tx) } as unknown as DB;
+      await expect(approveHmsWrite({ ...request, db, selectedSource, selectedInternetMessageId: '<voucher@example.test>',
+        sessionId: 'session-1', sessionProfile: 'remote' }))
+        .rejects.toMatchObject({ refusal: kind === 'valid' ? 'snapshot_missing' : 'needs_check_open' });
+      expect(insert).not.toHaveBeenCalled();
+    }
   });
 
   it('marks an existing HRCEN attach form unavailable to the approval card', async () => {
@@ -70,9 +96,11 @@ describe('HRCEN filing hold', () => {
       idempotencyKey: string; promptVersion: string } = { id: 'run-1', state: 'succeeded', failureClass: null, lastError: null,
       idempotencyKey: 'old-run', promptVersion: 'hms-write/1' };
     const evidence = { id: 'evidence-1', name: 'after.png', at: new Date() };
-    const readRun = async (current: typeof run, grant?: Record<string, unknown>) => {
+    const readRun = async (current: typeof run, grant?: Record<string, unknown>, payloadHash?: string) => {
+      const hash = grant ? payloadHash ?? hmsStateDigest(grant) : undefined;
       const answers: unknown[][] = [[item], [current],
-        ...(grant ? [[{ value: grant }], [{ id: 'consumed' }]] : []), [evidence], [],
+        ...(grant ? [[{ value: grant, payloadHash: hash }]] : []),
+        ...(grant && hash === hmsStateDigest(grant) ? [[{ id: 'consumed' }]] : []), [evidence], [],
         ...(['queued', 'claimed', 'running', 'retry_wait'].includes(current.state) ? [] : [[current]]),
         ...(current.failureClass === 'LEASE_LOST' ? [[]] : [])];
       const result = {
@@ -107,6 +135,9 @@ describe('HRCEN filing hold', () => {
     });
     expect(await readRun(filing, { ...grant, formDigest: 'earlier-form' }))
       .toMatchObject({ grant: null, run: null, needsCheck: false });
+    expect(await readRun(filing, grant, 'corrupt')).toMatchObject({
+      grant: null, run: { state: 'succeeded', evidence: [], lastError: 'filing_approval_unverified' }, needsCheck: true,
+    });
   });
 
   it('reports filing configuration for the selected property independently of the create flag', async () => {

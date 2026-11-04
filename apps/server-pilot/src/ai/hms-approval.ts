@@ -525,6 +525,21 @@ export async function approveHmsWrite(input: {
     }
     await supersedeChangedQueuedWrite(tx as DB, item.id, formDigest(item.state), now);
     await assertNoOpenWrite(tx as DB, item.id);
+    if (labtestAttach) {
+      const previous = await latestWriteRun(tx as DB, item.id);
+      if (previous?.state === 'succeeded' && previous.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION) {
+        const previousGrantId = grantIdForRun(previous);
+        try {
+          if (!previousGrantId) throw new HmsApprovalError('no_grant');
+          await loadGrant(tx as DB, item.id, previousGrantId, true);
+        } catch (error) {
+          if (error instanceof HmsApprovalError && error.refusal === 'no_grant') {
+            throw new HmsApprovalError('needs_check_open');
+          }
+          throw error;
+        }
+      }
+    }
 
     let state = item.state;
     let snapshot = readSnapshot(state);
@@ -1351,12 +1366,14 @@ export async function hmsWriteStateOf(input: {
   const storedValues = z
     .record(z.unknown())
     .safeParse((item.state[HMS_SNAPSHOT_KEY] as { values?: unknown } | undefined)?.values);
+  const target = paneStayHmsTargetForTransport(input.transportId);
+  const cloudFiling = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
   const run = await latestWriteRun(db, item.id);
   const grantId = run ? grantIdForRun(run) : null;
   let grant: HmsWriteStateView['grant'] = null;
   if (grantId) {
     const [row] = await db
-      .select({ value: workEvent.value })
+      .select({ value: workEvent.value, payloadHash: workEvent.payloadHash })
       .from(workEvent)
       .where(
         and(
@@ -1367,7 +1384,7 @@ export async function hmsWriteStateOf(input: {
       )
       .limit(1);
     const parsed = hmsWriteGrantSchema.safeParse(row?.value);
-    if (parsed.success) {
+    if (parsed.success && (!cloudFiling || row?.payloadHash === grantHash(parsed.data))) {
       const [consumed] = await db
         .select({ id: workEvent.id })
         .from(workEvent)
@@ -1403,10 +1420,9 @@ export async function hmsWriteStateOf(input: {
       reviewed,
     };
   }
-  const target = paneStayHmsTargetForTransport(input.transportId);
   let needsCheck = run !== null && !(NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) &&
     Boolean(await unresolvedNeedsCheckRunId(db, item.id));
-  if (item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN' && run &&
+  if (cloudFiling && run &&
       (run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION || !grant?.fingerprintMatches)) {
     // A completed write for another workflow or form is history, not this upload.
     // If a Filing success lacks its grant, its relationship to this form is unknown.
