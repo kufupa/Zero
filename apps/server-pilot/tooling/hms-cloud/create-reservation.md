@@ -145,6 +145,5 @@ A/R account, and CMS message `03`. The CMS send box was unchecked, and no
 browser send requests were observed; this does not establish server-side email
 queue behavior. Saved A/R, billing reference, reason for stay, and other combinations remain
 unverified. The new billing path has not been proven with a live save. See [guest-stay-save.md](./guest-stay-save.md) for the existing
-fake-only request, preimage, no-send and proof limitations.
-No part of this interface enables real-guest writes or replaces a future
-authenticated staff approval boundary.
+request, preimage and readback contract. Real-guest writes happen only through
+the pane's staff Go (PRODUCT.md).

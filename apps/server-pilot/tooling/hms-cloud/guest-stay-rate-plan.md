@@ -58,9 +58,8 @@ Live observations use Proof Labtest and 2027 dates. One blank-profile selection
 changed meal plan, market segment and track; a later rate replacement changed
 meal plan. A/R-only and guest-plus-A/R selections retained their identities and
 rates in the change responses and on the drafts. Other property, name and date
-combinations have not been established by these examples. A/R and selected-guest
-paths support only fake Labtest drafts; real-guest writes remain subject to
-`PRODUCT.md`. The booking-session checks bind each action to its observed inquiry and cancellation;
+combinations have not been established by these examples. Real-guest writes follow
+`PRODUCT.md` (staff Go). The booking-session checks bind each action to its observed inquiry and cancellation;
 isolation across every concurrent server session is not proved. The expected
 toolbar image GET is blocked and reported. Keep captured form values and HMS
 responses in approved private storage.

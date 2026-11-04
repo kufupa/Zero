@@ -195,8 +195,7 @@ This combines the current saved-record adapter and existing Hotel Availability
 reader. It does not reprice the saved form, establish amendment inventory,
 authorize Save, or integrate the shared saved-stay agent session. Count and rate
 observations remain separate from native amendment availability, especially when
-the existing booking already occupies inventory. Real-guest writes remain out
-of scope.
+the existing booking already occupies inventory. Real-guest writes follow PRODUCT.md (staff Go).
 
 On 2026-11-02 the existing date adapter staged a one-day departure extension
 on a separately reserved HRCEN Proof Labtest stay. The visible date and native

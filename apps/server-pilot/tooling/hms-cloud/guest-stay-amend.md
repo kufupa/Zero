@@ -39,5 +39,5 @@ need separate implementations and saved-frame observations.
 the change. Reopen the exact record in a fresh guarded session and verify the
 new note and unchanged identity and stay fields. Reconcile `uncertain`
 outcomes before any further mutation. A deadline and native-dialog signal
-disarm the action; dialogs are returned, never accepted.
+disarm the action; dialogs are returned to staff to decide.
 Returned observations can contain private data and belong in private storage.

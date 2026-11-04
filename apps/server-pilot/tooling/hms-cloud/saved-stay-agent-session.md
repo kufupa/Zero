@@ -93,7 +93,7 @@ full-form guard and fresh readback described in `guest-stay-amend-contact.md`.
 
 After `openCancel` returns `reason_ready`, only `confirmCancel` or closing the
 session is available. Outcomes such as `fee_dialog_pending`, `uncertain` and
-`awaiting_readback` are returned unchanged. Never accept a fee or penalty
-dialog; cancellation may already have taken effect. Start a fresh guarded
+`awaiting_readback` are returned unchanged. A fee or penalty
+dialog goes to staff for a second Go; cancellation may already have taken effect. Start a fresh guarded
 session to reconcile any attempted write, and never blindly retry an uncertain
 dispatch. Browser send observations cannot establish server-side delivery.
