@@ -552,7 +552,8 @@ export function QuoteWorkflowPanel({
   makeQuote?: boolean;
   workItemPane?: WorkItemPaneControls | null;
 }) {
-  const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
+  const currentEmailKey = session.binding?.entryId
+    ? JSON.stringify([session.binding.storeId, session.binding.folderEntryId, session.binding.entryId]) : null;
   const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
   const shuttleDraft = session.binding && paneConfig !== undefined ? (
     <ShuttleDraft

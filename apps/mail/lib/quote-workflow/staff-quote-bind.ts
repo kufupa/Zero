@@ -7,6 +7,7 @@ import type {
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
+import type { MailSourceInput, MailSourceSelection } from './backend-bind';
 import type {
   QueueStatus,
   QuoteOffer,
@@ -819,8 +820,9 @@ export type BoundStaffSource =
   | { kind: 'ready'; source: StaffQuoteSource };
 
 export async function bindStaffQuoteSource(args: {
-  query?: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult>;
+  query?: (input: MailSourceInput) => Promise<StaffQuoteSourceResult>;
   internetMessageId?: string;
+  selection?: MailSourceSelection;
 }): Promise<BoundStaffSource> {
   const internetMessageId = args.internetMessageId?.trim();
   if (!internetMessageId) {
@@ -833,13 +835,15 @@ export async function bindStaffQuoteSource(args: {
     };
   }
   try {
-    const result = await args.query({ internetMessageId });
+    const result = await args.query({ internetMessageId, ...(args.selection ? { selection: args.selection } : {}) });
     if (result.status === 'message_not_synced') return { kind: 'message_not_synced' };
     if (
       result.status !== 'ready' ||
       !result.messageId?.trim() ||
       !result.threadId?.trim() ||
-      !SOURCE_HASH.test(result.sourceHash)
+      !SOURCE_HASH.test(result.sourceHash) ||
+      (args.selection?.kind === 'web' &&
+        (result.messageId !== args.selection.messageId || result.threadId !== args.selection.threadId))
     ) {
       return { kind: 'unavailable', reason: 'The email could not be verified. Select it again.' };
     }
@@ -1849,7 +1853,7 @@ export async function bindHmsQueueStatus(query?: () => Promise<QueueStatus>): Pr
 }
 
 type StaffQuoteClient = {
-  staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
+  staffQuoteSource?: { query: (input: MailSourceInput) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: {
     mutate: (input: ExecuteStaffQuoteInput, options?: StaffQuoteCallOptions) => Promise<ExecuteStaffQuoteResult>;
   };

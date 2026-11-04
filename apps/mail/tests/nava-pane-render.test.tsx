@@ -152,6 +152,11 @@ const fakeBridge = {
   pairDevice: vi.fn(async () => {}),
 } as unknown as PaneBridge;
 
+const selectedMailKey = (entryId: string, internetMessageId: string) => JSON.stringify([
+  { kind: 'outlook', storeId: 'store-1', entryId, folderEntryId: 'folder-inbox' },
+  internetMessageId,
+]);
+
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
     data: {
@@ -1936,7 +1941,7 @@ describe('NavaPane', () => {
   });
 
   it('loads request controls when a work item arrives after a saved treat-as choice', async () => {
-    sessionStorage.setItem('nava.treat-as:transport-1::<quote-request@example.invalid>', 'quote');
+    sessionStorage.setItem(`nava.treat-as:transport-1::${selectedMailKey('001', '<quote-request@example.invalid>')}`, 'quote');
     bridgeMockState.storedWork = STORED_READY;
     let release = () => {};
     bridgeMockState.storedLookupGate = new Promise<void>(resolve => { release = resolve; });
@@ -2271,7 +2276,7 @@ describe('NavaPane', () => {
   });
 
   it('drafts a one-line decline for a queued inventory refusal and keeps alternatives staff-side', async () => {
-    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
+    sessionStorage.setItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`, '1');
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2526,7 +2531,8 @@ describe('NavaPane', () => {
 
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
     let staffQuotePolls = 0;
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    resolveDavinciProperty();
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
       ...STORED_READY,
       contact: {
@@ -2565,7 +2571,7 @@ describe('NavaPane', () => {
     });
 
     render(
-      <HmsJobNoticeProvider emailKey="mail-1" emailSubject="Quote request">
+      <HmsJobNoticeProvider emailKey={JSON.stringify(['store-1', 'folder-inbox', '001'])} emailSubject="Quote request">
         <NavaPane bridge={fakeBridge} hmsNoticesManagedByParent />
       </HmsJobNoticeProvider>,
     );
@@ -2589,7 +2595,7 @@ describe('NavaPane', () => {
   });
 
   it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2667,8 +2673,8 @@ describe('NavaPane', () => {
   });
 
   it('reads back the first email’s fresh quote when returning from another email', async () => {
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<other-quote@example.invalid>');
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('002', '<other-quote@example.invalid>')}`);
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.staffQuoteSources['<other-quote@example.invalid>'] = {
       messageId: 'mail-2',
@@ -2799,7 +2805,7 @@ describe('NavaPane', () => {
     }) => void;
     let retryReady = false;
     let runIdReads = 0;
-    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
+    sessionStorage.setItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`, '1');
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     bridgeMockState.queueStaffQuoteMutation.mockImplementation(async (input: Record<string, unknown>) => {
@@ -2920,7 +2926,7 @@ describe('NavaPane', () => {
 
   it('waits for staff to run rates after they edit the stay while the queue flag is loading', async () => {
     let enableQueueMode!: (enabled: boolean) => void;
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.jobQueueEnabledQuery.mockImplementation(
       () => new Promise((resolve) => { enableQueueMode = resolve; }),
@@ -2948,7 +2954,7 @@ describe('NavaPane', () => {
 
   it('suppresses auto-start after staff quote edits and uses the edited header, party, and rate plan for Get rates', async () => {
     const queueModeResolvers: Array<(enabled: boolean) => void> = [];
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -3002,6 +3008,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
+    resolveDavinciProperty();
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);

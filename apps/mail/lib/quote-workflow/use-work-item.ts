@@ -6,6 +6,7 @@ import {
   quoteAnalysisOf,
   workItemsFromTrpc,
   type ContactField,
+  type MailSourceSelection,
   type RecordFieldEventInput,
   type StoredContact,
   type StoredStayCommit,
@@ -374,19 +375,23 @@ function saveKey(workItemId: string, path: string): string {
 export function useStoredWork(args: {
   trpc: unknown;
   internetMessageId: string | null;
+  selection?: MailSourceSelection;
+  selectionEpoch?: number;
   /** Read an existing item without opening a new work item when this is a non-actionable channel/system message. */
   openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
   scope?: string | null;
 }) {
-  const { trpc, internetMessageId } = args;
+  const { trpc, internetMessageId, selection } = args;
   const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
-  const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
+  const lookupKey = internetMessageId
+    ? JSON.stringify([scope, internetMessageId, selection ?? null, args.selectionEpoch ?? null])
+    : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
   // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
-  const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
+  const [retries, setRetries] = useState<{ key: string | null; count: number }>({ key: null, count: 0 });
   const readyAt = useRef(0);
   const pending = useRef(new Map<string, PendingEvent>());
   // The newest send per save slot, so an older send's failure never stands in for a newer value.
@@ -527,7 +532,7 @@ export function useStoredWork(args: {
     // The lookup goes out under the active mailbox, so its work item lives there.
     const transportId = getMailCacheScope().activeTransportId;
     const settle = (result: LookupResult) => {
-      if (!current || settled) return;
+      if (!current || settled || lookupKeyRef.current !== lookupKey) return;
       // A timeout starts the live read. Only a late ready payload can supersede that fallback; a late miss or
       // transport failure leaves the current live-read state alone and keeps Retry available there.
       if (timedOut && result.status !== 'ready') {
@@ -552,8 +557,9 @@ export function useStoredWork(args: {
       open: routes.open,
       allowOpen: openMissingWorkItem,
       internetMessageId,
+      selection,
       transportId,
-      isStale: () => !current,
+      isStale: () => !current || lookupKeyRef.current !== lookupKey,
       onRead: () => clearTimeout(timer),
       openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
     }).then(settle);
@@ -566,7 +572,7 @@ export function useStoredWork(args: {
 
   const currentLookup = lookup && lookup.key === lookupKey ? lookup : null;
   const stored = currentLookup?.result ?? null;
-  const retried = retries.messageId === internetMessageId ? retries.count : 0;
+  const retried = retries.key === lookupKey ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
   else if (!currentLookup) pane = { state: 'loading' };
@@ -594,7 +600,7 @@ export function useStoredWork(args: {
 
   // Changes when the stored read changes or a retry is asked for, so the pane's analysis effect re-runs on it.
   const key = [
-    internetMessageId ?? '',
+    lookupKey ?? '',
     pane.state,
     pane.state === 'ready' ? (pane.workItemId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
@@ -607,12 +613,12 @@ export function useStoredWork(args: {
   const readyTransportId = currentLookup?.transportId ?? null;
 
   const retry = useCallback(() => {
-    if (!internetMessageId) return;
+    if (!lookupKey) return;
     setRetries((prev) => ({
-      messageId: internetMessageId,
-      count: (prev.messageId === internetMessageId ? prev.count : 0) + 1,
+      key: lookupKey,
+      count: (prev.key === lookupKey ? prev.count : 0) + 1,
     }));
-  }, [internetMessageId]);
+  }, [lookupKey]);
 
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
@@ -712,7 +718,7 @@ export function useStoredWork(args: {
     const keyNow = lookupKey;
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve();
     const pinned = inMailbox(readyTransportId);
-    const input = { internetMessageId: messageId };
+    const input = { internetMessageId: messageId, ...(selection ? { selection } : {}) };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((result) => {
         if (lookupKeyRef.current !== keyNow) return;

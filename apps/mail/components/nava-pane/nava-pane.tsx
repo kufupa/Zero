@@ -20,7 +20,7 @@ import {
   quoteDeclineReplyHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { ContactField, MailSourceSelection, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ConfirmationSourcesBridge } from '@/components/quote-workflow/confirmation-recipient';
 import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -281,6 +281,8 @@ type NavaPaneProps = {
   preview?: boolean;
   /** The web preview checked this exact message, or a unique inbound. */
   webSelectedMessageId?: string | null;
+  /** Stored thread containing the web selection. Outlook does not supply a web thread ID. */
+  webSelectedThreadId?: string;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
   onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
   /** Normal inbox only: allow owners to save this message's workflow as a gold label. */
@@ -293,6 +295,7 @@ export function NavaPane({
   bridge,
   preview = false,
   webSelectedMessageId = null,
+  webSelectedThreadId,
   onOpenThread,
   goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
@@ -327,6 +330,12 @@ export function NavaPane({
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
+  const selectedKey = activeEmail?.entryId
+    ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
+    : null;
+  const selectedEmailKey = activeEmail?.entryId
+    ? JSON.stringify([activeEmail.storeId ?? '', activeEmail.folderEntryId ?? '', activeEmail.entryId])
+    : null;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobMessageId = quoteSession.staffSource?.messageId ?? null;
@@ -382,7 +391,7 @@ export function NavaPane({
   useRatesReadyNotice({
     jobsRef: ratesReadyJobs,
     openMessageId: quoteSession.staffSource?.messageId ?? null,
-    openEmailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+    openEmailKey: selectedEmailKey,
     query: staffQuoteFromTrpc(trpcClient).workstation.staffQuoteJob?.query,
     onOpenThread,
   });
@@ -390,7 +399,7 @@ export function NavaPane({
     trackingStaffQuoteJob(ratesReadyJobs, query, () => ({
       messageId: source.messageId,
       threadId: source.threadId,
-      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      emailKey: selectedEmailKey,
       subject: activeEmail?.subject?.trim() || null,
       entryId: activeEmail?.entryId ?? null,
     }));
@@ -411,7 +420,7 @@ export function NavaPane({
     run: Promise<BoundExecuteStaffQuote | null>,
     retry: () => void,
     email = {
-      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      emailKey: selectedEmailKey,
       emailSubject: activeEmail?.subject?.trim() || null,
     },
   ): Promise<BoundExecuteStaffQuote | null> => {
@@ -449,9 +458,6 @@ export function NavaPane({
     );
   };
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
-  const selectedKey = activeEmail?.entryId
-    ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
-    : null;
   const { data: session, isLoading } = useSession();
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
@@ -513,8 +519,22 @@ export function NavaPane({
   const voucherMailboxScope = !requiresRelogin && session?.user?.id && session.session?.id && activeConnection?.id
     ? JSON.stringify([session.user.id, session.session.id, activeConnection.id])
     : null;
+  const sourceSelection = useMemo<MailSourceSelection | undefined>(() => {
+    if (!activeEmail?.entryId) return undefined;
+    if (preview) {
+      return webSelectedThreadId !== undefined
+        ? { kind: 'web', messageId: activeEmail.entryId, threadId: webSelectedThreadId }
+        : undefined;
+    }
+    return {
+      kind: 'outlook',
+      storeId: activeEmail.storeId ?? '',
+      entryId: activeEmail.entryId,
+      ...(activeEmail.folderEntryId ? { folderEntryId: activeEmail.folderEntryId } : {}),
+    };
+  }, [activeEmail?.entryId, activeEmail?.storeId, activeEmail?.folderEntryId, preview, webSelectedThreadId]);
   const selectedIdentity = activeEmail?.entryId
-    ? `${activeEmail.storeId ?? ''}:${activeEmail.folderEntryId ?? ''}:${activeEmail.entryId}` : null;
+    ? JSON.stringify([sourceSelection ?? selectedEmailKey, activeEmail.internetMessageId ?? '']) : null;
   const contextRevision = useRef({ scope: currentScope, selection: selectedIdentity, scopeEpoch: 0, selectionEpoch: 0 });
   if (contextRevision.current.scope !== currentScope) {
     contextRevision.current = { scope: currentScope, selection: selectedIdentity,
@@ -615,6 +635,7 @@ export function NavaPane({
         folderEntryId: activeEmail.folderEntryId ?? '',
         entryId: activeEmail.entryId,
         internetMessageId: activeEmail.internetMessageId,
+        ...(preview && webSelectedThreadId !== undefined ? { threadId: webSelectedThreadId } : {}),
         selectionEpoch: contextRevision.current.selectionEpoch,
         scopeEpoch: contextRevision.current.scopeEpoch,
       },
@@ -626,6 +647,8 @@ export function NavaPane({
     activeEmail?.folderEntryId,
     activeEmail?.internetMessageId,
     activeEmail?.storeId,
+    preview,
+    webSelectedThreadId,
     selectedIdentity,
     currentScope,
   ]);
@@ -643,6 +666,8 @@ export function NavaPane({
   const storedWork = useStoredWork({
     trpc: trpcClient,
     internetMessageId: activeEmail?.internetMessageId ?? null,
+    selection: sourceSelection,
+    selectionEpoch: contextRevision.current.selectionEpoch,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
   });
@@ -650,8 +675,7 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
-    (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const contactMessageKey = selectedIdentity ?? '';
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
   const contactEditorKey = `${contactCorrectionKey}|${
     storedWork.pane.state === 'ready'
@@ -689,8 +713,7 @@ export function NavaPane({
     setContactCorrection(null);
     pendingContactCorrections.current = null;
     const transportId = quoteSession.binding?.transportId;
-    const messageKey = quoteSession.binding?.internetMessageId ?? activeEmail?.internetMessageId;
-    if (transportId && messageKey) forgetPaneEdits(paneEditKey(transportId, messageKey));
+    if (transportId && contactMessageKey) forgetPaneEdits(paneEditKey(transportId, contactMessageKey));
   }, [storedWork.historyEpoch]);
   const workItemPane =
     storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
@@ -820,9 +843,8 @@ export function NavaPane({
     dispatchQuote(action);
     const after = reduceQuoteSession(before, action);
     storedWork.recordGroups(before.groups, after.groups);
-    const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
-    if (after.binding?.transportId && messageKey) {
-      rememberPaneEdits(paneEditKey(after.binding.transportId, messageKey), after.groups);
+    if (after.binding && isCurrentBinding(after.binding) && contactMessageKey) {
+      rememberPaneEdits(paneEditKey(after.binding.transportId, contactMessageKey), after.groups);
     }
   };
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
@@ -846,7 +868,7 @@ export function NavaPane({
         analysis: analysisWithPaneEdits(
           decision.analysis,
           binding.transportId,
-          binding.internetMessageId,
+          contactMessageKey,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
@@ -868,6 +890,7 @@ export function NavaPane({
       mutate: workflow.analyseSelection?.mutate,
       input: {
         internetMessageId: binding.internetMessageId,
+        ...(sourceSelection ? { selection: sourceSelection } : {}),
         storeId: binding.storeId,
         entryId: binding.entryId,
         folderEntryId: binding.folderEntryId,
@@ -885,7 +908,7 @@ export function NavaPane({
             analysis: analysisWithPaneEdits(
               remote.analysis,
               binding.transportId,
-              binding.internetMessageId,
+              contactMessageKey,
             ),
           });
           return;
@@ -931,6 +954,7 @@ export function NavaPane({
     void bindStaffQuoteSource({
       query: staff.workstation.staffQuoteSource?.query,
       internetMessageId: binding.internetMessageId,
+      selection: sourceSelection,
     }).then((source) => {
       if (cancelled || !isCurrentBinding(binding)) return;
       if (source.kind === 'message_not_synced') {
@@ -1911,7 +1935,7 @@ export function NavaPane({
           stayKey: step.shareKey,
         });
     const noticeEmail = {
-      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      emailKey: selectedEmailKey,
       emailSubject: activeEmail?.subject?.trim() || null,
     };
     const staffQuoteStep = step;
@@ -2143,7 +2167,7 @@ export function NavaPane({
 
   return (
     <HmsJobNoticeProvider
-      emailKey={activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null}
+      emailKey={selectedEmailKey}
       emailSubject={activeEmail?.subject?.trim() || null}
       passthrough={hmsNoticesManagedByParent}
       onReporterReady={setNoticeReporter}
