@@ -38,6 +38,8 @@ export function ApproveCard({
   guestSurname,
   arrival,
   requireStoredWrite = false,
+  filingApprovalAllowed = true,
+  filingApprovalDigest,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
@@ -51,6 +53,8 @@ export function ApproveCard({
    * action form such as attach_document, or a write run), so other items never get write controls.
    */
   requireStoredWrite?: boolean;
+  filingApprovalAllowed?: boolean;
+  filingApprovalDigest?: string | null;
 }) {
   if (!client) return null;
   return (
@@ -62,6 +66,8 @@ export function ApproveCard({
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
       writesEnabled={writesEnabled}
+      filingApprovalAllowed={filingApprovalAllowed}
+      filingApprovalDigest={filingApprovalDigest}
     />
   );
 }
@@ -131,6 +137,8 @@ function LiveWriteCard({
   arrival,
   requireStoredWrite,
   writesEnabled,
+  filingApprovalAllowed,
+  filingApprovalDigest,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -139,6 +147,8 @@ function LiveWriteCard({
   arrival?: string | null;
   requireStoredWrite: boolean;
   writesEnabled: boolean;
+  filingApprovalAllowed: boolean;
+  filingApprovalDigest?: string | null;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
@@ -153,10 +163,16 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
-  const effectiveWritesEnabled = view?.filingAvailable ?? writesEnabled;
+  const filingCurrent = filingApprovalAllowed &&
+    (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest));
+  const effectiveWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+    (view?.form.action !== 'attach_document' || filingCurrent);
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
-      {!effectiveWritesEnabled ? <p className={writeClasses.note}>{PANE_SAVE_OFF_COPY}</p> : null}
+      {!effectiveWritesEnabled ? <p className={writeClasses.note}>
+        {view?.form.action === 'attach_document' && !filingCurrent
+          ? 'Select the current document and booking before approving.' : PANE_SAVE_OFF_COPY}
+      </p> : null}
       {view ? (
         <>
           {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
