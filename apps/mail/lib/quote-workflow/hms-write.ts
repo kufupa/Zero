@@ -60,8 +60,9 @@ export type HmsApprovalClient = {
 };
 
 type MailboxOptions = NonNullable<ReturnType<typeof inMailbox>>;
+type SelectedSource = { threadId: string; messageId: string; sourceHash: string };
 type MailboxCall<T> = T extends (input: infer Input) => infer Result
-  ? (input: Input & { internetMessageId: string }, options: MailboxOptions) => Result
+  ? (input: Input & { internetMessageId: string; selectedSource?: SelectedSource }, options: MailboxOptions) => Result
   : never;
 
 type TrpcHmsApprovalRoutes = {
@@ -78,6 +79,7 @@ type TrpcHmsApprovalRoutes = {
 /** Pin every request to the mailbox and selected email the card belongs to. */
 export function hmsApprovalFromTrpc(
   trpc: unknown, transportId: string | null, internetMessageId: string | null,
+  selectedSource?: SelectedSource | null,
 ): HmsApprovalClient | null {
   const mailbox = inMailbox(transportId);
   if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
@@ -89,13 +91,15 @@ export function hmsApprovalFromTrpc(
   const reread = routes?.reread;
   const evidence = routes?.evidence;
   if (!writeState || !approve || !review || !resolve || !reread || !evidence) return null;
+  const selection = selectedSource ? { selectedSource: { threadId: selectedSource.threadId,
+    messageId: selectedSource.messageId, sourceHash: selectedSource.sourceHash } } : {};
   return {
-    writeState: (input) => writeState.query({ ...input, internetMessageId }, mailbox),
-    approve: (input) => approve.mutate({ ...input, internetMessageId }, mailbox),
-    review: (input) => review.mutate({ ...input, internetMessageId }, mailbox),
-    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId }, mailbox),
-    reread: (input) => reread.mutate({ ...input, internetMessageId }, mailbox),
-    evidence: (input) => evidence.query({ ...input, internetMessageId }, mailbox),
+    writeState: (input) => writeState.query({ ...input, internetMessageId, ...selection }, mailbox),
+    approve: (input) => approve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    review: (input) => review.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    reread: (input) => reread.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    evidence: (input) => evidence.query({ ...input, internetMessageId, ...selection }, mailbox),
   };
 }
 

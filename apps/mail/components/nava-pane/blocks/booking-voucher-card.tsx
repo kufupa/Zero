@@ -2,6 +2,7 @@ import { AmendLookupPanel, type AmendReadOnlyContext } from '@/components/quote-
 import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
+import type { MailSourceSelection } from '@/lib/quote-workflow/backend-bind';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { NavaReadAs } from '@/lib/quote-workflow/workflow-vocabulary';
@@ -17,6 +18,7 @@ import { OtaBookingChannelChip } from './ota-booking-channel-chip';
 export function BookingVoucherCard({
   session,
   internetMessageId,
+  lookupSelection,
   syncCommitted,
   syncPending,
   readAs = null,
@@ -33,6 +35,7 @@ export function BookingVoucherCard({
 }: {
   session: QuoteSession;
   internetMessageId: string | null;
+  lookupSelection?: MailSourceSelection;
   syncCommitted: number | null;
   syncPending: boolean;
   /** Shared selected-email classification; payment mails need voucher lookup even when the older workflow is `other`. */
@@ -51,12 +54,18 @@ export function BookingVoucherCard({
   amendPropertyResolved?: boolean;
   readOnlyAmend?: AmendReadOnlyContext | null;
 }) {
+  const selectedSource = session.staffSource;
   const approvalClient = useMemo(
-    () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId),
-    [transportId, internetMessageId, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash],
+    () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId, selectedSource),
+    [transportId, internetMessageId, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash],
   );
   const amendment = amendmentOf(session);
   const [approvalRevision, setApprovalRevision] = useState(0);
+  const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null } | null>(null);
+  const filingScope = JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId,
+    session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
+  const filingSourceCurrent = propertyCode !== 'HRCEN' || Boolean(selectedSource && readOnlyAmend?.selectionCurrent !== false &&
+    !readOnlyAmend?.sourceContentChanged);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
   const showVoucherFindCard = readAs === 'payment' || hasBookingWorkflow || amendment !== null;
@@ -90,10 +99,10 @@ export function BookingVoucherCard({
           session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend}
         />
       )}
-      {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
-      {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
+      {/* An amendment email can also contain a voucher; its filing card must only show a filing form. */}
+      {workItemId && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId, approvalRevision,
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId, approvalRevision,
             session.binding?.selectionEpoch, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash])}
           client={approvalClient}
           workItemId={workItemId}
@@ -102,21 +111,31 @@ export function BookingVoucherCard({
           guestSurname={guestSurname}
           arrival={arrival}
           requireStoredWrite
+          requiredAction={amendment ? 'attach_document' : undefined}
+          filingApprovalAllowed={filingSourceCurrent && preparedFiling?.scope === filingScope}
+          filingReviewAllowed={filingSourceCurrent}
+          filingApprovalDigest={preparedFiling?.scope === filingScope ? preparedFiling.digest : null}
         />
       ) : null}
       {showVoucherFindCard ? (
         <VoucherFindCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId])}
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, session.binding?.selectionEpoch,
+            selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash])}
           internetMessageId={internetMessageId}
+          lookupSelection={lookupSelection}
           transportId={transportId}
           mailboxScope={mailboxScope}
           trpc={trpcClient}
           syncCommitted={syncCommitted}
           syncPending={syncPending}
           workItemId={workItemId}
-          writesEnabled={writesEnabled && !amendment}
-          approvalAvailable={Boolean(approvalClient && workItemId && !amendment && mailboxScope && transportId && internetMessageId)}
-          onPrepared={() => setApprovalRevision((revision) => revision + 1)}
+          writesEnabled={writesEnabled}
+          approvalAvailable={Boolean(filingSourceCurrent && approvalClient && workItemId && mailboxScope && transportId && internetMessageId)}
+          selectionEpoch={session.binding?.selectionEpoch}
+          selectedSource={propertyCode === 'HRCEN' ? (selectedSource ?? null) : undefined}
+          selectionCurrent={filingSourceCurrent}
+          onTargetChanged={() => setPreparedFiling(null)}
+          onPrepared={(digest) => { setPreparedFiling({ scope: filingScope, digest: digest ?? null }); setApprovalRevision((revision) => revision + 1); }}
           propertyCode={propertyCode}
         />
       ) : null}

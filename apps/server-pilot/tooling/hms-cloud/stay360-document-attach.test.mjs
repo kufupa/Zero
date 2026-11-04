@@ -46,16 +46,19 @@ test('native validation fields use the model and each staged submit value', () =
   const value = documentValidationFields(snapshot);
   assert.deepEqual([...value], [['code', 'STAGED'], ['count', '0'], ['checked', 'false'], ['nullable', ''],
     ['SYSTEM_FUNCTION_NAME', 'BSUPLD'], ['USER_FUNCTION_NAME', 'BSUPLD']]);
-  assert.equal(documentValidationFields({ ...snapshot, fields: [{ name: 'code' }, { name: 'CODE' }] }), null);
-  assert.equal(documentValidationFields({ data: { code: {}, CODE: '' }, fields: [] }), null);
-  assert.equal(documentValidationFields({ data: { code: '' }, fields: [{ name: 'code', submit: {} }] }), null);
+  assert.equal(documentValidationFields({ data: { documentcode: '' },
+    fields: [{ name: 'documentcode' }, { name: 'DOCUMENTCODE' }] }), null);
+  assert.equal(documentValidationFields({ data: { documentcode: {} }, fields: [] }), null);
+  assert.equal(documentValidationFields({ data: { documentcode: '' }, fields: [{ name: 'documentcode', submit: {} }] }), null);
+  assert.equal(documentValidationFields({ data: { extra: {}, code: 'ok' }, fields: [] }).get('code'), 'ok');
   assert.equal(documentValidationFields({ data: { SYSTEM_FUNCTION_NAME: 'X' }, fields: [] }), null);
 });
 
-test('form matching rejects duplicates, unexpected keys and changed values', () => {
+test('form matching checks the intended fields while allowing other native controls', () => {
   const expected = new Map([['a', '1'], ['b', '2']]);
   assert.equal(exactDocumentParams(new URLSearchParams('a=1&b=2'), expected), true);
-  for (const value of ['a=1&b=2&b=2', 'a=1&c=2', 'a=1&b=3', 'a=1']) {
+  assert.equal(exactDocumentParams(new URLSearchParams('a=1&b=2&extra=harmless'), expected), true);
+  for (const value of ['a=1&b=2&b=2', 'a=1&c=2', 'a=1&b=3', 'a=1', 'a=1&b=2&pageaction=SAVE']) {
     assert.equal(exactDocumentParams(new URLSearchParams(value), expected), false);
   }
 });
@@ -63,6 +66,17 @@ test('form matching rejects duplicates, unexpected keys and changed values', () 
 test('multipart and query bind the current frame, target, token, name and exact bytes', () => {
   assert.equal(matchesDocumentMultipart(upload(), payload, file), true);
   assert.equal(matchesDocumentUpload(upload(), frame, payload, file, token), true);
+  assert.equal(matchesDocumentUpload(upload({ query: (q) => q.set('unreviewed', 'true') }), frame, payload, file, token), true);
+  assert.equal(matchesDocumentUpload(upload({ query: (q) => q.delete('recordid') }), frame, payload, file, token), true);
+  const original = upload(), body = original.postDataBuffer().toString('latin1');
+  const append = (part) => ({ ...original, postDataBuffer: () => Buffer.from(body.replace('--test-boundary--\r\n',
+    `--test-boundary\r\n${part}\r\n--test-boundary--\r\n`), 'latin1') });
+  assert.equal(matchesDocumentUpload(append('Content-Disposition: form-data; name="extra"\r\n\r\nvalue'), frame, payload, file, token), true);
+  assert.equal(matchesDocumentUpload(append('Content-Disposition: form-data; name="extra"; filename="other.pdf"\r\nContent-Type: application/pdf\r\n\r\nother'),
+    frame, payload, file, token), false);
+  const withoutRecord = { ...original, postDataBuffer: () => Buffer.from(body.replace(
+    '--test-boundary\r\nContent-Disposition: form-data; name="recordid"\r\n\r\n\r\n', ''), 'latin1') };
+  assert.equal(matchesDocumentUpload(withoutRecord, frame, payload, file, token), true);
   for (const request of [
     upload({ bytes: Buffer.from('other') }), upload({ filename: 'other.txt' }),
     upload({ mimeType: 'application/pdf' }), upload({ method: 'GET' }), upload({ navigation: false }),
@@ -72,7 +86,9 @@ test('multipart and query bind the current frame, target, token, name and exact 
     upload({ query: (q) => q.set('browserTabID', '2') }),
     upload({ query: (q) => q.set('daeCode', 'other#stay#HRCEN') }),
     upload({ query: (q) => q.append('daeCode', q.get('daeCode')) }),
-    upload({ query: (q) => q.set('unreviewed', 'true') }),
+    upload({ query: (q) => q.set('recordid', 'different') }),
+    upload({ values: new Map([...payload, ['filetype', 'different']]) }),
+    upload({ query: (q) => q.set('pageaction', 'SAVE') }),
     upload({ contentType: 'multipart/form-data' }),
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);
 });

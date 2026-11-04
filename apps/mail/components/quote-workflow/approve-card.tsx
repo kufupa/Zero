@@ -38,6 +38,10 @@ export function ApproveCard({
   guestSurname,
   arrival,
   requireStoredWrite = false,
+  requiredAction,
+  filingApprovalAllowed = true,
+  filingReviewAllowed = true,
+  filingApprovalDigest,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
@@ -51,6 +55,11 @@ export function ApproveCard({
    * action form such as attach_document, or a write run), so other items never get write controls.
    */
   requireStoredWrite?: boolean;
+  /** Keep the filing card separate from another action on the same work item. */
+  requiredAction?: 'attach_document';
+  filingApprovalAllowed?: boolean;
+  filingReviewAllowed?: boolean;
+  filingApprovalDigest?: string | null;
 }) {
   if (!client) return null;
   return (
@@ -61,7 +70,11 @@ export function ApproveCard({
       guestSurname={guestSurname}
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
+      requiredAction={requiredAction}
       writesEnabled={writesEnabled}
+      filingApprovalAllowed={filingApprovalAllowed}
+      filingReviewAllowed={filingReviewAllowed}
+      filingApprovalDigest={filingApprovalDigest}
     />
   );
 }
@@ -130,7 +143,11 @@ function LiveWriteCard({
   guestSurname,
   arrival,
   requireStoredWrite,
+  requiredAction,
   writesEnabled,
+  filingApprovalAllowed,
+  filingReviewAllowed,
+  filingApprovalDigest,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -138,9 +155,14 @@ function LiveWriteCard({
   guestSurname?: string | null;
   arrival?: string | null;
   requireStoredWrite: boolean;
+  requiredAction?: 'attach_document';
   writesEnabled: boolean;
+  filingApprovalAllowed: boolean;
+  filingReviewAllowed: boolean;
+  filingApprovalDigest?: string | null;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
+  if (requiredAction && (view ? view.form.action !== requiredAction : !filingApprovalAllowed)) return null;
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
   if (requireStoredWrite && (view ? !isStoredWrite(view) : !failed)) return null;
   const loadFailed = (
@@ -153,10 +175,19 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
-  const effectiveWritesEnabled = view?.filingAvailable ?? writesEnabled;
+  // The server marks HRCEN filings even before the pane's property configuration has loaded.
+  const filingCurrent = view?.filingAvailable === undefined || (filingApprovalAllowed &&
+    (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
+  const effectiveWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+    (view?.form.action !== 'attach_document' || filingCurrent);
+  const reviewWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+    (view?.form.action !== 'attach_document' || filingReviewAllowed);
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
-      {!effectiveWritesEnabled ? <p className={writeClasses.note}>{PANE_SAVE_OFF_COPY}</p> : null}
+      {!effectiveWritesEnabled ? <p className={writeClasses.note}>
+        {view?.form.action === 'attach_document' && !filingCurrent
+          ? 'Select the current document and booking before approving.' : PANE_SAVE_OFF_COPY}
+      </p> : null}
       {view ? (
         <>
           {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
@@ -167,6 +198,7 @@ function LiveWriteCard({
             view={view}
             onChanged={refresh}
             writesEnabled={effectiveWritesEnabled}
+            reviewWritesEnabled={reviewWritesEnabled}
           />
         </>
       ) : failed ? (
@@ -213,12 +245,14 @@ function WriteBody({
   view,
   onChanged,
   writesEnabled,
+  reviewWritesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   view: HmsWriteView;
   onChanged: () => void;
   writesEnabled: boolean;
+  reviewWritesEnabled: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -257,7 +291,7 @@ function WriteBody({
           workItemId={workItemId}
           run={view.run}
           onChanged={onChanged}
-          writesEnabled={writesEnabled}
+          writesEnabled={reviewWritesEnabled}
         />
       ) : null}
     </>

@@ -1,4 +1,5 @@
 import { formatStayDate } from './amend-find';
+import type { MailSourceInput } from './backend-bind';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 
 /**
@@ -35,12 +36,12 @@ export type VoucherFindReply =
     };
 
 export type VoucherFindClient = {
-  check: (input: { internetMessageId: string }) => Promise<VoucherFindReply>;
+  check: (input: MailSourceInput) => Promise<VoucherFindReply>;
 };
 
 type TrpcVoucherRoutes = {
   quoteWorkflow?: {
-    voucherFind?: { query: (input: { internetMessageId: string }, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
+    voucherFind?: { query: (input: MailSourceInput, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
   };
 };
 

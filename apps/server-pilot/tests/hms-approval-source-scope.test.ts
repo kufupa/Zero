@@ -5,13 +5,14 @@ import { __setDbForTests, type DB } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
 import { workItem } from '../src/db/schema/work.js';
 import { approveHmsWrite, formDigest, storeHmsSnapshot } from '../src/ai/hms-approval.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { hmsApprovalRouter } from '../src/trpc/routes/hms-approval.js';
 
 const transportId = 'transport-centurion';
 const workItemId = '48a2ac3d-b4c8-48f1-a17e-4a8f1f31b3a6';
 const selected = '<Selected@Example.com>';
 const source = { id: 'message-1', threadId: 'thread-1', direction: 'inbound',
-  transportId, messageIdHeader: 'selected@example.com' };
+  transportId, messageIdHeader: 'selected@example.com', subject: 'Voucher', textBody: 'Original mail', htmlBody: null };
 
 function fixture() {
   const item = { id: workItemId, transportId, sourceMessageId: source.id, threadId: source.threadId,
@@ -24,12 +25,15 @@ function fixture() {
     let params: unknown[] = [];
     const query = {
       from: (value: unknown) => { table = value; return query; },
+      innerJoin: () => query,
       where: (value: SQL) => { params = dialect.sqlToQuery(value).params; return query; },
       limit: (n: number) => {
         const rows = table === workItem
           ? (params.includes(item.id) && params.includes(item.transportId) ? [item] : [])
           : table === message
-            ? messages.filter((row) => params.includes(row.transportId) && params.includes(row.messageIdHeader))
+            ? messages.filter((row) => params[1] === row.messageIdHeader
+              ? row.transportId === params[0] && (params.length === 2 || (row.id === params[2] && row.threadId === params[3]))
+              : row.id === params[0] && row.transportId === params[1] && row.threadId === params[2] && row.direction === params[3])
             : [];
         const result = Promise.resolve(rows.slice(0, n));
         return Object.assign(result, { for: async (mode: string) => {
@@ -84,12 +88,37 @@ describe('approval selected-email scope', () => {
     }
   });
 
-  it('canonicalizes the selected header and reaches the form check only for its exact inbound source', async () => {
+  it('canonicalizes the selected header and admits an exact inbound source despite another identical header', async () => {
     const f = fixture();
+    f.setMessages([source, { ...source, id: 'duplicate' }]);
+    const selectedSource = { messageId: source.id, threadId: source.threadId, sourceHash: staffQuoteSourceHash(source) };
     await expect(approveHmsWrite({ db: f.db, transportId, workItemId, actorUserId: 'staff',
-      selectedInternetMessageId: selected, formDigest: 'wrong' })).rejects.toMatchObject({ refusal: 'form_outdated' });
+      selectedInternetMessageId: selected, selectedSource, formDigest: 'wrong' })).rejects.toMatchObject({ refusal: 'form_outdated' });
     expect(f.operations).toEqual(['mailbox:lock', 'item:update', 'message:share']);
     expect(f.insert).not.toHaveBeenCalled();
+    for (const changed of [
+      { ...selectedSource, sourceHash: '0'.repeat(64) },
+      { ...selectedSource, messageId: 'duplicate' },
+      { ...selectedSource, threadId: 'other-thread' },
+    ]) {
+      const mismatch = fixture();
+      mismatch.setMessages([source, { ...source, id: 'duplicate' }]);
+      await expect(approveHmsWrite({ db: mismatch.db, transportId, workItemId, actorUserId: 'staff',
+        selectedInternetMessageId: selected, selectedSource: changed, formDigest: 'wrong' }))
+        .rejects.toMatchObject({ refusal: 'source_mail_changed' });
+      expect(mismatch.insert).not.toHaveBeenCalled();
+    }
+    __setDbForTests({ db: f.db, conn: null as never });
+    const caller = f.caller();
+    const request = { workItemId, internetMessageId: selected, selectedSource };
+    f.item.status = 'done';
+    await expect(caller.review({ ...request, runId: workItemId, decision: 'ok' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'not_open' });
+    f.item.state.action = 'attach_document';
+    await expect(caller.resolveNeedsCheck({ ...request, note: 'checked' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'filing_unavailable' });
+    await expect(caller.evidence({ ...request, eventId: workItemId }))
+      .resolves.toEqual({ status: 'unavailable', reason: 'evidence_unavailable' });
   });
 
   it('rejects a changed selection on each mounted action before a side effect', async () => {
@@ -103,6 +132,13 @@ describe('approval selected-email scope', () => {
       () => caller.review({ ...input, runId: workItemId, decision: 'ok' }),
       () => caller.resolveNeedsCheck({ ...input, note: 'checked' }),
       () => caller.evidence({ ...input, eventId: workItemId }),
+    ]) await expect(request()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'source_mail_changed' });
+    const stale = { workItemId, internetMessageId: selected, selectedSource: {
+      messageId: source.id, threadId: source.threadId, sourceHash: '0'.repeat(64) } };
+    for (const request of [
+      () => caller.review({ ...stale, runId: workItemId, decision: 'ok' }),
+      () => caller.resolveNeedsCheck({ ...stale, note: 'checked' }),
+      () => caller.evidence({ ...stale, eventId: workItemId }),
     ]) await expect(request()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'source_mail_changed' });
     expect(f.update).not.toHaveBeenCalled();
     expect(f.insert).not.toHaveBeenCalled();

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
 const stubs = vi.hoisted(() => ({ find: vi.fn(), read: vi.fn() }));
 vi.mock('../src/ai/pane-stay-lookup.js', async (original) => ({
@@ -20,14 +21,18 @@ const input = { transportId: 'transport-centurion', actorUserId: 'user-1', workI
 const source = { transportId: input.transportId, messageId: input.sourceMessageId,
   attachmentId: input.attachmentId, filename: 'voucher.pdf', sha256: 'a'.repeat(64), snapshotDigest: 'b'.repeat(64) };
 const stay = { confirmation: input.confirmation, arrival: input.arrival, lastName: input.lastName };
+const selectedMail = { id: input.sourceMessageId, subject: 'Voucher', textBody: 'Please file this', htmlBody: '' };
 
 function fixture() {
   let rows = [{ itemThread: 'thread-1', messageThread: 'thread-1', itemMessage: input.sourceMessageId,
     messageId: input.sourceMessageId, transportId: input.transportId, actorUserId: input.actorUserId,
     active: true, status: 'needs_you', direction: 'inbound', messageHistoryOnly: false,
     threadHistoryOnly: false, threadTrashedAt: null as Date | null }];
-  const query = { from: () => query, innerJoin: () => query, where: () => query, limit: async () => rows };
-  const db = { select: () => query } as unknown as DB;
+  const db = { select: (fields: Record<string, unknown>) => {
+    const query = { from: () => query, innerJoin: () => query, where: () => query,
+      limit: async () => 'itemThread' in fields ? rows : [selectedMail] };
+    return query;
+  } } as unknown as DB;
   return { db, s3: new FakeS3Storage(), setRows: (next: typeof rows) => { rows = next; }, getRows: () => rows };
 }
 
@@ -59,6 +64,7 @@ describe('read-only filing preview', () => {
     for (const filename of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
       stubs.read.mockResolvedValueOnce({ source: { ...source, filename }, bytes: Buffer.from('%PDF-'), locator: {} });
       await expect(bindAttachDocumentForm({ ...input, db, internetMessageId: 'selected@example.test',
+        selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
         env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
         .resolves.toEqual({ status: 'refused', reason: 'form_invalid' });
     }

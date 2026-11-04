@@ -47,7 +47,9 @@ export function WebPanePanel({
   });
   const reporter = useHmsJobNoticeReporter();
   const activeEmail = selection.status === 'ready' ? selection.email : null;
-  const emailKey = activeEmail?.internetMessageId?.trim() || activeEmail?.entryId || threadId;
+  const emailKey = activeEmail?.entryId
+    ? JSON.stringify([activeEmail.storeId ?? '', activeEmail.folderEntryId ?? '', activeEmail.entryId])
+    : threadId;
   const emailSubject = activeEmail?.subject?.trim() || null;
 
   useLayoutEffect(() => {
@@ -83,6 +85,7 @@ export function WebPanePanel({
         bridge={bridge}
         preview
         webSelectedMessageId={requireSelectedMessage ? activeEmail?.entryId ?? null : null}
+        webSelectedThreadId={selection.threadId}
         onOpenThread={onOpenThread}
         goldLabelEnabled={goldLabelEnabled}
         hmsNoticesManagedByParent={hmsNoticesManagedByParent}

@@ -38,8 +38,19 @@ export const STAFF_QUOTE_PILOT_MISSING = {
   connectedIntegration: 'connected executeStaffQuote / qualifiedQuoteProposalPdf / native insertion (U4)',
 } as const;
 
+/** Exact source locator supplied by the webmail selection or the native Outlook bridge. */
+export type MailSourceSelection =
+  | { kind: 'web'; messageId: string; threadId: string }
+  | { kind: 'outlook'; storeId: string; entryId: string; folderEntryId?: string };
+
+export type MailSourceInput = {
+  internetMessageId: string;
+  selection?: MailSourceSelection;
+};
+
 export type AnalyseSelectionInput = {
   internetMessageId?: string;
+  selection?: MailSourceSelection;
   storeId: string;
   /** The Outlook store's native EntryID; distinct from the canonical webmail sourceMessageId. */
   entryId: string;
@@ -262,10 +273,10 @@ export type NeedsYouRow = {
 
 type WorkItemsClient = {
   getByMessage?: {
-    query: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    query: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
   open?: {
-    mutate: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    mutate: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
@@ -302,6 +313,7 @@ export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  selection?: MailSourceSelection;
   /** The mailbox the lookup was made in. Null sends under whichever mailbox is active. */
   transportId?: string | null;
   /** True once the caller no longer wants this lookup. Checked after the read, before any open. */
@@ -314,7 +326,10 @@ export async function bindStoredWork(args: {
   openTimeoutMs?: number;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
-  const input = { internetMessageId: args.internetMessageId };
+  const input: MailSourceInput = {
+    internetMessageId: args.internetMessageId,
+    ...(args.selection ? { selection: args.selection } : {}),
+  };
   const pinned = inMailbox(args.transportId ?? null);
   let stored: StoredWork;
   try {
