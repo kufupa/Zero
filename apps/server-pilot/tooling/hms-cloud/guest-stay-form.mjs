@@ -15,9 +15,7 @@ const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
 const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const GUARANTEE_CHANGE = '/web/base/OSRESV.HDR.changeguaranteemethod';
-const GUARANTEE_BLANK_IDS = ['reservationshareid', 'guestid', 'reservationstayid', 'guaranteecardprofileid', 'arprofileid',
-  'guestnameinfoid', 'externalprofileid', 'guestfoliocomptempresstayid', 'gueststaycouponids', 'additionalprofileids',
-  'reservationid', 'addlplayerprofileid', 'sourceprofileid', 'recordid'];
+const GUARANTEE_BLANK_IDS = ['reservationstayid', 'reservationid', 'recordid'];
 const busyPages = new WeakSet();
 const cmsSearches = new WeakMap();
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -142,7 +140,7 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
   if (propertyCode !== 'HRCEN') return null;
   const identity = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   if (!validCreateGuest(identity) || (!allowRealGuest && !isLabtestGuest(identity))) return null;
-  const state = await page.evaluate(({ origin, blankIds, identity }) => {
+  const state = await page.evaluate(({ origin, blankIds, identity, allowRealGuest }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['guaranteetype', 'ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
@@ -156,28 +154,28 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const guest = component('guestid');
     if (!data || !exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
-        !blankIds.filter((key) => key !== 'arprofileid' && key !== 'guestid').every((key) => exact(key, '')) ||
-        !unique('arprofileid') || !unique('guestid') ||
-        keys.filter((key) => key.toLowerCase() === 'araccountid').length > 1 ||
+        !exact('confirmationnumber', '') || !blankIds.every((key) => exact(key, '')) || !unique('guestid') ||
+        ['arprofileid', 'araccountid'].some((key) => keys.filter((name) => name.toLowerCase() === key).length > 1) ||
         !unique('bookingsessionid') || !String(data.bookingsessionid ?? '').trim() ||
         typeof guest?.getValue !== 'function' || String(guest.getValue() ?? '').trim() !== String(data.guestid ?? '').trim() ||
         fields.guestid[0].value.trim() !== String(data.guestid ?? '').trim() ||
         fields.confirmationnumber[0].value.trim() || fields.firstname[0].value !== identity.firstName ||
         fields.lastname[0].value !== identity.lastName) return null;
-    const profileId = String(data.arprofileid ?? '').trim();
-    const accountId = unique('araccountid') ? String(data.araccountid ?? '').trim() : '';
+    const hasProfileId = unique('arprofileid'), hasAccountId = unique('araccountid');
+    const profileId = hasProfileId ? String(data.arprofileid ?? '').trim() : '';
+    const accountId = hasAccountId ? String(data.araccountid ?? '').trim() : '';
     const guestId = String(data.guestid ?? '').trim();
-    if (Boolean(profileId) !== Boolean(accountId)) return null;
+    if (!allowRealGuest && Boolean(profileId) !== Boolean(accountId)) return null;
     return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
-      guestId, ar: profileId ? { accountId, profileId } : null };
-  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS, identity });
+      guestId, ar: profileId || accountId ? { accountId, profileId, hasAccountId, hasProfileId } : null };
+  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS, identity, allowRealGuest });
   if (!state) return null;
   const arrival = wireDate(state.arrival), departure = wireDate(state.departure);
   if (!arrival || !departure || !validCreateDates(arrival.iso, departure.iso, allowRealGuest) ||
       (allowRealGuest && !state.guestId)) return null;
   const arIdentity = state.ar && { session: state.session, ...state.ar };
-  const token = arIdentity && await verifiedArSelectionToken(page, arIdentity);
-  if (arIdentity && !token) return null;
+  const token = arIdentity?.accountId && arIdentity?.profileId ? await verifiedArSelectionToken(page, arIdentity) : null;
+  if (arIdentity && !token && !allowRealGuest) return null;
   let guest = null;
   if (state.guestId) {
     if (!isVerifiedLabtestProfile(page, state.guestId)) return null;
@@ -186,14 +184,14 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
     guest = { nativeId: state.guestId, token: guestToken };
   }
   return { session: state.session, arrival, departure, firstName: identity.firstName, lastName: identity.lastName,
-    ar: arIdentity ? { ...state.ar, token } : null, guest };
+    ar: arIdentity ? { ...state.ar, token: token || null } : null, guest };
 }
 
 function guaranteeRequest(page, request, expected) {
   try {
     const ar = expected.draft.ar;
     const guest = expected.draft.guest;
-    if (ar && !isVerifiedArSelectionCurrent(page, { session: expected.draft.session, ...ar })) return false;
+    if (ar?.token && !isVerifiedArSelectionCurrent(page, { session: expected.draft.session, ...ar })) return false;
     if (guest && !isVerifiedLabtestProfileCurrent(page, { session: expected.draft.session, ...guest })) return false;
     const url = new URL(request.url());
     if (request.method() !== 'POST' || url.origin !== CLOUD_ORIGIN || url.pathname !== GUARANTEE_CHANGE || url.search || url.hash ||
@@ -204,18 +202,15 @@ function guaranteeRequest(page, request, expected) {
       firstname: expected.draft.firstName, lastname: expected.draft.lastName,
       arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire, guaranteetype: expected.value,
       ONLY_DATA_REQUIRED: 'true', bookingsessionid: expected.draft.session,
-      confirmationnumber: '', guaranteecreditcardid: '', leaseguaranteecreditcardid: '',
+      confirmationnumber: '', guestid: guest?.nativeId || '',
       newprofileclick: '', linkprofileflag: '', savecctoprofile: '0', createinactiveprofileflag: '0', reqguestprofilelookup: '',
       pagemode: 'display', isafterreservationsave: '', savesettlementcctoprofile: '0', linkedprofileflag: '0',
       ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
-      ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}),
-      ...(guest ? { guestid: guest.nativeId } : {}),
+      ...(ar?.hasAccountId ? { araccountid: ar.accountId } : {}),
+      ...(ar?.hasProfileId ? { arprofileid: ar.profileId } : {}),
     };
-    return new Set(keys).size === keys.length && Object.entries(fields).every(([key, value]) => body.getAll(key).length === 1 &&
-      body.get(key) === value && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
-      !keys.some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
-        !(ar && key === 'arprofileid') && !(guest && key === 'guestid') && clean(body.get(key))) &&
-      !(!ar && keys.some((key) => key.toLowerCase() === 'araccountid' && clean(body.get(key))));
+    return Object.entries(fields).every(([key, value]) => body.getAll(key).length === 1 &&
+      body.get(key) === value && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
   } catch { return false; }
 }
 
@@ -257,15 +252,12 @@ async function verifyGuaranteeResponse(response, expected) {
   const fields = { propertycode: 'HRCEN', status: 'New',
     firstname: expected.draft.firstName, lastname: expected.draft.lastName,
     arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire,
-    guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '',
-    guaranteecreditcardid: '', leaseguaranteecreditcardid: '', ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
-    ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}),
-    ...(guest ? { guestid: guest.nativeId } : {}) };
+    guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '', guestid: guest?.nativeId || '',
+    ...Object.fromEntries(GUARANTEE_BLANK_IDS.map((key) => [key, ''])),
+    ...(ar?.hasAccountId ? { araccountid: ar.accountId } : {}),
+    ...(ar?.hasProfileId ? { arprofileid: ar.profileId } : {}) };
   if (!values || !Object.entries(fields).every(([key, value]) => Object.hasOwn(values, key) && clean(values[key]) === value &&
-      Object.keys(values).filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) ||
-      Object.keys(values || {}).some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
-        !(ar && key === 'arprofileid') && !(guest && key === 'guestid') && clean(values[key])) ||
-      (!ar && Object.keys(values || {}).some((key) => key.toLowerCase() === 'araccountid' && clean(values[key])))) {
+      Object.keys(values).filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1)) {
     throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
   }
 }
