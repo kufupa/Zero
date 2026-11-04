@@ -285,6 +285,7 @@ type CommitView =
       screenshots?: string[];
       shots?: HmsShotRecord[];
       statusChip?: 'check';
+      ambiguousStored?: boolean;
     };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
@@ -358,8 +359,57 @@ function stayIdForRoom(
   const group =
     groups.find((item) => item.id === room.groupId) ??
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  return `room_${group?.id ?? room.groupId}_${room.roomIndex}`;
+}
+
+function legacyStayIdForRoom(room: { groupId: string; roomIndex: number }, groups: StayGroupRequirement[]): string {
+  const group =
+    groups.find((item) => item.id === room.groupId) ??
+    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
   const stay = group?.stayId ?? room.groupId;
   return `${stay}_${room.roomIndex}`;
+}
+
+function roomIds(room: { groupId: string; roomIndex: number }, groups: StayGroupRequirement[]): string[] {
+  const group = groups.find((item) => item.id === room.groupId) ??
+    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  const row = group?.id ?? room.groupId, stay = group?.stayId ?? room.groupId;
+  const ids = [stayIdForRoom(room, groups), legacyStayIdForRoom(room, groups)];
+  if (row === stay || row === `${stay}_row`) ids.push(`room_${stay}_${room.roomIndex}`, `room_${stay}_row_${room.roomIndex}`);
+  return [...new Set(ids)];
+}
+
+function savedRoomMatch(
+  room: BookingDraftReady['draft']['rooms'][number], draft: BookingDraftReady,
+  groups: StayGroupRequirement[], savedStays: Record<string, SavedStayCommit> | undefined,
+): { id: string | null; ambiguous: boolean } {
+  const matches = roomIds(room, groups).filter((id) => savedStays && Object.hasOwn(savedStays, id));
+  if (!matches.length) return { id: null, ambiguous: false };
+  const ambiguous = matches.length !== 1 || matches.some((id) => {
+    const claimants = new Set<string>();
+    let duplicate = false;
+    for (const candidate of draft.draft.rooms) {
+      if (roomIds(candidate, groups).includes(id)) {
+        const key = JSON.stringify([roomGroupFor(candidate, groups)?.id ?? candidate.groupId, candidate.roomIndex]);
+        if (claimants.has(key)) duplicate = true;
+        claimants.add(key);
+      }
+    }
+    // Include other visible groups too, even if their draft belongs to another date card.
+    const groupClaims = new Set<string>();
+    for (const group of groups) {
+      if (Number.isInteger(group.quantity) && (group.quantity as number) < room.roomIndex) continue;
+      const candidate = { groupId: group.id, roomIndex: room.roomIndex };
+      if (roomIds(candidate, groups).includes(id)) {
+        const key = JSON.stringify([group.id, room.roomIndex]);
+        if (groupClaims.has(key)) duplicate = true;
+        groupClaims.add(key);
+        claimants.add(key);
+      }
+    }
+    return duplicate || claimants.size !== 1;
+  });
+  return { id: ambiguous ? null : matches[0]!, ambiguous };
 }
 
 /** Only apply a stored save when exactly one visible room claims its id. */
@@ -369,12 +419,10 @@ export function appliedSavedStayIds(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): string[] {
   if (!savedStays) return [];
-  const claims = new Map<string, number>();
-  for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    claims.set(id, (claims.get(id) ?? 0) + 1);
-  }
-  return [...claims.entries()].filter(([id, count]) => count === 1 && savedStays[id]).map(([id]) => id);
+  return draft.draft.rooms.flatMap((room) => {
+    const { id } = savedRoomMatch(room, draft, groups, savedStays);
+    return id ? [id] : [];
+  });
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -423,14 +471,15 @@ function savesFromSavedStays(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): Record<string, RoomSaveState> {
   if (!savedStays) return {};
-  const shown = new Set(appliedSavedStayIds(draft, groups, savedStays));
   const saves: Record<string, RoomSaveState> = {};
   for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    if (!shown.has(id)) continue;
-    const saved = savedStays[id];
-    if (!saved) continue;
-    saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
+    const { id, ambiguous } = savedRoomMatch(room, draft, groups, savedStays);
+    const saved = id ? savedStays[id] : undefined;
+    if (saved) saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
+    else if (ambiguous) saves[`${room.groupId}:${room.roomIndex}`] = { commit: {
+      status: 'refused', key: '', statusChip: 'check', ambiguousStored: true,
+      message: 'A previous booking could match this room. Check HMS before booking.',
+    } };
   }
   return saves;
 }
@@ -1025,7 +1074,8 @@ export function BookingCards({
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
           );
-          const saved = savedStays?.[stayIdForRoom(room, groups)];
+          const savedId = savedRoomMatch(room, draft, groups, savedStays).id;
+          const saved = savedId ? savedStays?.[savedId] : undefined;
           const savedTarget = saved?.status === 'booked' ? saved.cloudCreateTarget : undefined;
           const existingNote = textValue(room.request.reservationNote);
           const choice: RoomChoice = {
@@ -1347,6 +1397,10 @@ export function BookingCards({
     return `${room.groupId}:${room.roomIndex}`;
   }
 
+  function allocationIdForRoom(room: BookingDraftReady['draft']['rooms'][number]): string {
+    return cloudPreview ? stayIdForRoom(room, groups) : legacyStayIdForRoom(room, groups);
+  }
+
   function bookableRooms() {
     return draft.draft.rooms;
   }
@@ -1401,7 +1455,7 @@ export function BookingCards({
     const selectedId = group?.stayId;
     if (!workItemId || !source || !/^[a-f0-9]{64}$/.test(source.sourceHash) || !source.messageId.trim() ||
         !source.threadId.trim() || !selectedId || !stableId.test(selectedId) || !stableId.test(group?.id ?? '') ||
-        !stableId.test(`${selectedId}_${room.roomIndex}`)) missing.push('selected email and saved booking request');
+        !stableId.test(stayIdForRoom(room, groups))) missing.push('selected email and saved booking request');
     const stay = !missing.length && built.stay && source && selectedId && group
       ? { ...built.stay, childAges: built.stay.childAges ?? [], ...(propertyCode ? { propertyCode } : {}), createSelection: {
           source, identity: { stayId: selectedId, rowId: group.id, roomIndex: room.roomIndex },
@@ -1416,13 +1470,13 @@ export function BookingCards({
     stay: PaneStayInput | null,
   ): string | null {
     return stay
-      ? paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(stay))
+      ? paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(stay))
       : null;
   }
 
   const previewInputs = Object.fromEntries(
     draft.draft.rooms.map((room) => {
-      const stayId = stayIdForRoom(room, groups);
+      const stayId = allocationIdForRoom(room);
       const built = roomBuilt(room);
       const inputKey = built.stay ? paneStayKey(built.stay) : null;
       return [
@@ -1474,7 +1528,7 @@ export function BookingCards({
     const built = roomBuilt(room);
     if (!built.stay) return null;
     const preview = saves[roomKeyOf(room)]?.preview;
-    const key = paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(built.stay));
+    const key = paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(built.stay));
     return preview?.status === 'ready' && preview.key === key && cloudPreviewIsFresh(room, key)
       ? { stay: built.stay, digest: preview.digest }
       : null;
@@ -1485,8 +1539,12 @@ export function BookingCards({
   const unprocessedStoredStop = storedCloudStops.some((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
   const cloudUnknownStays = new Set([
     ...Object.entries(savedStays ?? {}).filter(([, save]) => save.status === 'unknown').map(([id]) => id),
-    ...draft.draft.rooms.filter((room) => uncertainCommit(saves[roomKeyOf(room)]?.commit))
-      .map((room) => stayIdForRoom(room, groups)),
+    ...draft.draft.rooms.filter((room) => {
+      const commit = saves[roomKeyOf(room)]?.commit;
+      return uncertainCommit(commit) && !(commit?.status === 'refused' && commit.ambiguousStored) &&
+        !roomIds(room, groups).some((id) => savedStays?.[id]?.status === 'unknown');
+    })
+      .map((room) => allocationIdForRoom(room)),
   ]);
   const hasCloudStop = cloudStops.length > 0 || cloudUnknownStays.size > 0;
   // A stored UNKNOWN without a captured target remains a global stop until HMS is checked.
@@ -1500,7 +1558,8 @@ export function BookingCards({
     const members = new Set(unseen.flatMap((stop) => stop.members.map((member) => member.stayId)));
     for (const id of members) previewReceipt.clear(workItemId, id);
     for (const room of draft.draft.rooms) {
-      if (!members.has(stayIdForRoom(room, groups))) continue;
+      if (!roomIds(room, groups).some((id) => members.has(id))) continue;
+      previewReceipt.clear(workItemId, allocationIdForRoom(room));
       const key = roomKeyOf(room);
       cloudApprovalEpoch.current[key] = (cloudApprovalEpoch.current[key] ?? 0) + 1;
       delete cloudFreshPreviews.current[key];
@@ -1508,7 +1567,7 @@ export function BookingCards({
     setSaves((current) => {
       const next = { ...current };
       for (const room of draft.draft.rooms) {
-        if (!members.has(stayIdForRoom(room, groups))) continue;
+        if (!roomIds(room, groups).some((id) => members.has(id))) continue;
         const key = roomKeyOf(room), save = current[key], preview = save?.preview;
         if (save && preview) next[key] = { ...save, preview: { status: 'stale', key: preview.key } };
       }
@@ -1538,7 +1597,7 @@ export function BookingCards({
       return !stored.cloudCreateTarget || cloudCreateTargetKey(stored.cloudCreateTarget) === expectedTarget;
     }
     return draft.draft.rooms.some((room) => {
-      if (stayIdForRoom(room, groups) !== stayId) return false;
+      if (!roomIds(room, groups).includes(stayId)) return false;
       const commit = saves[roomKeyOf(room)]?.commit;
       return commit?.status === 'booked' && !commit.unverified && Boolean(commit.confirmationNumber) &&
         cloudRoomTarget(room) === expectedTarget;
@@ -1546,18 +1605,18 @@ export function BookingCards({
   }
 
   function hasBookedSibling(room: BookingDraftReady['draft']['rooms'][number]): boolean {
-    const stayId = stayIdForRoom(room, groups);
-    return cloudStops.some((stop) => stop.members.some((member) => member.stayId === stayId &&
-      stop.members.some((other) => other.stayId !== stayId && other.targetKey === member.targetKey &&
+    const ids = roomIds(room, groups);
+    return cloudStops.some((stop) => stop.members.some((member) => ids.includes(member.stayId) &&
+      stop.members.some((other) => other.stayId !== member.stayId && other.targetKey === member.targetKey &&
         confirmedStay(other.stayId, member.targetKey))));
   }
 
   function cloudRoomHeld(room: BookingDraftReady['draft']['rooms'][number]): boolean {
     const key = roomKeyOf(room);
-    const stayId = stayIdForRoom(room, groups);
+    const ids = roomIds(room, groups);
     const target = cloudRoomTarget(room);
     return partialCloudRoomsRef.current.has(key) || hasBookedSibling(room) || cloudStops.some((stop) =>
-      stop.members.some((member) => member.stayId === stayId && member.targetKey === stop.targetKey) ||
+      stop.members.some((member) => ids.includes(member.stayId) && member.targetKey === stop.targetKey) ||
       (target !== null && (stop.targetKey === target ||
         stop.members.some((member) => member.targetKey === target && confirmedStay(member.stayId, member.targetKey)))));
   }
@@ -1606,7 +1665,7 @@ export function BookingCards({
       if (!ready) return;
       const targetKey = cloudPreview ? cloudCreateTargetKey(ready.stay) : null;
       if (cloudPreview && !targetKey) return;
-      snapshot.push({ roomKey: roomKeyOf(room), stayId: stayIdForRoom(room, groups),
+      snapshot.push({ roomKey: roomKeyOf(room), stayId: allocationIdForRoom(room),
         stay: ready.stay, digest: ready.digest, targetKey });
     }
     if (!snapshot.length) return;
@@ -1618,7 +1677,7 @@ export function BookingCards({
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room || !item.stay.createSelection?.nativeGuestId) return;
         rooms.push({ ...item.stay, createSelection: item.stay.createSelection,
-          stayId: stayIdForRoom(room, groups), workItemId, previewDigest: item.digest });
+          stayId: allocationIdForRoom(room), workItemId, previewDigest: item.digest });
       }
       batchStart = { kind: 'start', id: crypto.randomUUID(), rooms };
     }
@@ -1664,7 +1723,9 @@ export function BookingCards({
       // Add Record keeps room 1's guest profile, so only a room for the same guest joins it.
       if (otherStay && otherStay.lastName === stay.lastName && otherStay.firstName === stay.firstName &&
         otherStay.arrival === stay.arrival && otherStay.departure === stay.departure &&
-        inheritedFieldsMatch(other, otherStay, room, stay)) return stayIdForRoom(other, groups);
+        inheritedFieldsMatch(other, otherStay, room, stay)) {
+        return savedRoomMatch(other, draft, groups, savedStays).id ?? allocationIdForRoom(other);
+      }
     }
     return null;
   }
@@ -1695,14 +1756,14 @@ export function BookingCards({
     if (savedOutcomeBlocksRoom(roomKey)) return null;
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
-    if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
+    if (room) previewReceipt.clear(workItemId, allocationIdForRoom(room));
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
       const parentStayId = !cloudPreview && room && workItemId ? bookedParentStayId(room, stay) : null;
       const persist =
         workItemId && room
-          ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
+          ? { stayId: allocationIdForRoom(room), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
       const result = batch
         ? await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest, batch)
@@ -1753,7 +1814,7 @@ export function BookingCards({
     try {
       const commit = await bookRoom(roomKey, pane, stay, digest);
       if (uncertainCommit(commit ?? undefined)) {
-        stopCloudBatch([{ roomKey, stayId: stayIdForRoom(room, groups), stay, digest, targetKey }], 0);
+        stopCloudBatch([{ roomKey, stayId: allocationIdForRoom(room), stay, digest, targetKey }], 0);
       }
     } finally {
       stayBookingRef.current = false;
@@ -1912,7 +1973,7 @@ export function BookingCards({
         const commitStatus = saves[key]?.commit?.status;
         const originalHeldRoom = cloudPreview && (partialCloudRoomsRef.current.has(key) ||
           hasBookedSibling(room) ||
-          cloudStops.some((stop) => stop.members.some((member) => member.stayId === stayIdForRoom(room, groups) &&
+          cloudStops.some((stop) => stop.members.some((member) => roomIds(room, groups).includes(member.stayId) &&
             member.targetKey === stop.targetKey)));
         const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key) || originalHeldRoom;
         const request = room.request;

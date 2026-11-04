@@ -41,7 +41,7 @@ const stay = {
   firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01', departure: '2027-03-03',
   adults: 1, childAges: [], sourceOfBusiness: 'E-Mail', roomType: 'STQN', ratePlan: 'BAR', track: 'BAR',
   guestoptin4: false, guaranteeType: 'NGI', reservationNote: 'Staff reviewed booking',
-  cmsMessageId: '03', confirmationSendMail: false, propertyCode: 'HRCEN', workItemId, stayId: 's1_1',
+  cmsMessageId: '03', confirmationSendMail: false, propertyCode: 'HRCEN', workItemId, stayId: 'room_r1_1',
 };
 const requestProof = {
   propertyCode: 'HRCEN', guest: { nativeId: '123', firstName: 'Proof', lastName: 'Labtest' },
@@ -131,6 +131,13 @@ describe('mounted read-only Cloud preview', () => {
     expect(result).toMatchObject({ status: 'refused', reason: 'guest_choice_required',
       guestCandidates: [{ nativeId: '123', city: 'Pretoria' }] });
     expect((result as { guestCandidates?: unknown[] }).guestCandidates?.[0]).not.toHaveProperty('email');
+    const rows = h.row.extraction.payload.stays[0].rows;
+    rows.push({ ...rows[0], id: 'r2', roomType: 'Standard King', adultsPerRoom: 2 });
+    expect(await caller().quoteWorkflow.previewStay({ ...request(), stayId: 's1_1' }))
+      .toMatchObject({ status: 'refused', reason: 'cloud_create_scope_changed' });
+    const other = request();
+    other.stayId = 'room_r2_1'; other.createSelection.identity.rowId = 'r2';
+    expect(await caller().quoteWorkflow.previewStay(other)).toMatchObject({ reason: 'guest_choice_required' });
   });
 
   it('shows a private source-bound preview with no approval, and refuses the mounted Save route', async () => {
@@ -143,6 +150,11 @@ describe('mounted read-only Cloud preview', () => {
       status: 'refused', reason: 'pane_save_flag_off',
     });
     expect(calls).toHaveLength(1);
+    h.row.item.state = { stays: { s1_1: { status: 'booked', confirmationNumber: '12345-1' } } };
+    expect(await caller().quoteWorkflow.previewStay(request('123'))).toMatchObject({ reason: 'pane_stay_already_booked' });
+    h.row.item.state = { stays: { room_r1_1: { status: 'booked', confirmationNumber: '12345-1' } } };
+    expect(await caller().quoteWorkflow.previewStay({ ...request('123'), stayId: 's1_1' }))
+      .toMatchObject({ reason: 'pane_stay_already_booked' });
   });
 
   it('leaves HRDAV on its existing Save route and its own write-mode guard', async () => {

@@ -20,7 +20,8 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
-import { activePaneCreateIdentity, paneCreateIdentitySchema } from './pane-create-scope.js';
+import { activePaneCreateIdentity, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
+  type PaneCreateIdentity } from './pane-create-scope.js';
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
@@ -174,7 +175,8 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
     throw new Error('cloud_create_property_mismatch');
   }
   const payload = source.snapshot.extraction.payload;
-  if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity)) throw new Error('cloud_create_scope_changed');
+  if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
+    { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
   if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
@@ -221,6 +223,11 @@ function staysClear(state: Record<string, unknown>, target?: HmsDispatchTarget):
 }
 const hasStay = (state: Record<string, unknown>, stayId: string) =>
   !!state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays) && Object.hasOwn(state.stays, stayId);
+const matchesRoomId = (stayId: string, identity: PaneCreateIdentity) =>
+  stayId === paneCreateRoomId(identity) || stayId === legacyPaneCreateRoomId(identity);
+// A prior receipt under either key belongs to this room, or is ambiguous and must be checked in HMS.
+const hasIdentityStay = (state: Record<string, unknown>, identity: PaneCreateIdentity) =>
+  paneCreateRoomAliases(identity).some((id) => hasStay(state, id));
 const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsShot({ ...grant.previewShot, name: 'filled.png',
   owner: `${input.actorUserId}:${input.transportId}`, propertyCode: 'HRCEN', workItemId: input.workItemId });
 
@@ -330,7 +337,7 @@ export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string
       stay: z.object({ arrival: z.string() }).passthrough() }).passthrough().safeParse(room.grant.approvedRequest);
     if (grantIds.has(room.grant.grantId) || hash(grantBody) !== grantDigest ||
         hash(room.grant.approvedRequest) !== room.grant.requestDigest ||
-        room.stayId !== `${room.grant.identity.stayId}_${room.grant.identity.roomIndex}` ||
+        !matchesRoomId(room.stayId, room.grant.identity) ||
         !request.success || request.data.guest.nativeId !== room.grant.nativeGuestId) return null;
     grantIds.add(room.grant.grantId);
     const memberTarget = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
@@ -405,11 +412,11 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
     const current = await checkSource(tx, source, roomInput, grant.accessId);
     const roomTarget = createTarget(room.stay);
     if (!candidate || grantInStoppedBatch(source.item.state, candidate.grantId) ||
-        room.stayId !== `${room.selection.identity.stayId}_${room.selection.identity.roomIndex}` ||
+        !matchesRoomId(room.stayId, room.selection.identity) ||
         !sameGrant(candidate, roomInput, room.previewDigest) || !matchesSource(current, candidate) ||
         canonicalJson(candidate.source) !== canonicalJson(grant.source) ||
         canonicalJson(candidate.cursor) !== canonicalJson(grant.cursor) ||
-        !roomTarget || !staysClear(source.item.state, roomTarget) || hasStay(source.item.state, room.stayId) ||
+        !roomTarget || !staysClear(source.item.state, roomTarget) || hasIdentityStay(source.item.state, room.selection.identity) ||
         createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), room.stay).reason ||
         !await previewShotValid(candidate, roomInput)) throw new Error('cloud_batch_stale');
     rooms.push({ stayId: room.stayId, grant: candidate });
@@ -517,7 +524,7 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
 /** Preview the exact request; a one-use Go grant is issued only when saving is enabled. */
 export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayResult & { guestCandidates?: unknown[] }> {
   if (!cloudPreviewSelection.safeParse(input.selection).success ||
-      input.stayId !== `${input.selection.identity.stayId}_${input.selection.identity.roomIndex}`) return refused('pane_preview_binding_required');
+      !matchesRoomId(input.stayId, input.selection.identity)) return refused('pane_preview_binding_required');
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
   if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion') return refused('pane_save_property_mismatch');
   const dispatchTarget = createTarget(input.stay);
@@ -573,7 +580,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       const after = await checkSource(tx, source, input, before.accessId);
       if (!matchesSource(after, before)) return refused('cloud_create_scope_changed');
       if (!staysClear(source.item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
-      if (hasStay(source.item.state, input.stayId)) return refused('pane_stay_already_booked');
+      if (hasIdentityStay(source.item.state, input.selection.identity)) return refused('pane_stay_already_booked');
       const currentMode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
       const currentAdmission = createAdmission(currentMode, input.stay, true);
       if (currentAdmission.reason) return refused(currentAdmission.reason);
@@ -607,7 +614,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
 /** Consume one reviewed grant, write one fenced stay, and require fresh readback. */
 export async function commitPaneCloud(db: DB, input: Input, previewDigest: string): Promise<PaneStayResult> {
   if (!cloudPreviewSelection.safeParse(input.selection).success || !z.string().uuid().safeParse(input.workItemId).success ||
-      !/^[A-Za-z0-9_-]{1,40}$/.test(input.stayId) || input.stayId !== `${input.selection.identity.stayId}_${input.selection.identity.roomIndex}`) {
+      !/^[A-Za-z0-9_-]{1,40}$/.test(input.stayId) || !matchesRoomId(input.stayId, input.selection.identity)) {
     return refused('pane_preview_binding_required');
   }
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
@@ -648,7 +655,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
       const [item] = await db.select({ state: workItem.state }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
       if (item && !staysClear(item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
-      if (item && hasStay(item.state, input.stayId)) return refused('pane_stay_already_booked');
+      if (item && hasIdentityStay(item.state, input.selection.identity)) return refused('pane_stay_already_booked');
       const grant = item && grantOf(item.state, input.stayId);
       if (!grant || !sameGrant(grant, input, previewDigest) || !await previewShotValid(grant, input)) return refused('pane_save_preview_required');
       const key = sourceKey(input, grant.cursor);
@@ -695,7 +702,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
               if (claim.stayId !== input.stayId || !liveGrant || grantInStoppedBatch(source.item.state, liveGrant.grantId) ||
                   !sameGrant(liveGrant, input, previewDigest) ||
-                  !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) || hasStay(source.item.state, input.stayId) ||
+                  !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) ||
+                  hasIdentityStay(source.item.state, input.selection.identity) ||
                   createAdmission(mode, input.stay).reason || createAdmission(mode, input.stay).allowRealGuest !== admission.allowRealGuest ||
                   !paneCloudPreviewLoaders.authorityReady() ||
                   !await previewShotValid(grant, input)) throw new Error('cloud_create_dispatch_stale');
