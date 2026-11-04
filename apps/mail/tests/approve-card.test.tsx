@@ -25,9 +25,9 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // The pane block binds its write card off the shared tRPC client. Only the hmsApproval routes answer here.
 const paneWrite = vi.hoisted(() => ({ view: null as unknown, calls: [] as unknown[],
-  voucherProps: null as null | { approvalAvailable?: boolean; onPrepared?: () => void } }));
+  voucherProps: null as null | { approvalAvailable?: boolean; onPrepared?: (digest?: string) => void } }));
 vi.mock('@/components/quote-workflow/voucher-find-card', () => ({
-  VoucherFindCard: (props: { approvalAvailable?: boolean; onPrepared?: () => void }) => {
+  VoucherFindCard: (props: { approvalAvailable?: boolean; onPrepared?: (digest?: string) => void }) => {
     paneWrite.voucherProps = props;
     return null;
   },
@@ -412,13 +412,15 @@ describe('BookingVoucherCard write card', () => {
 
   it('refreshes an approval immediately after the voucher form and snapshot are prepared', async () => {
     paneWrite.view = viewWith({ form: attachForm, snapshot: null });
-    render(<BookingVoucherCard session={emailSession('create_booking')} internetMessageId="selected@example.test"
+    const session = { ...emailSession('create_booking'),
+      staffSource: { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) } };
+    render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
       syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
       mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
     await waitFor(() => expect(paneWrite.calls.length).toBe(1));
     expect(paneWrite.voucherProps?.approvalAvailable).toBe(true);
     paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
-    await act(async () => { paneWrite.voucherProps?.onPrepared?.(); });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     expect(paneWrite.calls.length).toBe(2);
   });
@@ -780,7 +782,8 @@ describe('hmsApprovalFromTrpc and refusals', () => {
     };
     expect(hmsApprovalFromTrpc(trpc, null, '<selected@example.test>')).toBeNull();
     expect(hmsApprovalFromTrpc(trpc, 'mailbox-a', null)).toBeNull();
-    const client = hmsApprovalFromTrpc(trpc, 'mailbox-a', '<selected@example.test>');
+    const selectedSource = { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) };
+    const client = hmsApprovalFromTrpc(trpc, 'mailbox-a', '<selected@example.test>', selectedSource);
     expect(client).not.toBeNull();
     await client?.writeState({ workItemId: WORK_ITEM });
     await client?.approve({ workItemId: WORK_ITEM, formDigest: DIGEST });
@@ -791,6 +794,9 @@ describe('hmsApprovalFromTrpc and refusals', () => {
     const mailbox = { context: { activeTransportId: 'mailbox-a' } };
     for (const call of [state, approve, review, resolve, reread, evidence]) {
       expect(call).toHaveBeenCalledWith(expect.objectContaining({ workItemId: WORK_ITEM, internetMessageId: '<selected@example.test>' }), mailbox);
+    }
+    for (const call of [state, approve, reread]) {
+      expect(call).toHaveBeenCalledWith(expect.objectContaining({ selectedSource }), mailbox);
     }
   });
 
