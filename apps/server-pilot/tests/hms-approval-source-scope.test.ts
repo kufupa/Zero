@@ -25,6 +25,7 @@ function fixture() {
     let params: unknown[] = [];
     const query = {
       from: (value: unknown) => { table = value; return query; },
+      innerJoin: () => query,
       where: (value: SQL) => { params = dialect.sqlToQuery(value).params; return query; },
       limit: (n: number) => {
         const rows = table === workItem
@@ -107,6 +108,17 @@ describe('approval selected-email scope', () => {
         .rejects.toMatchObject({ refusal: 'source_mail_changed' });
       expect(mismatch.insert).not.toHaveBeenCalled();
     }
+    __setDbForTests({ db: f.db, conn: null as never });
+    const caller = f.caller();
+    const request = { workItemId, internetMessageId: selected, selectedSource };
+    f.item.status = 'done';
+    await expect(caller.review({ ...request, runId: workItemId, decision: 'ok' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'not_open' });
+    f.item.state.action = 'attach_document';
+    await expect(caller.resolveNeedsCheck({ ...request, note: 'checked' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'filing_unavailable' });
+    await expect(caller.evidence({ ...request, eventId: workItemId }))
+      .resolves.toEqual({ status: 'unavailable', reason: 'evidence_unavailable' });
   });
 
   it('rejects a changed selection on each mounted action before a side effect', async () => {
@@ -120,6 +132,13 @@ describe('approval selected-email scope', () => {
       () => caller.review({ ...input, runId: workItemId, decision: 'ok' }),
       () => caller.resolveNeedsCheck({ ...input, note: 'checked' }),
       () => caller.evidence({ ...input, eventId: workItemId }),
+    ]) await expect(request()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'source_mail_changed' });
+    const stale = { workItemId, internetMessageId: selected, selectedSource: {
+      messageId: source.id, threadId: source.threadId, sourceHash: '0'.repeat(64) } };
+    for (const request of [
+      () => caller.review({ ...stale, runId: workItemId, decision: 'ok' }),
+      () => caller.resolveNeedsCheck({ ...stale, note: 'checked' }),
+      () => caller.evidence({ ...stale, eventId: workItemId }),
     ]) await expect(request()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'source_mail_changed' });
     expect(f.update).not.toHaveBeenCalled();
     expect(f.insert).not.toHaveBeenCalled();

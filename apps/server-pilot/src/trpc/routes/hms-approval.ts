@@ -22,21 +22,25 @@ const selectedSource = z.object({ threadId: z.string().min(1).max(512), messageI
 // strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
 const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: z.string().regex(/^[0-9a-f]{64}$/),
   selectedSource: selectedSource.optional() }).strict();
-const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid }).strict();
+const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid,
+  selectedSource: selectedSource.optional() }).strict();
 const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional() }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200), selectedSource }).strict();
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
-const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, note: z.string().trim().min(3).max(500) }).strict();
+const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail,
+  note: z.string().trim().min(3).max(500), selectedSource: selectedSource.optional() }).strict();
 // A flag must say why. An OK carries no note. Both name the run the reviewer was shown.
 const reviewInput = z.discriminatedUnion('decision', [
-  z.object({ workItemId: uuid, internetMessageId: selectedEmail, runId: uuid, decision: z.literal('ok') }).strict(),
+  z.object({ workItemId: uuid, internetMessageId: selectedEmail, runId: uuid, decision: z.literal('ok'),
+    selectedSource: selectedSource.optional() }).strict(),
   z
     .object({
       workItemId: uuid,
       internetMessageId: selectedEmail,
+      selectedSource: selectedSource.optional(),
       runId: uuid,
       decision: z.literal('flag'),
       note: z.string().trim().min(3).max(500),
@@ -99,6 +103,7 @@ export const hmsApprovalRouter = router({
         actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
         note: input.note,
       });
     } catch (err) {
@@ -112,6 +117,7 @@ export const hmsApprovalRouter = router({
         actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
         runId: input.runId,
         decision: input.decision,
         note: input.decision === 'flag' ? input.note : undefined,
@@ -169,6 +175,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
         eventId: input.eventId,
       });
     } catch (err) {

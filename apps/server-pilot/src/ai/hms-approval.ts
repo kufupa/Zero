@@ -598,6 +598,7 @@ export async function resolveHmsNeedsCheck(input: {
   actorUserId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   note?: string;
   rereadHmsState?: () => Promise<unknown>;
   now?: Date;
@@ -1065,6 +1066,7 @@ export async function readHmsWriteEvidence(input: {
   workItemId: string;
   eventId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
 }): Promise<{ status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string }> {
   const db = input.db ?? getDb();
   await assertCurrentHmsSelection(db, input);
@@ -1179,6 +1181,7 @@ export async function reviewHmsWrite(input: {
   actorUserId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   /** The run the reviewer was shown. When given, the review is refused unless it is still the latest write. */
   runId?: string;
   decision: 'ok' | 'flag';
