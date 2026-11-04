@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxAccess, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { remoteSession, session } from '../db/schema/auth.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
@@ -11,9 +11,14 @@ import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
 import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
+import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import { paneWriteMode } from './pane-stay-save.js';
+import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import {
   HMS_WRITE_RUN_KIND,
+  HMS_CLOUD_CANCEL_PROMPT_VERSION,
   HMS_LABTEST_ATTACH_PROMPT_VERSION,
   NONTERMINAL_AI_RUN_STATES,
   NOT_APPLICABLE_MODEL_ID,
@@ -84,6 +89,7 @@ export type HmsApprovalRefusal =
   | 'already_reviewed'
   | 'form_outdated'
   | 'filing_unavailable'
+  | 'cancel_reconciliation_required'
   | 'run_changed';
 
 export class HmsApprovalError extends Error {
@@ -106,7 +112,7 @@ async function currentSelectedHmsSource(db: DB, transportId: string, source: Hms
 }
 
 /** The public pane names the selected email; ambiguous legacy IDs or a mismatched selection never authorize a write. */
-async function assertHmsSelectedSource(db: DB, input: SelectedHmsSource, item: HmsSourceItem, lockRows = false): Promise<void> {
+export async function assertHmsSelectedSource(db: DB, input: SelectedHmsSource, item: HmsSourceItem, lockRows = false): Promise<void> {
   if (input.selectedInternetMessageId !== undefined) {
     const selectedId = canonicalMessageId(input.selectedInternetMessageId.trim());
     if (!selectedId || !item.sourceMessageId || !item.threadId) throw new HmsApprovalError('source_mail_changed');
@@ -172,6 +178,7 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
   const form: Record<string, unknown> = { ...state };
   delete form[HMS_SNAPSHOT_KEY];
   delete form.reservationistHandledRequests;
+  delete form.cloudCancelPreview;
   return form;
 }
 
@@ -488,6 +495,8 @@ export async function approveHmsWrite(input: {
   workItemId: string;
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
+  cloudCancelSelection?: HmsSelectedSource;
+  env?: NodeJS.Dict<string>;
   /**
    * The form digest of the values the card showed (hmsWriteStateOf.formDigest). When given, approval is refused unless
    * the stored form still has it, so staff never approve values they were not shown.
@@ -501,6 +510,17 @@ export async function approveHmsWrite(input: {
   const now = input.now ?? new Date();
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    let cancelSourceBound = false;
+    if (input.cloudCancelSelection) {
+      if (paneWriteMode('cancel', 'unpaid', input.env) === 'off' || !input.sessionId || !input.sessionProfile) {
+        throw new HmsApprovalError('state_changed');
+      }
+      const { lockSelectedCloudCancel } = await import('./pane-cloud-cancel.js');
+      await lockSelectedCloudCancel(tx, { workItemId: input.workItemId, transportId: input.transportId,
+        source: input.cloudCancelSelection, actorUserId: input.actorUserId,
+        sessionId: input.sessionId, sessionProfile: input.sessionProfile });
+      cancelSourceBound = true;
+    }
     const [item] = await tx
       .select()
       .from(workItem)
@@ -512,14 +532,27 @@ export async function approveHmsWrite(input: {
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
     const target = paneStayHmsTargetForTransport(input.transportId);
+    const cloudCancel = item.state.action === 'cancel' && target.ok && target.target.propertyCode === 'HRCEN';
+    if (cloudCancel !== cancelSourceBound || (cloudCancel && !input.formDigest)) throw new HmsApprovalError('state_changed');
+    if (cloudCancel) {
+      const mode = paneWriteMode('cancel', 'unpaid', input.env);
+      const { cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
+      const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
+      if (!bound.success || mode === 'off' || (bound.data.preimage.allowRealGuest && mode !== 'on')) {
+        throw new HmsApprovalError('state_changed');
+      }
+    }
     const labtestAttach = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
     if (item.state.action === 'attach_document' && (!target.ok || (labtestAttach &&
-        (!isBoundLabtestAttachment(item.state, item.sourceMessageId) || !labtestAttachEnabled() ||
+        (!isBoundLabtestAttachment(item.state, item.sourceMessageId, input.env) || !labtestAttachEnabled(input.env) ||
          !input.sessionId || !input.sessionProfile || !input.selectedInternetMessageId ||
          !boundFilingSelectionMatches(item.state, input.selectedSource) ||
          canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)))) {
       throw new HmsApprovalError('filing_unavailable');
     }
+    const cloudSession = z.object({ sessionId: z.string().trim().min(1).max(512),
+      sessionProfile: z.enum(['legacy', 'remote']) }).safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
+    if (cloudCancel && !cloudSession.success) throw new HmsApprovalError('no_grant');
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }
@@ -559,6 +592,7 @@ export async function approveHmsWrite(input: {
       transportId: input.transportId,
       actorUserId: input.actorUserId,
       ...(labtestAttach ? { sessionId: input.sessionId!, sessionProfile: input.sessionProfile! } : {}),
+      ...(cloudCancel && cloudSession.success ? cloudSession.data : {}),
       formDigest: formDigest(state),
       hmsBeforeDigest: snapshot.digest,
       hmsReadAt: snapshot.readAt,
@@ -583,7 +617,7 @@ export async function approveHmsWrite(input: {
         runKind: HMS_WRITE_RUN_KIND,
         idempotencyKey: `hms-write:${grant.grantId}`,
         modelId: NOT_APPLICABLE_MODEL_ID,
-        promptVersion: labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
+        promptVersion: cloudCancel ? HMS_CLOUD_CANCEL_PROMPT_VERSION : labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
         executorLane: 'hms',
         workItemId: item.id,
         priority: HMS_WRITE_PRIORITY,
@@ -638,6 +672,9 @@ export async function resolveHmsNeedsCheck(input: {
     if (item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')) {
       throw new HmsApprovalError('filing_unavailable');
     }
+    if (item.state.action === 'cancel' && Object.hasOwn(item.state, 'cloudCancel')) {
+      throw new HmsApprovalError('cancel_reconciliation_required');
+    }
     await assertNoWriteInFlight(tx as DB, item.id);
     const runId = await unresolvedNeedsCheckRunId(tx as DB, item.id);
     if (!runId) throw new HmsApprovalError('no_needs_check');
@@ -682,6 +719,7 @@ export async function consumeHmsWriteApproval(input: {
   actorUserId: string;
   sessionId?: string;
   sessionProfile?: 'legacy' | 'remote';
+  authority: { actorUserId: string; sessionId: string; sessionProfile: 'legacy' | 'remote' } | null;
   /** The approved form, read from the locked row. A runner writes this, not a fresh read of the work item. */
   form: Record<string, unknown>;
 }> {
@@ -741,9 +779,71 @@ export async function consumeHmsWriteApproval(input: {
       .update(aiWorkflowRun)
       .set({ heartbeatAt: now, updatedAt: now })
       .where(eq(aiWorkflowRun.id, run.id));
+    const authority = grant.sessionId && grant.sessionProfile
+      ? { actorUserId: grant.actorUserId, sessionId: grant.sessionId, sessionProfile: grant.sessionProfile }
+      : null;
     return { grantId, payloadHash, hmsBeforeDigest: grant.hmsBeforeDigest, actorUserId: grant.actorUserId,
-      sessionId: grant.sessionId, sessionProfile: grant.sessionProfile, form: formOf(item.state) };
+      sessionId: grant.sessionId, sessionProfile: grant.sessionProfile, form: formOf(item.state), authority };
   });
+}
+
+type HmsDispatchTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
+
+/** Revalidate the consumed Cloud cancel Go at the exact intercepted POST. */
+export async function lockConsumedCloudCancelApproval(tx: HmsDispatchTransaction, input: {
+  fence: AiRunFence;
+  transportId: string;
+  item: typeof workItem.$inferSelect;
+  grantId: string;
+  approvedDigest: string;
+  authority: NonNullable<Awaited<ReturnType<typeof consumeHmsWriteApproval>>['authority']>;
+  env?: NodeJS.Dict<string>;
+}): Promise<void> {
+  const { item, authority, fence } = input;
+  if (paneWriteMode('cancel', 'unpaid', input.env) === 'off') throw new HmsApprovalError('state_changed');
+  if (!item || item.transportId !== input.transportId || item.state.action !== 'cancel' ||
+      !Object.hasOwn(item.state, 'cloudCancel') || !item.threadId || !item.sourceMessageId ||
+      item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('state_changed');
+  const { cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
+  const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
+  if (!bound.success || (bound.data.preimage.allowRealGuest && paneWriteMode('cancel', 'unpaid', input.env) !== 'on')) {
+    throw new HmsApprovalError('state_changed');
+  }
+  await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: authority.actorUserId });
+  await lockCreateActorSession(tx, authority);
+  const [run] = await tx.select().from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+    eq(aiWorkflowRun.workItemId, item.id), eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.promptVersion, HMS_CLOUD_CANCEL_PROMPT_VERSION),
+    inArray(aiWorkflowRun.state, ['claimed', 'running']),
+  )).limit(1).for('update');
+  const now = new Date();
+  if (!run?.deadlineAt || run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION ||
+      run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+      run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
+      run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
+  if (grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('no_grant');
+  const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
+  const snapshot = readSnapshot(item.state);
+  if (grant.workItemId !== item.id || grant.transportId !== input.transportId ||
+      grant.actorUserId !== authority.actorUserId || grant.sessionId !== authority.sessionId ||
+      grant.sessionProfile !== authority.sessionProfile || grant.formDigest !== input.approvedDigest ||
+      formDigest(item.state) !== input.approvedDigest || snapshotStale(grant.hmsReadAt, now) ||
+      !snapshot || snapshot.digest !== grant.hmsBeforeDigest || snapshot.readAt !== grant.hmsReadAt) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+    eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'),
+    eq(workEvent.payloadHash, payloadHash), sql`${workEvent.value}->>'runId' = ${run.id}`,
+    sql`${workEvent.value}->>'grantId' = ${input.grantId}`,
+  )).limit(2).for('share');
+  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  const at = new Date();
+  if (run.deadlineAt.getTime() <= at.getTime() || snapshotStale(grant.hmsReadAt, at)) {
+    throw new HmsApprovalError('lease_lost');
+  }
+  await tx.update(aiWorkflowRun).set({ heartbeatAt: at, updatedAt: at }).where(eq(aiWorkflowRun.id, run.id));
 }
 
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -1241,17 +1341,34 @@ export async function reviewHmsWrite(input: {
         throw new HmsApprovalError('source_mail_changed');
       }
     }
+    const cloudCancel = run.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION ||
+      (target.ok && target.target.propertyCode === 'HRCEN' && item.state.action === 'cancel' &&
+        Object.hasOwn(item.state, 'cloudCancel'));
+    if (cloudCancel) {
+      const { cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
+      const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
+      const selectedTarget = target.ok ? target.target : null;
+      const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+      if (!selectedTarget || targetKeys.some((key) => selectedTarget[key] !== CENTURION_HMS_READ_TARGET[key]) ||
+          item.state.action !== 'cancel' ||
+          run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION || !bound.success || !input.selectedSource ||
+          canonicalJson(bound.data.source) !== canonicalJson(input.selectedSource) ||
+          item.state.confirmation !== bound.data.preimage.confirmation ||
+          item.state.arrival !== bound.data.preimage.arrival) {
+        throw new HmsApprovalError('no_executed_write');
+      }
+    }
     const evidence = await evidenceForRun(tx as DB, item.id, run.id);
     if (run.state !== 'succeeded' && evidence.length === 0)
       throw new HmsApprovalError('no_executed_write');
     if (await reviewForRun(tx as DB, item.id, run.id))
       throw new HmsApprovalError('already_reviewed');
     // The review applies only to the form this write was approved for. A later edit was never written.
-    if (input.decision === 'ok' || cloudFiling) {
+    if (input.decision === 'ok' || cloudFiling || cloudCancel) {
       const grantId = grantIdForRun(run);
       if (!grantId) throw new HmsApprovalError('no_grant');
       const { grant } = await loadGrant(tx as DB, item.id, grantId);
-      if (cloudFiling && (grant.grantId !== grantId || grant.workItemId !== item.id ||
+      if ((cloudFiling || cloudCancel) && (grant.grantId !== grantId || grant.workItemId !== item.id ||
           grant.transportId !== input.transportId)) throw new HmsApprovalError('no_grant');
       if (formDigest(item.state) !== grant.formDigest) throw new HmsApprovalError('state_changed');
     }
@@ -1322,6 +1439,8 @@ export type HmsWriteStateView = {
   filingAvailable?: boolean;
   /** Whether a Labtest filing form may be prepared for this mailbox. */
   filingConfigured?: boolean;
+  /** Whether this mailbox can start a source-bound cancellation. */
+  cancelAvailable?: boolean;
   /** False when a staff note cannot reconcile a possibly dispatched Cloud write. */
   manualResolve?: boolean;
 };
@@ -1343,6 +1462,89 @@ function maskedStrings<T>(value: T, key?: string): T {
   return value;
 }
 
+/** Keep the native cancellation preimage private while its digest remains bound to Go. */
+export function publicHmsWriteForm(state: Record<string, unknown>): Record<string, unknown> {
+  const form = formOf(state);
+  delete form.cloudCancelPreview;
+  if (form.action === 'cancel' && Object.hasOwn(form, 'cloudCancel')) form.cloudCancel = {};
+  else delete form.cloudCancel;
+  return maskedStrings(form);
+}
+
+function completedOtherHmsWrite(run: Awaited<ReturnType<typeof latestWriteRun>>, needsCheck: boolean): boolean {
+  return run !== null && run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION && run.state === 'succeeded' &&
+    run.failureClass === null && run.lastError === null && !needsCheck;
+}
+
+/** A restored cancel status must still name the same current email, target, form and run. */
+async function assertCancelStateSource(input: {
+  db: DB; transportId: string; workItemId: string; selectedInternetMessageId?: string;
+  cancelSource: { threadId: string; messageId: string; sourceHash: string };
+  initialFormDigest: string; initialPreview: string; run: Awaited<ReturnType<typeof latestWriteRun>>;
+  grantBound: boolean; needsCheck: boolean;
+}): Promise<void> {
+  const { cancelSelectionSchema, cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
+  const source = cancelSelectionSchema.safeParse(input.cancelSource);
+  const target = paneStayHmsTargetForTransport(input.transportId);
+  const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+  const selectedTarget = target.ok ? target.target : null;
+  if (!input.selectedInternetMessageId || !source.success || !selectedTarget ||
+      targetKeys.some((key) => selectedTarget[key] !== CENTURION_HMS_READ_TARGET[key])) {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+  const [item] = await input.db.select({ state: workItem.state, sourceMessageId: workItem.sourceMessageId,
+    threadId: workItem.threadId }).from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
+  if (!item || item.threadId !== source.data.threadId || item.sourceMessageId !== source.data.messageId ||
+      formDigest(item.state) !== input.initialFormDigest ||
+      canonicalJson(item.state.cloudCancelPreview ?? null) !== input.initialPreview) {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+  const [thread] = await input.db.select({ id: mailThread.id, historyOnly: mailThread.historyOnly, trashedAt: mailThread.trashedAt })
+    .from(mailThread).where(and(eq(mailThread.id, source.data.threadId), eq(mailThread.transportId, input.transportId))).limit(1);
+  const [mail] = await input.db.select({ id: message.id, threadId: message.threadId, direction: message.direction,
+    historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance, subject: message.subject,
+    textBody: message.textBody, htmlBody: message.htmlBody }).from(message)
+    .where(and(eq(message.id, source.data.messageId), eq(message.transportId, input.transportId),
+      eq(message.threadId, source.data.threadId))).limit(1);
+  if (!thread || thread.id !== source.data.threadId || thread.historyOnly || thread.trashedAt !== null ||
+      !mail || mail.id !== source.data.messageId || mail.threadId !== source.data.threadId ||
+      mail.direction !== 'inbound' || mail.historyOnly || mail.sourceProvenance?.attention != null ||
+      staffQuoteSourceHash(mail) !== source.data.sourceHash) throw new HmsApprovalError('source_mail_changed');
+  const hasCancel = Object.hasOwn(item.state, 'cloudCancel');
+  const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
+  // A completed filing or other write is history, not authority for this cancellation.
+  const completedOtherWrite = completedOtherHmsWrite(input.run, input.needsCheck);
+  if ((hasCancel && (!bound.success || item.state.action !== 'cancel' ||
+      canonicalJson(bound.data.source) !== canonicalJson(source.data) ||
+      item.state.confirmation !== bound.data.preimage.confirmation || item.state.arrival !== bound.data.preimage.arrival)) ||
+      (input.run && !completedOtherWrite &&
+        (input.run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION || !bound.success || !input.grantBound))) {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+  if (item.state.cloudCancelPreview != null) {
+    const pending = z.object({ digest: z.string().regex(/^[a-f0-9]{64}$/), source: cancelSelectionSchema,
+      stateDigest: z.string().regex(/^[a-f0-9]{64}$/), preimage: z.object({
+        confirmation: z.string().regex(/^\d+-\d+$/), nativeStayId: z.string().regex(/^\d{1,100}$/),
+      }).passthrough() }).passthrough().safeParse(item.state.cloudCancelPreview);
+    if (!pending.success) throw new HmsApprovalError('source_mail_changed');
+    const { digest, ...preview } = pending.data;
+    if (createHash('sha256').update(canonicalJson(preview)).digest('hex') !== digest ||
+        canonicalJson(preview.source) !== canonicalJson(source.data) || preview.stateDigest !== input.initialFormDigest ||
+        (input.run && !completedOtherWrite && (input.run.state !== 'succeeded' || input.run.failureClass !== null || input.run.lastError !== null ||
+          input.needsCheck || !bound.success || preview.preimage.confirmation === bound.data.preimage.confirmation ||
+          preview.preimage.nativeStayId === bound.data.preimage.nativeStayId))) {
+      throw new HmsApprovalError('source_mail_changed');
+    }
+  }
+  const latest = await latestWriteRun(input.db, input.workItemId);
+  if (latest?.id !== input.run?.id || latest?.state !== input.run?.state ||
+      latest?.failureClass !== input.run?.failureClass || latest?.lastError !== input.run?.lastError ||
+      latest?.idempotencyKey !== input.run?.idempotencyKey || latest?.promptVersion !== input.run?.promptVersion) {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+}
+
 /**
  * What the approve and review cards show for one work item: the form, the snapshot's age and display values, the latest
  * approval and whether it still matches the form, the latest write run with its evidence, and any open needs-check.
@@ -1354,6 +1556,7 @@ export async function hmsWriteStateOf(input: {
   workItemId: string;
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
+  cancelSource?: HmsSelectedSource;
   now?: Date;
 }): Promise<HmsWriteStateView | null> {
   const db = input.db ?? getDb();
@@ -1366,6 +1569,8 @@ export async function hmsWriteStateOf(input: {
     .limit(1);
   if (!item) return null;
   await assertHmsSelectedSource(db, input, item);
+  const currentFormDigest = formDigest(item.state);
+  const currentCancelPreview = canonicalJson(item.state.cloudCancelPreview ?? null);
   const snapshot = readSnapshot(item.state);
   const storedValues = z
     .record(z.unknown())
@@ -1373,8 +1578,10 @@ export async function hmsWriteStateOf(input: {
   const target = paneStayHmsTargetForTransport(input.transportId);
   const cloudFiling = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
   const run = await latestWriteRun(db, item.id);
+  const grantFormDigest = currentFormDigest;
   const grantId = run ? grantIdForRun(run) : null;
   let grant: HmsWriteStateView['grant'] = null;
+  let grantBound = false;
   if (grantId) {
     const [row] = await db
       .select({ value: workEvent.value, payloadHash: workEvent.payloadHash })
@@ -1389,6 +1596,8 @@ export async function hmsWriteStateOf(input: {
       .limit(1);
     const parsed = hmsWriteGrantSchema.safeParse(row?.value);
     if (parsed.success && (!cloudFiling || row?.payloadHash === grantHash(parsed.data))) {
+      grantBound = row?.payloadHash === grantHash(parsed.data) && parsed.data.grantId === grantId && parsed.data.workItemId === item.id &&
+        parsed.data.transportId === input.transportId && parsed.data.formDigest === grantFormDigest;
       const [consumed] = await db
         .select({ id: workEvent.id })
         .from(workEvent)
@@ -1403,7 +1612,7 @@ export async function hmsWriteStateOf(input: {
       grant = {
         grantId,
         consumed: Boolean(consumed),
-        fingerprintMatches: formDigest(item.state) === parsed.data.formDigest,
+        fingerprintMatches: grantFormDigest === parsed.data.formDigest,
       };
     }
   }
@@ -1440,6 +1649,10 @@ export async function hmsWriteStateOf(input: {
       : null;
   }
   await assertCurrentHmsSelection(db, input);
+  if (input.cancelSource) await assertCancelStateSource({ db, transportId: input.transportId, workItemId: item.id,
+    selectedInternetMessageId: input.selectedInternetMessageId, cancelSource: input.cancelSource,
+    initialFormDigest: currentFormDigest, initialPreview: currentCancelPreview, run, grantBound, needsCheck });
+  const priorWriteIsHistory = Boolean(input.cancelSource && completedOtherHmsWrite(run, needsCheck));
   return {
     status: item.status,
     ...(target.ok && target.target.propertyCode === 'HRCEN' ? { filingConfigured: labtestAttachEnabled() } : {}),
@@ -1447,14 +1660,17 @@ export async function hmsWriteStateOf(input: {
       ? { filingAvailable: target.ok && isBoundLabtestAttachment(item.state, item.sourceMessageId) && labtestAttachEnabled() &&
           (!input.selectedSource || boundFilingSelectionMatches(item.state, input.selectedSource)),
         manualResolve: false } : {}),
-    form: maskedStrings(formOf(item.state)),
-    formDigest: formDigest(item.state),
+    ...(item.state.action === 'cancel' && Object.hasOwn(item.state, 'cloudCancel') ? { manualResolve: false } : {}),
+    ...(item.state.action === 'cancel' && target.ok && target.target.propertyCode === 'HRCEN'
+      ? { cancelAvailable: paneWriteMode('cancel', 'unpaid') !== 'off', manualResolve: false } : {}),
+    form: publicHmsWriteForm(item.state),
+    formDigest: currentFormDigest,
     before: storedValues.success ? maskedStrings(storedValues.data) : null,
     snapshot: snapshot
       ? { readAt: snapshot.readAt, stale: snapshotStale(snapshot.readAt, now) }
       : null,
-    grant,
-    run: runView,
+    grant: priorWriteIsHistory ? null : grant,
+    run: priorWriteIsHistory ? null : runView,
     // A run still in flight has no outcome yet, so it is not a needs-check until it ends.
     needsCheck,
   };

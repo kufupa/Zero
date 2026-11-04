@@ -1,15 +1,16 @@
 import { AMEND_FIND_COPY, type ScreenshotInput, type ScreenshotReply } from './amend-find';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 
 /**
  * Cancel from the pane for amend and cancel mail. Luna opens the HMS cancel screen through the
- * paneStayCancel routes: preview reads the reasons and any cancellation fee, commit cancels the booking.
+ * paneStayCancel routes: preview reads available reasons, commit cancels the booking.
  * This module holds the copy, the outcome mapping and the tRPC binding. The panel owns the UI state.
  */
 
 export const AMEND_CANCEL_COPY = {
   preview: 'Preview cancellation',
   previewHint:
-    'Nava opens the cancel screen in HMS and reads any cancellation fee. Nothing is cancelled.',
+    'Nava checks the booking and available cancellation reasons. Nothing is cancelled.',
   footerPreview:
     'Nava can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
   previewing: 'Nava is reading the cancel screen in HMS… (usually under a minute)',
@@ -50,7 +51,7 @@ function sentence(text: string): string {
 
 /** What HMS said about a cancellation fee, as one full sentence. */
 export function cancelFeeSentence(penaltyText: string | null): string {
-  const phrase = penaltyText ? `HMS says: ${penaltyText.trim()}` : 'HMS showed no cancellation fee';
+  const phrase = penaltyText ? `HMS says: ${penaltyText.trim()}` : 'Check any cancellation charge in HMS';
   return sentence(phrase);
 }
 
@@ -58,6 +59,7 @@ export function cancelConfirmLine(input: {
   confirmation: string;
   guest: string;
   penaltyText: string | null;
+  policyFacts?: string[];
 }): string {
   return `Nava will cancel ${input.confirmation} for ${input.guest}. ${cancelFeeSentence(input.penaltyText)} This can't be undone from here.`;
 }
@@ -90,6 +92,10 @@ export function cancelOutcomeNote(
       return AMEND_CANCEL_COPY.testOnly;
     case 'refused_not_unpaid':
       return AMEND_SAVE_COPY.handleInHms;
+    case 'refused_target_unverified':
+      return 'Nava could not verify this booking in HMS. Check the booking before cancelling.';
+    case 'refused_scope_unverified':
+      return 'The booking may have linked rooms or reservations. Check the full scope in HMS.';
     case 'refused_lock_busy':
       return AMEND_FIND_COPY.busy;
     case 'refused_lock_unavailable':
@@ -106,14 +112,15 @@ export function cancelOutcomeNote(
 
 export function cancelledText(statusAfter: string | null, penaltyText: string | null = null): string {
   const done = `Cancelled in HMS – status now ${statusAfter ?? 'unknown'}`;
-  // A charge that opened after the OK is never clicked by Luna. Staff deal with it in HMS.
+  // A reported charge is not proof of a posted fee.
   if (!penaltyText) return done;
   return `${done}. HMS shows a cancellation charge: ${chargeText(penaltyText)}. Check HMS and deal with that charge there.`;
 }
 
-export type CancelInput = { confirmation: string; arrival: string };
+export type CancelInput = { confirmation: string; arrival: string; workItemId?: string;
+  source?: { threadId: string; messageId: string; sourceHash: string } };
 /** The previewDigest of the preview that must come back with the commit. The server refuses without it. */
-export type CancelCommitInput = CancelInput & { reason: string; previewDigest: string };
+export type CancelCommitInput = CancelInput & { reason: string; previewDigest: string; cancellationNote?: string };
 
 /** One paneStayCancel result. previewDigest is set only by a preview_ok, and a commit must send it back. */
 export type CancelRun = {
@@ -122,11 +129,24 @@ export type CancelRun = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
+  policyFacts?: string[];
   screenshots: string[];
   runId: string | null;
   previewDigest: string | null;
   /** Notice-window warning from the cancel result, shown as a plain staff line. */
   message?: string | null;
+  /** Details independently read from the native stay before staff approve cancellation. */
+  previewStay?: { confirmation: string; firstName: string; lastName: string; arrival: string; departure: string;
+    roomType: string; guarantee?: string; depositReceived?: string | null };
+};
+
+export type CancelChargeTarget = { workItemId: string; runId: string; confirmation: string; arrival: string };
+export type CancelChargeState = { status: 'none' } | { status: 'pending' | 'submitted' | 'expired'; challengeId: string;
+  dialogDigest: string; penaltyText: string; expiresAt: string; cancellationStatus?: 'Cancelled' };
+export type CancelChargeClient = {
+  pendingCharge: (input: CancelChargeTarget) => Promise<CancelChargeState>;
+  acceptCharge: (input: CancelChargeTarget & { challengeId: string; dialogDigest: string }) =>
+    Promise<{ status: 'accepted' | 'unavailable' }>;
 };
 
 export type CancelView =
@@ -163,6 +183,10 @@ export function viewAfterCommit(
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     case 'cancel_penalty_pending':
       return { kind: 'done', run, text: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
+    case 'cancel_unconfirmed':
+      return { kind: 'done', run, text: AMEND_CANCEL_COPY.unconfirmed };
+    case 'cancel_queued':
+      return { kind: 'committing', run, reason: '' };
     case 'refused_reason_missing':
       return { kind: 'ready', run: preview, reason: '', note: AMEND_CANCEL_COPY.reasonRefused };
     case 'cancel_preview_required':
@@ -181,13 +205,33 @@ export type AmendCancelClient = {
 
 type TrpcPaneStayCancelRoutes = {
   paneStayCancel?: {
-    previewCancel?: { mutate: (input: CancelInput) => Promise<CancelRun> };
-    commitCancel?: { mutate: (input: CancelCommitInput) => Promise<CancelRun> };
+    previewCancel?: { mutate: (input: CancelInput, options?: NonNullable<ReturnType<typeof inMailbox>>) => Promise<CancelRun> };
+    commitCancel?: { mutate: (input: CancelCommitInput, options?: NonNullable<ReturnType<typeof inMailbox>>) => Promise<CancelRun> };
     paneStayScreenshot?: {
-      query: (input: ScreenshotInput) => Promise<ScreenshotReply>;
+      query: (input: ScreenshotInput, options?: NonNullable<ReturnType<typeof inMailbox>>) => Promise<ScreenshotReply>;
     };
+    pendingCharge?: { query: (input: CancelChargeTarget & { source: NonNullable<CancelInput['source']>;
+      internetMessageId?: string }, options: NonNullable<ReturnType<typeof inMailbox>>) => Promise<CancelChargeState> };
+    acceptCharge?: { mutate: (input: CancelChargeTarget & { source: NonNullable<CancelInput['source']>;
+      internetMessageId?: string; challengeId: string; dialogDigest: string },
+      options: NonNullable<ReturnType<typeof inMailbox>>) => Promise<{ status: 'accepted' | 'unavailable' }> };
   };
 };
+
+/** Pin both charge calls to the same mailbox and selected email as the first Go. */
+export function cancelChargeClientFromTrpc(trpc: unknown, transportId: string | null,
+  source: CancelInput['source'], internetMessageId?: string | null): CancelChargeClient | null {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !source || !source.threadId.trim() || !source.messageId.trim() ||
+      !/^[a-f0-9]{64}$/.test(source.sourceHash) || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const routes = (trpc as TrpcPaneStayCancelRoutes).paneStayCancel;
+  if (!routes?.pendingCharge || !routes.acceptCharge) return null;
+  const bound = { source: { ...source }, ...(internetMessageId?.trim() ? { internetMessageId: internetMessageId.trim() } : {}) };
+  return {
+    pendingCharge: (input) => routes.pendingCharge!.query({ ...input, ...bound }, mailbox),
+    acceptCharge: (input) => routes.acceptCharge!.mutate({ ...input, ...bound }, mailbox),
+  };
+}
 
 export type PaneWriteCapabilityReply = {
   create?: unknown;
@@ -212,10 +256,7 @@ export function canPreviewCancelFromCapabilities(
   capabilities: PaneCapabilitiesReply | null | undefined,
 ): boolean {
   if (capabilities?.paneWrite) {
-    return (
-      writeSwitchOn(capabilities.paneWrite.cancelUnpaid) ||
-      writeSwitchOn(capabilities.paneWrite.cancelPaid)
-    );
+    return writeSwitchOn(capabilities.paneWrite.cancelUnpaid) || writeSwitchOn(capabilities.paneWrite.cancelPaid);
   }
   return capabilities?.paneSave === true;
 }
@@ -427,16 +468,17 @@ export function amendCapabilitiesFromTrpc(trpc: unknown): (() => Promise<PaneCap
 }
 
 /** Binds the three paneStayCancel routes off a tRPC client. Null when any of them is missing. */
-export function amendCancelClientFromTrpc(trpc: unknown): AmendCancelClient | null {
+export function amendCancelClientFromTrpc(trpc: unknown, transportId?: string | null): AmendCancelClient | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcPaneStayCancelRoutes).paneStayCancel;
   const preview = routes?.previewCancel;
   const commit = routes?.commitCancel;
   const screenshot = routes?.paneStayScreenshot;
   if (!preview || !commit || !screenshot) return null;
+  const pinned = inMailbox(transportId ?? null);
   return {
-    previewCancel: (input) => preview.mutate(input),
-    commitCancel: (input) => commit.mutate(input),
-    paneStayScreenshot: (input) => screenshot.query(input),
+    previewCancel: (input) => pinned ? preview.mutate(input, pinned) : preview.mutate(input),
+    commitCancel: (input) => pinned ? commit.mutate(input, pinned) : commit.mutate(input),
+    paneStayScreenshot: (input) => pinned ? screenshot.query(input, pinned) : screenshot.query(input),
   };
 }

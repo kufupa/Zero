@@ -25,7 +25,7 @@ import {
   type CandidateReadPlanKind,
 } from './run-ledger.js';
 import { sweepLostHmsWriteLeases } from './hms-approval.js';
-import { labtestAttachWorkerEnabled, runLabtestAttachOnce } from './hms-labtest-attach-worker.js';
+import { cloudCancelWorkerEnabled, labtestAttachWorkerEnabled, runCloudCancelOnce, runLabtestAttachOnce } from './hms-labtest-attach-worker.js';
 import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
@@ -5825,6 +5825,17 @@ async function runLabtestAttachLoop(signal: AbortSignal, recovery: HmsRecoveryGa
   }
 }
 
+async function runCloudCancelLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
+  while (!signal.aborted) {
+    const worked = await runCloudCancelOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
+      .catch((error: unknown) => {
+        console.error('cloud_cancel_loop_failed', error instanceof Error ? error.message : 'unknown');
+        return false;
+      });
+    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+  }
+}
+
 export async function runAiWorkerDrain(
   input: RunAiWorkerDrainInput,
 ): Promise<RunAiWorkerDrainResult> {
@@ -5928,6 +5939,10 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && labtestAttachWorkerEnabled() && !scope.idempotencyPrefix
       ? runLabtestAttachLoop(shutdown.signal, hmsRecovery)
       : null;
+  const hmsCloudCancel =
+    resolveWorkerLane() === 'default' && cloudCancelWorkerEnabled() && !scope.idempotencyPrefix
+      ? runCloudCancelLoop(shutdown.signal, hmsRecovery)
+      : null;
 
   try {
     while (!stopping) {
@@ -5948,6 +5963,7 @@ export async function runAiWorkerLoop(
     shutdown.abort();
     await hmsJobs;
     await hmsLabtestAttach;
+    await hmsCloudCancel;
     await hmsWriteSweep;
     await closeAiWorkerResources();
     if (stopping) console.log(`ai-worker: shutdown complete pid=${process.pid}`);

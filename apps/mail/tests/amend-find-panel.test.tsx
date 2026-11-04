@@ -1828,7 +1828,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
   }, 15_000);
 
-  it('says so when HMS shows no cancellation fee', async () => {
+  it('asks staff to check any cancellation charge when none was shown', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue({ ...PREVIEW_OK, penaltyText: null });
     await renderCancel({ preview });
@@ -1836,10 +1836,10 @@ describe('AmendLookupPanel cancel from the pane', () => {
     fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
       target: { value: 'Duplicate Booking' },
     });
-    expect(screen.getByText('HMS showed no cancellation fee.')).toBeTruthy();
+    expect(screen.getByText('Check any cancellation charge in HMS.')).toBeTruthy();
     expect(
       screen.getByText(
-        "Nava will cancel 57291630-1 for Thabo Mokoena. HMS showed no cancellation fee. This can't be undone from here.",
+        "Nava will cancel 57291630-1 for Thabo Mokoena. Check any cancellation charge in HMS. This can't be undone from here.",
       ),
     ).toBeTruthy();
   });
