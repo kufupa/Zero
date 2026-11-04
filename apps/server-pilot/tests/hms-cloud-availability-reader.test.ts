@@ -118,7 +118,8 @@ describe('Cloud HMS read result projection', () => {
   it('marks a negative native inventory unavailable rather than selectable as unchecked', () => {
     const view = readView();
     view.options[0]!.nights[1]!.roomsAvailable = -1;
-    view.options[0]!.nights[1]!.reasons = ['negative_stock'];
+    // An unknown price does not erase the independent negative inventory observation.
+    view.options[0]!.nights[1]!.reasons = ['negative_stock', 'unknown'];
     const result = projectCloudAvailability(request, [{ outcome: 'ok', view }]);
     if (result.outcome !== 'read') throw new Error('expected read result');
     const context: RateContext = {

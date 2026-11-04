@@ -226,9 +226,9 @@ export function buildCloudRateCandidates(context: RateContext, groups: readonly 
       const minRoomsAvailable = complete && counts.every((count): count is number => count !== null) ? Math.min(...counts) : null;
       const restricted = nightly.some(night => !night.reasons.includes('unknown') &&
         (night.stockStatus === 'restricted' || night.reasons.includes('closed_or_restricted')));
-      const shortfall = nightly.some(night => !night.reasons.includes('unknown') &&
-        (night.reasons.includes('negative_stock') || (!night.reasons.includes('conditions_present') &&
-          night.availableCount !== null && night.availableCount < context.quantity)));
+      const shortfall = nightly.some(night => night.reasons.includes('negative_stock') ||
+        (!night.reasons.includes('unknown') && !night.reasons.includes('conditions_present') &&
+          night.availableCount !== null && night.availableCount < context.quantity));
       const state: RateCandidate['state'] = restricted ? 'restricted' : shortfall ? 'unavailable' : 'unchecked';
       if (!complete) reasons.push('NIGHT_COVERAGE_INCOMPLETE');
       if (state === 'unchecked') reasons.push('NATIVE_STAY_ELIGIBILITY_UNVERIFIED');
