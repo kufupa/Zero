@@ -376,7 +376,8 @@ export function unchangedLabtestRecord(before, after, changes) {
     return [...fields].every((key) => {
       if (!Object.hasOwn(a, key) && !Object.hasOwn(b, key)) return !Object.hasOwn(changes, key);
       return Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
-        (Object.hasOwn(changes, key) ? String(b[key] ?? '') === String(changes[key]) :
+        (Object.hasOwn(changes, key) ? String(b[key] ?? '') === String(changes[key]) ||
+          (part === 'data' && JSON.stringify(a[key]) === JSON.stringify(b[key])) :
           JSON.stringify(a[key]) === JSON.stringify(b[key]));
     });
   });
