@@ -50,7 +50,8 @@ async function nativeScreenshots(root) {
 test('the selected fake booking matches property, guest and approved dates', () => {
   assert.deepEqual(filingSnapshot(record, stay), snapshot);
   assert.deepEqual(approvedLabtestRecord(record, stay), { confirmation: native.confirmation, guestId: native.guestId,
-    nativeStayId: native.reservationStayId, firstName: native.firstName, lastName: native.lastName, allowRealGuest: false,
+    nativeStayId: native.reservationStayId, firstName: native.firstName, lastName: native.lastName,
+    status: native.status, allowRealGuest: false,
     arrival: native.arrival, departure: native.departure });
   for (const changed of [{ propertyCode: 'OTHER' }, { firstName: 'Real' }, { lastName: 'Other' },
     { status: 'Cancelled' }, { arrival: '2026-12-31' }, { arrival: '2027-02-30' },
@@ -68,7 +69,8 @@ test('the separate upload guard binds the native guest and no-send setting', () 
   assert.equal(approvedDocumentDispatch({ ...record, details: { fields: [] } }, stay, snapshot), null);
   assert.equal(approvedDocumentDispatch({ ...record, details: { fields: [...record.details.fields, ...record.details.fields] } }, stay, snapshot), null);
   assert.equal(approvedDocumentDispatch(record, stay, { cmsSend: true }), null);
-  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', arrival: '2026-10-12', departure: '2026-10-13' };
+  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', status: 'Cancelled',
+    arrival: '2026-10-12', departure: '2026-10-13' };
   const realStay = { ...stay, firstName: realNative.firstName, lastName: realNative.lastName,
     arrival: realNative.arrival, departure: realNative.departure, allowRealGuest: true };
   const realRecord = { ...record, nativePreimage: realNative, details: { fields: record.details.fields.map((field) =>
@@ -137,7 +139,8 @@ test('restart recovery requires a stopped writer and fresh exact unique document
   } })).outcome, 'unconfirmed');
   assert.equal(shots, 1);
 
-  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', arrival: '2026-10-12', departure: '2026-10-13' };
+  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', status: 'Cancelled',
+    arrival: '2026-10-12', departure: '2026-10-13' };
   const realRecord = { ...record, nativePreimage: realNative, details: { fields: record.details.fields.map((field) =>
     field.name === 'udfchkbox04' ? { ...field, value: true } : field) } };
   const realIntent = { ...intent, firstName: realNative.firstName, lastName: realNative.lastName,
@@ -262,5 +265,6 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     await rm(outside.cleanupRoot, { recursive: true, force: true });
     assert.equal((await runCloudPaneAttach({ ...input, pdfSha256: 'a'.repeat(64) }, deps)).outcome, 'attachment_hash_changed');
     assert.equal((await runCloudPaneAttach({ ...input, target: { propertyCode: 'OTHER' } }, deps)).outcome, 'refused_input');
+
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
