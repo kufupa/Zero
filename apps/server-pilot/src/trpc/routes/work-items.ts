@@ -92,15 +92,21 @@ const fieldEventInput = z
       sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().optional(),
     expectedSeq: z.number().int().nonnegative().safe().optional(),
+    expectedExtractionId: z.string().uuid().nullable().optional(),
     value: z
       .union([
-        z.string().max(1000),
+        z.string().max(2000),
         z.number(),
         z.null(),
         z.boolean(),
         z.array(z.number().int().min(0).max(17)).max(9),
+        z.array(z.string().min(1).max(200)).max(40),
         z.object({ confirmation: z.string().max(200), arrival: z.string().max(10) }).strict(),
         z.object({ mode: z.enum(['self', 'client', 'custom']), address: z.string().max(255) }).strict(),
+        z.object({ nativeId: z.string().max(40), firstName: z.string().max(100), lastName: z.string().max(100) }).strict(),
+        z.object({ nativeId: z.string().max(40), name: z.string().max(200), code: z.string().max(80).optional() }).strict(),
+        z.object({ amountMinor: z.number().int().nonnegative().safe(), currency: z.string().length(3),
+          reason: z.string().max(1000).nullable(), offerId: z.string().max(200) }).strict(),
       ])
       .optional(),
     msSinceOpen: z.number().int().min(0).max(86_400_000).optional(),
@@ -169,6 +175,7 @@ export const workItemsRouter = router({
       msSinceOpen: input.msSinceOpen,
       source: input.source,
       expectedSeq: input.expectedSeq,
+      expectedExtractionId: input.expectedExtractionId,
     });
     if (result.status === 'not_found') {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
@@ -456,8 +463,11 @@ export const workItemsRouter = router({
             z.object({ type: z.literal('contact') }).strict(),
             z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
           ]),
+          expectedSeq: z.number().int().nonnegative().safe().optional(),
+          expectedExtractionId: z.string().uuid().nullable().optional(),
         })
-        .strict(),
+        .strict().refine((value) => (value.expectedSeq === undefined) === (value.expectedExtractionId === undefined),
+          { message: 'Expected sequence and extraction must be supplied together.' }),
     )
     .mutation(async ({ input, ctx }) => {
       const result = await resetWorkSection(getDb(), {
@@ -465,9 +475,13 @@ export const workItemsRouter = router({
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
         section: input.section,
+        expectedSeq: input.expectedSeq,
+        expectedExtractionId: input.expectedExtractionId,
       });
       if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+      if (result.status === 'invalid_cursor') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Incomplete cursor.' });
+      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'This work item changed. Reload before resetting.' });
       return { reset: result.reset };
     }),
 });

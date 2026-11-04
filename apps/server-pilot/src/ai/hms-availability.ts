@@ -24,6 +24,7 @@ import { type PaneStayLock } from './pane-stay-save.js';
 import { type HmsReadTarget } from '../hms/hms-read-target.js';
 import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
 import { canonicalJson } from './draft-approval.js';
+import { matchRoomType } from './room-types.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -107,6 +108,80 @@ export const availabilityJobRequestSchema = availabilityRequestSchema.superRefin
     }
   });
 export type AvailabilityRequest = z.infer<typeof availabilityRequestSchema>;
+
+const pickedRateParty = partyRef.extend({ jobId: z.string().uuid() }).strict();
+export const ratePartySelectionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none'), ratePlan: nativeCode.nullable().optional() }).strict(),
+  z.object({ kind: z.literal('selected'), agency: pickedRateParty.nullable(), organization: pickedRateParty.nullable(),
+    ratePlan: nativeCode.nullable().optional() }).strict(),
+]).refine(selection => selection.kind === 'none' || selection.agency !== null || selection.organization !== null);
+export type RatePartySelection = z.infer<typeof ratePartySelectionSchema>;
+
+/** Durable picker evidence, separate from native Prepare authority. */
+export const ratePartyBindingSchema = z.object({
+  version: z.literal(1), source: z.object({ threadId: z.string(), messageId: z.string(), sourceHash: z.string() }).strict(),
+  extractionId: z.string().uuid(), requestId: z.string(), stayId: z.string(), rowId: z.string(), roomIndex: z.number().nullable(),
+  workflow: z.enum(['quote', 'create']), selectedBy: z.string(), selectedAt: z.string(), selection: ratePartySelectionSchema,
+}).strict();
+export const ratePartyBindingKey = (request: { requestId: string; stayId: string; rowId: string | null; roomIndex: number | null }) =>
+  `requests[${request.requestId}].rateContext[${JSON.stringify([request.stayId, request.rowId, request.roomIndex])}]`;
+
+/** Current source room plus an explicit, persisted party choice; omitted parties stay unknown. */
+export function boundSourceRateRequest(input: {
+  propertyCode: string; workflow: 'quote' | 'create'; requestId: string; rowId: string; roomIndex: number | null;
+  stay: Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalAdults' | 'totalChildren'>;
+  state: Record<string, unknown>; selection: RatePartySelection; sourceRowExists: boolean; childAgeWarning?: boolean; typedRatePlan?: string;
+}): { request: AvailabilityRequest; explicitCode: string | null; unchangedCode: null; draftContextKey: string } | { reason: string } {
+  const { stay, state, selection } = input;
+  const row = stay.rows.find(row => row.id === input.rowId);
+  if (!row) return { reason: 'ROOM_IDENTITY_CHANGED' };
+  const rowPrefix = `stays[${stay.id}].rows[${row.id}].`;
+  const pick = (path: string, fallback: unknown) => Object.hasOwn(state, path) ? state[path] : fallback;
+  const count = pick(`${rowPrefix}count`, row.rooms);
+  if (!Number.isInteger(count) || (count as number) < 1 || (count as number) > 99 ||
+      (input.workflow === 'quote' ? input.roomIndex !== null : input.roomIndex === null || input.roomIndex >= (count as number))) {
+    return { reason: 'ROOM_QUANTITY_UNRESOLVED' };
+  }
+  const requestRow = `requests[${input.requestId}].rows[${input.rowId}].`;
+  const roomPrefix = input.workflow === 'create' ? `${requestRow}rooms[${input.roomIndex}].` : null;
+  const roomPick = (field: string, fallback: unknown) => roomPrefix ? pick(`${roomPrefix}${field}`, fallback) : fallback;
+  const arrival = roomPick('arrival', pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival));
+  const departure = roomPick('departure', pick(`stays[${stay.id}].requested.departure`, stay.requested.departure));
+  const selectedRoom = roomPrefix ? roomPick('roomTypeCode', pick(`${requestRow}roomTypeCode`, undefined)) : undefined;
+  const rawRoom = pick(`${rowPrefix}roomType`, row.roomType);
+  const room = typeof rawRoom === 'string' ? matchRoomType(rawRoom, input.propertyCode) : null;
+  const roomCode = selectedRoom !== undefined ? selectedRoom : room && 'code' in room ? room.code : null;
+  const adults = roomPick('adults', pick(`${rowPrefix}adults`, stay.rows.length === 1 && count === 1 &&
+    Object.hasOwn(state, `stays[${stay.id}].totalAdults`) ? state[`stays[${stay.id}].totalAdults`] :
+    row.adultsPerRoom ?? (stay.rows.length === 1 && count === 1 ? stay.totalAdults : null)));
+  const perRoomAges = roomPrefix !== null && Object.hasOwn(state, `${roomPrefix}childAges`);
+  const childAges = roomPick('childAges', pick(`${rowPrefix}childAges`, row.childAges ??
+    (stay.rows.length === 1 && stay.totalChildren === 0 ? [] : null)));
+  if (!Array.isArray(childAges) || (!input.sourceRowExists && !perRoomAges && !Object.hasOwn(state, `${rowPrefix}childAges`)) ||
+      (input.childAgeWarning && stay.totalChildren == null && childAges.length === 0 &&
+        !perRoomAges && !Object.hasOwn(state, `${rowPrefix}childAges`)) ||
+      (!perRoomAges && stay.rows.length === 1 && stay.totalChildren != null && stay.totalChildren !== childAges.length * (count as number))) {
+    return { reason: 'CHILD_AGES_UNRESOLVED' };
+  }
+  const board = pick(`${rowPrefix}board`, row.board);
+  const quantity = input.workflow === 'create' ? 1 : count;
+  const rateParties = selection.kind === 'none' ? {} : Object.fromEntries(
+    (['agency', 'organization'] as const).flatMap(kind => selection[kind] ?
+      [[kind, { nativeId: selection[kind]!.nativeId, name: selection[kind]!.name }]] : []));
+  const explicitCode = selection.ratePlan ?? null;
+  const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
+    rooms: [{ roomType: roomCode, quantity, adults, childAges }], rateParties,
+    rateContext: { propertyCode: input.propertyCode, workflow: input.workflow, arrival, departure, roomCode, quantity,
+      adults, childAges, board, currency: 'ZAR', // Existing HRCEN Quote currency; observations must match it.
+      agencyId: selection.kind === 'selected' ? selection.agency?.nativeId ?? null : null,
+      organizationId: selection.kind === 'selected' ? selection.organization?.nativeId ?? null : null,
+      guestProfileId: null, sourceOfBusiness: null, track: null, guaranteeType: null,
+      typedRatePlan: input.typedRatePlan ?? null, savedTarget: null, retainRates: null },
+  });
+  if (!parsed.success) return { reason: 'RATE_DRAFT_INCOMPLETE' };
+  return { request: parsed.data, explicitCode, unchangedCode: null,
+    draftContextKey: createHash('sha256').update(canonicalJson({ ...parsed.data.rateContext!, typedRatePlan: explicitCode })).digest('hex') };
+}
 
 /** Project only the current server draft and the exact saved-stay read. Explicit clears never fall back. */
 export function boundAmendRateRequest(input: {

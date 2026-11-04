@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   setMailSelection: vi.fn(),
   setComposeState: vi.fn(),
   flushCompose: vi.fn(),
+  getStored: vi.fn(),
+  openWorkItem: vi.fn(),
 }));
 
 // Vitest loads react-resizable-panels through the node export condition, and that build has no
@@ -143,7 +145,8 @@ vi.mock('@/paraglide/messages', () => ({
 vi.mock('@/providers/query-provider', () => ({
   useTRPC: () => ({ mail: { listThreads: { queryOptions: (input: unknown) => input } } }),
   // The header's Needs-you control reads this list route for its live status.
-  trpcClient: { workItems: { list: { query: async () => [] } } },
+  trpcClient: { workItems: { list: { query: async () => [] },
+    getByMessage: { query: mocks.getStored }, open: { mutate: mocks.openWorkItem } } },
 }));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({
@@ -203,6 +206,8 @@ beforeEach(() => {
   mocks.flushCompose.mockReset().mockResolvedValue(undefined);
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
+  mocks.getStored.mockReset().mockResolvedValue({ status: 'none' });
+  mocks.openWorkItem.mockReset();
   setNavaToggle(true);
 });
 
@@ -409,17 +414,22 @@ describe('shared WebPanePanel', () => {
     expect(document.querySelector('[data-preview-reason="no_message_id"]')).not.toBeNull();
   });
 
-  it('nava-preview still renders WebPanePanel for the selected thread', async () => {
+  it('nava-preview shows the selected email without mounting the writable pane', async () => {
     render(<NavaPreviewPage />);
 
-    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(await screen.findByText('Please quote 2 rooms.')).toBeDefined();
+    expect(screen.queryByTestId('nava-pane')).toBeNull();
     expect(document.querySelector('[data-preview-pane]')).not.toBeNull();
     expect(
       document.querySelector('[data-preview-status="ready"][data-preview-thread="thread-7"]'),
     ).not.toBeNull();
+    await waitFor(() => expect(mocks.getStored).toHaveBeenCalledWith({ internetMessageId: '<guest-1@example.com>',
+      selection: { kind: 'web', threadId: 'linked-thread', messageId: 'msg-1' } },
+    { context: { activeTransportId: 'transport-1' } }));
+    expect(mocks.openWorkItem).not.toHaveBeenCalled();
   });
 
-  it('keeps a quote notice bound to its exact email in nava-preview', () => {
+  it('keeps the webmail link bound to the selected email in nava-preview', () => {
     mocks.previewQuery = 'thread=thread-a&sourceMessageId=source-a';
     const { rerender } = render(<NavaPreviewPage />);
     expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
@@ -428,15 +438,13 @@ describe('shared WebPanePanel', () => {
     expect(screen.getByRole('link', { name: 'Open in webmail' }).getAttribute('href'))
       .toBe('/mail/inbox?threadId=thread-a&sourceMessageId=source-a');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open source B' }));
-    expect(mocks.setPreviewParams).toHaveBeenCalledWith({ thread: 'thread-b', sourceMessageId: 'source-b' });
     mocks.previewQuery = 'thread=thread-b&sourceMessageId=source-b';
     rerender(<NavaPreviewPage />);
     expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
       threadId: 'thread-b', sourceMessageId: 'source-b', requireSelectedMessage: true,
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Open thread only' }));
-    expect(mocks.setPreviewParams).toHaveBeenLastCalledWith({ thread: 'thread-7' });
+    expect(screen.getByRole('link', { name: 'Open in webmail' }).getAttribute('href'))
+      .toBe('/mail/inbox?threadId=thread-b&sourceMessageId=source-b');
     expect(screen.getByRole('link', { name: /Quote request/ }).getAttribute('href')).toBe('/nava-preview?thread=thread-7');
   });
 
@@ -453,15 +461,14 @@ describe('shared WebPanePanel', () => {
     expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-7', requireSelectedMessage: true });
   });
 
-  it('the preview page imports WebPanePanel instead of keeping its own copy', () => {
+  it('the preview page uses read-only message and classification queries', () => {
     const pageSource = readSource('../app/(routes)/nava-preview/page.tsx');
-    expect(pageSource).toContain(
-      "import { WebPanePanel } from '@/components/nava-pane/web-pane-panel';",
-    );
-    expect(pageSource).toContain('<WebPanePanel');
+    expect(pageSource).not.toContain('<WebPanePanel');
+    expect(pageSource).toContain('getByMessage?.query');
+    expect(pageSource).not.toContain('.mutate(');
     expect(pageSource).toContain('key={selectedId}');
     expect(pageSource).toContain('threadId={selectedId}');
-    expect(pageSource).not.toContain('function PreviewPanel');
+    expect(pageSource).toContain('<PreviewMessage');
   });
 });
 

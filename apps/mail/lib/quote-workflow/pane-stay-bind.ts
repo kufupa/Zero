@@ -136,6 +136,8 @@ export type PaneStayInput = {
     source: { messageId: string; threadId: string; sourceHash: string };
     identity: { stayId: string; rowId: string; roomIndex: number };
     nativeGuestId?: string;
+    expectedSeq?: number;
+    expectedExtractionId?: string;
   };
   sourceOfBusiness: string;
   roomType: string;

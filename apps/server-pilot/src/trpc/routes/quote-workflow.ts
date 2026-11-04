@@ -48,12 +48,14 @@ import {
   stayCommitGuard,
   workItemIdForMail,
   formStays,
+  requestPayload,
 } from '../../ai/work-items.js';
-import { getDb } from '../../db/client.js';
+import { getDb, type DB } from '../../db/client.js';
 import { mailThread, message } from '../../db/schema/mail.js';
-import { mailExtraction, workItem } from '../../db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../../db/schema/work.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
-import { boundAmendRateRequest, type RateContext } from '../../ai/hms-availability.js';
+import { boundAmendRateRequest, boundSourceRateRequest, ratePartyBindingKey, ratePartyBindingSchema,
+  ratePartySelectionSchema, type RateContext, type RatePartySelection } from '../../ai/hms-availability.js';
 import { rateContextKey, recommendRateCandidate, orderRateCandidates, type RateCandidate, type RateRecommendation } from '../../ai/rate-options.js';
 import { amendRequestId, projectAmendRequests } from '../../ai/pane-amend-draft.js';
 import { mailExtractionPayloadSchema } from '../../ai/extraction/schema.js';
@@ -61,6 +63,9 @@ import { hmsJobQueueEnabled, queueRateCandidatesHmsJob, readRateCandidatesHmsJob
 import type { HmsCloudRateLookup } from '../../ai/hms-cloud-saved-stay-find.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { loadPaneRateHistory } from '../../ai/pane-rate-recommendation.js';
+import { withLockedCreateSource } from '../../ai/pane-create-source-loader.js';
+import { assertNoCreateDispatchFence } from '../../ai/pane-create-dispatch-fence.js';
+import { advancePaneRevision } from '../../ai/work-item-revision.js';
 import { and, eq } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
@@ -184,12 +189,42 @@ const rateBinding = z.object({
     stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), rowId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).nullable(),
     roomIndex: z.number().int().nonnegative().max(7).nullable() }).strict(),
   expectedSeq: z.number().int().nonnegative().safe(),
+  expectedExtractionId: z.string().uuid().optional(),
 }).strict();
 export const rateCandidatesInput = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('start'), binding: rateBinding,
     typedRatePlan: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), forceRefresh: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal('read'), binding: rateBinding, jobId: z.string().uuid() }).strict(),
 ]);
+export const rateContextSelectionInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('read'), binding: rateBinding }).strict(),
+  z.object({ kind: z.literal('select'), binding: rateBinding, selection: ratePartySelectionSchema }).strict(),
+]);
+
+async function selectedRateSource(db: DB, binding: z.infer<typeof rateBinding>, transportId: string) {
+  const [selected] = await db.select({ item: workItem, mail: message, thread: mailThread, extraction: mailExtraction })
+    .from(workItem)
+    .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, workItem.transportId)))
+    .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, workItem.transportId)))
+    .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
+    .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, transportId),
+      eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
+  return selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
+    !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
+    selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
+    !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
+    (binding.expectedExtractionId === undefined || selected.extraction.id === binding.expectedExtractionId) &&
+    staffQuoteSourceHash(selected.mail) === binding.source.sourceHash ? selected : null;
+}
+
+function storedRatePartyBinding(state: Record<string, unknown>, binding: z.infer<typeof rateBinding>, extractionId: string, actorId: string) {
+  const parsed = ratePartyBindingSchema.safeParse(state[ratePartyBindingKey(binding.request)]);
+  const record = parsed.success ? parsed.data : null;
+  return record && record.selectedBy === actorId && record.extractionId === extractionId && record.requestId === binding.request.requestId &&
+    record.stayId === binding.request.stayId && record.rowId === binding.request.rowId &&
+    record.roomIndex === binding.request.roomIndex && record.source.threadId === binding.source.threadId &&
+    record.source.messageId === binding.source.messageId && record.source.sourceHash === binding.source.sourceHash ? record : null;
+}
 export type RateCandidatesReply = {
   status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
   requestId: string; jobId: string | null; contextKey: string | null; context: RateContext | null;
@@ -229,25 +264,91 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
+  rateContextSelection: mailboxProcedure.input(rateContextSelectionInput).mutation(async ({ input, ctx }) => {
+    const { binding } = input;
+    const db = getDb();
+    const refuse = (status: 'blocked' | 'stale', reason: string) =>
+      ({ status, reason, requestId: binding.request.requestId, selection: null });
+    const selected = await selectedRateSource(db, binding, ctx.activeTransportId);
+    if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED');
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED');
+    const parsed = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    if (!parsed.success || amendRequestId(binding.source, binding.request.stayId) !== binding.request.requestId) {
+      return refuse('stale', 'REQUEST_IDENTITY_CHANGED');
+    }
+    const sourceStay = requestPayload(parsed.data, selected.item.state, selected.item.kind).stays.find(stay => stay.id === binding.request.stayId);
+    const action = sourceStay?.action ?? (parsed.data.stays.length === 1
+      ? parsed.data.action ?? (selected.item.kind === 'quote' ? 'quote_availability' : selected.item.kind === 'booking' ? 'new_booking' : null)
+      : null);
+    const workflow = action === 'quote_availability' ? 'quote' : action === 'new_booking' ? 'create' : null;
+    const stay = formStays(parsed.data, selected.item.state).find(stay => stay.id === binding.request.stayId);
+    if (!workflow) return refuse('blocked', 'RATE_SELECTION_WORKFLOW_UNSUPPORTED');
+    if (!stay || binding.request.rowId === null || !stay.rows.some(row => row.id === binding.request.rowId) ||
+        (workflow === 'quote' ? binding.request.roomIndex !== null : binding.request.roomIndex === null)) {
+      return refuse('stale', 'ROOM_IDENTITY_CHANGED');
+    }
+    const previous = storedRatePartyBinding(selected.item.state, binding, selected.extraction.id, ctx.sessionUser.id);
+    if (input.kind === 'read') return { status: 'ready' as const, reason: previous ? null : 'RATE_PARTY_SELECTION_REQUIRED',
+      requestId: binding.request.requestId, seq: selected.item.revisionSeq, selection: previous?.selection ?? null };
+    if (input.selection.kind === 'selected') {
+      for (const [kind, pick] of [['agency', input.selection.agency], ['company', input.selection.organization]] as const) {
+        if (!pick) continue;
+        const job = await readHmsJobView({ transportId: ctx.activeTransportId, runId: pick.jobId,
+          threadId: binding.source.threadId, messageId: binding.source.messageId, sourceHash: binding.source.sourceHash,
+          selectedActorId: ctx.sessionUser.id }, db);
+        const at = job?.asOf ? Date.parse(job.asOf) : NaN;
+        const rows = job?.result?.results;
+        const nameKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+        if (job?.status !== 'done' || job.request?.kind !== 'party' ||
+            (job.request.partyKind && job.request.partyKind !== kind) || !Number.isFinite(at) || at > Date.now() ||
+            Date.now() - at >= 5 * 60_000 || !Array.isArray(rows) || rows.filter(row => row && typeof row === 'object' &&
+              row.kind === kind && row.nativeId === pick.nativeId && typeof row.name === 'string' &&
+              nameKey(row.name) === nameKey(pick.name)).length !== 1) {
+          return refuse('blocked', 'RATE_PARTY_JOB_UNVERIFIED');
+        }
+      }
+    }
+    try {
+      return await withLockedCreateSource(db, { transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+        messageId: binding.source.messageId, workItemId: binding.workItemId,
+        cursor: { extractionId: selected.extraction.id, revision: selected.item.revision,
+          revisionHead: selected.item.revisionHead, seq: binding.expectedSeq } }, async (tx, current) => {
+        if (staffQuoteSourceHash(current.snapshot.source) !== binding.source.sourceHash ||
+            current.snapshot.source.sourceProvenance?.attention != null) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED');
+        await assertNoCreateDispatchFence(tx, { transportId: ctx.activeTransportId, workItemId: binding.workItemId });
+        const existing = storedRatePartyBinding(current.item.state, binding, selected.extraction.id, ctx.sessionUser.id);
+        const selection: RatePartySelection = { ...input.selection,
+          ratePlan: Object.hasOwn(input.selection, 'ratePlan') ? input.selection.ratePlan : existing?.selection.ratePlan ?? null };
+        if (existing && JSON.stringify(existing.selection) === JSON.stringify(selection)) {
+          return { status: 'recorded' as const, reason: null, requestId: binding.request.requestId, selection: existing.selection,
+            previousSeq: current.item.revisionSeq, seq: current.item.revisionSeq, revision: current.item.revision,
+            revisionHead: current.item.revisionHead, workItemExtractionId: selected.extraction.id };
+        }
+        const record = ratePartyBindingSchema.parse({ version: 1, source: binding.source, extractionId: selected.extraction.id,
+          ...binding.request, workflow, selectedBy: ctx.sessionUser.id, selectedAt: new Date().toISOString(), selection });
+        const fieldPath = ratePartyBindingKey(binding.request);
+        const state = { ...current.item.state, [fieldPath]: record };
+        const advanced = advancePaneRevision({ revision: current.item.revision, revisionHead: current.item.revisionHead,
+          seq: current.item.revisionSeq, previousState: current.item.state, nextState: state, extractionId: selected.extraction.id });
+        await tx.insert(workEvent).values({ workItemId: binding.workItemId, actorKind: 'user', actorUserId: ctx.sessionUser.id,
+          type: 'field.edit', fieldPath, value: record, evidence: { ...advanced.evidence, rateLookupOnly: true } });
+        await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
+          revisionSeq: current.item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, binding.workItemId));
+        return { status: 'recorded' as const, reason: null, requestId: binding.request.requestId, selection: record.selection,
+          previousSeq: current.item.revisionSeq, seq: current.item.revisionSeq + 1, revision: advanced.revision,
+          revisionHead: advanced.revisionHead, workItemExtractionId: selected.extraction.id };
+      });
+    } catch { return refuse('stale', 'RATE_SELECTION_CHANGED'); }
+  }),
   rateCandidates: mailboxProcedure.input(rateCandidatesInput).mutation(async ({ input, ctx }): Promise<RateCandidatesReply> => {
     const { binding } = input;
     const db = getDb();
-    const [selected] = await db.select({ item: workItem, mail: message, thread: mailThread, extraction: mailExtraction })
-      .from(workItem)
-      .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, workItem.transportId)))
-      .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, workItem.transportId)))
-      .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
-      .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, ctx.activeTransportId),
-        eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
-    const valid = selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
-      !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
-      selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
-      !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
-      staffQuoteSourceHash(selected.mail) === binding.source.sourceHash;
+    const selected = await selectedRateSource(db, binding, ctx.activeTransportId);
     const requestId = binding.request.requestId;
     const refuse = (status: 'blocked' | 'failed' | 'stale', reason: string, message: string) =>
       rateRefusal(requestId, status, reason, message);
-    if (!valid || !selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
+    if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED', 'Rate lookup is not available for this hotel yet.');
     const payload = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
@@ -256,36 +357,55 @@ export const quoteWorkflowRouter = router({
     }
     const state = selected.item.state;
     const stay = formStays(payload.data, state).find(stay => stay.id === binding.request.stayId);
-    if (!stay || binding.request.roomIndex !== null || (binding.request.rowId !== null &&
+    if (!stay || (binding.request.rowId !== null &&
         !stay.rows.some(row => row.id === binding.request.rowId))) {
       return refuse('stale', 'ROOM_IDENTITY_CHANGED', 'This room request has changed. Refresh the email.');
     }
-    const request = projectAmendRequests(binding.source, payload.data, state).requests.find(request => request.requestId === requestId);
-    if (!request) return refuse('blocked', 'DURABLE_RATE_PARTIES_NOT_AVAILABLE', 'Rate lookup needs a saved stay with verified company or agency details. Prepare can still check the chosen rate.');
-    if (stay.rows.length > 1) return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Choose one saved room before checking its rates.');
-    const row = stay.rows[0];
-    const countPath = row ? `stays[${stay.id}].rows[${row.id}].count` : null;
-    const count = countPath && Object.hasOwn(state, countPath) ? state[countPath] : row?.rooms;
-    if ((count != null && count !== 1) || (countPath && Object.hasOwn(state, countPath) && count === null)) {
-      return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Rate lookup currently checks one saved room at a time.');
+    const sourceStay = requestPayload(payload.data, state, selected.item.kind).stays.find(stay => stay.id === binding.request.stayId);
+    const action = sourceStay?.action ?? (payload.data.stays.length === 1
+      ? payload.data.action ?? (selected.item.kind === 'quote' ? 'quote_availability' : selected.item.kind === 'booking' ? 'new_booking'
+        : selected.item.kind === 'amendment' ? 'amend' : null) : null);
+    const request = action === 'amend'
+      ? projectAmendRequests(binding.source, payload.data, state).requests.find(request => request.requestId === requestId)
+      : undefined;
+    const row = stay.rows.find(row => row.id === binding.request.rowId) ?? stay.rows[0];
+    let projected: ReturnType<typeof boundAmendRateRequest> | ReturnType<typeof boundSourceRateRequest>;
+    if (request) {
+      if (binding.request.roomIndex !== null || stay.rows.length > 1) return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Choose one saved room before checking its rates.');
+      const countPath = row ? `stays[${stay.id}].rows[${row.id}].count` : null;
+      const count = countPath && Object.hasOwn(state, countPath) ? state[countPath] : row?.rooms;
+      if ((count != null && count !== 1) || (countPath && Object.hasOwn(state, countPath) && count === null)) {
+        return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Rate lookup currently checks one saved room at a time.');
+      }
+      const savedTarget = request.fields.value.target as { confirmation?: unknown; arrival?: unknown } | null;
+      if (!savedTarget || typeof savedTarget.confirmation !== 'string' || typeof savedTarget.arrival !== 'string') {
+        return refuse('blocked', 'SAVED_TARGET_REQUIRED', 'Find the saved stay before checking rates.');
+      }
+      const saved = await readHmsJobView({ transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+        messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, selectedActorId: ctx.sessionUser.id,
+        kind: 'find', confirmation: savedTarget.confirmation, arrival: savedTarget.arrival }, db);
+      const lookup = saved?.result?.rateLookup as HmsCloudRateLookup | undefined;
+      const readTime = lookup?.observedAt ? Date.parse(lookup.observedAt) : NaN;
+      if (!lookup || saved?.status !== 'done' || saved.result?.outcome !== 'found' ||
+          !Number.isFinite(readTime) || readTime > Date.now() || Date.now() - readTime >= 5 * 60_000) {
+        return refuse('blocked', 'SAVED_CONTEXT_READ_REQUIRED', 'Refresh the saved stay to verify its company, agency and room details.');
+      }
+      projected = boundAmendRateRequest({ propertyCode: target.target.propertyCode, requestId,
+        stayId: binding.request.stayId, rowId: binding.request.rowId ?? row?.id ?? null,
+        fields: { ...request.fields.value, adults: request.fields.value.adults ?? row?.adultsPerRoom ?? null },
+        state, lookup, ...(input.kind === 'start' && input.typedRatePlan ? { typedRatePlan: input.typedRatePlan } : {}) });
+    } else {
+      const workflow = action === 'quote_availability' ? 'quote' : action === 'new_booking' ? 'create' : null;
+      if (!workflow) return refuse('blocked', 'RATE_WORKFLOW_UNSUPPORTED', 'Rates can be checked for a quote, new booking or saved-stay amendment.');
+      const party = storedRatePartyBinding(state, binding, selected.extraction.id, ctx.sessionUser.id);
+      if (!party || party.workflow !== workflow) return refuse('blocked', 'RATE_PARTY_SELECTION_REQUIRED', 'Choose verified company or agency details, or explicitly choose no company or agency, before checking rates.');
+      if (binding.request.rowId === null) return refuse('stale', 'ROOM_IDENTITY_CHANGED', 'Choose the current room request before checking rates.');
+      projected = boundSourceRateRequest({ propertyCode: target.target.propertyCode, requestId, workflow, stay,
+        rowId: binding.request.rowId, roomIndex: binding.request.roomIndex, state, selection: party.selection,
+        sourceRowExists: Boolean(sourceStay?.rows.some(row => row.id === binding.request.rowId)),
+        childAgeWarning: payload.data.missing.some(item => /child/i.test(`${item.field} ${item.question}`)),
+        ...(input.kind === 'start' && input.typedRatePlan ? { typedRatePlan: input.typedRatePlan } : {}) });
     }
-    const savedTarget = request.fields.value.target as { confirmation?: unknown; arrival?: unknown } | null;
-    if (!savedTarget || typeof savedTarget.confirmation !== 'string' || typeof savedTarget.arrival !== 'string') {
-      return refuse('blocked', 'SAVED_TARGET_REQUIRED', 'Find the saved stay before checking rates.');
-    }
-    const saved = await readHmsJobView({ transportId: ctx.activeTransportId, threadId: binding.source.threadId,
-      messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, selectedActorId: ctx.sessionUser.id,
-      kind: 'find', confirmation: savedTarget.confirmation, arrival: savedTarget.arrival }, db);
-    const lookup = saved?.result?.rateLookup as HmsCloudRateLookup | undefined;
-    const readTime = lookup?.observedAt ? Date.parse(lookup.observedAt) : NaN;
-    if (!lookup || saved?.status !== 'done' || saved.result?.outcome !== 'found' ||
-        !Number.isFinite(readTime) || readTime > Date.now() || Date.now() - readTime >= 5 * 60_000) {
-      return refuse('blocked', 'SAVED_CONTEXT_READ_REQUIRED', 'Refresh the saved stay to verify its company, agency and room details.');
-    }
-    const projected = boundAmendRateRequest({ propertyCode: target.target.propertyCode, requestId,
-      stayId: binding.request.stayId, rowId: binding.request.rowId ?? row?.id ?? null,
-      fields: { ...request.fields.value, adults: request.fields.value.adults ?? row?.adultsPerRoom ?? null },
-      state, lookup, ...(input.kind === 'start' && input.typedRatePlan ? { typedRatePlan: input.typedRatePlan } : {}) });
     if ('reason' in projected) return refuse('blocked', projected.reason, 'Complete the stay and verified company or agency details before checking rates. Prepare can still check the chosen rate.');
     const scope = { transportId: ctx.activeTransportId, threadId: binding.source.threadId,
       messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, workItemId: binding.workItemId,

@@ -223,11 +223,31 @@ export type AmendDraftFields = {
   bookerName: string | null; bookerContact: string | null;
   cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
 };
-export type AmendDraftRequest = { requestId: string; stayId: string; fields: { kind: 'amend'; value: AmendDraftFields } };
+export type WorkflowDraftRequest = {
+  requestId: string; stayId: string; action: string; workflow: string; status: string;
+  fields: { kind: string; value: unknown } | null;
+};
+export type AmendDraftRequest = WorkflowDraftRequest & {
+  action: 'amend'; workflow: 'amend'; status: 'pending'; fields: { kind: 'amend'; value: AmendDraftFields };
+};
 export type AmendDraftSnapshot = {
-  workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: AmendDraftRequest[];
+  workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: WorkflowDraftRequest[];
   fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
 };
+
+/** Until requests can be selected in the pane, only a single pending Amend is unambiguous. */
+export function selectedAmendRequest(snapshot: AmendDraftSnapshot | null): AmendDraftRequest | null {
+  if (!snapshot || snapshot.requests.length !== 1) return null;
+  const request = snapshot.requests[0];
+  const fields = request?.fields;
+  const value = fields?.value;
+  if (!request || typeof request.requestId !== 'string' || !request.requestId ||
+      typeof request.stayId !== 'string' || !request.stayId || request.action !== 'amend' ||
+      request.workflow !== 'amend' || request.status !== 'pending' || fields?.kind !== 'amend' ||
+      !value || typeof value !== 'object' || Array.isArray(value) ||
+      !('cms' in value) || !value.cms || typeof value.cms !== 'object' || Array.isArray(value.cms)) return null;
+  return request as AmendDraftRequest;
+}
 
 /**
  * A mail's stored read from workItems.getByMessage. Ready carries its analysis and its work item (null until one is
@@ -248,8 +268,9 @@ export type StoredWork =
       extractionId: string;
       draftContractVersion?: 1;
       source?: AmendDraftSource;
+      workItemExtractionId?: string | null;
       revisionSeq?: number | null;
-      workflowRequests?: AmendDraftRequest[];
+      workflowRequests?: WorkflowDraftRequest[];
       draftFieldMeta?: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
@@ -269,9 +290,11 @@ export type RecordFieldEventInput = {
   fieldPath: string;
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
   value?: string | number | number[] | boolean | null |
-    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string };
+    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string } |
+    { nativeId: string; firstName: string; lastName: string } | { nativeId: string; name: string; code?: string };
   source?: Omit<AmendDraftSource, 'extractionId'>;
   expectedSeq?: number;
+  expectedExtractionId?: string;
   msSinceOpen?: number;
 };
 

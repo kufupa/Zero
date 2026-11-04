@@ -10,7 +10,7 @@ type RateCandidate = {
   price: { currency: string; averagePerNightMinor: number | null; totalMinor: number | null;
     totalBasis: 'native' | 'nightly_sum' } | null;
 };
-type RateReply = {
+export type RateReply = {
   status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
   requestId: string; jobId: string | null; contextKey: string | null; observedAt: string | null; expiresAt: string | null;
   coverage: { candidateList: 'complete' | 'partial' | 'unknown'; reason: string | null };
@@ -19,7 +19,7 @@ type RateReply = {
 };
 type RateBinding = {
   workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
-  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number;
+  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number; expectedExtractionId: string;
 };
 type RateRoute = { mutate: (input: { kind: 'start'; binding: RateBinding; typedRatePlan?: string; forceRefresh?: boolean } |
   { kind: 'read'; binding: RateBinding; jobId: string }, options: { context: { activeTransportId: string } }) => Promise<RateReply> };
@@ -46,7 +46,7 @@ export function useAmendRateCandidates(args: {
     const current = latest.current;
     const mutate = (current.trpc as { quoteWorkflow?: { rateCandidates?: RateRoute } } | null)?.quoteWorkflow?.rateCandidates?.mutate;
     const mailbox = inMailbox(current.transportId);
-    if (!mutate || !mailbox || !current.draft || !current.workItemId) return;
+    if (!mutate || !mailbox || !current.draft?.source || !current.workItemId) return;
     if (timer.current) clearTimeout(timer.current);
     const mine = ++generation.current;
     const startedKey = currentKey.current;
@@ -61,7 +61,8 @@ export function useAmendRateCandidates(args: {
         return;
       }
       const binding: RateBinding = { workItemId: current.workItemId, source: current.source,
-        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq };
+        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq,
+        expectedExtractionId: current.draft.source.extractionId };
       let expectedContext: string | null = null;
       let polls = 0;
       const accept = async (reply: RateReply): Promise<void> => {

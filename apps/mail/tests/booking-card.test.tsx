@@ -17,6 +17,7 @@ import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step'
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact, StoredStayCommit } from '../lib/quote-workflow/backend-bind';
+import type { WorkItemPaneControls } from '../lib/quote-workflow/use-work-item';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -1054,10 +1055,21 @@ function previewButton(index: number): HTMLButtonElement {
 }
 
 function bookButton(index: number): HTMLButtonElement {
-  return screen.getAllByRole('button', { name: 'Create provisional booking' })[index] as HTMLButtonElement;
+  return screen.getAllByRole('button', { name: /^Create (?:provisional )?booking$/ })[index] as HTMLButtonElement;
 }
 
 describe('Cloud create controls', () => {
+  function cloudDraftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraftReady {
+    const draft = draftReady(over);
+    for (const room of draft.draft.rooms) room.request.reservationNote ??= 'Guest request';
+    return draft;
+  }
+  function cloudPreviewableDraft(track = 'COR'): BookingDraftReady {
+    const draft = previewableDraft(track);
+    for (const room of draft.draft.rooms) room.request.reservationNote ??= 'Guest request';
+    return draft;
+  }
+
   it.each(['off', 'lab'] as const)('binds selected mail and keeps preview-only Save disabled in %s mode', async (mode) => {
     const preview = vi.fn<PaneStayClient['preview']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
@@ -1065,7 +1077,7 @@ describe('Cloud create controls', () => {
       ] })
       .mockResolvedValueOnce({ status: 'ok', outcome: 'preview_only', runId: 'run-preview', screenshots: ['filled.png'] });
     const { client, commit } = paneClient({ preview, mode: () => mode, canPreview: () => true });
-    const draft = previewableDraft('BAR');
+    const draft = cloudPreviewableDraft('BAR');
     Object.assign(draft.draft.rooms[0]!.request, { firstName: 'Proof', lastName: 'Labtest',
       arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
@@ -1120,15 +1132,30 @@ describe('Cloud create controls', () => {
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue({ ...COMMIT_OK,
       hmsPrice: { averageRate: '1100.00', totalRate: '2200.00', currency: 'ZAR' } });
     const { client } = paneClient({ preview, commit, mode: () => mode, canPreview: () => true });
-    const draft = previewableDraft('BAR');
+    const draft = cloudPreviewableDraft('BAR');
     Object.assign(draft.draft.rooms[0]!.request, { firstName, lastName,
       arrival: '2027-03-01', departure: '2027-03-03', guaranteeType: 'NGI' });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
     const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
       arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
     const workItemId = '22222222-2222-4222-8222-222222222222';
-    render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)} workItemId={workItemId}
-      propertyCode="HRCEN" paneSave={client} />);
+    const requestId = 'b'.repeat(64);
+    let revisionSeq = 3;
+    const pane: WorkItemPaneControls = { refs: { g1: { stayId: 's1', rowId: 'g1' } }, fieldProvenance: {},
+      bindingCursor: { seq: revisionSeq, extractionId: 'ex-1' }, editGeneration: 0,
+      requestDraft: { available: true, snapshot: { workItemId, revisionSeq: 2, fieldMeta: {},
+        source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: STAFF_HASH, extractionId: 'ex-1' },
+        requests: [{ requestId, stayId: 's1', action: 'new_booking', workflow: 'create', status: 'pending',
+          fields: { kind: 'create', value: [{ rowId: 'g1', roomIndex: 0, firstName, lastName, guestProfile: null,
+            adults: 1, childAges: [], roomType: 'STQN', ratePlan: 'TAXYZ', bookingAgency: null, organization: null,
+            sourceOfBusiness: 'E-Mail', track: 'BAR', guaranteeType: 'NGI', reservationNote: 'Guest request',
+            bookerName: null, bookerEmail: null, cms: { send: null, messageId: null, recipient: null } }] } }] },
+        record: vi.fn(() => true), held: vi.fn(() => undefined),
+        flush: vi.fn(async () => ({ seq: revisionSeq, revision: 2, revisionHead: 2 })), retry: vi.fn(), pending: false,
+        error: null, retryable: false } };
+    const session = quotedSession(draft);
+    const view = render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
+      propertyCode="HRCEN" paneSave={client} workItemPane={pane} />);
     fireEvent.click(previewButton(0));
     fireEvent.change(await screen.findByLabelText('Guest profile'), { target: { value: '123' } });
     fireEvent.click(previewButton(0));
@@ -1136,12 +1163,22 @@ describe('Cloud create controls', () => {
     expect(screen.queryByText(/Booking from Nava is not available yet/)).toBeNull();
     expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(mode === 'on');
     expect(screen.getByText(/HMS average: 1000.00.*total: 2000.00.*ZAR/)).toBeDefined();
+    revisionSeq = 4;
+    pane.bindingCursor = { seq: revisionSeq, extractionId: 'ex-1' };
+    pane.editGeneration = 1;
+    view.rerender(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
+      propertyCode="HRCEN" paneSave={client} workItemPane={pane} />);
+    expect(bookButton(0).disabled).toBe(true);
+    preview.mockResolvedValue({ ...PREVIEW_OK, hmsPrice: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' } });
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(screen.getByText(/Saved HMS average: 1100.00.*total: 2200.00.*ZAR/)).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'room_g1_1', firstName, lastName,
-      confirmationSendMail: mode === 'on', createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
+      confirmationSendMail: mode === 'on', createSelection: expect.objectContaining({ nativeGuestId: '123',
+        expectedSeq: 4, expectedExtractionId: 'ex-1' }) }), PANE_DIGEST);
   });
 
   it.each(['confirmed', 'uncertain', 'partial'] as const)('uses one Cloud Go for separately approved rooms and stops on %s', async (result) => {
@@ -1155,7 +1192,7 @@ describe('Cloud create controls', () => {
       .mockResolvedValueOnce(result === 'partial' ? { status: 'refused', reason: 'cloud_create_unavailable' }
         : { ...COMMIT_OK, confirmationNumber: '222222-1' });
     const { client } = paneClient({ preview, commit, mode: () => 'lab', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     for (const room of draft.draft.rooms) Object.assign(room.request, { firstName: 'Proof', lastName: 'Labtest',
       arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
       guaranteeType: 'NGI', childAges: [] });
@@ -1215,7 +1252,7 @@ describe('Cloud create controls', () => {
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '333333-1' })
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '444444-1' });
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     const template = draft.draft.rooms[0]!;
     const rowId = '12345678-1234-4234-8234-123456789abc';
     template.groupId = rowId;
@@ -1322,7 +1359,7 @@ describe('Cloud create controls', () => {
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '333333-1' })
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '444444-1' });
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     const template = draft.draft.rooms[0]!;
     draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
       request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
@@ -1400,7 +1437,7 @@ describe('Cloud create controls', () => {
       ] });
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     draft.draft.rooms = draft.draft.rooms.map((room) => ({ ...room, request: { ...room.request,
       firstName: 'Ada', lastName: 'Moyo', arrival: '2027-04-01', departure: '2027-04-03',
       track: 'BAR', sourceOfBusiness: 'E-Mail', guaranteeType: 'NGI' } }));
@@ -1439,7 +1476,7 @@ describe('Cloud create controls', () => {
       ] });
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     draft.draft.rooms = draft.draft.rooms.map((room) => ({ ...room, request: { ...room.request,
       firstName: 'Ada', lastName: 'Moyo', arrival: '2027-03-01', departure: '2027-03-03',
       track: 'BAR', sourceOfBusiness: 'E-Mail', guaranteeType: 'NGI' } }));
@@ -1479,7 +1516,7 @@ describe('Cloud create controls', () => {
       ] });
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     const template = draft.draft.rooms[0]!;
     draft.draft.rooms = Array.from({ length: 3 }, (_, index) => ({ ...template, roomIndex: index + 1,
       request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
@@ -1516,7 +1553,7 @@ describe('Cloud create controls', () => {
 
   it('keeps a previously booked sibling target stopped after reopening', () => {
     const { client, commit } = paneClient({ mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     const template = draft.draft.rooms[0]!;
     draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
       request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
@@ -1551,7 +1588,7 @@ describe('Cloud create controls', () => {
       ] });
     const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
-    const draft = draftReady();
+    const draft = cloudDraftReady();
     for (const room of draft.draft.rooms) Object.assign(room.request, { firstName: 'Ada', lastName: 'Moyo',
       arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
       guaranteeType: 'NGI', childAges: [] });
@@ -1586,7 +1623,7 @@ describe('Cloud create controls', () => {
 
   it('preserves the other hotel’s existing preview and Save controls', async () => {
     const { client, preview } = paneClient({ canPreview: () => true });
-    render(<BookingCards draft={previewableDraft()} propertyCode="HRDAV" paneSave={client} />);
+    render(<BookingCards draft={cloudPreviewableDraft()} propertyCode="HRDAV" paneSave={client} />);
     fireEvent.click(previewButton(0));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAV' }));
@@ -2532,7 +2569,7 @@ describe('booking card pane save', () => {
     const draft = draftReady();
     draft.draft.rooms[0]!.request.childAges = [5];
     render(<BookingCards draft={draft} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Create (?:provisional )?booking$/ })).toHaveLength(2);
     pickRoomChoices(0);
     pickRoomChoices(1);
     fireEvent.click(previewButton(0));
@@ -2713,14 +2750,14 @@ describe('booking card save modes and the note fields', () => {
   it('names the Book action Create provisional booking in lab and on modes', () => {
     const lab = paneClient({ mode: () => 'lab' });
     const { unmount } = render(<BookingCards draft={draftReady()} paneSave={lab.client} />);
-    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Create (?:provisional )?booking$/ })).toHaveLength(2);
     expect(screen.getByRole('note').textContent).toBe('This write is test-only. Book a real guest in HMS.');
     expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
     unmount();
     const on = paneClient({ mode: () => 'on' });
     render(<BookingCards draft={draftReady()} paneSave={on.client} />);
-    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Create (?:provisional )?booking$/ })).toHaveLength(2);
     expect(screen.queryByText('This write is test-only. Book a real guest in HMS.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();

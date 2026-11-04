@@ -11,10 +11,13 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
+  MAIL_KINDS,
   mailExtraction,
   workEvent,
   workItem,
 } from '../db/schema/work.js';
+import { mailExtractionPayloadSchema, type MailKind } from '../ai/extraction/schema.js';
+import { pendingEffectiveActions } from '../ai/work-item-effective.js';
 import { MAIL_ACTIONS, type MailAction } from './action-labels.js';
 
 /** Centurion gold HITL window for nava-admin Workflows. Johannesburg SAST (UTC+2). */
@@ -63,6 +66,7 @@ type WorkflowMappingInput = {
   origin?: unknown;
   automatedChannel?: boolean;
   ownerAction?: unknown;
+  pendingActions?: MailAction[];
 };
 
 type WorkflowSourceRow = {
@@ -84,6 +88,9 @@ type WorkflowSourceRow = {
   extractionCreatedAt: Date;
   origin: string | null;
   automatedChannel: boolean;
+  draftSourceHash?: string;
+  draftPayload?: unknown;
+  draftState?: unknown;
 };
 
 export type WorkflowFolderRow = {
@@ -106,6 +113,7 @@ export type WorkflowFolderRow = {
   predictedAction?: MailAction;
   ownerAction?: MailAction | null;
   markedAt?: string | null;
+  pendingActions?: MailAction[];
 };
 
 export type StoredWorkflowRun = {
@@ -273,6 +281,15 @@ export function mapWorkflowFolder(input: WorkflowMappingInput): WorkflowFolderId
   const origin = cleanString(input.origin) ?? cleanString(payload.origin);
   if (input.automatedChannel) return 'not-for-nava';
 
+  if (input.pendingActions) {
+    const pending = [...new Set(input.pendingActions.filter((action) => action !== 'no_action'))];
+    if (pending.length > 1) return 'other-to-do';
+    if (!pending.length) return 'not-for-nava';
+    const action = pending[0]!;
+    return origin === 'system_notice'
+      ? SYSTEM_NOTICE_ACTION_FOLDERS[action] ?? actionFolder(action) : actionFolder(action);
+  }
+
   const action =
     cleanString(input.ownerAction) ?? cleanString(input.action) ?? cleanString(payload.action);
   if (action) {
@@ -355,6 +372,71 @@ const effectiveAction = sql<string | null>`coalesce(
 )`;
 const payloadOrigin = sql<string | null>`${mailExtraction.payload}->>'origin'`;
 
+/** The item's relink guard can retain an older read; folder routing must use that same read and state. */
+function boundWorkItemSql(transportId: string, column: 'state' | 'payload'): SQL<unknown> {
+  return column === 'state' ? sql`coalesce((
+    select wi.state from ${workItem} wi
+    where wi.transport_id = ${transportId} and wi.thread_id = ${message.threadId}
+      and wi.source_message_id = ${message.id} and wi.kind = ${mailExtraction.kind}
+    limit 1
+  ), '{}'::jsonb)` : sql`coalesce((
+    select linked.payload from ${workItem} wi
+    join ${mailExtraction} linked on linked.id = wi.extraction_id and linked.message_id = ${message.id}
+      and linked.status = 'succeeded'
+    where wi.transport_id = ${transportId} and wi.thread_id = ${message.threadId}
+      and wi.source_message_id = ${message.id} and wi.kind = ${mailExtraction.kind}
+    limit 1
+  ), ${mailExtraction.payload})`;
+}
+
+// Same sorted-key JSON as staffQuoteSourceHash / quoteDigest. PostgreSQL's sha256 is built in.
+function sourceHashSql(): SQL<string> {
+  return sql<string>`encode(sha256(convert_to(
+    '{"htmlBody":' || coalesce(to_json(${message.htmlBody})::text, 'null') ||
+    ',"id":' || to_json(${message.id})::text ||
+    ',"subject":' || coalesce(to_json(${message.subject})::text, 'null') ||
+    ',"textBody":' || coalesce(to_json(${message.textBody})::text, 'null') || '}', 'UTF8')), 'hex')`;
+}
+
+function primaryRequestIdSql(stayId: SQL<unknown>): SQL<string> {
+  return sql<string>`encode(sha256(convert_to(
+    '{"messageId":' || to_json(${message.id})::text ||
+    ',"sourceHash":' || to_json(bound.source_hash)::text ||
+    ',"stayId":' || to_json(${stayId})::text || ',"slot":"primary"}', 'UTF8')), 'hex')`;
+}
+
+/** Compute request actions before LIMIT/count so membership and counts see the same current-source edits. */
+function requestActionSql(): SQL<string | null> {
+  const payload = sql.raw('bound.payload');
+  const state = sql.raw('bound.state');
+  const stays = sql`case when jsonb_typeof(${payload}->'stays') = 'array' then ${payload}->'stays' else '[]'::jsonb end`;
+  const unique = sql`jsonb_array_length(${stays}) = 1`;
+  const stayId = sql`(stay.value->>'id')`;
+  const staff = sql`${state}->>('requests[' || ${primaryRequestIdSql(stayId)} || '].action')`;
+  const fallback = sql`case ${mailExtraction.kind} when 'quote' then 'quote_availability'
+    when 'booking' then 'new_booking' when 'amendment' then 'amend' when 'cancellation' then 'cancel'
+    when 'voucher_pop' then 'payment_proof' else null end`;
+  const action = sql`coalesce(${staff}, case when ${unique} then bound.owner_action end, stay.value->>'action',
+    case when ${unique} then coalesce(${payload}->>'action', ${fallback}) end, 'other_actionable')`;
+  const rows = jsonArray(sql`stay.value->'rows'`);
+  const live = sql`${state}->>('stays[' || ${stayId} || '].removed') is distinct from 'true'
+    and (jsonb_array_length(${rows}) = 0 or exists (
+      select 1 from jsonb_array_elements(${rows}) row_value
+      where ${state}->>('stays[' || ${stayId} || '].rows[' || (row_value->>'id') || '].removed') is distinct from 'true'
+    ))`;
+  return sql<string | null>`case when jsonb_array_length(${stays}) = 0 then coalesce(bound.owner_action, ${effectiveAction}) else (
+    select case when count(distinct action) filter (where action <> 'no_action') > 1 then 'other_actionable'
+      when count(distinct action) filter (where action <> 'no_action') = 1 then min(action) filter (where action <> 'no_action')
+      else 'no_action' end
+    from (
+      select pending.action from jsonb_array_elements(${stays}) stay(value)
+      cross join lateral (select ${action} as action) choice
+      cross join lateral unnest(array[choice.action]) pending(action)
+      where ${live} and pending.action is not null
+    ) request_actions
+  ) end`;
+}
+
 function ownerActionSql(transportId: string): SQL<string | null> {
   return sql<string | null>`(
     select ${mailActionLabel.action}
@@ -369,11 +451,11 @@ function ownerActionSql(transportId: string): SQL<string | null> {
 }
 
 export function workflowFolderMembershipSql(transportId: string): SQL<WorkflowFolderId> {
-  const action = sql<string | null>`coalesce(
-    nullif(btrim(${ownerActionSql(transportId)}), ''),
-    ${effectiveAction}
-  )`;
-  return mapWorkflowFolderSql(action);
+  return sql<WorkflowFolderId>`(select ${mapWorkflowFolderSql(sql.raw('resolved.action'), sql.raw('resolved.payload'))}
+    from (select ${requestActionSql()} as action, bound.payload
+      from (select ${boundWorkItemSql(transportId, 'payload')} as payload,
+        ${boundWorkItemSql(transportId, 'state')} as state, ${sourceHashSql()} as source_hash,
+        ${ownerActionSql(transportId)} as owner_action) bound) resolved)`;
 }
 
 const automatedChannel = sql<boolean>`exists (
@@ -387,11 +469,12 @@ const automatedChannel = sql<boolean>`exists (
 )`;
 
 /** SQL form used by the paged list/summary queries. It shares the same mapping tables as mapWorkflowFolder. */
-function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction): SQL<WorkflowFolderId> {
+function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction, payload: SQL<unknown> = sql`${mailExtraction.payload}`): SQL<WorkflowFolderId> {
+  const origin = sql`${payload}->>'origin'`;
   const actionCases = Object.entries(ACTION_FOLDERS).map(([action, folder]) => {
     const systemNoticeFolder = isMailAction(action) ? SYSTEM_NOTICE_ACTION_FOLDERS[action] : undefined;
     return systemNoticeFolder
-      ? sql`when ${action} then case when ${payloadOrigin} = 'system_notice'
+      ? sql`when ${action} then case when ${origin} = 'system_notice'
         then ${systemNoticeFolder} else ${folder} end`
       : sql`when ${action} then ${folder}`;
   });
@@ -404,7 +487,7 @@ function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction): SQL<Workf
       ${sql.join(actionCases, sql` `)}
       else 'other-to-do'
     end
-    when ${payloadOrigin} = 'system_notice' then 'not-for-nava'
+    when ${origin} = 'system_notice' then 'not-for-nava'
     else case ${mailExtraction.kind}
       ${sql.join(kindCases, sql` `)}
       else 'not-for-nava'
@@ -510,6 +593,9 @@ export function latestWorkflowThreads(db: DB, transportId: string) {
         kind: mailExtraction.kind,
         action: actionColumn.as('action'),
         ownerAction: ownerAction.as('owner_action'),
+        draftSourceHash: sourceHashSql().as('draft_source_hash'),
+        draftPayload: boundWorkItemSql(transportId, 'payload').as('draft_payload'),
+        draftState: boundWorkItemSql(transportId, 'state').as('draft_state'),
         payload: mailExtraction.payload,
         extractorVersion: mailExtraction.extractorVersion,
         extractionCreatedAt: sql<Date>`${mailExtraction.createdAt}`.mapWith(mailExtraction.createdAt).as('extraction_created_at'),
@@ -596,6 +682,10 @@ function latestSucceededExtractions(db: DB, transportId: string, threadId?: stri
       kind: mailExtraction.kind,
       action: actionColumn,
       ownerAction: ownerActionSql(transportId),
+      draftSourceHash: sourceHashSql(),
+      draftPayload: boundWorkItemSql(transportId, 'payload'),
+      draftState: boundWorkItemSql(transportId, 'state'),
+      folder: workflowFolderMembershipSql(transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -700,6 +790,12 @@ function toWorkflowFolderRow(
   row: WorkflowSourceRow,
   review: { review: WorkflowFolderReview | null; status: string | null } | undefined,
 ): WorkflowFolderRow {
+  const parsed = mailExtractionPayloadSchema.safeParse(row.draftPayload);
+  const kind = (MAIL_KINDS as readonly string[]).includes(row.kind ?? '') ? row.kind as MailKind : 'other';
+  const pendingActions = parsed.success && parsed.data.stays.length && row.draftSourceHash
+    ? [...new Set(pendingEffectiveActions({ threadId: row.threadId, messageId: row.sourceMessageId,
+      sourceHash: row.draftSourceHash }, parsed.data, asRecord(row.draftState), row.ownerAction, kind, null)
+      .map((request) => request.action ?? 'other_actionable' as MailAction))] : undefined;
   return {
     threadId: row.threadId,
     sourceMessageId: row.sourceMessageId,
@@ -711,6 +807,7 @@ function toWorkflowFolderRow(
       kind: row.kind,
       origin: row.origin,
       automatedChannel: row.automatedChannel,
+      pendingActions,
     }),
     sender: row.sender,
     subject: row.subject?.trim() || '(no subject)',
@@ -725,6 +822,7 @@ function toWorkflowFolderRow(
     workItemStatus: review?.status ?? null,
     review: review?.review ?? null,
     ownerAction: isMailAction(row.ownerAction) ? row.ownerAction : null,
+    ...(pendingActions ? { pendingActions } : {}),
   };
 }
 
@@ -1155,14 +1253,14 @@ export async function getWorkflowFolderThread(
     const latestForThread = newestExtractionPerMessage(threadRows)[0];
     if (
       !latestForThread ||
-      mapWorkflowFolder({
+      (latestForThread.folder ?? mapWorkflowFolder({
         action: latestForThread.action,
         ownerAction: latestForThread.ownerAction,
         payload: latestForThread.payload,
         kind: latestForThread.kind,
         origin: latestForThread.origin,
         automatedChannel: latestForThread.automatedChannel,
-      }) !== input.folder
+      })) !== input.folder
     ) {
       return null;
     }
@@ -1183,6 +1281,7 @@ export async function getWorkflowFolderThread(
       kind: mailExtraction.kind,
       action: actionColumn,
       ownerAction: ownerActionSql(input.transportId),
+      folder: workflowFolderMembershipSql(input.transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -1232,7 +1331,7 @@ export async function getWorkflowFolderThread(
           id: row.extractionId,
           kind: row.kind,
           action: cleanString(row.action) ?? cleanString(asRecord(row.payload).action),
-          folder: mapWorkflowFolder({
+          folder: row.folder ?? mapWorkflowFolder({
             action: row.action,
             ownerAction: row.ownerAction,
             payload: row.payload,
