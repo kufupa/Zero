@@ -69,6 +69,11 @@ import {
   type ClassifierResult,
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import {
+  amendEmailValue, amendStayForRequest, parseAmendRequestField, projectAmendRequests,
+  validAmendRequestValue, type DraftSource,
+} from './pane-amend-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
@@ -969,6 +974,11 @@ export function correctionsCarryTo(
   state: WorkState,
 ): boolean {
   if (before.stays === after.stays) return true;
+  // Request ids incorporate the extraction stay id. Never carry a person's
+  // request edits onto an independently re-extracted, different stay.
+  if (Object.keys(state).some((key) => parseAmendRequestField(key)) &&
+      (before.stays.length !== after.stays.length ||
+        before.stays.some((stay) => !after.stays.some((next) => next.id === stay.id)))) return false;
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;
@@ -1857,6 +1867,13 @@ export type StoredWork =
       stayPreviews: Record<string, StayPreviewRecord>;
       /** Latest append-only field event per path, scoped to this transport and work item. */
       fieldProvenance: FieldProvenance;
+      /** Additive first-Amend draft; existing workflow reads stay backwards compatible. */
+      draftContractVersion?: 1;
+      source?: DraftSource & { extractionId: string };
+      draftStays?: FormStay[];
+      workflowRequests?: ReturnType<typeof projectAmendRequests>['requests'];
+      draftFieldMeta?: ReturnType<typeof projectAmendRequests>['meta'];
+      unappliedEdits?: ReturnType<typeof projectAmendRequests>['unappliedEdits'];
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -2009,6 +2026,27 @@ async function readyView(
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
+  const draftSource = { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg) };
+  const amendDraft = read.kind === 'amendment' && !existingStayInformation
+    ? projectAmendRequests(draftSource, read.payload, state) : null;
+  const draftStays = amendDraft ? formStays(read.payload, state).map((stay) => {
+    const value = <T>(path: string, fallback: T): T => Object.hasOwn(state, path) ? state[path] as T : fallback;
+    return {
+      ...stay,
+      requested: {
+        arrival: value(`stays[${stay.id}].requested.arrival`, stay.requested.arrival),
+        departure: value(`stays[${stay.id}].requested.departure`, stay.requested.departure),
+      },
+      rows: stay.rows.map((row) => ({
+        ...row,
+        rooms: value(`stays[${stay.id}].rows[${row.id}].count`, row.rooms),
+        adultsPerRoom: value(`stays[${stay.id}].rows[${row.id}].adults`, row.adultsPerRoom),
+        roomType: value(`stays[${stay.id}].rows[${row.id}].roomType`, row.roomType),
+        childAges: value(`stays[${stay.id}].rows[${row.id}].childAges`, row.childAges),
+        board: value(`stays[${stay.id}].rows[${row.id}].board`, row.board),
+      })),
+    };
+  }) : undefined;
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -2043,6 +2081,14 @@ async function readyView(
       transportId,
       workItemId: paneItem?.id ?? null,
     }),
+    ...(amendDraft ? {
+      draftContractVersion: 1 as const,
+      source: { ...draftSource, extractionId: read.id },
+      draftStays,
+      workflowRequests: amendDraft.requests,
+      draftFieldMeta: amendDraft.meta,
+      unappliedEdits: amendDraft.unappliedEdits,
+    } : {}),
     language: read.language,
     translation: storedTranslation(read.translation),
   };
@@ -2129,6 +2175,8 @@ export type FieldEventResult =
   | { status: 'not_found' }
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
+  | { status: 'stale_source' }
+  | { status: 'stale_revision' }
   | {
       status: 'recorded';
       aiValue: unknown;
@@ -2156,18 +2204,27 @@ export async function recordFieldEvent(
     fieldPath: string;
     value?: unknown;
     msSinceOpen?: number;
+    source?: DraftSource;
+    expectedSeq?: number;
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
-  const path = contact ? null : parseFieldPath(input.fieldPath);
-  if (!contact && !path) return { status: 'invalid_path' };
+  const request = parseAmendRequestField(input.fieldPath);
+  const path = contact || request ? null : parseFieldPath(input.fieldPath);
+  if (!contact && !path && !request) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : path !== null && validFieldValue(path.field, personValue);
+  const fits = contact ? validContactValue(personValue) : request ? validAmendRequestValue(request.field, personValue)
+    : path !== null && validFieldValue(path.field, personValue);
+  if (request && ((input.type === 'field.accept' && input.value !== undefined) ||
+      (input.type === 'field.edit' && input.value === undefined))) return { status: 'invalid_value' };
   if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({
         extractionId: workItem.extractionId,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        kind: workItem.kind,
         state: workItem.state,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
@@ -2185,10 +2242,31 @@ export async function recordFieldEvent(
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
-    const aiValue = aiValueAt(
-      read?.payload as MailExtractionPayload | null | undefined,
-      input.fieldPath,
-    );
+    const payload = read?.payload as MailExtractionPayload | null | undefined;
+    if (request || input.source || input.expectedSeq !== undefined) {
+      if (!input.source || input.expectedSeq === undefined || (request && item.kind !== 'amendment') ||
+          input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId) {
+        return { status: 'stale_source' as const };
+      }
+      if (input.expectedSeq !== item.revisionSeq) return { status: 'stale_revision' as const };
+      const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+        htmlBody: message.htmlBody }).from(message)
+        .where(and(eq(message.id, input.source.messageId), eq(message.transportId, input.transportId))).limit(1);
+      if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash) return { status: 'stale_source' as const };
+    }
+    let aiValue: unknown;
+    if (request) {
+      // The common guard above guarantees the source is present here.
+      if (!input.source) return { status: 'stale_source' as const };
+      const stay = payload ? amendStayForRequest(input.source, payload, request.requestId) : undefined;
+      if (!stay || !payload) return { status: 'invalid_path' as const };
+      aiValue = request.field === 'target'
+        ? projectAmendRequests(input.source, payload, {}).requests.find((entry) => entry.requestId === request.requestId)
+          ?.fields.value.target ?? null
+        : amendEmailValue(stay, request.field);
+    } else {
+      aiValue = aiValueAt(payload, input.fieldPath);
+    }
     const value = input.type === 'field.accept' ? aiValue : personValue;
     // state holds only a person's values. An accept clears the path, so the AI value shows as the extraction.
     const state = { ...item.state };

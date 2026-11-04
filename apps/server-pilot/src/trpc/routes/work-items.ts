@@ -87,13 +87,20 @@ const fieldEventInput = z
     workItemId: z.string().uuid(),
     type: z.enum(['field.edit', 'field.accept', 'field.reject']),
     fieldPath: z.string().min(1).max(200),
+    source: z.object({
+      threadId: z.string().min(1).max(200), messageId: z.string().min(1).max(200),
+      sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional(),
+    expectedSeq: z.number().int().nonnegative().safe().optional(),
     value: z
       .union([
-        z.string().max(200),
+        z.string().max(1000),
         z.number(),
         z.null(),
-        z.literal(true),
+        z.boolean(),
         z.array(z.number().int().min(0).max(17)).max(9),
+        z.object({ confirmation: z.string().max(200), arrival: z.string().max(10) }).strict(),
+        z.object({ mode: z.enum(['self', 'client', 'custom']), address: z.string().max(255) }).strict(),
       ])
       .optional(),
     msSinceOpen: z.number().int().min(0).max(86_400_000).optional(),
@@ -150,6 +157,8 @@ export const workItemsRouter = router({
       fieldPath: input.fieldPath,
       value: input.value,
       msSinceOpen: input.msSinceOpen,
+      source: input.source,
+      expectedSeq: input.expectedSeq,
     });
     if (result.status === 'not_found') {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
@@ -159,6 +168,9 @@ export const workItemsRouter = router({
     }
     if (result.status === 'invalid_value') {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
+    }
+    if (result.status === 'stale_source' || result.status === 'stale_revision') {
+      throw new TRPCError({ code: 'CONFLICT', message: 'This email or draft changed. Reload before saving this field.' });
     }
     return {
       aiValue: result.aiValue,
