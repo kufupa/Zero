@@ -269,7 +269,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     action.check();
     armed = true;
     interactionStarted = true;
-    await cancel.click({ timeout: 5_000, noWaitAfter: true });
+    await cancel.click({ timeout: timeoutMs, noWaitAfter: true });
     action.check();
     response = await pending;
     const policyResponse = await policyPending;
@@ -311,7 +311,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
                 (await button.innerText()).trim() !== label || !await chargeTargetIsCurrent(frame, expected)) {
               throw new Error('CANCEL_CHARGE_CHANGED');
             }
-            await button.click({ timeout: 5_000, noWaitAfter: true });
+            await button.click({ timeout: timeoutMs, noWaitAfter: true });
             await page.waitForTimeout(1_000);
             dialogs = await windows.evaluateAll((items) => items.map((item) => item.innerText.trim())).catch(() => []);
             fee = dialogs.some((value) => /penalt|fee|charge|deposit/i.test(value) && !/cancellation reason/i.test(value));
@@ -440,11 +440,21 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     penaltyText: dialog?.message ?? chargeText, blockedRequests: [...blocked],
     browserSendRequests: sendRequests, dispatchCallbacksDrained: pendingDispatch === 0 }),
     onNativeCharge: async (dialog) => {
-      // A JS confirm pauses the page, so its target was verified immediately before the Save.
-      if (!dispatched || typeof awaitChargeApproval !== 'function' || typeof dispatchChargeWithAuthority !== 'function') return false;
+      // A JS confirm pauses the verified form. Before Save, hold the target before accepting it;
+      // after Save, the separate charge request must use its existing dispatch authority.
+      const beforeSave = !dispatched;
+      if (typeof awaitChargeApproval !== 'function' || (beforeSave
+        ? (!armed || !preparedSnapshot || typeof prepareChargeWithAuthority !== 'function')
+        : typeof dispatchChargeWithAuthority !== 'function')) return false;
       chargeText = dialog.message;
       if (await awaitChargeApproval({ text: dialog.message, button: 'OK' }) !== true ||
           action.isStopped() || continuationAllowed() !== true) return false;
+      if (beforeSave) {
+        if (dispatched || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
+        await prepareChargeWithAuthority();
+        chargeApproved = true;
+        return !action.isStopped() && continuationAllowed() === true && !dispatched && armed && !fence.isQuarantined();
+      }
       chargeApproved = true;
       chargeArmed = true;
       return true;
@@ -609,7 +619,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
     action.check();
     armed = true;
-    await ok.click({ timeout: 5_000, noWaitAfter: true });
+    await ok.click({ timeout: timeoutMs, noWaitAfter: true });
     action.check();
     response = await pending;
     action.check();
@@ -637,7 +647,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
               (await button.innerText()).trim() === label && await chargeTargetIsCurrent(frame, expected)) {
             chargeApproved = true;
             chargeArmed = true;
-            await button.click({ timeout: 5_000, noWaitAfter: true });
+            await button.click({ timeout: timeoutMs, noWaitAfter: true });
             await page.waitForTimeout(1_500);
             dialogs = await windows.evaluateAll((items) => items.map((item) => item.innerText.trim())).catch(() => []);
             fee = dialogs.some((value) => /penalt|fee|charge|deposit/i.test(value));
