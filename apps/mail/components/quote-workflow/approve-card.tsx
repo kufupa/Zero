@@ -163,8 +163,9 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
-  const filingCurrent = filingApprovalAllowed &&
-    (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest));
+  // The server marks HRCEN filings even before the pane's property configuration has loaded.
+  const filingCurrent = view?.filingAvailable === undefined || (filingApprovalAllowed &&
+    (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
   const effectiveWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
     (view?.form.action !== 'attach_document' || filingCurrent);
   return (

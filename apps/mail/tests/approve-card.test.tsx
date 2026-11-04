@@ -411,13 +411,17 @@ describe('BookingVoucherCard write card', () => {
   };
 
   it('refreshes an approval immediately after the voucher form and snapshot are prepared', async () => {
-    paneWrite.view = viewWith({ form: attachForm, snapshot: null });
+    paneWrite.view = viewWith({ form: attachForm, snapshot: null, filingAvailable: true });
     const session = { ...emailSession('create_booking'),
       staffSource: { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) } };
-    render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
+    const { rerender } = render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
+      syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
+      mailboxScope="actor:session:mailbox-a" />);
+    await waitFor(() => expect(paneWrite.calls.length).toBe(1));
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    rerender(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
       syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
       mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
-    await waitFor(() => expect(paneWrite.calls.length).toBe(1));
     expect(paneWrite.voucherProps?.approvalAvailable).toBe(true);
     paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
     await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });

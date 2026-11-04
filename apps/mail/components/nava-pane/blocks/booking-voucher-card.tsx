@@ -108,8 +108,8 @@ export function BookingVoucherCard({
           guestSurname={guestSurname}
           arrival={arrival}
           requireStoredWrite
-          filingApprovalAllowed={propertyCode !== 'HRCEN' || (filingSourceCurrent && preparedFiling?.scope === filingScope)}
-          filingApprovalDigest={propertyCode === 'HRCEN' ? (preparedFiling?.scope === filingScope ? preparedFiling.digest : null) : undefined}
+          filingApprovalAllowed={filingSourceCurrent && preparedFiling?.scope === filingScope}
+          filingApprovalDigest={preparedFiling?.scope === filingScope ? preparedFiling.digest : null}
         />
       ) : null}
       {showVoucherFindCard ? (
