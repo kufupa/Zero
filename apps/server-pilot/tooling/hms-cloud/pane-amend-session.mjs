@@ -10,7 +10,7 @@ import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mj
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
 import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
-import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
 import { nativeMoneyCents, nativeAverageCents, parseNativePricingJson, readAmendNightlyQuote } from './saved-stay-nightly-rates.mjs';
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
@@ -93,8 +93,6 @@ const displayDate = (value) => `${value.slice(8, 10)}-${['JAN', 'FEB', 'MAR', 'A
 const validDay = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') &&
   Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const isLabtest = (selected) => selected?.firstName === 'Proof' && selected?.lastName === 'Labtest';
-const checked = (value) => [true, 1, '1', 'true', 'on', 'yes', 'Y'].includes(value);
-
 /** The requested target is business data, independent of the native form's size. */
 function amendTarget(selected, changes, { allowRealGuest = false } = {}) {
   if (!selected || !changes || typeof changes !== 'object' || Array.isArray(changes) ||
@@ -148,7 +146,10 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   }
   const recipient = changes.cmsSend ? changes.cmsRecipient : String(baseline.data.udfchar13 ?? '');
   const message = changes.cmsSend ? changes.cmsMessageId : String(baseline.data.udfchar09 ?? '');
-  if (checked(data.udfchkbox04) !== changes.cmsSend || String(data.udfchar13 ?? '') !== recipient ||
+  const formCms = !Object.hasOwn(values, 'udfchkbox04') || values.udfchkbox04 === ''
+    ? false : nativeCmsSendValue(values.udfchkbox04);
+  if (snapshot.cmsSendControl !== changes.cmsSend || formCms !== changes.cmsSend ||
+      String(data.udfchar13 ?? '') !== recipient ||
       (message && String(data.udfchar09 ?? '') !== message)) return false;
   const children = savedChildOccupancy(snapshot);
   if (!children.valid || children.count !== target.children) return false;
@@ -177,7 +178,10 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
       reservationid: selected.reservationId, reservationstayid: selected.reservationStayId, recordid: selected.recordId,
       status: 'Reserved' };
     for (const name of ['firstname', 'lastname', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults',
-      'children', 'guaranteetype', 'reservationnote', 'emailaddress', 'udfchar13', 'udfchkbox04']) required[name] = String(data[name] ?? '');
+      'children', 'guaranteetype', 'reservationnote', 'emailaddress', 'udfchar13']) required[name] = String(data[name] ?? '');
+    const cmsFields = [...body].filter(([name]) => name.toLowerCase() === 'udfchkbox04');
+    if (cmsFields.length !== 1 || cmsFields[0][0] !== 'udfchkbox04' ||
+        nativeCmsSendValue(cmsFields[0][1]) !== changes.cmsSend) return false;
     if (Object.hasOwn(changes, 'childAges')) {
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
     }
@@ -334,6 +338,24 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   stageGuest = stageSavedGuestFieldsForComposition, syncRecord = syncAmendRecordAfterAvailability,
   quote = readAmendNightlyQuote, recordOptions = amendRecordOptions,
 } = {}) {
+  const readSnapshot = snapshot;
+  snapshot = async (frame) => {
+    const draft = await readSnapshot(frame);
+    if (!draft) return draft;
+    const cmsSendControl = await frame.evaluate(() => {
+      const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
+        getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const guests = [...document.querySelectorAll('input[name="guestid"]')].filter(visible);
+      const controls = [...document.querySelectorAll('input[name="udfchkbox04"]')].filter(visible);
+      if (guests.length !== 1 || controls.length !== 1) return null;
+      const panel = globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form');
+      const control = globalThis.Ext?.getCmp?.(controls[0].id.replace(/-inputEl$/, ''));
+      if (!panel?.el?.dom?.contains(controls[0]) || control?.up?.('form') !== panel) return null;
+      const value = control?.getValue?.();
+      return typeof value === 'boolean' ? value : null;
+    });
+    return { ...draft, cmsSendControl };
+  };
   input = { ...structuredClone({ ...input, signal: undefined }), signal: input?.signal };
   const selected = input?.selected, changes = input?.changes;
   const target = amendTarget(selected, changes, { allowRealGuest: input.allowRealGuest === true });
@@ -451,6 +473,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       fields.cmsSend = changes.cmsSend;
       if (changes.cmsSend) { fields.cmsMessageId = changes.cmsMessageId; fields.cmsRecipient = changes.cmsRecipient; }
       draft = await bounded(stageGuest(context, fields));
+      draft = await bounded(snapshot(prepared.frame));
       if (!context.isActive() || !valid(draft, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
       return { draft, approvedPrices: needsAvailability ? null : observedAmendPrice(draft, target, quoted) };
     },
