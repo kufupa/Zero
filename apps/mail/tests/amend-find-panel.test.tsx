@@ -2250,7 +2250,8 @@ describe('AmendLookupPanel amend form', () => {
     await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
     expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
-    expect((screen.getByLabelText('Retain the current rate?') as HTMLSelectElement).value).toBe('yes');
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
 

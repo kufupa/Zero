@@ -441,7 +441,7 @@ export function AmendLookupPanel({
     setPickedStayId(stayId);
     if (!key) return;
     const next = findRequestFor(confirmation, findArrival);
-    if ('request' in next) {
+    if ('request' in next && next.request.kind === 'find') {
       setSelectedAfterClear({ scope: key, confirmation, arrival: next.request.arrival ?? null });
       find.start(next.request);
     }
