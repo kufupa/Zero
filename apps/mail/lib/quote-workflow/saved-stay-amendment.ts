@@ -3,6 +3,7 @@ import { sendableArrival, type StayRecordWire } from './amend-find';
 export type SavedStayAmendDraft = {
   arrival: string;
   departure: string;
+  nights: string;
   adults: string;
   children: string;
   childAges: string;
@@ -91,8 +92,11 @@ export function amendmentReadbackDifferences(result: SavedStayAmendResult): stri
 }
 
 export function initialSavedStayAmendDraft(stay: StayRecordWire, request: { arrival?: string | null; departure?: string | null }): SavedStayAmendDraft {
+  const arrival = request.arrival ?? stay.arrival ?? '', departure = request.departure ?? stay.departure ?? '';
+  const nights = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000;
   return {
-    arrival: request.arrival ?? stay.arrival ?? '', departure: request.departure ?? stay.departure ?? '',
+    arrival, departure,
+    nights: Number.isInteger(nights) && nights > 0 ? String(nights) : '',
     adults: stay.adults == null ? '' : String(stay.adults), children: stay.children == null ? '' : String(stay.children),
     childAges: '',
   };

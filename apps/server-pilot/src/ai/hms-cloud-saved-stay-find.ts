@@ -31,6 +31,7 @@ export type HmsCloudReservationObservations = {
   groupName: HmsCloudFieldObservation;
   promotionCode: HmsCloudFieldObservation;
   arAccountName: HmsCloudFieldObservation;
+  guestEmail: HmsCloudFieldObservation;
   bookerName: HmsCloudFieldObservation;
   bookerContact: HmsCloudFieldObservation;
 };
@@ -41,6 +42,7 @@ export type HmsCloudNativePreimage = {
   reservationStayId: string; reservationId: string; recordId: string; guestId: string;
   status: string; firstName: string; lastName: string; arrival: string; departure: string;
   roomType: string; ratePlan: string; adults: number; children: number; childAges: number[] | 'unknown';
+  guaranteeCode?: string;
 };
 
 export type HmsCloudFindResult = PaneStayFindResult & {
@@ -208,6 +210,7 @@ function reservationObservations(fields: Array<RecordValue>): HmsCloudReservatio
     groupName: fieldObservation(fields, ['groupname']),
     promotionCode: fieldObservation(fields, ['promotioncode']),
     arAccountName: fieldObservation(fields, ['araccountname']),
+    guestEmail: fieldObservation(fields, ['emailaddress']),
     bookerName: fieldObservation(fields, ['caller']),
     bookerContact: fieldObservation(fields, ['udfchar06']),
   };
@@ -257,7 +260,9 @@ function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<Record
     recordId: native.recordId as string, guestId: native.guestId as string, status: native.status as string,
     firstName: native.firstName as string, lastName: native.lastName as string, arrival: native.arrival as string,
     departure: native.departure as string, roomType: native.roomType as string, ratePlan: native.ratePlan as string,
-    adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages] };
+    adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages],
+    ...(typeof native.guaranteeCode === 'string' && /^[A-Z0-9]{1,40}$/.test(native.guaranteeCode)
+      ? { guaranteeCode: native.guaranteeCode } : {}) };
 }
 
 function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNative: HmsCloudNativePreimage | null): PaneStayCommercial | undefined {

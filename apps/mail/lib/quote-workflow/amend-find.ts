@@ -187,6 +187,13 @@ export type StayCommercialWire = {
   departure?: string;
 };
 
+export type StayContactObservation = { state: 'observed' | 'blank' | 'unknown'; value: string | null };
+export type StayContactObservations = {
+  guestEmail?: StayContactObservation;
+  bookerName?: StayContactObservation;
+  bookerContact?: StayContactObservation;
+};
+
 /** The email's arrival, when it is a real ISO day, moves HMS quick search to cover that day. */
 export type FindStayInput = {
   confirmation: string;
@@ -205,6 +212,7 @@ export type FindStayReply = {
   reason: string | null;
   stay: StayRecordWire | null;
   commercial?: StayCommercialWire | null;
+  reservationObservations?: StayContactObservations | null;
   /** PNG file names. record.png is the booking itself. */
   screenshots: string[];
   runId: string | null;
@@ -535,6 +543,7 @@ export type HmsFindRun =
       kind: 'found';
       stay: StayRecordWire;
       commercial?: StayCommercialWire;
+      reservationObservations?: StayContactObservations;
       runId: string | null;
       screenshots: string[];
       arrivalMismatch: ArrivalMismatch | null;
@@ -582,6 +591,7 @@ export function findRunFromReply(reply: FindStayReply): HmsFindRun {
         kind: 'found',
         stay: reply.stay,
         ...(reply.commercial ? { commercial: reply.commercial } : {}),
+        ...(reply.reservationObservations ? { reservationObservations: reply.reservationObservations } : {}),
         runId: reply.runId,
         screenshots: reply.screenshots,
         arrivalMismatch: arrivalMismatchFrom(reply),

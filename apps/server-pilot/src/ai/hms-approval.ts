@@ -14,6 +14,8 @@ import { canonicalJson } from './draft-approval.js';
 import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { paneWriteMode } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { publicCloudAmendFields, retainedPricesForApproval } from './cloud-amend-price-projection.js';
+import { HMS_LABTEST_AMEND_PROMPT_VERSION, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import {
@@ -90,6 +92,8 @@ export type HmsApprovalRefusal =
   | 'form_outdated'
   | 'filing_unavailable'
   | 'cancel_reconciliation_required'
+  | 'amend_save_unavailable'
+  | 'amend_reconciliation_required'
   | 'run_changed';
 
 export class HmsApprovalError extends Error {
@@ -482,6 +486,24 @@ async function supersedeChangedQueuedWrite(
     .where(and(eq(aiWorkflowRun.id, run.id), eq(aiWorkflowRun.state, 'queued')));
 }
 
+/** Recheck the prepared target, business fields and observed price under the current write mode. */
+async function assertCloudAmendForm(state: Record<string, unknown>, env?: NodeJS.Dict<string>): Promise<void> {
+  if (!labtestAmendWorkerEnabled(env)) throw new HmsApprovalError('amend_save_unavailable');
+  const [{ cloudAmendDispatchFormSchema }, { cloudAmendFirstPilotScopeSupported }] = await Promise.all([
+    import('./pane-cloud-amend-dispatch.js'), import('./pane-cloud-amend.js'),
+  ]);
+  const parsed = cloudAmendDispatchFormSchema.safeParse(state);
+  if (!parsed.success) throw new HmsApprovalError('state_changed');
+  const form = parsed.data, { binding, preimage, nativeDigest, approvedPrices, preserved } = form.cloudAmend;
+  const price = retainedPricesForApproval(approvedPrices);
+  const previewDigest = hmsStateDigest({ binding, preimage, changes: form.fields, nativeDigest, approvedPrices, preserved });
+  if (form.confirmation !== preimage.native.confirmation || form.arrival !== preimage.native.arrival ||
+      state.lastName !== preimage.native.lastName || previewDigest !== form.previewDigest || price?.version !== 2 ||
+      !cloudAmendFirstPilotScopeSupported(preimage.native, form.fields, (env ?? process.env).PANE_WRITE_AMEND === 'on', preserved)) {
+    throw new HmsApprovalError('state_changed');
+  }
+}
+
 /**
  * Server-side approval of one HMS write. The client sends only the work item id. The server recomputes the form
  * digest from stored state. A stale or missing snapshot is re-read first (KTD11) when a reader is supplied.
@@ -496,6 +518,7 @@ export async function approveHmsWrite(input: {
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
   cloudCancelSelection?: HmsSelectedSource;
+  cloudSelection?: HmsSelectedSource;
   env?: NodeJS.Dict<string>;
   /**
    * The form digest of the values the card showed (hmsWriteStateOf.formDigest). When given, approval is refused unless
@@ -520,6 +543,14 @@ export async function approveHmsWrite(input: {
         source: input.cloudCancelSelection, actorUserId: input.actorUserId,
         sessionId: input.sessionId, sessionProfile: input.sessionProfile });
       cancelSourceBound = true;
+    }
+    let cloudSourceBound = false;
+    if (input.cloudSelection) {
+      if (!labtestAmendWorkerEnabled(input.env)) throw new HmsApprovalError('amend_save_unavailable');
+      const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
+      if (!await lockSelectedBoundCloudAmend(tx, { workItemId: input.workItemId, transportId: input.transportId,
+        source: input.cloudSelection })) throw new HmsApprovalError('state_changed');
+      cloudSourceBound = true;
     }
     const [item] = await tx
       .select()
@@ -550,21 +581,34 @@ export async function approveHmsWrite(input: {
          canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)))) {
       throw new HmsApprovalError('filing_unavailable');
     }
+    const cloudAmend = item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend');
+    if (cloudAmend && !labtestAmendWorkerEnabled(input.env)) throw new HmsApprovalError('amend_save_unavailable');
+    if (cloudAmend !== cloudSourceBound || (cloudAmend && !input.formDigest)) throw new HmsApprovalError('state_changed');
+    if (cloudAmend) {
+      const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+      if (!target.ok || targetKeys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+        throw new HmsApprovalError('state_changed');
+      }
+      await assertCloudAmendForm(item.state, input.env);
+    }
     const cloudSession = z.object({ sessionId: z.string().trim().min(1).max(512),
       sessionProfile: z.enum(['legacy', 'remote']) }).safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
-    if (cloudCancel && !cloudSession.success) throw new HmsApprovalError('no_grant');
+    if ((cloudCancel || cloudAmend) && !cloudSession.success) throw new HmsApprovalError('no_grant');
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }
     await supersedeChangedQueuedWrite(tx as DB, item.id, formDigest(item.state), now);
     await assertNoOpenWrite(tx as DB, item.id);
-    if (labtestAttach) {
+    if (labtestAttach || cloudAmend) {
       const previous = await latestWriteRun(tx as DB, item.id);
-      if (previous?.state === 'succeeded' && previous.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION) {
+      const promptVersion = cloudAmend ? HMS_LABTEST_AMEND_PROMPT_VERSION : HMS_LABTEST_ATTACH_PROMPT_VERSION;
+      if (previous?.state === 'succeeded' && previous.promptVersion === promptVersion) {
         const previousGrantId = grantIdForRun(previous);
         try {
           if (!previousGrantId) throw new HmsApprovalError('no_grant');
-          await loadGrant(tx as DB, item.id, previousGrantId, true);
+          const { grant: previousGrant } = await loadGrant(tx as DB, item.id, previousGrantId, true);
+          if (previousGrant.grantId !== previousGrantId || previousGrant.workItemId !== item.id ||
+              previousGrant.transportId !== input.transportId) throw new HmsApprovalError('no_grant');
         } catch (error) {
           if (error instanceof HmsApprovalError && error.refusal === 'no_grant') {
             throw new HmsApprovalError('needs_check_open');
@@ -592,7 +636,7 @@ export async function approveHmsWrite(input: {
       transportId: input.transportId,
       actorUserId: input.actorUserId,
       ...(labtestAttach ? { sessionId: input.sessionId!, sessionProfile: input.sessionProfile! } : {}),
-      ...(cloudCancel && cloudSession.success ? cloudSession.data : {}),
+      ...((cloudCancel || cloudAmend) && cloudSession.success ? cloudSession.data : {}),
       formDigest: formDigest(state),
       hmsBeforeDigest: snapshot.digest,
       hmsReadAt: snapshot.readAt,
@@ -617,7 +661,9 @@ export async function approveHmsWrite(input: {
         runKind: HMS_WRITE_RUN_KIND,
         idempotencyKey: `hms-write:${grant.grantId}`,
         modelId: NOT_APPLICABLE_MODEL_ID,
-        promptVersion: cloudCancel ? HMS_CLOUD_CANCEL_PROMPT_VERSION : labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
+        promptVersion: cloudAmend ? HMS_LABTEST_AMEND_PROMPT_VERSION
+          : cloudCancel ? HMS_CLOUD_CANCEL_PROMPT_VERSION
+            : labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
         executorLane: 'hms',
         workItemId: item.id,
         priority: HMS_WRITE_PRIORITY,
@@ -674,6 +720,9 @@ export async function resolveHmsNeedsCheck(input: {
     }
     if (item.state.action === 'cancel' && Object.hasOwn(item.state, 'cloudCancel')) {
       throw new HmsApprovalError('cancel_reconciliation_required');
+    }
+    if (item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend')) {
+      throw new HmsApprovalError('amend_reconciliation_required');
     }
     await assertNoWriteInFlight(tx as DB, item.id);
     const runId = await unresolvedNeedsCheckRunId(tx as DB, item.id);
@@ -820,6 +869,58 @@ export async function lockConsumedCloudCancelApproval(tx: HmsDispatchTransaction
   )).limit(1).for('update');
   const now = new Date();
   if (!run?.deadlineAt || run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION ||
+      run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+      run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
+      run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
+  if (grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('no_grant');
+  const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
+  const snapshot = readSnapshot(item.state);
+  if (grant.workItemId !== item.id || grant.transportId !== input.transportId ||
+      grant.actorUserId !== authority.actorUserId || grant.sessionId !== authority.sessionId ||
+      grant.sessionProfile !== authority.sessionProfile || grant.formDigest !== input.approvedDigest ||
+      formDigest(item.state) !== input.approvedDigest || snapshotStale(grant.hmsReadAt, now) ||
+      !snapshot || snapshot.digest !== grant.hmsBeforeDigest || snapshot.readAt !== grant.hmsReadAt) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+    eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'),
+    eq(workEvent.payloadHash, payloadHash), sql`${workEvent.value}->>'runId' = ${run.id}`,
+    sql`${workEvent.value}->>'grantId' = ${input.grantId}`,
+  )).limit(2).for('share');
+  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  const at = new Date();
+  if (run.deadlineAt.getTime() <= at.getTime() || snapshotStale(grant.hmsReadAt, at)) {
+    throw new HmsApprovalError('lease_lost');
+  }
+  await tx.update(aiWorkflowRun).set({ heartbeatAt: at, updatedAt: at }).where(eq(aiWorkflowRun.id, run.id));
+}
+
+/** Revalidate the consumed Cloud amend Go inside the durable dispatch claim. */
+export async function lockConsumedCloudAmendApproval(tx: HmsDispatchTransaction, input: {
+  fence: AiRunFence;
+  transportId: string;
+  item: typeof workItem.$inferSelect;
+  grantId: string;
+  approvedDigest: string;
+  authority: NonNullable<Awaited<ReturnType<typeof consumeHmsWriteApproval>>['authority']>;
+  env?: NodeJS.Dict<string>;
+}): Promise<void> {
+  const { item, authority, fence } = input;
+  if (!item || item.transportId !== input.transportId || item.state.action !== 'amend' ||
+      !Object.hasOwn(item.state, 'cloudAmend') || !item.threadId || !item.sourceMessageId ||
+      item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('state_changed');
+  await assertCloudAmendForm(item.state, input.env);
+  await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: authority.actorUserId });
+  await lockCreateActorSession(tx, authority);
+  const [run] = await tx.select().from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+    eq(aiWorkflowRun.workItemId, item.id), eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.promptVersion, HMS_LABTEST_AMEND_PROMPT_VERSION),
+    inArray(aiWorkflowRun.state, ['claimed', 'running']),
+  )).limit(1).for('update');
+  const now = new Date();
+  if (!run?.deadlineAt || run.promptVersion !== HMS_LABTEST_AMEND_PROMPT_VERSION ||
       run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
       run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
       run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
@@ -1298,6 +1399,7 @@ export async function reviewHmsWrite(input: {
   workItemId: string;
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
+  cloudSelection?: HmsSelectedSource;
   /** The run the reviewer was shown. When given, the review is refused unless it is still the latest write. */
   runId?: string;
   decision: 'ok' | 'flag';
@@ -1312,6 +1414,11 @@ export async function reviewHmsWrite(input: {
   }
   const reviewed = await db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    if (input.cloudSelection) {
+      const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
+      if (!await lockSelectedBoundCloudAmend(tx, { workItemId: input.workItemId, transportId: input.transportId,
+        source: input.cloudSelection })) throw new HmsApprovalError('state_changed');
+    }
     const [item] = await tx
       .select({ id: workItem.id, status: workItem.status, state: workItem.state, threadId: workItem.threadId,
         sourceMessageId: workItem.sourceMessageId })
@@ -1321,6 +1428,9 @@ export async function reviewHmsWrite(input: {
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
     await assertHmsSelectedSource(tx as DB, input, item, true);
+    if ((item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend')) !== Boolean(input.cloudSelection)) {
+      throw new HmsApprovalError('state_changed');
+    }
     if (item.status === 'done' || item.status === 'dismissed')
       throw new HmsApprovalError('not_open');
     await assertNoWriteInFlight(tx as DB, item.id);
@@ -1340,6 +1450,12 @@ export async function reviewHmsWrite(input: {
       if (!boundFilingSelectionMatches(item.state, input.selectedSource)) {
         throw new HmsApprovalError('source_mail_changed');
       }
+    }
+    const cloudAmend = run.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION ||
+      (item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend'));
+    if (cloudAmend && (!input.cloudSelection || item.state.action !== 'amend' ||
+        !Object.hasOwn(item.state, 'cloudAmend') || run.promptVersion !== HMS_LABTEST_AMEND_PROMPT_VERSION)) {
+      throw new HmsApprovalError('no_executed_write');
     }
     const cloudCancel = run.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION ||
       (target.ok && target.target.propertyCode === 'HRCEN' && item.state.action === 'cancel' &&
@@ -1364,11 +1480,11 @@ export async function reviewHmsWrite(input: {
     if (await reviewForRun(tx as DB, item.id, run.id))
       throw new HmsApprovalError('already_reviewed');
     // The review applies only to the form this write was approved for. A later edit was never written.
-    if (input.decision === 'ok' || cloudFiling || cloudCancel) {
+    if (input.decision === 'ok' || cloudFiling || cloudCancel || cloudAmend) {
       const grantId = grantIdForRun(run);
       if (!grantId) throw new HmsApprovalError('no_grant');
       const { grant } = await loadGrant(tx as DB, item.id, grantId);
-      if ((cloudFiling || cloudCancel) && (grant.grantId !== grantId || grant.workItemId !== item.id ||
+      if ((cloudFiling || cloudCancel || cloudAmend) && (grant.grantId !== grantId || grant.workItemId !== item.id ||
           grant.transportId !== input.transportId)) throw new HmsApprovalError('no_grant');
       if (formDigest(item.state) !== grant.formDigest) throw new HmsApprovalError('state_changed');
     }
@@ -1468,6 +1584,7 @@ export function publicHmsWriteForm(state: Record<string, unknown>): Record<strin
   delete form.cloudCancelPreview;
   if (form.action === 'cancel' && Object.hasOwn(form, 'cloudCancel')) form.cloudCancel = {};
   else delete form.cloudCancel;
+  if (Object.hasOwn(form, 'cloudAmend')) form.cloudAmend = publicCloudAmendFields(form.cloudAmend);
   return maskedStrings(form);
 }
 
@@ -1557,6 +1674,8 @@ export async function hmsWriteStateOf(input: {
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
   cancelSource?: HmsSelectedSource;
+  /** Internal Cloud Amend card: show only a run for its current bound form. */
+  cloudAmendOnly?: boolean;
   now?: Date;
 }): Promise<HmsWriteStateView | null> {
   const db = input.db ?? getDb();
@@ -1595,7 +1714,9 @@ export async function hmsWriteStateOf(input: {
       )
       .limit(1);
     const parsed = hmsWriteGrantSchema.safeParse(row?.value);
-    if (parsed.success && (!cloudFiling || row?.payloadHash === grantHash(parsed.data))) {
+    if (parsed.success && (!(cloudFiling || input.cloudAmendOnly) ||
+        (row?.payloadHash === grantHash(parsed.data) && (!input.cloudAmendOnly ||
+          (parsed.data.grantId === grantId && parsed.data.workItemId === item.id && parsed.data.transportId === input.transportId))))) {
       grantBound = row?.payloadHash === grantHash(parsed.data) && parsed.data.grantId === grantId && parsed.data.workItemId === item.id &&
         parsed.data.transportId === input.transportId && parsed.data.formDigest === grantFormDigest;
       const [consumed] = await db
@@ -1635,6 +1756,20 @@ export async function hmsWriteStateOf(input: {
   }
   let needsCheck = run !== null && !(NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) &&
     Boolean(await unresolvedNeedsCheckRunId(db, item.id));
+  if (input.cloudAmendOnly && run &&
+      (run.promptVersion !== HMS_LABTEST_AMEND_PROMPT_VERSION || !grant?.fingerprintMatches)) {
+    // Other workflows and earlier forms may still hold the item. Show the hold,
+    // but never present their evidence or review as this amendment's outcome.
+    const missingAmendGrant = run.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION &&
+      run.state === 'succeeded' && !grant;
+    needsCheck ||= missingAmendGrant;
+    grant = null;
+    runView = (NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) || needsCheck
+      ? { runId: run.id, state: run.state, failureClass: run.failureClass,
+          lastError: missingAmendGrant ? 'amend_approval_unverified' : run.lastError,
+          evidence: [], reviewed: null }
+      : null;
+  }
   if (cloudFiling && run &&
       (run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION || !grant?.fingerprintMatches)) {
     // A completed write for another workflow or form is history, not this upload.
@@ -1663,6 +1798,7 @@ export async function hmsWriteStateOf(input: {
     ...(item.state.action === 'cancel' && Object.hasOwn(item.state, 'cloudCancel') ? { manualResolve: false } : {}),
     ...(item.state.action === 'cancel' && target.ok && target.target.propertyCode === 'HRCEN'
       ? { cancelAvailable: paneWriteMode('cancel', 'unpaid') !== 'off', manualResolve: false } : {}),
+    ...(item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend') ? { manualResolve: false } : {}),
     form: publicHmsWriteForm(item.state),
     formDigest: currentFormDigest,
     before: storedValues.success ? maskedStrings(storedValues.data) : null,

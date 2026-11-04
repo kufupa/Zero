@@ -95,7 +95,20 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   }, [binding]);
   const field = (name: DraftField, value: string) => {
     const next = { ...draft, [name]: value };
-    const nextTouched = touched.includes(name) ? touched : [...touched, name];
+    if (name === 'nights' && /^\d+$/.test(value) && Number(value) > 0 && draft.arrival) {
+      const arrival = new Date(`${draft.arrival}T00:00:00Z`);
+      if (Number.isFinite(arrival.getTime())) {
+        arrival.setUTCDate(arrival.getUTCDate() + Number(value));
+        next.departure = arrival.toISOString().slice(0, 10);
+      }
+    } else if (name === 'nights') {
+      next.departure = '';
+    } else if ((name === 'arrival' || name === 'departure') && next.arrival && next.departure) {
+      const days = (Date.parse(`${next.departure}T00:00:00Z`) - Date.parse(`${next.arrival}T00:00:00Z`)) / 86400000;
+      next.nights = Number.isInteger(days) && days > 0 ? String(days) : '';
+    }
+    const nextTouched = touched.includes(name) ? [...touched] : [...touched, name];
+    if (name === 'nights' && !nextTouched.includes('departure')) nextTouched.push('departure');
     setTouched(nextTouched);
     setDraft(next);
     storeDraft({ draft: next, touched: nextTouched, acceptedBasis });
@@ -132,17 +145,17 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
         <button type="button" className="min-h-8 font-semibold text-[#1e40af] underline" onClick={updateUntouched}>Update untouched entries</button>
       </div> : null}
       <div className="grid grid-cols-2 gap-2">
-        {(['arrival', 'departure', 'adults', 'children'] as const).map((name) => {
-          const title = { arrival: 'Arrival', departure: 'Departure', adults: 'Adults', children: 'Children' }[name];
+        {(['arrival', 'departure', 'nights', 'adults', 'children'] as const).map((name) => {
+          const title = { arrival: 'Arrival', departure: 'Departure', nights: 'Nights', adults: 'Adults', children: 'Children' }[name];
           const current = stay[name];
           return <label key={name} className="flex min-w-0 flex-col gap-1">
             <span className={labelClass}>{title}</span>
             <span className={smallClass}>HMS at lookup: {current == null || current === '' ? 'Not shown' : String(current)}</span>
             <input aria-label={`Requested ${title.toLowerCase()}`} className={inputClass}
               type={name === 'arrival' || name === 'departure' ? 'date' : 'number'}
-              min={name === 'adults' ? 1 : name === 'children' ? 0 : undefined}
+              min={name === 'adults' || name === 'nights' ? 1 : name === 'children' ? 0 : undefined}
               max={name === 'adults' ? 16 : name === 'children' ? 9 : undefined}
-              step={name === 'adults' || name === 'children' ? 1 : undefined}
+              step={name === 'adults' || name === 'children' || name === 'nights' ? 1 : undefined}
               value={draft[name]} onChange={(event) => field(name, event.target.value)} />
           </label>;
         })}

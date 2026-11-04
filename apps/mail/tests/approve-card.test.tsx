@@ -841,6 +841,22 @@ describe('writeRowsOf and writeStatusOf', () => {
     expect(writeRowsOf({ form: { arrival: '2026-11-02' }, before: null })).toEqual([
       { key: 'arrival', label: 'Arrival', before: 'Not read', after: '2 Nov 2026' },
     ]);
+    expect(writeRowsOf({ form: { action: 'amend', cloudAmend: { bound: true }, fields: {
+      roomType: 'STWN', firstName: 'Anne', bookerName: 'New', cmsSend: false, cmsMessageId: '', cmsRecipient: '',
+    } }, before: { fields: { roomType: 'STQN', firstName: 'Alex', cmsSend: true,
+      cmsMessageId: '03', cmsRecipient: 'guest@example.test' } } })).toEqual([
+      { key: 'fields.roomType', label: 'Room type', before: 'STQN', after: 'STWN' },
+      { key: 'fields.firstName', label: 'Guest first name', before: 'Alex', after: 'Anne' },
+      { key: 'fields.bookerName', label: 'Booker name', before: 'Not read', after: 'New' },
+      { key: 'fields.cmsSend', label: 'Send confirmation', before: 'Yes', after: 'No' },
+    ]);
+    const cms = { cmsSend: true, cmsMessageId: '03', cmsRecipient: 'guest@example.test' };
+    expect(writeRowsOf({ form: { action: 'amend', cloudAmend: { bound: true }, fields: cms },
+      before: { fields: cms } })).toEqual([
+      { key: 'fields.cmsSend', label: 'Send confirmation', before: 'Yes', after: 'Yes' },
+      { key: 'fields.cmsMessageId', label: 'CMS message', before: '03', after: '03' },
+      { key: 'fields.cmsRecipient', label: 'Confirmation recipient', before: 'guest@example.test', after: 'guest@example.test' },
+    ]);
   });
 
   it('labels each stay in a multi-stay form, and joins list values', () => {

@@ -39,6 +39,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
 import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
+import { HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_LABTEST_AMEND_RUN_DEADLINE_MS } from './pane-cloud-amend-readiness.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -794,7 +795,10 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
-        candidate.runKind === HMS_WRITE_RUN_KIND &&
+        candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
+        candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION
+          ? Math.max(runDeadlineMs, HMS_LABTEST_AMEND_RUN_DEADLINE_MS)
+          : candidate.runKind === HMS_WRITE_RUN_KIND &&
         (candidate.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION || candidate.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION)
           ? Math.max(runDeadlineMs, HMS_LABTEST_ATTACH_RUN_DEADLINE_MS)
           : candidate.runKind === 'read_tool' &&
