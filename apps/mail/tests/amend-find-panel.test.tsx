@@ -1050,7 +1050,9 @@ describe('exact selected-email HMS lookup', () => {
       const amend = await cloudAmendClientFromTrpc(cloud, request, {
         transportId: 'mailbox-a', signal: new AbortController().signal, isCurrent: () => true,
       });
-      expect(await amend?.prepare()).toBe(true);
+      const draft = { requestId: 'b'.repeat(64), stayId: 'stay-1', expectedSeq: 3 };
+      expect(await amend?.prepare(draft)).toBe(true);
+      expect(cloud.hmsApproval.bindCloudAmend.mutate).toHaveBeenCalledWith(expect.objectContaining({ draft }), expect.anything());
       expect(await amend?.approval.writeState({ workItemId: RUN_ID })).toMatchObject({ formDigest: DIGEST });
       view.formDigest = 'b'.repeat(64);
       await expect(amend?.approval.writeState({ workItemId: RUN_ID })).rejects.toThrow('state_changed');

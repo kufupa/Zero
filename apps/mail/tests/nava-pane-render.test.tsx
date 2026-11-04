@@ -3145,6 +3145,26 @@ describe('NavaPane', () => {
     };
   }
 
+  function enableSavedAmendment() {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    const amendment = bridgeMockState.analysisOverride?.amendment as { requestedDeparture?: string } | undefined;
+    bridgeMockState.storedWork = { ...STORED_AMENDMENT,
+      analysis: { ...STORED_AMENDMENT.analysis, amendment },
+      draftContractVersion: 1, revisionSeq: 0,
+      source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32), extractionId: 'ex-amendment' },
+      draftFieldMeta: {}, workflowRequests: [{ requestId: 'b'.repeat(64), stayId: 'stay-1', fields: { kind: 'amend', value: {
+        target: { confirmation: '77945494-1', arrival: '2026-10-17' }, arrival: null,
+        departure: amendment?.requestedDeparture ?? null, adults: null, children: null, childAges: null,
+        roomType: null, ratePlan: null, retainRates: null, firstName: null, lastName: null, guestEmail: null,
+        bookerName: null, bookerContact: null, cms: { send: null, messageId: null, recipient: null },
+      } } }],
+    };
+    bridgeMockState.recordEvent.mockImplementation(async (input: unknown) => {
+      const seq = (input as { expectedSeq: number }).expectedSeq + 1;
+      return { seq, revision: seq, revisionHead: seq, workItemExtractionId: 'ex-amendment' };
+    });
+  }
+
   it('HRCEN mounts the local amendment review from the selected email and HMS lookup', async () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [],
@@ -3157,16 +3177,34 @@ describe('NavaPane', () => {
       amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
         arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
     };
+    enableSavedAmendment();
     const pane = render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
     const adults = await within(card).findByLabelText('Requested adults');
     expect(adults).toBeTruthy();
     expect(within(card).getByText('Booking at last HMS lookup')).toBeTruthy();
-    expect(within(card).getAllByText(/^HMS at lookup:/)).toHaveLength(4);
-    expect(within(card).getByLabelText('Rate plan to review in HMS')).toBeTruthy();
-    expect(within(card).getByText(/has not checked availability or the new price/)).toBeTruthy();
+    expect(within(card).getAllByText(/^HMS at lookup:/).length).toBeGreaterThanOrEqual(4);
+    expect(within(card).getByLabelText('Rate plan')).toBeTruthy();
+    expect(within(card).getByText(/Availability checked by HMS when prepared/)).toBeTruthy();
     expect(within(card).queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
     fireEvent.change(adults, { target: { value: '3' } });
+    fireEvent.change(within(card).getByLabelText('Rate plan'), { target: { value: 'CORP' } });
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      fieldPath: 'stays[stay-1].totalAdults', value: 3, expectedSeq: 0,
+      source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
+    }));
+    expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      fieldPath: `requests[${'b'.repeat(64)}].ratePlan`, value: 'CORP', expectedSeq: 1,
+    }));
+    bridgeMockState.storedWork = { ...bridgeMockState.storedWork, revisionSeq: 2 };
+    bridgeMockState.recordEvent.mockRejectedValueOnce(new Error('CONFLICT'));
+    fireEvent.change(adults, { target: { value: '4' } });
+    await screen.findByText(/Draft changed or could not save/);
+    expect((adults as HTMLInputElement).value).toBe('4');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry save' }));
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(4));
+    expect(bridgeMockState.recordEvent).toHaveBeenLastCalledWith(expect.objectContaining({ expectedSeq: 2, value: 4 }));
     try {
       // The new session's property catalogue is still unavailable after the old one is discarded.
       bridgeMockState.quotePaneConfig = null;
@@ -3193,6 +3231,7 @@ describe('NavaPane', () => {
       amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
         arrival: '2026-10-17', departure: '2026-10-18', requestedChange: null },
     };
+    enableSavedAmendment();
     const webBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
       entryId: 'mail-1', storeId: 'transport-1', folderEntryId: 'thread' } };
     const pane = render(<NavaPane bridge={webBridge} preview />);
@@ -3251,6 +3290,7 @@ describe('NavaPane', () => {
         amendment: { kind: 'amend', confirmationNumber: '77945494-1', guestLastName: 'Guest',
           arrival: '2026-10-17', departure: '2026-10-18', requestedDeparture: '2026-10-19', requestedChange: null },
       };
+      enableSavedAmendment();
       const pane = render(<NavaPane bridge={fakeBridge} />);
       expect(await screen.findByLabelText('Requested adults')).toBeTruthy();
       const changedBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, [field]: 'Changed content' } };

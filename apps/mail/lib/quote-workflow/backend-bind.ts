@@ -214,6 +214,21 @@ export type StoredTranslation =
   | { status: 'failed' }
   | null;
 
+export type AmendDraftSource = { threadId: string; messageId: string; sourceHash: string; extractionId: string };
+export type AmendDraftFields = {
+  target: { confirmation: string; arrival: string } | null;
+  arrival: string | null; departure: string | null; adults: number | null; children: number | null;
+  childAges: number[] | null; roomType: string | null; ratePlan: string | null; retainRates: 'yes' | 'no' | null;
+  firstName: string | null; lastName: string | null; guestEmail: string | null;
+  bookerName: string | null; bookerContact: string | null;
+  cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
+};
+export type AmendDraftRequest = { requestId: string; stayId: string; fields: { kind: 'amend'; value: AmendDraftFields } };
+export type AmendDraftSnapshot = {
+  workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: AmendDraftRequest[];
+  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+};
+
 /**
  * A mail's stored read from workItems.getByMessage. Ready carries its analysis and its work item (null until one is
  * opened, see bindStoredWork); none means read it live.
@@ -231,6 +246,11 @@ export type StoredWork =
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
+      draftContractVersion?: 1;
+      source?: AmendDraftSource;
+      revisionSeq?: number | null;
+      workflowRequests?: AmendDraftRequest[];
+      draftFieldMeta?: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
@@ -248,7 +268,10 @@ export type RecordFieldEventInput = {
   type: 'field.edit' | 'field.accept' | 'field.reject';
   fieldPath: string;
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
-  value?: string | number | number[] | true | null;
+  value?: string | number | number[] | boolean | null |
+    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string };
+  source?: Omit<AmendDraftSource, 'extractionId'>;
+  expectedSeq?: number;
   msSinceOpen?: number;
 };
 

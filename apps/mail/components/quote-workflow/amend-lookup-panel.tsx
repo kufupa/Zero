@@ -70,6 +70,7 @@ import { HMS_WRITE_IDLE_POLL_MS, HMS_WRITE_POLL_MS } from '@/lib/quote-workflow/
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
@@ -83,6 +84,12 @@ export type AmendReadOnlyContext = {
   selectionCurrent: boolean;
   sourceContentChanged?: boolean;
   sourceSelectionUnavailable?: boolean;
+  draft?: ReturnType<typeof useAmendWorkItem>;
+  historyEpoch?: number;
+  historyBusy?: boolean;
+  requireDurableDraft?: boolean;
+  retryDraft?: () => void;
+  draftLoading?: boolean;
 };
 
 type SearchForm = { lastName: string; arrival: string; departure: string };
@@ -226,17 +233,25 @@ export function AmendLookupPanel({
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const savedPicks = useMemo(() => savedStayPicksFrom(savedStays), [savedStays]);
   const [pickedStayId, setPickedStayId] = useState<string | null>(null);
-  const emailConfirmation = amendment?.confirmationNumber?.trim() || null;
+  const draftSource = readOnlyAmend?.draft?.source;
+  const sourceDraftMatches = Boolean(readOnlyAmend?.selectionCurrent && draftSource && session.staffSource &&
+    draftSource.threadId === session.staffSource.threadId && draftSource.messageId === session.staffSource.messageId &&
+    draftSource.sourceHash === session.staffSource.sourceHash);
+  const durableDraft = sourceDraftMatches && readOnlyAmend?.draft?.available ? readOnlyAmend.draft : null;
+  const projected = durableDraft?.request?.fields.value;
+  const targetCleared = projected?.target === null &&
+    durableDraft?.fieldMeta[`requests[${durableDraft?.request?.requestId}].target`]?.origin === 'staff';
+  const emailConfirmation = targetCleared ? null : projected?.target?.confirmation ?? (amendment?.confirmationNumber?.trim() || null);
   const resolvedStayId = resolvedSavedStayId(savedPicks, pickedStayId, emailConfirmation);
   const pickedConfirmation =
     savedPicks.find((pick) => pick.stayId === resolvedStayId)?.confirmationNumber ?? null;
-  const confirmationNumber = pickedConfirmation ?? (savedPicks.length > 0 ? null : emailConfirmation);
+  const confirmationNumber = targetCleared ? null : pickedConfirmation ?? (savedPicks.length > 0 ? null : emailConfirmation);
   // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
   // The booked arrival rides with the find so HMS quick search covers that day. Without booked dates in the mail the
   // find goes by confirmation number alone: the requested arrival never stands in (AE2). findRequestFor drops a non-date.
-  const findArrival = amendment?.arrival ?? null;
+  const findArrival = targetCleared ? null : projected?.target?.arrival ?? amendment?.arrival ?? null;
   const bookedMissing = !findArrival;
   const searchIdentity =
     amendment?.guestLastName?.trim() && amendment.arrival
@@ -283,6 +298,7 @@ export function AmendLookupPanel({
   }, []);
   const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
   const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
+  const [selectedAfterClear, setSelectedAfterClear] = useState<{ scope: string; confirmation: string; arrival: string | null } | null>(null);
   // Keep the mounted editor during a refresh, but never allow its stale booking to prepare a write.
   const refreshingAmend = useRef<{ scope: string; confirmation: string; stay: StayRecordWire;
     contactObservations?: StayContactObservations } | null>(null);
@@ -337,7 +353,9 @@ export function AmendLookupPanel({
   const suspectLink = Boolean(stay && suspectStayLink(amendment, stay, Boolean(found?.arrivalMismatch)));
   const waitingForSavedPick = savedPicks.length > 0 && !lookupable;
   // CHECK: missing / not found / ambiguous / suspect, or staff already has a candidate list to reopen.
-  const checkReason = waitingForSavedPick
+  const awaitingClearedTarget = Boolean(targetCleared && (!key || selectedAfterClear?.scope !== key ||
+    selectedAfterClear.confirmation !== foundNumber || (selectedAfterClear.arrival && selectedAfterClear.arrival !== stay?.arrival)));
+  const checkReason = awaitingClearedTarget ? 'missing' : waitingForSavedPick
     ? null
     : !stay
       ? !lookupable
@@ -423,7 +441,10 @@ export function AmendLookupPanel({
     setPickedStayId(stayId);
     if (!key) return;
     const next = findRequestFor(confirmation, findArrival);
-    if ('request' in next) find.start(next.request);
+    if ('request' in next) {
+      setSelectedAfterClear({ scope: key, confirmation, arrival: next.request.arrival ?? null });
+      find.start(next.request);
+    }
   };
 
   const reportStayAction = (kind: 'amend' | 'cancel', confirmation: string) => {
@@ -600,6 +621,8 @@ export function AmendLookupPanel({
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
+      {amendment.kind === 'amend' && (readOnlyAmend?.draft?.requestCount ?? 0) > 1 ?
+        <p role="status" className={warnNoteClass}>This email has multiple changes. Open each booking in HMS.</p> : null}
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
@@ -805,7 +828,10 @@ export function AmendLookupPanel({
           onPick={(row) => {
             if (!key) return;
             const next = findRequestFor(row.confirmation, row.arrival);
-            if ('request' in next) find.start(next.request);
+            if ('request' in next) {
+              setSelectedAfterClear({ scope: key, confirmation: row.confirmation, arrival: row.arrival });
+              find.start(next.request);
+            }
           }}
         />
       ) : null}
@@ -869,26 +895,37 @@ export function AmendLookupPanel({
       ) : null}
         </>
       )}
-      {amendment.kind === 'amend' && readOnlyAmend && amendReview && readOnlyIdentity ? (
-          <div hidden={!currentAmendReview}>
+      {amendment.kind === 'amend' && readOnlyAmend && amendReview && readOnlyIdentity &&
+          (!readOnlyAmend.requireDurableDraft || durableDraft) ? (
+          <fieldset className="min-w-0" hidden={!currentAmendReview} disabled={readOnlyAmend.historyBusy}>
           <LocalAmendReview
-            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, amendReview.confirmation])}
+            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, amendReview.confirmation,
+              readOnlyAmend.historyEpoch])}
             identity={readOnlyIdentity}
             revision={localReadRevision}
             confirmation={amendReview.confirmation}
             stay={amendReview.stay}
             contactObservations={amendReview.contactObservations}
-            requestedArrival={amendment.requestedArrival}
-            requestedDeparture={amendment.requestedDeparture}
+            requestedArrival={projected ? projected.arrival : amendment.requestedArrival}
+            requestedDeparture={projected ? projected.departure : amendment.requestedDeparture}
+            requestedAdults={projected?.adults}
+            requestedChildren={projected?.children}
+            requestedChildAges={projected?.childAges}
+            durableDraft={durableDraft}
             ratePlans={readOnlyAmend.ratePlans}
             defaultRecipient={session.staffHeader.clientEmail}
             onApprovalVisibilityChange={setActiveAmendApproval}
             writeContext={currentAmendReview && selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
           />
-          </div>
-      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend ? (
-        <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
-      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
+          </fieldset>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend &&
+          (readOnlyAmend.draft?.requestCount ?? 0) <= 1 ? (
+        <p className={infoNoteClass}>{readOnlyAmend.requireDurableDraft && !durableDraft
+          ? <>{readOnlyAmend.draftLoading ? 'Loading the saved request…' : 'The saved request is not ready.'}{' '}
+            {!readOnlyAmend.draftLoading && readOnlyAmend.retryDraft ? <button type="button" className="font-semibold underline"
+              onClick={readOnlyAmend.retryDraft}>Try again</button> : null}</>
+          : 'Select the email and confirm the booking before reviewing this change.'}</p>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && !readOnlyAmend ? (
         <AmendSection
           view={amendView}
           canPreview={canAmendWrite}
@@ -1216,7 +1253,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 
 /** Bind the editable request to the current selected email and booking. */
 function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
-  ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
+  requestedAdults, requestedChildren, requestedChildAges, durableDraft, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1224,6 +1261,10 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   contactObservations?: StayContactObservations;
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
+  requestedAdults?: number | null;
+  requestedChildren?: number | null;
+  requestedChildAges?: number[] | null;
+  durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
   ratePlans: RatePlanCatalogueEntry[];
   defaultRecipient: string;
   onApprovalVisibilityChange: (visible: boolean) => void;
@@ -1231,7 +1272,27 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
 }) {
   const [draftStore] = useState(createSavedStayAmendDraftStore);
   const [draft, setDraft] = useState<SavedStayAmendDraftUpdate | null>(null);
-  const basis = savedStayAmendReviewBasis(stay, { arrival: requestedArrival, departure: requestedDeparture }, revision);
+  const lastTarget = useRef('');
+  useEffect(() => {
+    const arrival = sendableArrival(stay.arrival ?? '');
+    if (!durableDraft || !arrival) return;
+    const target = { confirmation, arrival };
+    const key = JSON.stringify(target);
+    if (key !== lastTarget.current && JSON.stringify(durableDraft.request?.fields.value.target) !== key) {
+      lastTarget.current = key;
+      durableDraft.record('target', target);
+    }
+  }, [durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
+  const stayId = durableDraft?.request?.stayId;
+  const cleared = stayId ? {
+    arrival: requestedArrival == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.arrival`]?.origin === 'staff',
+    departure: requestedDeparture == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.departure`]?.origin === 'staff',
+    adults: requestedAdults == null && durableDraft?.fieldMeta[`stays[${stayId}].totalAdults`]?.origin === 'staff',
+    children: requestedChildren == null && durableDraft?.fieldMeta[`stays[${stayId}].totalChildren`]?.origin === 'staff',
+  } : undefined;
+  const requested = { arrival: requestedArrival, departure: requestedDeparture, adults: requestedAdults,
+    children: requestedChildren, childAges: requestedChildAges, cleared };
+  const basis = savedStayAmendReviewBasis(stay, requested, revision);
   const currentDraft = draft?.basis === basis && draft.extractionRevision === revision &&
     draft.confirmation === confirmation &&
     (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
@@ -1239,15 +1300,31 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   return <>
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
-      requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
+      requestedDeparture={requestedDeparture} requestedAdults={requestedAdults} requestedChildren={requestedChildren}
+      requestedChildAges={requestedChildAges} cleared={cleared} onFieldEdit={(field, value, next) => {
+        if (!durableDraft) return;
+        if (field === 'arrival' || field === 'departure' || field === 'nights') {
+          const dateField = field === 'nights' ? 'departure' : field;
+          const date = next[dateField];
+          durableDraft.record(dateField, date || null, !date || Boolean(sendableArrival(date)));
+        } else if (field === 'adults' || field === 'children') {
+          const valid = !value || /^(0|[1-9]\d{0,2})$/.test(value);
+          durableDraft.record(field, value && valid ? Number(value) : null, valid);
+        } else if (field === 'childAges') {
+          const parts = value.trim() ? value.split(',').map((age) => age.trim()) : [];
+          const valid = parts.every((age) => /^(0|[1-9]\d?)$/.test(age) && Number(age) <= 17) && parts.length <= 9;
+          durableDraft.record('childAges', value.trim() && valid ? parts.map(Number) : value.trim() ? null : [], valid);
+        }
+      }} onDraftChange={setDraft} />
     <LocalAmendChoices stay={stay} ratePlans={ratePlans} draft={currentDraft}
       identity={identity} confirmation={confirmation} contactObservations={contactObservations}
-      defaultRecipient={defaultRecipient} writeContext={writeContext} onApprovalVisibilityChange={onApprovalVisibilityChange} />
+      defaultRecipient={defaultRecipient} writeContext={writeContext} durableDraft={durableDraft}
+      onApprovalVisibilityChange={onApprovalVisibilityChange} />
   </>;
 }
 
 function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
-  onApprovalVisibilityChange }: {
+  durableDraft, onApprovalVisibilityChange }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
   draft: SavedStayAmendDraftUpdate | null;
@@ -1257,26 +1334,44 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   defaultRecipient: string;
   onApprovalVisibilityChange: (visible: boolean) => void;
   writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
+  durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
 }) {
   const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
-  const [roomType, setRoomType] = useState(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
-  const [ratePlan, setRatePlan] = useState(stay.ratePlan ?? '');
-  const [rateSearch, setRateSearch] = useState(stay.ratePlan ?? '');
+  const saved = durableDraft?.request?.fields.value;
+  const staffCleared = (field: string) => durableDraft?.fieldMeta[`requests[${durableDraft?.request?.requestId}].${field}`]?.origin === 'staff';
+  const savedText = (field: string, value: string | null | undefined, fallback: string) =>
+    value ?? (staffCleared(field) ? '' : fallback);
+  const initialRoom = saved?.roomType ?? (staffCleared('roomType') ? '' : knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
+  const initialRate = saved?.ratePlan ?? (staffCleared('ratePlan') ? '' : stay.ratePlan ?? '');
+  const initialFirstName = savedText('firstName', saved?.firstName, stay.firstName ?? '');
+  const initialLastName = savedText('lastName', saved?.lastName, stay.lastName ?? '');
+  const initialGuestEmail = savedText('guestEmail', saved?.guestEmail, contactObservations?.guestEmail?.value ?? '');
+  const initialBookerName = savedText('bookerName', saved?.bookerName, contactObservations?.bookerName?.value ?? '');
+  const initialBookerContact = savedText('bookerContact', saved?.bookerContact, contactObservations?.bookerContact?.value ?? '');
+  const initialCmsMessageId = savedText('cms.messageId', saved?.cms.messageId,
+    labtest ? '' : stay.bookingAgency || stay.organization ? '03' : '01');
+  const recipientCleared = saved?.cms.recipient === null && staffCleared('cms.recipient');
+  const sendCleared = saved?.cms.send === null && staffCleared('cms.send');
+  const [roomType, setRoomType] = useState(initialRoom);
+  const [ratePlan, setRatePlan] = useState(initialRate);
+  const [rateSearch, setRateSearch] = useState(initialRate);
   const [showRateMatches, setShowRateMatches] = useState(false);
-  const [retainRates, setRetainRates] = useState<'yes' | 'no'>('no');
-  const [firstName, setFirstName] = useState(stay.firstName ?? '');
-  const [lastName, setLastName] = useState(stay.lastName ?? '');
-  const [guestEmail, setGuestEmail] = useState(contactObservations?.guestEmail?.value ?? '');
-  const [bookerName, setBookerName] = useState(contactObservations?.bookerName?.value ?? '');
-  const [bookerContact, setBookerContact] = useState(contactObservations?.bookerContact?.value ?? '');
+  const [retainRates, setRetainRates] = useState<'yes' | 'no'>(saved?.retainRates ?? 'no');
+  const [firstName, setFirstName] = useState(initialFirstName);
+  const [lastName, setLastName] = useState(initialLastName);
+  const [guestEmail, setGuestEmail] = useState(initialGuestEmail);
+  const [bookerName, setBookerName] = useState(initialBookerName);
+  const [bookerContact, setBookerContact] = useState(initialBookerContact);
   const [editedDetails, setEditedDetails] = useState<string[]>([]);
   const sources = useConfirmationSources();
-  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
-  const [customRecipient, setCustomRecipient] = useState(sources?.setting?.address ?? '');
-  const [recipientTouched, setRecipientTouched] = useState(false);
-  const [cmsSend, setCmsSend] = useState(!labtest);
-  const [cmsMessageId, setCmsMessageId] = useState(labtest ? '' : stay.bookingAgency || stay.organization ? '03' : '01');
-  const [cmsTouched, setCmsTouched] = useState(false);
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(recipientCleared ? 'custom' : saved?.cms.recipient?.mode ?? sources?.setting?.mode ?? 'self');
+  const [customRecipient, setCustomRecipient] = useState(recipientCleared ? '' : saved?.cms.recipient?.address ?? sources?.setting?.address ?? '');
+  const [recipientTouched, setRecipientTouched] = useState(Boolean(saved?.cms.recipient || recipientCleared));
+  const [cmsSend, setCmsSend] = useState(labtest ? false : saved?.cms.send ?? true);
+  const [cmsNeedsChoice, setCmsNeedsChoice] = useState(Boolean(!labtest && sendCleared));
+  const [cmsMessageId, setCmsMessageId] = useState(initialCmsMessageId);
+  const [cmsTouched, setCmsTouched] = useState(Boolean(saved && (saved.cms.send !== null || saved.cms.messageId !== null || saved.cms.recipient)));
+  const [cmsEdited, setCmsEdited] = useState(false);
   const [boundKey, setBoundKey] = useState<string | null>(null);
   const [availableKey, setAvailableKey] = useState<string | null>(null);
   useEffect(() => {
@@ -1285,17 +1380,32 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     setCustomRecipient(sources.setting.address ?? '');
   }, [recipientTouched, sources?.setting]);
   useEffect(() => {
-    if (!editedDetails.includes('roomType')) setRoomType(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
+    if (!editedDetails.includes('roomType')) setRoomType(initialRoom);
     if (!editedDetails.includes('ratePlan')) {
-      setRatePlan(stay.ratePlan ?? '');
-      setRateSearch(stay.ratePlan ?? '');
+      setRatePlan(initialRate);
+      setRateSearch(initialRate);
     }
-    if (!editedDetails.includes('firstName')) setFirstName(stay.firstName ?? '');
-    if (!editedDetails.includes('lastName')) setLastName(stay.lastName ?? '');
-    if (!editedDetails.includes('guestEmail')) setGuestEmail(contactObservations?.guestEmail?.value ?? '');
-    if (!editedDetails.includes('bookerName')) setBookerName(contactObservations?.bookerName?.value ?? '');
-    if (!editedDetails.includes('bookerContact')) setBookerContact(contactObservations?.bookerContact?.value ?? '');
-  }, [stay, contactObservations, editedDetails]);
+    if (!editedDetails.includes('firstName')) setFirstName(initialFirstName);
+    if (!editedDetails.includes('lastName')) setLastName(initialLastName);
+    if (!editedDetails.includes('guestEmail')) setGuestEmail(initialGuestEmail);
+    if (!editedDetails.includes('bookerName')) setBookerName(initialBookerName);
+    if (!editedDetails.includes('bookerContact')) setBookerContact(initialBookerContact);
+    if (!editedDetails.includes('retainRates')) setRetainRates(saved?.retainRates ?? 'no');
+    if (!cmsEdited && saved) {
+      setCmsSend(labtest ? false : saved.cms.send ?? true);
+      setCmsNeedsChoice(Boolean(!labtest && sendCleared));
+      setCmsMessageId(initialCmsMessageId);
+      setCmsTouched(Boolean(saved.cms.send !== null || saved.cms.messageId !== null || saved.cms.recipient));
+      if (saved.cms.recipient) {
+        setRecipientMode(saved.cms.recipient.mode);
+        setCustomRecipient(saved.cms.recipient.address);
+        setRecipientTouched(true);
+      } else if (recipientCleared) {
+        setRecipientMode('custom'); setCustomRecipient(''); setRecipientTouched(true);
+      }
+    }
+  }, [stay, contactObservations, saved, editedDetails, cmsEdited, labtest, initialRoom, initialRate, initialFirstName,
+    initialLastName, initialGuestEmail, initialBookerName, initialBookerContact, initialCmsMessageId, recipientCleared, sendCleared]);
   const recipient = resolveConfirmationRecipient({
     mode: recipientMode, customAddress: customRecipient, userEmail: sources?.userEmail ?? '', clientEmail: defaultRecipient,
     invalidSetting: sources?.invalidSetting || sources?.load === 'failed', staffChose: recipientTouched,
@@ -1312,11 +1422,11 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     ...(ratePlan && ratePlan !== stay.ratePlan ? { ratePlan } : {}),
     ...(firstName.trim() !== (stay.firstName ?? '') ? { firstName: firstName.trim() } : {}),
     ...(lastName.trim() !== (stay.lastName ?? '') ? { lastName: lastName.trim() } : {}),
-    ...(editedDetails.includes('guestEmail') ? { guestEmail: guestEmail.trim() } : {}),
-    ...(editedDetails.includes('bookerName') ? { bookerName: bookerName.trim() } : {}),
-    ...(editedDetails.includes('bookerContact') ? { bookerContact: bookerContact.trim() } : {}),
+    ...(guestEmail.trim() !== (contactObservations?.guestEmail?.value ?? '') ? { guestEmail: guestEmail.trim() } : {}),
+    ...(bookerName.trim() !== (contactObservations?.bookerName?.value ?? '') ? { bookerName: bookerName.trim() } : {}),
+    ...(bookerContact.trim() !== (contactObservations?.bookerContact?.value ?? '') ? { bookerContact: bookerContact.trim() } : {}),
   };
-  const validRecipient = !cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim()));
+  const validRecipient = !cmsNeedsChoice && (!cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim())));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
     firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
     /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
@@ -1328,14 +1438,19 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     changes: { ...changes, ratePlan, retainRates, cmsSend: labtest ? false : cmsSend,
       cmsMessageId: cmsMessageId.trim(), cmsRecipient: cmsRecipient.trim() },
   } : null;
-  const requestKey = request ? JSON.stringify(request) : null;
+  const requestKey = request ? JSON.stringify([request, durableDraft?.editVersion ?? 0]) : null;
   const markDetail = (name: string) => setEditedDetails((current) => current.includes(name) ? current : [...current, name]);
+  const recordRecipient = (mode: ConfirmationMode, custom: string) => durableDraft?.record('cms.recipient', {
+    mode, address: mode === 'self' ? sources?.userEmail ?? '' : mode === 'client' ? defaultRecipient : custom,
+  });
   return <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
     <div className="grid grid-cols-2 gap-2">
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Room type</span>
         <span className={captionClass}>HMS: {stay.roomType || 'Not shown'}</span>
-        <select className={selectClass} value={roomType} onChange={(event) => { setRoomType(event.target.value); markDetail('roomType'); }}>
+        <select className={selectClass} value={roomType} onChange={(event) => {
+          setRoomType(event.target.value); markDetail('roomType'); durableDraft?.record('roomType', event.target.value || null);
+        }}>
           {!roomType ? <option value="">Choose room type</option> : null}
           {roomType && !Object.hasOwn(ROOM_TYPE_NAMES, roomType) ? <option value={roomType}>{roomType}</option> : null}
           {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => <option key={code} value={code}>{name} ({code})</option>)}
@@ -1346,18 +1461,25 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
         <span className={captionClass}>HMS: {stay.ratePlan || 'Not shown'}</span>
         <input aria-label="Rate plan" className={selectClass} value={rateSearch} placeholder="Search code or name"
           onFocus={() => setShowRateMatches(true)} onChange={(event) => {
-            setRateSearch(event.target.value);
-            setRatePlan(event.target.value.trim().toUpperCase());
+            const input = event.target.value;
+            const code = input.trim().toUpperCase();
+            const matches = ratePlans.some((plan) => `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(input.trim().toLocaleLowerCase()));
+            const exact = ratePlans.some((plan) => plan.code.toUpperCase() === code);
+            setRateSearch(input);
+            setRatePlan(code);
             setShowRateMatches(true);
             markDetail('ratePlan');
+            durableDraft?.record('ratePlan', code || null, !code || (/^[A-Z0-9]{1,12}$/.test(code) && (!matches || exact)));
           }} />
         {showRateMatches && rateMatches.length ? <ul aria-label="Matching rates" className="max-h-32 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
           {rateMatches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]"
-            onClick={() => { setRatePlan(plan.code); setRateSearch(plan.code); setShowRateMatches(false); markDetail('ratePlan'); }}>
+            onClick={() => { setRatePlan(plan.code); setRateSearch(plan.code); setShowRateMatches(false); markDetail('ratePlan');
+              durableDraft?.record('ratePlan', plan.code); }}>
             {plan.code} · {plan.name}
           </button></li>)}
           {pendingRateMatch && /^[A-Z0-9]{1,12}$/.test(ratePlan) ? <li><button type="button"
-            className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]" onClick={() => { setRateSearch(ratePlan); setShowRateMatches(false); }}>
+            className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]" onClick={() => { setRateSearch(ratePlan); setShowRateMatches(false);
+              durableDraft?.record('ratePlan', ratePlan); }}>
             Use {ratePlan} as a code
           </button></li> : null}
         </ul> : null}
@@ -1366,7 +1488,9 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
       </div>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Retain the current rate?</span>
-        <select aria-label="Retain the current rate?" className={selectClass} value={retainRates} onChange={(event) => setRetainRates(event.target.value as 'yes' | 'no')}>
+        <select aria-label="Retain the current rate?" className={selectClass} value={retainRates} onChange={(event) => {
+          const value = event.target.value as 'yes' | 'no'; setRetainRates(value); markDetail('retainRates'); durableDraft?.record('retainRates', value);
+        }}>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
@@ -1388,39 +1512,60 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
             update(event.target.value);
             const detailNames: Record<string, string> = { 'Guest first name': 'firstName', 'Guest surname': 'lastName', 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };
             const name = detailNames[label];
-            if (name) markDetail(name);
+            if (name) {
+              markDetail(name);
+              durableDraft?.record(name as 'firstName' | 'lastName' | 'guestEmail' | 'bookerName' | 'bookerContact', event.target.value,
+                event.target.value.length <= 1000 && !/[\p{Cc}]/u.test(event.target.value));
+            }
           }} />
         </label>)}
       </div>
     </details>
     {!firstName.trim() || !lastName.trim() ? <p className={warnNoteClass}>Enter guest first name and surname under More.</p> : null}
     {!/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType) ? <p className={warnNoteClass}>Choose a room type and enter a rate code (letters and numbers).</p> : null}
-    <label className="flex items-center gap-2 text-[11.5px] text-[#334155]">
-      <input type="checkbox" checked={cmsSend} disabled={labtest} onChange={(event) => { setCmsSend(event.target.checked); setCmsTouched(true); }} />
+    {cmsNeedsChoice ? <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      <span>Send HMS confirmation?</span>
+      <select className={selectClass} value="" onChange={(event) => {
+        if (!event.target.value) return;
+        const send = event.target.value === 'yes'; setCmsSend(send); setCmsNeedsChoice(false);
+        setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.send', send);
+      }}><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select>
+    </label> : <label className="flex items-center gap-2 text-[11.5px] text-[#334155]">
+      <input type="checkbox" checked={cmsSend} disabled={labtest} onChange={(event) => {
+        setCmsSend(event.target.checked); setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.send', event.target.checked);
+      }} />
       Send HMS confirmation
-    </label>
-    {cmsSend ? <div className="flex flex-col gap-2">
+    </label>}
+    {cmsSend && !cmsNeedsChoice ? <div className="flex flex-col gap-2">
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">CMS message ID</span>
-        <input className={selectClass} value={cmsMessageId} disabled={labtest} onChange={(event) => { setCmsMessageId(event.target.value); setCmsTouched(true); }} />
+        <input className={selectClass} maxLength={8} value={cmsMessageId} disabled={labtest} onChange={(event) => {
+          setCmsMessageId(event.target.value); setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.messageId', event.target.value);
+        }} />
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Send confirmation to</span>
         <select className={selectClass} value={(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? '' : recipientMode}
-          onChange={(event) => { setRecipientMode(event.target.value as ConfirmationMode); setRecipientTouched(true); setCmsTouched(true); }}>
+          onChange={(event) => { const mode = event.target.value as ConfirmationMode;
+            setRecipientMode(mode); setRecipientTouched(true); setCmsTouched(true); setCmsEdited(true); recordRecipient(mode, customRecipient); }}>
           {(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? <option value="">Choose recipient</option> : null}
           <option value="self">Me</option><option value="client">Client</option><option value="custom">Other</option>
         </select>
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Confirmation recipient</span>
-        <input data-pii type="email" className={selectClass} value={recipientMode === 'custom' ? customRecipient : cmsRecipient}
-          onChange={(event) => { setRecipientMode('custom'); setCustomRecipient(event.target.value); setRecipientTouched(true); setCmsTouched(true); }} />
+        <input data-pii type="email" maxLength={255} className={selectClass} value={recipientMode === 'custom' ? customRecipient : cmsRecipient}
+          onChange={(event) => { setRecipientMode('custom'); setCustomRecipient(event.target.value); setRecipientTouched(true);
+            setCmsTouched(true); setCmsEdited(true); recordRecipient('custom', event.target.value); }} />
       </label>
       <p className={captionClass}>HMS sends this confirmation.</p>
     </div> : null}
-    {!validRecipient ? <p className={warnNoteClass}>{recipientLoading ? 'Loading confirmation preference…' : !recipient.ok ? recipient.message : 'Enter a confirmation message ID.'}</p> : null}
+    {!validRecipient ? <p className={warnNoteClass}>{cmsNeedsChoice ? 'Choose whether to send an HMS confirmation.'
+      : recipientLoading ? 'Loading confirmation preference…' : !recipient.ok ? recipient.message : 'Enter a confirmation message ID.'}</p> : null}
     {labtest ? <p className={infoNoteClass}>HMS confirmation is off for Labtest.</p> : null}
+    {durableDraft?.error ? <p role="status" className={warnNoteClass}>{durableDraft.error}{' '}
+      {durableDraft.retryable ? <button type="button" className="font-semibold underline" onClick={durableDraft.retry}>Retry save</button> : null}
+    </p> : null}
     <p className={infoNoteClass}>{requestKey && boundKey === requestKey
       ? 'Review the HMS price and change below before Go.'
       : requestKey && availableKey === requestKey
@@ -1428,14 +1573,17 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
         : 'Enter the requested change and confirmation details.'}</p>
     {request && requestKey && writeContext ? <CloudAmendAction key={requestKey} request={request}
       guestSurname={stay.lastName || ''} transportId={writeContext.transportId} trpc={writeContext.trpc}
+      flushDraft={durableDraft?.flush} draftBinding={durableDraft?.binding}
       onApprovalVisibilityChange={onApprovalVisibilityChange}
       onAvailable={() => setAvailableKey(requestKey)} onBound={() => setBoundKey(requestKey)} /> : null}
   </div>;
 }
 
 /** Hidden unless the server advertises the complete, explicitly enabled writer. */
-function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname, onApprovalVisibilityChange }: {
+function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname, flushDraft, draftBinding, onApprovalVisibilityChange }: {
   request: CloudAmendRequest; transportId: string; trpc: unknown; onAvailable: () => void; onBound: () => void; guestSurname: string;
+  flushDraft?: () => Promise<boolean>;
+  draftBinding?: () => CloudAmendRequest['draft'] | null;
   onApprovalVisibilityChange: (visible: boolean) => void;
 }) {
   const [client, setClient] = useState<CloudAmendClient | null>(null);
@@ -1466,7 +1614,14 @@ function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, gu
   return <>
     {!bound ? <button type="button" className={buttonClass} disabled={busy} onClick={() => {
       setBusy(true); setFailed(false);
-      void client.prepare().then((ok) => { if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); } })
+      void (async () => {
+        if (flushDraft && !(await flushDraft())) return;
+        if (!liveRef.current) return;
+        const draft = draftBinding?.();
+        if (draftBinding && !draft) return;
+        const ok = await client.prepare(draft ?? undefined);
+        if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); }
+      })()
         .finally(() => { if (liveRef.current) setBusy(false); });
     }}>{busy ? 'Checking the booking…' : 'Review change for approval'}</button> : null}
     {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { sendableArrival, type StayRecordWire } from '@/lib/quote-workflow/amend-find';
 import {
   amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal, savedStayAmendReviewBasis,
-  type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity,
+  type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity, type SavedStayAmendRequest,
   type SavedStayAmendProposal, type SavedStayAmendResult,
 } from '@/lib/quote-workflow/saved-stay-amendment';
 
@@ -20,6 +20,11 @@ type Props = {
   stay: StayRecordWire;
   requestedArrival?: string | null;
   requestedDeparture?: string | null;
+  requestedAdults?: number | null;
+  requestedChildren?: number | null;
+  requestedChildAges?: number[] | null;
+  cleared?: SavedStayAmendRequest['cleared'];
+  onFieldEdit?: (field: keyof SavedStayAmendDraft, value: string, next: SavedStayAmendDraft) => void;
   result?: SavedStayAmendResult | null;
   /** The current source and the proposal actually submitted, not values copied from the result. */
   resultContext?: {
@@ -83,11 +88,13 @@ export function SavedStayAmendEditor(props: Props) {
     storeDraft={(value) => drafts.current.set(key, { ...value, draft: { ...value.draft }, touched: [...value.touched] })} />;
 }
 
-function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture, result, resultContext,
-  screenshot, onDraftChange, storedDraft, storeDraft }: Props & {
+function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture,
+  requestedAdults, requestedChildren, requestedChildAges, cleared, result, resultContext,
+  screenshot, onDraftChange, onFieldEdit, storedDraft, storeDraft }: Props & {
     storedDraft?: StoredDraft; storeDraft: (draft: StoredDraft) => void;
   }) {
-  const request = { arrival: requestedArrival, departure: requestedDeparture };
+  const request = { arrival: requestedArrival, departure: requestedDeparture,
+    adults: requestedAdults, children: requestedChildren, childAges: requestedChildAges, cleared };
   const basis = savedStayAmendReviewBasis(stay, request, extractionRevision);
   const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, request));
   const [touched, setTouched] = useState<DraftField[]>(() => storedDraft?.touched ?? []);
@@ -119,6 +126,7 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
     setTouched(nextTouched);
     setDraft(next);
     storeDraft({ draft: next, touched: nextTouched, acceptedBasis });
+    onFieldEdit?.(name, value, next);
     onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
       ...(needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, next)) });
   };
