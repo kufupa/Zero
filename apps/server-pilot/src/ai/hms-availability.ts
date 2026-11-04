@@ -35,11 +35,36 @@ const MAX_ROOM_GROUPS = 8;
 const MAX_NIGHTS = 30;
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+const nativeCode = z.string().regex(/^[A-Z0-9]{1,12}$/);
+const nativeId = z.string().trim().min(1).max(40).refine(value => !/[\p{Cc}]/u.test(value));
+const partyRef = z.object({ nativeId, name: z.string().trim().min(1).max(200).refine(value => !/[\p{Cc}]/u.test(value)) }).strict();
+
+/** Pricing identity reconstructed by the route from the bound effective draft. */
+export const rateContextSchema = z.object({
+  propertyCode: z.string().min(1),
+  workflow: z.enum(['quote', 'create', 'amend']),
+  arrival: z.string().regex(ISO_DAY), departure: z.string().regex(ISO_DAY),
+  roomCode: nativeCode, quantity: z.number().int().min(1).max(99),
+  adults: z.number().int().min(1).max(9), childAges: z.array(z.number().int().min(0).max(99)).max(9),
+  board: z.enum(['room_only', 'bb', 'dbb']).nullable(), currency: z.string().regex(/^[A-Z]{3}$/),
+  agencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
+  sourceOfBusiness: z.string().nullable(), track: z.string().nullable(), guaranteeType: z.string().nullable(),
+  typedRatePlan: nativeCode.nullable(),
+  savedTarget: z.object({ confirmation: z.string().min(1), bookedArrival: z.string().regex(ISO_DAY),
+    nativePreimageDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().nullable(),
+  retainRates: z.enum(['yes', 'no']).nullable(),
+}).strict();
+export type RateContext = z.infer<typeof rateContextSchema>;
+
+export { rateContextKey } from './rate-options.js';
+
 export const availabilityRequestSchema = z
   .object({
     kind: z.literal('availability'),
     arrival: z.string().regex(ISO_DAY),
     departure: z.string().regex(ISO_DAY),
+    rateContext: rateContextSchema.optional(),
+    rateParties: z.object({ organization: partyRef.optional(), agency: partyRef.optional() }).strict().optional(),
     rooms: z
       .array(
         z
@@ -56,6 +81,29 @@ export const availabilityRequestSchema = z
       .max(MAX_ROOM_GROUPS),
   })
   .strict();
+
+/** Refined job schema preserves availabilityRequestSchema.shape for existing pane route consumers. */
+export const availabilityJobRequestSchema = availabilityRequestSchema.superRefine((request, ctx) => {
+    const context = request.rateContext;
+    if (!context) {
+      if (request.rateParties) ctx.addIssue({ code: 'custom', message: 'Rate parties require a rate context.' });
+      return;
+    }
+    const room = request.rooms[0];
+    if (request.rooms.length !== 1 || !room || context.arrival !== request.arrival || context.departure !== request.departure ||
+        context.quantity !== room.quantity || context.adults !== room.adults ||
+        JSON.stringify(context.childAges) !== JSON.stringify(room.childAges) ||
+        !isRealIsoDay(context.arrival) || !isRealIsoDay(context.departure) ||
+        !(context.departure > context.arrival) ||
+        (Date.parse(context.departure) - Date.parse(context.arrival)) / 86_400_000 > MAX_NIGHTS) {
+      ctx.addIssue({ code: 'custom', message: 'Rate context must match one complete room scenario within 30 nights.' });
+    }
+    for (const [kind, id] of [['organization', context.organizationId], ['agency', context.agencyId]] as const) {
+      if ((request.rateParties?.[kind]?.nativeId ?? null) !== id) {
+        ctx.addIssue({ code: 'custom', message: `Rate ${kind} reference must match the context ID.` });
+      }
+    }
+  });
 export type AvailabilityRequest = z.infer<typeof availabilityRequestSchema>;
 
 /** A real calendar day in YYYY-MM-DD form. 2026-02-30 and 2026-13-01 are not one. */
@@ -158,6 +206,7 @@ export const AVAILABILITY_MAX_OPTIONS_PER_GROUP = 200;
 
 /** The quote tool's v2 request for one probe. Groups carry no room or rate codes, so every room type is read. */
 export function quoteRequestFor(request: AvailabilityRequest, target: HmsReadTarget): Record<string, unknown> {
+  if (request.rateContext) throw new Error('CLOUD_RATE_CONTEXT_REQUIRED');
   const propertyCode = target.propertyCode.trim();
   if (!propertyCode) throw new Error('availability_probe_property_unknown');
   return {
@@ -653,6 +702,7 @@ export async function probeAvailability(
   request: AvailabilityRequest,
   deps: AvailabilityProbeDeps,
 ): Promise<AvailabilityProbeResult> {
+  if (request.rateContext) return { outcome: 'refused_input_invalid' };
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
   const spawn = availabilityProbeLoaders.spawn ?? ((quote) => defaultQuoteSpawn(quote, deps.target));

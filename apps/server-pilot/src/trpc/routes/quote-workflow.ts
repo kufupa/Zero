@@ -49,6 +49,12 @@ import {
   workItemIdForMail,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
+import { mailThread, message } from '../../db/schema/mail.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
+import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
+import type { RateContext } from '../../ai/hms-availability.js';
+import type { RateCandidate, RateRecommendation } from '../../ai/rate-options.js';
+import { and, eq } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
@@ -163,6 +169,30 @@ export const voucherLoaders: {
 
 const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998), selection: paneSourceSelectionSchema.optional() });
 
+const rateBinding = z.object({
+  workItemId: z.string().uuid(),
+  source: z.object({ threadId: z.string().trim().min(1).max(200), messageId: z.string().trim().min(1).max(200),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  request: z.object({ requestId: z.string().regex(/^[a-f0-9]{64}$/),
+    stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), rowId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).nullable(),
+    roomIndex: z.number().int().nonnegative().max(7).nullable() }).strict(),
+  expectedSeq: z.number().int().nonnegative().safe(),
+}).strict();
+export const rateCandidatesInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('start'), binding: rateBinding,
+    typedRatePlan: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), forceRefresh: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal('read'), binding: rateBinding, jobId: z.string().uuid() }).strict(),
+]);
+export type RateCandidatesReply = {
+  status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
+  requestId: string; jobId: string | null; contextKey: string | null; context: RateContext | null;
+  observedAt: string | null; expiresAt: string | null;
+  coverage: { candidateList: 'complete' | 'partial' | 'unknown'; reason: string | null };
+  options: RateCandidate[]; recommendation: RateRecommendation | null;
+  issues: Array<{ code: 'missing' | 'invalid' | 'conflict' | 'target_required' | 'not_checked' | 'unsupported' | 'identity_changed';
+    fieldPath: string | null; message: string; blocksPrepare: boolean; blocksGo: boolean }>;
+};
+
 /**
  * Selection narrows the RFC match to a verified web message or synced Outlook locator when available.
  */
@@ -185,6 +215,30 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
+  rateCandidates: mailboxProcedure.input(rateCandidatesInput).mutation(async ({ input, ctx }): Promise<RateCandidatesReply> => {
+    const { binding } = input;
+    const db = getDb();
+    const [selected] = await db.select({ item: workItem, mail: message, thread: mailThread, extraction: mailExtraction })
+      .from(workItem)
+      .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, workItem.transportId)))
+      .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, workItem.transportId)))
+      .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
+      .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, ctx.activeTransportId),
+        eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
+    const valid = selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
+      !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
+      selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
+      !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
+      staffQuoteSourceHash(selected.mail) === binding.source.sourceHash;
+    // The current draft has no server-verified complete agency/company context or native stay preimage.
+    // An absent party is not evidence of a public-rate search. Wire the queued reader only after that proof exists.
+    return { status: valid ? 'blocked' as const : 'stale' as const, requestId: binding.request.requestId,
+      jobId: null, contextKey: null, context: null, observedAt: null, expiresAt: null,
+      coverage: { candidateList: 'unknown' as const, reason: null }, options: [], recommendation: null,
+      issues: [{ code: valid ? 'unsupported' as const : 'identity_changed' as const, fieldPath: null,
+        message: valid ? 'Rate lookup needs verified stay and company or agency details.' : 'This request has changed. Refresh the email.',
+        blocksPrepare: false, blocksGo: false }] };
+  }),
   rateCatalogue: mailboxProcedure.query(async ({ ctx }) => {
     const resolved = resolvePropertyTransport(ctx.activeTransportId);
     if (resolved.kind === 'collector') {
