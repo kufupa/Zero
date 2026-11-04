@@ -1433,18 +1433,20 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
 
   it('answers without waiting for the staff note to be kept, and logs a note that fails to keep', async () => {
     cacheLoaders.llmEnabled = () => false;
-    cacheLoaders.loadSyncedSelection = async () => ({
+    cacheLoaders.loadSyncedSelection = vi.fn(async () => ({
       subject: 'Quote request',
       bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
       preceding: [],
       attachments: [],
-    });
+      messageId: 'selected-note-mail',
+    }));
     const request = {
       internetMessageId: '<note-keep@x>',
       storeId: 'store-1',
       entryId: 'entry-1',
       folderEntryId: 'folder-1',
       staffNote: 'Arrival is now 2027-11-13',
+      selection: { kind: 'web' as const, messageId: 'selected-note-mail', threadId: 'selected-thread' },
     };
     // The writes are mocked, so the stub database is never queried.
     vi.mocked(getDb).mockReturnValue({} as never);
@@ -1455,6 +1457,10 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(await mailboxCaller().quoteWorkflow.analyseSelection({ ...request, selectionEpoch: 31 })).toMatchObject({
         status: 'ready',
       });
+      expect(cacheLoaders.loadSyncedSelection).toHaveBeenCalledWith(expect.objectContaining({ selection: request.selection }));
+      expect(workItemIdForMail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        internetMessageId: 'note-keep@x', selection: request.selection, expectedMessageId: 'selected-note-mail',
+      }));
 
       vi.mocked(workItemIdForMail).mockResolvedValueOnce('wi-note');
       vi.mocked(recordStaffNote).mockRejectedValueOnce(new Error('db down'));
@@ -1746,6 +1752,9 @@ describe('quoteWorkflow.analyseSelection without Outlook ids', () => {
     expect(seen).toHaveLength(1);
     // The route canonicalises the id (brackets stripped) before the loader sees it.
     expect(seen[0]).toMatchObject({ internetMessageId: 'preview-1@x' });
+    const selection = { kind: 'outlook' as const, storeId: 'native-store', entryId: 'native-entry' };
+    await mailboxCaller().quoteWorkflow.analyseSelection({ internetMessageId: '<preview-1@x>', selection, selectionEpoch: 3 });
+    expect(seen[1]).toMatchObject({ internetMessageId: 'preview-1@x', selection });
   });
 });
 
@@ -1817,8 +1826,9 @@ describe('quoteWorkflow.voucherFind', () => {
       };
     };
     voucherLoaders.readText = readText;
-    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<ABC@Host>' });
-    expect(seen).toEqual([{ transportId: 'transport-1', internetMessageId: 'abc@host' }]);
+    const selection = { kind: 'outlook' as const, storeId: 'native-store', entryId: 'native-entry', folderEntryId: 'folder' };
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<ABC@Host>', selection });
+    expect(seen).toEqual([{ transportId: 'transport-1', internetMessageId: 'abc@host', selection }]);
     expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['att-1']);
     expect(reply).toEqual({
       status: 'voucher',

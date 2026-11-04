@@ -17,6 +17,7 @@ import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import { extractEmbeddedPdfText, renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
 import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { getS3Storage } from '../storage/s3.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
@@ -304,6 +305,7 @@ export function extractVoucherGuest(input: {
 export async function loadVoucherCandidate(input: {
   transportId: string;
   internetMessageId: string;
+  selection?: PaneSourceSelection;
 }): Promise<VoucherCandidate | null> {
   let db;
   try {
@@ -323,6 +325,7 @@ export async function loadVoucherCandidate(input: {
       and(
         eq(message.transportId, input.transportId),
         eq(message.messageIdHeader, input.internetMessageId),
+        paneSourceSelectionCondition(input.selection),
       ),
     )
     .limit(2);
@@ -355,7 +358,7 @@ export async function loadVoucherCandidate(input: {
 async function readReconciledPop3Pdf(
   row: QuoteAttachmentRow,
   signal: AbortSignal,
-  scope: { transportId: string; messageId: string; internetMessageId: string },
+  scope: { transportId: string; messageId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): ReturnType<QuoteAttachmentReader> {
   if (row.messageId !== scope.messageId) return { text: null, reason: 'source changed' };
   try {
@@ -363,6 +366,7 @@ async function readReconciledPop3Pdf(
     const checkAuthority = async () => {
       const rows = await db.select({ id: message.id }).from(message).where(and(
         eq(message.transportId, scope.transportId), eq(message.messageIdHeader, scope.internetMessageId),
+        paneSourceSelectionCondition(scope.selection),
       )).limit(2);
       return rows.length === 1 && rows[0]?.id === scope.messageId;
     };
@@ -388,7 +392,7 @@ async function readReconciledPop3Pdf(
 export async function readVoucherAttachmentText(
   files: QuoteAttachmentRow[],
   signal: AbortSignal,
-  scope?: { transportId: string; messageId: string; internetMessageId: string },
+  scope?: { transportId: string; messageId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<SyncedQuoteAttachment[]> {
   let reader: QuoteAttachmentReader;
   try {

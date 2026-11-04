@@ -57,6 +57,7 @@ import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceTex
 import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
 import { maskCardNumbers } from './card-mask.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import {
   getPropertyTransportIds,
   resolvePropertyTransport,
@@ -1875,8 +1876,9 @@ async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
   return { status: 'failed', reason: copy ?? 'Nava could not read this email.' };
 }
 
-/** The one message in this transport with this Message-ID, or null (none, or not unique). */
-async function messageFor(db: DB, input: { transportId: string; internetMessageId: string }) {
+/** The exact selected message, or the unique RFC-only match for legacy callers. */
+async function messageFor(db: DB, input: { transportId: string; internetMessageId: string;
+  selection?: PaneSourceSelection; expectedMessageId?: string }) {
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
   if (!internetMessageId) return null;
   const found = await db
@@ -1891,9 +1893,11 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
     })
     .from(message)
     .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
-    .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)))
+    .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId),
+      paneSourceSelectionCondition(input.selection)))
     .limit(2);
-  return found.length === 1 ? found[0]! : null;
+  const result = found.length === 1 ? found[0]! : null;
+  return result && (!input.expectedMessageId || result.id === input.expectedMessageId) ? result : null;
 }
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
@@ -2051,7 +2055,7 @@ async function readyView(
  */
 export async function storedWorkFor(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
@@ -2095,7 +2099,7 @@ export async function storedWorkFor(
  */
 export async function openStoredWork(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
@@ -2387,7 +2391,7 @@ export async function acceptUneditedFields(
  */
 export async function workItemIdForMail(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection; expectedMessageId?: string },
 ): Promise<string | null> {
   const msg = await messageFor(db, input);
   if (!msg) return null;

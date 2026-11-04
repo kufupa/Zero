@@ -2,6 +2,7 @@ import {
   loadSyncedQuoteSelectionFromMailbox,
   type SyncedQuoteSelection,
 } from '../../ai/quote-workflow-synced-selection.js';
+import { paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
 import {
   quoteWorkflowLlmEnabled,
   QUOTE_WORKFLOW_PROMPT_VERSION,
@@ -123,6 +124,7 @@ const paneCloudBatchInput = z.discriminatedUnion('kind', [
 export type LoadSyncedSelection = (input: {
   transportId: string;
   internetMessageId?: string;
+  selection?: PaneSourceSelection;
   entryId?: string;
   storeId?: string;
   signal?: AbortSignal;
@@ -152,24 +154,24 @@ export const quoteWorkflowLoaders: {
 
 /** Test seams for the voucher route: the stored candidate and the PDF text reader. Null uses the real ones. */
 export const voucherLoaders: {
-  candidate: ((input: { transportId: string; internetMessageId: string }) => Promise<VoucherCandidate | null>) | null;
+  candidate: ((input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection }) => Promise<VoucherCandidate | null>) | null;
   readText: ((files: QuoteAttachmentRow[], signal: AbortSignal) => Promise<SyncedQuoteAttachment[]>) | null;
 } = {
   candidate: null,
   readText: null,
 };
 
-const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998) });
+const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998), selection: paneSourceSelectionSchema.optional() });
 
 /**
- * Only internetMessageId selects the mail. storeId, entryId and folderEntryId are
- * optional and unused, so the web preview can analyse a thread without Outlook ids.
+ * Selection narrows the RFC match to a verified web message or synced Outlook locator when available.
  */
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
   storeId: z.string().optional(),
   entryId: z.string().optional(),
   folderEntryId: z.string().optional(),
+  selection: paneSourceSelectionSchema.optional(),
   selectionEpoch: z.number().int(),
   treatAs: z.enum(['quote', 'create_booking']).optional(),
   staffNote: z.string().max(4000).optional(),
@@ -211,6 +213,7 @@ export const quoteWorkflowRouter = router({
       const synced = await loader({
         transportId: ctx.activeTransportId,
         internetMessageId,
+        ...(input.selection ? { selection: input.selection } : {}),
         entryId: input.entryId,
         storeId: input.storeId,
         signal: AbortSignal.timeout(15_000),
@@ -238,11 +241,12 @@ export const quoteWorkflowRouter = router({
       // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
       // never holds the answer, and a note that fails to save is logged, not thrown.
       const note = input.staffNote?.trim();
-      if (note && internetMessageId) {
+      if (note && internetMessageId && (!input.selection || synced.messageId)) {
         const transportId = ctx.activeTransportId;
         const userId = ctx.sessionUser.id;
         void (async () => {
-          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
+          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId,
+            selection: input.selection, expectedMessageId: synced.messageId });
           if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
         })().catch((error: unknown) => {
           console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
@@ -259,6 +263,7 @@ export const quoteWorkflowRouter = router({
     const candidate = await (voucherLoaders.candidate ?? loadVoucherCandidate)({
       transportId: ctx.activeTransportId,
       internetMessageId,
+      ...(input.selection ? { selection: input.selection } : {}),
     });
     if (!candidate) return { status: 'unsynced' };
     const files = candidate.attachments.filter((attachment) => !attachment.isInline);
@@ -273,6 +278,7 @@ export const quoteWorkflowRouter = router({
     const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
       : await readVoucherAttachmentText(readable, signal, {
           transportId: ctx.activeTransportId, messageId: candidate.messageId, internetMessageId,
+          ...(input.selection ? { selection: input.selection } : {}),
         });
     // A voucher PDF whose text was not read (over the reader's cap, scanned, or unreadable) is counted for the card.
     const withText = new Set(texts.filter((entry) => entry.text?.trim()).map((entry) => entry.id));

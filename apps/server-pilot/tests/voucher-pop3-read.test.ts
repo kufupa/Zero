@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const mocks = vi.hoisted(() => ({
   selected: 'message-1',
   existing: vi.fn(),
   readPop3: vi.fn(),
   extract: vi.fn(),
+  conditions: [] as unknown[],
 }));
 
 vi.mock('../src/ai/quote-workflow-synced-selection.js', async (original) => ({
@@ -21,7 +24,10 @@ vi.mock('../src/mail/artifacts/read-artifact.js', async (original) => ({
 }));
 vi.mock('../src/db/client.js', async (original) => ({
   ...await original<typeof import('../src/db/client.js')>(),
-  getDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ id: mocks.selected }] }) }) }) }),
+  getDb: () => ({ select: () => ({ from: () => ({ where: (condition: unknown) => {
+    mocks.conditions.push(condition);
+    return { limit: async () => [{ id: mocks.selected }] };
+  } }) }) }),
 }));
 vi.mock('../src/storage/s3.js', async (original) => ({
   ...await original<typeof import('../src/storage/s3.js')>(), getS3Storage: () => ({}),
@@ -46,6 +52,7 @@ const extracted = { data: { text: 'GUEST: Labtest, Proof\nARRIVAL 2027-09-14', r
 
 beforeEach(() => {
   mocks.selected = scope.messageId;
+  mocks.conditions = [];
   mocks.existing.mockReset().mockResolvedValue({ text: null, reason: 'malformed' });
   mocks.extract.mockReset().mockResolvedValue(extracted);
   mocks.readPop3.mockReset().mockImplementation(async (input: { checkAuthority: () => Promise<boolean> }) =>
@@ -82,16 +89,26 @@ describe('voucher lookup with a reconciled POP3 object key', () => {
   });
 
   it('connects the mounted voucher route to the scoped fallback', async () => {
-    voucherLoaders.candidate = async () => ({ messageId: scope.messageId, threadId: 'thread-1',
-      subject: 'Voucher', bodyText: '', attachments: [file] });
+    voucherLoaders.candidate = vi.fn(async () => ({ messageId: scope.messageId, threadId: 'thread-1',
+      subject: 'Voucher', bodyText: '', attachments: [file] }));
     voucherLoaders.readText = null;
     try {
       const caller = appRouter.createCaller({ auth: null, reqHeaders: new Headers(),
         sessionUser: { id: 'staff', email: 'staff@example.test', name: 'Staff' },
         activeTransportId: scope.transportId, transportEmail: 'hotel@example.test', accessRole: 'owner' } as never);
-      const reply = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId });
+      const selection = { kind: 'web' as const, messageId: scope.messageId, threadId: 'thread-1' };
+      const reply = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId, selection });
       expect(reply).toMatchObject({ status: 'voucher', messageId: scope.messageId,
         guest: { lastName: 'Labtest', arrival: '2027-09-14' }, file: { id: file.id } });
+      expect(voucherLoaders.candidate).toHaveBeenCalledWith({
+        transportId: scope.transportId, internetMessageId: scope.internetMessageId, selection,
+      });
+      expect(mocks.conditions.length).toBeGreaterThanOrEqual(2);
+      for (const condition of mocks.conditions) {
+        expect(new PgDialect().sqlToQuery(condition as SQL).params).toEqual(expect.arrayContaining([
+          scope.transportId, scope.internetMessageId, selection.messageId, selection.threadId,
+        ]));
+      }
       expect(mocks.readPop3.mock.calls[0]?.[0]).toMatchObject({
         transportId: scope.transportId, messageId: scope.messageId, attachmentId: file.id,
       });

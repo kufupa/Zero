@@ -38,6 +38,7 @@ import {
   useFollowUpDraft,
 } from '../../ai/quote-followup.js';
 import { mailboxProcedure, router } from '../trpc.js';
+import { paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 
 const internetMessageId = z.string().min(1).max(998);
 const followUpDraftId = z.string().min(1).max(200);
@@ -101,11 +102,12 @@ const fieldEventInput = z
 
 export const workItemsRouter = router({
   getByMessage: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
+    .input(z.object({ internetMessageId, selection: paneSourceSelectionSchema.optional() }).strict())
     .query(({ input, ctx }) =>
       storedWorkFor(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
+        selection: input.selection,
       }),
     ),
   /**
@@ -113,11 +115,12 @@ export const workItemsRouter = router({
    * it once, when getByMessage came back ready with a null workItemId, so getByMessage itself never writes.
    */
   open: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
+    .input(z.object({ internetMessageId, selection: paneSourceSelectionSchema.optional() }).strict())
     .mutation(({ input, ctx }) =>
       openStoredWork(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
+        selection: input.selection,
       }),
     ),
   list: mailboxProcedure

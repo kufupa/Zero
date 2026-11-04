@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
@@ -689,6 +690,7 @@ export function orderThreadContext(
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
   internetMessageId?: string;
+  selection?: PaneSourceSelection;
   /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
   messageId?: string;
   /** Include all prior thread messages for action classification, instead of only causal preceding text. */
@@ -700,7 +702,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   signal?: AbortSignal;
 }): Promise<SyncedQuoteSelection | null> {
   const internetMessageId = input.internetMessageId?.trim();
-  if (!internetMessageId && !input.messageId) return null;
+  if ((!internetMessageId && !input.messageId) || (input.selection && !internetMessageId)) return null;
   let db;
   try {
     db = getDb();
@@ -727,6 +729,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
         input.messageId
           ? eq(message.id, input.messageId)
           : eq(message.messageIdHeader, internetMessageId ?? ''),
+        input.selection ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined,
+        paneSourceSelectionCondition(input.selection),
       ),
     )
     .limit(2);
