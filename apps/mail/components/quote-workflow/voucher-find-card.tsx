@@ -77,7 +77,8 @@ type VoucherAttachWriteView = {
   grant?: { fingerprintMatches: boolean } | null;
   needsCheck?: boolean;
   filingConfigured?: boolean;
-  run: { state: string; lastError: string | null; failureClass?: string | null; evidence: { name: string }[] } | null;
+  run: { state: string; lastError: string | null; failureClass?: string | null;
+    reviewed?: 'ok' | 'flag' | null; evidence: { name: string }[] } | null;
 };
 
 type VoucherPreviewInput = VoucherAttachBindInput & { sourceMessageId: string };
@@ -526,7 +527,8 @@ function VoucherFindCardBody({
   const bindingFrozen = attachState?.workItemId === workItemId &&
     (attachState.status === 'binding' || attachState.status === 'unknown' ||
       (attachState.status === 'bound' && !attachStatusKnown));
-  const searchFrozen = bindingFrozen || unconfirmedAttach || attachMoving || attachSucceeded;
+  const searchFrozen = bindingFrozen || unconfirmedAttach || attachMoving || listedWithHold ||
+    (attachSucceeded && attachWrite?.run?.reviewed !== 'flag');
   const invalidateTarget = () => {
     previewKeyRef.current = '';
     setPicked(null);

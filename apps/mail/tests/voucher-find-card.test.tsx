@@ -891,10 +891,11 @@ describe('voucher find card: attach to HMS', () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: vi.fn(async () => ({
       filingConfigured: true, form: { action: 'attach_document' }, needsCheck: true,
-      run: { state: 'dead_letter', failureClass: 'UNKNOWN', lastError: 'confirmed_hold_unsettled', evidence: [] },
+      run: { state: 'dead_letter', failureClass: 'UNKNOWN', lastError: 'confirmed_hold_unsettled', reviewed: 'flag', evidence: [] },
     })) } };
     const view = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
     expect(await screen.findByText(/HMS lists the document by code and name/)).toBeTruthy();
+    expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(true);
     expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
     view.unmount();
     const { trpc: completed } = fakeTrpc({ reply: VOUCHER });
@@ -911,10 +912,21 @@ describe('voucher find card: attach to HMS', () => {
       filingConfigured: true, form: { action: 'attach_document' }, grant: null, needsCheck: true,
       run: { state: 'succeeded', lastError: 'filing_approval_unverified', evidence: [] },
     })) } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={unverified} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    const unverifiedView = render(<VoucherFindCard internetMessageId="abc@host" trpc={unverified} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
     expect(await screen.findByText(VOUCHER_ATTACH_COPY.checkInInfor)).toBeTruthy();
     expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(true);
     expect(screen.queryByText(VOUCHER_ATTACH_COPY.documentsRow)).toBeNull();
+    unverifiedView.unmount();
+    const { trpc: flagged } = fakeTrpc({ reply: VOUCHER });
+    const flaggedState = vi.fn(async () => ({
+      filingConfigured: true, form: { action: 'attach_document' }, grant: { fingerprintMatches: true }, needsCheck: false,
+      run: { state: 'succeeded', lastError: null, reviewed: 'flag', evidence: [] },
+    }));
+    (flagged as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: flaggedState } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={flagged} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    await waitFor(() => expect(flaggedState).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(false);
   });
 
   it('reviews the exact selected document and shows Go unavailable without enabling writes', async () => {
