@@ -113,6 +113,15 @@ describe('saved stay amendment request', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Update untouched entries' }));
     expect((screen.getByLabelText('Requested nights') as HTMLInputElement).value).toBe('4');
     expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('2027-10-08');
+    fireEvent.change(screen.getByLabelText('Requested nights'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('Requested arrival'), { target: { value: '2027-10-05' } });
+    expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('2027-10-09');
+    rerender(<SavedStayAmendEditor draftStore={draftStore} extractionRevision="extract-2" identity={identity} confirmation={stay.confirmation!} stay={{ ...stay, adults: 3 }}
+      requestedArrival="2027-10-04" requestedDeparture="2027-10-08" onDraftChange={onDraftChange} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Update untouched entries' }));
+    expect((screen.getByLabelText('Requested arrival') as HTMLInputElement).value).toBe('2027-10-05');
+    expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('2027-10-09');
+    expect((screen.getByLabelText('Requested nights') as HTMLInputElement).value).toBe('4');
     fireEvent.change(screen.getByLabelText('Requested nights'), { target: { value: '1000000000' } });
     expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('');
   });

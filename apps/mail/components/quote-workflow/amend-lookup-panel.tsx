@@ -1404,8 +1404,15 @@ function CloudAmendHistory({ trpc, transportId, selection, suspended }: {
         transportId, signal: controller.signal, isCurrent: () => live, resume: true,
       });
       if (!live) { result?.dispose(); return; }
-      if (result) { owned = result; setClient(result); return; }
+      if (result) {
+        if (!owned || owned.resumeKey !== result.resumeKey) {
+          owned?.dispose();
+          owned = result;
+          setClient(result);
+        } else result.dispose();
+      }
       attempts += 1;
+      // A delayed retry may replace an older stopped run after the draft changes.
       timer = setTimeout(poll, attempts <= 3 ? HMS_WRITE_POLL_MS : HMS_WRITE_IDLE_POLL_MS);
     };
     if (!suspended) void poll();

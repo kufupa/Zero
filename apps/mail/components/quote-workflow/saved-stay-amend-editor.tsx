@@ -114,6 +114,7 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
     // The last date or night edit determines the other value when a new email is rebased.
     const nextTouched = touched.filter((field) => name === 'nights' ? field !== 'departure'
       : name === 'arrival' || name === 'departure' ? field !== 'nights' : true);
+    if (name === 'arrival' && touched.includes('nights') && !nextTouched.includes('departure')) nextTouched.push('departure');
     if (!nextTouched.includes(name)) nextTouched.push(name);
     setTouched(nextTouched);
     setDraft(next);
