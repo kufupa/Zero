@@ -9,6 +9,9 @@ const hasWriteAction = (params) => [...params].some(([key, value]) =>
   key.toLowerCase() === 'pageaction' && MUTATION_ACTION.test(value.trim()));
 const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
 const CLOUD_CARD_ENTRY_PATH = '/Vault/servlets/showCardEntryHandler';
+// Every generic guard on a context checks the same one-shot approval. The
+// earliest guard consumes it, so other guards and independent fences still run.
+const readOnlyGuardState = new WeakMap();
 // On-prem Hotel Availability posts hotelAvail/; the Infor cloud build (HRCEN, 2026-10-27) posts rateshop/.
 const AVAILABILITY_READ_PATHS = new Set([
   '/api/internalBooking/hotelAvail/inquiryForGrid',
@@ -54,13 +57,25 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
   if (approvedCreateAvailabilityRequests !== undefined && !(approvedCreateAvailabilityRequests instanceof WeakSet)) {
     throw new Error('CREATE_AVAILABILITY_APPROVALS_INVALID');
   }
-  await context.route('**/*', async (route) => {
+  let state = readOnlyGuardState.get(context);
+  const firstGuard = !state;
+  if (!state) {
+    state = { approvals: undefined };
+    readOnlyGuardState.set(context, state);
+  }
+  if (approvedCreateAvailabilityRequests && state.approvals && approvedCreateAvailabilityRequests !== state.approvals) {
+    throw new Error('CREATE_AVAILABILITY_APPROVALS_INVALID');
+  }
+  const addedApprovals = Boolean(approvedCreateAvailabilityRequests && !state.approvals);
+  if (addedApprovals) state.approvals = approvedCreateAvailabilityRequests;
+  try { await context.route('**/*', async (route) => {
     const request = route.request();
     let target;
     try { target = new URL(request.url()); } catch { /* The default guard handles malformed targets. */ }
-    if (approvedCreateAvailabilityRequests && String(request.method()).toUpperCase() === 'POST' &&
+    const approvals = state.approvals;
+    if (approvals && String(request.method()).toUpperCase() === 'POST' &&
         target?.origin === HMS_WEB_ORIGIN && target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH &&
-        !target.search && !target.hash && approvedCreateAvailabilityRequests.delete(request)) {
+        !target.search && !target.hash && (firstGuard ? approvals.delete(request) : approvals.has(request))) {
       await route.fallback();
       return;
     }
@@ -71,7 +86,11 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
     // Readers can install this guard more than once. Preserve any stricter
     // context fence installed earlier instead of bypassing it.
     await route.fallback();
-  });
+  }); } catch (error) {
+    if (addedApprovals && state.approvals === approvedCreateAvailabilityRequests) state.approvals = undefined;
+    if (firstGuard && readOnlyGuardState.get(context) === state) readOnlyGuardState.delete(context);
+    throw error;
+  }
 }
 
 export async function installAvailabilityReadOnlyGuard(context, origin) {

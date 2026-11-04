@@ -396,14 +396,33 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
     let rateAvailability = null;
     if (requireM1CreateAvailability) {
-      const check = page.locator('a[data-qtip="Check Availability"]:visible');
-      if (await check.count() !== 1 || !await check.isEnabled().catch(() => false)) {
+      const controls = page.locator('a.x-btn:visible').filter({ hasText: /^Check Availability$/ });
+      const matches = [];
+      for (let index = 0; index < await controls.count(); index++) {
+        const control = await controls.nth(index).elementHandle();
+        if (!control) continue;
+        const belongsToDraft = await control.evaluate(element => {
+          const visible = input => Boolean((input.offsetWidth || input.offsetHeight) &&
+            getComputedStyle(input).visibility !== 'hidden' && !input.closest('.x-window'));
+          const guarantees = [...document.querySelectorAll('input[name="guaranteetype"]')].filter(visible);
+          const field = guarantees.length === 1 && globalThis.Ext?.getCmp?.(guarantees[0].id.replace(/-inputEl$/, ''));
+          const form = field?.up?.('form'), button = globalThis.Ext?.getCmp?.(element.id);
+          return visible(element) && Boolean(form?.el?.dom?.contains(element)) &&
+            !element.closest('.x-item-disabled') && !(button?.isDisabled?.() ?? false);
+        }).catch(() => false);
+        if (belongsToDraft && await control.isEnabled().catch(() => false)) matches.push(control);
+        else await control.dispose();
+      }
+      if (matches.length !== 1) {
+        await Promise.all(matches.map(control => control.dispose()));
         throw new Error('RATE_AVAILABILITY_CONTROL_UNAVAILABLE');
       }
+      const check = matches[0];
       const responsePromise = page.waitForResponse(response => requests.get(response.request()) === 'availability',
         { timeout: 15000 }).catch(() => null);
       availabilityCheckArmed = true;
-      await check.click({ timeout: 5000 });
+      try { await check.click({ timeout: 5000 }); }
+      finally { await check.dispose(); }
       const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       if (!availabilityResponse) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       if (!await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED')) {
