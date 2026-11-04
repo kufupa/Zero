@@ -28,6 +28,7 @@ import {
 } from '@/lib/quote-workflow/voucher-find';
 import { fetchAttachmentBlob, triggerBlobDownload, type AttachmentAccessInput } from '@/lib/attachment-access';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import type { MailSourceSelection } from '@/lib/quote-workflow/backend-bind';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, PrimaryButton, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
@@ -140,6 +141,7 @@ function searchKey(request: VoucherSearchRequest): string {
  */
 type VoucherFindCardProps = {
   internetMessageId: string | null;
+  lookupSelection?: MailSourceSelection;
   trpc: unknown;
   /** The session's active transport and actor scope. Missing scope disables all voucher reads. */
   transportId?: string | null;
@@ -172,12 +174,13 @@ export function VoucherFindCard(props: VoucherFindCardProps) {
   if (!props.transportId || !props.mailboxScope || !props.internetMessageId) return null;
   // Reset pending replies and previews whenever the selected mail, mailbox or actor/session changes.
   return <VoucherFindCardBody key={JSON.stringify([props.mailboxScope, props.transportId, props.internetMessageId,
-    props.selectionEpoch, props.selectedSource?.threadId, props.selectedSource?.messageId,
+    props.lookupSelection, props.selectionEpoch, props.selectedSource?.threadId, props.selectedSource?.messageId,
     props.selectedSource?.sourceHash, props.selectionCurrent])} {...props} />;
 }
 
 function VoucherFindCardBody({
   internetMessageId,
+  lookupSelection,
   trpc,
   transportId = null,
   download,
@@ -379,7 +382,7 @@ function VoucherFindCardBody({
     let live = true;
     // The commit count when this check starts. A commit that lands while the check runs is compared when it answers.
     const startedAt = committedSeen.current;
-    findClient.check({ internetMessageId }).then(
+    findClient.check({ internetMessageId, ...(lookupSelection ? { selection: lookupSelection } : {}) }).then(
       (next) => {
         if (!live) return;
         // A commit during this check means an unsynced answer may predate it, so check once more. The running check
@@ -400,7 +403,7 @@ function VoucherFindCardBody({
     return () => {
       live = false;
     };
-  }, [findClient, internetMessageId, checkRound]);
+  }, [findClient, internetMessageId, lookupSelection, checkRound]);
 
   // A commit while an unsynced answer shows starts one more check. A commit during a running check is compared when
   // that check answers, so the running check is left alone.

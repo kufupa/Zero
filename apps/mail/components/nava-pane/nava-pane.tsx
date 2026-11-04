@@ -2396,8 +2396,9 @@ export function NavaPane({
                 {shownScreen === 'tool' ? mailSourceNoActionNotice : null}
                 {readAs === 'payment' && activeEmail?.internetMessageId ? (
                   <VoucherFindCard
-                    key={JSON.stringify([voucherMailboxScope, activeConnection?.id ?? null, activeEmail.internetMessageId])}
+                    key={JSON.stringify([voucherMailboxScope, activeConnection?.id ?? null, activeEmail.internetMessageId, sourceSelection])}
                     internetMessageId={activeEmail.internetMessageId}
+                    lookupSelection={sourceSelection}
                     transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
                     mailboxScope={voucherMailboxScope}
                     propertyCode={activePaneConfig?.propertyCode ?? null}
@@ -2581,6 +2582,7 @@ export function NavaPane({
               mailboxScope={voucherMailboxScope}
               readAs={readAs}
               internetMessageId={activeEmail?.internetMessageId ?? null}
+              lookupSelection={sourceSelection}
               senderEmail={activeEmail?.senderEmail ?? null}
               subject={activeEmail?.subject ?? null}
               bodyText={activeEmail?.bodyText ?? null}

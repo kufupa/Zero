@@ -711,7 +711,8 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
     expect(screen.getByText(/Guest Smith/)).toBeDefined();
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>',
+      selection: { kind: 'outlook', storeId: 'store-1', folderEntryId: 'folder-inbox', entryId: '001' } },
       { context: { activeTransportId: 'transport-1' } });
   });
 
@@ -719,7 +720,8 @@ describe('NavaPane', () => {
     analysisForBookingVoucher();
     render(<NavaPane bridge={fakeBridge} />);
     await waitFor(() =>
-      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>',
+        selection: { kind: 'outlook', storeId: 'store-1', folderEntryId: 'folder-inbox', entryId: '001' } },
         { context: { activeTransportId: 'transport-1' } }),
     );
     expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
@@ -3755,7 +3757,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(bridgeMockState.analyseCalls).toBe(0);
     expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
     expect(bridgeMockState.storedWorkLookups).toBe(1);
-    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' },
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>',
+      selection: { kind: 'outlook', storeId: 'store-1', folderEntryId: 'folder-inbox', entryId: '001' } },
       { context: { activeTransportId: 'transport-1' } });
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });

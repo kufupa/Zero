@@ -2,6 +2,7 @@ import { AmendLookupPanel, type AmendReadOnlyContext } from '@/components/quote-
 import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
+import type { MailSourceSelection } from '@/lib/quote-workflow/backend-bind';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { NavaReadAs } from '@/lib/quote-workflow/workflow-vocabulary';
@@ -17,6 +18,7 @@ import { OtaBookingChannelChip } from './ota-booking-channel-chip';
 export function BookingVoucherCard({
   session,
   internetMessageId,
+  lookupSelection,
   syncCommitted,
   syncPending,
   readAs = null,
@@ -33,6 +35,7 @@ export function BookingVoucherCard({
 }: {
   session: QuoteSession;
   internetMessageId: string | null;
+  lookupSelection?: MailSourceSelection;
   syncCommitted: number | null;
   syncPending: boolean;
   /** Shared selected-email classification; payment mails need voucher lookup even when the older workflow is `other`. */
@@ -59,7 +62,7 @@ export function BookingVoucherCard({
   const amendment = amendmentOf(session);
   const [approvalRevision, setApprovalRevision] = useState(0);
   const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null } | null>(null);
-  const filingScope = JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId,
+  const filingScope = JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId,
     session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
   const filingSourceCurrent = propertyCode !== 'HRCEN' || Boolean(selectedSource && readOnlyAmend?.selectionCurrent !== false &&
     !readOnlyAmend?.sourceContentChanged);
@@ -99,7 +102,7 @@ export function BookingVoucherCard({
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId, workItemId, approvalRevision,
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId, approvalRevision,
             session.binding?.selectionEpoch, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash])}
           client={approvalClient}
           workItemId={workItemId}
@@ -114,9 +117,10 @@ export function BookingVoucherCard({
       ) : null}
       {showVoucherFindCard ? (
         <VoucherFindCard
-          key={JSON.stringify([mailboxScope, transportId, internetMessageId, session.binding?.selectionEpoch,
+          key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, session.binding?.selectionEpoch,
             selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash])}
           internetMessageId={internetMessageId}
+          lookupSelection={lookupSelection}
           transportId={transportId}
           mailboxScope={mailboxScope}
           trpc={trpcClient}
