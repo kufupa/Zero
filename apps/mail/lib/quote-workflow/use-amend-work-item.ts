@@ -69,7 +69,10 @@ export function useAmendWorkItem(args: {
         } catch {
           let fresh: AmendDraftSnapshot | null = null;
           let reloadFailed = false;
-          try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { reloadFailed = true; }
+          // The current reload belongs to the selected email. Never query a different
+          // email for an off-screen session; retry after staff return to this draft.
+          if (currentKey.current !== item.key) reloadFailed = true;
+          else try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { reloadFailed = true; }
           const same = fresh && fresh.workItemId === item.snapshot.workItemId &&
             JSON.stringify(fresh.source) === JSON.stringify(item.snapshot.source) &&
             fresh.requests.some((candidate) => candidate.requestId === item.snapshot.requests[0]?.requestId);
@@ -77,7 +80,8 @@ export function useAmendWorkItem(args: {
           item.error = reloadFailed ? 'Could not save or reload. Your entries are held here.'
             : same ? 'Draft changed or could not save. Check your entries, then retry.'
               : 'Email or draft changed. Your unsaved entries are held here.';
-          item.retryable = Boolean(same || reloadFailed);
+          // A null result can also mean selection changed while the reload was in flight.
+          item.retryable = Boolean(same || reloadFailed || !fresh);
           changed(item);
           return false;
         }
@@ -121,6 +125,7 @@ export function useAmendWorkItem(args: {
         fresh.requests.some((candidate) => candidate.requestId === session.snapshot.requests[0]?.requestId);
       if (!same || !fresh) {
         session.error = 'Email or draft changed. Your unsaved entries are held here.';
+        session.retryable = !fresh || currentKey.current !== session.key;
         changed(session);
         return;
       }
