@@ -1261,6 +1261,8 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
   const [roomType, setRoomType] = useState(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
   const [ratePlan, setRatePlan] = useState(stay.ratePlan ?? '');
+  const [rateSearch, setRateSearch] = useState(stay.ratePlan ?? '');
+  const [showRateMatches, setShowRateMatches] = useState(false);
   const [retainRates, setRetainRates] = useState<'yes' | 'no'>('no');
   const [firstName, setFirstName] = useState(stay.firstName ?? '');
   const [lastName, setLastName] = useState(stay.lastName ?? '');
@@ -1284,7 +1286,10 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   }, [recipientTouched, sources?.setting]);
   useEffect(() => {
     if (!editedDetails.includes('roomType')) setRoomType(knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
-    if (!editedDetails.includes('ratePlan')) setRatePlan(stay.ratePlan ?? '');
+    if (!editedDetails.includes('ratePlan')) {
+      setRatePlan(stay.ratePlan ?? '');
+      setRateSearch(stay.ratePlan ?? '');
+    }
     if (!editedDetails.includes('firstName')) setFirstName(stay.firstName ?? '');
     if (!editedDetails.includes('lastName')) setLastName(stay.lastName ?? '');
     if (!editedDetails.includes('guestEmail')) setGuestEmail(contactObservations?.guestEmail?.value ?? '');
@@ -1298,6 +1303,10 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const recipientLoading = sources?.load === 'pending' && !recipientTouched;
   const cmsRecipient = recipient.ok ? recipient.recipient.address : '';
   const choicesValid = Boolean(draft && draft.errors.every((error) => error === 'Choose a change to the booking.'));
+  const rateMatches = ratePlans.filter((plan) =>
+    `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(rateSearch.trim().toLocaleLowerCase())).slice(0, 8);
+  const pendingRateMatch = showRateMatches && rateMatches.length > 0 &&
+    !ratePlans.some((plan) => plan.code.toUpperCase() === ratePlan);
   const changes = { ...draft?.proposal?.changes,
     ...(roomType && roomType !== (knownRoomCode(stay.roomType ?? '') ?? stay.roomType) ? { roomType } : {}),
     ...(ratePlan && ratePlan !== stay.ratePlan ? { ratePlan } : {}),
@@ -1309,7 +1318,8 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   };
   const validRecipient = !cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim()));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
-    firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
+    firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
+    /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
     (Object.keys(changes).length > 0 || cmsTouched));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
     workItemId: writeContext.workItemId,
@@ -1334,15 +1344,25 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
       <div className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Rate plan</span>
         <span className={captionClass}>HMS: {stay.ratePlan || 'Not shown'}</span>
-        <select aria-label="Rate plan" className={selectClass} value={ratePlan}
-          onChange={(event) => { setRatePlan(event.target.value); markDetail('ratePlan'); }}>
-          {ratePlan && !ratePlans.some((plan) => plan.code === ratePlan) ? <option value={ratePlan}>{ratePlan}</option> : null}
-          {!ratePlan ? <option value="">Choose rate</option> : null}
-          {ratePlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name} ({plan.code})</option>)}
-        </select>
-        <input aria-label="Type rate code" className={selectClass} maxLength={12} value={ratePlan}
-          onChange={(event) => { setRatePlan(event.target.value.toUpperCase()); markDetail('ratePlan'); }} />
-        <span className={captionClass}>{ratePlans.find((plan) => plan.code === ratePlan)?.name ?? 'Availability checked by HMS when prepared'}</span>
+        <input aria-label="Rate plan" className={selectClass} value={rateSearch} placeholder="Search code or name"
+          onFocus={() => setShowRateMatches(true)} onChange={(event) => {
+            setRateSearch(event.target.value);
+            setRatePlan(event.target.value.trim().toUpperCase());
+            setShowRateMatches(true);
+            markDetail('ratePlan');
+          }} />
+        {showRateMatches && rateMatches.length ? <ul aria-label="Matching rates" className="max-h-32 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+          {rateMatches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]"
+            onClick={() => { setRatePlan(plan.code); setRateSearch(plan.code); setShowRateMatches(false); markDetail('ratePlan'); }}>
+            {plan.code} · {plan.name}
+          </button></li>)}
+          {pendingRateMatch && /^[A-Z0-9]{1,12}$/.test(ratePlan) ? <li><button type="button"
+            className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]" onClick={() => { setRateSearch(ratePlan); setShowRateMatches(false); }}>
+            Use {ratePlan} as a code
+          </button></li> : null}
+        </ul> : null}
+        <span className={captionClass}>{pendingRateMatch ? 'Choose a match or confirm the typed code.'
+          : ratePlans.find((plan) => plan.code === ratePlan)?.name ?? 'Availability checked by HMS when prepared'}</span>
       </div>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Retain the current rate?</span>

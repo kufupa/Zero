@@ -2225,12 +2225,12 @@ describe('AmendLookupPanel amend form', () => {
     fireEvent.change(within(form).getByLabelText('Requested adults'), { target: { value: '3' } });
     fireEvent.change(within(form).getByLabelText('Requested children'), { target: { value: '1' } });
     fireEvent.change(within(form).getByLabelText('Requested child ages'), { target: { value: '6' } });
-    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'corpor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate' }));
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
     expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
     expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
-    expect(within(screen.getByLabelText('Rate plan')).getByRole('option',
-      { name: 'Corporate (CORP)', selected: true })).toBeTruthy();
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
     expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
       { name: 'Yes', selected: true })).toBeTruthy();
     expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
@@ -2247,7 +2247,7 @@ describe('AmendLookupPanel amend form', () => {
       { context: { activeTransportId: 't1' } });
     await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
     expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
-    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('CORP');
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
     expect((screen.getByLabelText('Retain the current rate?') as HTMLSelectElement).value).toBe('yes');
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
@@ -2338,7 +2338,7 @@ describe('AmendLookupPanel amend form', () => {
     view.rerender(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect(within(screen.getByLabelText('Rate plan')).getByRole('option', { name: 'BAR', selected: true })).toBeTruthy();
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('BAR');
     expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
       { name: 'No', selected: true })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
@@ -2346,7 +2346,7 @@ describe('AmendLookupPanel amend form', () => {
     view.rerender(<AmendLookupPanel session={makeSession('57291631-1', 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
     await pressFind();
     expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
-    expect(within(screen.getByLabelText('Rate plan')).getByRole('option', { name: 'BAR', selected: true })).toBeTruthy();
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('BAR');
   });
 
   it('hides the local editor when its selected email is no longer current', async () => {
