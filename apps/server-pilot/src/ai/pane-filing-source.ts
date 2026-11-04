@@ -9,11 +9,12 @@ import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { panePop3AttachmentCandidate, readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
 import { getS3Storage } from '../storage/s3.js';
 import { heartbeatAiRun, type AiRunFence } from './run-ledger.js';
+import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 
 export type BoundFilingForm = {
   action: 'attach_document'; confirmation: string; arrival: string; lastName: string;
   sourceMessageId: string; sourceInternetMessageId: string; attachmentId: string; documentName: string;
-  pdfSha256: string; sourceSnapshotDigest: string;
+  pdfSha256: string; sourceSnapshotDigest: string; sourceThreadId?: string; sourceHash?: string;
 };
 type Scope = { transportId: string; workItemId: string; form: BoundFilingForm };
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -52,9 +53,14 @@ export async function lockBoundFilingSource(tx: WorkTransaction, input: Scope & 
   const [mail] = await tx.select().from(message).where(and(eq(message.id, form.sourceMessageId),
     eq(message.transportId, transportId))).limit(1).for('no key update');
   const selectedId = canonicalMessageId(form.sourceInternetMessageId);
-  if (!selectedId || selectedId !== form.sourceInternetMessageId || mail?.messageIdHeader !== selectedId) return null;
+  if (!mail || !selectedId || selectedId !== form.sourceInternetMessageId || mail.messageIdHeader !== selectedId) return null;
+  const hasExactSource = form.sourceThreadId !== undefined || form.sourceHash !== undefined;
+  if (hasExactSource && (!form.sourceThreadId || !form.sourceHash || !/^[a-f0-9]{64}$/.test(form.sourceHash) ||
+      form.sourceThreadId !== reference.threadId || mail.threadId !== form.sourceThreadId ||
+      mail.direction !== 'inbound' || staffQuoteSourceHash(mail) !== form.sourceHash)) return null;
   const matching = await tx.select({ id: message.id }).from(message).where(and(eq(message.transportId, transportId),
-    eq(message.messageIdHeader, selectedId))).limit(2).for('share');
+    eq(message.messageIdHeader, selectedId), hasExactSource ? eq(message.id, form.sourceMessageId) : undefined,
+    form.sourceThreadId ? eq(message.threadId, form.sourceThreadId) : undefined)).limit(2).for('share');
   if (matching.length !== 1 || matching[0]?.id !== form.sourceMessageId) return null;
   const origins = await tx.select({ id: message.id, direction: message.direction, fromAddress: message.fromAddress,
     ownerHeaderValue: message.ownerHeaderValue, toAddresses: message.toAddresses, ccAddresses: message.ccAddresses })
