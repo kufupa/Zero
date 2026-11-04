@@ -38,6 +38,7 @@ export function ApproveCard({
   guestSurname,
   arrival,
   requireStoredWrite = false,
+  requiredAction,
   filingApprovalAllowed = true,
   filingApprovalDigest,
 }: {
@@ -53,6 +54,8 @@ export function ApproveCard({
    * action form such as attach_document, or a write run), so other items never get write controls.
    */
   requireStoredWrite?: boolean;
+  /** Keep the filing card separate from another action on the same work item. */
+  requiredAction?: 'attach_document';
   filingApprovalAllowed?: boolean;
   filingApprovalDigest?: string | null;
 }) {
@@ -65,6 +68,7 @@ export function ApproveCard({
       guestSurname={guestSurname}
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
+      requiredAction={requiredAction}
       writesEnabled={writesEnabled}
       filingApprovalAllowed={filingApprovalAllowed}
       filingApprovalDigest={filingApprovalDigest}
@@ -136,6 +140,7 @@ function LiveWriteCard({
   guestSurname,
   arrival,
   requireStoredWrite,
+  requiredAction,
   writesEnabled,
   filingApprovalAllowed,
   filingApprovalDigest,
@@ -146,11 +151,13 @@ function LiveWriteCard({
   guestSurname?: string | null;
   arrival?: string | null;
   requireStoredWrite: boolean;
+  requiredAction?: 'attach_document';
   writesEnabled: boolean;
   filingApprovalAllowed: boolean;
   filingApprovalDigest?: string | null;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
+  if (requiredAction && (view ? view.form.action !== requiredAction : !filingApprovalAllowed)) return null;
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
   if (requireStoredWrite && (view ? !isStoredWrite(view) : !failed)) return null;
   const loadFailed = (

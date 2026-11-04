@@ -99,8 +99,8 @@ export function BookingVoucherCard({
           session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend}
         />
       )}
-      {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
-      {workItemId && !amendment && mailboxScope && transportId && internetMessageId ? (
+      {/* An amendment email can also contain a voucher; its filing card must only show a filing form. */}
+      {workItemId && mailboxScope && transportId && internetMessageId ? (
         <ApproveCard
           key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId, approvalRevision,
             session.binding?.selectionEpoch, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash])}
@@ -111,6 +111,7 @@ export function BookingVoucherCard({
           guestSurname={guestSurname}
           arrival={arrival}
           requireStoredWrite
+          requiredAction={amendment ? 'attach_document' : undefined}
           filingApprovalAllowed={filingSourceCurrent && preparedFiling?.scope === filingScope}
           filingApprovalDigest={preparedFiling?.scope === filingScope ? preparedFiling.digest : null}
         />
@@ -127,8 +128,8 @@ export function BookingVoucherCard({
           syncCommitted={syncCommitted}
           syncPending={syncPending}
           workItemId={workItemId}
-          writesEnabled={writesEnabled && !amendment}
-          approvalAvailable={Boolean(filingSourceCurrent && approvalClient && workItemId && !amendment && mailboxScope && transportId && internetMessageId)}
+          writesEnabled={writesEnabled}
+          approvalAvailable={Boolean(filingSourceCurrent && approvalClient && workItemId && mailboxScope && transportId && internetMessageId)}
           selectionEpoch={session.binding?.selectionEpoch}
           selectedSource={propertyCode === 'HRCEN' ? (selectedSource ?? null) : undefined}
           selectionCurrent={filingSourceCurrent}

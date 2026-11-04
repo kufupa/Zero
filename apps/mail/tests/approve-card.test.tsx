@@ -429,14 +429,24 @@ describe('BookingVoucherCard write card', () => {
     expect(paneWrite.calls.length).toBe(2);
   });
 
-  it('does not offer filing preparation on an amendment with no approval card', () => {
+  it('offers filing on amendment mail and shows only the prepared filing for approval', async () => {
     const amendment: QuoteAmendment = { kind: 'amend', confirmationNumber: '57291630-1', guestLastName: 'Mokoena',
       arrival: '2027-10-12', departure: '2027-10-14', requestedChange: 'Change room' };
-    render(<BookingVoucherCard session={emailSession('other', amendment)} internetMessageId="selected@example.test"
+    const session = { ...emailSession('other', amendment),
+      staffSource: { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) } };
+    paneWrite.view = viewWith({ form: { action: 'amend', confirmation: '57291630-1' }, filingAvailable: true });
+    render(<BookingVoucherCard session={session} internetMessageId="selected@example.test"
       syncCommitted={null} syncPending={false} workItemId={WORK_ITEM} transportId="mailbox-a"
       mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" writesEnabled />);
-    expect(paneWrite.voucherProps?.approvalAvailable).toBe(false);
+    expect(paneWrite.voucherProps?.approvalAvailable).toBe(true);
+    await waitFor(() => expect(paneWrite.calls.length).toBe(1));
     expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
+    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    paneWrite.view = viewWith({ form: { action: 'amend', confirmation: '57291630-1' }, filingAvailable: true });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull());
   });
 
   it('shows OTA attribution on amendment and booking mail without enabling automation', () => {
