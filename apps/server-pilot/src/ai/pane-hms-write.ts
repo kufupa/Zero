@@ -57,6 +57,7 @@ import {
   paneStayCloudTargetLock,
   paneStayPropertyLock,
   paneStayTransportIdFromOwner,
+  paneWriteMode,
   parseLabOn,
   pruneExpiredPaneRuns,
   recordPanePreview,
@@ -70,6 +71,7 @@ import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind } from './
 import { hmsDispatchTargetKey, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { recordNeverDispatchedAttach } from './pane-cloud-attach-recovery.js';
+import { cancelBusinessPreimage, cloudCancelDispatchSchema, executeCloudCancel, readCloudCancelPreimage } from './pane-cloud-cancel.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
   resolveNeverDispatchedAttach, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
@@ -219,8 +221,9 @@ const cancelFormSchema = z.object({
   action: z.literal('cancel'),
   confirmation: z.string().regex(CONFIRMATION),
   arrival: z.string().regex(ISO_DATE),
-  lastName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(200),
   reason: z.string().max(200),
+  cloudCancel: cloudCancelDispatchSchema.optional(),
 });
 
 export const amendFieldsSchema = z.object({
@@ -380,6 +383,9 @@ export async function bindAttachDocumentForm(input: {
     'reason',
     'fields',
     'previewDigest',
+    'cloudAmend',
+    'cloudCancel',
+    'cloudCancelPreview',
   ] as const;
   const target = paneStayHmsTargetForTransport(input.transportId);
   if (target.ok && target.target.propertyCode === 'HRCEN') {
@@ -1202,6 +1208,16 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   if (!approved || canonicalJson(approved) !== canonicalJson(form)) {
     return endRun(db, fence, 'NEEDS_CHECK', 'form_changed');
   }
+  if (approved.action === 'cancel' && target.propertyCode === 'HRCEN') {
+    if (!approved.cloudCancel || !input.dispatchTarget ||
+        approved.confirmation !== approved.cloudCancel.preimage.confirmation ||
+        approved.arrival !== approved.cloudCancel.preimage.arrival ||
+        approved.lastName !== approved.cloudCancel.preimage.lastName ||
+        approved.reason !== approved.cloudCancel.reasonLabel) return endRun(db, fence, 'POLICY_BLOCK', 'cancel_unavailable');
+    return executeCloudCancel({ db, fence, transportId: input.transportId, workItemId: input.workItemId,
+      target, dispatchTarget: input.dispatchTarget, bound: approved.cloudCancel, consumed, env: input.env,
+      runDirs: input.runDirs, pendingCloudEvidence: input.pendingCloudEvidence });
+  }
   const isCloudAttach = approved.action === 'attach_document' && target.propertyCode === 'HRCEN';
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(approved) : null;
   if (isCloudAttach && !parsedFiling?.success) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
@@ -1513,8 +1529,9 @@ async function runClaimed(
 ): Promise<PaneHmsWriteResult> {
   if (runId !== fence.runId) return { status: 'lease_lost' };
   const attachMode = paneHmsWriteMode(env);
+  const cancelMode = paneWriteMode('cancel', 'unpaid', env);
   const legacyLab = env.RESERVATIONIST_PANE_SAVE === 'lab';
-  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  if (attachMode === 'off' && cancelMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const [run] = await db
     .select({ workItemId: aiWorkflowRun.workItemId, transportId: aiWorkflowRun.transportId })
     .from(aiWorkflowRun)
@@ -1531,22 +1548,28 @@ async function runClaimed(
     .limit(1);
   const form = item ? parseHmsWriteForm(item.state) : null;
   if (!form) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
-  if (form.action === 'attach_document') {
-    if (attachMode === 'off') return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
-  } else if (!legacyLab) {
-    return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
-  }
-  const allowRealGuest = form.action === 'attach_document' && attachMode === 'on';
-  const refusal = formRefusal(form, { allowRealGuest });
-  if (refusal) return endRun(db, fence, 'POLICY_BLOCK', refusal);
-
   const resolved = paneStayHmsTargetForTransport(transportId);
   if (!resolved.ok) return endRun(db, fence, 'POLICY_BLOCK', 'refused_unknown_transport');
   const target = resolved.target;
+  const isCloudCancel = form.action === 'cancel' && target.propertyCode === 'HRCEN';
+  if (form.action === 'attach_document') {
+    if (attachMode === 'off') return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  } else if (isCloudCancel ? cancelMode === 'off' : !legacyLab) {
+    return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  }
+  const allowRealGuest = form.action === 'attach_document' ? attachMode === 'on'
+    : isCloudCancel && cancelMode === 'on';
+  const refusal = formRefusal(form, { allowRealGuest });
+  if (refusal) return endRun(db, fence, 'POLICY_BLOCK', refusal);
+
   const isCloudAttach = form.action === 'attach_document' && target.propertyCode === 'HRCEN';
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(form) : null;
   if (isCloudAttach && (!labtestAttachEnabled(env) || !parsedFiling?.success)) {
     return endRun(db, fence, 'POLICY_BLOCK', 'refused_cloud_upload_unavailable');
+  }
+  if (isCloudCancel && (form.action !== 'cancel' || !form.cloudCancel ||
+      (form.cloudCancel.preimage.allowRealGuest && cancelMode !== 'on'))) {
+    return endRun(db, fence, 'POLICY_BLOCK', 'cancel_unavailable');
   }
   if (parsedFiling?.success && !await currentFilingSelection(db, transportId, { threadId: parsedFiling.data.sourceThreadId,
     messageId: parsedFiling.data.sourceMessageId, sourceHash: parsedFiling.data.sourceHash })) {
@@ -1583,6 +1606,15 @@ async function runClaimed(
       return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
     }
     dispatchTarget = { propertyCode: 'HRCEN', kind: 'saved', confirmation: initial.stay.confirmation!,
+      nativeStayId: initial.nativeStayId };
+  } else if (isCloudCancel && form.action === 'cancel' && form.cloudCancel) {
+    const initial = await readCloudCancelPreimage({ target, confirmation: form.confirmation, arrival: form.arrival,
+      allowRealGuest: form.cloudCancel.preimage.allowRealGuest });
+    if (!initial || canonicalJson(cancelBusinessPreimage(initial, form.cloudCancel.preimage)) !==
+        canonicalJson(form.cloudCancel.preimage)) {
+      return endRun(db, fence, 'NEEDS_CHECK', 'cancel_target_unavailable');
+    }
+    dispatchTarget = { propertyCode: 'HRCEN', kind: 'saved', confirmation: initial.confirmation,
       nativeStayId: initial.nativeStayId };
   }
   const lock = paneHmsWriteLoaders.lock ?? (dispatchTarget

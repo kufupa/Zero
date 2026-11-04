@@ -413,15 +413,15 @@ describe('pane stay cancel', () => {
     depositReceived: '0',
   };
 
-  it('holds both mounted HRCEN cancel actions before any browser spawn', async () => {
+  it('holds HRCEN cancel actions without a selected source before browser spawn', async () => {
     const calls = enableCancel();
     const caller = mailboxCallerAs('user-held', 'transport-centurion');
     await expect(caller.paneStayCancel.previewCancel(stay)).resolves.toMatchObject({
-      outcome: 'refused_legacy_cancel_unavailable', previewDigest: null,
+      outcome: 'refused_source_changed', previewDigest: null,
     });
     await expect(caller.paneStayCancel.commitCancel({
       ...stay, reason: 'Duplicate Booking', previewDigest: digestOf(stay),
-    })).resolves.toMatchObject({ outcome: 'refused_legacy_cancel_unavailable' });
+    })).resolves.toMatchObject({ outcome: 'refused_source_changed' });
     expect(calls).toEqual([]);
   });
 
@@ -1212,10 +1212,10 @@ describe('pane stay cancel HMS target', () => {
     expect(calls[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
   });
 
-  it('a Centurion transport cancel is held before spawn', async () => {
+  it('a Centurion transport cancel without source is held before spawn', async () => {
     const calls = enableCancel();
     await expect(previewCancel({ ...stay, owner, transportId: 'transport-centurion' })).resolves.toMatchObject({
-      outcome: 'refused_legacy_cancel_unavailable',
+      outcome: 'refused_source_changed',
     });
     expect(calls).toEqual([]);
   });

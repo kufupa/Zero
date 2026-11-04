@@ -96,7 +96,7 @@ export function BookingVoucherCard({
         <AmendLookupPanel
           key={readOnlyAmend ? JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch,
             session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash]) : undefined}
-          session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend}
+          session={session} trpc={trpcClient} readOnlyAmend={readOnlyAmend} workItemId={workItemId}
         />
       )}
       {/* An amendment email can also contain a voucher; its filing card must only show a filing form. */}

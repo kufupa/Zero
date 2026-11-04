@@ -11,6 +11,7 @@ import {
 import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { previewFiling } from '../../ai/pane-filing-preview.js';
 import { isSelectedHmsInboundMessage } from '../../ai/hms-jobs.js';
+import { cancelSelectionSchema, commitCloudCancel, previewCloudCancel } from '../../ai/pane-cloud-cancel.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
@@ -18,13 +19,21 @@ const uuid = z.string().uuid();
 const selectedEmail = z.string().min(1).max(998);
 const selectedSource = z.object({ threadId: z.string().min(1).max(512), messageId: z.string().min(1).max(512),
   sourceHash: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+const formDigestInput = z.string().regex(/^[0-9a-f]{64}$/);
+const cancelTarget = z.object({ confirmation: z.string().regex(/^\d+-\d+$/).max(100),
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: cancelSelectionSchema }).strict();
+const cancelCommit = cancelTarget.extend({ reason: z.string().trim().min(1).max(120).refine((value) => !value.startsWith('-')),
+  previewDigest: formDigestInput, cancellationNote: z.string().max(200).optional() }).strict();
+const cancelPreviewInput = cancelTarget.extend({ workItemId: uuid, internetMessageId: selectedEmail,
+  formDigest: formDigestInput }).strict();
 
 // strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
-const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: z.string().regex(/^[0-9a-f]{64}$/),
-  selectedSource: selectedSource.optional() }).strict();
+const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: formDigestInput,
+  selectedSource: selectedSource.optional(), cancel: cancelCommit.optional() }).strict();
 const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid,
   selectedSource: selectedSource.optional() }).strict();
-const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional() }).strict();
+const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional(),
+  cancelSource: cancelSelectionSchema.optional() }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200), selectedSource }).strict();
@@ -59,6 +68,17 @@ function refusal(err: unknown): never {
 }
 
 export const hmsApprovalRouter = router({
+  previewCancel: mailboxProcedure.input(cancelPreviewInput).mutation(async ({ input, ctx }) => {
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (!target.ok || target.target.propertyCode !== 'HRCEN') {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'cancel_unavailable' });
+    }
+    return previewCloudCancel({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
+      sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+      workItemId: input.workItemId, selectedInternetMessageId: input.internetMessageId,
+      expectedFormDigest: input.formDigest, source: input.source, confirmation: input.confirmation,
+      arrival: input.arrival, target: target.target });
+  }),
   /** This preview makes no approval and never queues a write. */
   previewAttach: mailboxProcedure.input(filingPreviewInput).mutation(async ({ input, ctx }) => {
     const current = () => input.selectedSource.messageId === input.sourceMessageId &&
@@ -82,6 +102,21 @@ export const hmsApprovalRouter = router({
   }),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {
     try {
+      if (input.cancel) {
+        const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+        if (!target.ok || target.target.propertyCode !== 'HRCEN') {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'cancel_unavailable' });
+        }
+        if (input.selectedSource && (input.selectedSource.threadId !== input.cancel.source.threadId ||
+            input.selectedSource.messageId !== input.cancel.source.messageId ||
+            input.selectedSource.sourceHash !== input.cancel.source.sourceHash)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'source_mail_changed' });
+        }
+        return await commitCloudCancel({ ...input.cancel, transportId: ctx.activeTransportId,
+          actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+          workItemId: input.workItemId, selectedInternetMessageId: input.internetMessageId,
+          expectedFormDigest: input.formDigest, target: target.target });
+      }
       return await approveHmsWrite({
         transportId: ctx.activeTransportId,
         actorUserId: ctx.sessionUser.id,
@@ -139,6 +174,7 @@ export const hmsApprovalRouter = router({
         selectedSource: input.selectedSource,
       });
       if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
+      if (Object.hasOwn(view.form, 'cloudCancel')) return { status: 'refused' as const, reason: 'cancel_preview_required' };
       const form = parseHmsWriteForm(view.form);
       if (!form) return { status: 'refused' as const, reason: 'form_invalid' };
       const read = await prepareHmsWriteSnapshot({
@@ -162,6 +198,7 @@ export const hmsApprovalRouter = router({
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
         selectedSource: input.selectedSource,
+        cancelSource: input.cancelSource,
       });
       if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
       return view;

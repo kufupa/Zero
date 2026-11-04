@@ -49,6 +49,7 @@ export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
 /** Only fully bound Labtest attachments can be claimed by the opt-in filing worker. */
 export const HMS_LABTEST_ATTACH_PROMPT_VERSION = 'hms-write/lab-attach/1';
+export const HMS_CLOUD_CANCEL_PROMPT_VERSION = 'hms-write/cloud-cancel/1';
 export function labtestAttachEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return env.PANE_HMS_LAB_ATTACH_WORKER === 'on' && ['lab', 'on'].includes(env.PANE_WRITE_ATTACH ?? '');
 }
@@ -793,7 +794,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
-        candidate.runKind === HMS_WRITE_RUN_KIND && candidate.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION
+        candidate.runKind === HMS_WRITE_RUN_KIND &&
+        (candidate.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION || candidate.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION)
           ? Math.max(runDeadlineMs, HMS_LABTEST_ATTACH_RUN_DEADLINE_MS)
           : candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&

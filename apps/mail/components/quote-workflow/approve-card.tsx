@@ -7,6 +7,7 @@ import {
   isGuestWriteRow,
   isStoredWrite,
   refusalCopy,
+  cloudAmendApprovalHasPrices,
   writeRowsOf,
   writeStatusOf,
   type HmsApprovalClient,
@@ -14,7 +15,9 @@ import {
   type WriteRow,
   type WriteStatus,
 } from '@/lib/quote-workflow/hms-write';
-import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { AMEND_CANCEL_COPY, cancelOutcomeNote, type CancelChargeClient, type CancelChargeState,
+  type CancelChargeTarget, type CancelRun } from '@/lib/quote-workflow/amend-cancel';
 import { PANE_SAVE_OFF_COPY } from '@/lib/quote-workflow/pane-stay-bind';
 import { ReviewCard, writeClasses } from './review-card';
 import { HmsLinkActions } from './hms-link-actions';
@@ -39,6 +42,8 @@ export function ApproveCard({
   arrival,
   requireStoredWrite = false,
   requiredAction,
+  manualResolve = true,
+  allowApprove = true,
   filingApprovalAllowed = true,
   filingReviewAllowed = true,
   filingApprovalDigest,
@@ -57,8 +62,13 @@ export function ApproveCard({
   requireStoredWrite?: boolean;
   /** Keep the filing card separate from another action on the same work item. */
   requiredAction?: 'attach_document';
+  /** Some writes require machine-verified reconciliation instead of a staff note. */
+  manualResolve?: boolean;
+  allowApprove?: boolean;
+  /** The selected document and booking must still match the prepared filing. */
   filingApprovalAllowed?: boolean;
   filingReviewAllowed?: boolean;
+  /** When supplied, approval is limited to the filing form that was just bound. */
   filingApprovalDigest?: string | null;
 }) {
   if (!client) return null;
@@ -72,6 +82,8 @@ export function ApproveCard({
       requireStoredWrite={requireStoredWrite}
       requiredAction={requiredAction}
       writesEnabled={writesEnabled}
+      manualResolve={manualResolve}
+      allowApprove={allowApprove}
       filingApprovalAllowed={filingApprovalAllowed}
       filingReviewAllowed={filingReviewAllowed}
       filingApprovalDigest={filingApprovalDigest}
@@ -145,6 +157,8 @@ function LiveWriteCard({
   requireStoredWrite,
   requiredAction,
   writesEnabled,
+  manualResolve,
+  allowApprove,
   filingApprovalAllowed,
   filingReviewAllowed,
   filingApprovalDigest,
@@ -157,6 +171,8 @@ function LiveWriteCard({
   requireStoredWrite: boolean;
   requiredAction?: 'attach_document';
   writesEnabled: boolean;
+  manualResolve: boolean;
+  allowApprove: boolean;
   filingApprovalAllowed: boolean;
   filingReviewAllowed: boolean;
   filingApprovalDigest?: string | null;
@@ -175,18 +191,18 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
-  // The server marks HRCEN filings even before the pane's property configuration has loaded.
   const filingCurrent = view?.filingAvailable === undefined || (filingApprovalAllowed &&
     (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
-  const effectiveWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+  const effectiveWritesEnabled = (view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) &&
     (view?.form.action !== 'attach_document' || filingCurrent);
-  const reviewWritesEnabled = (view?.filingAvailable ?? writesEnabled) &&
+  const reviewWritesEnabled = (view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) &&
     (view?.form.action !== 'attach_document' || filingReviewAllowed);
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
       {!effectiveWritesEnabled ? <p className={writeClasses.note}>
         {view?.form.action === 'attach_document' && !filingCurrent
-          ? 'Select the current document and booking before approving.' : PANE_SAVE_OFF_COPY}
+          ? 'Select the current document and booking before approving.'
+          : view?.cancelAvailable === false ? AMEND_CANCEL_COPY.switchedOff : PANE_SAVE_OFF_COPY}
       </p> : null}
       {view ? (
         <>
@@ -198,6 +214,8 @@ function LiveWriteCard({
             view={view}
             onChanged={refresh}
             writesEnabled={effectiveWritesEnabled}
+            manualResolve={manualResolve}
+            allowApprove={allowApprove}
             reviewWritesEnabled={reviewWritesEnabled}
           />
         </>
@@ -245,6 +263,8 @@ function WriteBody({
   view,
   onChanged,
   writesEnabled,
+  manualResolve,
+  allowApprove,
   reviewWritesEnabled,
 }: {
   client: HmsApprovalClient;
@@ -252,38 +272,53 @@ function WriteBody({
   view: HmsWriteView;
   onChanged: () => void;
   writesEnabled: boolean;
+  manualResolve: boolean;
+  allowApprove: boolean;
   reviewWritesEnabled: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
   const filingUnavailable = view.form.action === 'attach_document' && view.filingAvailable === false;
+  const cloudCancel = view.form.action === 'cancel' && view.cancelAvailable !== undefined;
+  const pricesReady = cloudAmendApprovalHasPrices(view.form);
   return (
     <>
       <div role="status" aria-live="polite" className="text-[12px] text-[#334155]">
         {filingUnavailable && view.run?.lastError !== 'confirmed_hold_unsettled'
           ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
-      <WriteRows rows={rows} filing={view.form.action === 'attach_document'} />
-      {filingUnavailable ? (
+      {!cloudCancel ? <WriteRows rows={rows} filing={view.form.action === 'attach_document'} /> : null}
+      {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate, total or booking details could not be verified. Check them in HMS.</p> : null}
+      {cloudCancel ? status.approve && status.phase !== 'running' && allowApprove ? (
+        <CancelSection key={view.formDigest} client={client} workItemId={workItemId} view={view}
+          onChanged={onChanged} writesEnabled={writesEnabled} />
+      ) : null : filingUnavailable ? (
         <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
-      ) : status.approve ? (
+      ) : status.approve && allowApprove && !Object.hasOwn(view.form, 'cloudCancel') ? (
         <ApproveSection
           client={client}
           workItemId={workItemId}
           formDigest={view.formDigest}
           status={status}
-          canApprove={rows.length > 0}
+          canApprove={rows.length > 0 && pricesReady}
           onChanged={onChanged}
           writesEnabled={writesEnabled}
         />
       ) : null}
-      {status.phase === 'needs_check' && !filingUnavailable && view.manualResolve !== false ? (
+      {cloudCancel && view.run && client.cancelCharge &&
+          typeof view.form.confirmation === 'string' && typeof view.form.arrival === 'string' ? (
+        <CancelChargePrompt client={client.cancelCharge} writesEnabled={writesEnabled} onChanged={onChanged}
+          target={{ workItemId, runId: view.run.runId, confirmation: view.form.confirmation, arrival: view.form.arrival }} />
+      ) : null}
+      {status.phase === 'needs_check' && !filingUnavailable && manualResolve && view.manualResolve !== false ? (
         <NeedsCheckSection
           client={client}
           workItemId={workItemId}
           onChanged={onChanged}
           writesEnabled={writesEnabled}
         />
+      ) : status.phase === 'needs_check' ? (
+        <p className={writeClasses.note}>The HMS outcome is not confirmed. Do not retry until the previous session is closed and the booking has been verified.</p>
       ) : null}
       {status.review && view.run ? (
         <ReviewCard
@@ -298,6 +333,132 @@ function WriteBody({
   );
 }
 
+/** The worker keeps this exact HMS dialog open until a separate staff Go or timeout. */
+export function CancelChargePrompt({ client, target, writesEnabled, onChanged }: {
+  client: CancelChargeClient; target: CancelChargeTarget; writesEnabled: boolean; onChanged?: () => void;
+}) {
+  const [charge, setCharge] = useState<CancelChargeState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const accepting = useRef(false);
+  const submitted = useRef<string | null>(null);
+  const { workItemId, runId, confirmation, arrival } = target;
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const next = await client.pendingCharge({ workItemId, runId, confirmation, arrival });
+        if (live) setCharge(next.status === 'pending' && next.challengeId === submitted.current
+          ? { ...next, status: 'submitted' } : next);
+      } catch { if (live) setCharge(null); }
+      if (live) timer = setTimeout(poll, HMS_WRITE_POLL_MS);
+    };
+    void poll();
+    return () => { live = false; clearTimeout(timer); };
+  }, [client, workItemId, runId, confirmation, arrival]);
+  if (!charge || charge.status === 'none') return message ? <p role="alert" className={writeClasses.alert}>{message}</p> : null;
+  const go = async () => {
+    if (charge.status !== 'pending' || accepting.current || !writesEnabled) return;
+    accepting.current = true;
+    setBusy(true); setMessage(null);
+    try {
+      const result = await client.acceptCharge({ workItemId, runId, confirmation, arrival,
+        challengeId: charge.challengeId, dialogDigest: charge.dialogDigest });
+      if (result.status === 'accepted') { submitted.current = charge.challengeId; setCharge({ ...charge, status: 'submitted' }); }
+      else { setCharge(null); setMessage('This charge is no longer available. Check HMS before trying again.'); }
+      onChanged?.();
+    } catch { setCharge(null); setMessage('Could not confirm the charge. Check HMS before trying again.'); onChanged?.(); }
+    finally { accepting.current = false; setBusy(false); }
+  };
+  return <div className={divider} role="status" aria-live="polite">
+    <p className="text-[12px] font-semibold">HMS shows a cancellation charge</p>
+    <p className="whitespace-pre-line text-[12px] text-[#334155]">{charge.penaltyText}</p>
+    <p className={writeClasses.note}>{charge.cancellationStatus === 'Cancelled'
+      ? 'A fresh HMS read showed this booking as Cancelled. Check the charge in HMS.'
+      : 'HMS may already have cancelled this booking. Approve the charge only if you want HMS to apply it.'}</p>
+    {charge.status === 'pending' ? <PrimaryButton disabled={busy || !writesEnabled} onClick={go}>Approve charge in HMS</PrimaryButton>
+      : <p className={writeClasses.note}>{charge.status === 'expired'
+        ? 'This charge prompt is no longer open. Check HMS before trying again.'
+        : 'Charge approval sent. Nava is checking HMS.'}</p>}
+    {message ? <p role="alert" className={writeClasses.alert}>{message}</p> : null}
+  </div>;
+}
+
+function CancelSection({ client, workItemId, view, onChanged, writesEnabled }: {
+  client: HmsApprovalClient; workItemId: string; view: HmsWriteView; onChanged: () => void; writesEnabled: boolean;
+}) {
+  const [stage, setStage] = useState<'idle' | 'previewing' | 'ready' | 'submitting' | 'queued' | 'uncertain'>('idle');
+  const [preview, setPreview] = useState<CancelRun | null>(null);
+  const [reason, setReason] = useState('');
+  const [note, setNote] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+  const busy = useRef(false);
+  const confirmation = typeof view.form.confirmation === 'string' ? view.form.confirmation : '';
+  const arrival = typeof view.form.arrival === 'string' ? view.form.arrival : '';
+  if (!client.previewCancel || !client.approveCancel) {
+    return <p className={writeClasses.note}>Select this guest email again before previewing the cancellation.</p>;
+  }
+  if (!/^\d+-\d+$/.test(confirmation) || !/^\d{4}-\d{2}-\d{2}$/.test(arrival)) {
+    return <p className={writeClasses.note}>Check the confirmation number and arrival date in HMS.</p>;
+  }
+  const target = { workItemId, formDigest: view.formDigest, confirmation, arrival };
+  const startPreview = async () => {
+    if (!writesEnabled || busy.current || !client.previewCancel) return;
+    busy.current = true;
+    setStage('previewing'); setMessage(null); setPreview(null); setReason(''); setNote('');
+    try {
+      const result = await client.previewCancel(target), stay = result.previewStay;
+      if (result.outcome === 'preview_ok' && result.previewDigest && stay?.confirmation === confirmation &&
+          stay.arrival === arrival && stay.firstName && stay.lastName && stay.departure && stay.roomType && result.reasons.length) {
+        setPreview(result); setStage('ready');
+      } else {
+        setMessage(cancelOutcomeNote(result.outcome, confirmation, result.penaltyText)); setStage('idle');
+      }
+    } catch { setMessage(AMEND_CANCEL_COPY.failed); setStage('idle'); }
+    finally { busy.current = false; }
+  };
+  const go = async () => {
+    if (!writesEnabled || busy.current || !client.approveCancel || !preview?.previewDigest || !reason) return;
+    busy.current = true; setStage('submitting'); setMessage(null);
+    try {
+      const result = await client.approveCancel({ ...target, previewDigest: preview.previewDigest, reason, cancellationNote: note });
+      if (result.outcome === 'cancel_queued') setStage('queued');
+      else if (result.outcome === 'cancel_preview_required' || result.outcome === 'cancel_digest_mismatch') {
+        setMessage(AMEND_CANCEL_COPY.previewAgain); setStage('idle');
+      } else { setMessage(cancelOutcomeNote(result.outcome, confirmation, result.penaltyText)); setStage('uncertain'); }
+      onChanged();
+    } catch { setMessage(AMEND_CANCEL_COPY.unconfirmed); setStage('uncertain'); onChanged(); }
+    finally { busy.current = false; }
+  };
+  const stay = preview?.previewStay;
+  return <div className={divider}>
+    {stage === 'idle' && writesEnabled ? <SecondaryButton onClick={startPreview}>{AMEND_CANCEL_COPY.preview}</SecondaryButton> : null}
+    {stage === 'previewing' ? <p role="status" className={writeClasses.note}>{AMEND_CANCEL_COPY.previewing}</p> : null}
+    {stage === 'ready' && stay ? <>
+      <p data-pii className="text-[12px] font-semibold">{stay.firstName} {stay.lastName} · {stay.confirmation}</p>
+      <p className={writeClasses.note}>Arrival {stay.arrival} · Departure {stay.departure} · Room type {stay.roomType}</p>
+      {stay.guarantee ? <p className={writeClasses.note}>Guarantee: {stay.guarantee}</p> : null}
+      {stay.depositReceived ? <p className={writeClasses.note}>Deposit received: {stay.depositReceived}</p> : null}
+      {(preview?.policyFacts ?? []).map((fact) => <p key={fact} className={writeClasses.note}>{fact}</p>)}
+      {preview?.penaltyText ? <p className="whitespace-pre-line text-[12px] text-[#334155]">{preview.penaltyText}</p> : null}
+      <p className={writeClasses.note}>Nava will cancel this stay in HMS. Check any cancellation charge in HMS. This cannot be undone here.</p>
+      <label className={writeClasses.note}>Cancellation reason
+        <select value={reason} onChange={(event) => setReason(event.target.value)} className="block w-full rounded border p-2">
+          <option value="">{AMEND_CANCEL_COPY.reasonPlaceholder}</option>
+          {(preview?.reasons ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>
+      <label className={writeClasses.note}>Cancellation note (optional)
+        <textarea value={note} maxLength={200} onChange={(event) => setNote(event.target.value)} className="block w-full rounded border p-2" />
+      </label>
+      <PrimaryButton disabled={!reason || !writesEnabled} onClick={go}>{AMEND_CANCEL_COPY.commit}</PrimaryButton>
+    </> : null}
+    {stage === 'submitting' || stage === 'queued' ? <p role="status" className={writeClasses.note}>{AMEND_CANCEL_COPY.committing}</p> : null}
+    {message ? <p role="alert" className={writeClasses.alert}>{message}</p> : null}
+  </div>;
+}
+
 function WriteRows({ rows, filing }: { rows: WriteRow[]; filing: boolean }) {
   if (rows.length === 0) return <p className={writeClasses.note}>{HMS_WRITE_COPY.noChange}</p>;
   return (
@@ -305,7 +466,7 @@ function WriteRows({ rows, filing }: { rows: WriteRow[]; filing: boolean }) {
       {rows.map((row) => (
         <li key={row.key} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-medium text-[#334155]">{row.label}</span>
-          {!filing ? <>
+          {!filing && !row.displayOnly ? <>
             <span data-pii={isGuestWriteRow(row.key) || undefined} className="text-[#64748b] line-through">
               {row.before}
             </span>

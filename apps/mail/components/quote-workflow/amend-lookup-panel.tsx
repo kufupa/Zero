@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
   AMEND_FIELD_LABEL,
   AMEND_FORM_FIELDS,
   AMEND_SAVE_COPY,
   amendCancelClientFromTrpc,
+  cancelChargeClientFromTrpc,
   amendCapabilitiesFromTrpc,
   amendStayClientFromTrpc,
   canPreviewAmendFromCapabilities,
@@ -61,6 +62,8 @@ import {
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
+import { cancelWriteStateClientFromTrpc, type CancelWriteSelection } from '@/lib/quote-workflow/cancel-write-state';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
@@ -68,6 +71,7 @@ import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
+import { CancelChargePrompt } from './approve-card';
 
 export type AmendReadOnlyContext = {
   propertyCode: 'HRCEN';
@@ -103,6 +107,23 @@ export type AmendSavedStay = {
 const SAVED_STAY_COPY = {
   heading: 'Bookings on this request',
 };
+
+const CANCEL_PREVIEW_MISMATCH = 'Nava could not confirm the cancellation details. Check the booking in HMS.';
+
+function nativeCancelPreview(run: CancelRun, target: { confirmation: string; arrival: string }): NonNullable<CancelRun['previewStay']> | null {
+  const stay = run.previewStay;
+  const text = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 &&
+    value.length <= max && !/[\p{Cc}]/u.test(value);
+  const day = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+  };
+  if (!stay || typeof stay !== 'object' || Array.isArray(stay) || stay.confirmation !== target.confirmation ||
+      stay.arrival !== target.arrival || !day(stay.arrival) || !day(stay.departure) ||
+      !text(stay.firstName, 200) || !text(stay.lastName, 200) || !text(stay.roomType, 12)) return null;
+  return stay;
+}
 
 function savedStayPicksFrom(
   savedStays: Record<string, AmendSavedStay> | undefined,
@@ -141,11 +162,13 @@ export function AmendLookupPanel({
   savedStays,
   onStayActionResult,
   readOnlyAmend,
+  workItemId = null,
 }: {
   session: QuoteSession;
   trpc: unknown;
   savedStays?: Record<string, AmendSavedStay>;
   readOnlyAmend?: AmendReadOnlyContext | null;
+  workItemId?: string | null;
   onStayActionResult?: (input: {
     stayId: string;
     confirmationNumber: string;
@@ -157,7 +180,9 @@ export function AmendLookupPanel({
   const selectedTransportId = exactSource && readOnlyAmend?.selectionCurrent
     ? session.binding?.transportId?.trim() || null : null;
   const client = useMemo(() => amendFindClientFromTrpc(trpc, selectedTransportId), [trpc, selectedTransportId]);
-  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
+  const cancelTransportId = selectedTransportId ?? session.binding?.transportId?.trim() ?? null;
+  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc,
+    readOnlyAmend?.propertyCode === 'HRCEN' ? cancelTransportId : undefined), [trpc, cancelTransportId, readOnlyAmend?.propertyCode]);
   const amendClient = useMemo(() => amendStayClientFromTrpc(trpc), [trpc]);
   const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
   const [canPreviewCancel, setCanPreviewCancel] = useState(false);
@@ -236,10 +261,29 @@ export function AmendLookupPanel({
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
+  const [cancelNotes, setCancelNotes] = useState<Record<string, string>>({});
+  const cancelSelection = JSON.stringify([workItemId, threadId, messageId, sourceHash, cancelTransportId,
+    session.binding?.internetMessageId, epoch, readOnlyAmend?.selectionCurrent,
+    readOnlyAmend?.sourceContentChanged, readOnlyAmend?.sourceSelectionUnavailable]);
+  const cancelSelectionRef = useRef(cancelSelection);
+  cancelSelectionRef.current = cancelSelection;
+  const cancelScopeRef = useRef<string | null>(null);
+  const cancelScopeGeneration = useRef(0);
+  const cancelMountedRef = useRef(true);
+  const cancelMailboxGeneration = useRef(0);
+  useEffect(() => {
+    cancelMountedRef.current = true;
+    const unsubscribe = subscribeMailCacheScope(() => { cancelMailboxGeneration.current += 1; });
+    return () => { cancelMountedRef.current = false; unsubscribe(); };
+  }, []);
   const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
   const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
 
-  if (!amendment) return null;
+  if (!amendment) {
+    if (cancelScopeRef.current !== null) cancelScopeGeneration.current += 1;
+    cancelScopeRef.current = null;
+    return null;
+  }
 
   const findView: HmsJobView | null = find.view;
   const shownFindRequest = findView?.request?.kind === 'find' ? findView.request : null;
@@ -320,12 +364,28 @@ export function AmendLookupPanel({
 
   const searchHint = !client ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
 
-  // The cancel view belongs to the booking it was started for: one email can show several bookings in turn.
-  const cancelScope = key && foundNumber ? `${key}|${foundNumber}` : null;
+  const selectedBookingMatches = !pickedConfirmation || foundNumber === pickedConfirmation;
+  const cancelTarget = selectedBookingMatches && foundNumber ? foundNumber : hmsNumber;
+  const cancelStay = stay && selectedBookingMatches && foundNumber === cancelTarget ? stay : null;
+  // Use the booked email target to restore history while Find is still running.
+  const cancelArrival = isoDayOf(stayText(cancelStay?.arrival)) ?? isoDayOf(amendment.arrival);
+  const requireNativeCancelPreview = readOnlyAmend?.propertyCode === 'HRCEN';
+  // Cloud views bind the source and target; legacy cancellation keeps its existing scope.
+  const cancelScope = requireNativeCancelPreview
+    ? key && cancelTarget ? JSON.stringify([key, cancelTarget, cancelArrival, resolvedStayId, confirmationNumber, cancelSelection]) : null
+    : key && foundNumber ? `${key}|${foundNumber}` : null;
+  if (cancelScopeRef.current !== cancelScope) {
+    cancelScopeGeneration.current += 1;
+    cancelScopeRef.current = cancelScope;
+  }
   const cancelView = cancelScope ? (cancelViews[cancelScope] ?? null) : null;
-  // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
-  const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
-  const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
+  const cancelRestoreInput = cancelTarget && cancelArrival && workItemId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(workItemId) &&
+    threadId && messageId && /^[a-f0-9]{64}$/.test(sourceHash ?? '') &&
+    (!readOnlyAmend || (readOnlyAmend.selectionCurrent && !readOnlyAmend.sourceContentChanged && !readOnlyAmend.sourceSelectionUnavailable))
+    ? { confirmation: cancelTarget, arrival: cancelArrival, workItemId,
+        source: { threadId, messageId, sourceHash: sourceHash! } } : null;
+  const legacyCancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
+  const cancelInput = requireNativeCancelPreview ? (cancelStay && !checkReason ? cancelRestoreInput : null) : legacyCancelInput;
   const amendScope = cancelScope;
   const amendView = amendScope ? (amendViews[amendScope] ?? null) : null;
   const requested = (amendScope && requestedByScope[amendScope]) || {};
@@ -343,7 +403,8 @@ export function AmendLookupPanel({
   const amendRows = stay && amendment.kind === 'amend' ? changedAmendRows(stayCurrent, requestedValues) : [];
   const amendFields = Object.fromEntries(amendRows.map((row) => [row.field, requestedValues[row.field]])) as AmendFormValues;
   const amendLastName = stayText(stay?.lastName) ?? amendment.guestLastName ?? '';
-  const unpaidStay = classifyAmendPayment(paymentStayFromRecord(stay)) === 'unpaid';
+  const unpaidStay = amendment.kind === 'cancel' && requireNativeCancelPreview
+    ? null : classifyAmendPayment(paymentStayFromRecord(stay)) === 'unpaid';
   const canAmendWrite = Boolean(canPreviewAmend && unpaidStay && !checkReason && foundNumber);
   const amendInput =
     foundNumber && cancelArrival && amendLastName && Object.keys(amendFields).length
@@ -362,7 +423,7 @@ export function AmendLookupPanel({
     onStayActionResult?.({ stayId: resolvedStayId, confirmationNumber: confirmation, kind });
   };
 
-  const previewCancel = async () => {
+  const legacyPreviewCancel = async () => {
     if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
@@ -375,7 +436,7 @@ export function AmendLookupPanel({
   };
 
   // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
-  const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
+  const legacyCommitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
     if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
     const scope = cancelScope;
@@ -387,6 +448,63 @@ export function AmendLookupPanel({
       if (view.kind === 'done') reportStayAction('cancel', cancelInput.confirmation);
     } catch {
       setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
+    }
+  };
+
+  const cancelResponseCurrent = (scope: string, selection: string, generation: number, scopeGeneration: number, userId: string) => {
+    const active = getMailCacheScope();
+    return cancelMountedRef.current && cancelScopeRef.current === scope && cancelSelectionRef.current === selection &&
+      cancelMailboxGeneration.current === generation && cancelScopeGeneration.current === scopeGeneration &&
+      active.userId === userId && active.activeTransportId === cancelTransportId;
+  };
+
+  const previewCancel = async () => {
+    if (!requireNativeCancelPreview) return legacyPreviewCancel();
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
+    const mailbox = getMailCacheScope();
+    const userId = mailbox.userId;
+    if (!userId || mailbox.activeTransportId !== cancelTransportId) return;
+    const scope = cancelScope;
+    const selection = cancelSelection;
+    const generation = cancelMailboxGeneration.current;
+    const scopeGeneration = cancelScopeGeneration.current;
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
+    try {
+      const run = await cancelClient.previewCancel(cancelInput);
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      const preview = viewAfterPreview(run, cancelInput.confirmation);
+      setCancelViews((prev) => ({ ...prev, [scope]: preview.kind === 'ready' && requireNativeCancelPreview &&
+        !nativeCancelPreview(run, cancelInput) ? { kind: 'idle', note: CANCEL_PREVIEW_MISMATCH } : preview }));
+    } catch {
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
+    }
+  };
+
+  // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
+  const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
+    if (!requireNativeCancelPreview) return legacyCommitCancel(ready);
+    const previewDigest = ready.run.previewDigest;
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest ||
+        (requireNativeCancelPreview && !nativeCancelPreview(ready.run, cancelInput))) return;
+    const mailbox = getMailCacheScope();
+    const userId = mailbox.userId;
+    if (!userId || mailbox.activeTransportId !== cancelTransportId) return;
+    const scope = cancelScope;
+    const selection = cancelSelection;
+    const generation = cancelMailboxGeneration.current;
+    const scopeGeneration = cancelScopeGeneration.current;
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run, reason: ready.reason } }));
+    try {
+      const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason, previewDigest,
+        cancellationNote: (cancelNotes[scope] ?? '').slice(0, 200) });
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      const view = viewAfterCommit(run, ready.run, cancelInput.confirmation);
+      setCancelViews((prev) => ({ ...prev, [scope]: view }));
+      if (view.kind === 'done' && ['cancelled', 'already_cancelled'].includes(run.outcome)) reportStayAction('cancel', cancelInput.confirmation);
+    } catch {
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'done', run: ready.run, text: AMEND_CANCEL_COPY.unconfirmed } }));
     }
   };
 
@@ -419,7 +537,7 @@ export function AmendLookupPanel({
 
   // Cancel mail the pane can preview says so; otherwise the look-up footer stays.
   const footer =
-    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel && !checkReason
+    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel && cancelInput && !checkReason
       ? AMEND_CANCEL_COPY.footerPreview
       : AMEND_FIND_COPY.footer;
 
@@ -497,7 +615,7 @@ export function AmendLookupPanel({
           <p>{AMEND_FIND_COPY.checkHint}</p>
         </div>
       ) : null}
-      {stay && !unpaidStay && (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
+      {stay && unpaidStay === false && (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
         <div
           data-testid={amendment.kind === 'cancel' ? 'cancel-payment-banner' : 'amend-payment-banner'}
           className={warnNoteClass}
@@ -665,6 +783,49 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
+      {requireNativeCancelPreview ? (
+        <>
+      {amendment.kind === 'cancel' && cancelTarget && cancelScope &&
+        (cancelRestoreInput || (cancelStay && !checkReason)) ? (
+        <CloudCancelSection
+          key={cancelScope}
+          view={cancelView}
+          canPreview={canPreviewCancel && Boolean(cancelInput)}
+          chargeEnabled={canPreviewCancel && Boolean(cancelRestoreInput)}
+          offNote={checkReason ? 'Check the booking in HMS before previewing cancellation.'
+            : canPreviewCancel && !cancelInput ? 'Select the current email before previewing cancellation.' : cancelSwitchedOffNote(cancelTarget)}
+          confirmation={cancelTarget}
+          arrival={cancelArrival}
+          requireNativePreview={requireNativeCancelPreview}
+          guestName={(cancelStay ? stayGuest(cancelStay) : null) ?? amendment.guestLastName ?? 'this guest'}
+          client={cancelClient}
+          trpc={trpc}
+          transportId={cancelTransportId}
+          selection={cancelRestoreInput && session.binding?.internetMessageId?.trim()
+            ? { ...cancelRestoreInput, internetMessageId: session.binding.internetMessageId.trim() } : null}
+          waitingForFind={!cancelStay || Boolean(checkReason)}
+          isCurrent={() => cancelMountedRef.current && cancelScopeRef.current === cancelScope}
+          onRestored={(view) => {
+            if (!cancelMountedRef.current || !cancelScope || cancelScopeRef.current !== cancelScope) return;
+            setCancelViews((prev) => {
+              if (view) return { ...prev, [cancelScope]: view };
+              if (!(cancelScope in prev)) return prev;
+              const next = { ...prev }; delete next[cancelScope]; return next;
+            });
+            if (view?.kind === 'done' && view.run.outcome === 'cancelled') reportStayAction('cancel', cancelTarget);
+          }}
+          onPreview={() => void previewCancel()}
+          onReason={chooseReason}
+          cancellationNote={cancelScope ? cancelNotes[cancelScope] ?? '' : ''}
+          onNote={(note) => { if (cancelScope) setCancelNotes((prev) => ({ ...prev, [cancelScope]: note.slice(0, 200) })); }}
+          onCommit={() => {
+            if (cancelView?.kind === 'ready') void commitCancel(cancelView);
+          }}
+        />
+      ) : null}
+        </>
+      ) : (
+        <>
       {amendment.kind === 'cancel' && stay && foundNumber && !checkReason ? (
         <CancelSection
           view={cancelView}
@@ -680,6 +841,8 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
+        </>
+      )}
       {amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend ? (
         readOnlyIdentity && stayText(stay.confirmation) === foundNumber &&
         findView?.request?.kind === 'find' && findView.request.confirmation === foundNumber ? (
@@ -1190,6 +1353,270 @@ function AmendSection({
       {currentView.kind === 'previewing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.previewing}</p> : null}
       {currentView.kind === 'committing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.committing}</p> : null}
       {currentView.kind === 'idle' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
+    </div>
+  );
+}
+
+function CloudCancelSection({
+  view,
+  canPreview,
+  chargeEnabled,
+  offNote,
+  confirmation,
+  arrival,
+  requireNativePreview,
+  guestName,
+  client,
+  trpc,
+  transportId,
+  selection,
+  waitingForFind,
+  isCurrent,
+  onRestored,
+  onPreview,
+  onReason,
+  cancellationNote,
+  onNote,
+  onCommit,
+}: {
+  view: CancelView | null;
+  canPreview: boolean;
+  chargeEnabled: boolean;
+  offNote: string;
+  confirmation: string;
+  arrival: string | null;
+  requireNativePreview: boolean;
+  guestName: string;
+  client: AmendCancelClient | null;
+  trpc: unknown;
+  transportId: string | null;
+  selection: CancelWriteSelection | null;
+  waitingForFind: boolean;
+  isCurrent: () => boolean;
+  onRestored: (view: CancelView | null) => void;
+  onPreview: () => void;
+  onReason: (reason: string) => void;
+  cancellationNote: string;
+  onNote: (note: string) => void;
+  onCommit: () => void;
+}) {
+  const reasonId = useId();
+  const noteId = useId();
+  const selected = useRef(selection).current;
+  const chargeClient = useMemo(() => cancelChargeClientFromTrpc(trpc, transportId, selected?.source,
+    selected?.internetMessageId), [trpc, transportId, selected]);
+  const currentSelection = useRef(isCurrent);
+  const restored = useRef(onRestored);
+  const currentView = useRef(view);
+  const carriedView = useRef(view);
+  const settledRun = useRef<string | null>(null);
+  const revoked = useRef(false);
+  currentSelection.current = isCurrent;
+  restored.current = onRestored;
+  currentView.current = view;
+  const [readState, setReadState] = useState<'checking' | 'ready' | 'failed'>('checking');
+  const queuedRunId = view?.kind === 'committing' && view.run.outcome === 'cancel_queued' ? view.run.runId : null;
+
+  useEffect(() => {
+    let live = true, timer: ReturnType<typeof setTimeout> | undefined;
+    setReadState('checking');
+    if (!selected || !transportId || revoked.current) {
+      setReadState('failed');
+      return;
+    }
+    const controller = new AbortController();
+    const stateClient = cancelWriteStateClientFromTrpc(trpc, selected, {
+      transportId, signal: controller.signal, isCurrent: () => live && currentSelection.current(),
+      onInvalidated: () => {
+        if (live) { revoked.current = true; setReadState('failed'); }
+      },
+    });
+    if (!stateClient) {
+      setReadState('failed');
+      return () => { live = false; controller.abort(); };
+    }
+    let expectedRunId = queuedRunId ?? undefined;
+    const poll = async () => {
+      try {
+        const state = await stateClient.read(expectedRunId);
+        if (!live || !currentSelection.current()) return;
+        if (state.kind === 'empty') {
+          const current = currentView.current;
+          if (carriedView.current?.kind === 'committing' && current?.kind === 'committing') {
+            const unknown = { ...current.run, outcome: 'cancel_unconfirmed' as const };
+            restored.current(viewAfterCommit(unknown, current.run, confirmation));
+          } else if ((carriedView.current?.kind === 'ready' || carriedView.current?.kind === 'previewing') &&
+              (current?.kind === 'ready' || current?.kind === 'previewing')) {
+            restored.current(null);
+          }
+          carriedView.current = null;
+          setReadState('ready');
+          return;
+        }
+        carriedView.current = null;
+        expectedRunId = state.runId;
+        const current = currentView.current;
+        const run: CancelRun = current?.kind === 'committing' && current.run.runId === state.runId
+          ? current.run : { outcome: 'cancel_queued', statusBefore: null, statusAfter: null, reasons: [],
+              penaltyText: null, screenshots: [], runId: state.runId, previewDigest: null };
+        if (state.kind === 'running') {
+          if (current?.kind !== 'committing' || current.run.outcome !== 'cancel_queued' || current.run.runId !== state.runId) {
+            restored.current({ kind: 'committing', run, reason: '' });
+          }
+          setReadState('ready');
+          timer = setTimeout(() => void poll(), 2_000);
+          return;
+        }
+        setReadState('ready');
+        if (settledRun.current === state.runId) return;
+        settledRun.current = state.runId;
+        const result = { ...run, outcome: state.outcome, ...(state.outcome === 'cancelled' ? { statusAfter: 'Cancelled' } : {}) };
+        const done = viewAfterCommit(result, run, confirmation);
+        if (done.kind === 'done') restored.current(done);
+      } catch {
+        if (live) setReadState('failed');
+      }
+    };
+    void poll();
+    return () => { live = false; if (timer) clearTimeout(timer); stateClient.dispose(); controller.abort(); };
+  }, [trpc, transportId, selected, queuedRunId, confirmation, waitingForFind]);
+
+  const current: CancelView = view ?? { kind: 'idle', note: null };
+  const runId = 'run' in current ? current.run?.runId : null;
+  const chargePrompt = selected && chargeClient && runId ? <CancelChargePrompt client={chargeClient}
+    target={{ workItemId: selected.workItemId, runId, confirmation: selected.confirmation, arrival: selected.arrival }}
+    writesEnabled={chargeEnabled} /> : null;
+
+  if (readState !== 'ready') {
+    const note = readState === 'checking' ? 'Nava is checking the previous cancellation…'
+      : !selection && canPreview ? 'Select the current email before previewing cancellation.'
+        : !selection ? offNote : 'Nava could not check the previous cancellation. Check HMS before trying again.';
+    return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p data-pii className={readState === 'failed' ? warnNoteClass : infoNoteClass}>{note}</p>
+      {chargePrompt}
+    </div>;
+  }
+
+  if (current.kind === 'done') {
+    return (
+      <div aria-live="polite" className="flex flex-col gap-2">
+        <p className={headingClass}>Cancel in HMS</p>
+        <p data-pii className={infoNoteClass}>{current.text}</p>
+        <CancelScreenshot client={client} run={current.run} />
+        {chargePrompt}
+      </div>
+    );
+  }
+
+  if (current.kind === 'committing' && current.run.outcome === 'cancel_queued') {
+    return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p>
+      {chargePrompt}
+    </div>;
+  }
+
+  if (waitingForFind) return chargePrompt;
+
+  if (current.kind === 'ready' || current.kind === 'committing') {
+    const { run, reason } = current;
+    const committing = current.kind === 'committing';
+    const native = arrival ? nativeCancelPreview(run, { confirmation, arrival }) : null;
+    if (requireNativePreview && !native) return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p className={warnNoteClass}>{CANCEL_PREVIEW_MISMATCH}</p>
+    </div>;
+    const reviewedGuest = native ? `${native.firstName} ${native.lastName}` : guestName;
+    return (
+      <div aria-live="polite" className="flex flex-col gap-2">
+        <p className={headingClass}>Cancel in HMS</p>
+        <p className={valueClass}>{`Status in HMS: ${run.statusBefore ?? 'not shown'}`}</p>
+        {native ? <div data-testid="cancel-native-preview" data-pii className={valueClass}>
+          <p>{`Confirmation: ${native.confirmation}`}</p>
+          <p>{`Guest: ${native.firstName} ${native.lastName}`}</p>
+          <p>{`Arrival: ${native.arrival}`}</p>
+          <p>{`Departure: ${native.departure}`}</p>
+          <p>{`Room: ${native.roomType}`}</p>
+        </div> : null}
+        {native?.guarantee ? <p className={valueClass}>Guarantee: {native.guarantee}</p> : null}
+        {native?.depositReceived ? <p className={valueClass}>Deposit received: {native.depositReceived}</p> : null}
+        {(run.policyFacts ?? []).map((fact) => <p key={fact} className={valueClass}>{fact}</p>)}
+        <p className={run.penaltyText ? penaltyClass : captionClass}>{cancelFeeSentence(run.penaltyText)}</p>
+        <CancelScreenshot client={client} run={run} />
+        {chargePrompt}
+        <div className="flex flex-col gap-1">
+          <label htmlFor={reasonId} className={headingClass}>
+            {AMEND_CANCEL_COPY.reasonLabel}
+          </label>
+          <select
+            id={reasonId}
+            className={selectClass}
+            value={reason}
+            disabled={committing}
+            onChange={(event) => onReason(event.target.value)}
+          >
+            <option value="">{AMEND_CANCEL_COPY.reasonPlaceholder}</option>
+            {run.reasons.map((text) => (
+              <option key={text} value={text}>
+                {text}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor={noteId} className={headingClass}>Cancellation note (optional)</label>
+          <textarea id={noteId} data-pii className={selectClass} value={cancellationNote} maxLength={200}
+            disabled={committing} onChange={(event) => onNote(event.target.value)} />
+        </div>
+        <p data-pii className={warnNoteClass}>
+          {cancelConfirmLine({ confirmation, guest: reviewedGuest, penaltyText: run.penaltyText })}
+        </p>
+        {canPreview ? (
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={!reason || committing}
+            onClick={onCommit}
+          >
+            {AMEND_CANCEL_COPY.commit}
+          </button>
+        ) : (
+          <p className={infoNoteClass}>{offNote}</p>
+        )}
+        {committing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p> : null}
+        {current.kind === 'ready' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
+      </div>
+    );
+  }
+
+  const previewing = current.kind === 'previewing';
+  return (
+    <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      {canPreview ? (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={previewing}
+          onClick={onPreview}
+        >
+          {AMEND_CANCEL_COPY.preview}
+        </button>
+      ) : null}
+      {canPreview ? (
+        <>
+          <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>
+        </>
+      ) : (
+        <p data-pii className={infoNoteClass}>
+          {offNote}
+        </p>
+      )}
+      {previewing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.previewing}</p> : null}
+      {current.kind === 'idle' && current.note ? <p data-pii className={warnNoteClass}>{current.note}</p> : null}
+      {current.kind === 'idle' && current.run ? <CancelScreenshot client={client} run={current.run} /> : null}
+      {chargePrompt}
     </div>
   );
 }
