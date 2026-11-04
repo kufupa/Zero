@@ -104,6 +104,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     refreshAmendExtraction: null as null | ((input: unknown) => Promise<unknown>),
+    amendRateCandidates: null as null | ((input: unknown) => Promise<unknown>),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
 }));
@@ -292,6 +293,9 @@ vi.mock('../providers/query-provider', () => ({
       };
     },
     quoteWorkflow: {
+      get rateCandidates() {
+        return bridgeMockState.amendRateCandidates ? { mutate: bridgeMockState.amendRateCandidates } : undefined;
+      },
       rateCatalogue: {
         query: async () => bridgeMockState.quotePaneConfig,
       },
@@ -849,6 +853,7 @@ describe('NavaPane', () => {
     setMailCacheScope({ userId: null, activeTransportId: null });
     bridgeMockState.recordEvent.mockReset();
     bridgeMockState.refreshAmendExtraction = null;
+    bridgeMockState.amendRateCandidates = null;
     bridgeMockState.recordEvent.mockResolvedValue({ aiValue: null, value: null });
     localStorage.clear();
     sessionStorage.clear();
@@ -3186,6 +3191,18 @@ describe('NavaPane', () => {
       finishRefresh = () => resolve({ status: 'current', extractionId: 'ex-amendment' });
     }));
     bridgeMockState.refreshAmendExtraction = refresh;
+    const rateReady = { status: 'ready', requestId: 'b'.repeat(64), jobId: 'rate-job',
+      contextKey: 'rate-context', observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      coverage: { candidateList: 'partial', reason: 'Some nights were not returned.' },
+      recommendation: { rateCode: 'CORP', explanation: 'Requested rate.', validation: 'needs_native_check' }, issues: [],
+      options: [{ id: 'rate-1', rateCode: 'CORP', rateLabel: 'Corporate', roomCode: 'SKNG', roomLabel: 'Standard King',
+        boardLabel: 'Breakfast', state: 'unchecked', reasons: ['NATIVE_STAY_ELIGIBILITY_UNVERIFIED'], minRoomsAvailable: null,
+        coverage: { nightsExpected: 2, nightsObserved: 2, eligibilityVerified: false, nativePartyIdsMatched: true },
+        price: { currency: 'ZAR', averagePerNightMinor: 125000, totalMinor: null, totalBasis: 'nightly_sum' } }],
+    };
+    const rates = vi.fn(async (input: unknown) => (input as { kind: string }).kind === 'start'
+      ? { ...rateReady, status: 'queued', options: [] } : rateReady);
+    bridgeMockState.amendRateCandidates = rates;
     const pane = render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
     let adults = await within(card).findByLabelText('Requested adults');
@@ -3221,6 +3238,22 @@ describe('NavaPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry save' }));
     await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(4));
     expect(bridgeMockState.recordEvent).toHaveBeenLastCalledWith(expect.objectContaining({ expectedSeq: 2, value: 4 }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Check rates in HMS' }));
+    await waitFor(() => expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'start', binding: {
+      workItemId: 'wi-amendment', source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
+      request: { requestId: 'b'.repeat(64), stayId: 'stay-1', rowId: null, roomIndex: null }, expectedSeq: 3,
+    } }), { context: { activeTransportId: 'transport-1' } }));
+    expect((await screen.findByRole('list', { name: 'Rates from HMS' }, { timeout: 7000 })).textContent).toContain('ZAR 1250.00 estimated per night');
+    expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'read', jobId: 'rate-job' }),
+      { context: { activeTransportId: 'transport-1' } });
+    expect(screen.getByText(/Rate list is incomplete/)).toBeTruthy();
+    let finishRate!: () => void;
+    rates.mockImplementationOnce(() => new Promise((resolve) => { finishRate = () => resolve(rateReady); }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check CORP' }));
+    await waitFor(() => expect(rates).toHaveBeenCalledTimes(3));
+    fireEvent.change(adults, { target: { value: '5' } });
+    await act(async () => finishRate());
+    expect(screen.queryByRole('list', { name: 'Rates from HMS' })).toBeNull();
     try {
       // The new session's property catalogue is still unavailable after the old one is discarded.
       bridgeMockState.quotePaneConfig = null;
@@ -3234,7 +3267,7 @@ describe('NavaPane', () => {
       bridgeMockState.userId = 'staff-1';
       bridgeMockState.sessionId = 'session-1';
     }
-  });
+  }, 15_000);
 
   it('opens the HRCEN review only for a verified web message selection', async () => {
     bridgeMockState.quotePaneConfig = {
