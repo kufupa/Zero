@@ -14,6 +14,8 @@ import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { createSourceSnapshotDigest } from './pane-create-source-snapshot.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { amendStayForRequest, projectAmendRequests } from './pane-amend-draft.js';
 
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -26,8 +28,11 @@ export const cloudAmendSelectionSchema = z.object({
 // The extraction is server-owned. The client selects a message, not a version.
 export const cloudAmendSourceSchema = cloudAmendSelectionSchema.extend({ extractionId: z.string().uuid() }).strict();
 const cursor = z.number().int().nonnegative().safe();
+const amendDraftIdentitySchema = z.object({ requestId: z.string().regex(/^[a-f0-9]{64}$/),
+  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/) }).strict();
 export const cloudAmendSourceBindingSchema = z.object({ selected: cloudAmendSourceSchema,
   digest: z.string().regex(/^[a-f0-9]{64}$/), revision: cursor, revisionHead: cursor, revisionSeq: cursor,
+  draft: amendDraftIdentitySchema.optional(),
 }).strict().refine((binding) => binding.revision <= binding.revisionHead);
 const editableText = z.string().max(1000).refine((value) => !/[\p{Cc}]/u.test(value));
 export const cloudAmendChangesSchema = z.object({
@@ -44,6 +49,7 @@ export const cloudAmendChangesSchema = z.object({
 export const bindCloudAmendInput = z.object({
   workItemId: z.string().uuid(), source: cloudAmendSelectionSchema, confirmation: z.string().regex(/^\d{6,}-\d+$/),
   arrival: day, changes: cloudAmendChangesSchema,
+  draft: amendDraftIdentitySchema.extend({ expectedSeq: cursor }).strict().optional(),
 }).strict();
 export type CloudAmendChanges = z.infer<typeof cloudAmendChangesSchema>;
 export type CloudAmendSource = z.infer<typeof cloudAmendSourceSchema>;
@@ -77,21 +83,44 @@ type SourceRows = {
 };
 export type CloudAmendSourceBinding = z.infer<typeof cloudAmendSourceBindingSchema>;
 
+/** Review the saved request at the cursor staff just flushed, including its exact target. */
+export function amendDraftMatchesForm(input: {
+  selected: CloudAmendSource; payload: unknown; state: Record<string, unknown>; revisionSeq: number;
+  confirmation: string; arrival: string; draft?: z.infer<typeof bindCloudAmendInput>['draft'];
+}): boolean {
+  const payload = mailExtractionPayloadSchema.safeParse(input.payload);
+  if (!payload.success) return !input.draft; // Preserve pre-draft legacy clients.
+  const requests = projectAmendRequests(input.selected, payload.data, input.state).requests;
+  if (!input.draft) return requests.length <= 1;
+  if (input.draft.expectedSeq !== input.revisionSeq) return false;
+  const request = requests.find((candidate) => candidate.requestId === input.draft?.requestId &&
+    candidate.stayId === input.draft?.stayId);
+  const target = request?.fields.value.target as { confirmation?: unknown; arrival?: unknown } | null | undefined;
+  return Boolean(target && target.confirmation === input.confirmation && target.arrival === input.arrival);
+}
+
 /** Bind the material source and the item's edit cursor, not just the extraction ID. */
-export function cloudAmendSourceBinding(rows: SourceRows, selected: CloudAmendSource, transportId: string): CloudAmendSourceBinding | null {
+export function cloudAmendSourceBinding(rows: SourceRows, selected: CloudAmendSource, transportId: string,
+  draft?: z.infer<typeof amendDraftIdentitySchema>): CloudAmendSourceBinding | null {
   if (!selectedAmendSourceMatches(selected, rows.item, rows.mail, rows.extraction, transportId, rows.thread) ||
       !rows.item || !rows.mail || !rows.extraction || rows.attachments.length > MAX_SOURCE_ATTACHMENTS) return null;
+  if (draft) {
+    const payload = mailExtractionPayloadSchema.safeParse(rows.extraction.payload);
+    const stay = payload.success ? amendStayForRequest(selected, payload.data, draft.requestId) : undefined;
+    if (!stay || stay.id !== draft.stayId) return null;
+  }
   try {
     const digest = createSourceSnapshotDigest({ source: rows.mail, extraction: rows.extraction,
       attachments: rows.attachments, historicalCorrections: [] });
     return { selected, digest, revision: rows.item.revision, revisionHead: rows.item.revisionHead,
-      revisionSeq: rows.item.revisionSeq };
+      revisionSeq: rows.item.revisionSeq, ...(draft ? { draft } : {}) };
   } catch { return null; }
 }
 
 const sameBinding = (left: CloudAmendSourceBinding | null, right: CloudAmendSourceBinding) => Boolean(left &&
   left.digest === right.digest && left.revision === right.revision && left.revisionHead === right.revisionHead &&
-  left.revisionSeq === right.revisionSeq);
+  left.revisionSeq === right.revisionSeq && left.draft?.requestId === right.draft?.requestId &&
+  left.draft?.stayId === right.draft?.stayId);
 
 /** Stable server-owned HMS facts; observedAt and browser session ids must not alter the approval digest. */
 export function cloudAmendPreimage(found: HmsCloudFindResult, allowRealGuest = false) {
@@ -179,7 +208,7 @@ export async function lockCloudAmendSource(tx: WorkTx, input: {
   const [item] = await tx.select().from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
     .limit(1).for('no key update');
-  const current = cloudAmendSourceBinding({ item, thread, mail, extraction, attachments }, selected, input.transportId);
+  const current = cloudAmendSourceBinding({ item, thread, mail, extraction, attachments }, selected, input.transportId, input.binding.draft);
   return item && sameBinding(current, input.binding) ? item : null;
 }
 
@@ -240,8 +269,14 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   if (!selectedItem?.extractionId) return { status: 'refused' as const, reason: 'source_mail_changed' };
   const selected = { ...data.source, extractionId: selectedItem.extractionId };
   const sourceRows = await readSource(db, data.workItemId, transportId, selected);
-  const binding = cloudAmendSourceBinding(sourceRows, selected, transportId);
+  const draft = data.draft && { requestId: data.draft.requestId, stayId: data.draft.stayId };
+  const binding = cloudAmendSourceBinding(sourceRows, selected, transportId, draft);
   if (!binding) {
+    return { status: 'refused' as const, reason: 'source_mail_changed' };
+  }
+  if (!sourceRows.item || !amendDraftMatchesForm({ selected, payload: sourceRows.extraction?.payload,
+    state: sourceRows.item.state, revisionSeq: binding.revisionSeq, confirmation: data.confirmation,
+    arrival: data.arrival, draft: data.draft })) {
     return { status: 'refused' as const, reason: 'source_mail_changed' };
   }
   const target = paneStayHmsTargetForTransport(transportId);

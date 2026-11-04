@@ -2,11 +2,44 @@ import { describe, expect, it } from 'vitest';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { amendRequestId, projectAmendRequests, validAmendRequestValue } from '../src/ai/pane-amend-draft.js';
 import { paneStateOf, withPaneState } from '../src/ai/work-item-revision.js';
+import { amendDraftMatchesForm, cloudAmendSourceBinding } from '../src/ai/pane-cloud-amend.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
 const ACTION_OUTPUT = { ...AE1_OUTPUT, needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
 
 describe('amendment request draft', () => {
+  it('binds an amendment review to the selected extraction stay and revision', () => {
+    const parsed = mailExtractionSchema.parse({ ...ACTION_OUTPUT, kind: 'amendment',
+      stays: [{ ...AE1_OUTPUT.stays[0]!, action: 'amend' }] });
+    const payload = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: ACTION_OUTPUT.actionEvidence,
+      currentMessageText: ACTION_OUTPUT.actionEvidence }).payload;
+    const mail = { id: 'm1', transportId: 't1', threadId: 'th1', direction: 'inbound', historyOnly: false,
+      subject: 'Change', textBody: 'Please change the rate to BAR.', htmlBody: null, sourceProvenance: null,
+      createdAt: new Date('2026-01-01T00:00:00Z') };
+    const selected = { threadId: 'th1', messageId: 'm1', sourceHash: staffQuoteSourceHash(mail), extractionId: 'e1' };
+    const rows = { mail, thread: { id: 'th1', transportId: 't1', historyOnly: false, trashedAt: null },
+      item: { id: 'w1', transportId: 't1', threadId: 'th1', sourceMessageId: 'm1', extractionId: 'e1',
+        status: 'open', kind: 'amendment', state: {}, revision: 2, revisionHead: 2, revisionSeq: 3 },
+      extraction: { id: 'e1', messageId: 'm1', kind: 'amendment', status: 'succeeded', payload }, attachments: [] };
+    const typedRows = rows as unknown as Parameters<typeof cloudAmendSourceBinding>[0];
+    const stayId = payload.stays[0]!.id;
+    const identity = { requestId: amendRequestId(selected, stayId), stayId };
+    expect(cloudAmendSourceBinding(typedRows, selected, 't1', identity)).toMatchObject({ draft: identity, revisionSeq: 3 });
+    expect(cloudAmendSourceBinding(typedRows, selected, 't1', { ...identity, stayId: 'wrong' })).toBeNull();
+    expect(cloudAmendSourceBinding(typedRows, selected, 't1', { ...identity, requestId: 'b'.repeat(64) })).toBeNull();
+    expect(cloudAmendSourceBinding(typedRows, selected, 't1')).not.toBeNull(); // legacy single-stay form
+    const target = { confirmation: '123456-1', arrival: '2027-12-01' };
+    const form = { selected, payload, state: { [`requests[${identity.requestId}].target`]: target },
+      revisionSeq: 3, ...target, draft: { ...identity, expectedSeq: 3 } };
+    expect(amendDraftMatchesForm(form)).toBe(true);
+    expect(amendDraftMatchesForm({ ...form, revisionSeq: 4 })).toBe(false);
+    expect(amendDraftMatchesForm({ ...form, confirmation: '654321-1' })).toBe(false);
+    expect(amendDraftMatchesForm({ ...form, state: { [`requests[${identity.requestId}].target`]: null } })).toBe(false);
+    expect(amendDraftMatchesForm({ ...form, draft: undefined })).toBe(true);
+    expect(amendDraftMatchesForm({ ...form, draft: undefined,
+      payload: { ...payload, stays: [...payload.stays, { ...payload.stays[0], id: 'another' }] } })).toBe(false);
+  });
   it('undo restores request edits without rolling back HMS commit state', () => {
     const key = `requests[${'a'.repeat(64)}].ratePlan`;
     const before = { [key]: 'BAR', stays: { committed: { confirmationNumber: '123456-1' } } };
