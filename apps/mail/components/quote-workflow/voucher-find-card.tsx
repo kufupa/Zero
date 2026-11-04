@@ -798,7 +798,7 @@ function VoucherFindCardBody({
             onChange={(event) => editSearch('confirmation', event.target.value)}
             className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12px]" />
         </label>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2">
           <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
             Guest surname
             <input type="text" data-pii value={searchForm.lastName} disabled={searchFrozen}
