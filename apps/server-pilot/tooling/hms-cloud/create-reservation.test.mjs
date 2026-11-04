@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
+import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
 import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
 
 const input = {
@@ -510,6 +511,19 @@ test('supported inputs stage without claiming approval readiness', async () => {
   assert.ok(result.warnings.some(({ field, issue }) => field === 'sourceOfBusiness' && issue === 'native_code_not_exposed_on_form_or_saved_record'));
   assert.deepEqual(fake.calls.filter(({ tool }) => tool === 'inspectGuestStaySourceBusiness').map(({ offset }) => offset), [0, 100]);
   assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 0);
+  const { sourceOfBusiness: _sourceOfBusiness, ...withoutSource } = input;
+  const noSource = harness();
+  const prepared = await createReservation({ ...withoutSource, mode: 'prepare' }, noSource.options);
+  assert.equal(prepared.outcome, 'prepared');
+  assert.equal(noSource.calls.find(({ tool }) => tool === 'selectGuestStayRatePlan').createDraft.source, null);
+  assert.equal(prepared.requestBinding.request.sourceOfBusiness, undefined);
+  const createDraft = { propertyCode: 'HRCEN', guest: { nativeId: '123', firstName: 'Proof', lastName: 'Labtest' },
+    adults: 2, childCount: 2, roomType: 'DLXKNG', guaranteeType: 'NGI', source: null };
+  const authority = { requireM1CreateAvailability: true, authorizeM1CreateAvailabilityRequest: () => true };
+  const rate = (draft) => selectGuestStayRatePlan(null, { code: 'BAR', guestProfileId: '123', createDraft: draft }, authority);
+  assert.equal((await rate(createDraft)).issue, 'PAGE_REQUIRED');
+  assert.equal((await rate({ ...createDraft, source: { nativeCode: 'EMA', description: 'E-Mail' } })).issue, 'PAGE_REQUIRED');
+  assert.equal((await rate({ ...createDraft, source: { nativeCode: '', description: 'E-Mail' } })).issue, 'CREATE_AVAILABILITY_INPUT_INCOMPLETE');
 });
 
 test('prepare does not bind a billing reference before its guarded save-time staging and readback', async () => {

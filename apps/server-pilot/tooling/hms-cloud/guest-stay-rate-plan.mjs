@@ -278,7 +278,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       !Number.isInteger(createDraft.adults) || createDraft.adults < 1 || !Number.isInteger(createDraft.childCount) ||
       createDraft.childCount < 0 || !clean(createDraft.roomType) ||
       (createDraft.track != null && (!clean(createDraft.track.display) || !clean(createDraft.track.code))) ||
-      !clean(createDraft.guaranteeType) || !clean(createDraft.source?.nativeCode) || !clean(createDraft.source?.description))) {
+      !clean(createDraft.guaranteeType) ||
+      (createDraft.source != null && (!clean(createDraft.source.nativeCode) || !clean(createDraft.source.description))))) {
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
   }
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
@@ -419,7 +420,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
       const businessFields = [
         ['adults', createDraft.adults], ['children', createDraft.childCount], ['roomtype', createDraft.roomType],
-        ...(createDraft.track ? [['track', createDraft.track.display]] : []), ['sourceofbusinessdesc', createDraft.source.description],
+        ...(createDraft.track ? [['track', createDraft.track.display]] : []),
+        ...(createDraft.source ? [['sourceofbusinessdesc', createDraft.source.description]] : []),
         ['reservationnote', createDraft.note], ['udfchkbox04', createDraft.cmsSend],
         ...(createDraft.cmsMessageId != null ? [['udfchar09', createDraft.cmsMessageId]] : []),
         ...(createDraft.cmsRecipient != null ? [['udfchar13', createDraft.cmsRecipient]] : []),

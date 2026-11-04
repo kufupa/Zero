@@ -62,6 +62,12 @@ test('a unique positive fresh read verifies all approved fields, parties, and a 
     cloudTargetKey: '["HRCEN","create","proof","labtest","2027-03-15"]' }]);
   assert.deepEqual(f.calls[2][1].agency, request.parties.agency);
   assert.deepEqual(f.calls[2][1].organization, request.parties.organization);
+  const { sourceOfBusiness: _sourceOfBusiness, ...withoutSource } = request;
+  const binding = digestCloudCreateRequest(withoutSource);
+  const noSourceIntent = { ...intent, approvedDigest: binding.normalizedRequestDigest,
+    recovery: { ...intent.recovery, request: binding.request } };
+  assert.equal((await provePositiveCreateRecovery(noSourceIntent,
+    fixture({ values: { ...fieldValues, sourceofbusinessdesc: 'HMS default' } }).options)).outcome, 'verified');
 });
 
 test('changed authorization, incomplete census and ambiguity never reach fresh read', async () => {
@@ -99,6 +105,7 @@ test('recovery excludes sealed earlier rooms and requires one uniquely new match
 test('changed saved data, native guarantee, party or missing screenshot keep the hold unresolved', async () => {
   for (const options of [
     { values: { ...fieldValues, reservationnote: 'changed' } },
+    { values: { ...fieldValues, sourceofbusinessdesc: 'changed' } },
     { values: { ...fieldValues, udfchkbox04: true } },
     { values: { ...fieldValues, udfchar09: '04' } },
     { nativeChanges: { guaranteeCode: 'GTDAGT' } },
