@@ -1426,10 +1426,12 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     ...(bookerName.trim() !== (contactObservations?.bookerName?.value ?? '') ? { bookerName: bookerName.trim() } : {}),
     ...(bookerContact.trim() !== (contactObservations?.bookerContact?.value ?? '') ? { bookerContact: bookerContact.trim() } : {}),
   };
+  const retainedPriceChange = retainRates === 'yes' &&
+    ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'ratePlan'].some((key) => Object.hasOwn(changes, key));
   const validRecipient = !cmsNeedsChoice && (!cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim())));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
     firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
-    /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
+    /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient && !retainedPriceChange &&
     (Object.keys(changes).length > 0 || cmsTouched));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
     workItemId: writeContext.workItemId,
@@ -1497,6 +1499,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
         <span className={captionClass}>No: HMS reprices the stay.</span>
       </label>
     </div>
+    {retainedPriceChange ? <p className={warnNoteClass}>The new total cannot be verified while retaining rates. Choose No to reprice, or make this change in HMS.</p> : null}
     {stay.averageRate || stay.grandTotal ? <p className={captionClass}>HMS at lookup: {stay.averageRate ? `Average ${stay.averageRate}` : ''}{stay.averageRate && stay.grandTotal ? ' · ' : ''}{stay.grandTotal ? `Total ${stay.grandTotal}` : ''}</p> : null}
     <details className="rounded-sm border border-[#e2e8f0] p-2">
       <summary className="cursor-pointer text-[12px] font-semibold text-[#334155]">More · guest and booker</summary>

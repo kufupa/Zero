@@ -2,13 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { amendRequestId, projectAmendRequests, validAmendRequestValue } from '../src/ai/pane-amend-draft.js';
 import { paneStateOf, withPaneState } from '../src/ai/work-item-revision.js';
-import { amendDraftMatchesForm, cloudAmendSourceBinding } from '../src/ai/pane-cloud-amend.js';
+import { amendDraftMatchesForm, cloudAmendFirstPilotScopeSupported, cloudAmendSourceBinding } from '../src/ai/pane-cloud-amend.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
 const ACTION_OUTPUT = { ...AE1_OUTPUT, needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
 
 describe('amendment request draft', () => {
+  it('does not approve an old total for retained-rate price changes', () => {
+    const current = { arrival: '2027-12-20', departure: '2027-12-22', adults: 1, children: 0,
+      childAges: [] as number[], roomType: 'STQN', ratePlan: 'BAR', firstName: 'Proof', lastName: 'Labtest' };
+    const choices = { retainRates: 'yes' as const, ratePlan: 'BAR', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, departure: '2027-12-23' })).toBe(false);
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, adults: 2 })).toBe(false);
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, roomType: 'STWN' })).toBe(false);
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, ratePlan: 'CRIC' })).toBe(false);
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, departure: '2027-12-23', retainRates: 'no' })).toBe(true);
+    expect(cloudAmendFirstPilotScopeSupported(current, { ...choices, guestEmail: 'guest@example.test' })).toBe(true);
+  });
   it('binds an amendment review to the selected extraction stay and revision', () => {
     const parsed = mailExtractionSchema.parse({ ...ACTION_OUTPUT, kind: 'amendment',
       stays: [{ ...AE1_OUTPUT.stays[0]!, action: 'amend' }] });

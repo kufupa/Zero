@@ -420,6 +420,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     !same(changes.childAges, selected.childAges));
   const roomChanged = target.roomType !== selected.roomType, rateChanged = target.ratePlan !== selected.ratePlan;
   const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged;
+  // The retained baseline is not the final price when availability changes.
+  if (changes.retainRates === 'yes' && needsAvailability) throw new Error('AMEND_PRICE_UNVERIFIED');
   const allowsExtendOverrideRate = changes.retainRates === 'yes' &&
     (target.arrival < selected.arrival || target.departure > selected.departure);
   const dispatch = prepareOnly ? null : createLabtestAmendDispatch({ ...authorization,

@@ -2235,6 +2235,7 @@ describe('AmendLookupPanel amend form', () => {
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
     expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
       { name: 'Yes', selected: true })).toBeTruthy();
+    expect(screen.getByText(/new total cannot be verified while retaining rates/i)).toBeTruthy();
     expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
     expect(trpc.queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1' }),
@@ -2252,6 +2253,7 @@ describe('AmendLookupPanel amend form', () => {
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
     expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
       { name: 'Yes', selected: true })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'no' } });
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
 

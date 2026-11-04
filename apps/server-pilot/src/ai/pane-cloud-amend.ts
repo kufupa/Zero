@@ -149,6 +149,12 @@ export function cloudAmendFirstPilotScopeSupported(current: NativeAmendScope, fi
       (labtest && (current.arrival < '2027-01-01' || targetArrival.data < '2027-01-01' || fields.cmsSend ||
         (fields.firstName !== undefined && fields.firstName !== 'Proof') ||
         (fields.lastName !== undefined && fields.lastName !== 'Labtest')))) return false;
+  // Retained-rate staging currently observes the old stay total, not a verified
+  // total for changed dates, occupancy, room or rate. Do not approve it as the new price.
+  if (fields.retainRates === 'yes' && (['arrival', 'departure', 'adults', 'children', 'roomType', 'ratePlan'] as const)
+    .some((key) => fields[key] !== undefined && fields[key] !== current[key])) return false;
+  if (fields.retainRates === 'yes' && fields.childAges !== undefined &&
+      JSON.stringify(fields.childAges) !== JSON.stringify(current.childAges)) return false;
   const businessChange = Object.entries(fields).some(([key, value]) => {
     if (['retainRates', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(key)) return false;
     if (key === 'childAges') return JSON.stringify(value) !== JSON.stringify(current.childAges);
