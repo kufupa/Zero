@@ -4,6 +4,48 @@ import { HINT_LABELS, PARTY_FIELDS, SOURCES, combinationKey, confirmationKey, em
 
 export { queryHmsBookingMemory } from './hms-booking-memory-query.mjs';
 
+/** Private rate aggregates: all native-confirmed sources and the separate E-Mail cohort. */
+export function buildHmsRateFrequency({ propertyCode, pmsSnapshots = [] } = {}) {
+  const property = text(propertyCode).toUpperCase();
+  if (!property) throw new TypeError('propertyCode is required.');
+  const observations = [];
+  for (const snapshot of pmsSnapshots) {
+    if (text(snapshot?.propertyCode) && text(snapshot.propertyCode).toUpperCase() !== property) {
+      throw new TypeError('Rate history spans properties.');
+    }
+    for (const result of snapshot?.results || []) {
+      if (!result || result.ok === false || !confirmationKey(result.confirmation)) continue;
+      if (text(result.propertyCode) && text(result.propertyCode).toUpperCase() !== property) {
+        throw new TypeError('Rate history spans properties.');
+      }
+      const key = confirmationKey(result.confirmation);
+      if (historicalIdentity(result, key).nativeConfirmation !== 'matched') continue;
+      const hints = historicalHintFields(result).ratePlan;
+      const values = [...new Set([...(hints.recordView || []), ...(hints.stay360 || [])]
+        .filter(value => typeof value === 'string').map(value => text(value).toUpperCase()))];
+      if (values.length !== 1 || !/^[A-Z0-9]{1,12}$/.test(values[0])) continue;
+      const sources = [...new Set((result.recordView?.details?.fields || [])
+        .filter(field => labelOf(field) === 'source of business').map(field => text(field.value)).filter(Boolean))];
+      observations.push({ confirmationKey: key, provenance: result.provenance || null,
+        rateCode: values[0], email: sources.length === 1 && sources[0].toLowerCase() === 'e-mail' });
+    }
+  }
+  verifiedConfirmations(observations);
+  const counts = emailOnly => {
+    const codes = new Map(), confirmations = new Set();
+    for (const observation of observations) {
+      if (emailOnly && !observation.email) continue;
+      confirmations.add(observation.confirmationKey);
+      const set = codes.get(observation.rateCode) || new Set();
+      set.add(observation.confirmationKey); codes.set(observation.rateCode, set);
+    }
+    return { confirmationCount: confirmations.size,
+      codes: Object.fromEntries([...codes].map(([code, ids]) => [code, ids.size])) };
+  };
+  return { propertyCode: property, countingUnit: 'distinct_observed_confirmations',
+    full: counts(false), email: counts(true) };
+}
+
 const LABELS = {
   'primary booking agency': 'bookingAgency',
   'booking agency': 'bookingAgency',

@@ -7,7 +7,7 @@
  * when HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on.
  */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,8 @@ import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
 import { type HmsReadTarget } from '../hms/hms-read-target.js';
+import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
+import { canonicalJson } from './draft-approval.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -105,6 +107,71 @@ export const availabilityJobRequestSchema = availabilityRequestSchema.superRefin
     }
   });
 export type AvailabilityRequest = z.infer<typeof availabilityRequestSchema>;
+
+/** Project only the current server draft and the exact saved-stay read. Explicit clears never fall back. */
+export function boundAmendRateRequest(input: {
+  propertyCode: string; requestId: string; stayId: string; rowId: string | null;
+  fields: Record<string, unknown>; state: Record<string, unknown>;
+  lookup: HmsCloudRateLookup; typedRatePlan?: string;
+}): { request: AvailabilityRequest; selectedCode: string | null; explicitCode: string | null; unchangedCode: string; draftContextKey: string } |
+  { reason: string } {
+  const { lookup, fields, state } = input;
+  if (!lookup?.native || !lookup.parties?.agency || !lookup.parties.organization || !lookup.group ||
+      !lookup.promotion || !lookup.arAccount || !lookup.sourceOfBusiness || !lookup.track) return { reason: 'SAVED_CONTEXT_READ_REQUIRED' };
+  const native = lookup.native;
+  const target = fields.target as { confirmation?: unknown; arrival?: unknown } | null;
+  if (!target || target.confirmation !== native.confirmation || target.arrival !== native.arrival ||
+      native.propertyCode !== input.propertyCode || native.status !== 'Reserved') return { reason: 'SAVED_TARGET_CHANGED' };
+  if (Object.values(lookup.parties).some(party => party.state === 'unknown') ||
+      [lookup.group, lookup.promotion, lookup.arAccount].some(field => field.state !== 'blank')) {
+    return { reason: 'SAVED_PARTY_CONTEXT_UNSUPPORTED' };
+  }
+  const requestPrefix = `requests[${input.requestId}].`;
+  const resolved = (field: string, fallback: unknown, structural?: string) => {
+    const path = structural ?? `${requestPrefix}${field}`;
+    return Object.hasOwn(state, path) ? state[path] : fields[field] ?? fallback;
+  };
+  const arrival = resolved('arrival', native.arrival, `stays[${input.stayId}].requested.arrival`);
+  const departure = resolved('departure', native.departure, `stays[${input.stayId}].requested.departure`);
+  const rowPrefix = input.rowId ? `stays[${input.stayId}].rows[${input.rowId}].` : null;
+  const adultPath = rowPrefix && Object.hasOwn(state, `${rowPrefix}adults`) ? `${rowPrefix}adults` :
+    `stays[${input.stayId}].totalAdults`;
+  const adults = resolved('adults', native.adults, adultPath);
+  const childAges = Object.hasOwn(state, `${requestPrefix}childAges`) ? state[`${requestPrefix}childAges`] :
+    rowPrefix && Object.hasOwn(state, `${rowPrefix}childAges`) ? state[`${rowPrefix}childAges`] :
+    fields.childAges ?? (native.children === 0 ? [] : native.childAges === 'unknown' ? null : native.childAges);
+  const requestedAges = Object.hasOwn(state, `${requestPrefix}childAges`) ||
+    (rowPrefix && Object.hasOwn(state, `${rowPrefix}childAges`)) || fields.childAges != null;
+  const children = resolved('children', requestedAges && Array.isArray(childAges) ? childAges.length : native.children,
+    `stays[${input.stayId}].totalChildren`);
+  if (!Array.isArray(childAges) || children !== childAges.length) {
+    return { reason: 'CHILD_AGES_UNRESOLVED' };
+  }
+  const selectedCode = resolved('ratePlan', native.ratePlan);
+  const roomCode = resolved('roomType', native.roomType);
+  const retainRates = resolved('retainRates', 'yes');
+  const stableLookup = { ...lookup, observedAt: null };
+  const rateParties = Object.fromEntries(Object.entries(lookup.parties).flatMap(([kind, party]) =>
+    party.state === 'selected' ? [[kind, { nativeId: party.nativeId, name: party.name }]] : []));
+  const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
+    rooms: [{ roomType: roomCode, quantity: 1, adults, childAges }], rateParties,
+    rateContext: { propertyCode: input.propertyCode, workflow: 'amend', arrival, departure, roomCode,
+      quantity: 1, adults, childAges, board: null, currency: lookup.currency,
+      agencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
+      guestProfileId: native.guestId,
+      sourceOfBusiness: lookup.sourceOfBusiness.state === 'observed' ? lookup.sourceOfBusiness.value : null,
+      track: lookup.track.state === 'observed' ? lookup.track.value : null,
+      guaranteeType: native.guaranteeCode ?? null, typedRatePlan: input.typedRatePlan ?? null,
+      savedTarget: { confirmation: native.confirmation, bookedArrival: native.arrival,
+        nativePreimageDigest: createHash('sha256').update(canonicalJson(stableLookup)).digest('hex') }, retainRates },
+  });
+  if (!parsed.success || !nativeCode.safeParse(selectedCode).success) return { reason: 'RATE_DRAFT_INCOMPLETE' };
+  const context = parsed.data.rateContext!;
+  return { request: parsed.data, selectedCode: selectedCode as string,
+    explicitCode: Object.hasOwn(state, `${requestPrefix}ratePlan`) || fields.ratePlan != null ? selectedCode as string : null,
+    unchangedCode: native.ratePlan,
+    draftContextKey: createHash('sha256').update(canonicalJson({ ...context, typedRatePlan: selectedCode })).digest('hex') };
+}
 
 /** A real calendar day in YYYY-MM-DD form. 2026-02-30 and 2026-13-01 are not one. */
 function isRealIsoDay(value: string): boolean {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { RateContext } from './hms-availability.js';
 import type { HmsCloudAvailabilityResult } from './hms-cloud-availability-reader.js';
+import type { PaneRateHistory } from './pane-rate-recommendation.js';
 import {exactMinor,occupiedDates,type Board,type NativeOption,type QuoteSourceRecord,type RoomRequest} from '../quote-proposal/quote-revision.js';
 import {getProfileBoards,profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 
@@ -158,16 +159,17 @@ export type RateRecommendation = {
 const EMAIL_RATE_COUNTS: Readonly<Record<string, number>> = {
   NGOVDB: 204, NCOR1B: 95, NGOVB: 63, NCOR2B: 52, BAR: 45,
 };
-export function orderRateCandidates(context: RateContext, options: readonly RateCandidate[]): RateCandidate[] {
+export function orderRateCandidates(context: RateContext, options: readonly RateCandidate[], history?: PaneRateHistory): RateCandidate[] {
+  const counts = history && Object.keys(history.email).length ? history.email : history && Object.keys(history.full).length
+    ? history.full : context.propertyCode === 'HRCEN' ? EMAIL_RATE_COUNTS : {};
   return [...options].sort((a, b) => {
-    const frequency = context.propertyCode === 'HRCEN'
-      ? (EMAIL_RATE_COUNTS[b.rateCode] ?? 0) - (EMAIL_RATE_COUNTS[a.rateCode] ?? 0) : 0;
+    const frequency = (counts[b.rateCode] ?? 0) - (counts[a.rateCode] ?? 0);
     return frequency || a.rateCode.localeCompare(b.rateCode) || a.id.localeCompare(b.id);
   });
 }
 
 /** Recommendations are advisory: callers never replace a staff choice with this value. */
-export function recommendRateCandidate(context: RateContext, options: readonly RateCandidate[], unchangedRate: string | null = null): RateRecommendation | null {
+export function recommendRateCandidate(context: RateContext, options: readonly RateCandidate[], unchangedRate: string | null = null, history?: PaneRateHistory): RateRecommendation | null {
   const code = context.typedRatePlan ?? (context.workflow === 'amend' ? unchangedRate : null);
   const basis = context.typedRatePlan ? 'explicit_request' : code ? 'unchanged_hms' : null;
   if (code && basis) {
@@ -177,11 +179,27 @@ export function recommendRateCandidate(context: RateContext, options: readonly R
       validation: verified ? 'verified_for_context' : 'needs_native_check' };
   }
   if (context.workflow === 'amend' || context.propertyCode !== 'HRCEN') return null;
-  const candidate = orderRateCandidates(context, options).find(option => EMAIL_RATE_COUNTS[option.rateCode] &&
+  const usable = options.filter(option => option.matchesRequest && !['unavailable', 'restricted', 'failed'].includes(option.state));
+  const bound = usable.filter(option => history?.boundParty[option.rateCode]).sort((a, b) =>
+    (history!.boundParty[b.rateCode] ?? 0) - (history!.boundParty[a.rateCode] ?? 0) || a.rateCode.localeCompare(b.rateCode))[0];
+  if (bound) return { rateCode: bound.rateCode, basis: 'bound_party_history',
+    explanation: 'Used in prepared quotes with the same verified company and agency; check this stay in HMS.',
+    evidenceCount: history!.boundParty[bound.rateCode]!, historyDigest: null, historyAsOf: null,
+    validation: bound.state === 'available' && bound.coverage.eligibilityVerified ? 'verified_for_context' : 'needs_native_check' };
+  const email = history?.digest ? history.email : EMAIL_RATE_COUNTS;
+  let counts: Readonly<Record<string, number>> = email;
+  let frequencyBasis: 'email_frequency' | 'full_frequency' = 'email_frequency';
+  let candidate = orderRateCandidates(context, usable, history).find(option => email[option.rateCode] &&
     option.matchesRequest && !['unavailable', 'restricted', 'failed'].includes(option.state));
+  if (!candidate && history) {
+    counts = history.full; frequencyBasis = 'full_frequency';
+    candidate = [...usable].sort((a, b) => (counts[b.rateCode] ?? 0) - (counts[a.rateCode] ?? 0))
+      .find(option => counts[option.rateCode]);
+  }
   if (!candidate) return null;
-  return { rateCode: candidate.rateCode, basis: 'email_frequency', explanation: 'Often used for email bookings; check this stay in HMS.',
-    evidenceCount: EMAIL_RATE_COUNTS[candidate.rateCode]!, historyDigest: null, historyAsOf: '2026-10-29',
+  return { rateCode: candidate.rateCode, basis: frequencyBasis, explanation: frequencyBasis === 'email_frequency'
+    ? 'Often used for email bookings; check this stay in HMS.' : 'Often used across booking sources; check this stay in HMS.',
+    evidenceCount: counts[candidate.rateCode]!, historyDigest: history?.digest ?? null, historyAsOf: history?.asOf ?? '2026-10-29',
     validation: candidate.state === 'available' && candidate.coverage.eligibilityVerified ? 'verified_for_context' : 'needs_native_check' };
 }
 

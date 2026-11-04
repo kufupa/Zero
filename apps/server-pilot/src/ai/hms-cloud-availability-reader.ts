@@ -223,6 +223,16 @@ function completenessIncomplete(coverage: Record<string, unknown>): boolean {
     page?.nextOffset != null || nights?.nextOffset != null;
 }
 
+function unappliedStayContext(context: RateContext | undefined): string[] {
+  if (!context) return [];
+  return [context.guestProfileId ? 'GUEST_PROFILE_CONTEXT_UNAPPLIED' : null,
+    context.sourceOfBusiness ? 'SOURCE_OF_BUSINESS_CONTEXT_UNAPPLIED' : null,
+    context.track ? 'TRACK_CONTEXT_UNAPPLIED' : null,
+    context.guaranteeType ? 'GUARANTEE_CONTEXT_UNAPPLIED' : null,
+    context.retainRates === 'yes' ? 'RETAINED_PRICING_REQUIRES_PREPARE' : null]
+    .filter((reason): reason is string => reason !== null);
+}
+
 /** Validate actual native IDs and scenario, not just a reader's aggregate match flag. */
 function appliedContextMatches(request: AvailabilityRequest, view: RecordValue, unavailable: boolean): boolean {
   const context = request.rateContext;
@@ -235,7 +245,10 @@ function appliedContextMatches(request: AvailabilityRequest, view: RecordValue, 
   const codes = (value: unknown) => typeof value === 'string' ? value.split(',').map(item => item.trim()) : [];
   const expectedNights = (Date.parse(context.departure) - Date.parse(context.arrival)) / 86_400_000;
   const ages = applied.childAges ?? (Number(applied.childCount) === 0 ? [] : null);
-  return applied.propertyCodes === context.propertyCode && String(applied.startDate).slice(0, 10) === context.arrival &&
+  const start = String(applied.startDate).slice(0, 10);
+  const nativeDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(start);
+  const appliedArrival = nativeDate ? `${nativeDate[3]}-${nativeDate[1]}-${nativeDate[2]}` : start;
+  return applied.propertyCodes === context.propertyCode && appliedArrival === context.arrival &&
     Number(applied.numberOfDays) === expectedNights && Number(applied.adultCount) === context.adults &&
     Number(applied.childCount) === context.childAges.length && JSON.stringify(ages) === JSON.stringify(context.childAges) &&
     String(applied.organizationID ?? '') === (context.organizationId ?? '') &&
@@ -309,12 +322,14 @@ export function projectCloudAvailability(
   const truncated = validGroups.some((group) => completenessIncomplete(group.coverage));
   const filtered = Boolean(request.rateContext?.typedRatePlan);
   const complete = validGroups.every((group) => group.outcome === 'observed' && group.coverage.completeForRequestedScope === true);
+  const unapplied = unappliedStayContext(request.rateContext);
   return {
     outcome: 'read',
     source: 'hms_cloud_hotel_availability',
     roomScope: request.rateContext ? 'selected_room_type' : 'all_room_types',
     ...(request.rateContext ? { context: request.rateContext, contextKey: rateContextKey(request.rateContext),
-      rateCandidates: orderRateCandidates(request.rateContext, buildCloudRateCandidates(request.rateContext, validGroups)) } : {}),
+      rateCandidates: orderRateCandidates(request.rateContext, buildCloudRateCandidates(request.rateContext, validGroups))
+        .map(candidate => ({ ...candidate, reasons: [...new Set([...candidate.reasons, ...unapplied])] })) } : {}),
     priceEvidence: {
       label: 'estimate',
       priceBasis: 'unknown',
@@ -333,8 +348,9 @@ export function projectCloudAvailability(
       groupCount: request.rooms.length,
       readGroupCount: validGroups.filter((group) => group.outcome === 'observed').length,
       truncated,
-      candidateList: truncated || filtered ? 'partial' : complete ? 'complete' : 'unknown',
-      reason: truncated ? 'NATIVE_RESULTS_TRUNCATED' : filtered ? 'TYPED_RATE_FILTER' : complete ? null : 'NATIVE_COVERAGE_UNKNOWN',
+      candidateList: truncated || filtered || unapplied.length ? 'partial' : complete ? 'complete' : 'unknown',
+      reason: truncated ? 'NATIVE_RESULTS_TRUNCATED' : filtered ? 'TYPED_RATE_FILTER' : unapplied.length
+        ? 'NATIVE_STAY_CONTEXT_PARTIAL' : complete ? null : 'NATIVE_COVERAGE_UNKNOWN',
       groups: flattenedCoverage,
     },
   };
@@ -351,15 +367,15 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   const parsed = availabilityJobRequestSchema.safeParse(input.request);
   if (!parsed.success) return input.request.rooms.map(() => ({ outcome: 'input_gap', issue: 'CLOUD_RATE_REQUEST_INVALID' }));
   const context = input.request.rateContext;
-  if (context && (context.propertyCode !== input.target.propertyCode || context.guestProfileId !== null ||
-      context.sourceOfBusiness !== null || context.track !== null || context.guaranteeType !== null || context.retainRates === 'yes')) {
+  if (context && context.propertyCode !== input.target.propertyCode) {
     return input.request.rooms.map(() => ({ outcome: 'unsupported_context', issue: 'CLOUD_RATE_CONTEXT_UNSUPPORTED' }));
   }
   const hotelAvailabilityUrl = new URL('../../tooling/hms-cloud/hotel-availability.mjs', import.meta.url);
   const bootstrapUrl = new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url);
   const quoteReadUrl = new URL('../../tooling/hms-cloud/quote-read.mjs', import.meta.url);
   const quoteViewUrl = new URL('../../tooling/hms-cloud/quote-view.mjs', import.meta.url);
-  const [bootstrap, quoteRead, quoteView, partyPicker] = await Promise.all([
+  const guardUrl = new URL('../../tooling/playwright-quote/hms-read-only-guard.mjs', import.meta.url);
+  const [bootstrap, quoteRead, quoteView, partyPicker, guard] = await Promise.all([
     import(bootstrapUrl.href) as Promise<{ withCenturionStay360Page: <T>(operation: (page: unknown) => Promise<T>, options?: Record<string, unknown>) => Promise<T> }> ,
     import(quoteReadUrl.href) as Promise<{ readQuote: (page: unknown, input: Record<string, unknown>) => Promise<RecordValue> }> ,
     import(quoteViewUrl.href) as Promise<{ getQuoteView: (snapshot: unknown, filters: Record<string, unknown>) => RecordValue }> ,
@@ -367,6 +383,7 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
       searchHotelAvailabilityParty: (page: unknown, input: Record<string, unknown>) => Promise<RecordValue>;
       selectHotelAvailabilityParty: (page: unknown, input: Record<string, unknown>) => Promise<RecordValue>;
     }>,
+    import(guardUrl.href) as Promise<{ installReadOnlyGuard: (context: unknown) => Promise<void> }>,
   ]);
   const directory = await mkdtemp(join(tmpdir(), PRIVATE_SNAPSHOT_PREFIX));
   try {
@@ -459,7 +476,8 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
         });
       }
       return groups;
-    }, { headless: true, signal: input.signal, blockServiceWorkers: true });
+    }, { headless: true, signal: input.signal, blockServiceWorkers: true,
+      prepareContext: guard.installReadOnlyGuard });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

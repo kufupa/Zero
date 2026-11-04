@@ -932,13 +932,15 @@ export async function enqueueHmsJob(
 export async function queueRateCandidatesHmsJob(input: {
   transportId: string; threadId: string; messageId: string; sourceHash: string;
   workItemId: string; requestId: string; userId: string;
+  extractionId: string; draftContextKey: string; roomBindingKey: string;
   request: AvailabilityRequest; partyContextVerified: boolean; forceRefresh?: boolean;
 }, db: DB = getDb()): Promise<{ run: AiWorkflowRun; created: boolean }> {
   const request = availabilityJobRequestSchema.parse(input.request);
   if (!request.rateContext || !input.partyContextVerified || !/^[a-f0-9]{64}$/.test(input.sourceHash) ||
       !/^[a-f0-9]{64}$/.test(input.requestId)) throw new Error('rate_binding_incomplete');
   const key = JSON.stringify(['rate-candidates', input.transportId, input.threadId, input.messageId,
-    input.sourceHash, input.workItemId, input.requestId, input.userId, request.rateContext]);
+    input.sourceHash, input.workItemId, input.requestId, input.userId, input.extractionId,
+    input.roomBindingKey, input.draftContextKey, request.rateContext]);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
     const scoped = tx as unknown as DB;
@@ -949,6 +951,9 @@ export async function queueRateCandidatesHmsJob(input: {
       sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
       sql`${aiWorkflowRun.metrics}->>'selectedSourceHash' = ${input.sourceHash}`,
       sql`${aiWorkflowRun.metrics}->>'rateRequestId' = ${input.requestId}`,
+      sql`${aiWorkflowRun.metrics}->>'rateExtractionId' = ${input.extractionId}`,
+      sql`${aiWorkflowRun.metrics}->>'rateDraftContextKey' = ${input.draftContextKey}`,
+      sql`${aiWorkflowRun.metrics}->>'rateRoomBindingKey' = ${input.roomBindingKey}`,
       sql`${aiWorkflowRun.readRequest}->'rateContext' = ${JSON.stringify(request.rateContext)}::jsonb`,
     )).orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id)).limit(10);
     const now = Date.now();
@@ -962,9 +967,33 @@ export async function queueRateCandidatesHmsJob(input: {
     return enqueueHmsJob({ transportId: input.transportId, threadId: input.threadId,
       triggerMessageId: input.messageId, workItemId: input.workItemId, userId: input.userId,
       request, priority: HMS_JOB_PRIORITY_USER, idempotencyKey: `hms-job:rate-candidates:${randomUUID()}`,
-      extraMetrics: { selectedSourceHash: input.sourceHash, rateRequestId: input.requestId },
+      extraMetrics: { selectedSourceHash: input.sourceHash, rateRequestId: input.requestId,
+        rateExtractionId: input.extractionId, rateDraftContextKey: input.draftContextKey,
+        rateRoomBindingKey: input.roomBindingKey },
     }, scoped);
   });
+}
+
+/** Exact picker job binding. Reading a job never enqueues another browser. */
+export async function readRateCandidatesHmsJob(input: {
+  runId: string; transportId: string; threadId: string; messageId: string; sourceHash: string;
+  workItemId: string; requestId: string; userId: string; extractionId: string;
+  draftContextKey: string; roomBindingKey: string;
+}, db: DB = getDb()): Promise<HmsJobView | null> {
+  const [run] = await db.select().from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.id, input.runId), eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.threadId, input.threadId), eq(aiWorkflowRun.triggerMessageId, input.messageId),
+    eq(aiWorkflowRun.workItemId, input.workItemId), eq(aiWorkflowRun.runKind, 'read_tool'),
+    eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
+    sql`${aiWorkflowRun.metrics}->>'selectedSourceHash' = ${input.sourceHash}`,
+    sql`${aiWorkflowRun.metrics}->>'rateRequestId' = ${input.requestId}`,
+    sql`${aiWorkflowRun.metrics}->>'rateExtractionId' = ${input.extractionId}`,
+    sql`${aiWorkflowRun.metrics}->>'rateDraftContextKey' = ${input.draftContextKey}`,
+    sql`${aiWorkflowRun.metrics}->>'rateRoomBindingKey' = ${input.roomBindingKey}`,
+    sql`${aiWorkflowRun.readRequest}->>'kind' = 'availability'`,
+  )).limit(1);
+  return run ? toView(db, run) : null;
 }
 
 /** Auto-starts serialize one actor/mail/input request so simultaneous pane mounts share a fresh run. */

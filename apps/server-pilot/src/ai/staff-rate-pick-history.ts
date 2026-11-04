@@ -20,8 +20,10 @@ export type StaffRatePick = {
   partyRef: OpaquePartyRef | null;
   actorUserId: string;
   mailKind: (typeof MAIL_KINDS)[number];
+  /** Actual selected native codes, not the sales strategy. Absent on older history. */
+  nativeRateCodes?: string[];
 };
-export type LoggedStaffRatePick = StaffRatePick & { at: Date };
+export type LoggedStaffRatePick = StaffRatePick & { at: Date; preparationId?: string };
 export type StaffRateRankContext = {
   property?: string;
   transportId?: string;
@@ -74,6 +76,9 @@ export function parseStaffRatePick(value: unknown): StaffRatePick | null {
     return null;
   }
   const party = record(row.partyRef);
+  const codes = Array.isArray(row.nativeRateCodes) && row.nativeRateCodes.length <= 8 &&
+    row.nativeRateCodes.every(code => typeof code === 'string' && /^[A-Z0-9]{1,12}$/.test(code))
+    ? [...new Set(row.nativeRateCodes as string[])] : null;
   return {
     strategy,
     property,
@@ -81,6 +86,7 @@ export function parseStaffRatePick(value: unknown): StaffRatePick | null {
     partyRef: partyIds(party?.agencyNativeId, party?.companyNativeId),
     actorUserId,
     mailKind: mailKind as StaffRatePick['mailKind'],
+    ...(codes?.length ? { nativeRateCodes: codes } : {}),
   };
 }
 
@@ -91,6 +97,7 @@ export function buildStaffRatePick(input: {
   actorUserId: unknown;
   mailKind: unknown;
   parties?: StaffQuoteParties | null;
+  nativeRateCodes?: string[];
 }): StaffRatePick | null {
   return parseStaffRatePick({
     strategy: input.strategy,
@@ -99,6 +106,7 @@ export function buildStaffRatePick(input: {
     actorUserId: input.actorUserId,
     mailKind: input.mailKind,
     partyRef: opaquePartyRef(input.parties),
+    nativeRateCodes: input.nativeRateCodes,
   });
 }
 
@@ -167,6 +175,8 @@ export async function loadStaffRatePicks(db: DB, property: string): Promise<Logg
     .limit(500);
   return rows.flatMap((row) => {
     const pick = parseStaffRatePick(record(row.evidence)?.ratePick);
-    return pick && pick.property === code ? [{ ...pick, at: row.at }] : [];
+    const preparationId = record(row.evidence)?.workflowRunId;
+    return pick && pick.property === code ? [{ ...pick, at: row.at,
+      ...(typeof preparationId === 'string' ? { preparationId } : {}) }] : [];
   });
 }
