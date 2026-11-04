@@ -636,6 +636,19 @@ function fakeThreadMailboxDb(input: {
 }
 
 describe('loadSyncedQuoteSelectionFromMailbox', () => {
+  it('reads HTML-only mail while grounding current requests outside quoted history', async () => {
+    vi.mocked(getDb).mockReturnValue(fakeMailboxDb({ message: [{ id: 'm1', threadId: 't1',
+      subject: 'Change', textBody: null,
+      htmlBody: '<p>Please change the rate to BAR.</p><blockquote><p>Old rate was CRIC.</p></blockquote>',
+      receivedAt: new Date('2026-10-05T12:00:00Z'), createdAt: new Date('2026-10-05T12:00:00Z') }],
+    attachment: [] }, []) as never);
+    const loaded = await loadSyncedQuoteSelectionFromMailbox({ transportId: 'transport-1',
+      internetMessageId: '<m1@example.com>' });
+    expect(loaded?.bodyText).toContain('Please change the rate to BAR.');
+    expect(loaded?.bodyText).toContain('Old rate was CRIC.');
+    expect(loaded?.currentBodyText).toContain('Please change the rate to BAR.');
+    expect(loaded?.currentBodyText).not.toContain('Old rate was CRIC.');
+  });
   it('reads attachment rows in id order so the analyse cache key does not follow row order', async () => {
     const orderByCalls: Array<{ table: string; args: unknown[] }> = [];
     vi.mocked(getDb).mockReturnValue(

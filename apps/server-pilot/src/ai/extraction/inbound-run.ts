@@ -320,7 +320,7 @@ export async function runInboundExtraction(
   const selection = isSelfSentPreStaySubject({
     fromAddress: trigger.fromAddress, mailboxAddress: trigger.mailbox, subject: trigger.subject,
   })
-    ? { ...loadedSelection, bodyText: preStaySourceText(loadedSelection.bodyText, trigger.htmlBody) }
+    ? { ...loadedSelection, bodyText: loadedSelection.currentBodyText ?? preStaySourceText(loadedSelection.bodyText, trigger.htmlBody) }
     : loadedSelection;
   if (!takeCallSlot(max, clock())) return 'capped';
   const extraction = await extractInboundMail({

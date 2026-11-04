@@ -677,7 +677,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
-    currentMessageText: input.selection.bodyText,
+    currentMessageText: input.selection.currentBodyText ?? input.selection.bodyText,
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),
@@ -692,7 +692,7 @@ export async function extractInboundMail(input: {
     confirmationNumbers: sanitized.payload.confirmationNumbers,
   });
   const separateAsk = existingStayInformation
-    ? groundedSeparateAsk(maskCardNumbers(input.selection.bodyText), parsed.data.separateAsk)
+    ? groundedSeparateAsk(maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText), parsed.data.separateAsk)
     : null;
   if (existingStayInformation) {
     // A model's booking or quote action can never turn the confirmation into new-stay work.
