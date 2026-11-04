@@ -38,6 +38,7 @@ import {
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
 import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
+import { staffQuoteSourceHash } from '../staff-quote-workflow.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
@@ -176,6 +177,64 @@ export async function enqueueInboundExtraction(
     },
     db,
   );
+}
+
+export type SelectedExtractionResult =
+  | { status: 'current'; extractionId: string }
+  | { status: 'queued'; runId: string }
+  | { status: 'blocked'; reason: 'source_changed' | 'not_amendment' | 'disabled' | 'read_failed' |
+      'classification_changed' | 'relink_required' | 'run_failed' | 'deferred' };
+
+/** Queue only the selected inbound Amendment. Reuse the normal version key and worker relink safeguards. */
+export async function refreshSelectedAmendExtraction(
+  db: DB,
+  input: { transportId: string; workItemId: string; source: { threadId: string; messageId: string; sourceHash: string } },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SelectedExtractionResult> {
+  return db.transaction(async (tx) => {
+    // Match the thread -> message -> work-item lock order used by ingestion.
+    const [thread] = await tx.select({ id: mailThread.id }).from(mailThread)
+      .where(and(eq(mailThread.id, input.source.threadId), eq(mailThread.transportId, input.transportId),
+        isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
+    if (!thread) return { status: 'blocked', reason: 'source_changed' };
+    const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+      htmlBody: message.htmlBody }).from(message)
+      .where(and(eq(message.id, input.source.messageId), eq(message.threadId, thread.id),
+        eq(message.transportId, input.transportId), eq(message.direction, 'inbound')))
+      .limit(1).for('no key update');
+    if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash) {
+      return { status: 'blocked', reason: 'source_changed' };
+    }
+    const [item] = await tx.select({ kind: workItem.kind, extractionId: workItem.extractionId }).from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId),
+        eq(workItem.threadId, thread.id), eq(workItem.sourceMessageId, mail.id)))
+      .limit(1).for('no key update');
+    if (!item) return { status: 'blocked', reason: 'source_changed' };
+    if (item.kind !== 'amendment' || !item.extractionId) return { status: 'blocked', reason: 'not_amendment' };
+    const [linked] = await tx.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(and(eq(mailExtraction.id, item.extractionId), eq(mailExtraction.messageId, mail.id),
+        eq(mailExtraction.status, 'succeeded'), eq(mailExtraction.kind, 'amendment'))).limit(1);
+    if (!linked) return { status: 'blocked', reason: 'not_amendment' };
+    const [current] = await tx.select({ id: mailExtraction.id, status: mailExtraction.status, kind: mailExtraction.kind })
+      .from(mailExtraction).where(and(eq(mailExtraction.messageId, mail.id),
+        eq(mailExtraction.extractorVersion, EXTRACTION_VERSION))).limit(1);
+    if (current) {
+      if (current.status !== 'succeeded') return { status: 'blocked', reason: 'read_failed' };
+      if (current.kind !== 'amendment') return { status: 'blocked', reason: 'classification_changed' };
+      if (current.id !== item.extractionId) return { status: 'blocked', reason: 'relink_required' };
+      return { status: 'current', extractionId: current.id };
+    }
+    if (!inboundExtractionEnabled(env)) return { status: 'blocked', reason: 'disabled' };
+    const run = await enqueueInboundExtraction({ transportId: input.transportId, threadId: thread.id, messageId: mail.id },
+      tx as unknown as DB);
+    if (run.state === 'retry_wait' && run.failureClass === 'POLICY_BLOCK') {
+      return { status: 'blocked', reason: 'deferred' };
+    }
+    if (!['queued', 'claimed', 'running', 'retry_wait'].includes(run.state)) {
+      return { status: 'blocked', reason: 'run_failed' };
+    }
+    return { status: 'queued', runId: run.id };
+  });
 }
 
 type ExtractionRowInput = Omit<typeof mailExtraction.$inferInsert, 'extractorVersion'>;
