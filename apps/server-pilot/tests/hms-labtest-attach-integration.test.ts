@@ -34,6 +34,7 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) =>
 import { runLabtestAttachOnce } from '../src/ai/hms-labtest-attach-worker.js';
 import { approveHmsWrite, formDigest, hmsStateDigest } from '../src/ai/hms-approval.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 import { HmsLabtestDispatchError } from '../src/ai/hms-labtest-dispatch.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from '../src/ai/run-ledger.js';
@@ -106,9 +107,11 @@ describe('approved filing worker to Cloud upload fence', () => {
       const workItemId = randomUUID();
       const fingerprint = 'a'.repeat(64);
       const sourceSnapshotDigest = createHash('sha256').update(`${fingerprint}:${sha256}`).digest('hex');
+      const sourceMail = { id: 'mail-1', subject: null, textBody: null, htmlBody: null };
+      const selectedSource = { messageId: sourceMail.id, threadId: 'thread-1', sourceHash: staffQuoteSourceHash(sourceMail) };
       const form = { action: 'attach_document', confirmation: '123456-1', arrival: '2027-10-12', lastName: 'Labtest',
         attachmentId: 'att-1', documentName: 'voucher.pdf', pdfSha256: sha256, sourceMessageId: 'mail-1',
-        sourceInternetMessageId: 'selected@example.test',
+        sourceInternetMessageId: 'selected@example.test', sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash,
         sourceSnapshotDigest };
       const stay = { confirmation: form.confirmation, firstName: 'Proof', lastName: 'Labtest', status: 'Reserved',
         arrival: form.arrival, departure: '2027-10-13', roomType: 'STQN', ratePlan: 'BAR', organization: null, bookingAgency: null };
@@ -117,7 +120,7 @@ describe('approved filing worker to Cloud upload fence', () => {
         nativeStayId: '42', cmsSend: false };
       const item = { id: workItemId, transportId: 'transport-centurion', threadId: 'thread-1', status: 'needs_you',
         sourceMessageId: 'mail-1', state: { ...form, hmsSnapshot: { digest: hmsStateDigest(filingState), readAt: new Date().toISOString() } } };
-      const mail = { id: 'mail-1', transportId: item.transportId, threadId: item.threadId,
+      const mail = { ...sourceMail, transportId: item.transportId, threadId: item.threadId,
         messageIdHeader: form.sourceInternetMessageId, direction: 'inbound', fromAddress: 'guest@example.test',
         toAddresses: [], ccAddresses: [] };
       const native = { ...stay, source: 'record_view_ext_model', propertyCode: 'HRCEN', guestId: scenario === 'guest_changed' ? '124' : '123',
@@ -138,7 +141,8 @@ describe('approved filing worker to Cloud upload fence', () => {
           limit: () => query, for: async () => table === workItem ? [item] : table === message
             ? [{ id: item.sourceMessageId, threadId: item.threadId, direction: 'inbound' }] : [] }, {
           get(target, property, receiver) {
-            if (property === 'then') return (resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve([]));
+            if (property === 'then') return (resolve: (value: unknown[]) => unknown) =>
+              Promise.resolve(resolve(table === message ? [mail] : []));
             return Reflect.get(target, property, receiver);
           },
         });
@@ -156,6 +160,7 @@ describe('approved filing worker to Cloud upload fence', () => {
         let table: unknown;
         const result = () => {
           if (table === message) {
+            if ('subject' in fields) return [mail];
             if ('threadId' in fields) return [{ threadId: mail.threadId }];
             if ('direction' in fields || !Object.keys(fields).length) return [mail];
             return [{ id: mail.id }];
@@ -185,10 +190,11 @@ describe('approved filing worker to Cloud upload fence', () => {
         return query;
       }, insert: () => ({ values: async (value: Record<string, unknown>) => { events.push(value); } }),
       update: () => ({ set: (value: Record<string, unknown>) => ({ where: async () => { updates.push(value); } }) }) };
-      const db = { select: () => {
+      const db = { select: (fields: Record<string, unknown> = {}) => {
         let table: unknown;
         const query = { from: (value: unknown) => { table = value; return query; }, where: () => query,
-          limit: async () => table === aiWorkflowRun ? [run] : table === workItem ? [item] : [] };
+          limit: async () => table === aiWorkflowRun ? [run] : table === workItem ? [item]
+            : table === message && 'subject' in fields ? [mail] : [] };
         return query;
       },
         transaction: async (fn: (value: unknown) => Promise<unknown>) => {
@@ -207,7 +213,7 @@ describe('approved filing worker to Cloud upload fence', () => {
         } } as unknown as DB;
       vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on'); vi.stubEnv('PANE_WRITE_ATTACH', 'lab');
       const approved = await approveHmsWrite({ db, transportId: item.transportId, workItemId, actorUserId: 'staff',
-        selectedInternetMessageId: form.sourceInternetMessageId, sessionId: 'session-1', sessionProfile: 'remote',
+        selectedInternetMessageId: form.sourceInternetMessageId, selectedSource, sessionId: 'session-1', sessionProfile: 'remote',
         formDigest: formDigest(item.state) });
       expect(approvalEvents).toHaveLength(1);
       expect(approvalEvents[0]).toMatchObject({ type: 'approval.granted', id: approved.grantId });

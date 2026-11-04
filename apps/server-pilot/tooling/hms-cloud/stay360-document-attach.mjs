@@ -22,7 +22,12 @@ const OPTIONAL_DOCUMENT_FIELDS = ['recordid', 'daeType', 'filetype', 'multiorg',
   'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME'];
 const relevantFields = new Map([...DOCUMENT_FIELDS, ...OPTIONAL_DOCUMENT_FIELDS]
   .map((name) => [name.toLowerCase(), name]));
-const unexpectedAction = (name) => /^(pageaction|autosave)$/i.test(name);
+const mutationAction = /^(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|create|new|submit|send|upload|autosave|amend|post)$/i;
+const unexpectedAction = (name, value) => {
+  const key = name.toLowerCase();
+  if (key === 'autosave') return !['', '0', 'false', 'off', 'no'].includes(value.trim().toLowerCase());
+  return ['action', 'pageaction'].includes(key) && mutationAction.test(value.trim());
+};
 const usedPages = new WeakSet();
 const neverDispatchedAttachProofs = new WeakMap();
 const text = (v) => v == null ? '' : String(v);
@@ -70,7 +75,7 @@ function selectedFields(fields, names) {
 }
 
 export function exactDocumentParams(params, expected) {
-  if (!(expected instanceof Map) || !expected.size || [...params.keys()].some(unexpectedAction)) return false;
+  if (!(expected instanceof Map) || !expected.size || [...params].some(([name, value]) => unexpectedAction(name, value))) return false;
   return [...expected].every(([name, value]) => {
     const matches = [...params.keys()].filter((key) => key.toLowerCase() === name.toLowerCase());
     return matches.length === 1 && matches[0] === name && params.get(name) === value;
@@ -109,7 +114,7 @@ export function matchesDocumentMultipart(request, expected, file) {
       const name = /(?:^|;)\s*name\s*=\s*"([^"\r\n]+)"/i.exec(disposition)?.[1];
       const filenames = [...disposition.matchAll(/(?:^|;)\s*filename(?:\*)?\s*=/gi)];
       const filename = /(?:^|;)\s*filename\s*=\s*"([^"\r\n]*)"/i.exec(disposition)?.[1];
-      if (names.length !== 1 || !name || unexpectedAction(name)) return false;
+      if (names.length !== 1 || !name || unexpectedAction(name, payload)) return false;
       if (filenames.length) {
         if (filenames.length !== 1 || filename === undefined) return false;
         const decodedFilename = Buffer.from(filename, 'latin1').toString('utf8');

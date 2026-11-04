@@ -6,9 +6,12 @@ import { HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_WRITE_RUN_KIND, type claimNextAi
 import type { runPaneHmsWriteOnce } from '../src/ai/pane-hms-write.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
 const enabled = { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' };
 const selectedInternetMessageId = 'selected@example.test';
+const selectedMail = { id: 'message', subject: null, textBody: null, htmlBody: null };
+const selectedSource = { threadId: 'thread', messageId: selectedMail.id, sourceHash: staffQuoteSourceHash(selectedMail) };
 
 function selectedSourceQueries(item: { sourceMessageId: string; threadId: string }) {
   return () => {
@@ -18,7 +21,8 @@ function selectedSourceQueries(item: { sourceMessageId: string; threadId: string
       for: async () => table === workItem ? [item] : table === message
         ? [{ id: item.sourceMessageId, threadId: item.threadId, direction: 'inbound' }] : [] }, {
       get(target, property, receiver) {
-        if (property === 'then') return (resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve([]));
+        if (property === 'then') return (resolve: (value: unknown[]) => unknown) =>
+          Promise.resolve(resolve(table === message ? [selectedMail] : []));
         return Reflect.get(target, property, receiver);
       },
     });
@@ -29,9 +33,8 @@ function selectedSourceQueries(item: { sourceMessageId: string; threadId: string
 afterEach(() => vi.unstubAllEnvs());
 
 describe('opt-in Labtest attachment worker', () => {
-  it('stays off unless both the explicit worker flag and Labtest write mode are set', async () => {
+  it('stays off unless both the explicit worker flag and a write mode are set', async () => {
     for (const env of [{}, { PANE_HMS_LAB_ATTACH_WORKER: 'on' },
-      { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'on' },
       { PANE_HMS_LAB_ATTACH_WORKER: 'on', RESERVATIONIST_PANE_SAVE: 'lab' },
       { PANE_HMS_LAB_ATTACH_WORKER: 'off', PANE_WRITE_ATTACH: 'lab' }]) {
       expect(labtestAttachWorkerEnabled(env)).toBe(false);
@@ -39,6 +42,7 @@ describe('opt-in Labtest attachment worker', () => {
       expect(await runLabtestAttachOnce({ ownerId: 'worker', env, claim })).toBe(false);
       expect(claim).not.toHaveBeenCalled();
     }
+    expect(labtestAttachWorkerEnabled({ PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'on' })).toBe(true);
   });
 
   it('refuses Go before creating a grant when the matching worker is disabled', async () => {
@@ -47,12 +51,13 @@ describe('opt-in Labtest attachment worker', () => {
     const item = { id: 'item', transportId: 'transport-centurion', status: 'needs_you', threadId: 'thread',
       sourceMessageId: 'message', state: { action: 'attach_document', sourceMessageId: 'message', lastName: 'Labtest',
         confirmation: '123-1', arrival: '2027-09-14', attachmentId: 'attachment', documentName: 'voucher.pdf',
-        sourceInternetMessageId: selectedInternetMessageId, pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64) } };
+        sourceInternetMessageId: selectedInternetMessageId, sourceThreadId: selectedSource.threadId,
+        sourceHash: selectedSource.sourceHash, pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64) } };
     const insert = vi.fn();
     const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
       select: selectedSourceQueries(item), execute: async () => [], insert }) } as unknown as DB;
     await expect(approveHmsWrite({ db, transportId: item.transportId, workItemId: item.id, actorUserId: 'staff',
-      selectedInternetMessageId, sessionId: 'session-1', sessionProfile: 'remote' }))
+      selectedInternetMessageId, selectedSource, sessionId: 'session-1', sessionProfile: 'remote' }))
       .rejects.toThrow('filing_unavailable');
     expect(insert).not.toHaveBeenCalled();
   });
@@ -78,7 +83,8 @@ describe('opt-in Labtest attachment worker', () => {
     const item = { id: 'item', transportId: 'transport-centurion', status: 'needs_you', threadId: 'thread',
       sourceMessageId: 'message', state: { action: 'attach_document', sourceMessageId: 'message', lastName: 'Labtest',
         confirmation: '123-1', arrival: '2027-09-14', attachmentId: 'attachment', documentName: 'voucher.pdf',
-        sourceInternetMessageId: selectedInternetMessageId, pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64),
+        sourceInternetMessageId: selectedInternetMessageId, sourceThreadId: selectedSource.threadId,
+        sourceHash: selectedSource.sourceHash, pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64),
         hmsSnapshot: { digest: hmsStateDigest({ confirmation: '123-1' }), readAt: now.toISOString() } } };
     const events: Array<Record<string, unknown>> = [];
     let queued: Record<string, unknown> | undefined;
@@ -92,7 +98,7 @@ describe('opt-in Labtest attachment worker', () => {
     } }) };
     const db = { transaction: async (fn: (db: unknown) => Promise<unknown>) => fn(tx) } as unknown as DB;
     const approved = await approveHmsWrite({ db, transportId: item.transportId, workItemId: item.id,
-      actorUserId: 'staff', sessionId: 'session-1', sessionProfile: 'remote', selectedInternetMessageId,
+      actorUserId: 'staff', sessionId: 'session-1', sessionProfile: 'remote', selectedInternetMessageId, selectedSource,
       formDigest: formDigest(item.state), now });
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual(expect.objectContaining({ id: approved.grantId, type: 'approval.granted', actorUserId: 'staff' }));

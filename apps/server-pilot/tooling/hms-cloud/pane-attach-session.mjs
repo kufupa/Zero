@@ -54,17 +54,19 @@ export function approvedLabtestRecord(record, stay) {
   if (!native || !stay || native.source !== 'record_view_ext_model' || native.propertyCode !== 'HRCEN' ||
       typeof firstName !== 'string' || !firstName.trim() || firstName !== firstName.trim() || firstName.length > 200 || /[\p{Cc}]/u.test(firstName) ||
       typeof lastName !== 'string' || !lastName.trim() || lastName !== lastName.trim() || lastName.length > 200 || /[\p{Cc}]/u.test(lastName) ||
-      native.firstName !== firstName || native.lastName !== lastName || native.status !== 'Reserved' ||
+      native.firstName !== firstName || native.lastName !== lastName ||
+      typeof native.status !== 'string' || !native.status.trim() ||
       !/^\d{1,100}$/.test(native.reservationStayId || '') ||
       (stay.nativeStayId && native.reservationStayId !== stay.nativeStayId) ||
-      (!allowRealGuest && !labtestGuest) || (labtestGuest && native.arrival < '2027-01-01') ||
+      (!allowRealGuest && !labtestGuest) ||
+      (labtestGuest && (native.arrival < '2027-01-01' || native.status !== 'Reserved')) ||
       !validIsoDate(native.arrival) || !validIsoDate(native.departure) ||
       native.departure <= native.arrival) return null;
   for (const key of ['confirmation', 'arrival', 'departure']) {
     if (native[key] !== stay[key]) return null;
   }
   return { confirmation: native.confirmation, guestId: native.guestId, nativeStayId: native.reservationStayId,
-    firstName, lastName, allowRealGuest, arrival: native.arrival, departure: native.departure };
+    firstName, lastName, status: native.status, allowRealGuest, arrival: native.arrival, departure: native.departure };
 }
 
 /** The upload pins the independently observed guest ID and unchanged CMS setting. */
@@ -234,7 +236,10 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
     ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
   let fresh;
   const reading = { current: null };
-  try { fresh = await openSession((page) => freshRead(page, input, code, (native) => { reading.current = native; }),
+  try { fresh = await openSession((page) => freshRead(page, input, code, (native) => {
+    reading.current = native;
+    approvedNative.current = snapshotApprovedNativeIdentity(native);
+  }),
     options(reading, 5 * 60_000)); } catch { /* Unknown remains fenced. */ }
   const listed = fresh?.listed;
   const nativeReadback = fresh?.nativeReadback;

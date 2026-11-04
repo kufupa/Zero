@@ -32,6 +32,14 @@ test('Documents POST needs the verified fake target and its exact native identit
   }
   const duplicate = payload(); duplicate.append('CONFIRMATIONNUMBER', '123-1');
   assert.equal(filingDocumentsMayRequest(post(duplicate), scope), false);
+  const drift = payload(); drift.delete('twitterid'); drift.set('new_native_control', 'ignored');
+  drift.set('daeparentpkkey', 'confirmationnumber,reservationstayid,another_native_key');
+  drift.set('metadata', `${drift.get('metadata')},another_native_value`);
+  assert.equal(filingDocumentsMayRequest(post(drift), scope), true);
+  drift.set('pageaction', 'SAVE');
+  assert.equal(filingDocumentsMayRequest(post(drift), scope), false);
+  drift.set('pageaction', ''); drift.set('autosave', 'true');
+  assert.equal(filingDocumentsMayRequest(post(drift), scope), false);
   assert.equal(filingDocumentsMayRequest({ ...post(body), url: 'https://other.invalid/web/base/OSRESV.DOC' }, scope), false);
 });
 

@@ -58,7 +58,9 @@ test('form matching checks the intended fields while allowing other native contr
   const expected = new Map([['a', '1'], ['b', '2']]);
   assert.equal(exactDocumentParams(new URLSearchParams('a=1&b=2'), expected), true);
   assert.equal(exactDocumentParams(new URLSearchParams('a=1&b=2&extra=harmless'), expected), true);
-  for (const value of ['a=1&b=2&b=2', 'a=1&c=2', 'a=1&b=3', 'a=1', 'a=1&b=2&pageaction=SAVE']) {
+  assert.equal(exactDocumentParams(new URLSearchParams('a=1&b=2&pageaction=&autosave=0'), expected), true);
+  for (const value of ['a=1&b=2&b=2', 'a=1&c=2', 'a=1&b=3', 'a=1', 'a=1&b=2&pageaction=SAVE',
+    'a=1&b=2&action=SEND', 'a=1&b=2&autosave=true']) {
     assert.equal(exactDocumentParams(new URLSearchParams(value), expected), false);
   }
 });

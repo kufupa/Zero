@@ -153,14 +153,16 @@ async function readCloudFilingRecord(request: { confirmation: string; arrival: s
     const record = raw && typeof raw === 'object' ? (raw as { record?: { nativePreimage?: unknown } }).record : null;
     const parsed = z.object({ source: z.literal('record_view_ext_model'), propertyCode: z.literal('HRCEN'),
       confirmation: z.string(), guestId: z.string().regex(/^\d{1,30}$/),
-      reservationStayId: z.string().regex(/^\d{1,100}$/), status: z.literal('Reserved'),
+      reservationStayId: z.string().regex(/^\d{1,100}$/), status: z.string().trim().min(1).max(200),
       firstName: z.string().trim().min(1).max(200), lastName: z.string().trim().min(1).max(200),
       arrival: z.string(), departure: z.string() })
       .passthrough().safeParse(record?.nativePreimage);
     if (!parsed.success || result.outcome !== 'found' || !result.stay || result.arrivalMismatch) return null;
     const native = parsed.data;
+    const labtestGuest = native.firstName === 'Proof' && native.lastName === 'Labtest';
     if (native.confirmation !== request.confirmation || native.arrival !== request.arrival ||
-        (!options.allowRealGuest && (native.firstName !== 'Proof' || native.lastName !== 'Labtest' || native.arrival < '2027-01-01')) ||
+        (!options.allowRealGuest && !labtestGuest) ||
+        (labtestGuest && (native.arrival < '2027-01-01' || native.status !== 'Reserved')) ||
         native.arrival >= native.departure ||
         (['confirmation', 'firstName', 'lastName', 'status', 'arrival', 'departure'] as const)
           .some((key) => native[key] !== result.stay?.[key])) return null;
