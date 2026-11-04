@@ -18,21 +18,24 @@ export type PreviewInput = {
   confirmation: string;
   arrival: string;
   lastName: string;
+  documentSource?: { sha256: string; snapshotDigest: string };
   db?: DB;
   s3?: S3Storage;
 };
 
 type PreviewResult =
-  | { status: 'ready'; confirmation: string; arrival: string; documentName: string }
+  | { status: 'ready'; confirmation: string; arrival: string; documentName: string;
+      documentSource: { sha256: string; snapshotDigest: string }; revisionSeq: number }
   | { status: 'refused'; reason: string };
 
 /** Recheck the selected message, work item and current mailbox access around the remote reads. */
-export async function currentFilingSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
+async function currentFilingSource(db: DB, input: PreviewInput): Promise<{ threadId: string; revisionSeq: number } | null> {
   const rows = await db.select({ itemThread: workItem.threadId, messageThread: message.threadId,
     itemMessage: workItem.sourceMessageId, messageId: message.id, transportId: workItem.transportId,
     actorUserId: mailboxAccess.userId, active: mailboxTransport.isActive, status: workItem.status,
     direction: message.direction, messageHistoryOnly: message.historyOnly,
-    threadHistoryOnly: mailThread.historyOnly, threadTrashedAt: mailThread.trashedAt }).from(workItem)
+    threadHistoryOnly: mailThread.historyOnly, threadTrashedAt: mailThread.trashedAt,
+    revisionSeq: workItem.revisionSeq }).from(workItem)
     .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, input.transportId)))
     .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, input.transportId)))
     .innerJoin(mailboxTransport, eq(mailboxTransport.id, workItem.transportId))
@@ -45,7 +48,12 @@ export async function currentFilingSourceThread(db: DB, input: PreviewInput): Pr
     row.itemMessage === input.sourceMessageId && row.messageId === input.sourceMessageId &&
     row.transportId === input.transportId && row.actorUserId === input.actorUserId && row.direction === 'inbound' &&
     !row.messageHistoryOnly && !row.threadHistoryOnly && row.threadTrashedAt === null &&
-    row.status !== 'done' && row.status !== 'dismissed' ? row.itemThread : null;
+    row.status !== 'done' && row.status !== 'dismissed' && Number.isSafeInteger(row.revisionSeq) && row.revisionSeq >= 0
+    ? { threadId: row.itemThread, revisionSeq: row.revisionSeq } : null;
+}
+
+export async function currentFilingSourceThread(db: DB, input: PreviewInput): Promise<string | null> {
+  return (await currentFilingSource(db, input))?.threadId ?? null;
 }
 
 /**
@@ -62,9 +70,13 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
     return { status: 'refused', reason: 'property_unavailable' };
   }
   const db = input.db ?? getDb();
-  const threadId = await currentFilingSourceThread(db, input);
-  if (!threadId) return { status: 'refused', reason: 'source_unavailable' };
-  const checkAuthority = async () => (await currentFilingSourceThread(db, input)) === threadId;
+  const current = await currentFilingSource(db, input);
+  if (!current) return { status: 'refused', reason: 'source_unavailable' };
+  const { threadId, revisionSeq } = current;
+  const checkAuthority = async () => {
+    const next = await currentFilingSource(db, input);
+    return next?.threadId === threadId && next.revisionSeq === revisionSeq;
+  };
   const originAllowed = async () => {
     try {
       const target = await assertHmsReadOriginAllowed({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });
@@ -77,6 +89,10 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
     messageId: input.sourceMessageId, attachmentId: input.attachmentId, checkAuthority };
   const document = await readPanePop3Attachment({ ...sourceInput, signal: AbortSignal.timeout(60_000) });
   if (!document) return { status: 'refused', reason: 'source_unavailable' };
+  if (input.documentSource && (document.source.sha256 !== input.documentSource.sha256 ||
+      document.source.snapshotDigest !== input.documentSource.snapshotDigest)) {
+    return { status: 'refused', reason: 'source_changed' };
+  }
   if (!await originAllowed()) return { status: 'refused', reason: 'property_unavailable' };
 
   const found = await findStay({ confirmation: input.confirmation, arrival: input.arrival }, {
@@ -94,5 +110,6 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
     signal: AbortSignal.timeout(60_000) });
   if (!freshDocument) return { status: 'refused', reason: 'source_changed' };
   return { status: 'ready', confirmation: input.confirmation, arrival: input.arrival,
-    documentName: freshDocument.source.filename };
+    documentName: freshDocument.source.filename,
+    documentSource: { sha256: freshDocument.source.sha256, snapshotDigest: freshDocument.source.snapshotDigest }, revisionSeq };
 }

@@ -152,11 +152,12 @@ describe('ApproveCard approval', () => {
     expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
   });
 
-  it('disables Go and hides note-based resolution for unavailable filing', async () => {
+  it('hides Go and note-based resolution for unavailable filing', async () => {
     const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
       filingAvailable: false, needsCheck: true, run: runWith('dead_letter', { failureClass: 'LEASE_LOST' }) }));
     renderCard(client);
-    expect((await screen.findByRole('button', { name: 'Go' })).hasAttribute('disabled')).toBe(true);
+    expect(await screen.findByText(/Document upload is not available yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Go' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
     expect(client.approve).not.toHaveBeenCalled();
     expect(client.resolveNeedsCheck).not.toHaveBeenCalled();

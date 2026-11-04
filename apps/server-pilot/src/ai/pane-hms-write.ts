@@ -366,6 +366,8 @@ export async function bindAttachDocumentForm(input: {
   internetMessageId?: string;
   actorUserId?: string;
   selectedSource?: HmsSelectedSource;
+  documentSource?: { sha256: string; snapshotDigest: string };
+  revisionSeq?: number;
   env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
   const db = input.db ?? getDb();
@@ -382,6 +384,7 @@ export async function bindAttachDocumentForm(input: {
     'sourceSnapshotDigest',
     'sourceThreadId',
     'sourceHash',
+    'filingHistorySeq',
     'reason',
     'fields',
     'previewDigest',
@@ -392,7 +395,9 @@ export async function bindAttachDocumentForm(input: {
   const target = paneStayHmsTargetForTransport(input.transportId);
   if (target.ok && target.target.propertyCode === 'HRCEN') {
     if (!labtestAttachEnabled(input.env ?? process.env) || !input.sourceMessageId || !input.internetMessageId ||
-        !input.actorUserId || !input.selectedSource || input.selectedSource.messageId !== input.sourceMessageId) {
+        !input.actorUserId || !input.selectedSource || input.selectedSource.messageId !== input.sourceMessageId ||
+        !input.documentSource || !PDF_SHA256.test(input.documentSource.sha256) ||
+        !PDF_SHA256.test(input.documentSource.snapshotDigest) || !Number.isSafeInteger(input.revisionSeq) || input.revisionSeq! < 0) {
       return { status: 'refused', reason: 'filing_unavailable' };
     }
     const selected = canonicalMessageId(input.internetMessageId.trim());
@@ -416,6 +421,10 @@ export async function bindAttachDocumentForm(input: {
       checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId &&
         await currentFilingSelection(db, input.transportId, selectedSource) });
     if (!source) return { status: 'refused', reason: 'attachment_not_found' };
+    if (source.source.sha256 !== input.documentSource.sha256 ||
+        source.source.snapshotDigest !== input.documentSource.snapshotDigest) {
+      return { status: 'refused', reason: 'source_changed' };
+    }
     if (!await currentFilingSelection(db, input.transportId, selectedSource)) {
       return { status: 'refused', reason: 'source_mail_changed' };
     }
@@ -434,7 +443,7 @@ export async function bindAttachDocumentForm(input: {
     return db.transaction(async (tx) => {
       const item = await lockBoundFilingSource(tx, { transportId: input.transportId, workItemId: input.workItemId,
         form, allowUnbound: true });
-      if (!item || item.threadId !== selectedSource.threadId ||
+      if (!item || item.threadId !== selectedSource.threadId || item.revisionSeq !== input.revisionSeq ||
           !await currentFilingSelection(tx as DB, input.transportId, selectedSource)) {
         return { status: 'refused' as const, reason: 'source_mail_changed' };
       }

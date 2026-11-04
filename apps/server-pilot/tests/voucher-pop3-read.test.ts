@@ -103,6 +103,11 @@ describe('voucher lookup with a reconciled POP3 object key', () => {
       expect(voucherLoaders.candidate).toHaveBeenCalledWith({
         transportId: scope.transportId, internetMessageId: scope.internetMessageId, selection,
       });
+      const selected = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId,
+        selection, attachmentId: file.id });
+      expect(selected).toMatchObject({ status: 'voucher', file: { id: file.id },
+        documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest },
+        guest: { lastName: 'Labtest', arrival: '2027-09-14' } });
       expect(mocks.conditions.length).toBeGreaterThanOrEqual(2);
       for (const condition of mocks.conditions) {
         expect(new PgDialect().sqlToQuery(condition as SQL).params).toEqual(expect.arrayContaining([

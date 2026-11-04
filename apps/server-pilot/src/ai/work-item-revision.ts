@@ -168,6 +168,11 @@ async function applyHistoryMove(
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
     const state = withPaneState(item.state, restored);
+    // Undo/redo invalidates an earlier filing review, even when pane fields return to their old values.
+    if (state.action === 'attach_document') {
+      state.filingHistorySeq = nextSeq;
+      delete state.hmsSnapshot;
+    }
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,
       actorKind: 'user',

@@ -54,6 +54,7 @@ export const VOUCHER_ATTACH_COPY = {
 } as const;
 
 type SelectedSource = { threadId: string; messageId: string; sourceHash: string };
+type DocumentSource = { sha256: string; snapshotDigest: string };
 
 export type VoucherAttachBindInput = {
   workItemId: string;
@@ -63,12 +64,14 @@ export type VoucherAttachBindInput = {
   attachmentId: string;
   sourceMessageId: string;
   selectedSource?: SelectedSource;
+  documentSource?: DocumentSource;
+  revisionSeq?: number;
 };
 
 type VoucherAttachBindReply =
   | { status: 'bound'; formDigest?: string; form?: {
       confirmation?: string; arrival?: string; lastName?: string; attachmentId?: string; documentName?: string;
-      pdfSha256?: string; sourceMessageId?: string; sourceThreadId?: string; sourceHash?: string;
+      pdfSha256?: string; sourceSnapshotDigest?: string; sourceMessageId?: string; sourceThreadId?: string; sourceHash?: string;
     } }
   | { status: 'refused'; reason: string };
 
@@ -83,7 +86,8 @@ type VoucherAttachWriteView = {
 
 type VoucherPreviewInput = VoucherAttachBindInput & { sourceMessageId: string };
 type VoucherPreviewReply =
-  | { status: 'ready'; confirmation: string; arrival: string; documentName: string }
+  | { status: 'ready'; confirmation: string; arrival: string; documentName: string;
+      documentSource: DocumentSource; revisionSeq: number }
   | { status: 'refused'; reason: string };
 
 type VoucherAttachClient = {
@@ -118,7 +122,8 @@ function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, 
   if (!bindCloud && !bindLegacy && !writeState && !preview) return null;
   return {
     ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId }, mailbox) }
-      : bindLegacy ? { bind: ({ sourceMessageId: _source, selectedSource: _selection, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
+      : bindLegacy ? { bind: ({ sourceMessageId: _source, selectedSource: _selection,
+        documentSource: _document, revisionSeq: _revision, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
     ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
     ...(writeState ? { writeState: (input: { workItemId: string }) => writeState({ ...input, internetMessageId,
       ...(selectedSource ? { selectedSource } : {}) }, mailbox) } : {}),
@@ -131,7 +136,8 @@ function normalizedSurname(value: string): string {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'failed';
 type VoucherSearchRequest = Extract<HmsJobRequest, { kind: 'search_guest' }>;
-type VoucherSearchForm = { lastName: string; arrival: string; departure: string };
+type VoucherSearchForm = { confirmation: string; lastName: string; arrival: string; departure: string };
+type VoucherFindRequest = Extract<HmsJobRequest, { kind: 'find' }> & { arrival: string };
 
 function searchKey(request: VoucherSearchRequest): string {
   return JSON.stringify([normalizedSurname(request.lastName), request.arrival, request.departure ?? '']);
@@ -219,12 +225,15 @@ function VoucherFindCardBody({
   } | null>(null);
   const attachWrite = attachStatus?.workItemId === workItemId ? attachStatus.view : null;
   const attachStatusKnown = attachStatus?.workItemId === workItemId && attachStatus.valid && attachWrite !== null;
-  const [preview, setPreview] = useState<{ key: string; status: 'loading' | 'ready' | 'refused' } | null>(null);
+  const [preview, setPreview] = useState<{ key: string; status: 'loading' | 'ready' | 'refused';
+    documentSource?: DocumentSource; revisionSeq?: number } | null>(null);
   const previewKeyRef = useRef('');
   const [detailsRequested, setDetailsRequested] = useState(false);
   const detailsStartedFor = useRef<string | null>(null);
-  const [searchForm, setSearchForm] = useState<VoucherSearchForm>({ lastName: '', arrival: '', departure: '' });
+  const [searchForm, setSearchForm] = useState<VoucherSearchForm>({ confirmation: '', lastName: '', arrival: '', departure: '' });
   const [submittedSearch, setSubmittedSearch] = useState<VoucherSearchRequest | null>(null);
+  const [submittedDirect, setSubmittedDirect] = useState<VoucherFindRequest | null>(null);
+  const [directPicked, setDirectPicked] = useState<{ key: string; row: GuestSearchRow } | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchRevision, setSearchRevision] = useState(0);
   const [picked, setPicked] = useState<{ searchKey: string; row: GuestSearchRow } | null>(null);
@@ -245,7 +254,11 @@ function VoucherFindCardBody({
   const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
   const fileReady = Boolean(selectedFileId && verifiedFileId === selectedFileId &&
     reply?.status === 'voucher' && reply.file?.id === selectedFileId);
-  const sourceMatches = fileReady && selectionCurrent && (selectedSource === undefined || Boolean(selectedSource &&
+  const documentSource = reply?.status === 'voucher' ? reply.documentSource : undefined;
+  const validDocumentSource = Boolean(documentSource && /^[a-f0-9]{64}$/.test(documentSource.sha256) &&
+    /^[a-f0-9]{64}$/.test(documentSource.snapshotDigest));
+  const sourceMatches = fileReady && selectionCurrent && (propertyCode !== 'HRCEN' || validDocumentSource) &&
+    (selectedSource === undefined ? propertyCode !== 'HRCEN' : Boolean(selectedSource &&
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
   const transport = useMemo(
@@ -270,6 +283,23 @@ function VoucherFindCardBody({
     autoStartIfMissing: canSearch,
     targetId: 'quote-voucher-find',
   });
+  const directJob = useHmsJob({ transport, resume: null, scope: JSON.stringify([internetMessageId, selectedFileId]),
+    targetId: 'quote-voucher-find' });
+  const directKey = submittedDirect && searchForm.confirmation.trim() === submittedDirect.confirmation &&
+    searchForm.arrival === submittedDirect.arrival
+    ? JSON.stringify([submittedDirect.confirmation, submittedDirect.arrival]) : null;
+  const directRequestMatches = Boolean(directKey && directJob.view?.request?.kind === 'find' &&
+    directJob.view.request.confirmation === submittedDirect?.confirmation &&
+    directJob.view.request.arrival === submittedDirect?.arrival);
+  const directRun = directRequestMatches ? findRunFromJob(directJob.view, directJob.queueFailed, directJob.queueFailureMessage) : null;
+  const directStay = directRun?.kind === 'found' && !directRun.arrivalMismatch &&
+    directRun.stay.confirmation === submittedDirect?.confirmation && directRun.stay.arrival === submittedDirect?.arrival &&
+    directRun.stay.lastName ? directRun.stay : null;
+  const directRow: GuestSearchRow | null = directStay ? { confirmation: directStay.confirmation!,
+    lastName: directStay.lastName!, firstName: directStay.firstName ?? '', status: directStay.status ?? '',
+    arrival: directStay.arrival, departure: directStay.departure } : null;
+  const directMatch = directPicked && directPicked.key === directKey && directRow &&
+    JSON.stringify(directPicked.row) === JSON.stringify(directRow) ? directPicked.row : null;
   const currentSearch = searchRequestFor(searchForm);
   const currentSearchKey = 'request' in currentSearch && currentSearch.request.kind === 'search_guest'
     ? searchKey(currentSearch.request) : null;
@@ -290,10 +320,11 @@ function VoucherFindCardBody({
   const pickedMatch = picked && picked.searchKey === submittedKey && searchRun?.kind === 'rows' &&
     searchRun.rows.some((row) => JSON.stringify(row) === JSON.stringify(picked.row)) ? picked.row : null;
   // For Cloud filing, even one surname match needs an explicit choice and an exact fresh HMS read.
-  const selectedMatch = pickedMatch ?? (propertyCode === 'HRCEN' ? null : singleMatch);
+  const explicitPick = pickedMatch ?? directMatch;
+  const selectedMatch = explicitPick ?? (propertyCode === 'HRCEN' || submittedDirect ? null : singleMatch);
   const previewKey = JSON.stringify([internetMessageId, selectionEpoch, selectedSource?.sourceHash, workItemId,
     replyMessageId, approvalAvailable, searchRevision, currentSearchKey,
-    reply?.status === 'voucher' ? reply.file : null,
+    reply?.status === 'voucher' ? reply.file : null, documentSource,
     reply?.status === 'voucher' ? reply.guest : null, selectedMatch]);
   previewKeyRef.current = previewKey;
   const previewStatus = preview?.key === previewKey ? preview.status : 'idle';
@@ -308,7 +339,7 @@ function VoucherFindCardBody({
   const detailsJob = useHmsJob({
     transport,
     // Explicit picks always get a new exact read; a previous result is not proof of the current row.
-    resume: detailsRequested && !pickedMatch ? detailRequest : null,
+    resume: detailsRequested && !explicitPick ? detailRequest : null,
     scope: JSON.stringify([internetMessageId, selectedFileId]),
     targetId: 'quote-voucher-find',
   });
@@ -317,13 +348,13 @@ function VoucherFindCardBody({
     (detailsJob.view.request.arrival ?? null) === (detailRequest.arrival ?? null));
   const detailsRun: HmsFindRun | null = detailsRequestMatches || (!detailsJob.view && detailsJob.queueFailed)
     ? findRunFromJob(detailsJob.view, detailsJob.queueFailed, detailsJob.queueFailureMessage) : null;
-  const pickedVerified = Boolean(pickedMatch && detailRequest && detailRequestKey &&
+  const pickedVerified = Boolean(explicitPick && detailRequest && detailRequestKey &&
     detailsStartedFor.current === detailRequestKey && !detailsJob.queuing && detailsRequestMatches && detailsRun?.kind === 'found' &&
-    !detailsRun.arrivalMismatch && detailsRun.stay.confirmation === pickedMatch.confirmation &&
+    !detailsRun.arrivalMismatch && detailsRun.stay.confirmation === explicitPick.confirmation &&
     detailsRun.stay.arrival === detailRequest.arrival && detailsRun.stay.lastName &&
-    normalizedSurname(detailsRun.stay.lastName) === normalizedSurname(pickedMatch.lastName) &&
-    (!pickedMatch.firstName || (detailsRun.stay.firstName &&
-      normalizedSurname(detailsRun.stay.firstName) === normalizedSurname(pickedMatch.firstName))));
+    normalizedSurname(detailsRun.stay.lastName) === normalizedSurname(explicitPick.lastName) &&
+    (!explicitPick.firstName || (detailsRun.stay.firstName &&
+      normalizedSurname(detailsRun.stay.firstName) === normalizedSurname(explicitPick.firstName))));
   const retryableDetails =
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = selectedMatch !== null && (!detailsRequested || retryableDetails);
@@ -332,12 +363,15 @@ function VoucherFindCardBody({
   useEffect(() => {
     if (!replySeed || reply?.status !== 'voucher' || seededReply.current === replySeed) return;
     seededReply.current = replySeed;
-    const form = { lastName: reply.guest.lastName ?? '', arrival: reply.guest.arrival ?? '', departure: '' };
+    const form = { confirmation: reply.guest.confirmationNumber ?? '', lastName: reply.guest.lastName ?? '',
+      arrival: reply.guest.arrival ?? '', departure: '' };
     const request = canSearchVoucher(reply.guest) ? searchRequestFor(form) : null;
     setSearchForm(form);
     setSubmittedSearch(request && 'request' in request && request.request.kind === 'search_guest' ? request.request : null);
     setSearchError(null);
     setPicked(null);
+    setDirectPicked(null);
+    setSubmittedDirect(null);
     setDetailsRequested(false);
     detailsStartedFor.current = null;
     setSearchRevision((revision) => revision + 1);
@@ -349,7 +383,7 @@ function VoucherFindCardBody({
       !detailsRequested ||
       !detailRequest ||
       !detailRequestKey ||
-      (!pickedMatch && (!detailsJob.readBackSettled || detailsJob.view || detailsJob.queuing ||
+      (!explicitPick && (!detailsJob.readBackSettled || detailsJob.view || detailsJob.queuing ||
         detailsJob.queueFailed || detailsJob.statusFailed)) ||
       detailsStartedFor.current === detailRequestKey
     ) return;
@@ -357,7 +391,7 @@ function VoucherFindCardBody({
     detailsJob.start(detailRequest);
   }, [
     detailsRequested,
-    pickedMatch,
+    explicitPick,
     detailRequest,
     detailRequestKey,
     detailsJob.readBackSettled,
@@ -567,6 +601,7 @@ function VoucherFindCardBody({
   const invalidateTarget = () => {
     previewKeyRef.current = '';
     setPicked(null);
+    setDirectPicked(null);
     setDetailsRequested(false);
     detailsStartedFor.current = null;
     setSearchRevision((revision) => revision + 1);
@@ -579,8 +614,9 @@ function VoucherFindCardBody({
     setFileError(false);
     selectedFileRef.current = id;
     setSelectedFileId(id);
-    setSearchForm({ lastName: '', arrival: '', departure: '' });
+    setSearchForm({ confirmation: '', lastName: '', arrival: '', departure: '' });
     setSubmittedSearch(null);
+    setSubmittedDirect(null);
     setSearchError(null);
     setPreview(null);
     setSave('idle');
@@ -590,6 +626,7 @@ function VoucherFindCardBody({
     if (searchFrozen || bindingRequest.current) return;
     setSearchForm((current) => ({ ...current, [field]: value }));
     setSubmittedSearch(null);
+    setSubmittedDirect(null);
     setSearchError(null);
     invalidateTarget();
   };
@@ -597,6 +634,7 @@ function VoucherFindCardBody({
     if (searchFrozen || bindingRequest.current || !transport) return;
     const request = searchRequestFor(searchForm);
     invalidateTarget();
+    setSubmittedDirect(null);
     if ('error' in request || request.request.kind !== 'search_guest') {
       setSubmittedSearch(null);
       setSearchError('error' in request ? request.error : AMEND_FIND_COPY.searchInvalid);
@@ -606,6 +644,21 @@ function VoucherFindCardBody({
     setSubmittedSearch(request.request);
     searchJob.start(request.request);
   };
+  const findByConfirmation = () => {
+    if (searchFrozen || bindingRequest.current || !transport) return;
+    const request = findRequestFor(searchForm.confirmation.trim(), searchForm.arrival);
+    invalidateTarget();
+    setSubmittedSearch(null);
+    if ('error' in request || request.request.kind !== 'find' || !request.request.arrival) {
+      setSubmittedDirect(null);
+      setSearchError('Check the confirmation number and arrival date, then search again.');
+      return;
+    }
+    const direct = { ...request.request, arrival: request.request.arrival };
+    setSearchError(null);
+    setSubmittedDirect(direct);
+    directJob.start(direct);
+  };
   const pickBooking = (row: GuestSearchRow) => {
     if (searchFrozen || bindingRequest.current || !submittedKey || !submittedSearch) return;
     const request = findRequestFor(row.confirmation, row.arrival ?? submittedSearch.arrival);
@@ -614,12 +667,18 @@ function VoucherFindCardBody({
     setPicked({ searchKey: submittedKey, row });
     setDetailsRequested(true);
   };
+  const pickDirectBooking = () => {
+    if (searchFrozen || bindingRequest.current || !directKey || !directRow) return;
+    invalidateTarget();
+    setDirectPicked({ key: directKey, row: directRow });
+    setDetailsRequested(true);
+  };
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
   const arrivalForMatch = selectedMatch?.arrival ?? submittedSearch?.arrival ?? '';
   const targetVerified = Boolean(selectedMatch && detailRequest?.arrival &&
-    (propertyCode === 'HRCEN' ? pickedVerified : !pickedMatch || pickedVerified) &&
+    (propertyCode === 'HRCEN' ? pickedVerified : !explicitPick || pickedVerified) &&
     sendableArrival(arrivalForMatch));
   const canAttach = Boolean(propertyCode && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !searchFrozen && attach !== 'bound' &&
@@ -627,24 +686,30 @@ function VoucherFindCardBody({
   const canPreview = Boolean(propertyCode === 'HRCEN' && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId &&
     attachClient?.preview && !searchFrozen && attach !== 'bound');
   const reviewAttach = async () => {
-    if (!canPreview || !selectedMatch || !file || !workItemId || !attachClient?.preview || previewStatus === 'loading') return;
+    if (!canPreview || !selectedMatch || !file || !workItemId || !attachClient?.preview || !documentSource || previewStatus === 'loading') return;
     const key = previewKey;
     const arrival = arrivalForMatch;
     setPreview({ key, status: 'loading' });
     try {
       const result = await attachClient.preview({ workItemId, sourceMessageId: reply.messageId,
-        confirmation: selectedMatch.confirmation, arrival, lastName: selectedMatch.lastName, attachmentId: file.id,
+        confirmation: selectedMatch.confirmation, arrival, lastName: selectedMatch.lastName, attachmentId: file.id, documentSource,
         ...(selectedSource ? { selectedSource } : {}) });
       if (!mounted.current || previewKeyRef.current !== key) return;
       const ready = result.status === 'ready' && result.confirmation === selectedMatch.confirmation &&
-        result.arrival === arrival && result.documentName === file.filename;
-      setPreview({ key, status: ready ? 'ready' : 'refused' });
+        result.arrival === arrival && result.documentName === file.filename &&
+        result.documentSource?.sha256 === documentSource.sha256 &&
+        result.documentSource?.snapshotDigest === documentSource.snapshotDigest &&
+        Number.isSafeInteger(result.revisionSeq) && result.revisionSeq >= 0;
+      setPreview(ready && result.status === 'ready'
+        ? { key, status: 'ready', documentSource: result.documentSource, revisionSeq: result.revisionSeq }
+        : { key, status: 'refused' });
     } catch {
       if (mounted.current && previewKeyRef.current === key) setPreview({ key, status: 'refused' });
     }
   };
   const bindAttach = async () => {
-    if (!canAttach || !selectedMatch || !file || !workItemId || !reply.messageId || !attachClient?.bind || bindingRequest.current) return;
+    if (!canAttach || !selectedMatch || !file || !workItemId || !reply.messageId || !attachClient?.bind || bindingRequest.current ||
+        (propertyCode === 'HRCEN' && (!preview?.documentSource || preview.revisionSeq === undefined))) return;
     const key = previewKey;
     const item = workItemId;
     bindingRequest.current = true;
@@ -658,13 +723,15 @@ function VoucherFindCardBody({
         lastName: selectedMatch.lastName,
         attachmentId: file.id,
         sourceMessageId: reply.messageId,
+        ...(propertyCode === 'HRCEN' ? { documentSource: preview!.documentSource, revisionSeq: preview!.revisionSeq } : {}),
         ...(selectedSource ? { selectedSource } : {}),
       });
       if (!mounted.current) return;
       const current = previewKeyRef.current === key;
       const form = result.status === 'bound' ? result.form : null;
       const matchesSelection = !selectedSource || Boolean(form && result.status === 'bound' &&
-        /^[a-f0-9]{64}$/.test(result.formDigest ?? '') && /^[a-f0-9]{64}$/.test(form.pdfSha256 ?? '') &&
+        /^[a-f0-9]{64}$/.test(result.formDigest ?? '') && form.pdfSha256 === preview?.documentSource?.sha256 &&
+        form.sourceSnapshotDigest === preview?.documentSource?.snapshotDigest &&
         form.confirmation === selectedMatch.confirmation && form.arrival === arrivalForMatch &&
         normalizedSurname(form.lastName ?? '') === normalizedSurname(selectedMatch.lastName) &&
         form.attachmentId === file.id && form.documentName === file.filename &&
@@ -696,7 +763,7 @@ function VoucherFindCardBody({
         </label>
       ) : <Notice tone="warn">{inventory?.files ? VOUCHER_COPY.noFile : 'Document list unavailable. Reopen this email.'}</Notice>}
       {selectedFileId && !fileReady ? <Notice tone={fileError ? 'warn' : undefined} role="status">
-        {fileError ? 'Could not read this document. Select it again or reopen the email.' : 'Reading selected document…'}
+        {fileError ? 'Could not read this document. Reopen the email and try again.' : 'Reading selected document…'}
       </Notice> : null}
       {(!fileReady || !selectedMatch) && (unconfirmedAttach || listedWithHold) ? <Notice tone="warn" role="status">
         {listedWithHold ? VOUCHER_ATTACH_COPY.listedWithHold : VOUCHER_ATTACH_COPY.checkInInfor}
@@ -719,13 +786,19 @@ function VoucherFindCardBody({
           </ul>
         </Notice>
       ) : null}
-      {fileReady && !sourceMatches ? <Notice tone="warn">Select this email again to find its booking.</Notice> : null}
+      {fileReady && !sourceMatches ? <Notice tone="warn">Nava cannot verify this email and document. Reopen the email.</Notice> : null}
       {bindingFrozen && attachState?.status === 'unknown' ? (
         <Notice tone="warn">Nava could not confirm preparation. Reopen this email and check the filing status.</Notice>
       ) : null}
       {fileReady ? <><form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); searchByFields(); }}>
-        <p className={captionClass}>Search by guest surname and arrival date.</p>
-        <div className="grid grid-cols-3 gap-2">
+        <p className={captionClass}>Find by confirmation and arrival, or search by surname and arrival.</p>
+        <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
+          Confirmation number
+          <input type="text" data-pii value={searchForm.confirmation} disabled={searchFrozen}
+            onChange={(event) => editSearch('confirmation', event.target.value)}
+            className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12px]" />
+        </label>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
             Guest surname
             <input type="text" data-pii value={searchForm.lastName} disabled={searchFrozen}
@@ -745,11 +818,27 @@ function VoucherFindCardBody({
               className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12px]" />
           </label>
         </div>
-        <SecondaryButton type="submit" disabled={!transport || searchFrozen || searchJob.queuing}>
-          {canSearch && searchIdle && resumeFor && currentSearchKey === submittedKey ? VOUCHER_COPY.search : AMEND_FIND_COPY.searchButton}
-        </SecondaryButton>
+        <div className="flex flex-wrap gap-2">
+          <SecondaryButton type="button" disabled={!transport || searchFrozen || directJob.queuing} onClick={findByConfirmation}>
+            Find by confirmation
+          </SecondaryButton>
+          <SecondaryButton type="submit" disabled={!transport || searchFrozen || searchJob.queuing}>
+            {canSearch && searchIdle && resumeFor && currentSearchKey === submittedKey ? VOUCHER_COPY.search : AMEND_FIND_COPY.searchButton}
+          </SecondaryButton>
+        </div>
         {searchError ? <Notice tone="warn">{searchError}</Notice> : null}
       </form>
+      <HmsJobStatusLine view={directRequestMatches ? directJob.view : null}
+        queuing={Boolean(directKey && directJob.queuing)} detail={VOUCHER_COPY.readingDetails}
+        onRetry={directJob.retry} statusFailed={Boolean(directKey && directJob.statusFailed)}
+        queueFailed={Boolean(directKey && directJob.queueFailed)}
+        queueFailureMessage={directJob.queueFailureMessage ?? AMEND_FIND_COPY.lookupFailed} />
+      {directKey && directRow ? <SearchRow row={directRow} arrival={submittedDirect?.arrival ?? ''}
+        disabled={searchFrozen} selected={Boolean(directMatch)} onPick={pickDirectBooking} /> : null}
+      {directKey && directRun && !directRow ? <Notice tone="warn">
+        {directRun.kind === 'not_found' ? 'No booking found for that confirmation and arrival.'
+          : directRun.kind === 'error' ? directRun.message : 'Booking could not be verified. Check the confirmation and arrival.'}
+      </Notice> : null}
       <HmsJobStatusLine
         view={currentResult ? searchJob.view : null}
         queuing={currentResult && searchJob.queuing}
@@ -792,9 +881,9 @@ function VoucherFindCardBody({
             detailQueueFailed={detailsJob.queueFailed}
             detailQueueFailureMessage={detailsJob.queueFailureMessage}
             detailStatusFailed={detailsJob.statusFailed}
-            checkingDetails={detailsRequested && !pickedMatch && !detailsJob.readBackSettled && !detailsJob.statusFailed}
-            verifyingSelection={Boolean(pickedMatch && !pickedVerified)}
-            selectionMismatch={Boolean(pickedMatch && detailsRun?.kind === 'found' && !pickedVerified)}
+            checkingDetails={detailsRequested && !explicitPick && !detailsJob.readBackSettled && !detailsJob.statusFailed}
+            verifyingSelection={Boolean(explicitPick && !pickedVerified)}
+            selectionMismatch={Boolean(explicitPick && detailsRun?.kind === 'found' && !pickedVerified)}
             showReadDetails={showReadDetails}
             onReadDetails={() => {
               if (!detailsRequested) {
@@ -989,10 +1078,7 @@ function MatchedBooking({
       ) : null}
       {canPreview && previewStatus === 'refused' ? <Notice tone="warn" role="status">{VOUCHER_ATTACH_COPY.reviewFailed}</Notice> : null}
       {canPreview && previewStatus === 'ready' ? (
-        <>
-          <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.reviewReady}{!canAttach ? ' Upload is not available yet.' : ''}</p>
-          {!canAttach ? <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton> : null}
-        </>
+        <p role="status" className={infoNoteClass}>{VOUCHER_ATTACH_COPY.reviewReady}{!canAttach ? ' Upload is not available yet.' : ''}</p>
       ) : null}
     </div>
   );

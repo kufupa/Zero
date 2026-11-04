@@ -1,5 +1,7 @@
 import {
   loadSyncedQuoteSelectionFromMailbox,
+  resolveThreadConfirmationEvidence,
+  isHmsConfirmation,
   type SyncedQuoteSelection,
 } from '../../ai/quote-workflow-synced-selection.js';
 import { paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
@@ -21,6 +23,7 @@ import {
   loadVoucherCandidate,
   pickVoucherFile,
   readVoucherAttachmentText,
+  readSelectedVoucherAttachment,
   voucherFileMetadata,
   voucherFilingFiles,
   voucherReadFiles,
@@ -433,24 +436,36 @@ export const quoteWorkflowRouter = router({
     // let another attachment's text determine where this file is filed.
     const readable = selected ? [selected] : voucherReadFiles(files);
     const signal = AbortSignal.timeout(15_000);
-    const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
-      : await readVoucherAttachmentText(readable, signal, {
+    const scope = {
           transportId: ctx.activeTransportId, messageId: candidate.messageId, internetMessageId,
           ...(input.selection ? { selection: input.selection } : {}),
-        });
+        };
+    const selectedRead = selected && !voucherLoaders.readText
+      ? await readSelectedVoucherAttachment(selected, signal, scope) : null;
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (selected && !voucherLoaders.readText && !selectedRead && target.ok && target.target.propertyCode === 'HRCEN') {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The selected PDF changed or is unavailable.' });
+    }
+    const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
+      : selectedRead ? selectedRead.texts : await readVoucherAttachmentText(readable, signal, scope);
+    const confirmation = resolveThreadConfirmationEvidence([
+      { filename: '', text: `${candidate.subject}\n${candidate.bodyText}` },
+      ...texts.map((entry) => ({ filename: '', text: entry.text })),
+    ]).confirmation;
     // A voucher PDF whose text was not read (over the reader's cap, scanned, or unreadable) is counted for the card.
     const withText = new Set(texts.filter((entry) => entry.text?.trim()).map((entry) => entry.id));
     return {
       status: 'voucher',
       messageId: candidate.messageId,
       threadId: candidate.threadId,
-      guest: extractVoucherGuest({
+      guest: { ...extractVoucherGuest({
         subject: candidate.subject,
         bodyText: candidate.bodyText,
         attachmentTexts: texts.map((text) => text.text ?? ''),
-      }),
+      }), ...(confirmation && isHmsConfirmation(confirmation) ? { confirmationNumber: confirmation } : {}) },
       file: selected ? voucherFileMetadata(selected) : pickVoucherFile(files),
       files: filingFiles.map(voucherFileMetadata),
+      ...(selectedRead ? { documentSource: selectedRead.source } : {}),
       unreadPdfs: readable.filter((file) => !withText.has(file.id)).length,
     };
   }),
