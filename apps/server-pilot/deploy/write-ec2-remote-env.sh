@@ -85,13 +85,22 @@ REMOTE_COMMON_ALLOWLIST=(
   PANE_HMS_LAB_ATTACH_WORKER
 )
 
-# The bounded M1 render updates only its four write controls plus the five
-# native quote/filing runtime dependencies. Everything else stays as installed.
+# The bounded M1 render updates workflow controls and native runtime dependencies.
+# Later workflow controls are optional until their durable source is configured.
 M1_ONLY_WRITE_CONTROLS=(
   PANE_WRITE_CREATE
   PANE_CLOUD_CREATE_DISPATCH
   PANE_WRITE_ATTACH
   PANE_HMS_LAB_ATTACH_WORKER
+)
+M1_ONLY_OPTIONAL_WRITE_CONTROLS=(
+  PANE_HMS_LAB_CREATE_WORKER
+  PANE_WRITE_AMEND
+  PANE_HMS_LAB_AMEND_WORKER
+  PANE_WRITE_AMEND_UNPAID
+  PANE_WRITE_AMEND_PAID
+  PANE_WRITE_CANCEL_UNPAID
+  PANE_WRITE_CANCEL_PAID
 )
 M1_ONLY_RUNTIME_DEPENDENCIES=(
   HMS_EXPECTED_PROPERTY_CODE
@@ -100,7 +109,8 @@ M1_ONLY_RUNTIME_DEPENDENCIES=(
   HMS_CHROMIUM_EXECUTABLE_PATH
   PLAYWRIGHT_BROWSERS_PATH
 )
-M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
+M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}"
+  "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
 
 validate_remote_env_file() {
   local path="$1"
@@ -382,10 +392,13 @@ if [ "$M1_ONLY" -eq 1 ]; then
     "$REMOTE_M1_SOURCE_TMP" \
     "${M1_ONLY_ALLOWLIST[@]}"
   node - "$REMOTE_COMMON_ENV" "$REMOTE_M1_SOURCE_TMP" "$REMOTE_COMMON_TMP" \
-    "${M1_ONLY_ALLOWLIST[@]}" "${#M1_ONLY_WRITE_CONTROLS[@]}" <<'NODE'
+    "${M1_ONLY_ALLOWLIST[@]}" \
+    "$((${#M1_ONLY_WRITE_CONTROLS[@]} + ${#M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}))" \
+    "${#M1_ONLY_WRITE_CONTROLS[@]}" <<'NODE'
 const fs = require("fs");
 const args = process.argv.slice(2);
 const [installedPath, sourcePath, candidatePath] = args;
+const requiredControlCount = Number(args.pop());
 const controlCount = Number(args.pop());
 const keys = args.slice(3);
 const controlKeys = new Set(keys.slice(0, controlCount));
@@ -411,7 +424,8 @@ const fail = (message) => {
 try {
   const source = parse(sourcePath);
   for (const key of keys) {
-    if (!target.has(key) || !source.has(key)) fail(`M1 durable key missing: ${key}`);
+    const required = dependencyKeys.has(key) || keys.indexOf(key) < requiredControlCount;
+    if (!target.has(key) || (required && !source.has(key))) fail(`M1 durable key missing: ${key}`);
   }
   const installed = chunks(fs.readFileSync(installedPath, "utf8"));
   const merged = [];
@@ -424,6 +438,10 @@ try {
     }
     if (replaced.has(key)) fail(`duplicate installed M1 key: ${key}`);
     replaced.add(key);
+    if (!source.has(key)) {
+      merged.push(line);
+      continue;
+    }
     if (dependencyKeys.has(key)) {
       if (body(line) !== body(source.get(key))) {
         fail(`existing M1 dependency conflicts with durable source: ${key}`);
@@ -435,7 +453,7 @@ try {
     const ending = line.endsWith("\n") ? "\n" : "";
     merged.push(body(source.get(key)) + ending);
   }
-  const appended = keys.filter((key) => !replaced.has(key));
+  const appended = keys.filter((key) => source.has(key) && !replaced.has(key));
   let candidate = merged.join("");
   if (appended.length) {
     if (candidate && !candidate.endsWith("\n")) {
