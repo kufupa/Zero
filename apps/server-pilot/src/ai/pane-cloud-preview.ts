@@ -552,7 +552,10 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       const candidates = native.guestCandidates.flatMap((value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
         const row = value as Record<string, unknown>;
-        if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) || row.firstName !== input.stay.firstName || row.lastName !== input.stay.lastName) return [];
+        if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) ||
+            typeof row.firstName !== 'string' || typeof row.lastName !== 'string' ||
+            row.firstName.trim().toLowerCase() !== input.stay.firstName.trim().toLowerCase() ||
+            row.lastName.trim().toLowerCase() !== input.stay.lastName.trim().toLowerCase()) return [];
         return [{ nativeId: row.nativeId, firstName: row.firstName, lastName: row.lastName,
           ...(typeof row.city === 'string' && row.city ? { city: row.city } : {}),
           ...(typeof row.country === 'string' && row.country ? { country: row.country } : {}) }];

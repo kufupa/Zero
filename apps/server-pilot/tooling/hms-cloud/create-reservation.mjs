@@ -193,7 +193,9 @@ async function selectGuest(runTool, guest, commit, requireExplicitGuestSelection
   }
   const chosen = matches[0];
   if ((commit && !allowRealGuest && !isLabtestGuest(chosen)) ||
-      (expectedGuest && (chosen.firstName !== expectedGuest.firstName || chosen.lastName !== expectedGuest.lastName))) {
+      (expectedGuest && (commit
+        ? chosen.firstName !== expectedGuest.firstName || chosen.lastName !== expectedGuest.lastName
+        : !same(chosen.firstName, expectedGuest.firstName) || !same(chosen.lastName, expectedGuest.lastName)))) {
     stop('refused', REAL_GUEST_CREATE_AUTHORIZATION_HOLD);
   }
   const selected = await call(runTool, 'selectGuestProfile', { searchId: found.searchId, nativeId: chosen.nativeId });
@@ -602,8 +604,9 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.reason ? [['reasonforstay', state.reason.actual.display]] : []),
         ['udfchkbox04', state.cmsSend.actual],
       ]) if (!same(formValue(form.fields, name), expected)) stop('uncertain', 'draft_readback_mismatch', { field: name });
-      if (expectedGuest && state.guest && (formValue(form.fields, 'firstname') !== expectedGuest.firstName ||
-          formValue(form.fields, 'lastname') !== expectedGuest.lastName)) {
+      if (expectedGuest && state.guest && (commit
+        ? formValue(form.fields, 'firstname') !== expectedGuest.firstName || formValue(form.fields, 'lastname') !== expectedGuest.lastName
+        : !same(formValue(form.fields, 'firstname'), expectedGuest.firstName) || !same(formValue(form.fields, 'lastname'), expectedGuest.lastName))) {
         stop('uncertain', 'draft_readback_mismatch', { field: 'guest' });
       }
       if (state.guestNameDraft) {

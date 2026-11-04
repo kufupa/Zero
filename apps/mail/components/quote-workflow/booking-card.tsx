@@ -1956,7 +1956,7 @@ export function BookingCards({
             const nextChoice: RoomChoice = {
               ...currentChoice,
               ...patch,
-              ...(guestChanged ? { guestoptin4: false, nativeGuestId: undefined } : {}),
+              ...(guestChanged ? { guestoptin4: false, nativeGuestId: patch.nativeGuestId } : {}),
             };
             if (!reservationNoteDirty.current[key]) {
               const wasGenerated = currentChoice.generatedReservationNote !== undefined &&
@@ -2002,7 +2002,8 @@ export function BookingCards({
         const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
         const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
-          candidate.firstName === choice.firstName.trim() && candidate.lastName === choice.lastName.trim());
+          candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase() &&
+          candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
         const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
           roomPreference: selectedRoom || textValue(request.roomType),
@@ -2119,7 +2120,12 @@ export function BookingCards({
               <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Guest profile
                 <select aria-label="Guest profile" className={paneFieldClass} disabled={locked}
-                  value={choice.nativeGuestId ?? ''} onChange={(event) => setChoice({ nativeGuestId: event.target.value })}>
+                  value={choice.nativeGuestId ?? ''} onChange={(event) => {
+                    const candidate = matchingGuests.find((guest) => guest.nativeId === event.target.value);
+                    if (candidate) guestNamesEdited.current[key] = true;
+                    setChoice({ nativeGuestId: event.target.value,
+                      ...(candidate ? { firstName: candidate.firstName, lastName: candidate.lastName } : {}) });
+                  }}>
                   <option value="">Select the matching guest</option>
                   {matchingGuests.map((candidate) => (
                     <option key={candidate.nativeId} value={candidate.nativeId}>
