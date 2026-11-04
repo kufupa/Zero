@@ -584,12 +584,11 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     const after = await currentCancellationRecord(page, expected);
     const afterFields = await recordSnapshot(frame);
     action.check();
-    const changes = { cancelreason: reasonCode, cancellationnote: cancellationNote,
-      reservationstaystatus: 'CANCELED' };
+    // The dialog and Save request separately verify the requested reason and note.
     if (!filled || !selected || blocked.length || opened.blocked.length || nativeDialog || opened.dialogSeen() ||
         frame !== after.frame || JSON.stringify(state.native) !== JSON.stringify(after.native) ||
         !sameParties(state, afterFields, expected) || !unchangedCancellationFields(before, afterFields, expected) ||
-        !unchangedExcept(before, afterFields, changes) || fence.isQuarantined() || await windows.count() !== 1) {
+        !unchangedExcept(before, afterFields, {}) || fence.isQuarantined() || await windows.count() !== 1) {
       throw new Error('CANCEL_REASON_CHANGED');
     }
     preparedSnapshot = afterFields;
