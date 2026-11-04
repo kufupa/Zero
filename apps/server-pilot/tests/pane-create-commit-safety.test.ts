@@ -229,6 +229,7 @@ beforeEach(async () => {
       const binding = digestCloudCreateRequest(proof);
       if (binding.outcome !== 'ok') throw new Error('bad fixture');
       return { outcome: 'prepared', applied: { guaranteeType: CREATE_GUARANTEES[String(input.guaranteeType)] },
+        ratePlanAvailability: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' },
         requestBinding: { request: proof, digest: binding.normalizedRequestDigest }, screenshots: { filled: join(dir, 'filled.png') } };
     }
     const candidate = { method: () => 'POST', url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
@@ -245,7 +246,9 @@ beforeEach(async () => {
     });
     return outcome === 'saved'
       ? { outcome: 'saved', confirmation: '123456-1', writerSessionClosed: true,
-          save: { dispatchCallbacksDrained: true }, readback: { fields: [{ name: 'status', value: 'Reserved' }], mismatches: [] },
+          save: { dispatchCallbacksDrained: true }, readback: { fields: [{ name: 'status', value: 'Reserved' },
+            { name: 'averagerate', value: '1000.00' }, { name: 'totalrate', value: '2000.00' },
+            { name: 'currency', value: 'ZAR' }], mismatches: [] },
           screenshots: { before: join(dir, 'before.png'), after: join(dir, 'after.png') } }
       : { outcome: 'uncertain' };
   };
@@ -300,8 +303,8 @@ describe('mounted Cloud create route', () => {
     const selected = { ...request('123'), firstName: 'Ada', lastName: 'Moyo' };
     proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
     vi.stubEnv('PANE_WRITE_CREATE', 'off');
-    expect(await caller().quoteWorkflow.previewStay(selected)).toMatchObject({ status: 'refused' });
-    expect(calls).toHaveLength(0);
+    expect(await caller().quoteWorkflow.previewStay(selected)).toMatchObject({ status: 'ok', outcome: 'preview_only' });
+    expect(calls).toHaveLength(1);
     vi.stubEnv('PANE_WRITE_CREATE', 'on');
     const preview = await caller().quoteWorkflow.previewStay(selected);
     expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
@@ -312,9 +315,9 @@ describe('mounted Cloud create route', () => {
     vi.stubEnv('PANE_WRITE_CREATE', 'on');
     expect(await caller().quoteWorkflow.commitStay({ ...selected, previewDigest: preview.previewDigest! }))
       .toMatchObject({ status: 'ok', outcome: 'committed' });
-    expect(calls[1]?.options).toMatchObject({ allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' },
+    expect(calls.at(-1)?.options).toMatchObject({ allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' },
       cloudTargetKey: '["HRCEN","create","ada","moyo","2027-03-01"]' });
-    expect(calls[1]?.input.cms).toEqual({ send: false, messageId: '03' });
+    expect(calls.at(-1)?.input.cms).toEqual({ send: false, messageId: '03' });
   });
 
   it('admits a real arrival today and refuses yesterday at the mounted route', async () => {

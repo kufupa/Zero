@@ -2,7 +2,7 @@
 import { digestCloudCreateRequest } from './create-request-binding.mjs';
 import { readLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
-import { CREATE_GUARANTEES, createCloudTargetKey, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 /** The caller supplies only prior, durably confirmed rooms from the approved batch. */
 export async function verifyBatchSiblings(census, siblings, {
@@ -26,7 +26,9 @@ export async function verifyBatchSiblings(census, siblings, {
       const sameTarget = matching.includes(sibling);
       if (binding.outcome !== 'ok' || binding.normalizedRequestDigest !== requestDigest ||
           !/^\d{6,}-\d+$/.test(confirmation) || request.propertyCode !== 'HRCEN' || !validCreateGuest(request.guest) ||
-          request.sendHmsConfirmation.kind !== 'never' || !CREATE_GUARANTEES[request.guaranteeType] ||
+          (request.sendHmsConfirmation.kind === 'send' && (isLabtestGuest(request.guest) ||
+            !request.cmsMessageId || request.cmsRecipient !== request.sendHmsConfirmation.recipient)) ||
+          !CREATE_GUARANTEES[request.guaranteeType] ||
           !validCreateDates(request.stay.arrival, request.stay.departure, true, true) ||
           (sameTarget && (!row || !sameCreateGuest(row, request.guest) || row.status !== 'Reserved' ||
             row.arrival !== request.stay.arrival || row.departure !== request.stay.departure)) ||
@@ -41,7 +43,9 @@ export async function verifyBatchSiblings(census, siblings, {
         guestId: request.guest.nativeId, firstName: request.guest.firstName, lastName: request.guest.lastName,
         allowRealGuest: true, source: request.sourceOfBusiness.description,
         organization: request.parties?.organization?.name ?? '', guarantee: CREATE_GUARANTEES[request.guaranteeType],
-        guaranteeCode: request.guaranteeType, cmsRecipient: request.cmsRecipient ?? '',
+        guaranteeCode: request.guaranteeType, cmsSend: request.sendHmsConfirmation.kind === 'send',
+        ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
+        ...(request.cmsRecipient !== undefined ? { cmsRecipient: request.cmsRecipient } : {}),
         ...(request.track ? { track: request.track.display } : {}),
         ...(request.booker ? { booker: request.booker } : {}),
         ...(request.guestOptIn === false ? { guestOptIn: false } : {}) };
@@ -51,8 +55,7 @@ export async function verifyBatchSiblings(census, siblings, {
         const fields = proof.fields.filter((field) => field.name === 'udfchar09');
         if (fields.length !== 1 || fields[0].value !== request.cmsMessageId) return false;
       }
-      // An absent party is also an approved value: independently verify that
-      // no native agency, company or AR account was linked after the save.
+      // Independently verify the selected agency and company after the save.
       const parties = await readParties({ confirmation, arrival: request.stay.arrival, guestId: request.guest.nativeId,
         firstName: request.guest.firstName, lastName: request.guest.lastName, allowRealGuest: true,
         agency: request.parties?.bookingAgency ?? null, organization: request.parties?.organization ?? null, arAccount: null },

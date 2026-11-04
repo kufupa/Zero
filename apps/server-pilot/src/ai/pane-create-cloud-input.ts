@@ -28,7 +28,7 @@ type CloudCreateProof = {
   booker?: { name?: string; contact?: string };
   track?: { lookupCode: string; display: string };
   guestOptIn?: false;
-  sendHmsConfirmation: { kind: 'never' };
+  sendHmsConfirmation: { kind: 'never' } | { kind: 'send'; recipient: string };
 };
 
 export type PaneCloudCreateMapping =
@@ -53,8 +53,11 @@ export function mapPaneStayToCloudCreateInput(
   ] as const) {
     if (value !== undefined) return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field };
   }
-  if (stay.confirmationSendMail === true) {
-    return { outcome: 'refused', reason: 'confirmation_email_writer_unavailable', field: 'confirmationSendMail' };
+  if (stay.confirmationSendMail === true && (!allowRealGuest || isLabtestGuest(stay))) {
+    return { outcome: 'refused', reason: 'labtest_send_forbidden', field: 'confirmationSendMail' };
+  }
+  if (stay.confirmationSendMail === true && (!stay.cmsMessageId || !stay.confirmationRecipient)) {
+    return { outcome: 'refused', reason: 'confirmation_recipient_required', field: 'confirmationRecipient' };
   }
   for (const [field, value, max] of [['bookerName', stay.bookerName, 50], ['bookerEmail', stay.bookerEmail, 80]] as const) {
     if (value !== undefined && (!cleanText(value) || value.length > max)) {
@@ -145,7 +148,7 @@ export function mapPaneStayToCloudCreateInput(
       sourceOfBusiness: stay.sourceOfBusiness,
       ...(Object.keys(parties).length ? { parties } : {}),
       note: stay.reservationNote,
-      cms: { send: false, ...(stay.cmsMessageId ? { messageId: stay.cmsMessageId } : {}),
+      cms: { send: stay.confirmationSendMail === true, ...(stay.cmsMessageId ? { messageId: stay.cmsMessageId } : {}),
         ...(stay.confirmationRecipient ? { recipient: stay.confirmationRecipient.address } : {}) },
     },
   };
@@ -153,12 +156,12 @@ export function mapPaneStayToCloudCreateInput(
 
 /** Bind only server-observed final selections to the reviewed pane stay. */
 export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, visibleGuarantee?: unknown, selectedGuestId?: string,
-  requireVisibleGuarantee = false):
+  requireVisibleGuarantee = false, allowRealGuest = false):
   | { outcome: 'ok'; normalizedRequestDigest: string; request: Record<string, unknown> }
   | { outcome: 'refused'; reason: string } {
   // A matching native proof is not evidence for a stay this bridge cannot map.
   // Apply the same limits independently, even when a caller skipped mapping.
-  if (mapPaneStayToCloudCreateInput(stay, 'prepare', selectedGuestId).outcome !== 'ok') {
+  if (mapPaneStayToCloudCreateInput(stay, 'prepare', selectedGuestId, { allowRealGuest }).outcome !== 'ok') {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }
   // When staff selected a display label, a matching code alone does not prove
@@ -202,7 +205,10 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
       (stay.guestoptin4 === false ? request.guestOptIn !== false : request.guestOptIn !== undefined) ||
       !source || (!same(source.nativeCode, stay.sourceOfBusiness) && !same(source.description, stay.sourceOfBusiness)) ||
       (stay.cmsMessageId !== undefined ? request.cmsMessageId !== stay.cmsMessageId : request.cmsMessageId !== undefined) ||
-      !request.sendHmsConfirmation || (request.sendHmsConfirmation as { kind?: unknown }).kind !== 'never') {
+      !request.sendHmsConfirmation || (stay.confirmationSendMail === true
+        ? (request.sendHmsConfirmation as { kind?: unknown; recipient?: unknown }).kind !== 'send' ||
+          (request.sendHmsConfirmation as { recipient?: unknown }).recipient !== stay.confirmationRecipient?.address
+        : (request.sendHmsConfirmation as { kind?: unknown }).kind !== 'never')) {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }
   if (stay.bookingAgency) {

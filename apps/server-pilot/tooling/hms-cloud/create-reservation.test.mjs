@@ -343,7 +343,7 @@ test('booker and no-send CMS recipient survive native staging and fresh readback
   assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'cmsRecipient'));
   const send = harness();
   const rejected = await createReservation({ ...requested, cms: { ...requested.cms, send: true } }, send.options);
-  assert.equal(rejected.issue, 'sending_not_supported');
+  assert.equal(rejected.issue, 'confirmation_details_or_real_guest_required');
   assert.equal(send.calls.length, 0);
 });
 
@@ -576,7 +576,7 @@ test('unsafe inputs and wrong staged values do not become approval ready', async
   let sessions = 0;
   const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
   for (const [change, outcome, issue] of [
-    [{ cms: { send: true } }, 'unsupported', 'sending_not_supported'],
+    [{ cms: { send: true } }, 'unsupported', 'confirmation_details_or_real_guest_required'],
     [{ guaranteeType: 'CC' }, 'refused', 'guarantee_not_supported_yet'],
     [{ guest: { search: { lastName: 'Real' } } }, 'refused', REAL_GUEST_CREATE_AUTHORIZATION_HOLD],
     [{ room: { ...input.room, ratePlan: 'BAR-1' } }, 'refused', 'native_code_not_supported_yet'],
@@ -678,7 +678,8 @@ test('prepare stages supported partial fields while retaining unsupported values
       assert.equal(fake.calls.some(({ tool, field }) => tool === 'setGuestStayText' && field === 'reservationNote'), false);
     }
     assert.equal(fake.calls.some(({ tool, field }) => tool === 'selectGuestStayDropdown' && field === 'guaranteeType'), change.guaranteeType !== 'CC');
-    assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay' || tool === 'setCmsSendCheckbox'), false);
+    assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+    assert.ok(fake.calls.filter(({ tool }) => tool === 'setCmsSendCheckbox').every(({ checked }) => checked === false));
     assert.equal(fake.freshReads, 0);
   }
 });

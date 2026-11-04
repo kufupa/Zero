@@ -1075,7 +1075,7 @@ describe('Cloud create controls', () => {
     const workItemId = '11111111-1111-4111-8111-111111111111';
     render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
-    expect(screen.getByText(mode === 'lab' ? /HMS testing is currently limited to Proof Labtest/
+    expect(screen.getByText(mode === 'lab' ? /Preview any stay. Booking is currently limited to Proof Labtest/
       : /Booking from this pane is off/)).toBeDefined();
     expect(previewButton(0).disabled).toBe(false);
     fireEvent.click(previewButton(0));
@@ -1112,12 +1112,13 @@ describe('Cloud create controls', () => {
   it.each([
     { mode: 'lab' as const, firstName: 'Proof', lastName: 'Labtest' },
     { mode: 'on' as const, firstName: 'Ada', lastName: 'Moyo' },
-  ])('uses one Go on a bound $mode preview and keeps HMS sending off', async ({ mode, firstName, lastName }) => {
+  ])('uses one Go on a bound $mode preview with the correct HMS send choice', async ({ mode, firstName, lastName }) => {
     const preview = vi.fn<PaneStayClient['preview']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
         { nativeId: '123', firstName, lastName, city: 'Pretoria' },
-      ] }).mockResolvedValueOnce(PREVIEW_OK);
-    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+      ] }).mockResolvedValueOnce({ ...PREVIEW_OK, hmsPrice: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' } });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue({ ...COMMIT_OK,
+      hmsPrice: { averageRate: '1100.00', totalRate: '2200.00', currency: 'ZAR' } });
     const { client } = paneClient({ preview, commit, mode: () => mode, canPreview: () => true });
     const draft = previewableDraft('BAR');
     Object.assign(draft.draft.rooms[0]!.request, { firstName, lastName,
@@ -1133,12 +1134,14 @@ describe('Cloud create controls', () => {
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     expect(screen.queryByText(/Booking from Nava is not available yet/)).toBeNull();
-    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(mode === 'on');
+    expect(screen.getByText(/HMS average: 1000.00.*total: 2000.00.*ZAR/)).toBeDefined();
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getByText(/Saved HMS average: 1100.00.*total: 2200.00.*ZAR/)).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1', firstName, lastName,
-      confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
+      confirmationSendMail: mode === 'on', createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
   });
 
   it.each(['confirmed', 'uncertain', 'partial'] as const)('uses one Cloud Go for separately approved rooms and stops on %s', async (result) => {
@@ -1497,7 +1500,7 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     expect(commit.mock.calls[0]).toHaveLength(2);
     expect(commit.mock.calls[0]![0]).toMatchObject({ stayId: 's1_3', firstName: 'Ada', lastName: 'Moyo',
-      confirmationSendMail: false });
+      confirmationSendMail: true });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
   });
 

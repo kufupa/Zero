@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './draft-approval.js';
+import { hrcenToday } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 
 const text = z.string().trim().min(1).max(200);
 const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
@@ -76,14 +77,15 @@ export function batchRoomDigest(room: BatchRoom): string {
 }
 
 export function parseLabBatch(input: unknown, capability: 'off' | 'lab' | 'on'): BatchManifest {
-  // 'on' is intentionally not accepted: no real-guest batch capability exists yet.
-  if (capability !== 'lab') throw new Error('batch_capability_not_lab');
+  if (capability === 'off') throw new Error('batch_capability_off');
   const manifest = batchManifestSchema.parse(input);
   if (manifest.propertyCode !== 'HRCEN') throw new Error('batch_property_not_hrcen');
   for (const room of manifest.rooms) {
-    if (room.cmsSend !== false) throw new Error('batch_labtest_send_forbidden');
-    if (room.guest.firstName !== 'Proof' || room.guest.lastName !== 'Labtest' || room.stay.arrival < '2027-01-01') {
-      throw new Error('batch_labtest_required');
+    const labtest = room.guest.firstName === 'Proof' && room.guest.lastName === 'Labtest';
+    if (labtest && room.cmsSend) throw new Error('batch_labtest_send_forbidden');
+    if (labtest && room.stay.arrival < '2027-01-01') throw new Error('batch_labtest_required');
+    if (!labtest && (capability !== 'on' || room.stay.arrival < hrcenToday())) {
+      throw new Error('batch_real_guest_not_enabled');
     }
   }
   const freeze = (value: object): void => {
@@ -101,7 +103,7 @@ export type BatchProfileLookup = (propertyCode: string, profileId: string) => Pr
 export async function verifyBatchRoomProfile(manifest: BatchManifest, room: BatchRoom, lookup: BatchProfileLookup): Promise<void> {
   const profile = await lookup(manifest.propertyCode, room.guest.profileId);
   if (!profile || profile.propertyCode !== manifest.propertyCode || profile.profileId !== room.guest.profileId ||
-      profile.firstName !== 'Proof' || profile.lastName !== 'Labtest') throw new Error('batch_profile_unverified');
+      profile.firstName !== room.guest.firstName || profile.lastName !== room.guest.lastName) throw new Error('batch_profile_unverified');
 }
 
 /** Before claim, resolve every profile through trusted property-bound HMS reads. */

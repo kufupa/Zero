@@ -39,6 +39,7 @@ import {
   type PaneStayClient,
   type PaneStayBatch,
   type PaneStayInput,
+  type PaneStayResult,
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import {
@@ -256,8 +257,8 @@ const textareaClass =
 
 type PreviewView =
   | { status: 'running'; key: string; requestId: symbol }
-  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
-  | { status: 'view_only'; key: string; runId?: string; screenshots: string[] }
+  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
+  | { status: 'view_only'; key: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
   | { status: 'refused'; key: string; message: string }
   | { status: 'stale'; key: string };
 
@@ -274,6 +275,7 @@ type CommitView =
       shots?: HmsShotRecord[];
       unverified?: boolean;
       cmsMismatch?: boolean;
+      hmsPrice?: PaneStayResult['hmsPrice'];
     }
   | {
       status: 'refused';
@@ -576,6 +578,11 @@ function RoomSave({
             ? PANE_SAVE_UNVERIFIED_COPY
             : `Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
+        {commit.hmsPrice ? (
+          <p className="text-[12px] font-semibold text-[#1e293b]">
+            Saved HMS average: {commit.hmsPrice.averageRate} · total: {commit.hmsPrice.totalRate} · {commit.hmsPrice.currency ?? 'Currency unavailable'}
+          </p>
+        ) : stay?.createSelection ? <p className="text-[11px] text-[#64748b]">Saved price unavailable. Check HMS.</p> : null}
         {commit.confirmationNumber ? (
           <HmsLinkActions
             confirmation={commit.confirmationNumber}
@@ -632,6 +639,11 @@ function RoomSave({
             : `Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
         </p>
       ) : null}
+      {displayed?.hmsPrice ? (
+        <p className="text-[12px] font-semibold text-[#1e293b]">
+          HMS average: {displayed.hmsPrice.averageRate} · total: {displayed.hmsPrice.totalRate} · {displayed.hmsPrice.currency ?? 'Currency unavailable'}
+        </p>
+      ) : null}
       {displayed && stay?.createSelection?.nativeGuestId ? (
         <dl aria-label="Reviewed booking details" data-pii className="grid grid-cols-2 gap-x-3 text-[11px] text-[#475569]">
           {[
@@ -642,7 +654,7 @@ function RoomSave({
             ['Agency', stay.bookingAgency ? `${stay.bookingAgency.name} · #${stay.bookingAgency.nativeId}` : 'None'],
             ['Company', stay.organization ? `${stay.organization.name} · #${stay.organization.nativeId}` : 'None'],
             ['Booker', [stay.bookerName, stay.bookerEmail].filter(Boolean).join(' · ') || 'None'],
-            ['Confirmation', `${stay.cmsMessageId ?? 'None'} · ${stay.confirmationRecipient?.address ?? 'No recipient'} · Send off`],
+            ['Confirmation', `${stay.cmsMessageId ?? 'None'} · ${stay.confirmationRecipient?.address ?? 'No recipient'} · Send ${stay.confirmationSendMail ? 'on' : 'off'}`],
             ['Reservation note', stay.reservationNote ?? 'None'],
           ].map(([label, value]) => <div key={label}><dt className="font-semibold">{label}</dt><dd>{value}</dd></div>)}
         </dl>
@@ -1072,7 +1084,11 @@ export function BookingCards({
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
-  const sendHmsConfirmation = cloudPreview ? false : sendConfirmation;
+  const labtestOnly = draft.draft.rooms.length > 0 && draft.draft.rooms.every((room) => {
+    const choice = choices[`${room.groupId}:${room.roomIndex}`];
+    return textValue(choice?.firstName).trim().toLowerCase() === 'proof' && textValue(choice?.lastName).trim().toLowerCase() === 'labtest';
+  });
+  const sendHmsConfirmation = labtestOnly ? false : sendConfirmation;
   const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(null);
   const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
   const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
@@ -1282,8 +1298,8 @@ export function BookingCards({
         result.guestCandidates.length === 0;
       preview = outcome.ok
         ? 'previewOnly' in outcome
-          ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots }
-          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
+          ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
+          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
         : {
             status: 'refused',
             key,
@@ -1303,6 +1319,7 @@ export function BookingCards({
             digest: preview.digest,
             runId: preview.runId,
             screenshots: preview.screenshots,
+            hmsPrice: preview.hmsPrice,
           }
         : undefined;
     const accepted = previewReceipt.finish(workItemId, stayId, inputKey, generation, receipt);
@@ -1355,15 +1372,16 @@ export function BookingCards({
     if (cloudPreview && choice.organization.trim() && boundCompany && choice.organization.trim() === boundCompany.name) {
       roomChoice.organization = { name: boundCompany.name, nativeId: boundCompany.nativeId };
     }
-    roomChoice.confirmationSendMail = sendHmsConfirmation;
+    const labtestRoom = textValue(roomChoice.firstName).trim().toLowerCase() === 'proof' &&
+      textValue(roomChoice.lastName).trim().toLowerCase() === 'labtest';
+    roomChoice.confirmationSendMail = labtestRoom ? false : sendHmsConfirmation;
     roomChoice.cmsMessageId = cmsMessage;
     const request = roomRequestFor(room, group, choice);
     const built = paneStayInputForConfiguredRoom(request, roomChoice, requiredCreateFields);
     const missing = [...built.missing];
     if (agencyUnresolved) missing.push('booking agency');
     if (cloudPreview && choice.organization.trim() && (!boundCompany || choice.organization.trim() !== boundCompany.name)) missing.push('company selected from HMS');
-    if (sendHmsConfirmation && !recipient.ok) missing.push('confirmation recipient');
-    if (cloudPreview && staffChose && !recipient.ok) missing.push('confirmation recipient');
+    if (roomChoice.confirmationSendMail && !recipient.ok) missing.push('confirmation recipient');
     if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
     const selectedRoom = roomChoice.roomType ?? '';
     if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
@@ -1372,7 +1390,6 @@ export function BookingCards({
         ? { ...built.stay, propertyCode } : built.stay;
       return { stay: missing.length ? null : legacy, missing: [...new Set(missing)] };
     }
-    if (!Array.isArray(request.childAges)) missing.push('number of children');
     const source = session?.staffSource;
     const stableId = /^[A-Za-z0-9_-]{1,40}$/;
     const selectedId = group?.stayId;
@@ -1380,7 +1397,7 @@ export function BookingCards({
         !source.threadId.trim() || !selectedId || !stableId.test(selectedId) || !stableId.test(group?.id ?? '') ||
         !stableId.test(`${selectedId}_${room.roomIndex}`)) missing.push('selected email and saved booking request');
     const stay = !missing.length && built.stay && source && selectedId && group
-      ? { ...built.stay, childAges: request.childAges as number[], ...(propertyCode ? { propertyCode } : {}), createSelection: {
+      ? { ...built.stay, childAges: built.stay.childAges ?? [], ...(propertyCode ? { propertyCode } : {}), createSelection: {
           source, identity: { stayId: selectedId, rowId: group.id, roomIndex: room.roomIndex },
           ...(choice.nativeGuestId ? { nativeGuestId: choice.nativeGuestId } : {}),
         } }
@@ -1692,6 +1709,7 @@ export function BookingCards({
             confirmationNumber: outcome.confirmationNumber,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
+            hmsPrice: outcome.hmsPrice,
             ...(outcome.unverified ? { unverified: true } : {}),
             ...(outcome.cmsMismatch ? { cmsMismatch: true } : {}),
           }
@@ -1743,18 +1761,18 @@ export function BookingCards({
       <p className="text-[11px] text-[#64748b]">
         {cloudPreview
           ? mode === 'on' ? 'Preview each room in HMS, then book when the preview is ready.'
-            : mode === 'lab' ? 'HMS testing is currently limited to Proof Labtest stays in 2027 or later.'
-              : 'HMS previews are available for test stays. Booking from this pane is off.'
+            : mode === 'lab' ? 'Preview any stay. Booking is currently limited to Proof Labtest stays in 2027 or later.'
+              : 'Booking from this pane is off.'
           : savesOn ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendHmsConfirmation}
-            disabled={stayBooking || cloudPreview} onChange={(event) => setSendConfirmation(event.target.checked)} />
+            disabled={stayBooking || labtestOnly} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
-        {cloudPreview ? <p className="text-[11px] text-[#64748b]">HMS confirmations are turned off for these bookings.</p> : null}
+        {labtestOnly ? <p className="text-[11px] text-[#64748b]">Proof Labtest bookings do not send confirmations.</p> : null}
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
           <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}

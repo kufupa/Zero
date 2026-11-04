@@ -65,12 +65,13 @@ describe('batch manifest', () => {
     expect(batchRoomDigest(raw.rooms[0]!)).toBe(batchRoomDigest(parsed.rooms[0]!));
   });
 
-  it('limits fake saves to HRCEN Proof Labtest 2027+, with CMS sending off', () => {
-    expect(() => parseLabBatch(manifest(), 'on')).toThrow('batch_capability_not_lab');
+  it('limits lab saves to HRCEN Proof Labtest 2027+, with CMS sending off', () => {
+    expect(parseLabBatch(manifest(), 'on').propertyCode).toBe('HRCEN');
     const wrongHotel = manifest(); wrongHotel.propertyCode = 'HRDAV';
     expect(() => parseLabBatch(wrongHotel, 'lab')).toThrow('batch_property_not_hrcen');
     const realGuest = manifest(); realGuest.rooms[0]!.guest.lastName = 'Guest';
-    expect(() => parseLabBatch(realGuest, 'lab')).toThrow('batch_labtest_required');
+    expect(() => parseLabBatch(realGuest, 'lab')).toThrow('batch_real_guest_not_enabled');
+    expect(parseLabBatch(realGuest, 'on').rooms[0]!.guest.lastName).toBe('Guest');
     const oldDate = manifest();
     for (const room of oldDate.rooms) room.stay.arrival = '2026-12-29';
     expect(() => parseLabBatch(oldDate, 'lab')).toThrow('batch_labtest_required');

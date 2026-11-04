@@ -102,6 +102,7 @@ beforeEach(async () => {
     const binding = digestCloudCreateRequest(proof);
     if (binding.outcome !== 'ok') throw new Error('bad proof');
     return { outcome: 'prepared', applied: { guaranteeType: 'Non-Guaranteed Individual' },
+      ratePlanAvailability: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' },
       requestBinding: { request: proof, digest: binding.normalizedRequestDigest }, screenshots: { filled: join(sourceDir, 'filled.png') } };
   };
 });
@@ -169,7 +170,7 @@ describe('mounted read-only Cloud preview', () => {
     expect(await caller().quoteWorkflow.previewStay(request('123'))).toMatchObject({ reason: 'cloud_create_proof_mismatch' });
     const count = calls.length;
     expect(await caller().quoteWorkflow.previewStay({ ...request('123'), firstName: 'Real' })).toMatchObject({ reason: 'cloud_preview_labtest_only' });
-    expect(await caller().quoteWorkflow.previewStay({ ...request('123'), confirmationSendMail: true })).toMatchObject({ reason: 'confirmation_email_writer_unavailable' });
+    expect(await caller().quoteWorkflow.previewStay({ ...request('123'), confirmationSendMail: true })).toMatchObject({ reason: 'labtest_send_forbidden' });
     expect(calls).toHaveLength(count);
   });
 

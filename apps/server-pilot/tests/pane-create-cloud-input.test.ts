@@ -111,8 +111,16 @@ describe('Cloud pane create mapping', () => {
     expect(digestPaneCloudCreateProof(reviewed, { ...native, cmsRecipient: 'other@example.test' }).outcome).toBe('refused');
     expect(digestPaneCloudCreateProof(reviewed, { ...native, booker: { ...native.booker, name: 'Other' } }).outcome).toBe('refused');
     expect(mapPaneStayToCloudCreateInput({ ...reviewed, confirmationSendMail: true }, 'commit', '123')).toMatchObject({
-      outcome: 'refused', reason: 'confirmation_email_writer_unavailable',
+      outcome: 'refused', reason: 'labtest_send_forbidden',
     });
+    const real = { ...reviewed, firstName: 'Ada', lastName: 'Moyo', confirmationSendMail: true, cmsMessageId: '03' };
+    const send = { ...native, guest: { ...native.guest, firstName: 'Ada', lastName: 'Moyo' },
+      cmsMessageId: '03', sendHmsConfirmation: { kind: 'send', recipient: reviewed.confirmationRecipient.address } };
+    expect(mapPaneStayToCloudCreateInput(real, 'prepare', '123', { allowRealGuest: true })).toMatchObject({
+      outcome: 'ok', input: { cms: { send: true, messageId: real.cmsMessageId, recipient: real.confirmationRecipient.address } },
+    });
+    expect(digestPaneCloudCreateProof(real, send, undefined, '123', false, true).outcome).toBe('ok');
+    expect(digestPaneCloudCreateProof(real, { ...send, sendHmsConfirmation: { kind: 'never' } }, undefined, '123', false, true).outcome).toBe('refused');
   });
 
   it('binds the selected track and explicitly false guest opt-in', () => {

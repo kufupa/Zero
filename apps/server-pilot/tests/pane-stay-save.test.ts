@@ -219,13 +219,10 @@ describe('pane stay save guards', () => {
     );
   });
 
-  it('treats *_PAID=on as off and logs it', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('off');
-    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('off');
+  it('accepts dedicated paid amend and cancel flags', () => {
+    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('on');
+    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('on');
     expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'lab' })).toBe('lab');
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_AMEND_PAID' });
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_CANCEL_PAID' });
     expect(paneWriteModes({ PANE_WRITE_CREATE: 'on' })).toEqual({
       create: 'on',
       amendUnpaid: 'off',
