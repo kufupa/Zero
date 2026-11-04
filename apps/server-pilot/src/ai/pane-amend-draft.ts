@@ -3,12 +3,12 @@ import type { ExtractionStay, MailExtractionPayload } from './extraction/schema.
 
 export type DraftSource = { threadId: string; messageId: string; sourceHash: string };
 export type AmendField =
-  | 'target' | 'ratePlan' | 'retainRates' | 'firstName' | 'lastName' | 'guestEmail'
+  | 'target' | 'roomType' | 'childAges' | 'ratePlan' | 'retainRates' | 'firstName' | 'lastName' | 'guestEmail'
   | 'bookerName' | 'bookerContact' | 'cms.send' | 'cms.messageId' | 'cms.recipient';
 type State = Record<string, unknown>;
 
 const FIELDS = new Set<AmendField>([
-  'target', 'ratePlan', 'retainRates', 'firstName', 'lastName', 'guestEmail',
+  'target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName', 'guestEmail',
   'bookerName', 'bookerContact', 'cms.send', 'cms.messageId', 'cms.recipient',
 ]);
 
@@ -46,7 +46,10 @@ export function validAmendRequestValue(field: AmendField, value: unknown): boole
     case 'target':
       return plainRecord(value) && Object.keys(value).every((key) => key === 'confirmation' || key === 'arrival') &&
         typeof value.confirmation === 'string' && /^\d{6,}-\d+$/.test(value.confirmation) && date(value.arrival);
+    case 'roomType':
     case 'ratePlan': return typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
+    case 'childAges': return Array.isArray(value) && value.length <= 9 &&
+      value.every((age) => Number.isInteger(age) && age >= 0 && age <= 17);
     case 'retainRates': return value === 'yes' || value === 'no';
     case 'cms.send': return typeof value === 'boolean';
     case 'cms.messageId': return text(value, 8);
@@ -118,12 +121,14 @@ export function projectAmendRequests(source: DraftSource, payload: MailExtractio
     const childPath = `stays[${stay.id}].totalChildren`;
     const singleRow = stay.rows.length === 1 ? stay.rows[0] : undefined;
     const agesPath = singleRow ? `stays[${stay.id}].rows[${singleRow.id}].childAges` : '';
+    const requestedChildAges = valueOf('childAges');
     const fields = {
       target, arrival: stayValue('arrival'), departure: stayValue('departure'),
       adults: Object.hasOwn(state, adultPath) ? state[adultPath] : stay.totalAdults ?? null,
       children: Object.hasOwn(state, childPath) ? state[childPath] : stay.totalChildren ?? null,
-      childAges: agesPath && Object.hasOwn(state, agesPath) ? state[agesPath] : singleRow?.childAges ?? null,
-      roomType: null, ratePlan: valueOf('ratePlan'), retainRates: valueOf('retainRates'),
+      childAges: Object.hasOwn(state, `requests[${requestId}].childAges`) ? requestedChildAges :
+        agesPath && Object.hasOwn(state, agesPath) ? state[agesPath] : singleRow?.childAges ?? null,
+      roomType: valueOf('roomType'), ratePlan: valueOf('ratePlan'), retainRates: valueOf('retainRates'),
       firstName: valueOf('firstName'), lastName: valueOf('lastName'), guestEmail: valueOf('guestEmail'),
       bookerName: valueOf('bookerName'), bookerContact: valueOf('bookerContact'),
       cms: { send: valueOf('cms.send'), messageId: valueOf('cms.messageId'), recipient: valueOf('cms.recipient') },

@@ -36,6 +36,9 @@ describe('amendment request draft', () => {
     expect(result.meta[`requests[${id}].cms.send`]?.origin).toBe('staff');
     expect(projectAmendRequests({ ...source, sourceHash: 'b'.repeat(64) }, payload, state).unappliedEdits).toHaveLength(2);
     expect(validAmendRequestValue('cms.send', false)).toBe(true);
+    expect(validAmendRequestValue('childAges', [0, 17])).toBe(true);
+    expect(validAmendRequestValue('childAges', [18])).toBe(false);
+    expect(validAmendRequestValue('roomType', 'DLX')).toBe(true);
     expect(validAmendRequestValue('target', { confirmation: '123456-1', arrival: '2027-12-01', other: true })).toBe(false);
   });
 
