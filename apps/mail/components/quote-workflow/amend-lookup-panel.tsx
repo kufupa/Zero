@@ -100,7 +100,7 @@ const warnNoteClass = 'rounded-xs border border-amber-300 bg-amber-50 px-2.5 py-
 const penaltyClass =
   'rounded-xs border border-amber-400 bg-amber-50 px-2.5 py-2 text-[12.5px] font-semibold text-amber-900';
 const selectClass =
-  'h-8 rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
+  'h-8 min-w-0 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
 
 export type AmendSavedStay = {
   confirmationNumber: string | null;
@@ -283,6 +283,9 @@ export function AmendLookupPanel({
   }, []);
   const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
   const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
+  // Keep the mounted editor during a refresh, but never allow its stale booking to prepare a write.
+  const refreshingAmend = useRef<{ scope: string; confirmation: string; stay: StayRecordWire;
+    contactObservations?: StayContactObservations } | null>(null);
 
   if (!amendment) {
     if (cancelScopeRef.current !== null) cancelScopeGeneration.current += 1;
@@ -568,6 +571,13 @@ export function AmendLookupPanel({
       ? { propertyCode: readOnlyAmend.propertyCode, threadId: source.threadId, messageId: source.messageId,
           mailboxEmail: binding.mailboxEmail, sourceHash: source.sourceHash }
       : null;
+  const reviewScope = readOnlyIdentity ? JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch]) : null;
+  const currentAmendReview = amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyIdentity &&
+    stayText(stay.confirmation) === foundNumber && findView?.request?.kind === 'find' &&
+    findView.request.confirmation === foundNumber
+      ? { confirmation: foundNumber, stay, contactObservations: found?.reservationObservations } : null;
+  const heldAmendReview = reviewScope && refreshingAmend.current?.scope === reviewScope ? refreshingAmend.current : null;
+  const amendReview = currentAmendReview ?? heldAmendReview;
   // This is a local display revision, not an extraction id or authority to write.
   const localReadRevision = JSON.stringify([session.inputRevision, amendment]);
   const matchWarningParts =
@@ -676,8 +686,12 @@ export function AmendLookupPanel({
               {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
               {readOnlyAmend && shownFindRequest && shownFindRequest.confirmation === foundNumber ? (
                 <button type="button" className={buttonClass} disabled={!key || !transport || busy}
-                  title="Refreshing clears the entries on this card."
-                  onClick={() => find.start(shownFindRequest)}>
+                  onClick={() => {
+                    if (reviewScope && foundNumber && stay && amendment.kind === 'amend')
+                      refreshingAmend.current = { scope: reviewScope, confirmation: foundNumber, stay,
+                        contactObservations: found?.reservationObservations };
+                    find.start(shownFindRequest);
+                  }}>
                   Refresh HMS lookup
                 </button>
               ) : null}
@@ -855,24 +869,25 @@ export function AmendLookupPanel({
       ) : null}
         </>
       )}
-      {amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend ? (
-        readOnlyIdentity && stayText(stay.confirmation) === foundNumber &&
-        findView?.request?.kind === 'find' && findView.request.confirmation === foundNumber ? (
+      {amendment.kind === 'amend' && readOnlyAmend && amendReview && readOnlyIdentity ? (
+          <div hidden={!currentAmendReview}>
           <LocalAmendReview
-            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, foundNumber])}
+            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, amendReview.confirmation])}
             identity={readOnlyIdentity}
             revision={localReadRevision}
-            confirmation={foundNumber}
-            stay={stay}
-            contactObservations={found?.reservationObservations}
+            confirmation={amendReview.confirmation}
+            stay={amendReview.stay}
+            contactObservations={amendReview.contactObservations}
             requestedArrival={amendment.requestedArrival}
             requestedDeparture={amendment.requestedDeparture}
             ratePlans={readOnlyAmend.ratePlans}
             defaultRecipient={session.staffHeader.clientEmail}
             onApprovalVisibilityChange={setActiveAmendApproval}
-            writeContext={selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
+            writeContext={currentAmendReview && selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
           />
-        ) : <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
+          </div>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend ? (
+        <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
       ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
         <AmendSection
           view={amendView}
@@ -1295,7 +1310,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const validRecipient = !cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim()));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
     firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient &&
-    (Object.keys(changes).length > 0 || cmsTouched || (!labtest && cmsSend)));
+    (Object.keys(changes).length > 0 || cmsTouched));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
     workItemId: writeContext.workItemId,
     source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
@@ -1342,11 +1357,13 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     <details className="rounded-sm border border-[#e2e8f0] p-2">
       <summary className="cursor-pointer text-[12px] font-semibold text-[#334155]">More · guest and booker</summary>
       <div className="mt-2 grid grid-cols-2 gap-2">
-      {([['Guest first name', firstName, setFirstName], ['Guest surname', lastName, setLastName],
-        ['Guest email', guestEmail, setGuestEmail], ['Booker name', bookerName, setBookerName],
-        ['Booker contact', bookerContact, setBookerContact]] as const).map(([label, value, update]) =>
-        <label key={label} className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      {([['Guest first name', firstName, setFirstName, stay.firstName], ['Guest surname', lastName, setLastName, stay.lastName],
+        ['Guest email', guestEmail, setGuestEmail, contactObservations?.guestEmail?.value],
+        ['Booker name', bookerName, setBookerName, contactObservations?.bookerName?.value],
+        ['Booker contact', bookerContact, setBookerContact, contactObservations?.bookerContact?.value]] as const).map(([label, value, update, current]) =>
+        <label key={label} className="flex min-w-0 flex-col gap-1 text-[11.5px] text-[#334155]">
           <span className="font-semibold">{label}</span>
+          <span data-pii className={captionClass}>HMS: {current || 'Not shown'}</span>
           <input data-pii className={selectClass} value={value} onChange={(event) => {
             update(event.target.value);
             const detailNames: Record<string, string> = { 'Guest first name': 'firstName', 'Guest surname': 'lastName', 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };

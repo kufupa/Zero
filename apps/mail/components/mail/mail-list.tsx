@@ -1108,9 +1108,10 @@ export const MailList = memo(function MailList() {
           setDraftId(null);
         });
         if (sequence === navigationSequence.current && isCurrentMailSelectionIntent(intent)) {
-          // The row displays this message. Keep its exact ID only when it is an
-          // inbound mail; the bridge still validates mailbox, thread and identity.
-          if (message.id && !message.isDraft && activeConnection?.email && isInboundMessage(message, activeConnection.email))
+          // Carry the displayed ID even while its direction is unresolved. The
+          // bridge verifies inbound status, mailbox, thread and identity.
+          if (message.id && !message.isDraft && (message.direction === 'inbound' ||
+            (!message.direction && (!activeConnection?.email || isInboundMessage(message, activeConnection.email)))))
             void setMailSelection({ threadId: messageThreadId, sourceMessageId: message.id });
           else
             void setMailSelection({ threadId: messageThreadId, sourceMessageId: null });

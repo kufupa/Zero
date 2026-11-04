@@ -2245,7 +2245,10 @@ describe('AmendLookupPanel amend form', () => {
     expect(trpc.queueFind).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1',
       sourceHash: 'a'.repeat(64), confirmation: CONFIRMATION, arrival: AMEND.arrival }),
       { context: { activeTransportId: 't1' } });
-    await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1'));
+    await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
+    expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('CORP');
+    expect((screen.getByLabelText('Retain the current rate?') as HTMLSelectElement).value).toBe('yes');
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
 
