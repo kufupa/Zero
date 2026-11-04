@@ -36,6 +36,7 @@ import {
   endHmsWriteRun,
   formDigest,
   HmsApprovalError,
+  type HmsSelectedSource,
   type HmsPreSaveOutcome,
   recordHmsWriteEvidence,
   storeHmsSnapshot,
@@ -114,6 +115,11 @@ const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 type FilingSnapshot = { cmsSend: boolean };
 type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
 type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string };
+
+async function currentFilingSelection(db: DB, transportId: string, source: HmsSelectedSource): Promise<boolean> {
+  const { isSelectedHmsInboundMessage } = await import('./hms-jobs.js');
+  return isSelectedHmsInboundMessage({ transportId, ...source }, db);
+}
 
 /** Target identity and the preserved CMS state bind the approved Documents upload. */
 function filingState(cloud: CloudFilingRecord) {
@@ -199,11 +205,14 @@ const attachFormSchema = z.object({
   sourceMessageId: z.string().min(1).max(512).optional(),
   sourceInternetMessageId: z.string().min(1).max(998).optional(),
   sourceSnapshotDigest: z.string().regex(PDF_SHA256).optional(),
+  sourceThreadId: z.string().min(1).max(512).optional(),
+  sourceHash: z.string().regex(PDF_SHA256).optional(),
 });
 
 const boundFilingFormSchema = attachFormSchema.extend({
   pdfSha256: z.string().regex(PDF_SHA256), sourceMessageId: z.string().min(1).max(512),
   sourceInternetMessageId: z.string().min(1).max(998), sourceSnapshotDigest: z.string().regex(PDF_SHA256),
+  sourceThreadId: z.string().min(1).max(512), sourceHash: z.string().regex(PDF_SHA256),
 });
 
 const cancelFormSchema = z.object({
@@ -351,6 +360,7 @@ export async function bindAttachDocumentForm(input: {
   sourceMessageId?: string;
   internetMessageId?: string;
   actorUserId?: string;
+  selectedSource?: HmsSelectedSource;
   env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
   const db = input.db ?? getDb();
@@ -365,20 +375,27 @@ export async function bindAttachDocumentForm(input: {
     'sourceMessageId',
     'sourceInternetMessageId',
     'sourceSnapshotDigest',
+    'sourceThreadId',
+    'sourceHash',
     'reason',
     'fields',
     'previewDigest',
   ] as const;
   const target = paneStayHmsTargetForTransport(input.transportId);
   if (target.ok && target.target.propertyCode === 'HRCEN') {
-    if (!labtestAttachEnabled(input.env ?? process.env) || !input.sourceMessageId || !input.internetMessageId || !input.actorUserId) {
+    if (!labtestAttachEnabled(input.env ?? process.env) || !input.sourceMessageId || !input.internetMessageId ||
+        !input.actorUserId || !input.selectedSource || input.selectedSource.messageId !== input.sourceMessageId) {
       return { status: 'refused', reason: 'filing_unavailable' };
     }
     const selected = canonicalMessageId(input.internetMessageId.trim());
     if (!selected) return { status: 'refused', reason: 'source_mail_changed' };
     const sourceInput = { ...input, sourceMessageId: input.sourceMessageId, actorUserId: input.actorUserId };
     const threadId = await currentFilingSourceThread(db, sourceInput);
-    if (!threadId) return { status: 'refused', reason: 'source_mail_changed' };
+    if (!threadId || threadId !== input.selectedSource.threadId ||
+        !await currentFilingSelection(db, input.transportId, input.selectedSource)) {
+      return { status: 'refused', reason: 'source_mail_changed' };
+    }
+    const selectedSource = input.selectedSource;
     try {
       const allowed = await assertHmsReadOriginAllowed({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });
       if (Object.keys(CENTURION_HMS_READ_TARGET).some((key) =>
@@ -388,23 +405,31 @@ export async function bindAttachDocumentForm(input: {
     } catch { return { status: 'refused', reason: 'refused_unknown_transport' }; }
     const source = await readPanePop3Attachment({ db, s3: getS3Storage(), transportId: input.transportId,
       messageId: input.sourceMessageId, attachmentId: input.attachmentId, signal: AbortSignal.timeout(READ_ATTACHMENT_TIMEOUT_MS),
-      checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId });
+      checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId &&
+        await currentFilingSelection(db, input.transportId, selectedSource) });
     if (!source) return { status: 'refused', reason: 'attachment_not_found' };
+    if (!await currentFilingSelection(db, input.transportId, selectedSource)) {
+      return { status: 'refused', reason: 'source_mail_changed' };
+    }
     // The Documents reader collapses whitespace. Refuse before Go if its
     // readback could not compare the exact approved filename.
     if (source.source.filename !== source.source.filename.replace(/\s+/g, ' ').trim()) {
       return { status: 'refused', reason: 'form_invalid' };
     }
-    const form: BoundFilingForm = { action: 'attach_document', confirmation: input.confirmation, arrival: input.arrival,
+    const form: BoundFilingForm & { sourceThreadId: string; sourceHash: string } = {
+      action: 'attach_document', confirmation: input.confirmation, arrival: input.arrival,
       lastName: squash(input.lastName), sourceMessageId: input.sourceMessageId, sourceInternetMessageId: selected,
       attachmentId: input.attachmentId, documentName: source.source.filename, pdfSha256: source.source.sha256,
-      sourceSnapshotDigest: source.source.snapshotDigest };
+      sourceSnapshotDigest: source.source.snapshotDigest, sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash };
     const parsed = attachFormSchema.safeParse(form);
-    if (!parsed.success || formRefusal(form, { allowRealGuest: paneHmsWriteMode(input.env) === 'on' })) return { status: 'refused', reason: 'form_invalid' };
+    if (!parsed.success || formRefusal(form, { allowRealGuest: true })) return { status: 'refused', reason: 'form_invalid' };
     return db.transaction(async (tx) => {
       const item = await lockBoundFilingSource(tx, { transportId: input.transportId, workItemId: input.workItemId,
         form, allowUnbound: true });
-      if (!item) return { status: 'refused' as const, reason: 'source_mail_changed' };
+      if (!item || item.threadId !== selectedSource.threadId ||
+          !await currentFilingSelection(tx as DB, input.transportId, selectedSource)) {
+        return { status: 'refused' as const, reason: 'source_mail_changed' };
+      }
       try {
         await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: item.id });
         await assertNoOpenWrite(tx as DB, item.id);
@@ -507,6 +532,7 @@ export async function prepareHmsWriteSnapshot(input: {
   transportId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   expectedFormDigest?: string;
   confirmation: string;
   arrival: string;
@@ -519,7 +545,7 @@ export async function prepareHmsWriteSnapshot(input: {
   }
   const shape = checkCancelInput(
     { confirmation: input.confirmation, arrival: input.arrival },
-    { allowRealGuest: attachMode === 'on' },
+    { allowRealGuest: attachMode !== 'off' },
   );
   if (shape) return { status: 'refused', reason: shape };
   const resolved = paneStayHmsTargetForTransport(input.transportId);
@@ -535,7 +561,10 @@ export async function prepareHmsWriteSnapshot(input: {
   let stay: PaneStayFields, reviewed: unknown;
   if (cloudAttach) {
     if (!labtestAttachEnabled(env) || !boundFilingFormSchema.safeParse(form).success ||
-        form.confirmation !== input.confirmation || form.arrival !== input.arrival) {
+        form.confirmation !== input.confirmation || form.arrival !== input.arrival || !input.selectedSource ||
+        form.sourceMessageId !== input.selectedSource.messageId || form.sourceThreadId !== input.selectedSource.threadId ||
+        form.sourceHash !== input.selectedSource.sourceHash ||
+        !await currentFilingSelection(db, input.transportId, input.selectedSource)) {
       return { status: 'refused', reason: 'filing_unavailable' };
     }
     const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
@@ -543,7 +572,7 @@ export async function prepareHmsWriteSnapshot(input: {
     let cloud: CloudFilingRecord | null;
     try {
       cloud = await lock.withLock(() => (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
-        { confirmation: input.confirmation, arrival: input.arrival }, target, { allowRealGuest: attachMode === 'on' }),
+        { confirmation: input.confirmation, arrival: input.arrival }, target, { allowRealGuest: true }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     } catch (error) {
       return { status: 'refused', reason: isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure' };
@@ -564,13 +593,17 @@ export async function prepareHmsWriteSnapshot(input: {
     stay = found.stay;
     reviewed = stay;
   }
-  const refusal = stayRefusal(stay, form ?? input, { allowRealGuest: attachMode === 'on' });
+  const refusal = stayRefusal(stay, form ?? input, { allowRealGuest: attachMode !== 'off' });
   if (refusal) return { status: 'refused', reason: refusal };
+  if (input.selectedSource && !await currentFilingSelection(db, input.transportId, input.selectedSource)) {
+    return { status: 'refused', reason: 'source_mail_changed' };
+  }
   await storeHmsSnapshot({
     db,
     transportId: input.transportId,
     workItemId: input.workItemId,
     selectedInternetMessageId: input.selectedInternetMessageId,
+    selectedSource: input.selectedSource,
     expectedFormDigest: input.expectedFormDigest,
     readHmsState: async () => reviewed,
     now: readAt,
@@ -1246,7 +1279,9 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         if (current.status !== 'unchanged') return false;
         const bytes = await readBoundFilingSource({ db, transportId: input.transportId,
           workItemId: input.workItemId, form: filing, fence });
-        return hasFinishBudget() && !!bytes && pdfBytesHash(bytes) === filing.pdfSha256;
+        return hasFinishBudget() && !!bytes && pdfBytesHash(bytes) === filing.pdfSha256 &&
+          await currentFilingSelection(db, input.transportId, { threadId: filing.sourceThreadId,
+            messageId: filing.sourceMessageId, sourceHash: filing.sourceHash });
       },
       finalAuthority: async (code: string) => {
         if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code) || !dispatch.stay || !dispatch.guestId || !dispatch.nativeStayId ||
@@ -1512,6 +1547,10 @@ async function runClaimed(
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(form) : null;
   if (isCloudAttach && (!labtestAttachEnabled(env) || !parsedFiling?.success)) {
     return endRun(db, fence, 'POLICY_BLOCK', 'refused_cloud_upload_unavailable');
+  }
+  if (parsedFiling?.success && !await currentFilingSelection(db, transportId, { threadId: parsedFiling.data.sourceThreadId,
+    messageId: parsedFiling.data.sourceMessageId, sourceHash: parsedFiling.data.sourceHash })) {
+    return endRun(db, fence, 'POLICY_BLOCK', 'source_mail_changed');
   }
 
   // Read before consume: a refused read ends the run with nothing consumed.

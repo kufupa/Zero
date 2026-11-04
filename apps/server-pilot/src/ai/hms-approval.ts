@@ -96,29 +96,41 @@ export class HmsApprovalError extends Error {
   }
 }
 
-type SelectedHmsSource = { transportId: string; selectedInternetMessageId?: string };
+export type HmsSelectedSource = { threadId: string; messageId: string; sourceHash: string };
+type SelectedHmsSource = { transportId: string; selectedInternetMessageId?: string; selectedSource?: HmsSelectedSource };
 type HmsSourceItem = { sourceMessageId: string | null; threadId: string | null };
+
+async function currentSelectedHmsSource(db: DB, transportId: string, source: HmsSelectedSource): Promise<boolean> {
+  const { isSelectedHmsInboundMessage } = await import('./hms-jobs.js');
+  return isSelectedHmsInboundMessage({ transportId, ...source }, db);
+}
 
 /** The public pane names the selected email; ambiguous or mismatched message IDs never authorize a write. */
 async function assertHmsSelectedSource(db: DB, input: SelectedHmsSource, item: HmsSourceItem, lockRows = false): Promise<void> {
-  if (input.selectedInternetMessageId === undefined) return;
-  const selectedId = canonicalMessageId(input.selectedInternetMessageId.trim());
-  if (!selectedId || !item.sourceMessageId || !item.threadId) throw new HmsApprovalError('source_mail_changed');
-  const query = db.select({ id: message.id, threadId: message.threadId, direction: message.direction })
-    .from(message).where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, selectedId))).limit(2);
-  const matches = lockRows ? await query.for('share') : await query;
-  if (matches.length !== 1 || matches[0]?.id !== item.sourceMessageId ||
-      matches[0].threadId !== item.threadId || matches[0].direction !== 'inbound') {
+  if (input.selectedInternetMessageId !== undefined) {
+    const selectedId = canonicalMessageId(input.selectedInternetMessageId.trim());
+    if (!selectedId || !item.sourceMessageId || !item.threadId) throw new HmsApprovalError('source_mail_changed');
+    const query = db.select({ id: message.id, threadId: message.threadId, direction: message.direction })
+      .from(message).where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, selectedId))).limit(2);
+    const matches = lockRows ? await query.for('share') : await query;
+    if (matches.length !== 1 || matches[0]?.id !== item.sourceMessageId ||
+        matches[0].threadId !== item.threadId || matches[0].direction !== 'inbound') {
+      throw new HmsApprovalError('source_mail_changed');
+    }
+  }
+  if (input.selectedSource && (input.selectedSource.messageId !== item.sourceMessageId ||
+      input.selectedSource.threadId !== item.threadId ||
+      !await currentSelectedHmsSource(db, input.transportId, input.selectedSource))) {
     throw new HmsApprovalError('source_mail_changed');
   }
 }
 
 async function lockHmsSelectedMailbox(db: DB, input: SelectedHmsSource): Promise<void> {
-  if (input.selectedInternetMessageId !== undefined) await lockCanonicalMailbox(db, input.transportId);
+  if (input.selectedInternetMessageId !== undefined || input.selectedSource !== undefined) await lockCanonicalMailbox(db, input.transportId);
 }
 
 async function assertCurrentHmsSelection(db: DB, input: SelectedHmsSource & { workItemId: string }): Promise<void> {
-  if (input.selectedInternetMessageId === undefined) return;
+  if (input.selectedInternetMessageId === undefined && input.selectedSource === undefined) return;
   const [item] = await db.select({ sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
   if (!item) throw new HmsApprovalError('not_found');
@@ -178,7 +190,14 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
     typeof state.attachmentId === 'string' && state.attachmentId.length > 0 &&
     typeof state.documentName === 'string' && /\.pdf$/i.test(state.documentName) &&
     typeof state.pdfSha256 === 'string' && /^[a-f0-9]{64}$/.test(state.pdfSha256) &&
-    typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest);
+    typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest) &&
+    typeof state.sourceThreadId === 'string' && state.sourceThreadId.length > 0 &&
+    typeof state.sourceHash === 'string' && /^[a-f0-9]{64}$/.test(state.sourceHash);
+}
+
+function boundFilingSelectionMatches(state: Record<string, unknown>, source: HmsSelectedSource | undefined): boolean {
+  return !!source && state.sourceMessageId === source.messageId && state.sourceThreadId === source.threadId &&
+    state.sourceHash === source.sourceHash;
 }
 
 export function formDigest(state: Record<string, unknown>): string {
@@ -339,6 +358,7 @@ export async function storeHmsSnapshot(input: {
   transportId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   expectedFormDigest?: string;
   readHmsState: () => Promise<unknown>;
   now?: Date;
@@ -357,6 +377,8 @@ export async function storeHmsSnapshot(input: {
       .for('update');
     if (!item) throw new HmsApprovalError('not_found');
     await assertHmsSelectedSource(tx as DB, input, item, true);
+    if (item.state.action === 'attach_document' && input.selectedSource &&
+        !boundFilingSelectionMatches(item.state, input.selectedSource)) throw new HmsApprovalError('source_mail_changed');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (input.expectedFormDigest !== undefined && input.expectedFormDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
@@ -463,6 +485,7 @@ export async function approveHmsWrite(input: {
   sessionProfile?: 'legacy' | 'remote';
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   /**
    * The form digest of the values the card showed (hmsWriteStateOf.formDigest). When given, approval is refused unless
    * the stored form still has it, so staff never approve values they were not shown.
@@ -491,6 +514,7 @@ export async function approveHmsWrite(input: {
     if (item.state.action === 'attach_document' && (!target.ok || (labtestAttach &&
         (!isBoundLabtestAttachment(item.state, item.sourceMessageId) || !labtestAttachEnabled() ||
          !input.sessionId || !input.sessionProfile || !input.selectedInternetMessageId ||
+         !boundFilingSelectionMatches(item.state, input.selectedSource) ||
          canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)))) {
       throw new HmsApprovalError('filing_unavailable');
     }
@@ -724,6 +748,10 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
       item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256) {
     throw new HmsApprovalError('state_changed');
   }
+  if (item.state.sourceThreadId !== item.threadId || typeof item.state.sourceHash !== 'string' ||
+      !item.threadId || !item.sourceMessageId || !await currentSelectedHmsSource(tx as DB, input.transportId, {
+        threadId: item.threadId, messageId: item.sourceMessageId, sourceHash: item.state.sourceHash,
+      })) throw new HmsApprovalError('source_mail_changed');
   const [transport] = await tx.select({ active: mailboxTransport.isActive }).from(mailboxTransport)
     .where(eq(mailboxTransport.id, input.transportId)).limit(1).for('share');
   const [access] = await tx.select({ userId: mailboxAccess.userId }).from(mailboxAccess).where(and(
@@ -1290,6 +1318,7 @@ export async function hmsWriteStateOf(input: {
   transportId: string;
   workItemId: string;
   selectedInternetMessageId?: string;
+  selectedSource?: HmsSelectedSource;
   now?: Date;
 }): Promise<HmsWriteStateView | null> {
   const db = input.db ?? getDb();
@@ -1364,7 +1393,8 @@ export async function hmsWriteStateOf(input: {
     status: item.status,
     ...(target.ok && target.target.propertyCode === 'HRCEN' ? { filingConfigured: labtestAttachEnabled() } : {}),
     ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')
-      ? { filingAvailable: target.ok && isBoundLabtestAttachment(item.state, item.sourceMessageId) && labtestAttachEnabled(),
+      ? { filingAvailable: target.ok && isBoundLabtestAttachment(item.state, item.sourceMessageId) && labtestAttachEnabled() &&
+          (!input.selectedSource || boundFilingSelectionMatches(item.state, input.selectedSource)),
         manualResolve: false } : {}),
     form: maskedStrings(formOf(item.state)),
     formDigest: formDigest(item.state),

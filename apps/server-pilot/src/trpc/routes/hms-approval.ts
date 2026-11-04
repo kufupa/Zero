@@ -10,19 +10,23 @@ import {
 } from '../../ai/hms-approval.js';
 import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { previewFiling } from '../../ai/pane-filing-preview.js';
+import { isSelectedHmsInboundMessage } from '../../ai/hms-jobs.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
 const selectedEmail = z.string().min(1).max(998);
+const selectedSource = z.object({ threadId: z.string().min(1).max(512), messageId: z.string().min(1).max(512),
+  sourceHash: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 
 // strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
-const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  selectedSource: selectedSource.optional() }).strict();
 const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid }).strict();
-const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail }).strict();
+const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional() }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
-  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200) }).strict();
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200), selectedSource }).strict();
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, note: z.string().trim().min(3).max(500) }).strict();
@@ -52,8 +56,13 @@ function refusal(err: unknown): never {
 
 export const hmsApprovalRouter = router({
   /** This preview makes no approval and never queues a write. */
-  previewAttach: mailboxProcedure.input(filingPreviewInput).mutation(({ input, ctx }) =>
-    previewFiling({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id })),
+  previewAttach: mailboxProcedure.input(filingPreviewInput).mutation(async ({ input, ctx }) => {
+    const current = () => input.selectedSource.messageId === input.sourceMessageId &&
+      isSelectedHmsInboundMessage({ transportId: ctx.activeTransportId, ...input.selectedSource });
+    if (!await current()) return { status: 'refused' as const, reason: 'source_changed' };
+    const preview = await previewFiling({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
+    return await current() ? preview : { status: 'refused' as const, reason: 'source_changed' };
+  }),
   /** Binding prepares the reviewed PDF and booking; it never approves or sends the upload. */
   bindAttach: mailboxProcedure.input(bindAttachInput).mutation(async ({ input, ctx }) => {
     try {
@@ -62,7 +71,7 @@ export const hmsApprovalRouter = router({
       const bound = await bindAttachDocumentForm({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
       if (bound.status !== 'bound' || !bound.formDigest) return bound;
       const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
-        selectedInternetMessageId: input.internetMessageId, expectedFormDigest: bound.formDigest,
+        selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource, expectedFormDigest: bound.formDigest,
         confirmation: bound.form.confirmation, arrival: bound.form.arrival });
       return snapshot.status === 'stored' ? bound : snapshot;
     } catch (err) { return refusal(err); }
@@ -76,6 +85,7 @@ export const hmsApprovalRouter = router({
         sessionProfile: ctx.sessionUser.sessionProfile,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
         formDigest: input.formDigest,
       });
     } catch (err) {
@@ -120,6 +130,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
       });
       if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
       const form = parseHmsWriteForm(view.form);
@@ -128,6 +139,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
         expectedFormDigest: view.formDigest,
         confirmation: form.confirmation,
         arrival: form.arrival,
@@ -143,6 +155,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
+        selectedSource: input.selectedSource,
       });
       if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
       return view;

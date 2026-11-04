@@ -5,6 +5,7 @@ import type { DB } from '../src/db/client.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
 import { authorizeConsumedLabtestAttach, formDigest } from '../src/ai/hms-approval.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from '../src/ai/run-ledger.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -15,8 +16,10 @@ function fixture() {
   const transportId = 'transport-centurion', confirmation = '123456-1', arrival = '2027-09-14', sourceDigest = 'a'.repeat(64);
   const document = { code: documentCodeForUuid(randomUUID()), name: 'voucher.pdf', sha256: 'b'.repeat(64) };
   const readAt = new Date().toISOString(), before = 'c'.repeat(64);
+  const selected = { id: 'selected-message', subject: 'Voucher', textBody: 'Please file', htmlBody: null };
   const state = { action: 'attach_document', confirmation, arrival, lastName: 'Labtest', attachmentId: 'attachment-1',
     sourceMessageId: 'selected-message', sourceInternetMessageId: 'selected@example.test',
+    sourceThreadId: 'thread', sourceHash: staffQuoteSourceHash(selected),
     sourceSnapshotDigest: sourceDigest, documentName: document.name, pdfSha256: document.sha256,
     hmsSnapshot: { digest: before, readAt } };
   const item = { id: workItemId, transportId, threadId: 'thread', sourceMessageId: 'selected-message',
@@ -31,7 +34,7 @@ function fixture() {
     sessionId: 'session-1', sessionProfile: 'remote' as const, sourceDigest, approvedDigest: grant.formDigest,
     documentCode: document.code, documentName: document.name, pdfSha256: document.sha256,
     lockSource: async () => item as never };
-  const rows: unknown[][] = [[{ active: true }], [{ userId: 'staff' }], [{ id: 'session-1' }], [run],
+  const rows: unknown[][] = [[selected], [{ active: true }], [{ userId: 'staff' }], [{ id: 'session-1' }], [run],
     [{ value: grant, payloadHash: sha(canonicalJson(grant)) }], [{ id: randomUUID() }]];
   return { input, item, rows };
 }
@@ -78,14 +81,18 @@ describe('final Labtest filing claim authorization', () => {
       .rejects.toThrow('state_changed');
     await expect(authorizeConsumedLabtestAttach(transaction([]).tx, { ...changed.input, arrival: '2027-09-15' }))
       .rejects.toThrow('state_changed');
+    const changedBody = fixture();
+    changedBody.item.state.sourceHash = 'd'.repeat(64);
+    await expect(authorizeConsumedLabtestAttach(transaction(changedBody.rows).tx, changedBody.input))
+      .rejects.toThrow('source_mail_changed');
     for (const [index, reason] of [[0, 'filing_unavailable'], [1, 'filing_unavailable'],
       [2, 'filing_unavailable'], [3, 'lease_lost'], [4, 'no_grant'], [5, 'not_consumed']] as const) {
       const f = fixture();
-      f.rows[index] = [];
+      f.rows[index + 1] = [];
       await expect(authorizeConsumedLabtestAttach(transaction(f.rows).tx, f.input)).rejects.toThrow(reason);
     }
     const duplicate = fixture();
-    duplicate.rows[5] = [{ id: randomUUID() }, { id: randomUUID() }];
+    duplicate.rows[6] = [{ id: randomUUID() }, { id: randomUUID() }];
     await expect(authorizeConsumedLabtestAttach(transaction(duplicate.rows).tx, duplicate.input)).rejects.toThrow('not_consumed');
   });
 
