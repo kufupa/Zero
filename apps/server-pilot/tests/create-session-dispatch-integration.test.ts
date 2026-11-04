@@ -1,37 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname } from 'node:path';
 import { rm } from 'node:fs/promises';
-import { blankPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
 import { CREATE_GUARANTEES } from '../tooling/hms-cloud/cloud-create-policy.mjs';
-
-// This exercises callback propagation, not the captured native schema. The real
-// 985-key fixture is unavailable here, so only this test's synthetic field-set
-// hash is substituted; all other SHA-256 operations use the real implementation.
-vi.mock('node:crypto', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:crypto')>();
-  return {
-    ...actual,
-    createHash: (...args: Parameters<typeof actual.createHash>) => {
-      const hash = actual.createHash(...args);
-      let syntheticSchema = false;
-      const wrapped = new Proxy(hash, {
-        get(target, key) {
-          if (key === 'update') return (value: unknown, ...options: unknown[]) => {
-            if (typeof value === 'string' && value.includes('\nzzsynthetic_000')) syntheticSchema = true;
-            (target.update as (...args: unknown[]) => unknown)(value, ...options);
-            return wrapped;
-          };
-          if (key === 'digest') return (...options: unknown[]) => syntheticSchema
-            ? '03a9432f20d5b59c1cc7daee4e519639b82b978d1e78b2de110964a98828292e'
-            : (target.digest as (...args: unknown[]) => unknown)(...options);
-          const value = Reflect.get(target, key, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      });
-      return wrapped;
-    },
-  };
-});
 
 const fixture = vi.hoisted(() => ({ page: null as unknown }));
 vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
@@ -85,7 +55,8 @@ vi.mock('../tooling/hms-cloud/guest-stay-room-rate.mjs', async (original) => ({
 }));
 vi.mock('../tooling/hms-cloud/guest-stay-rate-plan.mjs', async (original) => ({
   ...await original<typeof import('../tooling/hms-cloud/guest-stay-rate-plan.mjs')>(),
-  selectGuestStayRatePlan: async () => ({ outcome: 'selected_unsaved', code: 'BAR' }),
+  selectGuestStayRatePlan: async () => ({ outcome: 'selected_unsaved', code: 'BAR',
+    rateAvailability: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' } }),
 }));
 
 import { createReservation } from '../tooling/hms-cloud/create-reservation.mjs';
@@ -95,6 +66,7 @@ function visibleFields() {
   return Object.entries({ guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
     arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', adults: '1', children: '0', child1: '0',
     child2: '0', child3: '0', roomtype: 'STQN', rateplan: 'BAR', company: '',
+    averagerate: '1000.00', totalrate: '2000.00',
     guaranteetype: 'Non-Guaranteed Individual', reservationnote: 'Synthetic note',
     udfchkbox04: false, udfchar13: '', emailaddress: '' }).map(([name, value]) => ({
       name, value, ...(name === 'reservationnote' ? { rawValue: value } : {}),
@@ -118,7 +90,7 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
     route: async (_pattern: string, handler: typeof contextHandler) => { contextHandler = handler; },
   };
   const form: Record<string, string> = {
-    ...Object.fromEntries(blankPartyFields.map((name: string) => [name, ''])),
+    taid1: '', ta1: '', companyid: '', company: '', araccountname: '',
     propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New',
     firstname: options.firstName ?? 'Proof', lastname: options.lastName ?? 'Labtest',
     guestid: '123', bookingsessionid: 'session', sessionID: 'synthetic-session', arrivaldate: '12/29/2027',
@@ -129,7 +101,6 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
     children: '0', childages: '', child1: '0', child2: '0', child3: '0', activechildcategories: '0',
     updatechildcategories: 'true',
   };
-  for (let n = 0; Object.keys(form).length < 985; n += 1) form[`zzsynthetic_${String(n).padStart(3, '0')}`] = '';
   const body = new URLSearchParams({ ...form, SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR' });
   if (options.bodyGuarantee !== undefined) body.set('guaranteetype', options.bodyGuarantee);
   if (options.bodyFirstName !== undefined) body.set('firstname', options.bodyFirstName);
@@ -149,8 +120,9 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
       ? { count: async () => 1, click: async () => { void pageHandler?.(route).catch(() => {}); } }
       : { count: async () => 0, allTextContents: async () => [] },
     evaluate: async () => ++evaluateCount === 1
-      ? { session: 'session', track: 'TRACK', modelData: form, formData: form, activeChildCategories: '0',
-        partyValues: Object.fromEntries(blankPartyFields.map((name: string) => [name, ''])) }
+      ? { session: 'session', track: 'TRACK', guestEmail: '', cmsRecipient: '',
+        arProfileId: '', arAccountId: '', arAccountName: '', modelData: form, formData: form, activeChildCategories: '0',
+        partyValues: { taid1: '', ta1: '', companyid: '', company: '', araccountname: '' } }
       : { confirmation: '123456-1', status: 'Reserved' },
     waitForResponse: () => ready.promise, waitForFunction: async () => true,
   };
@@ -203,8 +175,7 @@ describe('server-owned create callbacks through the real session and writer', ()
   }
 });
 
-// The model-field schema and identity/preimage proofs are mocked above. This
-// exercises the real native matcher and route chain, not live HMS or the real schema.
+// Identity and preimage proofs are mocked; the matcher and route chain are real.
 describe('agent guarantee in the real native request guard', () => {
   const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
     actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };

@@ -6,7 +6,7 @@ import { readCreateParties } from './create-party-readback.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
-import { CREATE_GUARANTEES, createCloudTargetKey, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const censusDefault = (stay, guest, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page,
   { ...stay, firstName: guest.firstName, lastName: guest.lastName }, { allowRealGuest: true, allowPast: true }), {
@@ -28,8 +28,10 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
     const request = parsed.request, { stay, guest, room } = request;
     if (request.propertyCode !== 'HRCEN' || guest.firstName !== intent.firstName || guest.lastName !== intent.lastName ||
         guest.nativeId !== intent.nativeGuestId || !validCreateDates(stay.arrival, stay.departure, true, true) ||
-        !CREATE_GUARANTEES[request.guaranteeType] || request.sendHmsConfirmation?.kind !== 'never' ||
-        typeof request.note !== 'string' || !request.sourceOfBusiness?.description ||
+        !CREATE_GUARANTEES[request.guaranteeType] ||
+        (request.sendHmsConfirmation.kind === 'send' && (isLabtestGuest(guest) ||
+          !request.cmsMessageId || request.cmsRecipient !== request.sendHmsConfirmation.recipient)) ||
+        typeof request.note !== 'string' ||
         recovery.guaranteeDisplay !== CREATE_GUARANTEES[request.guaranteeType] ||
         request.parties?.arAccount || request.billingReference !== undefined) return blocked('intent_unverified');
     const preimage = recovery.preimage;
@@ -89,8 +91,11 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         child2: ages.filter((age) => age >= 3 && age <= 12).length, child3: ages.filter((age) => age >= 13).length },
       roomType: room.roomType, ratePlan: room.ratePlan, note: request.note, guestId: guest.nativeId,
       firstName: guest.firstName, lastName: guest.lastName, allowRealGuest: true,
-      source: request.sourceOfBusiness.description, organization: request.parties?.organization?.name ?? '',
+      ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),
+      organization: request.parties?.organization?.name ?? '',
       guarantee: recovery.guaranteeDisplay, guaranteeCode: request.guaranteeType,
+      cmsSend: request.sendHmsConfirmation.kind === 'send',
+      ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
       ...(request.track ? { track: request.track.display } : {}),
       ...(request.guestOptIn === false ? { guestOptIn: false } : {}),
       ...(request.booker ? { booker: request.booker } : {}),

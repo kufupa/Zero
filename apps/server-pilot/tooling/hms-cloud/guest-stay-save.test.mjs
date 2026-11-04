@@ -508,46 +508,27 @@ function nativeCreateDraftPage() {
   return page;
 }
 
-test('native create schema accepts only the two observed blank confirmation flags', async () => {
-  const originalKeys = JSON.parse(readFileSync(new URL('./fixtures/native-create-model-keys.json', import.meta.url), 'utf8'));
-  const newFlags = ['confirmcheckinautoaddons', 'confirmratenotallowedforrestemplate'];
+test('native create draft tolerates unrelated HMS field drift but checks guest and room', async () => {
   const makePage = () => {
     const page = nativeCreateDraftPage();
-    for (const key of originalKeys) if (!Object.hasOwn(page.data, key)) page.data[key] = '';
     page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
     page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
     page.elements.find((element) => element.name === 'araccountname').value = '';
-    return page;
-  };
-  const withFlags = () => {
-    const page = makePage();
-    for (const key of newFlags) page.data[key] = '';
     return page;
   };
   const run = (page) => saveNewLabtestStay(page, saveInputs, {
     authorizeCandidate: async () => false,
     dispatchCandidate: async () => { throw new Error('unexpected dispatch'); },
   });
-  assert.equal((await run(makePage())).issue, 'LABTEST_PROFILE_PROOF_STALE');
-  const observed = withFlags();
-  assert.equal((await run(observed)).issue, 'LABTEST_PROFILE_PROOF_STALE');
-  const body = createSaveBody(observed.lastDraft.formData);
-  assert.equal(matchesFullCreateBody(body, observed.lastDraft.formData), true);
-  for (const key of newFlags) {
-    body.set(key, 'confirmed');
-    assert.equal(matchesFullCreateBody(body, observed.lastDraft.formData), false);
-    body.set(key, '');
-    for (const value of ['confirmed', ' ', null]) {
-      const changed = withFlags(); changed.data[key] = value;
-      assert.equal((await run(changed)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
-    }
+  for (const page of [makePage(), makePage()]) {
+    page.data.newNativeField = 'HMS default';
+    delete page.data.nightsvalue;
+    assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   }
-  const missingFlag = withFlags(); delete missingFlag.data[newFlags[0]];
-  const unexpectedField = withFlags(); unexpectedField.data.unreviewedfield = '';
-  const missingOriginal = withFlags(); delete missingOriginal.data[originalKeys.find((key) => !Object.hasOwn(nativeCreateDraftPage().data, key))];
-  for (const page of [missingFlag, unexpectedField, missingOriginal]) {
-    assert.equal((await run(page)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
-  }
+  const wrongGuest = makePage(); wrongGuest.data.guestid = '7654321';
+  assert.equal((await run(wrongGuest)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongRoom = makePage(); wrongRoom.elements.find((field) => field.name === 'roomtype').value = 'OTHER';
+  assert.equal((await run(wrongRoom)).draftCheck, 'DRAFT_STAY_FIELDS');
 });
 
 test('native draft checks agent guarantee display, native value and submitted value', async () => {
@@ -563,10 +544,10 @@ test('native draft checks agent guarantee display, native value and submitted va
     return page;
   };
   const run = (page) => saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
-  // Synthetic form intentionally lacks the complete native schema; no Save may dispatch.
+  // The fixture has no verified profile token; no Save may dispatch.
   const valid = await run(makePage());
   assert.equal(valid.outcome, 'not_dispatched');
-  assert.equal(valid.issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal(valid.issue, 'LABTEST_PROFILE_PROOF_STALE');
   const wrongDisplay = makePage();
   wrongDisplay.elements.find((element) => element.name === 'guaranteetype').value = 'Non-Guaranteed Individual';
   const wrongValue = makePage(); wrongValue.components.guaranteetype.getValue = () => 'NGI';
@@ -586,8 +567,8 @@ test('native draft binds A/R, CMS and reason controls before any save route', as
     cmsMessageSelection: { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' },
     reasonSelection: { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } } };
   const run = (page) => saveNewLabtestStay(page, { ...saveInputs, arSelection, createFieldProof });
-  // Fixture is deliberately not a full 985-field HMS model. A valid native draft reaches the schema guard.
-  assert.equal((await run(nativeCreateDraftPage())).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  // A valid draft reaches the independent profile proof guard.
+  assert.equal((await run(nativeCreateDraftPage())).issue, 'LABTEST_PROFILE_PROOF_STALE');
   const wrongAccount = nativeCreateDraftPage(); wrongAccount.data.araccountid = '76';
   assert.equal((await run(wrongAccount)).draftCheck, 'DRAFT_RESERVATION_MODEL');
   const wrongProfile = nativeCreateDraftPage(); wrongProfile.data.arprofileid = '';
@@ -625,7 +606,7 @@ test('agency commission defaults are bound from unique native submit controls', 
   const run = (page) => saveNewLabtestStay(page, { ...saveInputs, agencySelection: agencySelection(), arSelection,
     createFieldProof: { adultSelection: adultSelection(2) } });
   const valid = makePage();
-  assert.equal((await run(valid)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal((await run(valid)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   assert.equal(valid.lastDraft.formData.bookingagencycommissionpricing, 'FLAT');
   assert.equal(valid.lastDraft.formData.bookingagencycommissiontype, 'PERCNT');
   const body = createSaveBody(valid.lastDraft.formData);
@@ -663,7 +644,7 @@ test('billing draft exempts only its own blank required control and verifies nat
     createFieldProof: { adultSelection: adultSelection(2) } });
   const page = nativeCreateDraftPage();
   page.components.billingreference.allowBlank = false;
-  assert.equal((await run(page)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   const before = page.lastDraft, fn = page.lastDraftFunction, args = page.lastDraftArguments;
   page.values.billingreference = ' PO 123 ';
   page.elements.find((field) => field.name === 'billingreference').value = ' PO 123 ';
@@ -693,7 +674,7 @@ test('billing draft exempts only its own blank required control and verifies nat
   assert.equal((await run(invalid)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
 });
 
-test('billing snapshot rejects unrelated form, model, identity and visible control drift', () => {
+test('billing snapshot preserves reviewed values while tolerating unrelated HMS field drift', () => {
   const before = { session: 's', arProfileId: 'p', track: 'x', partyValues: { araccountname: 'A' },
     modelData: { billingreference: '', roomtype: 'A', nested: { value: 1 } },
     formData: { billingreference: '', roomtype: 'A' },
@@ -701,10 +682,12 @@ test('billing snapshot rejects unrelated form, model, identity and visible contr
   const after = structuredClone(before); after.formData.billingreference = ' ref '; after.visibleFields[0].value = ' ref ';
   assert.equal(billingOnlyDraftChange(before, after, ' ref '), true);
   for (const mutate of [
-    (s) => { s.formData.roomtype = 'B'; }, (s) => { s.modelData.nested.value = 2; },
+    (s) => { s.formData.roomtype = 'B'; },
     (s) => { s.visibleFields[1].value = 'B'; }, (s) => { s.arProfileId = 'other'; },
     (s) => { s.modelData.billingreference = 'different'; }, (s) => { s.formData.billingreference = 'ref'; },
   ]) { const changed = structuredClone(after); mutate(changed); assert.equal(billingOnlyDraftChange(before, changed, ' ref '), false); }
+  const nativeDrift = structuredClone(after); nativeDrift.modelData.nested.value = 2;
+  assert.equal(billingOnlyDraftChange(before, nativeDrift, ' ref '), true);
   const body = createSaveBody({ billingreference: ' ref ', roomtype: 'A' });
   assert.equal(matchesFullCreateBody(body, { billingreference: ' ref ', roomtype: 'A' }), true);
   body.set('billingreference', 'ref');

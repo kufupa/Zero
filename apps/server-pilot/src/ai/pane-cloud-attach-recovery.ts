@@ -28,7 +28,7 @@ const recoverySchema = z.object({
   documentName: z.string().max(120).refine((s) => /\.pdf$/i.test(s) && !/[\\/\p{Cc}]/u.test(s) && s === s.replace(/\s+/g, ' ').trim()),
   pdfSha256: digest, runId: z.string().uuid(), claimDigest: digest, before: receipt, writer: z.unknown().optional(),
   nativeStayId: z.string().regex(/^\d{1,100}$/).optional(), guestName: z.string().min(1).max(401).optional(),
-  allowRealGuest: z.boolean().optional(), cloudTargetKey: z.string().max(1024).optional(),
+  allowRealGuest: z.boolean().optional(), cmsSend: z.boolean().optional(), cloudTargetKey: z.string().max(1024).optional(),
 }).strict();
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');

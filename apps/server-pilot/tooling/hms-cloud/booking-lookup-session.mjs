@@ -44,6 +44,7 @@ import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
 
 const PROPERTY = 'HRCEN';
+const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
 const DEFAULT_DATA_DIR = '/home/orca/.local/share/zero/research/halloween/raw-data';
 const quoteSnapshots = new WeakMap();
 const unexpectedNativeDialogs = new WeakSet();
@@ -479,8 +480,15 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
-      result = await action(page, request, ['selectGuestStayDropdown', 'selectGuestStayRatePlan'].includes(tool)
-        ? { ...request.options, ...createAuthority } : request.options);
+      const options = ['selectGuestStayDropdown', 'selectGuestStayRatePlan'].includes(tool)
+        ? { ...request.options, ...createAuthority } : request.options;
+      if (tool === 'selectGuestStayRatePlan') {
+        delete options?.requireM1CreateAvailability;
+        delete options?.authorizeM1CreateAvailabilityRequest;
+        const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
+        if (availability) Object.assign(options, availability);
+      }
+      result = await action(page, request, options);
     } else {
       result = await action(page, request.query, request.options);
     }
@@ -546,9 +554,34 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       (cloudTargetKey !== undefined && typeof cloudTargetKey !== 'string')) {
     throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
   }
+  const approvedCreateAvailabilityRequests = new WeakSet();
+  const activeCreateRateAvailability = new WeakSet();
+  const usedCreateRateAvailability = new WeakSet();
   const createAuthority = { ...(allowRealGuest ? { allowRealGuest: true, expectedGuest: { ...expectedGuest } } : {}),
     ...(cloudTargetKey ? { cloudTargetKey } : {}) };
-  const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey });
+  Object.defineProperties(createAuthority, {
+    __m1CreateFlowAuthority: { value: true },
+    withM1CreateRateAvailability: { value: async (operation) => {
+      if (createAuthority.__m1CreateFlowAuthority !== true || typeof operation !== 'function' ||
+          activeCreateRateAvailability.has(createAuthority)) throw new Error('CREATE_AVAILABILITY_AUTHORITY_INVALID');
+      activeCreateRateAvailability.add(createAuthority);
+      try { return await operation(); }
+      finally { activeCreateRateAvailability.delete(createAuthority); }
+    } },
+    m1CreateRateAvailabilityOptions: { value: () => {
+      if (createAuthority.__m1CreateFlowAuthority !== true || !activeCreateRateAvailability.has(createAuthority) ||
+          usedCreateRateAvailability.has(createAuthority)) return null;
+      return { requireM1CreateAvailability: true, authorizeM1CreateAvailabilityRequest: (request) => {
+        if (!activeCreateRateAvailability.has(createAuthority) || usedCreateRateAvailability.has(createAuthority) ||
+            !request || typeof request !== 'object') return false;
+        usedCreateRateAvailability.add(createAuthority);
+        approvedCreateAvailabilityRequests.add(request);
+        return true;
+      } };
+    } },
+  });
+  const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }),
+    prepareContext: (context) => installReadOnlyGuard(context, { approvedCreateAvailabilityRequests }) };
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
@@ -573,7 +606,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       throw error;
     }
     // Keep a page interceptor installed when a form action removes its temporary route.
-    await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
+    await installPageRequestFence(page, ['/web/base/OSRESV.HDR', GUEST_STAY_CHECK_AVAILABILITY_PATH]);
     const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot,
       authorizeCandidate, dispatchCandidate, createAuthority };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };

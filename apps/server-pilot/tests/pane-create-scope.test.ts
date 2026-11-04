@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activePaneCreateIdentity, reconcilePaneCreateScope } from '../src/ai/pane-create-scope.js';
+import { activePaneCreateIdentity, paneCreateRoomAliases, reconcilePaneCreateScope } from '../src/ai/pane-create-scope.js';
 import { paneOwnRowsFromEvents } from '../src/ai/pane-create-scope-origin.js';
 import { storedAnalysis } from '../src/ai/work-items.js';
 
@@ -28,8 +28,10 @@ describe('active create room identity', () => {
   it('refuses duplicate room keys and orphan rows while permitting explicit staff additions', () => {
     const second = { ...extractedStay, id: 's2', rows: [{ ...row, id: 'r2' }] };
     expect(activePaneCreateIdentity({ ...payload, stays: [extractedStay, second] }, {}, base.identity)).toBe(true);
-    expect(activePaneCreateIdentity({ ...payload, stays: [{ ...extractedStay, rows: [row, { ...row, id: 'r2' }] }] },
-      {}, base.identity)).toBe(false);
+    const mixed = { ...payload, stays: [{ ...extractedStay, rows: [row, { ...row, id: 'r2' }] }] };
+    expect(activePaneCreateIdentity(mixed, {}, base.identity)).toBe(true);
+    expect(activePaneCreateIdentity(mixed, {}, { ...base.identity, rowId: 'r2' })).toBe(true);
+    expect(activePaneCreateIdentity(mixed, {}, base.identity, { legacyKey: true })).toBe(false);
     expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r2].count': 1 }, { ...base.identity, rowId: 'r2' })).toBe(false);
     expect(activePaneCreateIdentity(payload, { 'stays[s1].rows[r1].removed': true,
       'stays[s1].rows[r2].removed': null, 'stays[s1].rows[r2].count': 1 }, { ...base.identity, rowId: 'r2' })).toBe(true);
@@ -43,6 +45,8 @@ describe('active create room identity', () => {
     expect(before.refs.s1).toEqual({ stayId: 's1', rowId: null });
     expect(after.refs.s1_row).toEqual({ stayId: 's1', rowId: 's1_row' });
     const alias = { stayId: 's1', rowId: 's1', roomIndex: 1 };
+    expect(paneCreateRoomAliases(alias)).toContain('room_s1_row_1');
+    expect(paneCreateRoomAliases({ ...alias, rowId: 's1_row' })).toContain('room_s1_1');
     expect(activePaneCreateIdentity(rowless, state, alias)).toBe(true);
     expect(activePaneCreateIdentity(rowless, state, { ...alias, rowId: 's1_row' })).toBe(true);
     expect(activePaneCreateIdentity(rowless, {}, alias)).toBe(false);

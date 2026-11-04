@@ -1075,7 +1075,7 @@ describe('Cloud create controls', () => {
     const workItemId = '11111111-1111-4111-8111-111111111111';
     render(<BookingCards draft={draft} groups={[group]} session={session} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
-    expect(screen.getByText(mode === 'lab' ? /HMS testing is currently limited to Proof Labtest/
+    expect(screen.getByText(mode === 'lab' ? /Preview any stay. Booking is currently limited to Proof Labtest/
       : /Booking from this pane is off/)).toBeDefined();
     expect(previewButton(0).disabled).toBe(false);
     fireEvent.click(previewButton(0));
@@ -1087,7 +1087,7 @@ describe('Cloud create controls', () => {
     expect(reviewed.getByText('Proof Labtest · #123')).toBeDefined();
     expect(reviewed.getByText(/Send off/)).toBeDefined();
     expect(reviewed.getByText('Source and guarantee')).toBeDefined();
-    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1',
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId, stayId: 'room_g1_1',
       confirmationSendMail: false, createSelection: { source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
         identity: { stayId: 's1', rowId: 'g1', roomIndex: 1 }, nativeGuestId: '123' } }));
     expect(bookButton(0).disabled).toBe(true);
@@ -1112,12 +1112,13 @@ describe('Cloud create controls', () => {
   it.each([
     { mode: 'lab' as const, firstName: 'Proof', lastName: 'Labtest' },
     { mode: 'on' as const, firstName: 'Ada', lastName: 'Moyo' },
-  ])('uses one Go on a bound $mode preview and keeps HMS sending off', async ({ mode, firstName, lastName }) => {
+  ])('uses one Go on a bound $mode preview with the correct HMS send choice', async ({ mode, firstName, lastName }) => {
     const preview = vi.fn<PaneStayClient['preview']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'guest_choice_required', guestCandidates: [
         { nativeId: '123', firstName, lastName, city: 'Pretoria' },
-      ] }).mockResolvedValueOnce(PREVIEW_OK);
-    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
+      ] }).mockResolvedValueOnce({ ...PREVIEW_OK, hmsPrice: { averageRate: '1000.00', totalRate: '2000.00', currency: 'ZAR' } });
+    const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue({ ...COMMIT_OK,
+      hmsPrice: { averageRate: '1100.00', totalRate: '2200.00', currency: 'ZAR' } });
     const { client } = paneClient({ preview, commit, mode: () => mode, canPreview: () => true });
     const draft = previewableDraft('BAR');
     Object.assign(draft.draft.rooms[0]!.request, { firstName, lastName,
@@ -1133,12 +1134,14 @@ describe('Cloud create controls', () => {
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     expect(screen.queryByText(/Booking from Nava is not available yet/)).toBeNull();
-    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('Send confirmation from HMS') as HTMLInputElement).checked).toBe(mode === 'on');
+    expect(screen.getByText(/HMS average: 1000.00.*total: 2000.00.*ZAR/)).toBeDefined();
     fireEvent.click(bookButton(0));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getByText(/Saved HMS average: 1100.00.*total: 2200.00.*ZAR/)).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 's1_1', firstName, lastName,
-      confirmationSendMail: false, createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'room_g1_1', firstName, lastName,
+      confirmationSendMail: mode === 'on', createSelection: expect.objectContaining({ nativeGuestId: '123' }) }), PANE_DIGEST);
   });
 
   it.each(['confirmed', 'uncertain', 'partial'] as const)('uses one Cloud Go for separately approved rooms and stops on %s', async (result) => {
@@ -1157,10 +1160,15 @@ describe('Cloud create controls', () => {
       arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
       guaranteeType: 'NGI', childAges: [] });
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
-    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 2,
+    const otherRowId = '12345678-1234-4234-8234-123456789abc';
+    draft.draft.rooms[1]!.groupId = otherRowId;
+    draft.draft.rooms[1]!.roomIndex = 1;
+    Object.assign(draft.draft.rooms[1]!.request, { roomType: 'SKNG', adults: 2 });
+    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 1,
       arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
+    const otherGroup: StayGroupRequirement = { ...group, id: otherRowId, adults: 2 };
     const workItemId = '22222222-2222-4222-8222-222222222222';
-    render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)} workItemId={workItemId}
+    render(<BookingCards draft={draft} groups={[group, otherGroup]} session={quotedSession(draft)} workItemId={workItemId}
       propertyCode="HRCEN" paneSave={client} />);
     for (const index of [0, 1]) {
       fireEvent.click(previewButton(index));
@@ -1176,8 +1184,10 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(result === 'uncertain' ? 1 : 2));
     const started = commit.mock.calls[0]?.[2];
     expect(started).toMatchObject({ kind: 'start', rooms: [
-      { stayId: 's1_1', workItemId, confirmationSendMail: false },
-      { stayId: 's1_2', workItemId, confirmationSendMail: false },
+      { stayId: 'room_g1_1', workItemId, confirmationSendMail: false,
+        createSelection: { identity: { stayId: 's1', rowId: 'g1', roomIndex: 1 } } },
+      { stayId: `room_${otherRowId}_1`, workItemId, confirmationSendMail: false, adults: 2, roomType: 'SKNG',
+        createSelection: { identity: { stayId: 's1', rowId: otherRowId, roomIndex: 1 } } },
     ] });
     expect(commit.mock.calls[0]?.[0]).not.toHaveProperty('parentStayId');
     if (result !== 'uncertain') {
@@ -1207,12 +1217,14 @@ describe('Cloud create controls', () => {
     const { client } = paneClient({ preview, commit, mode: () => 'on', canPreview: () => true });
     const draft = draftReady();
     const template = draft.draft.rooms[0]!;
+    const rowId = '12345678-1234-4234-8234-123456789abc';
+    template.groupId = rowId;
     draft.draft.rooms = Array.from({ length: 4 }, (_, index) => ({ ...template, roomIndex: index + 1,
       request: { ...template.request, firstName: index < 2 ? 'Proof' : 'Ada', lastName: index < 2 ? 'Labtest' : 'Moyo',
         arrival: '2027-03-01', departure: '2027-03-03', track: 'BAR', sourceOfBusiness: 'E-Mail',
         guaranteeType: 'NGI', childAges: [] } }));
     draft.options = { ...draft.options, guaranteeType: ['NGI'] };
-    const group: StayGroupRequirement = { ...g1, stayId: 's1', quantity: 4,
+    const group: StayGroupRequirement = { ...g1, id: rowId, stayId: 's1', quantity: 4,
       arrivalDate: '2027-03-01', departureDate: '2027-03-03' };
     const workItemId = '22222222-2222-4222-8222-222222222222';
     let view = render(<BookingCards draft={draft} groups={[group]} session={quotedSession(draft)}
@@ -1232,7 +1244,8 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(room(0).getByText(/HMS may have saved this booking/)).toBeDefined());
     const original = commit.mock.calls[0]![2];
     expect(original).toMatchObject({ kind: 'start', rooms: [
-      { stayId: 's1_1' }, { stayId: 's1_2' }, { stayId: 's1_3' }, { stayId: 's1_4' },
+      { stayId: `room_${rowId}_1` }, { stayId: `room_${rowId}_2` },
+      { stayId: `room_${rowId}_3` }, { stayId: `room_${rowId}_4` },
     ] });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
     expect(go.disabled).toBe(true);
@@ -1241,7 +1254,7 @@ describe('Cloud create controls', () => {
     if (!original || original.kind !== 'start') throw new Error('expected original batch');
     const target = { propertyCode: 'HRCEN' as const, kind: 'create' as const,
       firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01' };
-    const savedStays = { s1_1: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
+    const savedStays = { [`room_${rowId}_1`]: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null,
       cloudCreateHold: { target, batch: { id: original.id, rooms: original.rooms.map((item) => ({
         stayId: item.stayId, target: { ...target, firstName: item.firstName, lastName: item.lastName, arrival: item.arrival },
       })) } } } };
@@ -1273,7 +1286,7 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(3));
     const separate = commit.mock.calls[1]![2];
     expect(separate).toMatchObject({ kind: 'start', rooms: [
-      { stayId: 's1_3', workItemId }, { stayId: 's1_4', workItemId },
+      { stayId: `room_${rowId}_3`, workItemId }, { stayId: `room_${rowId}_4`, workItemId },
     ] });
     expect(separate?.id).not.toBe(original?.id);
     expect(commit.mock.calls[2]![2]).toMatchObject({ kind: 'continue', id: separate?.id, index: 1 });
@@ -1355,7 +1368,7 @@ describe('Cloud create controls', () => {
     fireEvent.click(go);
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
     const fresh = commit.mock.calls[0]![2];
-    expect(fresh).toMatchObject({ kind: 'start', rooms: [{ stayId: 's1_3' }, { stayId: 's1_4' }] });
+    expect(fresh).toMatchObject({ kind: 'start', rooms: [{ stayId: 'room_g1_3' }, { stayId: 'room_g1_4' }] });
     expect(fresh?.id).not.toBe(receipt.originalId);
     expect(commit.mock.calls[1]![2]).toMatchObject({ kind: 'continue', id: fresh?.id, index: 1 });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
@@ -1376,7 +1389,7 @@ describe('Cloud create controls', () => {
     fireEvent.click(singleGo);
     await waitFor(() => expect(singleCommit).toHaveBeenCalledTimes(1));
     expect(singleCommit.mock.calls[0]).toHaveLength(2);
-    expect(singleCommit.mock.calls[0]![0]).toMatchObject({ stayId: 's1_3', firstName: 'Ada', lastName: 'Moyo' });
+    expect(singleCommit.mock.calls[0]![0]).toMatchObject({ stayId: 'room_g1_3', firstName: 'Ada', lastName: 'Moyo' });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
   }, 60_000);
 
@@ -1416,7 +1429,7 @@ describe('Cloud create controls', () => {
     expect(commit).not.toHaveBeenCalled();
     fireEvent.click(go);
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
-    expect(commit.mock.calls[0]![2]).toMatchObject({ kind: 'start', rooms: [{ stayId: 's2_1' }, { stayId: 's2_2' }] });
+    expect(commit.mock.calls[0]![2]).toMatchObject({ kind: 'start', rooms: [{ stayId: 'room_g1_1' }, { stayId: 'room_g1_2' }] });
   });
 
   it('uses the actual booked target instead of an older held manifest after guest edits', async () => {
@@ -1455,7 +1468,7 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(go.disabled).toBe(false));
     fireEvent.click(go);
     await waitFor(() => expect(commit).toHaveBeenCalledOnce());
-    expect(commit.mock.calls[0]![0]).toMatchObject({ firstName: 'Ada', lastName: 'Moyo', stayId: 's1_2' });
+    expect(commit.mock.calls[0]![0]).toMatchObject({ firstName: 'Ada', lastName: 'Moyo', stayId: 'room_g1_2' });
     expect(commit.mock.calls[0]).toHaveLength(2);
   });
 
@@ -1496,8 +1509,8 @@ describe('Cloud create controls', () => {
     fireEvent.click(go);
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     expect(commit.mock.calls[0]).toHaveLength(2);
-    expect(commit.mock.calls[0]![0]).toMatchObject({ stayId: 's1_3', firstName: 'Ada', lastName: 'Moyo',
-      confirmationSendMail: false });
+    expect(commit.mock.calls[0]![0]).toMatchObject({ stayId: 'room_g1_3', firstName: 'Ada', lastName: 'Moyo',
+      confirmationSendMail: true });
     expect((room(1).getByLabelText('First name') as HTMLInputElement).disabled).toBe(true);
   });
 

@@ -136,15 +136,6 @@ function anyPaneWriteEnvSet(env: NodeJS.Dict<string>): boolean {
   return PANE_WRITE_ENV_NAMES.some((name) => env[name] !== undefined);
 }
 
-function parsePaidWriteFlag(name: string, value: string | undefined): PaneSaveMode {
-  const mode = parseLabOn(value);
-  if (mode === 'on') {
-    console.warn('pane_write_paid_on_ignored', { env: name });
-    return 'off';
-  }
-  return mode;
-}
-
 /** busy: the check could not get the property lock within the pane wait, so nothing was checked. */
 export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate' | 'busy';
 
@@ -184,6 +175,7 @@ export type PaneStayResult = {
   runId?: string;
   /** Screenshot file names. Fetch the bytes with readPaneStayScreenshot. */
   screenshots?: string[];
+  hmsPrice?: { averageRate: string; totalRate: string; currency: string | null };
   /** Durable before/saved refs written under HMS_SHOTS_DIR. */
   shots?: HmsShotMeta[];
 };
@@ -255,9 +247,9 @@ export function paneWriteModes(env: NodeJS.Dict<string> = process.env): PaneWrit
     return {
       create: parseLabOn(env[PANE_WRITE_CREATE]),
       amendUnpaid: parseLabOn(env[PANE_WRITE_AMEND_UNPAID]),
-      amendPaid: parsePaidWriteFlag(PANE_WRITE_AMEND_PAID, env[PANE_WRITE_AMEND_PAID]),
+      amendPaid: parseLabOn(env[PANE_WRITE_AMEND_PAID]),
       cancelUnpaid: parseLabOn(env[PANE_WRITE_CANCEL_UNPAID]),
-      cancelPaid: parsePaidWriteFlag(PANE_WRITE_CANCEL_PAID, env[PANE_WRITE_CANCEL_PAID]),
+      cancelPaid: parseLabOn(env[PANE_WRITE_CANCEL_PAID]),
     };
   }
   const legacy = parseLabOn(env.RESERVATIONIST_PANE_SAVE);

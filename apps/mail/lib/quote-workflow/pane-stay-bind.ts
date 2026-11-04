@@ -53,6 +53,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_parent_unsupported: 'Nava cannot add a room to an existing booking from this card. Book it in HMS.',
   cloud_create_preview_only: 'Booking from Nava is not available yet. Nothing was saved.',
   cloud_create_scope_changed: 'This booking or selected email changed. Check its details and try the preview again.',
+  cloud_price_unavailable: 'HMS did not return a price. Check availability before booking.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
@@ -171,6 +172,7 @@ export type PaneStayResult = {
   runId?: string;
   screenshots?: string[];
   guestCandidates?: PaneGuestCandidate[];
+  hmsPrice?: { averageRate: string; totalRate: string; currency: string | null };
 };
 
 export type PaneStayAvailabilityRequest = {
@@ -398,7 +400,7 @@ export function paneStayInputForRoom(
   const bookingAgency = party(choice.bookingAgency);
   const organization = party(choice.organization);
   const childAges = Array.isArray(request.childAges) ? request.childAges : [];
-  if (childAges.length > 16 || childAges.some((age) =>
+  if ((request.childAges !== undefined && !Array.isArray(request.childAges)) || childAges.length > 16 || childAges.some((age) =>
     typeof age !== 'number' || !Number.isInteger(age) || age < 0 || age > 17
   )) missing.push('child ages (0–17)');
   const cmsMessageId = text(choice.cmsMessageId);
@@ -424,7 +426,7 @@ export function paneStayInputForRoom(
       arrival,
       departure,
       adults,
-      ...(childAges.length ? { childAges: childAges as number[] } : {}),
+      childAges: childAges as number[],
       ...(cmsMessageId ? { cmsMessageId } : {}),
       ...(choice.confirmationSendMail !== undefined ? { confirmationSendMail: choice.confirmationSendMail } : {}),
       sourceOfBusiness: choice.sourceOfBusiness,
@@ -458,14 +460,14 @@ export function paneStayKey(stay: PaneStayInput): string {
 }
 
 export type PreviewOutcome =
-  | { ok: true; digest: string; runId?: string; screenshots: string[] }
-  | { ok: true; previewOnly: true; runId?: string; screenshots: string[] }
+  | { ok: true; digest: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
+  | { ok: true; previewOnly: true; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
   | { ok: false; message: string };
 
 export function previewOutcome(result: PaneStayResult): PreviewOutcome {
   if (result.status === 'refused') return { ok: false, message: paneRefusalMessage(result.reason) };
   if (result.outcome === 'preview_only' && result.runId) {
-    return { ok: true, previewOnly: true, runId: result.runId, screenshots: result.screenshots ?? [] };
+    return { ok: true, previewOnly: true, runId: result.runId, screenshots: result.screenshots ?? [], hmsPrice: result.hmsPrice };
   }
   if (result.outcome === 'previewed' && result.previewDigest) {
     return {
@@ -473,13 +475,15 @@ export function previewOutcome(result: PaneStayResult): PreviewOutcome {
       digest: result.previewDigest,
       runId: result.runId,
       screenshots: result.screenshots ?? [],
+      hmsPrice: result.hmsPrice,
     };
   }
   return { ok: false, message: PANE_PREVIEW_FAILED_COPY };
 }
 
 export type CommitOutcome =
-  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean; cmsMismatch?: boolean }
+  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean; cmsMismatch?: boolean;
+      hmsPrice?: PaneStayResult['hmsPrice'] }
   | { ok: false; message: string; runId?: string; screenshots: string[] };
 
 export const PANE_SAVE_UNVERIFIED_COPY = 'Saved — check in Infor';
@@ -501,7 +505,7 @@ export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): Com
     };
   }
   if (result.outcome === 'committed' && result.confirmationNumber) {
-    return { ok: true, confirmationNumber: result.confirmationNumber, runId: result.runId, screenshots };
+    return { ok: true, confirmationNumber: result.confirmationNumber, runId: result.runId, screenshots, hmsPrice: result.hmsPrice };
   }
   // Any other answer may still mean HMS saved the booking, so it is never a plain failure.
   return { ok: false, message: paneUnconfirmedMessage(stay), runId: result.runId, screenshots };

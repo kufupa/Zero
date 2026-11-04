@@ -219,13 +219,10 @@ describe('pane stay save guards', () => {
     );
   });
 
-  it('treats *_PAID=on as off and logs it', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('off');
-    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('off');
+  it('accepts dedicated paid amend and cancel flags', () => {
+    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('on');
+    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('on');
     expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'lab' })).toBe('lab');
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_AMEND_PAID' });
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_CANCEL_PAID' });
     expect(paneWriteModes({ PANE_WRITE_CREATE: 'on' })).toEqual({
       create: 'on',
       amendUnpaid: 'off',
@@ -1010,6 +1007,7 @@ describe('pane stay save modes', () => {
 
   it('rejects out-of-range child ages at the pane boundary', () => {
     expect(paneStayInput.safeParse({ ...realStay, childAges: [0, 17] }).success).toBe(true);
+    expect(paneStayInput.safeParse({ ...realStay, stayId: `room_${'a'.repeat(36)}_1` }).success).toBe(true);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [18] }).success).toBe(false);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [-1] }).success).toBe(false);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [1.5] }).success).toBe(false);
@@ -1450,6 +1448,8 @@ describe('stay commit persist/reload', () => {
   it('reload reads the confirmation saved on the stay', () => {
     const state = withStayCommit({}, 's_1', booked);
     expect(stayCommitOf(state, 's_1')).toEqual(booked);
+    const longId = `room_${'a'.repeat(36)}_1`;
+    expect(stayCommitOf(JSON.parse(JSON.stringify(withStayCommit(state, longId, booked))), longId)).toEqual(booked);
   });
 
   it('persists a saved CMS mismatch across JSON reload without permitting another booking', () => {
@@ -1639,7 +1639,7 @@ describe('pane stay preview persist', () => {
       return cliSpawn(input);
     };
     const workItemId = randomUUID();
-    const stayId = 's_1';
+    const stayId = `room_${'a'.repeat(36)}_1`;
     const owner = freshOwner('transport-davinci');
     const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner, workItemId, stayId });
     expect(preview).toMatchObject({

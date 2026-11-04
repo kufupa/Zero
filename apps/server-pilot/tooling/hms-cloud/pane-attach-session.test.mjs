@@ -68,6 +68,14 @@ test('the separate upload guard binds the native guest and no-send setting', () 
   assert.equal(approvedDocumentDispatch({ ...record, details: { fields: [] } }, stay, snapshot), null);
   assert.equal(approvedDocumentDispatch({ ...record, details: { fields: [...record.details.fields, ...record.details.fields] } }, stay, snapshot), null);
   assert.equal(approvedDocumentDispatch(record, stay, { cmsSend: true }), null);
+  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', arrival: '2026-10-12', departure: '2026-10-13' };
+  const realStay = { ...stay, firstName: realNative.firstName, lastName: realNative.lastName,
+    arrival: realNative.arrival, departure: realNative.departure, allowRealGuest: true };
+  const realRecord = { ...record, nativePreimage: realNative, details: { fields: record.details.fields.map((field) =>
+    field.name === 'udfchkbox04' ? { ...field, value: true } : field) } };
+  assert.deepEqual(filingSnapshot(realRecord), { cmsSend: true });
+  assert.ok(approvedDocumentDispatch(realRecord, realStay, { cmsSend: true }));
+  assert.equal(approvedDocumentDispatch(realRecord, realStay, { cmsSend: false }), null);
 });
 
 test('guarantee, linked parties, reservation notes and rates do not gate document upload', () => {
@@ -128,6 +136,21 @@ test('restart recovery requires a stopped writer and fresh exact unique document
     await fn({ screenshot: async () => png }); throw new Error('browser close unconfirmed');
   } })).outcome, 'unconfirmed');
   assert.equal(shots, 1);
+
+  const realNative = { ...native, firstName: 'Real', lastName: 'Guest', arrival: '2026-10-12', departure: '2026-10-13' };
+  const realRecord = { ...record, nativePreimage: realNative, details: { fields: record.details.fields.map((field) =>
+    field.name === 'udfchkbox04' ? { ...field, value: true } : field) } };
+  const realIntent = { ...intent, firstName: realNative.firstName, lastName: realNative.lastName,
+    recovery: { ...intent.recovery, arrival: realNative.arrival, departure: realNative.departure,
+      allowRealGuest: true, cmsSend: true } };
+  const realDeps = { ...deps, read: async () => realRecord,
+    openSession: async (fn) => fn({ screenshot: async () => png }) };
+  assert.equal((await provePositiveAttachRecovery(realIntent, realDeps)).outcome, 'verified');
+  assert.equal((await provePositiveAttachRecovery({ ...realIntent, recovery: { ...realIntent.recovery, cmsSend: false } },
+    realDeps)).outcome, 'unconfirmed');
+  const legacyRecovery = { ...realIntent.recovery };
+  delete legacyRecovery.cmsSend;
+  assert.equal((await provePositiveAttachRecovery({ ...realIntent, recovery: legacyRecovery }, realDeps)).outcome, 'unconfirmed');
 });
 
 test('filing refuses names that the Documents reader would normalize before opening HMS', async () => {

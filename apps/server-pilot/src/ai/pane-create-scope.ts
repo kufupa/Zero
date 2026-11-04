@@ -16,9 +16,20 @@ export const paneCreateIdentitySchema = z.object({
 }).strict();
 export type PaneCreateIdentity = z.infer<typeof paneCreateIdentitySchema>;
 export type PaneCreateParty = z.infer<typeof paneCreatePartySchema>;
+export const paneCreateRoomId = (identity: PaneCreateIdentity): string => `room_${identity.rowId}_${identity.roomIndex}`;
+export const legacyPaneCreateRoomId = (identity: PaneCreateIdentity): string => `${identity.stayId}_${identity.roomIndex}`;
+export function paneCreateRoomAliases(identity: PaneCreateIdentity): string[] {
+  const ids = [paneCreateRoomId(identity), legacyPaneCreateRoomId(identity)];
+  // An initially rowless stay renders under the stay ID until its own row is persisted.
+  if (identity.rowId === identity.stayId || identity.rowId === `${identity.stayId}_row`) {
+    ids.push(`room_${identity.stayId}_${identity.roomIndex}`, `room_${identity.stayId}_row_${identity.roomIndex}`);
+  }
+  return [...new Set(ids)];
+}
 
 /** Bind the reviewed form to one currently visible, unambiguous source room. */
-export function activePaneCreateIdentity(payload: unknown, state: WorkState, identity: PaneCreateIdentity): boolean {
+export function activePaneCreateIdentity(payload: unknown, state: WorkState, identity: PaneCreateIdentity,
+  { legacyKey = false }: { legacyKey?: boolean } = {}): boolean {
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(identity).success) return false;
   const stayIds = parsed.data.stays.map((stay) => stay.id);
@@ -40,15 +51,17 @@ export function activePaneCreateIdentity(payload: unknown, state: WorkState, ide
   const stay = stays[0]!;
   const selectedRowId = rowlessAlias ? `${identity.stayId}_row` : identity.rowId;
   if (rowlessAlias && (stay.rows.length !== 1 || groupIds.includes(identity.rowId))) return false;
-  // Room indexes are per row, while the saved key is per stay. If another row
-  // can claim the same index, the key cannot identify the reviewed room.
-  const candidates = stay.rows.filter((row) => {
-    const path = `stays[${stay.id}].rows[${row.id}].count`;
-    const count = Object.hasOwn(state, path) ? state[path] : row.rooms;
-    return !Number.isInteger(count) || (count as number) < 1 || (count as number) > 999 || (count as number) >= identity.roomIndex;
-  });
-  const row = candidates[0];
-  if (candidates.length !== 1 || row?.id !== selectedRowId) return false;
+  const row = stay.rows.find((candidate) => candidate.id === selectedRowId);
+  if (!row) return false;
+  // Old keys omitted the row ID. They are safe only while one row can claim them.
+  if (legacyKey) {
+    const candidates = stay.rows.filter((candidate) => {
+      const path = `stays[${stay.id}].rows[${candidate.id}].count`;
+      const count = Object.hasOwn(state, path) ? state[path] : candidate.rooms;
+      return !Number.isInteger(count) || (count as number) < 1 || (count as number) > 999 || (count as number) >= identity.roomIndex;
+    });
+    if (candidates.length !== 1 || candidates[0]?.id !== selectedRowId) return false;
+  }
   const path = `stays[${stay.id}].rows[${row.id}].count`;
   const count = Object.hasOwn(state, path) ? state[path] : row.rooms;
   return Number.isInteger(count) && (count as number) <= 999 && (count as number) >= identity.roomIndex;

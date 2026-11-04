@@ -21,6 +21,7 @@ export type QuotedBoard = 'room_only' | 'bb' | 'dinner_bb' | 'unknown';
 
 export type BookingDraftRoom = {
   groupId: string;
+  /** One-based within this group; the group and index together identify the room. */
   roomIndex: number;
   /** The board the approved quote uses, so staff copy the meal plan that matches the rate. */
   board: QuotedBoard;

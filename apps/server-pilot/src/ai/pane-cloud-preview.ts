@@ -20,7 +20,8 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
-import { activePaneCreateIdentity, paneCreateIdentitySchema } from './pane-create-scope.js';
+import { activePaneCreateIdentity, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
+  type PaneCreateIdentity } from './pane-create-scope.js';
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
@@ -40,6 +41,7 @@ export type PaneCloudBatch =
       stay: PaneStay; previewDigest: string }> }
   | { kind: 'continue'; id: string; index: number };
 type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; applied?: { guaranteeType?: unknown };
+  ratePlanAvailability?: unknown;
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
   writerSessionClosed?: unknown; save?: { dispatchCallbacksDrained?: unknown };
   confirmation?: unknown; readback?: { fields?: unknown; mismatches?: unknown } };
@@ -83,6 +85,25 @@ const cursorSchema = z.object({ extractionId: z.string().uuid(), revision: z.num
   revisionHead: z.number().int().nonnegative(), seq: z.number().int().nonnegative() }).strict();
 type Cursor = z.infer<typeof cursorSchema>;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const hmsPriceSchema = z.object({ averageRate: z.string().trim().min(1).max(64), totalRate: z.string().trim().min(1).max(64),
+  currency: z.string().trim().min(1).max(16).nullable() });
+function savedHmsPrice(fields: unknown): z.infer<typeof hmsPriceSchema> | undefined {
+  if (!Array.isArray(fields)) return undefined;
+  const field = (name: string) => {
+    const matches = fields.filter((item) => item && typeof item === 'object' && item.name === name);
+    const value: unknown = matches.length === 1 ? matches[0].value : undefined;
+    return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  };
+  const averageRate = field('averagerate'), totalRate = field('totalrate');
+  const currencies = [field('averageratecurr'), field('totalratecurr'), field('currency')].filter(Boolean)
+    .map((value) => value.toUpperCase() === 'R' ? 'ZAR' : value.toUpperCase());
+  if (!currencies.length && [averageRate, totalRate].every((value) => /^(?:R|ZAR)\s*\d/i.test(value) || /\bZAR$/i.test(value))) {
+    currencies.push('ZAR');
+  }
+  const currency = currencies.length && currencies.every((value) => value === currencies[0]) ? currencies[0] : null;
+  const parsed = hmsPriceSchema.safeParse({ averageRate, totalRate, currency });
+  return parsed.success ? parsed.data : undefined;
+}
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const day = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(day.valueOf()) && day.toISOString().slice(0, 10) === value;
@@ -101,7 +122,7 @@ const PAST_BATCHES = 'cloudCreatePastBatches';
 const BATCH_HOLDS = 'cloudCreateBatchHolds';
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const batchSchema = z.object({ version: z.literal('pane-cloud-batch/v1'), id: z.string().uuid(),
-  rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), grant: grantSchema }).strict()).min(2).max(8),
+  rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/), grant: grantSchema }).strict()).min(2).max(8),
   digest }).strict();
 type StoredBatch = z.infer<typeof batchSchema>;
 type BatchSibling = { confirmation: string; approvedRequest: Record<string, unknown>; requestDigest: string };
@@ -114,9 +135,9 @@ function createTarget(stay: PaneStay): HmsDispatchTarget | null {
 
 // The legacy alias can report on; real guests require the dedicated flag itself.
 function createAdmission(mode: 'off' | 'lab' | 'on', stay: PaneStay, preview = false) {
-  const allowRealGuest = mode === 'on' && process.env.PANE_WRITE_CREATE === 'on';
+  const allowRealGuest = !isLabtestGuest(stay) && (preview ? mode !== 'off' : mode === 'on' && process.env.PANE_WRITE_CREATE === 'on');
   if (!isLabtestGuest(stay) && !allowRealGuest) return { reason: 'cloud_preview_labtest_only', allowRealGuest: false };
-  const reason = paneStayModeRefusal(preview && mode === 'off' ? 'on' : mode, stay);
+  const reason = paneStayModeRefusal(preview && (allowRealGuest || mode === 'off') ? 'on' : mode, stay);
   if (reason) return { reason, allowRealGuest };
   if (!validCreateDates(stay.arrival, stay.departure, allowRealGuest)) {
     return { reason: allowRealGuest ? 'current_or_future_arrival_required' : 'pane_save_arrival_2027_required', allowRealGuest };
@@ -154,7 +175,8 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
     throw new Error('cloud_create_property_mismatch');
   }
   const payload = source.snapshot.extraction.payload;
-  if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity)) throw new Error('cloud_create_scope_changed');
+  if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
+    { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
   if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
@@ -201,6 +223,11 @@ function staysClear(state: Record<string, unknown>, target?: HmsDispatchTarget):
 }
 const hasStay = (state: Record<string, unknown>, stayId: string) =>
   !!state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays) && Object.hasOwn(state.stays, stayId);
+const matchesRoomId = (stayId: string, identity: PaneCreateIdentity) =>
+  stayId === paneCreateRoomId(identity) || stayId === legacyPaneCreateRoomId(identity);
+// A prior receipt under either key belongs to this room, or is ambiguous and must be checked in HMS.
+const hasIdentityStay = (state: Record<string, unknown>, identity: PaneCreateIdentity) =>
+  paneCreateRoomAliases(identity).some((id) => hasStay(state, id));
 const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsShot({ ...grant.previewShot, name: 'filled.png',
   owner: `${input.actorUserId}:${input.transportId}`, propertyCode: 'HRCEN', workItemId: input.workItemId });
 
@@ -310,7 +337,7 @@ export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string
       stay: z.object({ arrival: z.string() }).passthrough() }).passthrough().safeParse(room.grant.approvedRequest);
     if (grantIds.has(room.grant.grantId) || hash(grantBody) !== grantDigest ||
         hash(room.grant.approvedRequest) !== room.grant.requestDigest ||
-        room.stayId !== `${room.grant.identity.stayId}_${room.grant.identity.roomIndex}` ||
+        !matchesRoomId(room.stayId, room.grant.identity) ||
         !request.success || request.data.guest.nativeId !== room.grant.nativeGuestId) return null;
     grantIds.add(room.grant.grantId);
     const memberTarget = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
@@ -385,11 +412,11 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
     const current = await checkSource(tx, source, roomInput, grant.accessId);
     const roomTarget = createTarget(room.stay);
     if (!candidate || grantInStoppedBatch(source.item.state, candidate.grantId) ||
-        room.stayId !== `${room.selection.identity.stayId}_${room.selection.identity.roomIndex}` ||
+        !matchesRoomId(room.stayId, room.selection.identity) ||
         !sameGrant(candidate, roomInput, room.previewDigest) || !matchesSource(current, candidate) ||
         canonicalJson(candidate.source) !== canonicalJson(grant.source) ||
         canonicalJson(candidate.cursor) !== canonicalJson(grant.cursor) ||
-        !roomTarget || !staysClear(source.item.state, roomTarget) || hasStay(source.item.state, room.stayId) ||
+        !roomTarget || !staysClear(source.item.state, roomTarget) || hasIdentityStay(source.item.state, room.selection.identity) ||
         createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), room.stay).reason ||
         !await previewShotValid(candidate, roomInput)) throw new Error('cloud_batch_stale');
     rooms.push({ stayId: room.stayId, grant: candidate });
@@ -497,7 +524,7 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
 /** Preview the exact request; a one-use Go grant is issued only when saving is enabled. */
 export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayResult & { guestCandidates?: unknown[] }> {
   if (!cloudPreviewSelection.safeParse(input.selection).success ||
-      input.stayId !== `${input.selection.identity.stayId}_${input.selection.identity.roomIndex}`) return refused('pane_preview_binding_required');
+      !matchesRoomId(input.stayId, input.selection.identity)) return refused('pane_preview_binding_required');
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
   if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion') return refused('pane_save_property_mismatch');
   const dispatchTarget = createTarget(input.stay);
@@ -506,7 +533,8 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
   const admission = createAdmission(initialMode, input.stay, true);
   if (admission.reason) return refused(admission.reason);
   if (!paneCloudPreviewLoaders.runtimeReady()) return refused('cloud_create_runtime_unavailable');
-  const mapped = mapPaneStayToCloudCreateInput(input.stay, 'prepare', input.selection.nativeGuestId);
+  const mapped = mapPaneStayToCloudCreateInput(input.stay, 'prepare', input.selection.nativeGuestId,
+    { allowRealGuest: admission.allowRealGuest });
   if (mapped.outcome !== 'ok') return refused(mapped.reason);
   try {
     const cursor = await currentCursor(db, input), key = sourceKey(input, cursor);
@@ -524,7 +552,10 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       const candidates = native.guestCandidates.flatMap((value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
         const row = value as Record<string, unknown>;
-        if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) || row.firstName !== input.stay.firstName || row.lastName !== input.stay.lastName) return [];
+        if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) ||
+            typeof row.firstName !== 'string' || typeof row.lastName !== 'string' ||
+            row.firstName.trim().toLowerCase() !== input.stay.firstName.trim().toLowerCase() ||
+            row.lastName.trim().toLowerCase() !== input.stay.lastName.trim().toLowerCase()) return [];
         return [{ nativeId: row.nativeId, firstName: row.firstName, lastName: row.lastName,
           ...(typeof row.city === 'string' && row.city ? { city: row.city } : {}),
           ...(typeof row.country === 'string' && row.country ? { country: row.country } : {}) }];
@@ -533,8 +564,10 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
     }
     if (!input.selection.nativeGuestId) return refused('prepared_guest_identity_required');
     if (native.outcome !== 'prepared' || !native.requestBinding) return refused('cloud_preview_unavailable');
+    const price = hmsPriceSchema.safeParse(native.ratePlanAvailability);
+    if (!price.success) return refused('cloud_price_unavailable');
     const proof = digestPaneCloudCreateProof(input.stay, native.requestBinding.request, native.applied?.guaranteeType,
-      input.selection.nativeGuestId, true);
+      input.selection.nativeGuestId, true, admission.allowRealGuest);
     if (proof.outcome !== 'ok' || native.requestBinding.digest !== proof.normalizedRequestDigest) return refused('cloud_create_proof_mismatch');
     const shot = native.screenshots?.filled;
     if (typeof shot !== 'string') return refused('cloud_preview_unavailable');
@@ -550,15 +583,17 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       const after = await checkSource(tx, source, input, before.accessId);
       if (!matchesSource(after, before)) return refused('cloud_create_scope_changed');
       if (!staysClear(source.item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
-      if (hasStay(source.item.state, input.stayId)) return refused('pane_stay_already_booked');
+      if (hasIdentityStay(source.item.state, input.selection.identity)) return refused('pane_stay_already_booked');
       const currentMode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
       const currentAdmission = createAdmission(currentMode, input.stay, true);
       if (currentAdmission.reason) return refused(currentAdmission.reason);
       const sessionBinding = z.object({ sessionId: z.string().min(1), sessionProfile: z.enum(['legacy', 'remote']) })
         .safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
-      if (initialMode === 'off' || currentMode === 'off' || currentAdmission.allowRealGuest !== admission.allowRealGuest ||
+      if (initialMode === 'off' || currentMode === 'off' ||
+          (admission.allowRealGuest && (currentMode !== 'on' || process.env.PANE_WRITE_CREATE !== 'on')) ||
+          currentAdmission.allowRealGuest !== admission.allowRealGuest ||
           !paneCloudPreviewLoaders.authorityReady() || !sessionBinding.success) {
-        return { status: 'ok' as const, outcome: 'preview_only', runId, screenshots: ['filled.png'] };
+        return { status: 'ok' as const, outcome: 'preview_only', runId, screenshots: ['filled.png'], hmsPrice: price.data };
       }
       await lockCreateActorSession(tx, { actorUserId: input.actorUserId, ...sessionBinding.data });
       const draft = { version: 'pane-cloud-preview/v1' as const, grantId: randomUUID(), actorUserId: input.actorUserId,
@@ -571,7 +606,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       if (previews !== undefined && (!previews || typeof previews !== 'object' || Array.isArray(previews))) return refused('cloud_preview_unavailable');
       const state = { ...source.item.state, [PREVIEWS]: { ...(previews as Record<string, unknown> | undefined), [input.stayId]: grant } };
       await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
-      return { status: 'ok' as const, outcome: 'previewed', previewDigest: grant.digest, runId, screenshots: ['filled.png'] };
+      return { status: 'ok' as const, outcome: 'previewed', previewDigest: grant.digest, runId, screenshots: ['filled.png'], hmsPrice: price.data };
     });
   } catch (error) {
     const sourceChanged = error instanceof Error && /^(create_source_|create_actor_|create_fence_|cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed))/.test(error.message);
@@ -582,7 +617,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
 /** Consume one reviewed grant, write one fenced stay, and require fresh readback. */
 export async function commitPaneCloud(db: DB, input: Input, previewDigest: string): Promise<PaneStayResult> {
   if (!cloudPreviewSelection.safeParse(input.selection).success || !z.string().uuid().safeParse(input.workItemId).success ||
-      !/^[A-Za-z0-9_-]{1,40}$/.test(input.stayId) || input.stayId !== `${input.selection.identity.stayId}_${input.selection.identity.roomIndex}`) {
+      !/^[A-Za-z0-9_-]{1,120}$/.test(input.stayId) || !matchesRoomId(input.stayId, input.selection.identity)) {
     return refused('pane_preview_binding_required');
   }
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
@@ -623,7 +658,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
       const [item] = await db.select({ state: workItem.state }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
       if (item && !staysClear(item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
-      if (item && hasStay(item.state, input.stayId)) return refused('pane_stay_already_booked');
+      if (item && hasIdentityStay(item.state, input.selection.identity)) return refused('pane_stay_already_booked');
       const grant = item && grantOf(item.state, input.stayId);
       if (!grant || !sameGrant(grant, input, previewDigest) || !await previewShotValid(grant, input)) return refused('pane_save_preview_required');
       const key = sourceKey(input, grant.cursor);
@@ -651,7 +686,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           const firstRequestDigest = nativeCreateSaveDigest(request);
           if (siblings.length && !verifiedSiblings) throw new Error('cloud_batch_readback_unavailable');
           const recovery = await createRecoveryEvidence(evidence, input, siblings);
-          const checked = digestPaneCloudCreateProof(input.stay, grant.approvedRequest, recovery.guaranteeDisplay, grant.nativeGuestId, true);
+          const checked = digestPaneCloudCreateProof(input.stay, grant.approvedRequest, recovery.guaranteeDisplay, grant.nativeGuestId, true, admission.allowRealGuest);
           if (checked.outcome !== 'ok' || checked.normalizedRequestDigest !== grant.requestDigest ||
               canonicalJson(checked.request) !== canonicalJson(grant.approvedRequest)) {
             throw new Error('cloud_create_recovery_invalid');
@@ -670,7 +705,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
               if (claim.stayId !== input.stayId || !liveGrant || grantInStoppedBatch(source.item.state, liveGrant.grantId) ||
                   !sameGrant(liveGrant, input, previewDigest) ||
-                  !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) || hasStay(source.item.state, input.stayId) ||
+                  !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) ||
+                  hasIdentityStay(source.item.state, input.selection.identity) ||
                   createAdmission(mode, input.stay).reason || createAdmission(mode, input.stay).allowRealGuest !== admission.allowRealGuest ||
                   !paneCloudPreviewLoaders.authorityReady() ||
                   !await previewShotValid(grant, input)) throw new Error('cloud_create_dispatch_stale');
@@ -742,7 +778,9 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
         await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest: hash(native.readback),
           savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots }, input.batch?.id, false);
       });
-      return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true, ...shots };
+      const hmsPrice = savedHmsPrice(native.readback.fields);
+      return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true,
+        ...(hmsPrice ? { hmsPrice } : {}), ...shots };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (claimAttempted) return noClaimResult();

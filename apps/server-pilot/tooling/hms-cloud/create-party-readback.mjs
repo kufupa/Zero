@@ -29,14 +29,16 @@ export function compareCreatePartyRecord(snapshot, expected) {
   if (!snapshot || typeof snapshot !== 'object' || !snapshot.model || !snapshot.visible) {
     return { outcome: 'unverified', issue: 'PARTY_RECORD_UNVERIFIED' };
   }
+  const guest = { firstName: expected.firstName ?? 'Proof', lastName: expected.lastName ?? 'Labtest' };
   const values = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
-    firstname: expected.firstName ?? 'Proof', lastname: expected.lastName ?? 'Labtest',
+    firstname: guest.firstName, lastname: guest.lastName,
     taid1: expected.agency?.nativeId ?? '', ta1: expected.agency?.name ?? '',
     companyid: expected.organization?.nativeId ?? '', company: expected.organization?.name ?? '',
-    araccountid: expected.arAccount?.nativeId ?? '', araccountname: expected.arAccount?.name ?? '',
-    arprofileid: expected.arAccount?.profileId ?? '' };
+    ...((expected.arAccount || isLabtestGuest(guest)) ? {
+      araccountid: expected.arAccount?.nativeId ?? '', araccountname: expected.arAccount?.name ?? '',
+      arprofileid: expected.arAccount?.profileId ?? '' } : {}) };
   const mismatches = Object.entries(values).filter(([key, wanted]) => snapshot.model[key] !== wanted).map(([key]) => key);
-  for (const name of ['ta1', 'company', 'araccountname']) {
+  for (const name of ['ta1', 'company', ...(Object.hasOwn(values, 'araccountname') ? ['araccountname'] : [])]) {
     if (snapshot.visible[name] !== values[name]) mismatches.push(`${name}_visible`);
   }
   if (expected.billingReference !== undefined) {
@@ -44,7 +46,7 @@ export function compareCreatePartyRecord(snapshot, expected) {
     if (snapshot.visible.billingreference !== expected.billingReference) mismatches.push('billingreference_visible');
   }
   return mismatches.length ? { outcome: 'unverified', issue: 'PARTY_READBACK_MISMATCH', fields: mismatches }
-    : { outcome: 'verified', verified: ['agency', 'organization', 'arAccount',
+    : { outcome: 'verified', verified: ['agency', 'organization', ...(Object.hasOwn(values, 'araccountname') ? ['arAccount'] : []),
       ...(expected.billingReference !== undefined ? ['billingReference'] : [])] };
 }
 

@@ -111,11 +111,11 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 /** The caller already holds the property lock, so findStay's own acquisition is passed through. */
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
-type FilingSnapshot = { cmsSend: false };
+type FilingSnapshot = { cmsSend: boolean };
 type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
 type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string };
 
-/** Only target identity and no-send affect the approved Documents upload. */
+/** Target identity and the preserved CMS state bind the approved Documents upload. */
 function filingState(cloud: CloudFilingRecord) {
   const { confirmation, firstName, lastName, status, arrival, departure } = cloud.stay;
   return { confirmation, firstName, lastName, status, arrival, departure,
@@ -1257,7 +1257,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
       },
       dispatchWithAuthority: async (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
         continueOnce: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => {
-        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay || dispatch.handle ||
+        if (dispatchEpoch === null || !consumed.sessionId || !consumed.sessionProfile || !dispatch.stay ||
+            !dispatch.filingSnapshot || dispatch.handle ||
             dispatchTarget?.kind !== 'saved' || typeof dispatch.stay.firstName !== 'string' ||
             typeof dispatch.stay.lastName !== 'string' || typeof dispatch.stay.departure !== 'string' || !hasFinishBudget() ||
             !centurionWriterCurrent(writer) ||
@@ -1280,6 +1281,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, departure: dispatch.stay.departure,
           documentCode: code, documentName: filing.documentName, pdfSha256: filing.pdfSha256,
           nativeStayId, guestName: `${dispatch.stay.firstName} ${dispatch.stay.lastName}`,
+          cmsSend: dispatch.filingSnapshot.cmsSend,
           allowRealGuest: input.allowRealGuest, ...(cloudTargetKey ? { cloudTargetKey } : {}),
           runId: fence.runId, claimDigest: pdfBytesHash(Buffer.from(canonicalJson({ claimOwner: fence.claimOwner,
             claimToken: fence.claimToken }))), before: dispatch.before, writer };

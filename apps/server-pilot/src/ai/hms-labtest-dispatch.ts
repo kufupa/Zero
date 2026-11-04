@@ -21,7 +21,7 @@ const claimSchema = z.object({
   workItemId: uuid, transportId: identifier, actorUserId: identifier, grantId: uuid,
   propertyCode: z.literal('HRCEN'), firstName: z.string().trim().min(1).max(256), lastName: z.string().trim().min(1).max(256),
   nativeGuestId: z.string().regex(/^[0-9]{1,30}$/), operation,
-  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
   sourceDigest: digest, approvedDigest: digest, requestDigest: digest,
   recovery: z.record(z.string(), z.unknown()).refine((value) => Object.keys(value).length > 0),
   // Optional in the stored schema for append-only legacy rows. New claims require it.

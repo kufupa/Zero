@@ -7,6 +7,7 @@ import {
   unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { installLabtestSaveRouteChain as installLabtestContactSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import { labtestAmendOutcome as contactAmendOutcome, runLabtestAmendSave } from './labtest-amend-save.mjs';
 export { installLabtestContactSaveRouteChain };
@@ -19,6 +20,10 @@ const CONTACT_FIELDS = Object.freeze({
   bookerContact: Object.freeze({ name: 'udfchar06', label: 'Booker Contact' }),
 });
 const CONTACT_FIELD_NAMES = new Set(Object.values(CONTACT_FIELDS).map(({ name }) => name));
+const PRESERVED_BUSINESS_FIELDS = ['status', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
+  'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3', 'childages',
+  'track', 'guaranteetype', 'reservationnote', 'emailaddress', 'udfchkbox04', 'udfchar09',
+  'udfchar13', 'caller', 'udfchar06', ...blankSavedPartyFields];
 
 function uniqueSnapshotField(snapshot, name) {
   const read = (source) => {
@@ -108,7 +113,16 @@ export function matchesLabtestContactAmendDraft(before, after, field, value) {
 export function matchesLabtestBookerContactDraft(before, after, changes) {
   return validContactChanges(changes) &&
     Object.entries(changes).every(([name, value]) => after?.values?.[name] === value) &&
-    unchangedLabtestRecord(before, after, changes);
+    unchangedLabtestRecord(before, after, changes) &&
+    ['values', 'data'].every((part) => PRESERVED_BUSINESS_FIELDS.every((name) => {
+      if (Object.hasOwn(changes, name)) return true;
+      const previous = before?.[part], current = after?.[part];
+      if (!previous || !current) return false;
+      const matches = Object.keys(current).filter((key) => key.toLowerCase() === name.toLowerCase());
+      if (matches.length > 1 || (matches.length === 1 && matches[0] !== name)) return false;
+      return Object.hasOwn(previous, name) === Object.hasOwn(current, name) &&
+        JSON.stringify(previous[name]) === JSON.stringify(current[name]);
+    }));
 }
 
 async function editableContactField(frame, snapshot, spec, value) {

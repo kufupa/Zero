@@ -20,12 +20,12 @@ export function documentCodeForUuid(uuid) {
   return code;
 }
 
-/** Filing does not alter the stay; the send checkbox is the only communication setting it needs. */
+/** Filing leaves the stay unchanged, including its existing CMS setting. */
 export function filingSnapshot(record) {
   const fields = record?.details?.fields;
   if (!Array.isArray(fields)) return null;
   const send = fields.filter((item) => item?.name === 'udfchkbox04');
-  return send.length === 1 && send[0].value === false ? { cmsSend: false } : null;
+  return send.length === 1 && typeof send[0].value === 'boolean' ? { cmsSend: send[0].value } : null;
 }
 
 function validIsoDate(value) {
@@ -67,11 +67,12 @@ export function approvedLabtestRecord(record, stay) {
     firstName, lastName, allowRealGuest, arrival: native.arrival, departure: native.departure };
 }
 
-/** The upload additionally pins the independently observed guest ID and forbids sending. */
+/** The upload pins the independently observed guest ID and unchanged CMS setting. */
 export function approvedDocumentDispatch(record, stay, approvedSnapshot) {
   const target = approvedLabtestRecord(record, stay), snapshot = filingSnapshot(record);
   if (!target || typeof target.guestId !== 'string' || !/^[0-9]{1,30}$/.test(target.guestId) ||
       target.guestId !== stay.nativeGuestId || !snapshot || !approvedSnapshot ||
+      (target.firstName === 'Proof' && target.lastName === 'Labtest' && snapshot.cmsSend !== false) ||
       JSON.stringify(snapshot) !== JSON.stringify(approvedSnapshot)) return null;
   return target;
 }
@@ -137,6 +138,7 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
         !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(recovery.documentCode || '') ||
         typeof recovery.documentName !== 'string' || !/\.pdf$/i.test(recovery.documentName) ||
         recovery.documentName !== recovery.documentName.replace(/\s+/g, ' ').trim() ||
+        (recovery.cmsSend !== undefined && typeof recovery.cmsSend !== 'boolean') ||
         !/^[a-f0-9]{64}$/.test(recovery.pdfSha256 || '')) return { outcome: 'unconfirmed' };
     const ref = { current: null }, approvedNative = { current: null };
     return await openSession(async (page) => {
@@ -145,7 +147,8 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
       const stay = { confirmation: recovery.confirmation, arrival: recovery.arrival, departure: recovery.departure,
         nativeGuestId: intent.nativeGuestId, nativeStayId: recovery.nativeStayId,
         firstName: intent.firstName, lastName: intent.lastName, allowRealGuest: recovery.allowRealGuest === true };
-      if (!approvedDocumentDispatch(record, stay, { cmsSend: false })) return { outcome: 'unconfirmed' };
+      // Old holds predate CMS-on filing and could only have captured false.
+      if (!approvedDocumentDispatch(record, stay, { cmsSend: recovery.cmsSend ?? false })) return { outcome: 'unconfirmed' };
       approvedNative.current = snapshotApprovedNativeIdentity(record.nativePreimage);
       ref.current = record.nativePreimage;
       const listing = await documents(page, recovery.confirmation);
