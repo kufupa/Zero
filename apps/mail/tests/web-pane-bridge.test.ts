@@ -66,6 +66,8 @@ describe('latest inbound selection', () => {
     const selection = selectPreviewMessage(messages, MAILBOX, TRANSPORT);
     expect(selection).toMatchObject({ status: 'ready', threadId: 'linked-thread', email: { entryId: 'in-2' } });
     expect(latestInboundMessage(messages, MAILBOX)?.id).toBe('in-2');
+    expect(selectPreviewMessage([message({ id: 'older-payload', threadId: undefined })], MAILBOX, TRANSPORT))
+      .toMatchObject({ status: 'ready', threadId: undefined, email: { entryId: 'older-payload' } });
   });
 
   it('keeps a workflow preview bound to its listed thread when a linked thread is newer', () => {
@@ -183,6 +185,7 @@ describe('exact webmail selection', () => {
   it('never falls back to the latest message when an explicit id is stale or belongs to a linked thread', () => {
     expect(select('missing')).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
     expect(select('in-1', [first, second], 'another-thread')).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    expect(select('in-1', [{ ...first, threadId: undefined }])).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
   });
 
   it('refuses duplicate stored ids, drafts, outgoing messages and missing mailbox identity', () => {

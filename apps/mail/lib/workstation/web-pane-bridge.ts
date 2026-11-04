@@ -31,7 +31,7 @@ export type PreviewSelection =
   | { status: 'loading' }
   | { status: 'error' }
   | { status: 'unsynced'; reason: 'no_inbound' | 'no_message_id' | 'select_message' | 'source_message_unavailable' }
-  | { status: 'ready'; email: WorkstationEmailPayload; threadId: string };
+  | { status: 'ready'; email: WorkstationEmailPayload; threadId?: string };
 
 function sameAddress(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
