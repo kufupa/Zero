@@ -4,6 +4,7 @@ const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
 const MUTATION_ACTION = /^(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|create|submit|autosave|amend|post)$/i;
 const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/osresv.hdr.getcheckavailability';
+const HMS_WEB_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const hasWriteAction = (params) => [...params].some(([key, value]) =>
   key.toLowerCase() === 'pageaction' && MUTATION_ACTION.test(value.trim()));
 const CLOUD_VAULT_ORIGIN = 'https://hmsvault.hms.eu1.inforcloudsuite.com';
@@ -49,9 +50,20 @@ export function shouldAbortReadOnlyRequest({ method, url, postData }) {
     (typeof postData === 'string' && hasWriteAction(new URLSearchParams(postData)));
 }
 
-export async function installReadOnlyGuard(context) {
+export async function installReadOnlyGuard(context, { approvedCreateAvailabilityRequests } = {}) {
+  if (approvedCreateAvailabilityRequests !== undefined && !(approvedCreateAvailabilityRequests instanceof WeakSet)) {
+    throw new Error('CREATE_AVAILABILITY_APPROVALS_INVALID');
+  }
   await context.route('**/*', async (route) => {
     const request = route.request();
+    let target;
+    try { target = new URL(request.url()); } catch { /* The default guard handles malformed targets. */ }
+    if (approvedCreateAvailabilityRequests && String(request.method()).toUpperCase() === 'POST' &&
+        target?.origin === HMS_WEB_ORIGIN && target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH &&
+        !target.search && !target.hash && approvedCreateAvailabilityRequests.delete(request)) {
+      await route.fallback();
+      return;
+    }
     if (shouldAbortReadOnlyRequest({ method: request.method(), url: request.url(), postData: request.postData?.() })) {
       await route.abort();
       return;

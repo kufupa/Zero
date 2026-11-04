@@ -395,8 +395,9 @@ export async function createReservation(input, { withSession = withBookingLookup
   const stay = input.stay || {}, room = input.room || {}, state = {};
   if (commit) output.screenshots = {};
   try {
-    await withSession(async ({ page, runTool, labtestPreimage }) => {
+    await withSession(async ({ page, runTool, labtestPreimage, createAuthority }) => {
       state.preimage = labtestPreimage;
+      state.rateAvailabilityRequired = typeof createAuthority?.withM1CreateRateAvailability === 'function';
       const propertyCode = input.propertyCode;
       if (commit) {
         state.guest = await selectGuest(runTool, input.guest, true, false, allowRealGuest, expectedGuest);
@@ -530,15 +531,40 @@ export async function createReservation(input, { withSession = withBookingLookup
       }
       // Select rates only after the final guest, track and party context is staged.
       if (code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
-        const selected = await call(runTool, 'selectGuestStayRatePlan',
-          { code: room.ratePlan, ...(state.guest ? { guestProfileId: String(state.guest.selected.nativeId) } : {}) },
-          ['selected_unsaved', 'criteria_unavailable']);
+        const selectRatePlan = () => call(runTool, 'selectGuestStayRatePlan', {
+          code: room.ratePlan,
+          ...(state.guest ? { guestProfileId: String(state.guest.selected.nativeId) } : {}),
+          createDraft: {
+            propertyCode,
+            guest: state.guest ? { nativeId: String(state.guest.selected.nativeId),
+              firstName: state.guest.guest.firstName, lastName: state.guest.guest.lastName } : null,
+            adults: stay.adults,
+            childCount: state.children?.actualChildAges.length,
+            roomType: room.roomType,
+            track: state.track ? { display: state.track.display, code: state.track.lookupCode } : null,
+            guaranteeType: input.guaranteeType,
+            source: state.source ? { nativeCode: state.source.nativeCode, description: state.source.candidate?.description } : null,
+            cmsMessageId: state.cms?.actual ?? null, cmsRecipient: state.cmsRecipient ?? null, note: note || '',
+            parties: {
+              ...(state.agency ? { agency: { nativeId: String(state.agency.nativeId), name: state.agency.displayedAgency } } : {}),
+              ...(state.organization ? { organization: { nativeId: String(state.organization.nativeId),
+                name: state.organization.displayedOrganization } } : {}),
+            },
+          },
+        }, ['selected_unsaved', 'criteria_unavailable']);
+        const selected = typeof createAuthority?.withM1CreateRateAvailability === 'function'
+          ? await createAuthority.withM1CreateRateAvailability(selectRatePlan)
+          : await selectRatePlan();
         if (selected.outcome === 'criteria_unavailable') {
           if (commit) stop('needs_input', selected.issue || 'rate_criteria_unavailable', { detail: selected });
           missing.push('room.ratePlanCriteria'); output.ratePlanIssue = selected;
         } else {
           if (selected.code !== room.ratePlan) stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
+          if (state.rateAvailabilityRequired && !selected.rateAvailability) {
+            stop('needs_input', 'rate_availability_unverified', { field: 'room.ratePlan' });
+          }
           output.applied.ratePlan = selected.code;
+          if (selected.rateAvailability) output.ratePlanAvailability = selected.rateAvailability;
         }
       }
       let form;
