@@ -67,12 +67,16 @@ test('multipart and query bind the current frame, target, token, name and exact 
   assert.equal(matchesDocumentMultipart(upload(), payload, file), true);
   assert.equal(matchesDocumentUpload(upload(), frame, payload, file, token), true);
   assert.equal(matchesDocumentUpload(upload({ query: (q) => q.set('unreviewed', 'true') }), frame, payload, file, token), true);
+  assert.equal(matchesDocumentUpload(upload({ query: (q) => q.delete('recordid') }), frame, payload, file, token), true);
   const original = upload(), body = original.postDataBuffer().toString('latin1');
   const append = (part) => ({ ...original, postDataBuffer: () => Buffer.from(body.replace('--test-boundary--\r\n',
     `--test-boundary\r\n${part}\r\n--test-boundary--\r\n`), 'latin1') });
   assert.equal(matchesDocumentUpload(append('Content-Disposition: form-data; name="extra"\r\n\r\nvalue'), frame, payload, file, token), true);
   assert.equal(matchesDocumentUpload(append('Content-Disposition: form-data; name="extra"; filename="other.pdf"\r\nContent-Type: application/pdf\r\n\r\nother'),
     frame, payload, file, token), false);
+  const withoutRecord = { ...original, postDataBuffer: () => Buffer.from(body.replace(
+    '--test-boundary\r\nContent-Disposition: form-data; name="recordid"\r\n\r\n\r\n', ''), 'latin1') };
+  assert.equal(matchesDocumentUpload(withoutRecord, frame, payload, file, token), true);
   for (const request of [
     upload({ bytes: Buffer.from('other') }), upload({ filename: 'other.txt' }),
     upload({ mimeType: 'application/pdf' }), upload({ method: 'GET' }), upload({ navigation: false }),
@@ -82,6 +86,8 @@ test('multipart and query bind the current frame, target, token, name and exact 
     upload({ query: (q) => q.set('browserTabID', '2') }),
     upload({ query: (q) => q.set('daeCode', 'other#stay#HRCEN') }),
     upload({ query: (q) => q.append('daeCode', q.get('daeCode')) }),
+    upload({ query: (q) => q.set('recordid', 'different') }),
+    upload({ values: new Map([...payload, ['filetype', 'different']]) }),
     upload({ query: (q) => q.set('pageaction', 'SAVE') }),
     upload({ contentType: 'multipart/form-data' }),
   ]) assert.equal(matchesDocumentUpload(request, frame, payload, file, token), false);

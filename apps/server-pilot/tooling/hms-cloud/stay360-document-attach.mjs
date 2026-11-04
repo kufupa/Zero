@@ -17,7 +17,10 @@ const UPLOAD = '/web/base/BSUPLD.upload', REFRESH = '/web/base/OSRESV.DOC';
 // HMS may add other controls without changing the approved upload.
 const DOCUMENT_FIELDS = ['documentcode', 'description', 'organization', 'filename', 'typecode',
   'uploaddoc', 'uploadorcreatedoc', 'daeRentity', 'daeCode'];
-const relevantFields = new Map([...DOCUMENT_FIELDS, 'callerorg', 'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME']
+// Check identity and action controls if HMS includes them; their presence may vary by form version.
+const OPTIONAL_DOCUMENT_FIELDS = ['recordid', 'daeType', 'filetype', 'multiorg', 'pagemode', 'callerorg',
+  'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME'];
+const relevantFields = new Map([...DOCUMENT_FIELDS, ...OPTIONAL_DOCUMENT_FIELDS]
   .map((name) => [name.toLowerCase(), name]));
 const unexpectedAction = (name) => /^(pageaction|autosave)$/i.test(name);
 const usedPages = new WeakSet();
@@ -74,6 +77,15 @@ export function exactDocumentParams(params, expected) {
   });
 }
 
+function optionalDocumentParams(params, expected) {
+  if (!(expected instanceof Map)) return false;
+  return OPTIONAL_DOCUMENT_FIELDS.every((name) => {
+    const matches = [...params.keys()].filter((key) => key.toLowerCase() === name.toLowerCase());
+    return !matches.length || (expected.has(name) && matches.length === 1 && matches[0] === name &&
+      params.get(name) === expected.get(name));
+  });
+}
+
 export function matchesDocumentMultipart(request, expected, file) {
   try {
     const type = request.headers()['content-type'] || '';
@@ -111,9 +123,9 @@ export function matchesDocumentMultipart(request, expected, file) {
         if (contentTypes.length > 1 || (contentTypes.length === 1 &&
             !/^content-type:\s*text\/plain(?:\s*;|\s*$)/i.test(contentTypes[0]))) return false;
         const canonical = relevantFields.get(name.toLowerCase());
-        if (canonical && required.has(canonical)) {
-          if (canonical !== name || values.has(name) ||
-              !Buffer.from(payload, 'latin1').equals(Buffer.from(required.get(name), 'utf8'))) return false;
+        if (canonical) {
+          if (canonical !== name || !expected.has(name) || values.has(name) ||
+              !Buffer.from(payload, 'latin1').equals(Buffer.from(expected.get(name), 'utf8'))) return false;
           values.set(name, payload);
         }
       }
@@ -132,7 +144,8 @@ export function matchesDocumentUpload(request, frame, expected, file, token) {
     queryFields.set('isPopup', 'true');
     return request.method() === 'POST' && request.isNavigationRequest() && child.parentFrame() === frame &&
       child.url() === 'about:blank' && url.origin === ORIGIN && url.pathname === UPLOAD && !url.hash &&
-      exactDocumentParams(params, queryFields) && matchesDocumentMultipart(request, expected, file);
+      exactDocumentParams(params, queryFields) && optionalDocumentParams(params, expected) &&
+      matchesDocumentMultipart(request, expected, file);
   } catch { return false; }
 }
 
@@ -245,13 +258,14 @@ export function createDocumentUploadGate({ frame, fields, file, token, evidenceD
   return gate;
 }
 
-function matchesForm(request, path, frame, expected) {
+function matchesForm(request, path, frame, expected, optionalExpected) {
   try {
     const url = new URL(request.url());
+    const params = new URLSearchParams(request.postData() || '');
     return request.method() === 'POST' && request.frame() === frame && url.origin === ORIGIN &&
       url.pathname === path && !url.search && !url.hash &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
-      exactDocumentParams(new URLSearchParams(request.postData() || ''), expected);
+      exactDocumentParams(params, expected) && (!optionalExpected || optionalDocumentParams(params, optionalExpected));
   } catch { return false; }
 }
 
@@ -355,7 +369,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) {
         initAllowed = true; return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
       }
-      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, checkFields)) {
+      if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, checkFields, expectedFields)) {
         return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
       }
       if (!stopped && uploadGate) {
@@ -375,7 +389,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       try { path = new URL(request.url()).pathname; } catch { rejectRequest(); return route.abort(); }
       if ([CHECK.toLowerCase(), UPLOAD.toLowerCase()].includes(path.toLowerCase())) {
         const match = !stopped && armed && (path === CHECK
-          ? !checkCandidate && matchesForm(request, CHECK, frame, checkFields)
+          ? !checkCandidate && matchesForm(request, CHECK, frame, checkFields, expectedFields)
           : !uploadCandidate && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token));
         if (match && scope.allow(request)) {
           if (path === CHECK) checkCandidate = request; else uploadCandidate = request;
