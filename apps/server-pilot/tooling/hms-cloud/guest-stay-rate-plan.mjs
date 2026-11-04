@@ -203,9 +203,9 @@ function validateAvailabilityResponse(response) {
     return Boolean(data);
   });
 }
-function positivePrice(value) {
+function observedPrice(value) {
   const normalized = clean(value).replace(/^\s*(?:ZAR|R)\s*/i,'').replace(/\s*(?:ZAR)\s*$/i,'').replace(/[ ,]/g,'');
-  return /^\d+(?:\.\d{1,4})?$/.test(normalized) && Number(normalized) > 0;
+  return /^\d+(?:\.\d{1,4})?$/.test(normalized) && Number.isFinite(Number(normalized));
 }
 
 // Normalize the vendor's data-only object literal without executing it.
@@ -276,7 +276,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   if (requireM1CreateAvailability && (createDraft.propertyCode !== PROPERTY || !createDraft.guest ||
       clean(createDraft.guest.nativeId) !== guestId || !clean(createDraft.guest.firstName) || !clean(createDraft.guest.lastName) ||
       !Number.isInteger(createDraft.adults) || createDraft.adults < 1 || !Number.isInteger(createDraft.childCount) ||
-      createDraft.childCount < 0 || !clean(createDraft.roomType) || !clean(createDraft.track?.display) || !clean(createDraft.track?.code) ||
+      createDraft.childCount < 0 || !clean(createDraft.roomType) ||
+      (createDraft.track != null && (!clean(createDraft.track.display) || !clean(createDraft.track.code))) ||
       !clean(createDraft.guaranteeType) || !clean(createDraft.source?.nativeCode) || !clean(createDraft.source?.description))) {
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
   }
@@ -418,7 +419,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
       const businessFields = [
         ['adults', createDraft.adults], ['children', createDraft.childCount], ['roomtype', createDraft.roomType],
-        ['track', createDraft.track.display], ['sourceofbusinessdesc', createDraft.source.description],
+        ...(createDraft.track ? [['track', createDraft.track.display]] : []), ['sourceofbusinessdesc', createDraft.source.description],
         ['reservationnote', createDraft.note], ['udfchkbox04', createDraft.cmsSend],
         ...(createDraft.cmsMessageId != null ? [['udfchar09', createDraft.cmsMessageId]] : []),
         ...(createDraft.cmsRecipient != null ? [['udfchar13', createDraft.cmsRecipient]] : []),
@@ -430,7 +431,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
           JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
           checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
           checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true' ||
-          !positivePrice(fieldValue(checked.fields,'averagerate')) || !positivePrice(fieldValue(checked.fields,'totalrate'))) {
+          !observedPrice(fieldValue(checked.fields,'averagerate')) || !observedPrice(fieldValue(checked.fields,'totalrate'))) {
         throw new Error('RATE_AVAILABILITY_UNVERIFIED');
       }
       if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');

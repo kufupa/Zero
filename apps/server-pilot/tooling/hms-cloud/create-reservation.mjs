@@ -537,7 +537,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         state.cmsRecipient = result.actual;
       }
       // Select rates only after the final guest, track and party context is staged.
-      if (code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
+      if (state.guest && code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
         const selectRatePlan = () => call(runTool, 'selectGuestStayRatePlan', {
           code: room.ratePlan,
           ...(state.guest ? { guestProfileId: String(state.guest.selected.nativeId) } : {}),

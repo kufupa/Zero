@@ -829,6 +829,12 @@ function roomTypeFor(room: BookingDraftReady['draft']['rooms'][number], group?: 
     textValue(group?.roomPreference);
 }
 
+function inheritedChildAges(room: BookingDraftReady['draft']['rooms'][number], group?: StayGroupRequirement): unknown {
+  const ages = group?.childrenAges ?? room.request.childAges;
+  if (group?.fields.childAges === 'missing') return null;
+  return ages;
+}
+
 function roomRequestFor(
   room: BookingDraftReady['draft']['rooms'][number],
   group?: StayGroupRequirement,
@@ -841,7 +847,7 @@ function roomRequestFor(
     adults: choice?.adults ?? group?.adults ?? room.request.adults,
     childAges: choice?.childAges
       ? choice.childAges.map((age) => age.trim() === '' ? Number.NaN : Number(age))
-      : group?.childrenAges ?? room.request.childAges,
+      : inheritedChildAges(room, group),
   };
 }
 
@@ -1930,9 +1936,9 @@ export function BookingCards({
           ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
           ...(choice.ratePlan === undefined && selectedRate ? [selectedRate] : []),
         ].filter(Boolean))];
-        const ages = choice.childAges ?? (Array.isArray(group?.childrenAges ?? request.childAges)
-          ? (group?.childrenAges ?? request.childAges as number[]).map(String) : []);
-        const agesKnown = choice.childAges !== undefined || Array.isArray(group?.childrenAges ?? request.childAges);
+        const inheritedAges = inheritedChildAges(room, group);
+        const ages = choice.childAges ?? (Array.isArray(inheritedAges) ? inheritedAges.map(String) : []);
+        const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
         const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
           candidate.firstName === choice.firstName.trim() && candidate.lastName === choice.lastName.trim());
