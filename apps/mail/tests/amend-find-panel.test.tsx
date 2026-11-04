@@ -41,7 +41,7 @@ import {
 import { AMEND_SAVE_COPY, type CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { amendmentOf, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import { getMailCacheScope, setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { cloudAmendClientFromTrpc } from '../lib/quote-workflow/cloud-amend-client';
+import { cloudAmendClientFromTrpc, type CloudAmendRequest } from '../lib/quote-workflow/cloud-amend-client';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
 // brain.getCapabilities answers with this flag. Tests set it before rendering.
@@ -2208,7 +2208,7 @@ describe('AmendLookupPanel amend form', () => {
     expect(preview).not.toHaveBeenCalled();
   });
 
-  it('reviews the selected HMS booking locally without calling either amend route', async () => {
+  it('reviews the selected HMS booking and keeps a submitted run visible after editing', async () => {
     capabilities.paneSave = true;
     capabilities.paneSaveMode = 'lab';
     const preview = vi.fn(), commit = vi.fn(), findStay = vi.fn().mockResolvedValue(found({
@@ -2217,7 +2217,7 @@ describe('AmendLookupPanel amend form', () => {
     const trpc = amendTrpc(findStay, preview, commit);
     const session = sessionWith({ ...AMEND, requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
     session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
-    render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true,
+    const panel = render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true,
       ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }] }} />);
     await pressFind();
     const form = await screen.findByTestId('amend-form');
@@ -2248,7 +2248,57 @@ describe('AmendLookupPanel amend form', () => {
     await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('1'));
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
-  });
+
+    const previousScope = getMailCacheScope();
+    setMailCacheScope({ userId: 'user-1', activeTransportId: 't1' });
+    try {
+      let stored: { status: string; formDigest: string; form: Record<string, unknown>; before: Record<string, unknown>;
+        snapshot: { readAt: string; stale: boolean }; grant: null;
+        run: { runId: string; state: string; failureClass: null; lastError: null; evidence: []; reviewed: null } | null;
+        needsCheck: boolean } | null = null;
+      const pendingGo: { finish?: () => void } = {};
+      const state = vi.fn(async () => stored ?? { form: {}, run: null });
+      const review = vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'done' });
+      const cloud = { ...trpc, hmsApproval: {
+        cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
+        bindCloudAmend: { mutate: vi.fn(async (request: CloudAmendRequest) => {
+          stored = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: request.confirmation,
+            arrival: request.arrival, fields: request.changes, cloudAmend: { bound: true,
+              approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', options: [] },
+              preserved: { agency: null, organization: null } } }, before: { fields: {} },
+          snapshot: { readAt: AS_OF, stale: false }, grant: null, run: null, needsCheck: false };
+          return { status: 'bound', formDigest: DIGEST, previewDigest: DIGEST, readAt: AS_OF };
+        }) },
+        cloudAmendState: { query: state },
+        approveCloudAmend: { mutate: vi.fn(() => new Promise((resolve) => {
+          pendingGo.finish = () => {
+            if (stored) stored.run = { runId: RUN_ID, state: 'succeeded', failureClass: null,
+              lastError: null, evidence: [], reviewed: null };
+            resolve({ grantId: RUN_ID, runId: RUN_ID, hmsReadAt: AS_OF, expiresAt: AS_OF });
+          };
+        })) },
+        reviewCloudAmend: { mutate: review }, cloudAmendEvidence: { query: vi.fn() },
+      } };
+      panel.rerender(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{
+        propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+      }} />);
+      await pressFind();
+      fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
+      fireEvent.click(await screen.findByRole('button', { name: 'Review change for approval' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
+      await waitFor(() => expect(pendingGo.finish).toBeDefined());
+      const readsBeforeEdit = state.mock.calls.length;
+      fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '2' } });
+      await waitFor(() => expect(state.mock.calls.length).toBeGreaterThan(readsBeforeEdit));
+      pendingGo.finish?.();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review OK' }, { timeout: 6500 }));
+      await waitFor(() => expect(review).toHaveBeenCalledWith(expect.objectContaining({
+        workItemId: RUN_ID, runId: RUN_ID, decision: 'ok', source: { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64) },
+      }), expect.anything()));
+    } finally {
+      setMailCacheScope(previousScope);
+    }
+  }, 10000);
 
   it('clears local choices when the selected email or booking changes', async () => {
     const findStay = vi.fn(async ({ confirmation }: { confirmation: string }) => unpaidFound({ confirmation }));

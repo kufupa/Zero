@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { StayRecordWire } from '@/lib/quote-workflow/amend-find';
+import { sendableArrival, type StayRecordWire } from '@/lib/quote-workflow/amend-find';
 import {
   amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal, savedStayAmendReviewBasis,
   type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity,
@@ -46,6 +46,20 @@ type StoredDraft = { draft: SavedStayAmendDraft; touched: DraftField[]; accepted
 export type SavedStayAmendDraftStore = Map<string, StoredDraft>;
 export function createSavedStayAmendDraftStore(): SavedStayAmendDraftStore { return new Map(); }
 const changedDetails = 'Booking or email details changed. Update untouched entries, then review the request.';
+
+function departureAfterNights(arrival: string, nights: string): string {
+  const start = sendableArrival(arrival), count = Number(nights);
+  if (!start || !/^\d+$/.test(nights) || !Number.isSafeInteger(count) || count < 1) return '';
+  const date = new Date(Date.parse(`${start}T00:00:00Z`) + count * 86400000);
+  if (!Number.isFinite(date.getTime())) return '';
+  return sendableArrival(date.toISOString().slice(0, 10)) ?? '';
+}
+
+function nightsBetween(arrival: string, departure: string): string {
+  if (!sendableArrival(arrival) || !sendableArrival(departure)) return '';
+  const nights = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000;
+  return Number.isInteger(nights) && nights > 0 ? String(nights) : '';
+}
 
 /** Local request only. Nothing here approves or writes to HMS. */
 export function SavedStayAmendEditor(props: Props) {
@@ -95,20 +109,12 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   }, [binding]);
   const field = (name: DraftField, value: string) => {
     const next = { ...draft, [name]: value };
-    if (name === 'nights' && /^\d+$/.test(value) && Number(value) > 0 && draft.arrival) {
-      const arrival = new Date(`${draft.arrival}T00:00:00Z`);
-      if (Number.isFinite(arrival.getTime())) {
-        arrival.setUTCDate(arrival.getUTCDate() + Number(value));
-        next.departure = arrival.toISOString().slice(0, 10);
-      }
-    } else if (name === 'nights') {
-      next.departure = '';
-    } else if ((name === 'arrival' || name === 'departure') && next.arrival && next.departure) {
-      const days = (Date.parse(`${next.departure}T00:00:00Z`) - Date.parse(`${next.arrival}T00:00:00Z`)) / 86400000;
-      next.nights = Number.isInteger(days) && days > 0 ? String(days) : '';
-    }
-    const nextTouched = touched.includes(name) ? [...touched] : [...touched, name];
-    if (name === 'nights' && !nextTouched.includes('departure')) nextTouched.push('departure');
+    if (name === 'nights') next.departure = departureAfterNights(next.arrival, value);
+    else if (name === 'arrival' || name === 'departure') next.nights = nightsBetween(next.arrival, next.departure);
+    // The last date or night edit determines the other value when a new email is rebased.
+    const nextTouched = touched.filter((field) => name === 'nights' ? field !== 'departure'
+      : name === 'arrival' || name === 'departure' ? field !== 'nights' : true);
+    if (!nextTouched.includes(name)) nextTouched.push(name);
     setTouched(nextTouched);
     setDraft(next);
     storeDraft({ draft: next, touched: nextTouched, acceptedBasis });
@@ -118,6 +124,8 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   const updateUntouched = () => {
     const next = initialSavedStayAmendDraft(stay, request);
     for (const name of touched) next[name] = draft[name];
+    if (touched.includes('nights')) next.departure = departureAfterNights(next.arrival, next.nights);
+    else if (touched.includes('arrival') || touched.includes('departure')) next.nights = nightsBetween(next.arrival, next.departure);
     setDraft(next);
     setAcceptedBasis(basis);
     storeDraft({ draft: next, touched, acceptedBasis: basis });

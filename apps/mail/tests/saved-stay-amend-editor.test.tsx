@@ -101,10 +101,20 @@ describe('saved stay amendment request', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Update untouched entries' }));
     expect((screen.getByLabelText('Requested arrival') as HTMLInputElement).value).toBe('2027-10-03');
     expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('2027-10-07');
+    expect((screen.getByLabelText('Requested nights') as HTMLInputElement).value).toBe('4');
     expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('5');
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(expect.objectContaining({ proposal: {
       confirmation: stay.confirmation, changes: { arrival: '2027-10-03', departure: '2027-10-07', adults: 5 },
     }, errors: [] })));
+    fireEvent.change(screen.getByLabelText('Requested nights'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('Requested nights'), { target: { value: '4' } });
+    rerender(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!} stay={{ ...stay, adults: 3 }}
+      requestedArrival="2027-10-04" requestedDeparture="2027-10-08" onDraftChange={onDraftChange} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Update untouched entries' }));
+    expect((screen.getByLabelText('Requested nights') as HTMLInputElement).value).toBe('4');
+    expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('2027-10-08');
+    fireEvent.change(screen.getByLabelText('Requested nights'), { target: { value: '1000000000' } });
+    expect((screen.getByLabelText('Requested departure') as HTMLInputElement).value).toBe('');
   });
   it('holds an independently changed requested date on the same source', async () => {
     const onDraftChange = vi.fn();

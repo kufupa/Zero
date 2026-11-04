@@ -66,6 +66,7 @@ import { amendmentOf } from '@/lib/quote-workflow/session';
 import { cancelWriteStateClientFromTrpc, type CancelWriteSelection } from '@/lib/quote-workflow/cancel-write-state';
 import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest, type CloudAmendSelection } from '@/lib/quote-workflow/cloud-amend-client';
+import { HMS_WRITE_IDLE_POLL_MS, HMS_WRITE_POLL_MS } from '@/lib/quote-workflow/hms-write';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
 import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
@@ -189,6 +190,7 @@ export function AmendLookupPanel({
   const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
   const [canPreviewCancel, setCanPreviewCancel] = useState(false);
   const [canPreviewAmend, setCanPreviewAmend] = useState(false);
+  const [activeAmendApproval, setActiveAmendApproval] = useState(false);
   useEffect(() => {
     if (!loadCapabilities) {
       setCanPreviewCancel(false);
@@ -592,7 +594,7 @@ export function AmendLookupPanel({
       </p>
       {amendment.kind === 'amend' && readOnlyIdentity && selectedTransportId && workItemId ? (
         <CloudAmendHistory key={JSON.stringify([readOnlyIdentity, selectedTransportId, binding?.selectionEpoch, workItemId])}
-          trpc={trpc} transportId={selectedTransportId} selection={{ workItemId, source: {
+          trpc={trpc} transportId={selectedTransportId} suspended={activeAmendApproval} selection={{ workItemId, source: {
             threadId: readOnlyIdentity.threadId, messageId: readOnlyIdentity.messageId, sourceHash: readOnlyIdentity.sourceHash,
           } }} />
       ) : null}
@@ -866,6 +868,7 @@ export function AmendLookupPanel({
             requestedDeparture={amendment.requestedDeparture}
             ratePlans={readOnlyAmend.ratePlans}
             defaultRecipient={session.staffHeader.clientEmail}
+            onApprovalVisibilityChange={setActiveAmendApproval}
             writeContext={selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
           />
         ) : <p className={infoNoteClass}>Select the email and confirm the booking before reviewing this change.</p>
@@ -1197,7 +1200,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 
 /** Bind the editable request to the current selected email and booking. */
 function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
-  ratePlans, defaultRecipient, writeContext }: {
+  ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1207,6 +1210,7 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   requestedDeparture?: string | null;
   ratePlans: RatePlanCatalogueEntry[];
   defaultRecipient: string;
+  onApprovalVisibilityChange: (visible: boolean) => void;
   writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
   const [draftStore] = useState(createSavedStayAmendDraftStore);
@@ -1223,11 +1227,12 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
       requestedDeparture={requestedDeparture} onDraftChange={setDraft} />
     <LocalAmendChoices key={choiceKey} stay={stay} ratePlans={ratePlans} draft={currentDraft}
       identity={identity} confirmation={confirmation} contactObservations={contactObservations}
-      defaultRecipient={defaultRecipient} writeContext={writeContext} />
+      defaultRecipient={defaultRecipient} writeContext={writeContext} onApprovalVisibilityChange={onApprovalVisibilityChange} />
   </>;
 }
 
-function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext }: {
+function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
+  onApprovalVisibilityChange }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
   draft: SavedStayAmendDraftUpdate | null;
@@ -1235,6 +1240,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   confirmation: string;
   contactObservations?: StayContactObservations;
   defaultRecipient: string;
+  onApprovalVisibilityChange: (visible: boolean) => void;
   writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
 }) {
   const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
@@ -1335,19 +1341,25 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
         : 'Enter the requested change and confirmation details.'}</p>
     {request && requestKey && writeContext ? <CloudAmendAction key={requestKey} request={request}
       guestSurname={stay.lastName || ''} transportId={writeContext.transportId} trpc={writeContext.trpc}
+      onApprovalVisibilityChange={onApprovalVisibilityChange}
       onAvailable={() => setAvailableKey(requestKey)} onBound={() => setBoundKey(requestKey)} /> : null}
   </div>;
 }
 
 /** Hidden unless the server advertises the complete, explicitly enabled writer. */
-function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname }: {
+function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname, onApprovalVisibilityChange }: {
   request: CloudAmendRequest; transportId: string; trpc: unknown; onAvailable: () => void; onBound: () => void; guestSurname: string;
+  onApprovalVisibilityChange: (visible: boolean) => void;
 }) {
   const [client, setClient] = useState<CloudAmendClient | null>(null);
   const [busy, setBusy] = useState(false);
   const [bound, setBound] = useState(false);
   const [failed, setFailed] = useState(false);
   const liveRef = useRef(false);
+  useEffect(() => {
+    onApprovalVisibilityChange(bound && client !== null);
+    return () => onApprovalVisibilityChange(false);
+  }, [bound, client, onApprovalVisibilityChange]);
   // The component is keyed by the exact source, booking and choices.
   const [selected] = useState(request);
   useEffect(() => {
@@ -1377,23 +1389,29 @@ function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, gu
 }
 
 /** Restore a previous run without creating another HMS preview or approval. */
-function CloudAmendHistory({ trpc, transportId, selection }: {
-  trpc: unknown; transportId: string; selection: CloudAmendSelection;
+function CloudAmendHistory({ trpc, transportId, selection, suspended }: {
+  trpc: unknown; transportId: string; selection: CloudAmendSelection; suspended: boolean;
 }) {
   const [client, setClient] = useState<CloudAmendClient | null>(null);
   const [selected] = useState(selection);
   useEffect(() => {
     const controller = new AbortController();
     let live = true, owned: CloudAmendClient | null = null;
-    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live, resume: true })
-      .then((result) => {
-        if (!live) { result?.dispose(); return; }
-        owned = result;
-        setClient(result);
+    let timer: ReturnType<typeof setTimeout> | undefined, attempts = 0;
+    setClient(null);
+    const poll = async () => {
+      const result = await cloudAmendClientFromTrpc(trpc, selected, {
+        transportId, signal: controller.signal, isCurrent: () => live, resume: true,
       });
-    return () => { live = false; controller.abort(); owned?.dispose(); };
-  }, [trpc, selected, transportId]);
-  return client ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={null}
+      if (!live) { result?.dispose(); return; }
+      if (result) { owned = result; setClient(result); return; }
+      attempts += 1;
+      timer = setTimeout(poll, attempts <= 3 ? HMS_WRITE_POLL_MS : HMS_WRITE_IDLE_POLL_MS);
+    };
+    if (!suspended) void poll();
+    return () => { live = false; clearTimeout(timer); controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId, suspended]);
+  return !suspended && client ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={null}
     writesEnabled manualResolve={false} allowApprove={false} /> : null;
 }
 
