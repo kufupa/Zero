@@ -322,6 +322,7 @@ function WriteBody({
       ) : null}
       {status.review && view.run ? (
         <ReviewCard
+          key={view.run.runId}
           client={client}
           workItemId={workItemId}
           run={view.run}

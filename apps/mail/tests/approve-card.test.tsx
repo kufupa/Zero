@@ -286,6 +286,14 @@ describe('ApproveCard write states', () => {
     await waitFor(() =>
       expect(client.evidence).toHaveBeenCalledWith({ workItemId: WORK_ITEM, eventId: EVENT_ID }),
     );
+    vi.mocked(client.writeState).mockResolvedValueOnce(viewWith({
+      run: runWith('dead_letter', { runId: 'run-2', failureClass: 'TRANSIENT_NETWORK',
+        evidence: [{ eventId: EVENT_ID, name: '01-search.png', expired: false }] }),
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    expect(await screen.findByText(/Stopped part way/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Review OK' })).toBeTruthy();
+    expect(screen.queryByText('HMS write reviewed.')).toBeNull();
   });
 
   it('shows a failed-partial write with what is confirmed, and review', async () => {
