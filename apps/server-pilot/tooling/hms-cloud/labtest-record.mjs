@@ -12,7 +12,7 @@ const savedIdentityFields = ['propertycode', 'confirmationnumber', 'guestid', 'P
 const savedBusinessFields = new Set([...savedIdentityFields, ...blankSavedPartyFields,
   'status', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children',
   'childages', 'track', 'guaranteetype', 'reservationnote', 'firstname', 'lastname',
-  'emailaddress', 'bookername', 'bookercontact', 'udfchkbox04', 'udfchar09', 'udfchar13',
+  'emailaddress', 'bookername', 'bookercontact', 'caller', 'udfchar06', 'udfchkbox04', 'udfchar09', 'udfchar13',
   'cancelreason', 'cancellationnote', 'reservationstaystatus', 'cancelpolicyoverride']);
 
 function normalizeExpectedOrganization(value) {

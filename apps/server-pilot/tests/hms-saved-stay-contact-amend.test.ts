@@ -88,15 +88,18 @@ function requestFor(body: URLSearchParams, overrides: {
 }
 
 describe('saved Labtest Booker contact amendment guards', () => {
-  it('matches either allowed Booker field only when the full saved-record payload is otherwise unchanged', () => {
+  it('matches either allowed Booker field with the saved business fields unchanged', () => {
     for (const [field, formName, value] of contactCases) {
       const body = saveBody(formName, value);
       expect(matchesLabtestContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, field, value))
         .toBe(true);
+      body.set(formName === 'caller' ? 'udfchar06' : 'caller', 'Unexpected Booker change');
+      expect(matchesLabtestContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, field, value))
+        .toBe(false);
     }
   });
 
-  it('matches both Booker fields in one exact full-record Save request', () => {
+  it('matches both Booker fields in one Save request', () => {
     const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
     const body = saveBodyWithChanges(changes);
     expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
@@ -106,7 +109,10 @@ describe('saved Labtest Booker contact amendment guards', () => {
     expect(matchesLabtestBookerContactAmendRequest(requestFor(partial), requestFrame, expected, state, baseline, changes))
       .toBe(false);
 
-    body.set('udfchar02', 'unexpected collateral change');
+    body.set('extId', 'refreshed native field');
+    expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
+      .toBe(true);
+    body.set('roomtype', 'OTHER');
     expect(matchesLabtestBookerContactAmendRequest(requestFor(body), requestFrame, expected, state, baseline, changes))
       .toBe(false);
     expect(matchesLabtestBookerContactAmendRequest(requestFor(saveBodyWithChanges(changes)),
@@ -207,7 +213,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     })).resolves.toMatchObject({ outcome: 'input_gap', issue: 'CONTACT_CHANGES_INVALID' });
   });
 
-  it('accepts both staged Booker values before model sync and rejects unrelated changes', () => {
+  it('accepts staged Booker values before model sync and preserves other business fields', () => {
     const changes = { caller: 'Synthetic Booker Updated', udfchar06: 'Synthetic contact updated' };
     const staged = {
       values: { ...baseline.values, ...changes },
@@ -223,12 +229,12 @@ describe('saved Labtest Booker contact amendment guards', () => {
 
     expect(matchesLabtestBookerContactDraft(baseline, {
       ...staged,
-      values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+      values: { ...staged.values, roomtype: 'OTHER' },
     }, changes)).toBe(false);
     expect(matchesLabtestBookerContactDraft(baseline, {
       ...staged,
-      dirtyFields: ['caller', 'udfchar06', 'udfchar02'],
-    }, changes)).toBe(false);
+      dirtyFields: ['caller', 'udfchar06', 'extId'],
+    }, changes)).toBe(true);
     expect(matchesLabtestBookerContactDraft(baseline, staged, { ...changes, toString: 'blocked' })).toBe(false);
   });
 
@@ -243,30 +249,35 @@ describe('saved Labtest Booker contact amendment guards', () => {
         modifiedFields: [],
       };
 
-      // Ext updates the form field first; the exact full-record request matcher
-      // remains the only authorization for dispatch.
+      // Ext updates the form field before its loaded record model.
       expect(staged.data[formName]).toBe(baseline.data[formName]);
       expect(matchesLabtestContactAmendDraft(baseline, staged, field, value)).toBe(true);
+      expect(matchesLabtestContactAmendDraft(baseline, {
+        ...staged, values: { ...staged.values, [formName]: baseline.values[formName] },
+      }, field, value)).toBe(false);
+      expect(matchesLabtestContactAmendDraft(baseline, {
+        ...staged, data: { ...staged.data, [formName]: 'unexpected model value' },
+      }, field, value)).toBe(false);
 
       const collateralValue = {
         ...staged,
-        values: { ...staged.values, udfchar02: 'unexpected collateral change' },
+        values: { ...staged.values, roomtype: 'OTHER' },
       };
       expect(matchesLabtestContactAmendDraft(baseline, collateralValue, field, value)).toBe(false);
 
       const collateralRecord = {
         ...staged,
-        data: { ...staged.data, udfchar02: 'unexpected record-model change' },
+        data: { ...staged.data, roomtype: 'OTHER' },
       };
       expect(matchesLabtestContactAmendDraft(baseline, collateralRecord, field, value)).toBe(false);
 
-      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'udfchar02'] };
-      expect(matchesLabtestContactAmendDraft(baseline, collateralDirtyField, field, value)).toBe(false);
-      expect(matchesLabtestContactAmendDraft(baseline, { ...staged, dirtyFields: [] }, field, value)).toBe(false);
+      const collateralDirtyField = { ...staged, dirtyFields: [formName, 'extId'] };
+      expect(matchesLabtestContactAmendDraft(baseline, collateralDirtyField, field, value)).toBe(true);
+      expect(matchesLabtestContactAmendDraft(baseline, { ...staged, dirtyFields: [] }, field, value)).toBe(true);
     }
   });
 
-  it('rejects collateral, duplicate, extra, wrong-frame, and wrong-target requests', () => {
+  it('rejects collateral business changes, duplicates, and wrong-frame or wrong-target requests', () => {
     const [field, formName, value] = contactCases[0];
     const match = (body: URLSearchParams, overrides: {
       url?: string; method?: string; frame?: object; contentType?: string;
@@ -275,7 +286,7 @@ describe('saved Labtest Booker contact amendment guards', () => {
     );
 
     const collateral = saveBody(formName, value);
-    collateral.set('udfchar02', 'unexpected collateral change');
+    collateral.set('roomtype', 'OTHER');
     expect(match(collateral)).toBe(false);
 
     const duplicate = saveBody(formName, value);
@@ -283,8 +294,8 @@ describe('saved Labtest Booker contact amendment guards', () => {
     expect(match(duplicate)).toBe(false);
 
     const extra = saveBody(formName, value);
-    extra.set('unexpected', 'not in the saved record');
-    expect(match(extra)).toBe(false);
+    extra.set('unexpected', 'new native field');
+    expect(match(extra)).toBe(true);
 
     expect(match(saveBody(formName, value), { frame: {} })).toBe(false);
     expect(match(saveBody(formName, value), { url: `${HMS_ORIGIN}${SAVE_PATH}?pageaction=SAVE&extra=1` })).toBe(false);
