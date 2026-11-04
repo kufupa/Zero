@@ -9,8 +9,9 @@ vi.mock('../src/ai/run-ledger.js', async (original) => ({
   ...(await original<typeof import('../src/ai/run-ledger.js')>()), markAiRunRunning: stubs.running,
 }));
 
-import { approveHmsWrite, hmsWriteStateOf, resolveHmsNeedsCheck } from '../src/ai/hms-approval.js';
+import { approveHmsWrite, formDigest, hmsWriteStateOf, resolveHmsNeedsCheck, reviewHmsWrite } from '../src/ai/hms-approval.js';
 import { paneHmsWriteLoaders, runPaneHmsWriteOnce } from '../src/ai/pane-hms-write.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
 const item = { id: 'item-1', threadId: 'thread-1', sourceMessageId: 'mail-1', status: 'needs_you',
   state: { action: 'attach_document', confirmation: '123456-1', arrival: '2027-09-14',
@@ -36,6 +37,25 @@ describe('HRCEN filing hold', () => {
         .rejects.toMatchObject({ refusal: 'filing_unavailable' });
     }
     expect(f.insert).not.toHaveBeenCalled();
+
+    const source = { id: item.sourceMessageId, subject: 'Voucher', textBody: 'Document', htmlBody: null };
+    const selectedSource = { messageId: source.id, threadId: item.threadId, sourceHash: staffQuoteSourceHash(source) };
+    const bound = { ...item, state: { ...item.state, sourceMessageId: source.id,
+      sourceThreadId: item.threadId, sourceHash: selectedSource.sourceHash } };
+    const previous = { id: 'run-1', state: 'succeeded', failureClass: null, promptVersion: 'hms-write/1' };
+    for (const decision of ['ok', 'flag'] as const) {
+      const answers: unknown[][] = [[bound], [source], [], [previous], [previous]];
+      const query = { from: () => query, where: () => query, orderBy: () => query, limit: () => {
+        const rows = answers.shift() ?? [];
+        return Object.assign(Promise.resolve(rows), { for: async () => rows });
+      } };
+      const insert = vi.fn();
+      const tx = { select: () => query, execute: async () => undefined, insert };
+      const db = { transaction: async (fn: (value: unknown) => unknown) => fn(tx) } as unknown as DB;
+      await expect(reviewHmsWrite({ ...request, db, selectedSource, decision, note: 'Checked' }))
+        .rejects.toMatchObject({ refusal: 'no_executed_write' });
+      expect(insert).not.toHaveBeenCalled();
+    }
   });
 
   it('marks an existing HRCEN attach form unavailable to the approval card', async () => {
@@ -45,6 +65,48 @@ describe('HRCEN filing hold', () => {
     const db = { select: () => query } as unknown as DB;
     await expect(hmsWriteStateOf({ db, transportId: request.transportId, workItemId: item.id }))
       .resolves.toMatchObject({ filingAvailable: false, form: { action: 'attach_document' } });
+
+    const run: { id: string; state: string; failureClass: string | null; lastError: string | null;
+      idempotencyKey: string; promptVersion: string } = { id: 'run-1', state: 'succeeded', failureClass: null, lastError: null,
+      idempotencyKey: 'old-run', promptVersion: 'hms-write/1' };
+    const evidence = { id: 'evidence-1', name: 'after.png', at: new Date() };
+    const readRun = async (current: typeof run, grant?: Record<string, unknown>) => {
+      const answers: unknown[][] = [[item], [current],
+        ...(grant ? [[{ value: grant }], [{ id: 'consumed' }]] : []), [evidence], [],
+        ...(['queued', 'claimed', 'running', 'retry_wait'].includes(current.state) ? [] : [[current]]),
+        ...(current.failureClass === 'LEASE_LOST' ? [[]] : [])];
+      const result = {
+        from: () => result, where: () => result, orderBy: () => {
+          const rows = answers.shift() ?? [];
+          return Object.assign(Promise.resolve(rows), { limit: async () => rows });
+        },
+        limit: async () => answers.shift() ?? [],
+      };
+      return hmsWriteStateOf({ db: { select: () => result } as unknown as DB,
+        transportId: request.transportId, workItemId: item.id });
+    };
+    // An earlier successful workflow cannot be presented as the new upload.
+    expect(await readRun(run)).toMatchObject({ grant: null, run: null, needsCheck: false });
+    // An active or unresolved prior write still blocks the new form.
+    expect(await readRun({ ...run, state: 'running' })).toMatchObject({
+      run: { state: 'running', evidence: [] }, needsCheck: false,
+    });
+    expect(await readRun({ ...run, state: 'dead_letter', failureClass: 'LEASE_LOST' })).toMatchObject({
+      run: { state: 'dead_letter', evidence: [] }, needsCheck: true,
+    });
+    // A Filing success without its grant is unknown, not evidence of this upload.
+    expect(await readRun({ ...run, promptVersion: 'hms-write/lab-attach/1' })).toMatchObject({
+      grant: null, run: { state: 'succeeded', evidence: [], lastError: 'filing_approval_unverified' }, needsCheck: true,
+    });
+    const grantId = '11111111-1111-4111-8111-111111111111';
+    const filing = { ...run, idempotencyKey: `hms-write:${grantId}`, promptVersion: 'hms-write/lab-attach/1' };
+    const grant = { grantId, workItemId: item.id, transportId: request.transportId, actorUserId: 'user-1',
+      formDigest: formDigest(item.state), hmsBeforeDigest: 'before', hmsReadAt: new Date().toISOString() };
+    expect(await readRun(filing, grant)).toMatchObject({
+      grant: { fingerprintMatches: true }, run: { state: 'succeeded', evidence: [{ eventId: evidence.id }] }, needsCheck: false,
+    });
+    expect(await readRun(filing, { ...grant, formDigest: 'earlier-form' }))
+      .toMatchObject({ grant: null, run: null, needsCheck: false });
   });
 
   it('reports filing configuration for the selected property independently of the create flag', async () => {

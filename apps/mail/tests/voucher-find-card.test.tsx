@@ -19,7 +19,7 @@ import {
   type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { VoucherFindCard as ScopedVoucherFindCard } from '../components/quote-workflow/voucher-find-card';
+import { VoucherFindCard as ScopedVoucherFindCard, VOUCHER_ATTACH_COPY } from '../components/quote-workflow/voucher-find-card';
 import * as attachmentAccess from '../lib/attachment-access';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -902,9 +902,19 @@ describe('voucher find card: attach to HMS', () => {
       filingConfigured: true, form: { action: 'attach_document' }, grant: { fingerprintMatches: true }, needsCheck: false,
       run: { state: 'succeeded', lastError: null, evidence: [] },
     })) } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={completed} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    const completedView = render(<VoucherFindCard internetMessageId="abc@host" trpc={completed} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
     await waitFor(() => expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(true));
     expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
+    completedView.unmount();
+    const { trpc: unverified } = fakeTrpc({ reply: VOUCHER });
+    (unverified as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: vi.fn(async () => ({
+      filingConfigured: true, form: { action: 'attach_document' }, grant: null, needsCheck: true,
+      run: { state: 'succeeded', lastError: 'filing_approval_unverified', evidence: [] },
+    })) } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={unverified} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    expect(await screen.findByText(VOUCHER_ATTACH_COPY.checkInInfor)).toBeTruthy();
+    expect(screen.getByLabelText('Guest surname').hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByText(VOUCHER_ATTACH_COPY.documentsRow)).toBeNull();
   });
 
   it('reviews the exact selected document and shows Go unavailable without enabling writes', async () => {

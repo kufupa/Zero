@@ -1119,6 +1119,7 @@ async function latestWriteRun(db: DB, workItemId: string) {
       failureClass: aiWorkflowRun.failureClass,
       lastError: aiWorkflowRun.lastError,
       idempotencyKey: aiWorkflowRun.idempotencyKey,
+      promptVersion: aiWorkflowRun.promptVersion,
     })
     .from(aiWorkflowRun)
     .where(
@@ -1213,13 +1214,23 @@ export async function reviewHmsWrite(input: {
     const run = await latestWriteRun(tx as DB, item.id);
     if (!run) throw new HmsApprovalError('no_executed_write');
     if (input.runId !== undefined && input.runId !== run.id) throw new HmsApprovalError('run_changed');
+    const target = paneStayHmsTargetForTransport(input.transportId);
+    const cloudFiling = target.ok && target.target.propertyCode === 'HRCEN' &&
+      item.state.action === 'attach_document' && typeof item.state.sourceThreadId === 'string' &&
+      typeof item.state.sourceHash === 'string';
+    if (cloudFiling && !boundFilingSelectionMatches(item.state, input.selectedSource)) {
+      throw new HmsApprovalError('source_mail_changed');
+    }
+    if (cloudFiling && run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION) {
+      throw new HmsApprovalError('no_executed_write');
+    }
     const evidence = await evidenceForRun(tx as DB, item.id, run.id);
     if (run.state !== 'succeeded' && evidence.length === 0)
       throw new HmsApprovalError('no_executed_write');
     if (await reviewForRun(tx as DB, item.id, run.id))
       throw new HmsApprovalError('already_reviewed');
     // The review applies only to the form this write was approved for. A later edit was never written.
-    if (input.decision === 'ok') {
+    if (input.decision === 'ok' || cloudFiling) {
       const grantId = grantIdForRun(run);
       if (!grantId) throw new HmsApprovalError('no_grant');
       const { grant } = await loadGrant(tx as DB, item.id, grantId);
@@ -1393,6 +1404,21 @@ export async function hmsWriteStateOf(input: {
     };
   }
   const target = paneStayHmsTargetForTransport(input.transportId);
+  let needsCheck = run !== null && !(NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) &&
+    Boolean(await unresolvedNeedsCheckRunId(db, item.id));
+  if (item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN' && run &&
+      (run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION || !grant?.fingerprintMatches)) {
+    // A completed write for another workflow or form is history, not this upload.
+    // If a Filing success lacks its grant, its relationship to this form is unknown.
+    const missingFilingGrant = run.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION &&
+      run.state === 'succeeded' && !grant;
+    needsCheck ||= missingFilingGrant;
+    grant = null;
+    runView = (NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) || needsCheck
+      ? { runId: run.id, state: run.state, failureClass: run.failureClass,
+          lastError: missingFilingGrant ? 'filing_approval_unverified' : run.lastError, evidence: [], reviewed: null }
+      : null;
+  }
   await assertCurrentHmsSelection(db, input);
   return {
     status: item.status,
@@ -1410,9 +1436,6 @@ export async function hmsWriteStateOf(input: {
     grant,
     run: runView,
     // A run still in flight has no outcome yet, so it is not a needs-check until it ends.
-    needsCheck:
-      run !== null &&
-      !(NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) &&
-      Boolean(await unresolvedNeedsCheckRunId(db, item.id)),
+    needsCheck,
   };
 }

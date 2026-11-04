@@ -520,7 +520,8 @@ function VoucherFindCardBody({
     (attachWrite?.form?.action === 'attach_document' &&
       (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? ''))));
   const attachSucceeded = listedWithHold || (attachWrite?.form?.action === 'attach_document' &&
-    attachWrite.grant?.fingerprintMatches !== false && attachWrite.run?.state === 'succeeded');
+    (propertyCode === 'HRCEN' ? attachWrite.grant?.fingerprintMatches === true :
+      attachWrite.grant?.fingerprintMatches !== false) && attachWrite.run?.state === 'succeeded');
   const attachMoving = ['queued', 'claimed', 'running', 'retry_wait'].includes(attachWrite?.run?.state ?? '');
   const bindingFrozen = attachState?.workItemId === workItemId &&
     (attachState.status === 'binding' || attachState.status === 'unknown' ||
