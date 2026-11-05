@@ -373,7 +373,10 @@ function extractionStayId(
 function stayResetControl(rows: StayGroupRequirement[], workItemPane: WorkItemPaneControls | null) {
   const stayId = extractionStayId(rows, workItemPane?.refs);
   if (!stayId || !workItemPane?.onResetStay) return null;
-  if (!sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId })) return null;
+  const requestIds = workItemPane.requestDraft?.snapshot?.requests
+    .filter((request) => request.stayId === stayId && request.action === 'new_booking')
+    .map((request) => request.requestId) ?? [];
+  if (!sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId }, requestIds)) return null;
   return (
     <WorkItemResetButton
       onClick={() => workItemPane.onResetStay?.(stayId)}

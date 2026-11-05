@@ -225,10 +225,12 @@ function historyRoutesFrom(trpc: unknown): {
 export function sectionHasStaffEdit(
   provenance: WorkItemProvenanceMap | null | undefined,
   section: WorkItemSection,
+  requestIds: readonly string[] = [],
 ): boolean {
   if (!provenance) return false;
   for (const [path, entry] of Object.entries(provenance)) {
-    if (fieldPathInSection(path, section) && entry.source === 'staff') return true;
+    if (entry.source === 'staff' && (fieldPathInSection(path, section) ||
+        (section.type === 'stay' && requestIds.some((id) => path.startsWith(`requests[${id}].`))))) return true;
   }
   return false;
 }
@@ -1098,14 +1100,14 @@ export function useStoredWork(args: {
   );
 
   const undo = useCallback(
-    (_workItemId: string, _expectedRevision: number) => {
+    () => {
       runHistoryMove(historyRoutesFrom(trpcRef.current).undoRevision?.mutate, "Couldn't undo — try again");
     },
     [runHistoryMove],
   );
 
   const redo = useCallback(
-    (_workItemId: string, _expectedRevision: number) => {
+    () => {
       runHistoryMove(historyRoutesFrom(trpcRef.current).redoRevision?.mutate, "Couldn't redo — try again");
     },
     [runHistoryMove],
