@@ -525,9 +525,14 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     }
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
     if (tool === 'selectRoomTypeForCharge') {
-      state.chargeRoom = result?.outcome === 'selected_unsaved' ? result.code : null;
-      state.chargeRateChecked = false;
-      if (state.chargeRoom) createAuthority?.invalidateM1CreateRateAvailability?.();
+      if (result?.outcome === 'selected_unsaved') {
+        state.chargeRoom = result.code;
+        state.chargeRateChecked = false;
+        createAuthority?.invalidateM1CreateRateAvailability?.();
+      } else if (result?.outcome === 'selection_uncertain') {
+        state.chargeRoom = null;
+        state.chargeRateChecked = false;
+      }
     }
     if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved' && result.rateAvailability) {
       const checked = await currentCheckedChargeRate(page, { roomTypeForCharge: state.chargeRoom,
