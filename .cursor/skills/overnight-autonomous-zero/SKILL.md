@@ -98,7 +98,7 @@ FAIL → reproduce → root cause (file:line) → fix → test → commit → re
 
 Exact error: `Execution backend unavailable. Do not retry tool calls — the execution environment is down.`
 
-This is Cursor's agent tool bridge, not Zero app/AWS/RDS. Full playbook: `docs/solutions/workflow-issues/cursor-execution-backend-unavailable.md`.
+This is Cursor's agent tool bridge, not Zero app/AWS/RDS.
 
 **Required agent behavior:**
 1. Do **not** ask the user to wait or re-invoke.
@@ -132,4 +132,4 @@ local: tests on disposable/no DB + builds green → commit → push EC2-pilot
 
 ## SSM stdout
 
-Windows AWS CLI may choke on command output unicode. Use `ssm-run-command.sh` (wraps `ssm-format-invocation.cjs`). See `docs/solutions/database-issues/vitest-production-pilot-db-wipe.md` before any EC2 test workflow.
+Windows AWS CLI may choke on command output unicode. Use `ssm-run-command.sh` (wraps `ssm-format-invocation.cjs`). See the pilot RDS rules in `AGENTS.md` before any EC2 test workflow.

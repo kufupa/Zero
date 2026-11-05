@@ -106,7 +106,6 @@ REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NV
 
 # Every on-box pnpm install runs husky's prepare, which fails with EACCES while .husky/_/h is mode 0444.
 # Restore the owner write bit before the first install. A missing hook is skipped.
-# See docs/solutions/workflow-issues/ec2-deploy-husky-prepare-eacces-readonly-hook.md
 step_finish
 echo "== ops-deploy: restore husky hook write bit =="
 step_mark 'ops-deploy: restore husky hook write bit'

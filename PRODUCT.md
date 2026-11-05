@@ -55,13 +55,13 @@ HMS supplies booking, rate and financial facts, and staff decide. Don't build pr
 ## Front door
 
 - **Skip** OTA, channel, automated and spam mail. Travel-agent mail stays in scope.
-- Generalise; don't overfit. [Details](docs/context/PRODUCT-DETAIL.md#front-door-specifics).
+- Generalise; don't overfit. Owner exact-host exclusions (Profitroom, Tiket.com, RateTiger, H-Pay `hospitality.cloud`) are in the [asks log](PRODUCT-ASKS-HISTORY.md#asks-logged), 2026-10-14. Travelit and TBO stay in scope.
 
 **Pre-stay self-mail (owner rule):** mail the hotel's own mailbox sends to itself, titled "Pre Stay : Property … Confirmation No <conf> <name>", is about an **existing** booking. Never offer Create for it. Build it as a general rule (own mailbox + pre-stay subject + confirmation number), not a Centurion string match. Keep any separate current ask in the same mail.
 
 ## Pane
 
-Keep the V1 look: one primary action per step and no dead controls. Prefer mounting existing components. [Details](docs/context/PRODUCT-DETAIL.md#pane-staff).
+One primary action per step. No dead controls. The layout may be redesigned (see `AGENTS.md`).
 
 ## Rules
 
@@ -72,10 +72,6 @@ Keep the V1 look: one primary action per step and no dead controls. Prefer mount
 - **HMS reads and unsaved staging** on real guests and bookings are always allowed. This is how tools are proven on real email: run the real tool on a real email's details and stop before Save.
 - **Labtest writes** (Proof Labtest guest, 2027+ stays) are always allowed; never ask. Keep CMS send off on Labtest.
 - **Uncertain write:** never blind-retry; re-read HMS first. This prevents double bookings.
-- **Deploy main:** from a clean worktree at fetched `origin/main`, run that checkout's `apps/server-pilot/deploy/ops-deploy.sh`. Verify the runtime SHA, effective flags on all PM2 processes, and health.
-
-Engineering and verification rules live in `AGENTS.md`.
-
 ## Done
 
 A workflow is done when deployed main runs it for real guests. That means:
