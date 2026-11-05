@@ -9,7 +9,8 @@ import { appRouter } from '../src/trpc/router.js';
 
 const request = { workItemId: '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b', sourceMessageId: 'mail-1',
   attachmentId: 'attachment-1', confirmation: '123456-1', arrival: '2027-09-14', lastName: 'Labtest',
-  selectedSource: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'a'.repeat(64) } };
+  selectedSource: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'a'.repeat(64) },
+  documentSource: { sha256: 'b'.repeat(64), snapshotDigest: 'c'.repeat(64) } };
 
 describe('mounted filing preview', () => {
   it('uses the authenticated actor and selected mailbox, not caller-supplied authority', async () => {

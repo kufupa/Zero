@@ -345,7 +345,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
     }
     const state: Record<string, unknown> = { ...item.state };
     for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
-      'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
+      'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash', 'documentCode', 'filingStateDigest',
       'reason', 'fields', 'previewDigest', 'cloudAmend', 'cloudCancel', 'cloudCancelPreview', 'hmsSnapshot']) delete state[key];
     Object.assign(state, { action: 'amend', confirmation: data.confirmation, arrival: data.arrival, lastName: preimage.native.lastName,
       fields: data.changes, previewDigest, cloudAmend: { binding, preimage, nativeDigest,

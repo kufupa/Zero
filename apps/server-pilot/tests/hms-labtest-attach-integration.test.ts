@@ -112,12 +112,13 @@ describe('approved filing worker to Cloud upload fence', () => {
       const form = { action: 'attach_document', confirmation: '123456-1', arrival: '2027-10-12', lastName: 'Labtest',
         attachmentId: 'att-1', documentName: 'voucher.pdf', pdfSha256: sha256, sourceMessageId: 'mail-1',
         sourceInternetMessageId: 'selected@example.test', sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash,
-        sourceSnapshotDigest };
+        sourceSnapshotDigest, documentCode: `NAVA${'A'.repeat(26)}`, filingStateDigest: '' };
       const stay = { confirmation: form.confirmation, firstName: 'Proof', lastName: 'Labtest', status: 'Reserved',
         arrival: form.arrival, departure: '2027-10-13', roomType: 'STQN', ratePlan: 'BAR', organization: null, bookingAgency: null };
       const filingState = { confirmation: stay.confirmation, firstName: stay.firstName, lastName: stay.lastName,
         status: stay.status, arrival: stay.arrival, departure: stay.departure, nativeGuestId: '123',
         nativeStayId: '42', cmsSend: false };
+      form.filingStateDigest = hmsStateDigest(filingState);
       const item = { id: workItemId, transportId: 'transport-centurion', threadId: 'thread-1', status: 'needs_you',
         sourceMessageId: 'mail-1', state: { ...form, hmsSnapshot: { digest: hmsStateDigest(filingState), readAt: new Date().toISOString() } } };
       const mail = { ...sourceMail, transportId: item.transportId, threadId: item.threadId,
@@ -226,7 +227,8 @@ describe('approved filing worker to Cloud upload fence', () => {
       paneHmsWriteLoaders.lock = { withLock: async (fn) => fn() };
       paneHmsWriteLoaders.readCloudFiling = async () => ({ stay, nativeGuestId: '123', nativeStayId: '42',
         filingSnapshot: { cmsSend: false } });
-      stubs.consume.mockResolvedValue({ form, grantId: approved.grantId, actorUserId: 'staff', sessionId: 'session-1', sessionProfile: 'remote' });
+      stubs.consume.mockResolvedValue({ form, grantId: approved.grantId, hmsBeforeDigest: form.filingStateDigest,
+        actorUserId: 'staff', sessionId: 'session-1', sessionProfile: 'remote' });
       stubs.unchanged.mockImplementation(async ({ readHmsState }) => {
         expect(await readHmsState()).toEqual(filingState);
         return { status: 'unchanged' };
