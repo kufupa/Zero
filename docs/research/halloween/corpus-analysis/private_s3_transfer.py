@@ -44,6 +44,8 @@ def _aws_json(operation: str) -> dict[str, Any]:
     )
     if result.returncode:
         raise RuntimeError('private_transfer_preflight_failed')
+    if operation == 'get-bucket-versioning' and not result.stdout.strip():
+        return {}
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -109,6 +111,7 @@ def fetch_payload(metadata: object, expected_key: str) -> bytes:
             [
                 'aws', 's3api', 'get-object', '--bucket', BUCKET, '--key', expected_key,
                 '--region', REGION, '--expected-bucket-owner', EXPECTED_BUCKET_OWNER,
+                '--output', 'json',
                 str(path),
             ],
             text=True,

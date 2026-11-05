@@ -120,7 +120,7 @@ def main():
             + REMOTE_PREPARE)
     ensure_private_transfer_bucket()
     try:
-        meta = json.loads(ssm("python3 - <<'PY\n" + code + "\nPY"))
+        meta = json.loads(ssm("python3 - <<'PY'\n" + code + "\nPY"))
         encoded = fetch_payload(meta, expected_key)
     finally:
         delete_transfer(expected_key)
