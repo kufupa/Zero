@@ -88,7 +88,7 @@ export async function submitRateOverrideOnce(session, stage, onPaused, { signal 
   const { page } = session;
   const fence = await installPageRequestFence(page, [UPDATE, '/web/base/OSRESV.HDR']);
   const scope = fence.open();
-  let armed = false, calls = 0, blocked = false, chain;
+  let armed = false, calls = 0, blocked = false, chain, stopSignal, onStop;
   try {
     chain = await installLabtestSaveRouteChain(page, { frame: stage.frame, savePath: UPDATE, fence, scope,
       isArmed: () => armed && !signal?.aborted,
@@ -108,9 +108,16 @@ export async function submitRateOverrideOnce(session, stage, onPaused, { signal 
     const submit = wizard.locator('a.x-btn:visible').filter({ hasText: /^\s*Submit\s*$/ });
     if (await wizard.count() !== 1 || await submit.count() !== 1) throw new Error('RATE_OVERRIDE_SUBMIT_UNVERIFIED');
     armed = true;
+    stopSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000);
+    const stopped = new Promise((_, reject) => {
+      onStop = () => reject(new Error('RATE_OVERRIDE_DISPATCH_TIMEOUT'));
+      if (stopSignal.aborted) onStop();
+      else stopSignal.addEventListener('abort', onStop, { once: true });
+    });
+    void stopped.catch(() => {});
     const response = page.waitForResponse(res => res.request() === chain.candidate(), { timeout: 90_000 });
     void response.catch(() => {});
-    await submit.click({ timeout: 90_000 });
+    await Promise.race([submit.click({ timeout: 90_000 }), stopped]);
     const dispatch = chain.waitForDispatch();
     const saved = await Promise.race([
       response,
@@ -118,12 +125,14 @@ export async function submitRateOverrideOnce(session, stage, onPaused, { signal 
         if (!dispatched) throw new Error('RATE_OVERRIDE_DISPATCH_NOT_CONFIRMED');
         return response;
       }),
+      stopped,
     ]);
-    const dispatched = await dispatch;
+    const dispatched = await Promise.race([dispatch, stopped]);
     armed = false;
     const drained = await chain.drain();
     return { httpStatus: saved.status(), dispatchCallbacksDrained: dispatched === true && drained && calls === 1 && !blocked };
   } finally {
+    if (stopSignal && onStop) stopSignal.removeEventListener('abort', onStop);
     armed = false;
     fence.quarantine();
     await chain?.close();
