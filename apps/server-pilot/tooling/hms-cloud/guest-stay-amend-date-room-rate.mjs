@@ -250,6 +250,8 @@ export async function stageSavedDatesForComposition(context, expected, changes, 
     active();
     await input.fill(dateParts(value).display);
     await input.press('Tab');
+    // Component/model equality does not establish completion of deferred blur
+    // effects on the saved record. Keep the guarded observation window.
     await context.page.waitForTimeout(1500);
     active();
     const nativeDate = await nativeDateObservation(input, SPECS[name].name);

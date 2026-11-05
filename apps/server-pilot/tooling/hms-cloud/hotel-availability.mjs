@@ -1,5 +1,6 @@
 // Read prices and inventory from cloud Hotel Availability on the caller's page.
 import { randomUUID } from 'node:crypto';
+import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { captureAvailabilityDisplay } from './availability-display.mjs';
 
@@ -109,28 +110,10 @@ export async function openHotelAvailability(page) {
   await page.locator('input[name="search"]:visible').first().waitFor({ timeout: 25000 });
   const node = (name) => page.locator('span.x-tree-node-text:visible')
     .filter({ hasText: new RegExp(`^${name}$`) });
-  const menuOpen = () => node('Front Desk').evaluate((element) => {
-    const box = element.closest('.x-tree-view')?.getBoundingClientRect();
-    return Boolean(box && Math.min(innerWidth, box.right) - Math.max(0, box.left) >= box.width * 0.9);
-  }).catch(() => false);
-  const ensureMenuOpen = async () => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (await menuOpen()) return;
-      await page.locator('a.app-menu-trigger:visible').click();
-      await page.waitForTimeout(1200);
-    }
-    if (!await menuOpen()) throw new Error('MENU_NOT_OPENED');
-  };
-  const ensureExpanded = async (parent, child, delay) => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (await node(child).isVisible()) return;
-      await clickMenuNode(node(parent));
-      await page.waitForTimeout(delay);
-    }
-    if (!await node(child).isVisible()) throw new Error('MENU_NOT_EXPANDED');
-  };
+  const ensureExpanded = (parent, child, timeoutMs) => ensureMenuChild(node(parent), node(child),
+    () => clickMenuNode(node(parent)), { timeoutMs });
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await ensureMenuOpen();
+    await ensureApplicationMenuOpen(page, node('Front Desk'));
     await ensureExpanded('Front Desk', 'Availability', 900);
     await ensureExpanded('Availability', 'Hotel Availability', 1200);
     await clickMenuNode(node('Hotel Availability'));
@@ -186,8 +169,21 @@ async function chooseDate(page, iso) {
     }
     if (!calendars.length || calendars.some((calendar) => !calendar.month)) throw new Error('DATE_PICKER_UNAVAILABLE');
     const direction = iso.slice(0, 7) < calendars[0].month ? 'prev' : 'next';
+    const before = await picker.locator('.x-datepicker:visible').evaluateAll((elements) =>
+      elements.map((element) => [...element.querySelectorAll('td.x-datepicker-active[title]')]
+        .find((cell) => cell.title !== 'Today')?.title));
     await picker.locator(`.x-daterange-${direction}:visible`).click();
-    await page.waitForTimeout(100);
+    const element = await picker.elementHandle();
+    try {
+      await page.waitForFunction(({ element, before }) => {
+        const dates = [...element.querySelectorAll('.x-datepicker')].filter((calendar) =>
+          calendar.getBoundingClientRect().width > 0 && getComputedStyle(calendar).visibility !== 'hidden')
+          .map((calendar) => [...calendar.querySelectorAll('td.x-datepicker-active[title]')]
+            .find((cell) => cell.title !== 'Today')?.title);
+        return dates.length === before.length && dates.every(Boolean) &&
+          dates.every((date, index) => date !== before[index]);
+      }, { element, before }, { timeout: 5000 });
+    } finally { await element?.dispose(); }
   }
   throw new Error('DATE_OUTSIDE_PICKER_RANGE');
 }

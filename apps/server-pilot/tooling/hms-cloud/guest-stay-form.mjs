@@ -344,7 +344,11 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         if (!guaranteeApproved || guaranteeResponses.length !== 1) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
         await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: 10000 }); ensureActive();
       }
-      await page.waitForTimeout(1000);
+      // Child Apply has a validated response and response-derived parent counts;
+      // guarantee has its matched response and draft checks. Other controls still
+      // need the guarded observation window for uncorrelated blur effects.
+      const correlatedUpdate = result.outcome === 'updated_unsaved' && ['ages', 'guarantee'].includes(post);
+      if (!correlatedUpdate) await page.waitForTimeout(1000);
       await check();
       const after = await readFields(page); ensureActive();
       await verifySettled(page, result, after); ensureActive();
@@ -388,6 +392,24 @@ async function uniqueInput(page, name) {
   return field;
 }
 
+// This proves a control's requested state; run() still observes late side effects.
+async function waitForInputState(page, input, expected) {
+  const element = await input.elementHandle();
+  try {
+    await page.waitForFunction(({ element, expected }) => {
+      const component = globalThis.Ext?.getCmp?.(element?.id.replace(/-inputEl$/, ''));
+      if (!element?.isConnected || !component) return false;
+      const same = (actual, value) => expected.caseInsensitive
+        ? String(actual ?? '').toUpperCase() === String(value ?? '').toUpperCase() : expected.trim
+          ? String(actual ?? '').trim() === String(value ?? '').trim() : actual === value;
+      return (!Object.hasOwn(expected, 'display') || same(element.value, expected.display)) &&
+        (!Object.hasOwn(expected, 'value') || same(component.getValue?.(), expected.value)) &&
+        (!expected.blurred || component.hasFocus !== true) &&
+        (!expected.submitted || same(component.getSubmitData?.()?.[element.name], expected.value));
+    }, { element, expected }, { timeout: 5000 });
+  } finally { await element?.dispose(); }
+}
+
 export async function readGuestStayForm(page, { propertyCode } = {}) {
   return run(page, propertyCode, {}, async () => ({ outcome: 'ok', fields: await readFields(page) }));
 }
@@ -401,7 +423,7 @@ export async function setGuestStayText(page, { propertyCode, field, value } = {}
     await check(); mark();
     await input.fill(value, { timeout: 5000 });
     await input.press('Tab', { timeout: 5000 });
-    await page.waitForTimeout(500); await check();
+    await waitForInputState(page, input, { display: value, blurred: true }); await check();
     const actual = await input.inputValue();
     if (actual !== value) throw new Error('TEXT_READBACK_MISMATCH');
     return { outcome: 'updated_unsaved', field, requested: value, actual };
@@ -418,7 +440,7 @@ export async function setGuestStayDate(page, { propertyCode, field, date } = {})
     await check(); mark();
     await input.fill(display, { timeout: 5000 });
     await input.press('Tab', { timeout: 5000 });
-    await page.waitForTimeout(500); await check();
+    await waitForInputState(page, input, { display, blurred: true, caseInsensitive: true }); await check();
     const actual = await input.inputValue();
     if (actual.toUpperCase() !== display) throw new Error('DATE_READBACK_MISMATCH');
     return { outcome: 'updated_unsaved', field, requested: date, actual: date, displayed: actual };
@@ -495,7 +517,8 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
       allowGuarantee({ draft: ready, value: clean(value) });
     } else await check();
     await items.nth(indexes[0]).click({ timeout: 5000 });
-    await page.waitForTimeout(500); await check();
+    await waitForInputState(page, input, { value, display: matches[0].label, trim: true,
+      submitted: guarantee }); await check();
     const actual = await input.evaluate((el, includeSubmitted) => {
       const cmp = Ext.getCmp(el.id.replace(/-inputEl$/, ''));
       return { value: cmp?.getValue?.(), display: el.value, ...(includeSubmitted ? { submitted: cmp?.getSubmitData?.()?.guaranteetype } : {}) };
@@ -518,7 +541,7 @@ export async function setCmsSendCheckbox(page, { propertyCode, checked } = {}) {
     const before = await read();
     if (typeof before !== 'boolean') throw new Error('CHECKBOX_UNAVAILABLE');
     if (before !== checked) { await check(); mark(); await input.click({ timeout: 5000 }); }
-    await page.waitForTimeout(500); await check();
+    await waitForInputState(page, input, { value: checked }); await check();
     const actual = await read();
     if (actual !== checked) throw new Error('CHECKBOX_READBACK_MISMATCH');
     return { outcome: 'updated_unsaved', field: 'cmsSend', requested: checked, actual };
@@ -574,7 +597,7 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
       for (const [direction, expected] of [['up', 1], ['down', 0]]) {
         const button = count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${direction}`);
         await check(); await button.click({ timeout: 5000 });
-        await page.waitForTimeout(100);
+        await waitForInputState(page, count, { display: String(expected) });
         if (clean(await count.inputValue()) !== String(expected)) throw new Error('CHILD_COUNT_READBACK_MISMATCH');
       }
     }
@@ -582,7 +605,7 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
       const change = current < requested.length ? 1 : -1;
       const button = count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${change === 1 ? 'up' : 'down'}`);
       await check(); await button.click({ timeout: 5000 });
-      await page.waitForTimeout(100);
+      await waitForInputState(page, count, { display: String(current + change) });
       const updated = await parseCount();
       if (updated !== current + change) throw new Error('CHILD_COUNT_READBACK_MISMATCH');
       current = updated;
@@ -611,7 +634,18 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
       throw new Error('AGE_VALIDATION_MISMATCH');
     }
     await popup.waitFor({ state: 'hidden', timeout: 10000 });
-    await page.waitForTimeout(500); await check();
+    await page.waitForFunction(({ childCount, nativeCounts }) => {
+      const names = ['children', 'child1', 'child2', 'child3'];
+      const values = names.map((name) => {
+        const fields = [...document.querySelectorAll(`input[name="${name}"]`)].filter((element) =>
+          (element.offsetWidth || element.offsetHeight) && getComputedStyle(element).visibility !== 'hidden' &&
+          !element.closest('.x-window'));
+        return fields.length === 1 ? fields[0].value.trim() : null;
+      });
+      return values[0] === String(childCount) && names.slice(1).every((name, index) =>
+        values[index + 1] === String(nativeCounts?.[name] ?? nativeCounts?.[name.toUpperCase()] ?? 0));
+    }, { childCount: requested.length, nativeCounts: native.childCategoryCounts }, { timeout: 5000 });
+    await check();
     const counts = {};
     for (const name of ['children', 'child1', 'child2', 'child3']) counts[name] = clean(await (await uniqueInput(page, name)).inputValue());
     const names = ['child1', 'child2', 'child3'];
@@ -690,8 +724,9 @@ export async function selectCmsMessageId(page, { propertyCode, searchId, code } 
     await check();
     await win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).last().click({ timeout: 5000 });
     await win.waitFor({ state: 'hidden', timeout: 10000 });
-    await page.waitForTimeout(500); await check();
-    const actual = await (await uniqueInput(page, 'udfchar09')).inputValue();
+    const input = await uniqueInput(page, 'udfchar09');
+    await waitForInputState(page, input, { display: code.trim(), trim: true }); await check();
+    const actual = await input.inputValue();
     if (clean(actual) !== code.trim()) throw new Error('CMS_READBACK_MISMATCH');
     cmsSearches.delete(page);
     return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: code, actual };

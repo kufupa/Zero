@@ -382,6 +382,8 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
           if (await bounded(() => control.count()) !== 1 || !await bounded(() => control.isEditable())) throw new Error('FIELD_NOT_EDITABLE');
           await bounded(() => control.fill(value, { timeout: 5000 }));
           await bounded(() => control.press('Tab', { timeout: 5000 }));
+          // Keep observing guarded blur effects; a matching billing value
+          // alone does not establish that its native callback has finished.
           await bounded(() => page.waitForTimeout(1000));
         }
       }

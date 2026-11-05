@@ -1,5 +1,6 @@
 // Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
 import { randomUUID } from 'node:crypto';
+import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
@@ -180,14 +181,13 @@ export async function openNewGuestStay(page) {
     await assertExpectedDialogs(page, nativeDialog);
     const agency = page.locator('input[name="ta1"]:visible').first();
     if (!await agency.isVisible().catch(() => false)) {
-      await page.locator('a.app-menu-trigger:visible').click();
       const nodes = page.locator('span.x-tree-node-text:visible');
       const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
-      if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }), () => nativeDialog);
+      const frontDesk = nodes.filter({ hasText: /^Front Desk$/ });
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
-        await page.waitForTimeout(800);
-        if (!await guestStay.isVisible().catch(() => false)) await page.locator('a.app-menu-trigger:visible').click();
+        await ensureApplicationMenuOpen(page, frontDesk);
+        await ensureMenuChild(frontDesk, guestStay, () => clickTreeNode(frontDesk, () => nativeDialog));
         await clickTreeNode(guestStay, () => nativeDialog);
         opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
           .waitFor({ timeout: 8000 }).then(() => true, () => false);
@@ -205,7 +205,7 @@ export async function openNewGuestStay(page) {
         const ext = globalThis.Ext;
         if (typeof ext?.Ajax?.isLoading !== 'function' || ext.Ajax.isLoading()) return false;
         const shown = el => Boolean(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-        if ([...document.querySelectorAll('.x-mask,.x-mask-msg')].some(shown)) return false;
+        if ([...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(shown)) return false;
         const named = name => [...document.querySelectorAll(`input[name="${name}"]`)]
           .filter(el => shown(el) && !el.closest('.x-window'));
         const confirmation = named('confirmationnumber'), agency = named('ta1');
@@ -213,7 +213,8 @@ export async function openNewGuestStay(page) {
         const form = ext.getCmp?.(agency[0].id.replace(/-inputEl$/, ''))?.up?.('form');
         const data = form?.getRecord?.()?.data;
         return Boolean(form?.el?.dom?.contains(confirmation[0]) && data?.propertycode === property &&
-          data.status === 'New' && !String(data.confirmationnumber ?? '').trim());
+          data.status === 'New' && data.PKID === `@[EMPTY]#@[EMPTY]#${property}#` &&
+          !String(data.confirmationnumber ?? '').trim());
       }, PROPERTY, { timeout: 20000 });
     } catch {
       throw new Error('GUEST_STAY_STARTUP_UNSETTLED');
@@ -756,6 +757,7 @@ export async function closeGuestStayPartyPicker(page, { propertyCode } = {}) {
     await cancel.click({ timeout: 5000 });
     await page.waitForFunction((id) => !Ext.getCmp(id)?.isVisible(), windowId, { timeout: 10000 });
     await win.waitFor({ state: 'hidden', timeout: 10000 });
+    // Hidden alone does not establish that picker callbacks and late requests have drained.
     await page.waitForTimeout(500);
     await assertExpectedDialogs(page, nativeDialog);
     await checkDraft();
